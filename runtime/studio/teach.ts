@@ -21,13 +21,14 @@ import {
   first45Histories,
   first45Question,
   TeachingError,
-  teachingProfile,
   type CompanionMessage,
   type TeachingDependencies,
   type TeachingResponse,
 } from '../../executors/teaching/index.ts';
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
 import { caseId, type DisplayTurn } from './sessions.ts';
+import { turnTask } from './model-routes.ts';
+import { sameRoute, resolveMcpGrants, mcpRevision } from './harness.ts';
 import { loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
 import { methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
@@ -99,15 +100,22 @@ export async function teach(db: Db, ref: WorkRef) {
   }
   try {
     const submission = studyTurn(await read(job.slotKey));
-    if (submission.model !== teachingProfile.model || submission.reasoningEffort !== teachingProfile.reasoningEffort)
-      throw new TeachingError('provider_configuration', '这轮作答提交于教学模型切换前。请开始新对话，以当前模型继续。');
-    const settings = await loadSettings();
-    if (settings.baseUrl !== submission.baseUrl)
-      throw new TeachingError('provider_configuration', '模型服务地址已更改，请开始新会话。');
+    const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
+    const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
+    const settings = await loadSettings(task);
+    if (!sameRoute(submission, settings))
+      throw new TeachingError('provider_configuration', '本轮绑定的模型配置已变更，请切回原配置或新建对话。');
+    const grants = submission.mcpGrants ?? [];
+    function checkMcpAccess(current: typeof settings) {
+      const servers = resolveMcpGrants(grants, current);
+      if (grants.length && submission.mcpRevision !== mcpRevision(grants, current))
+        throw new TeachingError('provider_configuration', 'MCP 服务凭证已变更，请重新选择工具并发送。');
+      return servers;
+    }
+    const mcpServers = checkMcpAccess(settings);
     if (submission.parentId) {
-      const origin = studyTurn(await read(submission.sessionId));
       const previous = studyTurn(await read(submission.parentId));
-      if (origin.baseUrl !== settings.baseUrl || previous.baseUrl !== settings.baseUrl)
+      if (!sameRoute(origin, settings) || !sameRoute(previous, settings))
         throw new TeachingError('provider_configuration', '此对话使用过不同端点，请新建对话。');
     }
     const onProgress: NonNullable<TeachingDependencies['onProgress']> = async (progress) => {
@@ -142,7 +150,11 @@ export async function teach(db: Db, ref: WorkRef) {
         async (tx) => {
           if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
           await validInputs(tx);
-          if (step.provider === 'tool:exa_search' && !(await loadSettings()).allowSearch) throw new ChangedEvidence();
+          const current = await loadSettings(task);
+          if (!sameRoute(submission, current)) throw new ChangedEvidence();
+          if (!step.provider.startsWith('tool:') && current.apiKey !== settings.apiKey) throw new ChangedEvidence();
+          if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new ChangedEvidence();
+          if (grants.length) checkMcpAccess(current);
         },
       );
       if (effect.kind === 'unknown') throw new UncertainEffect(effect.providerEffectId);
@@ -156,7 +168,7 @@ export async function teach(db: Db, ref: WorkRef) {
       if (!answer) throw new TeachingError('invalid_input', '请输入有效的学习问题。');
       const preference = submission.caseId === 'companion' ? await db.snapshot(scope, async tx => {
         const value = await currentMemory(tx);
-        if (!value.text || value.endpoint !== settings.baseUrl) return;
+        if (!value.text || value.endpoint !== settings.baseUrl || value.providerId !== settings.activeProviderId || value.protocol !== settings.protocol) return;
         await readFact(tx, memoryId, 'pinned');
         liveMemoryRevision = value.revision;
         return value.text;
@@ -166,7 +178,7 @@ export async function teach(db: Db, ref: WorkRef) {
         let previousId = submission.parentId;
         for (let count = 0; previousId && count < 3; count++) {
           const previous = studyTurn(await readFact(tx, previousId));
-          if (previous.sessionId !== submission.sessionId || previous.caseId !== submission.caseId || previous.baseUrl !== settings.baseUrl || !previous.answer) {
+          if (previous.sessionId !== submission.sessionId || previous.caseId !== submission.caseId || !sameRoute(previous, settings) || !previous.answer) {
             throw new ChangedEvidence();
           }
           // Each reply follows its immediate predecessor. Recursive manifest
@@ -181,8 +193,7 @@ export async function teach(db: Db, ref: WorkRef) {
       });
       await onProgress({ phase: 'thinking' });
       const { title, distanceKm, movingMinutes, stoppedMinutes } = ridingLesson;
-      const root = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
-      const attachment = root.attachment;
+      const attachment = origin.attachment;
       const material = submission.caseId === 'riding'
         ? `《${title}》：全程 ${distanceKm} 公里，移动 ${movingMinutes} 分钟，停车 ${stoppedMinutes} 分钟。移动均速 ${averageSpeed(distanceKm, movingMinutes)} 公里/小时，全程均速 ${averageSpeed(distanceKm, movingMinutes + stoppedMinutes)} 公里/小时。`
         : attachment ? `《${attachment.title}》\n${attachment.text}` : undefined;
@@ -190,7 +201,7 @@ export async function teach(db: Db, ref: WorkRef) {
       const privateContext = Boolean(material || preference || publicHistory.length);
       const result = await runCompanionTurn(answer, publicHistory, material, {
         provider: settings, runEffect: runModelEffect, onProgress,
-        ...(submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey,
+        ...(submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey, mcpServers,
           ...(publicSearchQuery ? {publicSearchQuery} : {}),
           allowSearch: submission.allowSearch === true && settings.allowSearch && (!privateContext || Boolean(publicSearchQuery)) } } : {}),
       }, attachment?.mode === 'prepare' && !submission.parentId, preference);
@@ -200,7 +211,7 @@ export async function teach(db: Db, ref: WorkRef) {
           ...(attachment ? [{ id: attachment.id, title: attachment.title, text: attachment.text }] : []),
           ...(preference ? [{ id: memoryId, title: '本人保存的同伴备忘', text: preference }] : []),
         ],
-        ...teachingProfile,
+        model: settings.model, reasoningEffort: settings.reasoningEffort,
       };
     } else {
       const selected = caseId(submission.caseId);
@@ -245,7 +256,7 @@ export async function teach(db: Db, ref: WorkRef) {
         action: result.action,
         rationale: result.rationale,
         message: result.nextStep,
-        ...teachingProfile,
+        model: settings.model, reasoningEffort: settings.reasoningEffort,
         evidenceIds: result.evidenceIds,
         ...(result.reportedModel ? { reportedModel: result.reportedModel } : {}),
         reads: result.reads.map((record) => ({

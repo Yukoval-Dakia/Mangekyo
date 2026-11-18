@@ -1,6 +1,14 @@
+import {readBoundedText} from './bounded-response.ts';
 export type FunctionCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
-type Completion = { id?: unknown; model?: unknown } & ({ truncated: true } | { content?: string; toolCalls?: FunctionCall[] });
-type ProviderHooks = {
+/**
+ * A raw assistant turn that must be replayed on the next native-protocol call.
+ * Tool-use thinking blocks carry signatures that cannot be reconstructed from
+ * function calls alone.
+ */
+export type ProviderTurn = { protocol: 'anthropic'; content: unknown[] };
+export type Completion = { id?: unknown; model?: unknown; providerTurn?: ProviderTurn } &
+  ({ truncated: true } | { content?: string; toolCalls?: FunctionCall[] });
+export type ProviderHooks = {
   allowTools?: boolean;
   model?: (model: unknown) => void;
   content?: (text: string) => Promise<void>;
@@ -8,6 +16,66 @@ type ProviderHooks = {
 
 const maximumFrame = 512_000;
 const maximumContent = 64_000;
+
+/**
+ * Read the data payload of each server-sent event. Empty comment and non-data
+ * fields are ignored; a payload is delivered only when its event is terminated.
+ */
+export async function readSseData(
+  response: Response,
+  onData: (payload: string) => boolean | void | Promise<boolean | void>,
+  maximum = maximumFrame,
+): Promise<void> {
+  if (!response.body) throw new Error('Missing completion stream');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let pending = '';
+  let data: string[] = [];
+  let dataLength = 0;
+  let finished = false;
+
+  async function readLine(line: string) {
+    if (line !== '') {
+      if (line.startsWith('data:')) {
+        const value = line.slice(5).replace(/^ /, '');
+        dataLength += value.length;
+        if (dataLength > maximum) throw new Error('Completion event too large');
+        data.push(value);
+      }
+      return;
+    }
+    if (data.length === 0) return;
+    const payload = data.join('\n');
+    data = [];
+    dataLength = 0;
+    if ((await onData(payload)) === true) finished = true;
+  }
+
+  try {
+    while (!finished) {
+      const { done, value } = await reader.read();
+      pending += decoder.decode(value, { stream: !done });
+      let start = 0;
+      for (let index = 0; index < pending.length && !finished; index++) {
+        const character = pending[index];
+        if (character !== '\r' && character !== '\n') continue;
+        if (character === '\r' && index === pending.length - 1 && !done) break;
+        await readLine(pending.slice(start, index));
+        if (character === '\r' && pending[index + 1] === '\n') index++;
+        start = index + 1;
+      }
+      pending = pending.slice(start);
+      if (pending.length > maximum) throw new Error('Completion line too large');
+      if (done) {
+        if (pending.trim() || data.length) throw new Error('Incomplete completion event');
+        break;
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
 
 function collectCalls(calls: FunctionCall[], chunks: unknown, streamed: boolean) {
   if (!Array.isArray(chunks) || chunks.length > 4) throw new Error('Invalid tool calls');
@@ -47,7 +115,7 @@ type ProviderChunk = {
 
 export async function readProviderCompletion(response: Response, hooks: ProviderHooks): Promise<Completion> {
   if (response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'text/event-stream') {
-    const value: unknown = await response.text().then((text) => {
+    const value: unknown = await readBoundedText(response, 2 * 1024 * 1024).then((text) => {
       try {
         return JSON.parse(text);
       } catch {

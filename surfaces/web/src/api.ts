@@ -6,13 +6,72 @@ export interface TeachingCase {
   initialAnswer: string;
 }
 
-export interface Settings {
+export type ProviderProtocol = "openai" | "anthropic";
+
+export interface ProviderProfileSummary {
+  id: string;
+  label: string;
   baseUrl: string;
+  protocol: ProviderProtocol;
   model: string;
   reasoningEffort: string;
   hasKey: boolean;
+}
+
+export interface McpServerSummary {
+  id: string;
+  label?: string;
+  url: string;
+  allowedTools: string[];
+  enabled: boolean;
+  hasToken: boolean;
+}
+
+export interface Settings {
+  routes?: Partial<Record<"companion"|"preparation"|"diagnostic"|"assessment", string>>;
+  baseUrl: string;
+  model: string;
+  protocol: ProviderProtocol;
+  reasoningEffort: string;
+  activeProviderId: string;
+  providers: ProviderProfileSummary[];
+  mcpServers: McpServerSummary[];
+  hasKey: boolean;
   hasExaKey: boolean;
   allowSearch: boolean;
+}
+
+export interface ProviderProfileInput {
+  id?: string;
+  label?: string;
+  baseUrl?: string;
+  protocol?: ProviderProtocol;
+  model?: string;
+  reasoningEffort?: string;
+  apiKey?: string;
+}
+
+export interface McpServerInput {
+  id?: string;
+  label?: string;
+  url?: string;
+  token?: string;
+  allowedTools?: string[];
+  enabled?: boolean;
+}
+
+export interface SettingsUpdate {
+  routes?: Settings["routes"];
+  activeProviderId?: string;
+  providers?: ProviderProfileInput[];
+  mcpServers?: McpServerInput[];
+  exaApiKey?: string;
+  allowSearch?: boolean;
+  baseUrl?: string;
+  apiKey?: string;
+  protocol?: ProviderProtocol;
+  model?: string;
+  reasoningEffort?: string;
 }
 
 export type StudyAttachment = { id: string; title: string; text: string; mode: 'ask' | 'prepare' };
@@ -52,8 +111,8 @@ export function sessionEvents(id: string) {
 }
 
 export class ApiError extends Error {
-  constructor(readonly status: number) {
-    super(`HTTP ${status}`);
+  constructor(readonly status: number, message = `HTTP ${status}`) {
+    super(message);
   }
 }
 
@@ -69,7 +128,13 @@ export async function api<T>(
       body: JSON.stringify(options.body),
     }),
   });
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    const message = await response.json().then(
+      (value) => typeof value?.error === "string" ? value.error : undefined,
+      () => undefined,
+    );
+    throw new ApiError(response.status, message ?? `HTTP ${response.status}`);
+  }
   return response.json() as Promise<T>;
 }
 

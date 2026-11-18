@@ -1,3 +1,4 @@
+import { forTask, selectedRoute } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
   WorkbookAttemptView,
@@ -8,10 +9,11 @@ import type {
   WorkbookSummary,
 } from '../../../modules/activity/workbook-values.ts';
 import { api, ApiError, remember, remembered, requestId, type Settings } from './api';
-import { PageTitle, ReadState, useResource, type Material } from './workspace';
+import { PageTitle, ReadState, useResource, type Material, type Resource } from './workspace';
 import './workbook.css';
 
 export type WorkbookProps = {
+  modelSettings: Resource<Settings>;
   id?: string;
   materials: Material[];
 };
@@ -682,6 +684,7 @@ function FeedbackItem({
   assessments,
   onAssess,
   allowSearch,
+  destination,
   assessing,
 }: {
   paperId: string;
@@ -691,6 +694,7 @@ function FeedbackItem({
   assessments: WorkbookRubricAssessmentView[];
   onAssess: (questionId: string, query?: string) => void;
   allowSearch: boolean;
+  destination: string;
   assessing: string | null;
 }) {
   const [query, setQuery] = useState('');
@@ -736,13 +740,15 @@ function FeedbackItem({
                   <dt>工具轨迹</dt>
                   <dd>{assessment.trace.length ? assessment.trace.join(' · ') : '本次未使用工具。'}</dd>
                 </div>
-                <div><dt>版本</dt><dd>{assessment.rubricVersion} · {assessment.assessedAt.slice(0, 10)}{assessment.reportedModel ? ' · ' + assessment.reportedModel : ''}</dd></div>
+                <div><dt>版本</dt><dd>{assessment.rubricVersion} · {assessment.assessedAt.slice(0, 10)}</dd></div>
+                {assessment.requestedModel && <div><dt>请求模型</dt><dd>{assessment.requestedModel}</dd></div>}
+                {assessment.reportedModel && <div><dt>服务返回的模型</dt><dd>{assessment.reportedModel}</dd></div>}
               </dl>
               <p className="workbook-selfcheck-note">这次批改已随本次作答保存。</p>
             </>
           ) : (
             <p className="workbook-selfcheck-note">
-              交卷时没有发送给模型。批改会把<strong>这道题的题面、你的作答和评分标准</strong>发送到「模型设置」中的端点；原答保存在这次练习里。
+              交卷时没有发送给模型。批改会把<strong>这道题的题面、你的作答和评分标准</strong>发送给 {destination}；原答保存在这次练习里。
             </p>
           )}
           {allowSearch && (!assessment || assessment.verdict === 'pending') && <label className="field"><span>允许 Exa 检索的公开主题（可留空）</span>
@@ -762,13 +768,13 @@ function FeedbackItem({
   );
 }
 
-function PaperDetail({ paperId, materials }: { paperId: string; materials: Material[] }) {
+function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
   const [assessing, setAssessing] = useState<string | null>(null);
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [settingsError, setSettingsError] = useState('');
+  const settings = modelSettings.data && forTask(modelSettings.data, 'assessment');
+  const settingsError = modelSettings.error ? '无法读取模型设置。' : '';
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
@@ -788,18 +794,6 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
       });
     return () => controller.abort();
   }, [paperId, reload]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    api<Settings>('/settings', { signal: controller.signal })
-      .then((result) => {
-        if (!controller.signal.aborted) setSettings(result);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setSettingsError('无法读取模型设置。');
-      });
-    return () => controller.abort();
-  }, []);
 
   useEffect(() => {
     if (!view || !draft) return;
@@ -913,7 +907,7 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
           questionId,
           consent: 'send-question-answer-rubric',
           ...(publicSearchQuery ? {publicSearchQuery} : {}),
-          providerBaseUrl: settings.baseUrl,
+          providerBaseUrl: settings.baseUrl, route: selectedRoute(settings),
         },
       },
     )
@@ -1080,6 +1074,7 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
                       (assessment) => assessment.questionId === feedback.questionId,
                     )}
                     allowSearch={settings?.allowSearch === true}
+                    destination={settings ? settings.model + ' · ' + settings.baseUrl : '模型服务'}
                     onAssess={assessRubric}
                     assessing={assessing}
                   />
@@ -1118,8 +1113,8 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
   );
 }
 
-export function Workbook({ id, materials }: WorkbookProps) {
+export function Workbook({ id, materials, modelSettings }: WorkbookProps) {
   if (id === undefined) return <ListPage />;
   if (id === 'new') return <AuthorPage materials={materials} />;
-  return <PaperDetail paperId={id} materials={materials} />;
+  return <PaperDetail paperId={id} materials={materials} modelSettings={modelSettings} />;
 }

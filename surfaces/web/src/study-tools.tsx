@@ -1,3 +1,5 @@
+import type {Settings} from './api';
+import {selectedRoute} from './model-route';
 import { useRef, useState } from 'react';
 import { api, ApiError, requestId, type Turn } from './api';
 import { ReadState, useResource } from './workspace';
@@ -50,9 +52,10 @@ export function StudyCards({ kit, materialId, discuss }: { kit: Kit; materialId?
   </section>;
 }
 
-type Memory = { text: string; revision: number; endpoint: string };
+type Memory = { text: string; revision: number; endpoint: string; protocol?: string; providerId?: string };
 
-export function LearningMemory({ endpoint }: { endpoint: string | undefined }) {
+export function LearningMemory({ settings }: { settings: Settings | undefined }) {
+  const endpoint = settings?.baseUrl;
   const memory = useResource<Memory>('/memory');
   const [draft, setDraft] = useState<{ text: string; revision: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -60,7 +63,7 @@ export function LearningMemory({ endpoint }: { endpoint: string | undefined }) {
   const intent = useRef({ key: '', id: '' });
   async function save() {
     if (!draft || !endpoint || busy) return;
-    const data = { ...draft, endpoint };
+    const data = { text: draft.text, revision: draft.revision, endpoint, route: selectedRoute(settings) };
     const key = JSON.stringify(data);
     if (intent.current.key !== key) intent.current = { key, id: requestId() };
     setBusy(true);
@@ -81,7 +84,7 @@ export function LearningMemory({ endpoint }: { endpoint: string | undefined }) {
     </div>
     <ReadState resource={memory} />
     {memory.data && <p className="preserve">{memory.data.text || '你可以告诉同伴，以后希望它怎样陪你学。'}</p>}
-    {memory.data?.text && memory.data.endpoint !== endpoint && <p>这条备忘绑定了另一模型端点。重新保存后才会在当前端点使用。</p>}
+    {memory.data?.text && (memory.data.endpoint !== endpoint || (memory.data.providerId ?? 'default') !== settings?.activeProviderId || (memory.data.protocol ?? 'openai') !== settings?.protocol) && <p>这条备忘绑定了另一模型端点。重新保存后才会在当前端点使用。</p>}
     {draft && <form onSubmit={e => {e.preventDefault(); void save();}}>
       <label className="field"><span>希望同伴记住什么</span>
         <textarea rows={3} maxLength={800} disabled={busy} value={draft.text} onChange={e => setDraft({ ...draft, text: e.target.value })} /></label>
