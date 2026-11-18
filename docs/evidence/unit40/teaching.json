@@ -1,0 +1,105 @@
+{
+  "source": "Real local HTTP/Temporal/PostgreSQL execution against a configured LLM gateway, synthetic learning histories and test learner replies.",
+  "receiptsBeforeForcedExit": [
+    {
+      "id": "3A817669DE81C3567452541401",
+      "state": "pending"
+    },
+    {
+      "id": "89C110C42E1319CE42B89C16FA",
+      "state": "pending"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "3A817669DE81C3567452541401",
+      "caseId": "independent",
+      "currentTurnId": "422DF70E4ACC906BB22B2888B7",
+      "status": "ready",
+      "turns": [
+        {
+          "model": "auto/deepseek-v4.1-flash",
+          "reads": [
+            {
+              "id": "work-01",
+              "text": "题目：一辆车以 24 公里/小时行驶 2 小时，再以 36 公里/小时行驶 1 小时。全程平均速度是多少？\n学生草稿：前一段走了 24×2=48 公里，后一段走了 36×1=36 公里，一共走了 84 公里，用了 3 小时，平均 84÷3=28 公里/小时。\n课堂记录：这是第一次见到的题。学生独立作答、提交后才打开反馈，提交前未见提示和解答。",
+              "title": "分段行程练习",
+              "reportedModel": "group/auto-deepseek-v4-1-flash"
+            }
+          ],
+          "action": "transfer_question",
+          "message": "请计算：先以 12 公里/小时骑 1 小时，再以 24 公里/小时骑 2 小时，全程平均速度是多少？请写出总路程和总时间。",
+          "rationale": "你已独立用总路程÷总时间解决过分段行程题，当前等时题也答对；换一个时间不相等的情境，检验是否真正迁移方法。",
+          "evidenceIds": [
+            "work-01"
+          ],
+          "reportedModel": "group/auto-deepseek-v4-1-flash"
+        },
+        {
+          "model": "auto/deepseek-v4.1-flash",
+          "reads": [
+            {
+              "id": "work-01",
+              "text": "题目：一辆车以 24 公里/小时行驶 2 小时，再以 36 公里/小时行驶 1 小时。全程平均速度是多少？\n学生草稿：前一段走了 24×2=48 公里，后一段走了 36×1=36 公里，一共走了 84 公里，用了 3 小时，平均 84÷3=28 公里/小时。\n课堂记录：这是第一次见到的题。学生独立作答、提交后才打开反馈，提交前未见提示和解答。",
+              "title": "分段行程练习",
+              "reportedModel": "group/auto-deepseek-v4-1-flash"
+            }
+          ],
+          "action": "transfer_question",
+          "message": "请计算：一名骑行者先以 15 公里/小时骑完 30 公里，再以 30 公里/小时骑完 30 公里，全程平均速度是多少？请写出总路程和总时间，并说明为什么不能直接用（15+30）÷2。",
+          "rationale": "原题答案正确；追答写清了总路程 60 公里、总时间 3 小时，并用 60÷3 得 20，说明已按总路程÷总时间处理。之前独立草稿 work-01 也使用了同一方法。",
+          "evidenceIds": [
+            "work-01"
+          ],
+          "reportedModel": "group/auto-deepseek-v4-1-flash",
+          "answer": "总路程是 12×1+24×2=60 公里，总时间是 3 小时，所以平均速度是 20 公里/小时。"
+        }
+      ]
+    },
+    {
+      "id": "89C110C42E1319CE42B89C16FA",
+      "caseId": "workedExample",
+      "currentTurnId": "852260277EF68E822CE581D7F3",
+      "status": "ready",
+      "turns": [
+        {
+          "model": "auto/deepseek-v4.1-flash",
+          "reads": [
+            {
+              "id": "work-01",
+              "text": "题目：一辆车以 24 公里/小时行驶 2 小时，再以 36 公里/小时行驶 1 小时。全程平均速度是多少？\n先展示的完整例题：前一段走了 24×2=48 公里，后一段走了 36×1=36 公里，一共走了 84 公里，用了 3 小时，平均 84÷3=28 公里/小时。\n学生草稿：28 公里/小时。课堂记录：学生在完整例题下填答，没有留下独立列式。",
+              "title": "分段行程练习",
+              "reportedModel": "group/auto-deepseek-v4-1-flash"
+            }
+          ],
+          "action": "diagnostic_question",
+          "message": "一名骑车人先以每小时 30 公里的速度骑了 1 小时，再以每小时 60 公里的速度骑了 2 小时。全程平均速度是多少？请写出关键算式或说明理由。",
+          "rationale": "当前题两段都骑 1 小时，45 公里/小时既符合“总路程÷总时间”，也符合直接把两个速度取平均；旧作中你是在完整例题下填答，未留下独立列式，值得用变式区分这两种理解。",
+          "evidenceIds": [
+            "work-01"
+          ],
+          "reportedModel": "group/auto-deepseek-v4-1-flash"
+        },
+        {
+          "model": "auto/deepseek-v4.1-flash",
+          "reads": [
+            {
+              "id": "work-01",
+              "text": "题目：一辆车以 24 公里/小时行驶 2 小时，再以 36 公里/小时行驶 1 小时。全程平均速度是多少？\n先展示的完整例题：前一段走了 24×2=48 公里，后一段走了 36×1=36 公里，一共走了 84 公里，用了 3 小时，平均 84÷3=28 公里/小时。\n学生草稿：28 公里/小时。课堂记录：学生在完整例题下填答，没有留下独立列式。",
+              "title": "分段行程练习",
+              "reportedModel": "group/auto-deepseek-v4-1-flash"
+            }
+          ],
+          "action": "targeted_explanation",
+          "message": "你这一步还是把 30 和 60 直接平均成 45；当两段时间不同，平均速度应算总路程÷总时间，不能简单平均速度。请先算总路程 30×1＋60×2，再算总时间 1＋2，然后求平均，并说明为什么后一段多骑 1 小时会把结果拉向 60。",
+          "rationale": "追答明确显示你仍把两个速度直接相加再除以2，并主动问时间长短是否要算；旧作 work-01 只有例题下填答，不能证明总路程÷总时间的方法已独立掌握。",
+          "evidenceIds": [
+            "work-01"
+          ],
+          "reportedModel": "group/auto-deepseek-v4-1-flash",
+          "answer": "我觉得还是 45。我把两个速度加起来再除以二，时间长短也要算吗？"
+        }
+      ]
+    }
+  ]
+}

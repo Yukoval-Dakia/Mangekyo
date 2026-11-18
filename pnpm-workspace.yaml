@@ -1,0 +1,6 @@
+packages:
+  - kernel
+  - modules/*
+  - executors/*
+  - surfaces/*
+  - runtime/*

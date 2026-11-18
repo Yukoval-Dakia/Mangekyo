@@ -1,0 +1,29 @@
+{
+  "name": "mangekyo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "node scripts/check-test-budget.mjs && vitest run",
+    "test:pg": "node scripts/check-test-budget.mjs && vitest run --config vitest.pg.config.ts",
+    "verify:teaching": "node runtime/studio/test/teaching-acceptance.mjs",
+    "test:boundary": "node kernel/test/package-boundary/check.mjs",
+    "build:kernel": "tsc -p kernel/tsconfig.build.json",
+    "typecheck": "pnpm build:kernel && tsc --noEmit && pnpm --filter @mangekyo/web typecheck",
+    "check:structure": "node scripts/check-structure.mjs",
+    "new:module": "node scripts/new-module.mjs",
+    "new:deriver": "node scripts/new-deriver.mjs",
+    "check:test-budget": "node scripts/check-test-budget.mjs",
+    "dev": "pnpm build:kernel && pnpm --filter @mangekyo/web build && pnpm --filter @mangekyo/studio exec tsx server.ts",
+    "studio:serve": "pnpm --filter @mangekyo/studio exec tsx server.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "@types/pg": "^8.16.0",
+    "typescript": "^6.0.0",
+    "vitest": "^5.1.0"
+  }
+}

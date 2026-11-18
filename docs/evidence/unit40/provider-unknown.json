@@ -1,0 +1,18 @@
+[
+  {
+    "id": "17153F4A3F326AD4467A20A3D2",
+    "caseId": "independent",
+    "currentTurnId": "17153F4A3F326AD4467A20A3D2",
+    "status": "unknown",
+    "error": "提供方的执行结果待核对，本轮已停止自动调用。请求标识 01M7PX9K2NAEFG6AMMYVETKTAX",
+    "turns": []
+  },
+  {
+    "id": "BB6CAB8BE08F7117AA2AAF4516",
+    "caseId": "workedExample",
+    "currentTurnId": "BB6CAB8BE08F7117AA2AAF4516",
+    "status": "unknown",
+    "error": "提供方的执行结果待核对，本轮已停止自动调用。请求标识 01M7PX9CZCHAF49RA04CC2K2WW",
+    "turns": []
+  }
+]

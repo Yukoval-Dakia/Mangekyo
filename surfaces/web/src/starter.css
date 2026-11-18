@@ -1,0 +1,99 @@
+.starter {
+  width: min(100%, 1100px);
+  margin-inline: auto;
+  padding: clamp(22px, 4vw, 40px) 0 32px;
+  line-height: 1.6;
+}
+
+.starter-heading { margin-bottom: 22px; }
+.starter-heading h1 { font-size: clamp(23px, 3.5vw, 32px); line-height: 1.2; letter-spacing: -.04em; }
+.starter-heading p { margin-top: 9px; max-width: 40em; }
+.starter h2 { font-size: 19px; line-height: 1.4; letter-spacing: -.02em; }
+.starter-heading p, .starter-lab-heading p, .starter-readings p, .starter-equation,
+.starter-graph-note, .starter-time-axis, .starter-practice-links span, .starter-submit span { color: var(--muted); }
+
+.starter-lesson-grid, .starter-practice-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+}
+
+.starter-lab { grid-column: span 7; }
+.starter-readings { grid-column: span 5; }
+.starter-lab, .starter-readings, .starter-paper {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  min-width: 0;
+  padding: clamp(14px, 2.6vw, 26px);
+}
+
+.starter-lab-heading p, .starter-readings > p { font-size: 14px; margin-top: 6px; }
+.starter-graph { margin: 18px 0 12px; }
+.starter-graph figcaption, .starter-time-axis { font-size: 12px; }
+.starter-time-axis { text-align: right; margin-top: 25px; }
+.starter-plot { display: grid; grid-template-columns: 25px minmax(0, 1fr); align-items: stretch; margin-top: 13px; }
+.starter-plot-labels { display: flex; flex-direction: column; justify-content: space-between; font-size: 12px; line-height: 1; color: var(--muted); }
+.starter-plot-labels span:first-child { transform: translateY(-45%); }
+.starter-plot-labels span:last-child { transform: translateY(50%); }
+.starter-trace { display: flex; height: clamp(70px, 12vw, 116px); position: relative; border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); }
+.starter-motion { background: color-mix(in srgb, #287854 18%, var(--surface)); border-top: 3px solid #287854; border-right: 2px solid #287854; }
+.starter-stop { border-bottom: 3px solid var(--muted); }
+.starter-first-tick, .starter-divider-tick, .starter-last-tick { position: absolute; top: calc(100% + 4px); color: var(--muted); font-size: 12px; }
+.starter-first-tick { left: 0; }
+.starter-divider-tick { transform: translateX(-50%); }
+.starter-last-tick { right: 0; }
+.starter-graph-note { font-size: 13px; margin-top: 8px; }
+.starter-range { border-top: 1px solid var(--line); padding-top: 10px; }
+.starter-range label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 14px; }
+.starter-range input { display: block; width: 100%; height: 44px; margin: 0; accent-color: var(--primary); cursor: pointer; }
+.starter-mobile-readings { display: none; }
+.starter-range-actions { display: flex; flex-wrap: wrap; gap: 0 8px; }
+.starter-range-actions .text-button { padding-inline: 10px; }
+
+.starter-readings dl { margin: 13px 0; }
+.starter-readings dl > div { padding: 12px 0; border-top: 1px solid var(--line); }
+.starter-readings dl > div:last-child { border-bottom: 1px solid var(--line); }
+.starter-readings dt { font-weight: 680; }
+.starter-readings dd { margin: 0; font-size: 14px; }
+.starter-readings dd strong { font-size: clamp(28px, 4vw, 40px); line-height: 1.3; font-weight: 520; font-variant-numeric: tabular-nums; }
+.starter-readings .starter-equation { margin-top: 3px; font-size: 13px; }
+.starter-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 18px; }
+.starter-links a { text-decoration: none; }
+
+.starter-paper { grid-column: span 8; }
+.starter-practice-links { grid-column: span 4; padding: 0 clamp(8px, 2vw, 18px); }
+.starter-practice-links a { display: grid; gap: 2px; padding: 13px 0; color: var(--primary); text-decoration: none; }
+.starter-practice-links a:hover strong { text-decoration: underline; }
+.starter-practice-links a + a { border-top: 1px solid var(--line); }
+.starter-practice-links span { font-size: 13px; }
+.starter-exercises { padding-left: 26px; margin: 0; }
+.starter-exercise::marker { color: var(--muted); }
+.starter-exercise { padding: 12px 0 15px 5px; }
+.starter-exercise + .starter-exercise { border-top: 1px solid var(--line); }
+.starter-prompt { display: block; }
+.starter-answer { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin-top: 9px; }
+.starter-answer input { max-width: 100%; width: 130px; border: 1px solid #a8b6aa; color: var(--ink); background: var(--surface); border-radius: 10px; min-height: 44px; padding: 0 10px; font-variant-numeric: tabular-nums; }
+.starter-answer span, .starter-submit span { font-size: 13px; }
+.starter-submit { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; border-top: 1px solid var(--line); padding-top: 14px; }
+.starter-history, .starter-review-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.starter-history { border-bottom: 1px solid var(--line); padding-bottom: 12px; font-size: 14px; }
+.starter-history select { font: inherit; min-height: 44px; border: 1px solid #a8b6aa; color: var(--ink); background: var(--surface); border-radius: 10px; padding: 0 10px; }
+.starter-review-header { justify-content: space-between; margin-top: 8px; }
+.starter-feedback-answer { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 14px; }
+.starter-result-correct { color: var(--primary); }
+.starter-result-incorrect { color: var(--danger); }
+.starter-result-unanswered { color: var(--muted); }
+.starter-feedback-explanation { margin-top: 6px; color: var(--muted); }
+.starter-status { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; color: var(--muted); }
+.starter-status[role="alert"] { color: var(--danger); }
+
+@media (max-width: 760px) {
+  .starter-lesson-grid, .starter-practice-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .starter-lab, .starter-readings, .starter-paper, .starter-practice-links { grid-column: 1; }
+  .starter-mobile-readings { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 9px; margin: 2px 0 5px; font-size: 13px; }
+  .starter-mobile-readings strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .starter-mobile-readings > span:last-child { color: var(--muted); }
+  .starter-range-actions .text-button { padding-inline: 8px; }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@mangekyo/studio",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "pg": "^8.23.1",
+    "tsx": "^4.20.0",
+    "@temporalio/client": "1.26.0"
+  }
+}

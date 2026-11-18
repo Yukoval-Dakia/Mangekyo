@@ -1,0 +1,67 @@
+[
+  {
+    "id": "C0E9BDF1182D433E6263E1AF90",
+    "caseId": "independent",
+    "currentTurnId": "C0E9BDF1182D433E6263E1AF90",
+    "status": "ready",
+    "turns": [
+      {
+        "model": "auto/deepseek-v4.1-flash",
+        "reads": [
+          {
+            "id": "work-01",
+            "text": "题目：一辆车以 24 公里/小时行驶 2 小时，再以 36 公里/小时行驶 1 小时。全程平均速度是多少？\n学生草稿：前一段走了 24×2=48 公里，后一段走了 36×1=36 公里，一共走了 84 公里，用了 3 小时，平均 84÷3=28 公里/小时。\n课堂记录：这是第一次见到的题。学生独立作答、提交后才打开反馈，提交前未见提示和解答。",
+            "title": "分段行程练习",
+            "reportedModel": "group/auto-deepseek-v4-1-flash"
+          }
+        ],
+        "action": "transfer_question",
+        "message": "请完成一道迁移题：某人从 A 到 B 以 60 公里/小时行驶，再沿原路以 30 公里/小时返回。往返全程的平均速度是多少？请写出总路程和总时间，不要直接把两个速度相加除以 2。",
+        "rationale": "work-01 显示学生已独立用“总路程÷总时间”处理分段行程，当前答案 45 公里/小时也正确，旧证据已足以区分方法，不必重复原题辨析。",
+        "evidenceIds": [
+          "work-01"
+        ],
+        "reportedModel": "group/auto-deepseek-v4-1-flash",
+        "reasoningEffort": "high"
+      }
+    ]
+  },
+  {
+    "id": "50C1641A622C411911CDD81F36",
+    "caseId": "workedExample",
+    "currentTurnId": "59F403239BECB582840B25788A",
+    "status": "ready",
+    "turns": [
+      {
+        "model": "auto/deepseek-v4.1-flash",
+        "reads": [
+          {
+            "id": "work-01",
+            "text": "题目：一辆车以 24 公里/小时行驶 2 小时，再以 36 公里/小时行驶 1 小时。全程平均速度是多少？\n先展示的完整例题：前一段走了 24×2=48 公里，后一段走了 36×1=36 公里，一共走了 84 公里，用了 3 小时，平均 84÷3=28 公里/小时。\n学生草稿：28 公里/小时。课堂记录：学生在完整例题下填答，没有留下独立列式。",
+            "title": "分段行程练习",
+            "reportedModel": "group/auto-deepseek-v4-1-flash"
+          }
+        ],
+        "action": "diagnostic_question",
+        "message": "一名骑车人先以每小时 30 公里的速度骑了 1 小时，再以每小时 60 公里的速度骑了 2 小时。全程平均速度是多少？请写出关键算式或说明理由。",
+        "rationale": "原题用两种不同的方法都可能得到同一个数，换一个条件可以分清你用的是哪种。这份旧作是在有帮助的情况下完成的，我想看看你独立作答时会怎么想。",
+        "evidenceIds": [
+          "work-01"
+        ],
+        "reportedModel": "group/auto-deepseek-v4-1-flash",
+        "reasoningEffort": "high"
+      },
+      {
+        "model": "auto/deepseek-v4.1-flash",
+        "reads": [],
+        "action": "targeted_explanation",
+        "message": "平均速度不是速度的算术平均，而是“总路程÷总时间”。请先算 30×1＋60×2 的总路程，再算 1＋2 的总时间，最后用总路程÷总时间检查：为什么直接平均会得到 45，而正确的平均速度不是 45？",
+        "rationale": "追答明确说出“把两段速度直接相加除以二，无论骑多久都一样”，错误步骤已经清楚，不需要再出辨析题。",
+        "evidenceIds": [],
+        "reportedModel": "group/auto-deepseek-v4-1-flash",
+        "reasoningEffort": "high",
+        "answer": "我用的算法就是把两段速度直接加起来除以二，无论骑多久都一样，所以我答 45。"
+      }
+    ]
+  }
+]

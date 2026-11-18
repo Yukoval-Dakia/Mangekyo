@@ -1,0 +1,101 @@
+{
+  "namespace": "probe-mwlw42vd",
+  "waiting": {
+    "workflowId": "01ARZ3NDEKTSV4RRFFQ69G5FAT",
+    "runId": "01a1ede1-ffba-7084-82b1-e25f04ece493",
+    "status": "RUNNING",
+    "taskQueue": "probe-mwlw42vd",
+    "startTime": "2026-11-18T08:59:33.690Z",
+    "versioningInfo": {
+      "behavior": "VERSIONING_BEHAVIOR_PINNED",
+      "version": "probe-mwlw42vd.old",
+      "deploymentVersion": {
+        "buildId": "old",
+        "deploymentName": "probe-mwlw42vd"
+      },
+      "revisionNumber": "1"
+    },
+    "pendingActivities": [
+      {
+        "activityId": "1",
+        "state": 1,
+        "attempt": 2,
+        "lastHeartbeatTime": null,
+        "lastWorkerIdentity": "probe-mwlw42vd.old:16734@bancho-home.local"
+      }
+    ]
+  },
+  "resumed": {
+    "workflowId": "01ARZ3NDEKTSV4RRFFQ69G5FAT",
+    "runId": "01a1ede1-ffba-7084-82b1-e25f04ece493",
+    "status": "COMPLETED",
+    "taskQueue": "probe-mwlw42vd",
+    "startTime": "2026-11-18T08:59:33.690Z",
+    "closeTime": "2026-11-18T08:59:44.932Z",
+    "versioningInfo": {
+      "behavior": "VERSIONING_BEHAVIOR_PINNED",
+      "version": "probe-mwlw42vd.old",
+      "deploymentVersion": {
+        "buildId": "old",
+        "deploymentName": "probe-mwlw42vd"
+      },
+      "revisionNumber": "1"
+    },
+    "pendingActivities": []
+  },
+  "freshResult": {
+    "workflowId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "runId": "01a1ede2-0817-763d-a095-69ccd21f5ec2",
+    "status": "COMPLETED",
+    "taskQueue": "probe-mwlw42vd",
+    "startTime": "2026-11-18T08:59:35.831Z",
+    "closeTime": "2026-11-18T08:59:36.075Z",
+    "versioningInfo": {
+      "behavior": "VERSIONING_BEHAVIOR_PINNED",
+      "version": "probe-mwlw42vd.new",
+      "deploymentVersion": {
+        "buildId": "new",
+        "deploymentName": "probe-mwlw42vd"
+      },
+      "revisionNumber": "2"
+    },
+    "pendingActivities": []
+  },
+  "closedResult": {
+    "workflowId": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    "runId": "01a1ede2-2c72-7b56-b78e-d7f048bc06cd",
+    "status": "COMPLETED",
+    "taskQueue": "probe-mwlw42vd",
+    "startTime": "2026-11-18T08:59:45.138Z",
+    "closeTime": "2026-11-18T08:59:45.171Z",
+    "versioningInfo": {
+      "behavior": "VERSIONING_BEHAVIOR_PINNED",
+      "version": "probe-mwlw42vd.new",
+      "deploymentVersion": {
+        "buildId": "new",
+        "deploymentName": "probe-mwlw42vd"
+      },
+      "revisionNumber": "2"
+    },
+    "pendingActivities": []
+  },
+  "failureResult": {
+    "workflowId": "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+    "runId": "01a1ede2-2d5d-7065-a26d-24d14d6600e5",
+    "status": "COMPLETED",
+    "taskQueue": "probe-mwlw42vd",
+    "startTime": "2026-11-18T08:59:45.373Z",
+    "closeTime": "2026-11-18T08:59:46.425Z",
+    "versioningInfo": {
+      "behavior": "VERSIONING_BEHAVIOR_PINNED",
+      "version": "probe-mwlw42vd.new",
+      "deploymentVersion": {
+        "buildId": "new",
+        "deploymentName": "probe-mwlw42vd"
+      },
+      "revisionNumber": "2"
+    },
+    "pendingActivities": []
+  },
+  "terminalId": "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+}

@@ -1,0 +1,52 @@
+[
+  {
+    "session": "3A817669DE81C3567452541401",
+    "turn": "3A817669DE81C3567452541401",
+    "tick": 29,
+    "state": "satisfied",
+    "execution": "01M7PVRSTPWZXNW26PJX6VKYEB",
+    "handoff": "delivered",
+    "completed_calls": 2,
+    "uncertain_calls": 0
+  },
+  {
+    "session": "89C110C42E1319CE42B89C16FA",
+    "turn": "89C110C42E1319CE42B89C16FA",
+    "tick": 30,
+    "state": "satisfied",
+    "execution": "01M7PVRSVCRYE7KX4BR98CXA3S",
+    "handoff": "delivered",
+    "completed_calls": 2,
+    "uncertain_calls": 0
+  },
+  {
+    "session": "3A817669DE81C3567452541401",
+    "turn": "422DF70E4ACC906BB22B2888B7",
+    "tick": 41,
+    "state": "satisfied",
+    "execution": "01M7PVX2HDE16PGD1FDHPSCZ26",
+    "handoff": "delivered",
+    "completed_calls": 2,
+    "uncertain_calls": 0
+  },
+  {
+    "session": "89C110C42E1319CE42B89C16FA",
+    "turn": "852260277EF68E822CE581D7F3",
+    "tick": 42,
+    "state": "satisfied",
+    "execution": "01M7PVX2J8TR3RNAY7SPNVR21Z",
+    "handoff": "delivered",
+    "completed_calls": 2,
+    "uncertain_calls": 0
+  },
+  {
+    "session": "89C110C42E1319CE42B89C16FA",
+    "turn": "DD31D52CB0A21619B8CA02EB9B",
+    "tick": 53,
+    "state": "blocked",
+    "execution": "01M7PW1TGMNG5CFY548CG3H1BC",
+    "handoff": "delivered",
+    "completed_calls": 1,
+    "uncertain_calls": 1
+  }
+]
