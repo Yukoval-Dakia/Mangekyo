@@ -1,3 +1,4 @@
+import { browseMcpTools } from '../../executors/teaching/mcp-client.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
@@ -143,6 +144,18 @@ export function serve(
         return json(res, 200, await practice.submit(await body(req)));
       if (path === '/api/settings' && method === 'GET')
         return json(res, 200, publicSettings(await loadSettings()));
+      if (path === '/api/settings/mcp-tools' && method === 'POST') {
+        const input = await body(req);
+        if (typeof input.id !== 'string' || typeof input.url !== 'string' ||
+            (input.token !== undefined && typeof input.token !== 'string')) throw new RequestError(400, 'MCP 地址或凭据无效。');
+        const saved = (await loadSettings()).mcpServers.find(item => item.id === input.id && item.url === input.url);
+        const token = input.token === undefined ? saved?.token : input.token;
+        try {
+          return json(res, 200, await browseMcpTools({id: input.id, url: input.url, allowedTools: [], ...(token ? {token} : {})}));
+        } catch {
+          throw new RequestError(422, '无法读取 MCP 工具。请核对 Streamable HTTP 地址和访问令牌。');
+        }
+      }
       if (path === '/api/settings' && method === 'PUT') {
         const input = await body(req);
         try {
@@ -156,7 +169,7 @@ export function serve(
         return json(
           res,
           202,
-          await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment),
+          await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment, input.mcpGrants, input.route),
         );
       }
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
@@ -168,7 +181,7 @@ export function serve(
         return json(
           res,
           202,
-          await studio.answer(match[1], input.parentId, input.answer, clientRequest(input.requestId)),
+          await studio.answer(match[1], input.parentId, input.answer, clientRequest(input.requestId), input.mcpGrants, input.route),
         );
       }
       if (method !== 'GET' || path.startsWith('/api/')) throw new RequestError(404, '这个入口不存在。');

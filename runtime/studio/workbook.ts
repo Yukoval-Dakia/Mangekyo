@@ -54,6 +54,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
+import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { loadSettings } from './settings.ts';
 
 class UncertainRubricEffect extends Error {}
@@ -496,9 +497,9 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
       } catch (error) {
         invalid(error, '评分标准批改请求无效。');
       }
-      const settings = await loadSettings();
+      const settings = await loadSettings('assessment');
       if (request.publicSearchQuery && !settings.allowSearch) throw new RequestError(400, '请在设置中启用公开检索。');
-      if (request.providerBaseUrl !== settings.baseUrl) {
+      if (request.providerBaseUrl !== settings.baseUrl || !routeMatchesInput((input as Record<string, unknown>).route, settings)) {
         throw new RequestError(409, '模型端点已经变化，请重新确认本次批改。');
       }
 
@@ -559,7 +560,9 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
           },
           providerEffectId => invoke(providerEffectId),
           async tx => {
-            if (step.provider === 'tool:exa_search' && !(await loadSettings()).allowSearch) throw new RequestError(409, '公开检索授权已撤回。');
+            const current = await loadSettings('assessment');
+            if (!sameActiveProvider(settings, current) || current.apiKey !== settings.apiKey) throw new RequestError(409, '模型配置已变化，请重新确认批改。');
+            if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new RequestError(409, '公开检索授权已撤回。');
             if ((await revalidateManifest(tx, selected.manifest)).kind !== 'valid') throw new RequestError(409, '批改依据已经变化。');
           },
         );
@@ -613,6 +616,9 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
         rubricVersion: selected.question.rubricVersion,
         rubric: selected.question.rubric,
         providerBaseUrl: settings.baseUrl,
+        requestedModel: settings.model,
+        providerProtocol: settings.protocol,
+        providerId: settings.activeProviderId,
         ...result,
       };
       await db.tx({learner: studioLearner}, async tx => {

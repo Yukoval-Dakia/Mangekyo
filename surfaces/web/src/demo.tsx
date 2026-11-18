@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { api, remember, remembered, sessionPath, type Session, type TeachingCase, type Turn } from "./api";
+import { api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
 import { useConversation } from "./conversation";
 import { Message } from "./message";
 import { StudyCards } from "./study-tools";
@@ -83,10 +83,10 @@ export function TeachingTurn({ turn, materialId, discuss }: { turn: Turn; materi
   );
 }
 
-function Conversation({ teachingCase, active, configured, needsSetup, openSettings, initialSession }: {
+function Conversation({ teachingCase, active, settings, needsSetup, openSettings, initialSession }: {
   teachingCase: TeachingCase;
   active: boolean;
-  configured: boolean;
+  settings: Settings | undefined;
   needsSetup: boolean;
   openSettings: (event: MouseEvent<HTMLButtonElement>) => void;
   initialSession?: Session | undefined;
@@ -118,7 +118,7 @@ function Conversation({ teachingCase, active, configured, needsSetup, openSettin
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (canReply && !outdatedDraft && !conflict) conversation.send();
+    if (settings && canReply && !outdatedDraft && !conflict) conversation.send(undefined, settings);
   }
 
   function handleComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -137,7 +137,7 @@ function Conversation({ teachingCase, active, configured, needsSetup, openSettin
             <Mark />
             <div><h2>教研同伴</h2><p>{teachingCase.title}</p></div>
           </div>
-          {(session || invalidated) && <button type="button" className="tonal-button" disabled={waiting || Boolean(retryOperation)} onClick={() => conversation.start()}><Icon name="plus" /> 新对话</button>}
+          {(session || invalidated) && <button type="button" className="tonal-button" disabled={!settings || waiting || Boolean(retryOperation)} onClick={() => conversation.start(undefined, undefined, undefined, settings)}><Icon name="plus" /> 新对话</button>}
         </header>
         <div className="feed" ref={feed} role="region" aria-label="对话记录" tabIndex={0}>
           {turns.length > 0 && <ol className="turns">{turns.map((turn, index) => <TeachingTurn turn={turn} key={`${sessionId}-${index}`} />)}</ol>}
@@ -150,7 +150,7 @@ function Conversation({ teachingCase, active, configured, needsSetup, openSettin
               </div>
               {needsSetup
                 ? <button type="button" className="primary-button start-button" onClick={openSettings}>配置模型 <Icon name="arrow" /></button>
-                : <button type="button" className="primary-button start-button" disabled={!configured} onClick={() => conversation.start()}>开始对话 <Icon name="arrow" /></button>}
+                : <button type="button" className="primary-button start-button" disabled={!settings} onClick={() => conversation.start(undefined, undefined, undefined, settings)}>开始对话 <Icon name="arrow" /></button>}
             </div>
           )}
           {problem && (
@@ -198,8 +198,8 @@ function Conversation({ teachingCase, active, configured, needsSetup, openSettin
   );
 }
 
-export function DemoClassroom({ configured, needsSetup, openSettings }: {
-  configured: boolean; needsSetup: boolean; openSettings: (event: MouseEvent<HTMLButtonElement>) => void;
+export function DemoClassroom({ settings, needsSetup, openSettings }: {
+  settings: Settings | undefined; needsSetup: boolean; openSettings: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   const [linkedId, setLinkedId] = useState(() => new URLSearchParams(location.search).get("session"));
   const [linkedSession, setLinkedSession] = useState<Session>();
@@ -261,7 +261,7 @@ export function DemoClassroom({ configured, needsSetup, openSettings }: {
                 ))}
               </div>
             </fieldset>
-            {cases.map((teachingCase) => <Conversation key={teachingCase.id} teachingCase={teachingCase} active={teachingCase.id === selected.id} initialSession={linkedSession?.caseId === teachingCase.id ? linkedSession : undefined} configured={configured} needsSetup={needsSetup} openSettings={openSettings} />)}
+            {cases.map((teachingCase) => <Conversation key={teachingCase.id} teachingCase={teachingCase} active={teachingCase.id === selected.id} initialSession={linkedSession?.caseId === teachingCase.id ? linkedSession : undefined} settings={settings} needsSetup={needsSetup} openSettings={openSettings} />)}
           </>
         ) : (
           <div className="case-loading" role={caseLoadProblem ? "alert" : "status"}>
