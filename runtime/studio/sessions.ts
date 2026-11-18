@@ -60,6 +60,7 @@ export function clientRequest(value: unknown): string {
 }
 export type DisplayTurn = {
   studyKit?: StudyKit;
+  trace?: string[];
   action: string;
   rationale: string;
   message: string;
@@ -208,6 +209,7 @@ export async function openStudio(db: Db, activity: LoadedModule) {
       parentId: parent,
       answer,
       ...(attachment ? { attachment } : {}),
+      ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),
       ...teachingProfile,
       baseUrl: settings.baseUrl,
     };

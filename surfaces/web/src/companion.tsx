@@ -122,7 +122,7 @@ function ChatRoom({
             <label className="field"><span>随本次对话发送的原文选段</span>
               <textarea rows={4} maxLength={3000} value={excerpt} disabled={busy} onChange={e => setExcerpt(e.target.value)} />
             </label>
-            <p className="field-help">{excerptValid ? '点发送后，材料标题和这段文字会交给设置中的模型服务，并保存在这次对话里。你可以只留下需要的一段。' : '请使用原文中连续的一段文字，最多 3000 字。'}</p>
+            <p className="field-help">{excerptValid ? '点发送后，材料标题和这段文字会交给设置中的模型服务，并保存在这次对话里。你可以只留下需要的一段。需要联网核对时，在消息中另起一行写「公开检索：主题」。' : '请使用原文中连续的一段文字，最多 3000 字。'}</p>
           </div>}
           {mode === 'riding' && (
             <a className="context-tag" href="/materials/riding">

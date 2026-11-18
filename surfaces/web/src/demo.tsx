@@ -64,6 +64,7 @@ export function TeachingTurn({ turn, materialId, discuss }: { turn: Turn; materi
           <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
           <div className="evidence-content">
             {rationale && <p>{rationale}</p>}
+            {turn.trace && turn.trace.length > 0 && <ol aria-label="本轮工具记录">{turn.trace.map((step, index) => <li key={index}>{step}</li>)}</ol>}
             {turn.reads.length > 0 && <ul className="read-list">{turn.reads.map((read) => (
               <li key={read.id}>
                 <div className="read-heading"><strong>{read.title}</strong>{turn.evidenceIds.includes(read.id) && <span>本轮引用</span>}</div>

@@ -105,6 +105,10 @@ export function serve(
       if (await handleIntakeRequest(student.intake, req, res, path, method)) return;
       if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());
       if (path === '/api/papers' && method === 'POST') return json(res, 201, await student.workbook.save(await body(req)));
+      const assessment = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/assessments$/.exec(path);
+      if (assessment?.[1] && assessment[2] && method === 'POST') {
+        return json(res, 200, await student.workbook.assess(assessment[1], assessment[2], await body(req)));
+      }
       const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print))?$/.exec(path);
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));

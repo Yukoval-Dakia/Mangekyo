@@ -11,11 +11,14 @@ export interface Settings {
   model: string;
   reasoningEffort: string;
   hasKey: boolean;
+  hasExaKey: boolean;
+  allowSearch: boolean;
 }
 
 export type StudyAttachment = { id: string; title: string; text: string; mode: 'ask' | 'prepare' };
 export interface Turn {
-  studyKit?: { title: string; lesson: string; questions: { prompt: string; answer: string }[] };
+  trace?: string[];
+  studyKit?: { title: string; lesson: string; questions: { prompt: string; answer: string; rubric?: string }[] };
   answer?: string;
   action: "diagnostic_question" | "transfer_question" | "targeted_explanation" | "clarifying_question" | "companion_reply";
   rationale: string;

@@ -1,11 +1,38 @@
-type Completion = { id?: unknown; model?: unknown } & ({ truncated: true } | { content?: string });
+export type FunctionCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
+type Completion = { id?: unknown; model?: unknown } & ({ truncated: true } | { content?: string; toolCalls?: FunctionCall[] });
 type ProviderHooks = {
+  allowTools?: boolean;
   model?: (model: unknown) => void;
   content?: (text: string) => Promise<void>;
 };
 
 const maximumFrame = 512_000;
 const maximumContent = 64_000;
+
+function collectCalls(calls: FunctionCall[], chunks: unknown, streamed: boolean) {
+  if (!Array.isArray(chunks) || chunks.length > 4) throw new Error('Invalid tool calls');
+  chunks.forEach((chunk, position) => {
+    const index = streamed ? chunk?.index : position;
+    if (!Number.isInteger(index) || index < 0 || index > 3 || (chunk.type && chunk.type !== 'function'))
+      throw new Error('Invalid tool call');
+    const call = calls[index] ??= { id: '', type: 'function', function: { name: '', arguments: '' } };
+    for (const part of [chunk.id, chunk.function?.name, chunk.function?.arguments])
+      if (part !== undefined && typeof part !== 'string') throw new Error('Invalid tool argument');
+    call.id += chunk.id ?? '';
+    call.function.name += chunk.function?.name ?? '';
+    call.function.arguments += chunk.function?.arguments ?? '';
+    if (call.id.length > 200 || call.function.name.length > 80 || call.function.arguments.length > 16_000)
+      throw new Error('Tool call too large');
+  });
+}
+
+function completedCalls(calls: FunctionCall[]): FunctionCall[] {
+  if (!calls.length || new Set(calls.map(call => call?.id)).size !== calls.length)
+    throw new Error('Incomplete tool calls');
+  for (const call of calls)
+    if (!call || !/^[\w.:/-]+$/.test(call.id) || !/^\w+$/.test(call.function.name)) throw new Error('Incomplete tool call');
+  return calls;
+}
 
 type ProviderChunk = {
   id?: unknown;
@@ -36,8 +63,13 @@ export async function readProviderCompletion(response: Response, hooks: Provider
     const model = completion?.model;
     if (model !== undefined && model !== null) hooks.model?.(model);
     if (choice?.finish_reason === 'length') return { id: completion?.id, model, truncated: true };
-    if (choice?.finish_reason && choice.finish_reason !== 'stop') throw new Error('Unusable completion');
     const message = choice?.message;
+    if (hooks.allowTools && choice?.finish_reason === 'tool_calls' && message?.role === 'assistant') {
+      const calls: FunctionCall[] = [];
+      collectCalls(calls, message.tool_calls, false);
+      return { id: completion?.id, model, toolCalls: completedCalls(calls) };
+    }
+    if (choice?.finish_reason && choice.finish_reason !== 'stop') throw new Error('Unusable completion');
     if (message?.tool_calls || message?.function_call || (message?.role && message.role !== 'assistant')) {
       throw new Error('Unexpected completion channel');
     }
@@ -57,6 +89,8 @@ export async function readProviderCompletion(response: Response, hooks: Provider
   let finished = false;
   let stopped = false;
   let truncated = false;
+  const calls: FunctionCall[] = [];
+  let endedWithTools = false;
 
   async function readLine(line: string) {
     if (line !== '') {
@@ -90,19 +124,25 @@ export async function readProviderCompletion(response: Response, hooks: Provider
       finished = true;
       return;
     }
-    if (choice.finish_reason && choice.finish_reason !== 'stop') throw new Error('Unusable completion');
+    const toolEnd = hooks.allowTools && choice.finish_reason === 'tool_calls';
+    if (choice.finish_reason && choice.finish_reason !== 'stop' && !toolEnd) throw new Error('Unusable completion');
     const delta = choice.delta;
-    if (delta?.tool_calls || delta?.function_call || (delta?.role && delta.role !== 'assistant')) {
+    if ((!hooks.allowTools && delta?.tool_calls) || delta?.function_call || (delta?.role && delta.role !== 'assistant')) {
       throw new Error('Unexpected completion channel');
+    }
+    if (delta?.tool_calls) {
+      if (stopped) throw new Error('Tool call after completion');
+      collectCalls(calls, delta.tool_calls, true);
     }
     if (typeof delta?.content === 'string' && delta.content.length) {
       if (stopped) throw new Error('Content after completion');
       output += delta.content;
       if (output.length > maximumContent) throw new Error('Completion content too large');
     }
-    if (choice.finish_reason === 'stop') stopped = true;
+    if (toolEnd) endedWithTools = true;
+    if (toolEnd || choice.finish_reason === 'stop') stopped = true;
     // Reasoning fields and provider metadata never enter the visible content.
-    if (typeof delta?.content === 'string' || chunk.model) await hooks.content?.(output);
+    if (!calls.length && (typeof delta?.content === 'string' || chunk.model)) await hooks.content?.(output);
   }
 
   try {
@@ -127,6 +167,8 @@ export async function readProviderCompletion(response: Response, hooks: Provider
     }
     if (truncated) return { id, model, truncated: true };
     if (!stopped) throw new Error('Incomplete completion stream');
+    if (endedWithTools) return { id, model, toolCalls: completedCalls(calls) };
+    if (calls.length) throw new Error('Incomplete tool call');
     return { id, model, content: output };
   } finally {
     await reader.cancel().catch(() => undefined);

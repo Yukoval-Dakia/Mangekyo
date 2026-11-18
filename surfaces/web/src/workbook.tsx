@@ -4,9 +4,10 @@ import type {
   WorkbookDetail,
   WorkbookExpected,
   WorkbookQuestionView,
+  WorkbookRubricAssessmentView,
   WorkbookSummary,
 } from '../../../modules/activity/workbook-values.ts';
-import { api, ApiError, remember, remembered, requestId } from './api';
+import { api, ApiError, remember, remembered, requestId, type Settings } from './api';
 import { PageTitle, ReadState, useResource, type Material } from './workspace';
 import './workbook.css';
 
@@ -19,8 +20,16 @@ type FeedbackResult = WorkbookDetail['attempts'][number]['feedback'][number]['re
 const resultLabels: Record<FeedbackResult, string> = {
   correct: '答对',
   incorrect: '答错',
+  partial: '部分正确',
+  pending: '待批改',
   unanswered: '未作答',
   'self-check': '待自评',
+};
+const assessmentLabels: Record<WorkbookRubricAssessmentView['verdict'], string> = {
+  correct: '答对',
+  partial: '部分正确',
+  incorrect: '答错',
+  pending: '待批改',
 };
 
 function dateLabel(value: string): string {
@@ -85,7 +94,13 @@ type ExactEditor = {
   selfCheck: boolean;
   explanation: string;
 };
-type EditorQuestion = NumericEditor | ExactEditor;
+type RubricEditor = {
+  kind: 'rubric';
+  prompt: string;
+  rubric: string;
+  explanation: string;
+};
+type EditorQuestion = NumericEditor | ExactEditor | RubricEditor;
 type PaperEditorDraft = {
   requestId: string;
   title: string;
@@ -103,6 +118,9 @@ function numericQuestion(): NumericEditor {
 }
 function exactQuestion(selfCheck = false): ExactEditor {
   return { kind: 'exact', prompt: '', answerLines: '', selfCheck, explanation: '' };
+}
+function rubricQuestion(): RubricEditor {
+  return { kind: 'rubric', prompt: '', rubric: '', explanation: '' };
 }
 
 function emptyDraft(materialId: string | null, material?: Material): PaperEditorDraft {
@@ -137,10 +155,11 @@ function proposalFromSession(materials: Material[]): PaperEditorDraft | null {
         ? proposal.materialId
         : null;
     const questions: EditorQuestion[] = questionsValue.map((entry, index) => {
-      const row = entry as { prompt?: unknown; answer?: unknown } | null;
+      const row = entry as { prompt?: unknown; answer?: unknown; rubric?: unknown } | null;
       const prompt = row && typeof row.prompt === 'string' ? row.prompt : '';
       const answer = row && typeof row.answer === 'string' ? row.answer : '';
       if (!prompt) throw new Error(`第 ${index + 1} 道题目缺少题面。`);
+      if (typeof row?.rubric === 'string' && row.rubric.trim()) return { ...rubricQuestion(), prompt, rubric: row.rubric, explanation: answer };
       return { ...exactQuestion(true), prompt, answerLines: answer };
     });
     return {
@@ -167,7 +186,10 @@ function storedEditorDraft(): PaperEditorDraft | null {
       (draft.materialId !== null && typeof draft.materialId !== 'string') ||
       !Array.isArray(draft.questions) ||
       draft.questions.some((question) => {
-        if (!question || (question.kind !== 'numeric' && question.kind !== 'exact')) return true;
+        if (
+          !question ||
+          (question.kind !== 'numeric' && question.kind !== 'exact' && question.kind !== 'rubric')
+        ) return true;
         const row = question as Partial<EditorQuestion>;
         return typeof row.prompt !== 'string' || typeof row.explanation !== 'string';
       })
@@ -229,12 +251,16 @@ function AuthorPage({ materials }: { materials: Material[] }) {
       ),
     }));
   }
-  function changeKind(index: number, kind: 'numeric' | 'exact') {
+  function changeKind(index: number, kind: 'numeric' | 'exact' | 'rubric') {
     setDraft((current) => ({
       ...current,
       questions: current.questions.map((question, i) => {
         if (i !== index) return question;
-        return kind === 'numeric' ? numericQuestion() : exactQuestion();
+        return kind === 'numeric'
+          ? numericQuestion()
+          : kind === 'exact'
+            ? exactQuestion()
+            : rubricQuestion();
       }),
     }));
   }
@@ -281,6 +307,17 @@ function AuthorPage({ materials }: { materials: Material[] }) {
             answer,
             tolerance,
             unit: question.unit.trim() || null,
+            explanation: question.explanation,
+          };
+        }
+        if (question.kind === 'rubric') {
+          if (!question.rubric.trim()) {
+            throw new Error(`第 ${index + 1} 题需要评分标准。`);
+          }
+          return {
+            kind: 'rubric',
+            prompt: question.prompt,
+            rubric: question.rubric,
             explanation: question.explanation,
           };
         }
@@ -362,6 +399,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
             </p>
           )}
           <p className="field-help">数值题按容差判断；精确题只按文字精确比对。自评题只展示参考答案，不替你判断等价表述。</p>
+          <p className="field-help">评分标准题保存你写下的标准。交卷只记为待批改；之后可逐题明确确认，把该题题面、作答和标准发送给已配置的模型批改。</p>
         </section>
         <section className="workbook-editor-block">
           <div className="subhead">
@@ -401,6 +439,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
                 >
                   <option value="numeric">数值（带容差）</option>
                   <option value="exact">精确答案</option>
+                  <option value="rubric">评分标准</option>
                 </select>
               </label>
               <label className="field">
@@ -444,6 +483,18 @@ function AuthorPage({ materials }: { materials: Material[] }) {
                     />
                   </label>
                 </div>
+              ) : question.kind === 'rubric' ? (
+                <label className="field">
+                  <span>评分标准（只发送本标准和这道题的作答）</span>
+                  <textarea
+                    disabled={busy}
+                    maxLength={8000}
+                    required
+                    rows={6}
+                    value={question.rubric}
+                    onChange={(event) => updateQuestion(index, { rubric: event.target.value })}
+                  />
+                </label>
               ) : (
                 <>
                   <label className="field">
@@ -495,6 +546,14 @@ function AuthorPage({ materials }: { materials: Material[] }) {
               onClick={() => setDraft((current) => ({ ...current, questions: [...current.questions, exactQuestion()] }))}
             >
               添加精确题
+            </button>
+            <button
+              type="button"
+              className="tonal-button"
+              disabled={busy}
+              onClick={() => setDraft((current) => ({ ...current, questions: [...current.questions, rubricQuestion()] }))}
+            >
+              添加评分标准题
             </button>
           </div>
         </section>
@@ -565,7 +624,11 @@ function restoreAttemptDraft(paperId: string): AttemptDraft | null {
 }
 
 function ExpectedView({ expected }: { expected: WorkbookExpected }) {
-  return expected.kind === 'numeric' ? (
+  return expected.kind === 'rubric' ? (
+    <span>
+      评分标准（{expected.rubricVersion}）：<span className="workbook-rubric-text">{expected.rubric}</span>
+    </span>
+  ) : expected.kind === 'numeric' ? (
     <span>
       参考答案：<strong>{String(expected.value)}</strong> ± {String(expected.tolerance)}
       {expected.unit ? ' ' + expected.unit : ''}
@@ -616,21 +679,32 @@ function FeedbackItem({
   attemptId,
   question,
   feedback,
+  assessments,
+  onAssess,
+  allowSearch,
+  assessing,
 }: {
   paperId: string;
   attemptId: string;
   question: WorkbookQuestionView;
   feedback: WorkbookDetail['attempts'][number]['feedback'][number];
+  assessments: WorkbookRubricAssessmentView[];
+  onAssess: (questionId: string, query?: string) => void;
+  allowSearch: boolean;
+  assessing: string | null;
 }) {
-  const className = feedback.result === 'correct'
+  const [query, setQuery] = useState('');
+  const assessment = assessments.at(-1);
+  const shownResult = assessment?.verdict ?? feedback.result;
+  const className = shownResult === 'correct'
     ? 'workbook-result-correct'
-    : feedback.result === 'incorrect'
+    : shownResult === 'incorrect'
       ? 'workbook-result-incorrect'
       : 'workbook-result-muted';
   return (
     <article className={`workbook-feedback-item ${className}`}>
       <header className="workbook-feedback-head">
-        <span>{resultLabels[feedback.result]}</span>
+        <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>
         <span className="workbook-feedback-question">{question.prompt}</span>
       </header>
       {feedback.result === 'self-check' && (
@@ -643,6 +717,47 @@ function FeedbackItem({
       )}
       {feedback.expected && <p className="workbook-expected"><ExpectedView expected={feedback.expected} /></p>}
       {feedback.explanation && <p className="workbook-explanation">{feedback.explanation}</p>}
+      {question.kind === 'rubric' && feedback.answer !== null && (
+        <section className="workbook-rubric-assessment">
+          {assessment ? (
+            <>
+              <dl>
+                {assessment.score && <div><dt>得分</dt><dd>{assessment.score.earned} / {assessment.score.maximum}</dd></div>}
+                <div><dt>批改说明</dt><dd>{assessment.feedback}</dd></div>
+                <div>
+                  <dt>依据</dt>
+                  <dd>
+                    {assessment.evidence.length
+                      ? <ul>{assessment.evidence.map((entry, index) => <li key={index}>{entry}</li>)}</ul>
+                      : '没有额外依据。'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>工具轨迹</dt>
+                  <dd>{assessment.trace.length ? assessment.trace.join(' · ') : '本次未使用工具。'}</dd>
+                </div>
+                <div><dt>版本</dt><dd>{assessment.rubricVersion} · {assessment.assessedAt.slice(0, 10)}{assessment.reportedModel ? ' · ' + assessment.reportedModel : ''}</dd></div>
+              </dl>
+              <p className="workbook-selfcheck-note">这次批改已随本次作答保存。</p>
+            </>
+          ) : (
+            <p className="workbook-selfcheck-note">
+              交卷时没有发送给模型。批改会把<strong>这道题的题面、你的作答和评分标准</strong>发送到「模型设置」中的端点；原答保存在这次练习里。
+            </p>
+          )}
+          {allowSearch && (!assessment || assessment.verdict === 'pending') && <label className="field"><span>允许 Exa 检索的公开主题（可留空）</span>
+            <input value={query} maxLength={400} onChange={e => setQuery(e.target.value)} placeholder="例如日食的形成条件" /></label>}
+          {assessing === question.id && <p role="status">正在请模型按评分标准批改…</p>}
+          <button
+            type="button"
+            className="tonal-button workbook-mini-button"
+            disabled={assessing !== null || (assessment !== undefined && assessment.verdict !== 'pending')}
+            onClick={() => onAssess(question.id, query.trim())}
+          >
+            {assessing === question.id ? '批改中…' : assessment?.verdict === 'pending' ? '重新评阅' : assessment ? '已归档批改' : '发送本题并批改'}
+          </button>
+        </section>
+      )}
     </article>
   );
 }
@@ -651,6 +766,9 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
+  const [assessing, setAssessing] = useState<string | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsError, setSettingsError] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
@@ -670,6 +788,18 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
       });
     return () => controller.abort();
   }, [paperId, reload]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api<Settings>('/settings', { signal: controller.signal })
+      .then((result) => {
+        if (!controller.signal.aborted) setSettings(result);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSettingsError('无法读取模型设置。');
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!view || !draft) return;
@@ -710,7 +840,14 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
     : [];
   const wrongQuestionIds = activeAttempt
     ? activeAttempt.feedback
-        .filter((feedback) => feedback.result === 'incorrect')
+        .filter((feedback) =>
+          feedback.result === 'incorrect' ||
+          (activeAttempt.assessments ?? []).some(
+            (assessment) =>
+              assessment.questionId === feedback.questionId &&
+              (assessment.verdict === 'incorrect' || assessment.verdict === 'partial'),
+          ),
+        )
         .map((feedback) => feedback.questionId)
     : [];
   const showForm = Boolean(draft) || attempts.length === 0;
@@ -763,6 +900,34 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
       .finally(() => setBusy(false));
   }
 
+  function assessRubric(questionId: string, publicSearchQuery?: string) {
+    if (!view || !activeAttempt || !settings || assessing) return;
+    setError('');
+    setAssessing(questionId);
+    api<WorkbookDetail>(
+      `/papers/${encodeURIComponent(paperId)}/attempts/${encodeURIComponent(activeAttempt.id)}/assessments`,
+      {
+        method: 'POST',
+        body: {
+          requestId: requestId(),
+          questionId,
+          consent: 'send-question-answer-rubric',
+          ...(publicSearchQuery ? {publicSearchQuery} : {}),
+          providerBaseUrl: settings.baseUrl,
+        },
+      },
+    )
+      .then((next) => setView(next))
+      .catch((error: unknown) => {
+        setError(
+          error instanceof ApiError
+            ? error.message
+            : error instanceof Error ? error.message : '批改没有完成。',
+        );
+      })
+      .finally(() => setAssessing(null));
+  }
+
   if (error && !view) {
     return (
       <>
@@ -808,7 +973,14 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
               {visibleQuestions.map((question, index) => (
                 <article key={question.id} className="workbook-answer-item">
                   <header className="workbook-answer-head">
-                    <span>第 {view.questions.findIndex((item) => item.id === question.id) + 1} 题 · {question.kind === 'numeric' ? '数值题' : '精确题'}</span>
+                    <span>
+                      第 {view.questions.findIndex((item) => item.id === question.id) + 1} 题 ·{' '}
+                      {question.kind === 'numeric'
+                        ? '数值题'
+                        : question.kind === 'exact'
+                          ? '精确题'
+                          : '评分标准题'}
+                    </span>
                   </header>
                   <p className="workbook-answer-prompt">{question.prompt}</p>
                   {question.kind === 'numeric' ? (
@@ -817,6 +989,17 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
                       <input
                         disabled={busy}
                         inputMode="decimal"
+                        value={draft?.answers[question.id] ?? ''}
+                        onChange={(event) => setDraft((current) => current ? { ...current, answers: { ...current.answers, [question.id]: event.target.value } } : current)}
+                      />
+                    </label>
+                  ) : question.kind === 'rubric' ? (
+                    <label className="field">
+                      <span>文字作答（交卷后可按评分标准批改）</span>
+                      <textarea
+                        disabled={busy}
+                        maxLength={4000}
+                        rows={4}
                         value={draft?.answers[question.id] ?? ''}
                         onChange={(event) => setDraft((current) => current ? { ...current, answers: { ...current.answers, [question.id]: event.target.value } } : current)}
                       />
@@ -869,7 +1052,7 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
               <div>
                 <h2>本次反馈</h2>
                 <p className="muted">
-                  {dateLabel(activeAttempt.submittedAt)} · {activeAttempt.total ? '自动核对答对 ' + activeAttempt.correctCount + ' / ' + activeAttempt.total : '本次均为自评题'}
+                  {dateLabel(activeAttempt.submittedAt)} · {activeAttempt.total ? '自动核对答对 ' + activeAttempt.correctCount + ' / ' + activeAttempt.total : '查看各题反馈'}
                 </p>
               </div>
               <div className="workbook-attempt-actions">
@@ -887,13 +1070,23 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
               const question = view.questions.find((item) => item.id === feedback.questionId);
               if (!question) return null;
               return (
-                <FeedbackItem
-                  key={feedback.questionId}
-                  paperId={paperId}
-                  attemptId={activeAttempt.id}
-                  question={question}
-                  feedback={feedback}
-                />
+                <div key={feedback.questionId}>
+                  <FeedbackItem
+                    paperId={paperId}
+                    attemptId={activeAttempt.id}
+                    question={question}
+                    feedback={feedback}
+                    assessments={(activeAttempt.assessments ?? []).filter(
+                      (assessment) => assessment.questionId === feedback.questionId,
+                    )}
+                    allowSearch={settings?.allowSearch === true}
+                    onAssess={assessRubric}
+                    assessing={assessing}
+                  />
+                  {settingsError && question.kind === 'rubric' && !(activeAttempt.assessments ?? []).some(
+                    (assessment) => assessment.questionId === feedback.questionId,
+                  ) && <p className="error-text" role="alert">{settingsError}</p>}
+                </div>
               );
             })}
           </section>
@@ -913,7 +1106,7 @@ function PaperDetail({ paperId, materials }: { paperId: string; materials: Mater
               >
                 <span>
                   <strong>{dateLabel(attempt.submittedAt)}</strong>
-                  <small>{attempt.total ? '自动核对答对 ' + attempt.correctCount + ' / ' + attempt.total : '本次均为自评题'}</small>
+                  <small>{attempt.total ? '自动核对答对 ' + attempt.correctCount + ' / ' + attempt.total : '查看各题反馈'}</small>
                 </span>
                 <small>{attempt.feedback.filter((feedback) => feedback.result === 'self-check').length} 题自评</small>
               </button>

@@ -128,7 +128,7 @@ export async function teach(db: Db, ref: WorkRef) {
           ownerKind: 'session',
           ownerId: job.slotKey,
           stepKey: String(step.index),
-          label: 'teaching-model',
+          label: step.provider.startsWith('tool:') ? step.provider : 'teaching-model',
           input: { digest: step.requestDigest, provider: step.provider, model: step.model },
         },
         async (requestId) => {
@@ -142,6 +142,7 @@ export async function teach(db: Db, ref: WorkRef) {
         async (tx) => {
           if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
           await validInputs(tx);
+          if (step.provider === 'tool:exa_search' && !(await loadSettings()).allowSearch) throw new ChangedEvidence();
         },
       );
       if (effect.kind === 'unknown') throw new UncertainEffect(effect.providerEffectId);
@@ -185,8 +186,13 @@ export async function teach(db: Db, ref: WorkRef) {
       const material = submission.caseId === 'riding'
         ? `《${title}》：全程 ${distanceKm} 公里，移动 ${movingMinutes} 分钟，停车 ${stoppedMinutes} 分钟。移动均速 ${averageSpeed(distanceKm, movingMinutes)} 公里/小时，全程均速 ${averageSpeed(distanceKm, movingMinutes + stoppedMinutes)} 公里/小时。`
         : attachment ? `《${attachment.title}》\n${attachment.text}` : undefined;
+      const publicSearchQuery = /(?:^|\n)公开检索[：:]([^\n]{1,400})(?:\n|$)/u.exec(answer)?.[1]?.trim();
+      const privateContext = Boolean(material || preference || publicHistory.length);
       const result = await runCompanionTurn(answer, publicHistory, material, {
         provider: settings, runEffect: runModelEffect, onProgress,
+        ...(submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey,
+          ...(publicSearchQuery ? {publicSearchQuery} : {}),
+          allowSearch: submission.allowSearch === true && settings.allowSearch && (!privateContext || Boolean(publicSearchQuery)) } } : {}),
       }, attachment?.mode === 'prepare' && !submission.parentId, preference);
       feedback = {
         ...result, action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : '',

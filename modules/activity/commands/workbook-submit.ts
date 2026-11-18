@@ -8,6 +8,7 @@ import {
   workbookAttemptType,
   workbookGradingVersion,
   workbookPaper,
+  workbookRubricGradingVersion,
 } from '../workbook-values.ts';
 
 export default defineCommand({
@@ -27,7 +28,9 @@ export default defineCommand({
           paperId: data.paperId,
           requestId: data.requestId,
           submittedAt: data.submittedAt,
-          gradingVersion: workbookGradingVersion,
+          gradingVersion: paper.questions.some((question) => question.kind === 'rubric')
+            ? workbookRubricGradingVersion
+            : workbookGradingVersion,
           paper,
           answers: graded.answers,
           feedback: graded.feedback,

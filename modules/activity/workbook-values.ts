@@ -2,12 +2,18 @@ import { factId } from '@mangekyo/kernel';
 
 export const workbookPaperType = 'activity.workbookPaper';
 export const workbookAttemptType = 'activity.workbookAttempt';
+export const workbookRubricAssessmentType = 'activity.workbookRubricAssessment';
 export const saveWorkbookPaperCommand = 'activity.saveWorkbookPaper';
 export const submitWorkbookAttemptCommand = 'activity.submitWorkbookAttempt';
 export const workbookGradingVersion = 'workbook-v1';
+export const workbookRubricGradingVersion = 'workbook-v2';
+export const workbookRubricVersion = 'rubric-v1';
+export const workbookRubricAssessmentVersion = 'workbook-rubric-assessment-v1';
+export const workbookAssessmentConsent = 'send-question-answer-rubric';
 
 const requestPattern = /^[A-Za-z0-9_-]{8,100}$/;
 const questionIdPattern = /^[A-Za-z0-9_-]{1,40}$/;
+const rubricVersionPattern = /^rubric-v[1-9][0-9]{0,3}$/;
 const maxQuestions = 100;
 
 export type WorkbookNumericQuestion = {
@@ -29,7 +35,19 @@ export type WorkbookExactQuestion = {
   explanation: string | null;
 };
 
-export type WorkbookQuestion = WorkbookNumericQuestion | WorkbookExactQuestion;
+export type WorkbookRubricQuestion = {
+  id: string;
+  kind: 'rubric';
+  prompt: string;
+  rubric: string;
+  rubricVersion: string;
+  explanation: string | null;
+};
+
+export type WorkbookQuestion =
+  | WorkbookNumericQuestion
+  | WorkbookExactQuestion
+  | WorkbookRubricQuestion;
 
 export type WorkbookPaper = {
   title: string;
@@ -53,6 +71,12 @@ export type WorkbookQuestionDraft =
     answers: string[];
     selfCheck?: boolean;
     explanation?: string | null;
+  }
+  | {
+    kind: 'rubric';
+    prompt: string;
+    rubric: string;
+    explanation?: string | null;
   };
 
 export type WorkbookDraft = {
@@ -65,11 +89,12 @@ export type WorkbookAnswer = number | string | null;
 
 export type WorkbookExpected =
   | { kind: 'numeric'; value: number; tolerance: number; unit: string | null }
-  | { kind: 'exact'; values: string[] };
+  | { kind: 'exact'; values: string[] }
+  | { kind: 'rubric'; rubric: string; rubricVersion: string };
 
 export type WorkbookFeedback = {
   questionId: string;
-  result: 'correct' | 'incorrect' | 'unanswered' | 'self-check';
+  result: 'correct' | 'incorrect' | 'partial' | 'pending' | 'unanswered' | 'self-check';
   answer: WorkbookAnswer;
   expected: WorkbookExpected;
   explanation: string | null;
@@ -94,7 +119,13 @@ export type WorkbookAttemptRequest = {
 
 export type WorkbookQuestionView =
   | { id: string; kind: 'numeric'; prompt: string; unit: string | null }
-  | { id: string; kind: 'exact'; prompt: string; selfCheck: boolean };
+  | { id: string; kind: 'exact'; prompt: string; selfCheck: boolean }
+  | {
+    id: string;
+    kind: 'rubric';
+    prompt: string;
+    rubricVersion: string;
+  };
 
 export type WorkbookSourceView = {
   id: string;
@@ -117,10 +148,44 @@ export type WorkbookAttemptView = {
   id: string;
   requestId: string;
   submittedAt: string;
+  gradingVersion: string;
   answers: Record<string, WorkbookAnswer>;
   feedback: (Omit<WorkbookFeedback, 'expected'> & { expected: WorkbookExpected | null })[];
+  assessments: WorkbookRubricAssessmentView[];
   correctCount: number;
   total: number;
+};
+
+export type WorkbookAssessmentVerdict = 'correct' | 'partial' | 'incorrect' | 'pending';
+
+export type WorkbookRubricAssessment = {
+  attemptId: string;
+  paperId: string;
+  questionId: string;
+  requestId: string;
+  assessedAt: string;
+  assessmentVersion: string;
+  consent?: typeof workbookAssessmentConsent;
+  publicSearchQuery?: string;
+  rubricVersion: string;
+  rubric: string;
+  providerBaseUrl: string;
+  verdict: WorkbookAssessmentVerdict;
+  score?: { earned: number; maximum: number };
+  feedback: string;
+  evidence: string[];
+  trace: string[];
+  reportedModel?: string;
+};
+
+export type WorkbookRubricAssessmentView = WorkbookRubricAssessment & { id: string };
+
+export type WorkbookAssessmentRequest = {
+  requestId: string;
+  questionId: string;
+  consent: typeof workbookAssessmentConsent;
+  publicSearchQuery?: string;
+  providerBaseUrl: string;
 };
 
 export type WorkbookDetail = {
@@ -201,7 +266,7 @@ function alternatives(value: unknown): string[] {
   return answers;
 }
 
-function draftQuestion(value: unknown, index: number): WorkbookQuestion {
+function draftQuestion(value: unknown, index: number, stored = false): WorkbookQuestion {
   const row = record(value);
   const kind = row.kind;
   const prompt = text(row.prompt, `第 ${index + 1} 题题面`, 4000);
@@ -233,6 +298,23 @@ function draftQuestion(value: unknown, index: number): WorkbookQuestion {
       explanation,
     };
   }
+  if (kind === 'rubric') {
+    if (stored) {
+      if (typeof row.rubricVersion !== 'string' || !rubricVersionPattern.test(row.rubricVersion)) {
+        throw new Error(`第 ${index + 1} 题评分标准版本无效。`);
+      }
+    } else if (row.rubricVersion !== undefined && row.rubricVersion !== workbookRubricVersion) {
+      throw new Error(`第 ${index + 1} 题评分标准版本无效。`);
+    }
+    return {
+      id,
+      kind,
+      prompt,
+      rubric: text(row.rubric, `第 ${index + 1} 题评分标准`, 8000),
+      rubricVersion: stored ? String(row.rubricVersion) : workbookRubricVersion,
+      explanation,
+    };
+  }
   throw new Error(`第 ${index + 1} 题类型无效。`);
 }
 
@@ -245,7 +327,7 @@ function storedQuestion(value: unknown, index: number): WorkbookQuestion {
   const parsed = draftQuestion({
     ...row,
     id: undefined,
-  }, index);
+  }, index, true);
   return { ...parsed, id };
 }
 
@@ -258,7 +340,7 @@ export function workbookDraft(input: unknown): WorkbookDraft {
   return {
     title: text(row.title, '试卷标题', 240),
     materialId: materialReference(row.materialId),
-    questions: questions.map(draftQuestion),
+    questions: questions.map((question, index) => draftQuestion(question, index)),
   };
 }
 
@@ -301,6 +383,24 @@ export function workbookAttemptRequest(input: unknown): WorkbookAttemptRequest {
     requestId: workbookRequestId(row.requestId),
     submittedAt: timestamp(row.submittedAt, '提交时间'),
     answers: given,
+  };
+}
+
+export function workbookAssessmentRequest(input: unknown): WorkbookAssessmentRequest {
+  const row = record(input);
+  if (row.consent !== workbookAssessmentConsent) {
+    throw new Error('请明确同意本次评分标准批改。');
+  }
+  const questionId = row.questionId;
+  if (typeof questionId !== 'string' || !questionIdPattern.test(questionId)) {
+    throw new Error('题目标识无效。');
+  }
+  return {
+    requestId: workbookRequestId(row.requestId),
+    questionId,
+    consent: workbookAssessmentConsent,
+    ...(row.publicSearchQuery ? {publicSearchQuery: text(row.publicSearchQuery, '公开检索词', 400)} : {}),
+    providerBaseUrl: text(row.providerBaseUrl, '模型端点', 2000),
   };
 }
 
@@ -359,6 +459,22 @@ export function gradeWorkbook(
           value: question.answer,
           tolerance: question.tolerance,
           unit: question.unit,
+        },
+        explanation: question.explanation,
+      });
+      return;
+    }
+    if (question.kind === 'rubric') {
+      const answer = trimmed;
+      answers[question.id] = answer;
+      feedback.push({
+        questionId: question.id,
+        result: answer === null ? 'unanswered' : 'pending',
+        answer,
+        expected: {
+          kind: 'rubric',
+          rubric: question.rubric,
+          rubricVersion: question.rubricVersion,
         },
         explanation: question.explanation,
       });
@@ -424,7 +540,19 @@ function storedExpected(
     };
   }
   if (row.kind !== 'exact' || !Array.isArray(row.values) || row.values.length === 0) {
-    throw new Error(`第 ${index + 1} 题归档参考答案无效。`);
+    if (
+      row.kind !== 'rubric' ||
+      typeof row.rubric !== 'string' ||
+      typeof row.rubricVersion !== 'string' ||
+      !rubricVersionPattern.test(row.rubricVersion)
+    ) {
+      throw new Error(`第 ${index + 1} 题归档参考答案无效。`);
+    }
+    return {
+      kind: 'rubric',
+      rubric: text(row.rubric, `第 ${index + 1} 题归档评分标准`, 8000),
+      rubricVersion: row.rubricVersion,
+    };
   }
   return {
     kind: 'exact',
@@ -440,7 +568,12 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
   const paperId = factId(String(row.paperId));
   const requestId = workbookRequestId(row.requestId);
   const submittedAt = timestamp(row.submittedAt, '提交时间');
-  if (row.gradingVersion !== workbookGradingVersion) throw new Error('这份作答的判分版本不被识别。');
+  if (
+    row.gradingVersion !== workbookGradingVersion &&
+    row.gradingVersion !== workbookRubricGradingVersion
+  ) {
+    throw new Error('这份作答的判分版本不被识别。');
+  }
   const storedAnswers = record(row.answers);
   const storedKeys = new Set(Object.keys(storedAnswers));
   if (
@@ -467,6 +600,8 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     if (
       result !== 'correct' &&
       result !== 'incorrect' &&
+      result !== 'partial' &&
+      result !== 'pending' &&
       result !== 'unanswered' &&
       result !== 'self-check'
     ) {
@@ -485,7 +620,15 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     if (question.kind === 'exact' && question.selfCheck && answer !== null && result !== 'self-check') {
       throw new Error('归档自评题不应被系统判分。');
     }
-    if ((question.kind === 'numeric' || !question.selfCheck) && result === 'self-check') {
+    if (question.kind === 'rubric' && result !== (answer === null ? 'unanswered' : 'pending')) {
+      throw new Error('归档评分标准题应保持待评估。');
+    }
+    if (
+      (question.kind === 'numeric' ||
+        (question.kind === 'exact' && !question.selfCheck) ||
+        (question.kind === 'exact' && question.selfCheck && result === 'partial')) &&
+      (result === 'self-check' || result === 'partial' || result === 'pending')
+    ) {
       throw new Error('归档反馈结果无效。');
     }
     const expected = storedExpected(question, item.expected, index);
@@ -507,7 +650,7 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     paperId,
     requestId,
     submittedAt,
-    gradingVersion: workbookGradingVersion,
+    gradingVersion: row.gradingVersion,
     paper: pap,
     answers,
     feedback,
@@ -517,7 +660,14 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
 export function workbookQuestionView(question: WorkbookQuestion): WorkbookQuestionView {
   return question.kind === 'numeric'
     ? { id: question.id, kind: 'numeric', prompt: question.prompt, unit: question.unit }
-    : { id: question.id, kind: 'exact', prompt: question.prompt, selfCheck: question.selfCheck };
+    : question.kind === 'exact'
+      ? { id: question.id, kind: 'exact', prompt: question.prompt, selfCheck: question.selfCheck }
+      : {
+        id: question.id,
+        kind: 'rubric',
+        prompt: question.prompt,
+        rubricVersion: question.rubricVersion,
+      };
 }
 
 export function workbookQuestionsView(paper: WorkbookPaper): WorkbookQuestionView[] {
@@ -526,4 +676,65 @@ export function workbookQuestionsView(paper: WorkbookPaper): WorkbookQuestionVie
 
 export function workbookCorrectCount(feedback: readonly WorkbookFeedback[]): number {
   return feedback.filter(({ result }) => result === 'correct').length;
+}
+
+function verdict(value: unknown): WorkbookAssessmentVerdict {
+  if (value === 'correct' || value === 'partial' || value === 'incorrect' || value === 'pending') {
+    return value;
+  }
+  throw new Error('评分标准批改结果无效。');
+}
+
+function stringList(value: unknown, label: string, limit = 40, length = 4000): string[] {
+  if (!Array.isArray(value) || value.length > limit) throw new Error(`${label}格式无效。`);
+  return value.map((entry, index) => text(entry, `${label}第 ${index + 1} 项`, length));
+}
+
+export function workbookAssessmentResult(input: unknown): {
+  verdict: WorkbookAssessmentVerdict;
+  score?: { earned: number; maximum: number };
+  feedback: string;
+  evidence: string[];
+  trace: string[];
+  reportedModel?: string;
+} {
+  const row = record(input);
+  const reportedModel = optionalText(row.reportedModel, '模型标识', 240);
+  const score = row.score === undefined ? undefined : record(row.score);
+  if (score && (typeof score.earned !== 'number' || typeof score.maximum !== 'number' ||
+      !Number.isFinite(score.earned) || !Number.isFinite(score.maximum) || score.maximum <= 0 || score.earned < 0 || score.earned > score.maximum)) {
+    throw new Error('批改得分无效。');
+  }
+  return {
+    verdict: verdict(row.verdict),
+    ...(score ? {score: {earned: Number(score.earned), maximum: Number(score.maximum)}} : {}),
+    feedback: text(row.feedback, '批改说明', 8000),
+    evidence: stringList(row.evidence, '批改依据'),
+    trace: stringList(row.trace, '工具轨迹'),
+    ...(reportedModel === null ? {} : { reportedModel }),
+  };
+}
+
+export function workbookRubricAssessment(input: unknown): WorkbookRubricAssessment {
+  const row = record(input);
+  if (row.assessmentVersion !== workbookRubricAssessmentVersion) {
+    throw new Error('评分标准批改版本不被识别。');
+  }
+  if (typeof row.rubricVersion !== 'string' || !rubricVersionPattern.test(row.rubricVersion)) {
+    throw new Error('评分标准版本无效。');
+  }
+  return {
+    attemptId: factId(String(row.attemptId)),
+    paperId: factId(String(row.paperId)),
+    questionId: text(row.questionId, '题目标识', 40),
+    requestId: workbookRequestId(row.requestId),
+    assessedAt: timestamp(row.assessedAt, '批改时间'),
+    assessmentVersion: workbookRubricAssessmentVersion,
+    rubricVersion: row.rubricVersion,
+    rubric: text(row.rubric, '评分标准', 8000),
+    providerBaseUrl: text(row.providerBaseUrl, '模型端点', 2000),
+    ...(row.consent === workbookAssessmentConsent ? {consent: workbookAssessmentConsent} : {}),
+    ...(row.publicSearchQuery ? {publicSearchQuery: text(row.publicSearchQuery, '公开检索词', 400)} : {}),
+    ...workbookAssessmentResult(row),
+  };
 }

@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-18",
+  "model": "group/auto-deepseek-v4-1-flash",
+  "requestedEffort": "high",
+  "grading": {
+    "paper": "1B00A4B069436B0F45E931CC96",
+    "question": "矩形长 293 厘米，宽 137 厘米。算出面积和周长。",
+    "answer": "面积为 40141 平方厘米，周长为 440 厘米。",
+    "rubric": "用 Python 独立核对面积和周长。面积正确得 2 分，周长正确得 1 分。总分 3 分。只对一项为部分正确。",
+    "score": {
+      "earned": 2,
+      "maximum": 3
+    },
+    "verdict": "partial",
+    "feedback": "面积是否正确（满足 2/2）· 293×137=40141（平方厘米）\n周长是否正确（未满足 0/1）· 2×(293+137)=860（厘米），不是 440 厘米",
+    "evidence": [
+      "面积为 40141 平方厘米",
+      "周长为 440 厘米"
+    ],
+    "trace": [
+      "Python 验算 · 40141 860\n程序 · print(293*137, 2*(293+137))"
+    ]
+  },
+  "fileCalculation": {
+    "session": "C0493BB788C0B5962D2B3901DF",
+    "trace": [
+      "写文件 · numbers.txt · wrote numbers.txt (8 bytes)",
+      "Python 验算 · /tmp/workspace\n['numbers.txt']\n[Errno 2] No such file or directory: '/mnt/data'\nfiles: numbers.txt\n程序 · import os\nprint(os.getcwd())\nprint(os.listdir('.'))\ntry:\n    print(os.listdir('/mnt/data'))\nexcept Exception as e:\n    print(e)\n",
+      "Python 验算 · '7831 749'\n7831 749 5865419\n5865419\nfiles: numbers.txt, result.txt\n程序 · with open('numbers.txt') as f:\n    data = f.read()\nprint(repr(data))\na, b = [int(x) for x in data.split()]\nprod = a * b\nprint(a, b, prod)\nwith open('result.txt', 'w') as f:\n    f.write(str(prod))\nprint(open('result.txt').read())\n",
+      "读文件 · result.txt · 5865419"
+    ]
+  },
+  "search": {
+    "paper": "40BA05254C034FF5E12934ADFB",
+    "verdict": "correct",
+    "publicSearchQuery": "NASA why not every new moon solar eclipse Moon orbit tilt",
+    "source": "Exa 检索 · NASA why not every new moon solar eclipse Moon orbit tilt\nTitle: Why Do Eclipses Happen? - NASA Science\nURL: https://science.nasa.gov/eclipses/geometry/\nPublished: 2022-10-14T20:35:19.000Z\nAuthor: NASA Science Editorial Team\nHighlights:\nEclipses occur on our planet when the Sun, Moon, and Earth line up. Exactly how they align determines wh"
+  },
+  "preparation": {
+    "session": "7A9944515C66841EDBB316F605",
+    "questions": 3,
+    "questionWithRubric": {
+      "answer": "不正确。反例：两段各 600 m。前段用时 600÷4 = 150 s，后段用时 600÷6 = 100 s，总时间 250 s，v̄ = 1200÷250 = 4.8 m/s ≠ 5 m/s。\n\n原因：5 m/s 是速度的算术平均，它默认两段用时相等；而这里慢段用时长，权重更大，平均速度被拉向 4 m/s。\n\n恰好成立的条件：两段用时相等（t₁ = t₂）。此时 v̄ = (4t+6t)/(2t) = 5 m/s。也就是说，4 m/s 与 6 m/s 各走相同时间时，平均才是 5 m/s；若各走相同路程，则为调和平均 2×4×6/(4+6) = 4.8 m/s。",
+      "prompt": "小明说：“一段路前半程的速度是 4 m/s，后半程的速度是 6 m/s，所以全程平均速度就是 5 m/s。”请判断这句话是否正确。若不正确，请举一个具体的例子算出真实平均速度，并说明“平均速度恰好等于 5 m/s”需要什么条件。",
+      "rubric": "本题为解释题，允许多种合法路径，按以下三点分项判断，总计 3 分。\n\n【判断与反例，1 分】\n- 满分：明确指出“不正确”，并给出一个具体、自洽的反例（给出各段路程或时间、算出各段时间、得到不等于 5 m/s 的平均速度，数值正确）。反例可以是任意数值组合，只要计算无误且结论 ≠ 5。\n- 部分：判断正确但只给“因为速度不能直接平均”的定性说法、无反例或反例数据不完整/算错；或反例正确但未明确表态。\n- 缺失：认为 5 m/s 正确，或只抄题面无实质内容。\n\n【机理解释，1 分】\n- 满分：说清平均速度按时间加权，慢段用时长因而权重大；或等价地用 v̄ = Σs/Σt 展示算术平均不成立。\n- 部分：只说“要用总路程除以总时间”而未说明为何不能算术平均；或提到“权重”但未指向时间。\n- 缺失：无解释，或解释为“题目没说清”等无关理由。\n\n【成立条件，1 分】\n- 满分：给出“两段用时相等”这一条件，并能代入验证（或等价条件，如“两次速度各持续相同时间”）。\n- 部分：给出条件但未验证，或给出“v₁ = v₂”等退化条件；或只写出 2v₁v₂/(v₁+v₂) 而未说明它对应“路程相等”的情形。\n- 缺失：未提条件，或条件错误（如“两段路程相等时平均为 5”）。\n\n等价解法认可：用设 t 的代数法、设 s 的代数法、画时间条/表格、或用调和平均公式推导，凡结论与理由正确者同样给分；若学生额外指出“算术平均只在时间相等时成立，路程相等时是调和平均 4.8”，可视为第【机理解释】项满分且第【成立条件】项满分。"
+    }
+  }
+}

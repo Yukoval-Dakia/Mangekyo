@@ -17,6 +17,7 @@ export function studyTurn(input: unknown) {
     caseId: field(value, 'caseId', 120),
     parentId: value.parentId === null ? null : factId(field(value, 'parentId')),
     answer,
+    ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),
     ...(value.attachment === undefined ? {} : { attachment: studyAttachment(value.attachment) }),
     model: field(value, 'model', 200),
     ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: field(value, 'reasoningEffort', 40) }),

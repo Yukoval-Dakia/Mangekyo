@@ -1,5 +1,5 @@
 import type { ReviewEntry } from './review.ts';
-import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import {
   createCommandReadContext,
@@ -8,6 +8,15 @@ import {
 } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
+import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
+import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { runEffect } from '../../kernel/src/work/index.ts';
+import { assessWithAgent } from '../../executors/teaching/assessment-agent.ts';
+import {
+  TeachingError,
+  type TeachingDependencies,
+} from '../../executors/teaching/index.ts';
 import {
   materialType,
   storagePurpose,
@@ -20,23 +29,47 @@ import {
   workbookAttempt,
   workbookAttemptRequest,
   workbookAttemptType,
+  workbookAssessmentRequest,
+  workbookAssessmentResult,
   workbookCorrectCount,
   workbookDraft,
   workbookPaper,
   workbookPaperType,
   workbookQuestionsView,
   workbookRequestId,
+  workbookRubricAssessment,
+  workbookRubricAssessmentType,
+  workbookRubricAssessmentVersion,
   sameWorkbookJson,
   type WorkbookAttempt,
   type WorkbookAttemptView,
   type WorkbookDetail,
   type WorkbookDraft,
   type WorkbookPaper,
+  type WorkbookRubricAssessment,
+  type WorkbookRubricAssessmentView,
+  type WorkbookRubricQuestion,
   type WorkbookSourceView,
   type WorkbookSummary,
 } from '../../modules/activity/workbook-values.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
+import { loadSettings } from './settings.ts';
+
+class UncertainRubricEffect extends Error {}
+
+function assessmentKey(
+  attemptId: FactId,
+  question: WorkbookRubricQuestion,
+): FactId {
+  return factId(stableId(
+    'workbook-rubric-assessment',
+    attemptId,
+    question.id,
+    question.rubricVersion,
+    question.rubric,
+  ));
+}
 
 function invalid(error: unknown, message: string): never {
   if (error instanceof RequestError) throw error;
@@ -121,15 +154,23 @@ async function sourceView(
   }
 }
 
-function attemptView(id: string, attempt: WorkbookAttempt): WorkbookAttemptView {
+function attemptView(
+  id: string,
+  attempt: WorkbookAttempt,
+  assessments: WorkbookRubricAssessmentView[],
+): WorkbookAttemptView {
   return {
     id,
     requestId: attempt.requestId,
     submittedAt: attempt.submittedAt,
+    gradingVersion: attempt.gradingVersion,
     answers: attempt.answers,
     feedback: attempt.feedback.map(item => item.result === 'unanswered' ? {...item, expected: null, explanation: null} : item),
+    assessments,
     correctCount: workbookCorrectCount(attempt.feedback),
-    total: attempt.paper.questions.filter(q => q.kind !== 'exact' || !q.selfCheck).length,
+    total: attempt.paper.questions.filter(
+      q => q.kind !== 'rubric' && (q.kind !== 'exact' || !q.selfCheck),
+    ).length,
   };
 }
 
@@ -153,6 +194,24 @@ async function allAttempts(
     }
   }
   return attempts;
+}
+
+async function allAssessments(tx: ReadTransaction, paperId?: string, key?: string) {
+  const { rows } = await tx.query<{ id: string; value: unknown; manifest: unknown }>(
+    `SELECT d.id,d.value,d.manifest FROM derivations d JOIN slot_state s
+       ON s.learner_id=d.learner_id AND s.slot_type=d.slot_type AND s.current_id=d.id
+       WHERE d.learner_id=$1 AND d.slot_type=$2 AND ($3::text IS NULL OR d.scope_keys->>'paperId'=$3)
+       AND ($4::text IS NULL OR s.slot_key=$4)`,
+    [tx.learner, workbookRubricAssessmentType, paperId ?? null, key ?? null]);
+  const result = new Map<string, WorkbookRubricAssessmentView[]>();
+  for (const row of rows) {
+    if ((await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid') continue;
+    const assessment = workbookRubricAssessment(row.value);
+    const current = result.get(assessment.attemptId) ?? [];
+    current.push({id: row.id, ...assessment});
+    result.set(assessment.attemptId, current);
+  }
+  return result;
 }
 
 async function requireSource(db: Db, id: string): Promise<void> {
@@ -193,9 +252,11 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
       const source = paper.materialId === null
         ? null
         : await sourceView(tx, read, paper.materialId);
+      const assessments = await allAssessments(tx, paperId);
       const attempts = (await allAttempts(tx, read))
         .filter(({ attempt }) => attempt.paperId === paperId)
-        .map(({ id: attemptId, attempt }) => attemptView(attemptId, attempt));
+        .map(({ id: attemptId, attempt }) =>
+          attemptView(attemptId, attempt, assessments.get(attemptId) ?? []));
       return {
         id: paperId,
         title: paper.title,
@@ -271,7 +332,8 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
         const seen = new Set<string>();
         const available = new Map<string, boolean>();
         const result: ReviewEntry[] = [];
-        for (const { attempt } of await allAttempts(tx, read)) {
+        const assessments = await allAssessments(tx);
+        for (const { id, attempt } of await allAttempts(tx, read)) {
           if (!available.has(attempt.paperId)) {
             try {
               available.set(attempt.paperId, Boolean(await readPaperOrNull(tx, factId(attempt.paperId))));
@@ -283,15 +345,20 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
           if (!available.get(attempt.paperId)) continue;
           for (const f of attempt.feedback) {
             const key = attempt.paperId + '/' + f.questionId;
-            if (f.result === 'unanswered' || f.result === 'self-check' || seen.has(key)) continue;
+            const grade = assessments.get(id)?.find(result => result.questionId === f.questionId);
+            const verdict = grade?.verdict ?? f.result;
+            if (verdict === 'pending' || verdict === 'unanswered' || verdict === 'self-check' || seen.has(key)) continue;
             seen.add(key);
-            if (f.result !== 'incorrect') continue;
+            if (verdict !== 'incorrect' && verdict !== 'partial') continue;
             const q = attempt.paper.questions.find(q => q.id === f.questionId);
             if (!q) continue;
-            const expected = f.expected.kind === 'exact' ? f.expected.values.join(' / ') :
-              [f.expected.value, f.expected.unit].filter(x => x !== null).join(' ');
+            const expected = f.expected.kind === 'exact'
+              ? f.expected.values.join(' / ')
+              : f.expected.kind === 'rubric'
+                ? f.expected.rubric
+                : [f.expected.value, f.expected.unit].filter(x => x !== null).join(' ');
             result.push({ paperId: attempt.paperId, title: attempt.paper.title, questionId: q.id,
-              prompt: q.prompt, answer: String(f.answer), expected, explanation: f.explanation });
+              prompt: q.prompt, answer: String(f.answer), expected, explanation: grade?.feedback ?? f.explanation });
           }
         }
         return result;
@@ -413,6 +480,161 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
         }
         throw error;
       }
+      return get(paperId);
+    },
+
+    async assess(
+      paperValue: string,
+      attemptValue: string,
+      input: unknown,
+    ): Promise<WorkbookDetail> {
+      const paperId = factIdOf(paperValue, '找不到这份试卷。');
+      const attemptId = factIdOf(attemptValue, '找不到这次作答。');
+      let request;
+      try {
+        request = workbookAssessmentRequest(input);
+      } catch (error) {
+        invalid(error, '评分标准批改请求无效。');
+      }
+      const settings = await loadSettings();
+      if (request.publicSearchQuery && !settings.allowSearch) throw new RequestError(400, '请在设置中启用公开检索。');
+      if (request.providerBaseUrl !== settings.baseUrl) {
+        throw new RequestError(409, '模型端点已经变化，请重新确认本次批改。');
+      }
+
+      const selected = await db.snapshot({ learner: studioLearner }, async (tx) => {
+        await readPaper(tx, paperId);
+        const attempt = await readAttemptOrNull(tx, attemptId);
+        if (!attempt || attempt.paperId !== paperId) {
+          throw new RequestError(404, '找不到这次作答。');
+        }
+        const question = attempt.paper.questions.find(({ id }) => id === request.questionId);
+        if (!question || question.kind !== 'rubric') {
+          throw new RequestError(400, '这道题没有可用的评分标准。');
+        }
+        const answer = attempt.answers[question.id];
+        if (typeof answer !== 'string' || !answer.trim()) {
+          throw new RequestError(400, '这次作答没有可供批改的文字。');
+        }
+        const id = assessmentKey(attemptId, question);
+        const reads = createCommandReadContext(tx, storagePurpose);
+        const inputs = [];
+        for (const source of [paperId, attemptId]) {
+          const record = await reads.fact(source, {mode: 'following'});
+          inputs.push({kind: 'fact', id: source, rev: record.ref.rev, accessEpoch: record.accessEpoch, mode: 'following'});
+        }
+        const {rows} = await tx.query<{tick: string}>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner]);
+        const manifest = parseManifest({version: 1, learner: tx.learner, purpose: storagePurpose, gatherTick: rows[0]?.tick, inputs});
+        return {
+          question,
+          answer,
+          assessmentId: id,
+          manifest, existing: (await allAssessments(tx, paperId, id)).get(attemptId)?.[0],
+        };
+      });
+      const prior = selected.existing;
+      if (prior && (prior.verdict !== 'pending' || prior.requestId === request.requestId)) return get(paperId);
+      const generation = prior?.id ?? stableId('rubric-input', JSON.stringify(selected.manifest.inputs), request.providerBaseUrl, request.publicSearchQuery ?? '');
+
+      const runAssessmentEffect: TeachingDependencies['runEffect'] = async (step, invoke) => {
+        const effect = await runEffect(
+          db,
+          {
+            learner: studioLearner,
+            ownerKind: 'session',
+            ownerId: attemptId,
+            stepKey: 'rubric:' + selected.question.id + ':' + generation + ':' + step.index,
+            label: 'workbook-rubric',
+            input: {
+              assessmentVersion: workbookRubricAssessmentVersion,
+              attemptId,
+              paperId,
+              questionId: selected.question.id,
+              rubricVersion: selected.question.rubricVersion,
+              consent: request.consent,
+              provider: settings.baseUrl,
+              model: step.model,
+              requestDigest: step.requestDigest,
+            },
+          },
+          providerEffectId => invoke(providerEffectId),
+          async tx => {
+            if (step.provider === 'tool:exa_search' && !(await loadSettings()).allowSearch) throw new RequestError(409, '公开检索授权已撤回。');
+            if ((await revalidateManifest(tx, selected.manifest)).kind !== 'valid') throw new RequestError(409, '批改依据已经变化。');
+          },
+        );
+        if (effect.kind === 'unknown') {
+          throw new UncertainRubricEffect(
+            '提供方的批改结果待核对，本次没有重复发送。' +
+              (effect.providerEffectId ? '请求标识 ' + effect.providerEffectId : ''),
+          );
+        }
+        if (typeof effect.result !== 'string') throw new Error('提供方返回的批改结果无效。');
+        return effect.result;
+      };
+
+      let result;
+      try {
+        const raw = await assessWithAgent(
+          {
+            question: selected.question.prompt,
+            answer: selected.answer,
+            rubric: selected.question.rubric,
+          },
+          {
+            provider: settings,
+            runEffect: runAssessmentEffect,
+            allowSearch: settings.allowSearch, exaApiKey: settings.exaApiKey,
+            ...(request.publicSearchQuery ? {publicSearchQuery: request.publicSearchQuery} : {}),
+          },
+        );
+        result = workbookAssessmentResult(raw);
+      } catch (error) {
+        if (error instanceof RequestError) throw error;
+        if (error instanceof UncertainRubricEffect) {
+          throw new RequestError(409, error.message);
+        }
+        if (error instanceof TeachingError) {
+          result = {verdict: 'pending' as const, feedback: error.message, evidence: [], trace: []};
+        } else {
+          throw new RequestError(502, '批改未完成，原作答已保留。');
+        }
+      }
+
+      const data: WorkbookRubricAssessment = {
+        attemptId,
+        paperId,
+        questionId: selected.question.id,
+        requestId: request.requestId,
+        assessedAt: new Date().toISOString(),
+        consent: request.consent,
+        ...(request.publicSearchQuery ? {publicSearchQuery: request.publicSearchQuery} : {}),
+        assessmentVersion: workbookRubricAssessmentVersion,
+        rubricVersion: selected.question.rubricVersion,
+        rubric: selected.question.rubric,
+        providerBaseUrl: settings.baseUrl,
+        ...result,
+      };
+      await db.tx({learner: studioLearner}, async tx => {
+        await lockLearner(tx, tx.learner);
+        if ((await revalidateManifest(tx, selected.manifest)).kind !== 'valid') throw new RequestError(409, '本次批改依据已经变化。');
+        const latest = (await allAssessments(tx, paperId, selected.assessmentId)).get(attemptId)?.[0];
+        if (latest?.id !== prior?.id) return;
+        await tx.withLearnerWrite(async tick => {
+          const id = stableId('rubric-result', selected.assessmentId, generation, request.requestId);
+          if (prior) await tx.query("UPDATE derivations SET lifecycle='superseded',selection_ended_tick=$3 WHERE learner_id=$1 AND id=$2", [tx.learner,prior.id,tick]);
+          await tx.insert('derivations', {
+            learner_id: tx.learner, id, slot_type: workbookRubricAssessmentType, slot_key: selected.assessmentId,
+            deriver: workbookRubricAssessmentVersion, scope_keys: JSON.stringify({paperId,attemptId}),
+            value: JSON.stringify(data), lifecycle: 'effective', freshness: 'current', is_shadow: false,
+            gather_tick: selected.manifest.gatherTick, effective_tick: tick, manifest: JSON.stringify(selected.manifest),
+          });
+          await tx.query(`INSERT INTO slot_state (learner_id,slot_type,slot_key,current_id,last_id,changed_tick,scope_keys)
+            VALUES ($1,$2,$3,$4,$4,$5,$6) ON CONFLICT (learner_id,slot_type,slot_key)
+            DO UPDATE SET current_id=EXCLUDED.current_id,last_id=EXCLUDED.last_id,changed_tick=EXCLUDED.changed_tick`,
+            [tx.learner,workbookRubricAssessmentType,selected.assessmentId,id,tick,JSON.stringify({paperId,attemptId})]);
+        });
+      });
       return get(paperId);
     },
   };
