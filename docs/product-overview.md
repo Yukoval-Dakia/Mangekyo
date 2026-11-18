@@ -18,7 +18,7 @@ Mangekyō 是为一位学习者长期工作的私人教研团。你交进来的�
 
 ### 一次学习会用到哪些能力
 
-老 TLP 的 70 项能力在这里归入八种学习场景。以骑行课为例，同伴用上次的记忆决定是否追问，当场画出你能操作的路线，再按出题时定下的要求评价这条路线。可以沿着这三个决定读下去。[Agent 记忆](#agent-memory) · [Generative UI](#generative-ui) · [灵活判分契约](#assessment-contract) · [70 项逐项去向](feature-disposition.md)
+下面八种场景是这套学习环境要支持的事。比如你问「我最近总错哪类？」，理想的用法是直接问同伴。它从你允许用于学习的作答里找出具体例子，引用你写过的那一步。两种错因都说得通时，它问一道能区分它们的题；你换个条件也能独立做对，就可以跳过这段讲解。目前可以在错题页把实际错答整理成复习单，选择要发给同伴的原文。直接在对话中按需调取学习史是后续要做到的。[实测对话](evidence/student-workspace/mistake-review.json) · [Agent 记忆](#agent-memory) · [Generative UI](#generative-ui) · [灵活判分契约](#assessment-contract)
 
 | 我想做的事 | 在 Mangekyō 里怎样做 | 功能编号 |
 | --- | --- | --- |

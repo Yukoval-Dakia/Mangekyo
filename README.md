@@ -38,5 +38,5 @@ MANGEKYO_ACTIVATE_LOCAL_BUILD=1 pnpm dev
 
 - 单元 40 的本地验收涵盖版本化数据库迁移、事务内登记工作、幂等交接、真实 Worker 被杀后的恢复、版本隔离、迟到结果和未知外部效果。[运行证据](docs/evidence/unit40/README.md)
 - 教研室是第一项智能验收。自由对话和起步课堂已接入产品导航。四页真实拍卷、个人化排课、跨设备和删除生命周期仍按工作单推进。[工作单](docs/BACKLOG.md)
-- 旧 TLP 的 73 项功能按新产品的学习场景重新设计。70 项纳入，1 项部分纳入，2 项排除。每项的设计、所属单元和验收依据已有索引。[功能去向](docs/feature-disposition.md)
+- 从旧 TLP 的实现记录和愿景中盘点了 73 项候选，Mangekyō 纳入 70 项、部分纳入 1 项、排除 2 项。学生在新版怎样使用这些能力，见[产品概览](docs/product-overview.md)；范围和验收见[功能去向](docs/feature-disposition.md)。
 - 产品行为以 [PRD](docs/PRD.md) 与[产品规格](docs/product-spec.md)为准，内核实现遵循[内核规格](docs/kernel-design.md)与[实现契约](docs/implementation-contract.md)。较早的命令、边界和生成器检查见[历史验证记录](docs/verification.md)。
