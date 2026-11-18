@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api, remember, remembered, requestId } from './api';
 import { Icon } from './icons';
+import { LearningMemory } from './study-tools';
+import { MaterialOriginal } from './intake';
 
 export type Material = { id: string; title: string; text: string };
 export type Workspace = { materials: Material[]; goal: string | null };
@@ -96,55 +98,55 @@ function Recent({ chats }: { chats: Resource<ChatLink[]> }) {
   );
 }
 
+type PaperSummary = { id: string; title: string };
+type OrganizerIndex = { tasks: { id: string; title: string; date: string; done: boolean }[]; notes: { id: string; title: string }[] };
+
 export function Today({ library, chats }: { library: Resource<Workspace>; chats: Resource<ChatLink[]> }) {
+  const organizer = useResource<OrganizerIndex>('/organizer/index');
+  const papers = useResource<PaperSummary[]>('/papers');
+  const next = organizer.data?.tasks.filter(t => !t.done).sort((a,b) => a.date.localeCompare(b.date))[0];
+  const latest = library.data?.materials[0];
   const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(
     new Date(),
   );
   return (
     <>
       <PageTitle title="今天" meta={date} />
-      <article className="lesson-cover">
-        <div className="cover-copy">
-          <span className="cover-kind">
-            <Icon name="book" /> 起步课堂
-          </span>
-          <h2>
-            一趟骑行，
-            <br />
-            两个平均速度
-          </h2>
-          <p>骑了 10 公里，两块码表却显示不同的均速。试着拖长停车时间，看看哪一个数会变。</p>
-          <a className="cover-action" href="/materials/riding">
-            进入课堂 <Icon name="arrow" />
-          </a>
+      <section className="study-today-hero">
+        <div>
+          <span className="cover-kind"><Icon name={next ? 'today' : 'book'} />{next ? '下一项安排 · ' + next.date : latest ? '最近交入的材料' : '个人学习台'}</span>
+          <h2>{next?.title || latest?.title || '今天想学些什么？'}</h2>
+          <p>{next ? '打开计划，查看接下来的安排或记录已完成。' : latest ? '打开原文，写笔记，或选一段交给同伴备课。' : '带上你的讲义、卷子或课堂笔记，从手头正在学的内容开始。'}</p>
+          <div className="study-actions"><a className="primary-button" href={next ? '/plan?id='+next.id : latest ? materialPath(latest.id) : '/intake'}>{next ? '打开学习计划' : latest ? '继续读材料' : '导入学习材料'} <Icon name="arrow" /></a>
+          <a className="tonal-button" href={next ? '/intake' : '/plan'}>{next ? '导入材料' : '学习计划'}</a></div>
         </div>
-        <img
-          src="/images/riding.webp"
-          alt="骑行路上的车把和码表"
-          width="1050"
-          height="700"
-          fetchPriority="high"
-        />
-      </article>
+        <time className="study-calendar" aria-label={date}>
+          <span>{new Intl.DateTimeFormat('zh-CN',{month:'long'}).format(new Date())}</span>
+          <strong>{new Date().getDate()}</strong>
+          <small>{new Intl.DateTimeFormat('zh-CN',{weekday:'long'}).format(new Date())}</small>
+        </time>
+      </section>
       <div className="today-lower">
         <section className="surface-section">
-          <div className="subhead">
-            <h2>自己练一练</h2>
-            <Icon name="practice" />
-          </div>
-          <ListLink
-            href="/practice/riding"
-            icon="practice"
-            title="骑行与平均速度"
-            detail="独立短练 · 交卷后逐题核对"
-          />
+          <div className="subhead"><h2>我的练习</h2><a href="/papers">全部练习</a></div>
+          <ReadState resource={papers} />
+          {papers.data?.slice(0, 2).map(p => <ListLink key={p.id} href={'/papers/'+p.id} title={p.title} detail="继续作答或查看反馈" icon="practice" />)}
+          <ListLink href="/review" title="错题回看" detail="从上次答错的题回到原卷" icon="history" />
+          <ListLink href="/papers/new" title="编一份练习" detail="用自己的题目和答案组卷" icon="practice" />
         </section>
         <section className="surface-section">
-          <div className="subhead">
-            <h2>学习同伴</h2>
-            <a href="/companion">全部对话</a>
-          </div>
+          <div className="subhead"><h2>学习笔记</h2><a href="/notes">全部笔记</a></div>
+          <ReadState resource={organizer} />
+          {organizer.data?.notes.slice(0,2).map(n => <ListLink key={n.id} href={'/notes?id='+n.id} title={n.title} detail="打开笔记及修订记录" icon="document" />)}
+          <ListLink href="/notes" title="整理学习笔记" detail="记录思路、原文和自己的解法" icon="book" />
+        </section>
+        <section className="surface-section">
+          <div className="subhead"><h2>学习同伴</h2><a href="/companion">全部对话</a></div>
           <Recent chats={chats} />
+        </section>
+        <section className="surface-section">
+          <div className="subhead"><h2>起步材料</h2><a href="/materials">材料库</a></div>
+          <ListLink href="/materials/riding" title="同一趟骑行，两块码表" detail="内置讲义 · 调节停车时间" icon="book" />
         </section>
       </div>
       {library.data?.goal && (
@@ -179,6 +181,8 @@ export function Today({ library, chats }: { library: Resource<Workspace>; chats:
 }
 
 export function Materials({ library, capture }: { library: Resource<Workspace>; capture: () => void }) {
+  const papers = useResource<PaperSummary[]>('/papers');
+  const organizer = useResource<OrganizerIndex>('/organizer/index');
   const [filter, setFilter] = useState('全部');
   const [search, setSearch] = useState('');
   const items = [
@@ -203,6 +207,8 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
       href: '/classroom/first45',
       icon: 'chat' as const,
     },
+    ...(papers.data ?? []).map(p => ({ title:p.title, detail:'自编或从材料备课的练习', kind:'题库', href:'/papers/'+p.id, icon:'practice' as const })),
+    ...(organizer.data?.notes ?? []).map(n => ({title:n.title, detail:'个人笔记 · 可编辑', kind:'笔记', href:'/notes?id='+n.id, icon:'book' as const})),
     ...(library.data?.materials ?? []).map((m) => ({
       title: m.title,
       detail: '个人材料 · 仅保存',
@@ -219,7 +225,8 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
   );
   return (
     <>
-      <PageTitle title="材料" />
+      <PageTitle title="材料"><a className="tonal-button" href="/intake"><Icon name="plus" /> 导入文件</a></PageTitle>
+      <div className="study-actions library-actions"><a href="/papers">我的题库</a><a href="/notes">学习笔记</a><button className="text-button" onClick={capture}>交入文字</button></div>
       <div className="library-controls">
         <label className="search-box">
           <Icon name="search" />
@@ -231,19 +238,20 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
           />
         </label>
         <div className="filter-row" aria-label="材料分类">
-          {['全部', '教材', '题库', '个人材料', '示例课堂'].map((k) => (
+          {['全部', '教材', '题库', '笔记', '个人材料', '示例课堂'].map((k) => (
             <button key={k} type="button" aria-pressed={filter === k} onClick={() => setFilter(k)}>
               {k}
             </button>
           ))}
         </div>
       </div>
+      <ReadState resource={papers} /><ReadState resource={organizer} />
       <div className="library-list">
         {visible.map((x) => (
           <ListLink key={x.href} {...x} />
         ))}
         <ReadState resource={library} />
-        {!visible.length && library.data && (
+        {!visible.length && library.data && papers.data && organizer.data && (
           <div className="empty">
             <h2>{search ? '没有匹配的材料' : '还没有个人材料'}</h2>
             {!search && (
@@ -269,7 +277,13 @@ export function SavedMaterial({ library, id }: { library: Resource<Workspace>; i
       {m ? (
         <article className="reading-paper">
           <PageTitle title={m.title} meta="个人材料 · 仅保存" />
-          <p className="preserve">{m.text}</p>
+          <div className="study-actions material-actions">
+            <a className="primary-button" href={'/companion?mode=prepare&material='+m.id}>让同伴备课</a>
+            <a className="tonal-button" href={'/companion?material='+m.id}>带原文提问</a>
+            <a href={'/notes?material='+m.id}>写笔记</a>
+            <a href={'/papers/new?material='+m.id}>自己编卷</a>
+          </div>
+          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} changed={library.reload} />
         </article>
       ) : (
         library.data && <h1>未找到这份材料</h1>
@@ -282,10 +296,12 @@ export function Me({
   library,
   chats,
   editGoal,
+  endpoint,
 }: {
   library: Resource<Workspace>;
   chats: Resource<ChatLink[]>;
   editGoal: () => void;
+  endpoint: string | undefined;
 }) {
   return (
     <>
@@ -302,16 +318,20 @@ export function Me({
           <p>{library.data.goal || '你最近希望弄懂什么？'}</p>
         </section>
       )}
+      <LearningMemory endpoint={endpoint} />
       <section className="surface-section profile-records">
         <div className="subhead">
           <h2>我的学习记录</h2>
         </div>
         <ListLink
-          href="/practice/riding"
-          title="独立练习与反馈"
+          href="/papers"
+          title="我的练习与反馈"
           detail="回看每次提交的答案"
           icon="practice"
         />
+        <ListLink href="/review" title="错题回看" detail="回看最近一次未答对的题" icon="history" />
+        <ListLink href="/plan" title="学习计划" detail="安排与完成记录" icon="today" />
+        <ListLink href="/notes" title="学习笔记" detail="回看原文和笔记修订" icon="book" />
         <ListLink href="/materials" title="个人材料" detail="回到已保存的原文" icon="document" />
         <Recent chats={chats} />
       </section>
@@ -319,7 +339,7 @@ export function Me({
         <Icon name="lock" />
         <div>
           <h2>资料用途</h2>
-          <p>交入的文字材料仅供自己回看。主动发到学习同伴的文字会用于这次对话。</p>
+          <p>材料默认保存在本机。只有在发送时选中的材料片段和主动保存的同伴备忘会用于相应对话。</p>
         </div>
       </section>
     </>
@@ -430,7 +450,7 @@ export function EditDialog({
             }}
           />
         </label>
-        {isMaterial && <p className="field-help">仅保存到我的材料。</p>}
+        {isMaterial && <p className="field-help">仅保存到我的材料。也可以<a href="/intake">导入文件或照片</a>。</p>}
         {error && (
           <p className="error-text" role="alert">
             {error}

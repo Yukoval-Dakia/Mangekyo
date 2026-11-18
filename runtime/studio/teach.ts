@@ -1,4 +1,5 @@
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
+import { currentMemory, memoryId } from './memory.ts';
 import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, factId, learnerId } from '../../kernel/src/declarations/ids.ts';
@@ -46,14 +47,15 @@ export async function teach(db: Db, ref: WorkRef) {
   const learner = learnerId(ref.learner);
   const scope = { learner };
   const inputs = new Map<string, ManifestInput>();
-  async function readFact(tx: ReadTransaction, id: string) {
+  let liveMemoryRevision: number | undefined;
+  async function readFact(tx: ReadTransaction, id: string, mode: 'pinned' | 'following' = 'following') {
     const fact = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });
     inputs.set(id, {
       kind: 'fact',
       id: fact.ref.id,
       rev: fact.ref.rev,
       accessEpoch: fact.accessEpoch,
-      mode: 'following',
+      mode,
     });
     return fact.value;
   }
@@ -81,6 +83,7 @@ export async function teach(db: Db, ref: WorkRef) {
     return row.value;
   }
   async function validInputs(tx: ReadTransaction) {
+    if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
     const {
       rows: [clock],
     } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [learner]);
@@ -150,6 +153,13 @@ export async function teach(db: Db, ref: WorkRef) {
     if (submission.caseId === 'companion' || submission.caseId === 'riding') {
       const answer = submission.answer;
       if (!answer) throw new TeachingError('invalid_input', '请输入有效的学习问题。');
+      const preference = submission.caseId === 'companion' ? await db.snapshot(scope, async tx => {
+        const value = await currentMemory(tx);
+        if (!value.text || value.endpoint !== settings.baseUrl) return;
+        await readFact(tx, memoryId, 'pinned');
+        liveMemoryRevision = value.revision;
+        return value.text;
+      }) : undefined;
       const publicHistory = await db.snapshot(scope, async (tx) => {
         const messages: CompanionMessage[] = [];
         let previousId = submission.parentId;
@@ -161,6 +171,8 @@ export async function teach(db: Db, ref: WorkRef) {
           // Each reply follows its immediate predecessor. Recursive manifest
           // validation covers earlier replies without repeating dependency paths.
           const response = await readFeedback(tx, previousId, count === 0);
+          const priorMemory = response.reads.find(item => item.id === memoryId);
+          if (priorMemory && priorMemory.text !== preference) break;
           messages.unshift({ role: 'user', content: previous.answer }, { role: 'assistant', content: response.message });
           previousId = previous.parentId;
         }
@@ -168,13 +180,22 @@ export async function teach(db: Db, ref: WorkRef) {
       });
       await onProgress({ phase: 'thinking' });
       const { title, distanceKm, movingMinutes, stoppedMinutes } = ridingLesson;
+      const root = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
+      const attachment = root.attachment;
       const material = submission.caseId === 'riding'
         ? `《${title}》：全程 ${distanceKm} 公里，移动 ${movingMinutes} 分钟，停车 ${stoppedMinutes} 分钟。移动均速 ${averageSpeed(distanceKm, movingMinutes)} 公里/小时，全程均速 ${averageSpeed(distanceKm, movingMinutes + stoppedMinutes)} 公里/小时。`
-        : undefined;
+        : attachment ? `《${attachment.title}》\n${attachment.text}` : undefined;
       const result = await runCompanionTurn(answer, publicHistory, material, {
         provider: settings, runEffect: runModelEffect, onProgress,
-      });
-      feedback = { ...result, action: 'companion_reply', rationale: '', evidenceIds: [], reads: [], ...teachingProfile };
+      }, attachment?.mode === 'prepare' && !submission.parentId, preference);
+      feedback = {
+        ...result, action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : '',
+        evidenceIds: [], reads: [
+          ...(attachment ? [{ id: attachment.id, title: attachment.title, text: attachment.text }] : []),
+          ...(preference ? [{ id: memoryId, title: '本人保存的同伴备忘', text: preference }] : []),
+        ],
+        ...teachingProfile,
+      };
     } else {
       const selected = caseId(submission.caseId);
       if (selected !== 'independent' && selected !== 'workedExample') throw new Error('Unknown teaching case');

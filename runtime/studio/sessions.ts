@@ -8,7 +8,9 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { first45Answer, first45Histories, first45Question } from '../../executors/teaching/examples.ts';
 import { teachingProfile } from '../../executors/teaching/index.ts';
-import { studyTurn } from '../../modules/activity/values.ts';
+import { studyAttachment, studyTurn } from '../../modules/activity/values.ts';
+import { readMaterialText } from './reading.ts';
+import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import { loadSettings } from './settings.ts';
 import {
   stableId,
@@ -57,6 +59,7 @@ export function clientRequest(value: unknown): string {
   return value;
 }
 export type DisplayTurn = {
+  studyKit?: StudyKit;
   action: string;
   rationale: string;
   message: string;
@@ -139,6 +142,7 @@ export async function getSession(db: Db, session: string) {
     id: session,
     caseId: last.submission.caseId,
     currentTurnId: last.id,
+    ...(timeline[0]?.submission.attachment ? { attachment: timeline[0].submission.attachment } : {}),
     status: last.status,
     ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
     ...(last.error ? { error: last.error } : {}),
@@ -188,6 +192,7 @@ export async function openStudio(db: Db, activity: LoadedModule) {
     parent: string | null,
     answer: string | null,
     req: string,
+    attachment?: ReturnType<typeof studyAttachment>,
   ) {
     const id = parent ? nextTurn(session, parent) : firstTurn(req);
     const settings = await loadSettings();
@@ -202,6 +207,7 @@ export async function openStudio(db: Db, activity: LoadedModule) {
       sessionId: session,
       parentId: parent,
       answer,
+      ...(attachment ? { attachment } : {}),
       ...teachingProfile,
       baseUrl: settings.baseUrl,
     };
@@ -221,6 +227,7 @@ export async function openStudio(db: Db, activity: LoadedModule) {
     selected: CaseId | undefined,
     parent: string | null,
     answer: string | null,
+    attachment?: ReturnType<typeof studyAttachment>,
   ) {
     const {
       rows: [row],
@@ -234,25 +241,40 @@ export async function openStudio(db: Db, activity: LoadedModule) {
       existing.sessionId !== session ||
       existing.answer !== answer ||
       existing.parentId !== parent ||
-      (selected && existing.caseId !== selected)
+      (selected && existing.caseId !== selected) ||
+      JSON.stringify(existing.attachment) !== JSON.stringify(attachment)
     ) {
       throw new RequestError(409, '同一个提交标识已经用于不同内容。');
     }
     return getSession(db, session);
   }
   return {
-    async start(selected: CaseId, requestId: string, question?: unknown) {
+    async start(selected: CaseId, requestId: string, question?: unknown, shared?: unknown) {
       const personal = selected === 'companion' || selected === 'riding';
       if (personal && (typeof question !== 'string' || !question.trim() || question.length > 4000))
         throw new RequestError(400, '请输入 1 至 4000 字的问题。');
       const firstAnswer = personal && typeof question === 'string' ? question.trim() : null;
+      let attachment;
+      if (shared !== undefined) {
+        if (selected !== 'companion') throw new RequestError(400, '请在自由对话中使用个人材料。');
+        try { attachment = studyAttachment(shared); }
+        catch { throw new RequestError(400, '请选择一段 1 至 3000 字的材料。'); }
+      }
       const session = firstTurn(requestId);
-      const prior = await replay(requestId, session, selected, null, firstAnswer);
+      const prior = await replay(requestId, session, selected, null, firstAnswer, attachment);
       if (prior) return prior;
+      if (attachment) {
+        const chosen = attachment;
+        const found = await db.snapshot({ learner: studioLearner }, async tx => {
+          const original = await readMaterialText(tx, chosen.id);
+          return original && chosen.title === original.title && original.text.includes(chosen.text);
+        });
+        if (!found) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
+      }
       try {
-        return await submit(selected, session, null, firstAnswer, requestId);
+        return await submit(selected, session, null, firstAnswer, requestId, attachment);
       } catch (error) {
-        const again = await replay(requestId, session, selected, null, firstAnswer);
+        const again = await replay(requestId, session, selected, null, firstAnswer, attachment);
         if (again) return again;
         throw error;
       }

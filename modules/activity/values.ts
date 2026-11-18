@@ -17,9 +17,20 @@ export function studyTurn(input: unknown) {
     caseId: field(value, 'caseId', 120),
     parentId: value.parentId === null ? null : factId(field(value, 'parentId')),
     answer,
+    ...(value.attachment === undefined ? {} : { attachment: studyAttachment(value.attachment) }),
     model: field(value, 'model', 200),
     ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: field(value, 'reasoningEffort', 40) }),
     baseUrl: field(value, 'baseUrl', 2000),
+  };
+}
+export function studyAttachment(input: unknown) {
+  const value = object(input);
+  if (value.mode !== 'ask' && value.mode !== 'prepare') throw new Error('材料使用方式无效');
+  return {
+    id: factId(field(value, 'id')),
+    title: field(value, 'title', 240),
+    text: field(value, 'text', 3000),
+    mode: value.mode as 'ask' | 'prepare',
   };
 }
 export function studyRecord(input: unknown) {

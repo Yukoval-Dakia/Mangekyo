@@ -79,7 +79,12 @@ it('streams only public companion content before the provider completes', async 
     const init = requests.mock.calls[0]?.[1];
     expect(JSON.parse(String(init?.body))).toMatchObject({
       stream: true, model: 'auto/deepseek-v4.1-flash', reasoning_effort: 'high',
-      messages: [{ role: 'system', content: expect.stringContaining('公开题面。') }, { role: 'user', content: '昨天的问题' }, { role: 'user', content: '为什么？' }],
+      messages: [
+        { role: 'system', content: expect.stringContaining('学习同伴') },
+        { role: 'user', content: expect.stringContaining('公开题面。') },
+        { role: 'user', content: '昨天的问题' },
+        { role: 'user', content: '为什么？' },
+      ],
     });
   } finally {
     requests.mockRestore();

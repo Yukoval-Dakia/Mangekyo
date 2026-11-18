@@ -32,6 +32,7 @@ export async function sourceBuildId() {
     'kernel/src',
     'kernel/dist',
     'modules/activity',
+    'modules/companion',
     'executors/temporal/src',
     'executors/teaching',
     'runtime/studio',

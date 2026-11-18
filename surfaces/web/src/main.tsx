@@ -6,7 +6,12 @@ import { Companion } from './companion';
 import { Icon, Mark, type IconName } from './icons';
 import { SettingsDialog } from './settings';
 import { StarterLesson, StarterPractice } from './starter';
+import { Workbook } from './workbook';
+import { Organizer } from './organizer';
+import { Intake } from './intake';
+import { Mistakes, PrintPaper } from './review';
 import {
+  ReadState,
   Today,
   Materials,
   SavedMaterial,
@@ -19,6 +24,7 @@ import {
 } from './workspace';
 import './styles.css';
 import './shell.css';
+import './learning.css';
 
 const destinations: { path: string; text: string; icon: IconName }[] = [
   { path: '/today', text: '今天', icon: 'today' },
@@ -32,9 +38,9 @@ function App() {
   const [legacyError, setLegacyError] = useState(false);
   const path = location.pathname === '/' ? '/today' : location.pathname;
   const active =
-    path.startsWith('/materials') || path.startsWith('/practice') || path.startsWith('/classroom')
+    ['/materials','/papers','/practice','/classroom','/intake','/notes','/review'].some(group => path === group || path.startsWith(group+'/'))
       ? '/materials'
-      : path;
+      : path === '/plan' ? '/today' : path;
   const section = destinations.find((x) => x.path === active)?.text ?? '今天';
   const [dialog, setDialog] = useState<'settings' | 'material' | 'goal' | null>(null);
   const [notice, setNotice] = useState('');
@@ -92,6 +98,17 @@ function App() {
     );
   else if (path === '/today') content = <Today library={library} chats={chats} />;
   else if (path === '/materials') content = <Materials library={library} capture={() => open('material')} />;
+  else if (path === '/intake') content = <Intake />;
+  else if (path === '/review') content = <Mistakes />;
+  else if (/^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/print$/.test(path)) content = <PrintPaper id={path.split('/')[2]!} />;
+  else if (path === '/papers' || path.startsWith('/papers/')) {
+    const id = path.slice('/papers/'.length);
+    content = id === 'new' && !library.data ? <ReadState resource={library} /> : <>
+      {id && id !== 'new' && <a className="text-button" href={'/papers/'+id+'/print'}>打开打印版</a>}
+      <Workbook {...(id ? {id} : {})} materials={library.data?.materials ?? []} />
+    </>;
+  }
+  else if (path === '/plan' || path === '/notes') content = <Organizer section={path === '/plan' ? 'plan' : 'notes'} materials={library.data?.materials ?? []} />;
   else if (path === '/materials/riding') content = <StarterLesson />;
   else if (path.startsWith('/materials/saved/'))
     content = <SavedMaterial library={library} id={path.slice('/materials/saved/'.length)} />;
@@ -105,7 +122,7 @@ function App() {
       />
     );
   else if (path === '/companion') content = <Companion chats={chats} />;
-  else if (path === '/me') content = <Me library={library} chats={chats} editGoal={() => open('goal')} />;
+  else if (path === '/me') content = <Me library={library} chats={chats} endpoint={settings.data?.baseUrl} editGoal={() => open('goal')} />;
   return (
     <div className="product-shell">
       <a className="skip-content" href="#main-content">

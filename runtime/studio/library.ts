@@ -13,6 +13,7 @@ import {
   studyGoal,
   textMaterial,
 } from '../../modules/activity/library-values.ts';
+import { readMaterialText } from './reading.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
@@ -47,6 +48,11 @@ export function openLibrary(db: Db, activity: LoadedModule) {
     }
   }
   return {
+    async reading(id: string) {
+      const source = await db.snapshot({learner: studioLearner}, tx => readMaterialText(tx, id));
+      if (!source) throw new RequestError(404, '找不到这份材料。');
+      return source;
+    },
     snapshot: () => db.snapshot({ learner: studioLearner }, async (tx) => {
       const read = createCommandReadContext(tx, storagePurpose);
       async function readValue(id: string) {

@@ -12,6 +12,10 @@ import { openStudio } from './sessions.ts';
 import { recordTerminalFailure, teach } from './teach.ts';
 import { sourceBuildId } from './build.ts';
 import { serve } from './http.ts';
+import { openIntake } from './intake.ts';
+import { openWorkbook } from './workbook.ts';
+import { openOrganizer } from './organizer.ts';
+import { openMemory } from './memory.ts';
 import { openPractice } from './practice.ts';
 import { openLibrary } from './library.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
@@ -38,7 +42,10 @@ const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, pool) : 
 async function openWeb() {
   const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
   const studio = await openStudio(db, activity);
-  return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), port)
+  const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
+  const student = { workbook: openWorkbook(db, activity), organizer: openOrganizer(db, activity),
+    memory: openMemory(db, companion), intake: openIntake(db, activity) };
+  return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
 const server = mode === 'worker' ? undefined : await openWeb();

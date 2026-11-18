@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type SessionEvent } from "./api";
+import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type SessionEvent, type StudyAttachment } from "./api";
 
 type Operation =
-  | { kind: "create"; requestId: string; question?: string }
+  | { kind: "create"; requestId: string; question?: string; attachment?: StudyAttachment }
   | { kind: "answer"; requestId: string; sessionId: string; parentId: string; answer: string };
 
 const progressLabels: Record<NonNullable<SessionEvent["phase"]>, string> = {
@@ -158,7 +158,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const result = operation.kind === "create"
         ? await api<Session>("/sessions", {
           method: "POST",
-          body: { caseId, requestId: operation.requestId, question: operation.question },
+          body: { caseId, requestId: operation.requestId, question: operation.question, attachment: operation.attachment },
         })
         : await api<Session>(`${sessionPath(operation.sessionId)}/answers`, {
           method: "POST",
@@ -194,12 +194,12 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     }
   }
 
-  function start(question?: string) {
+  function start(question?: string, attachment?: StudyAttachment) {
     if (inFlight.current || retryOperation) return;
     const text = question?.trim();
     const id = text ? requestId() : remembered(createKey) ?? requestId();
     if (!text) remember(createKey, id);
-    void perform({ kind: "create", requestId: id, ...(text ? { question: text } : {}) });
+    void perform({ kind: "create", requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
   }
 
   function send() {

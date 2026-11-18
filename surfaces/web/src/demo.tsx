@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type M
 import { api, remember, remembered, sessionPath, type Session, type TeachingCase, type Turn } from "./api";
 import { useConversation } from "./conversation";
 import { Message } from "./message";
+import { StudyCards } from "./study-tools";
 import { Icon, Mark } from "./icons";
 
 const actionNames: Record<Turn["action"], string> = {
@@ -50,7 +51,7 @@ function Question({ teachingCase }: { teachingCase: TeachingCase }) {
   );
 }
 
-export function TeachingTurn({ turn }: { turn: Turn }) {
+export function TeachingTurn({ turn, materialId, discuss }: { turn: Turn; materialId?: string | undefined; discuss?: ((question: string, answer: string) => void) | undefined }) {
   const rationale = turn.reads.reduce((text, read) => text.replaceAll(read.id, read.title), turn.rationale);
   return (
     <li className="turn">
@@ -58,6 +59,7 @@ export function TeachingTurn({ turn }: { turn: Turn }) {
       <article className="companion-turn">
         <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
         <Message text={turn.message} />
+        {turn.studyKit && <StudyCards kit={turn.studyKit} materialId={materialId} discuss={discuss} />}
         <details className="evidence">
           <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
           <div className="evidence-content">

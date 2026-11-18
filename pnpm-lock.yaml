@@ -57,6 +57,12 @@ importers:
         specifier: workspace:*
         version: link:../../kernel
 
+  modules/companion:
+    dependencies:
+      '@mangekyo/kernel':
+        specifier: workspace:*
+        version: link:../../kernel
+
   runtime/studio:
     dependencies:
       '@temporalio/client':

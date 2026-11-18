@@ -13,7 +13,9 @@ export interface Settings {
   hasKey: boolean;
 }
 
+export type StudyAttachment = { id: string; title: string; text: string; mode: 'ask' | 'prepare' };
 export interface Turn {
+  studyKit?: { title: string; lesson: string; questions: { prompt: string; answer: string }[] };
   answer?: string;
   action: "diagnostic_question" | "transfer_question" | "targeted_explanation" | "clarifying_question" | "companion_reply";
   rationale: string;
@@ -26,6 +28,7 @@ export interface Turn {
 }
 
 export interface Session {
+  attachment?: StudyAttachment;
   id: string;
   caseId: string;
   turns: Turn[];

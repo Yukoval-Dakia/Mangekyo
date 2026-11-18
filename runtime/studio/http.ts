@@ -14,6 +14,11 @@ import {
 } from './sessions.ts';
 import type { openLibrary } from './library.ts';
 import type { openPractice } from './practice.ts';
+import { handleIntakeRequest, type openIntake } from './intake.ts';
+import type { openWorkbook } from './workbook.ts';
+import type { openOrganizer } from './organizer.ts';
+import type { openMemory } from './memory.ts';
+import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
 import { saveSettings, publicSettings, loadSettings } from './settings.ts';
 
@@ -24,7 +29,7 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 32768) throw new RequestError(413, '请求内容过长。');
+    if (size > 1024 * 1024) throw new RequestError(413, '请求内容过长。');
     chunks.push(chunk);
   }
   try {
@@ -55,7 +60,7 @@ const types: Record<string, string> = {
 };
 const pages = new Set([
   '/',
-  '/today',
+  '/today', '/papers', '/papers/new', '/plan', '/notes', '/review', '/intake',
   '/materials',
   '/materials/riding',
   '/practice/riding',
@@ -68,6 +73,12 @@ export function serve(
   studio: Awaited<ReturnType<typeof openStudio>>,
   library: ReturnType<typeof openLibrary>,
   practice: ReturnType<typeof openPractice>,
+  student: {
+    workbook: ReturnType<typeof openWorkbook>;
+    organizer: ReturnType<typeof openOrganizer>;
+    memory: ReturnType<typeof openMemory>;
+    intake: ReturnType<typeof openIntake>;
+  },
   port: number,
 ) {
   const hosts = new Set(['localhost', '127.0.0.1'].map((host) => host + ':' + port));
@@ -89,6 +100,28 @@ export function serve(
         throw new RequestError(403, '此入口仅供本机页面使用。');
       const path = new URL(req.url ?? '/', 'http://' + host).pathname;
       const method = req.method;
+      const reading = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/reading$/.exec(path);
+      if (reading?.[1] && method === 'GET') return json(res, 200, await library.reading(reading[1]));
+      if (await handleIntakeRequest(student.intake, req, res, path, method)) return;
+      if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());
+      if (path === '/api/papers' && method === 'POST') return json(res, 201, await student.workbook.save(await body(req)));
+      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print))?$/.exec(path);
+      if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
+      if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));
+      if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return json(res, 200, await student.workbook.submit(paper[1], await body(req)));
+      if (path === '/api/review' && method === 'GET') {
+        const [mine, riding] = await Promise.all([student.workbook.review(), practice.read()]);
+        return json(res, 200, [...mine, ...ridingReview(riding)]);
+      }
+      if (path === '/api/organizer/index' && method === 'GET') {
+        const { tasks, notes } = await student.organizer.snapshot(false);
+        return json(res, 200, { tasks, notes: notes.map(({id, title}) => ({id, title})) });
+      }
+      if (path === '/api/organizer' && method === 'GET') return json(res, 200, await student.organizer.snapshot());
+      if (path === '/api/organizer/tasks' && method === 'POST') return json(res, 200, await student.organizer.task(await body(req)));
+      if (path === '/api/organizer/notes' && method === 'POST') return json(res, 200, await student.organizer.note(await body(req)));
+      if (path === '/api/memory' && method === 'GET') return json(res, 200, await student.memory.read());
+      if (path === '/api/memory' && method === 'POST') return json(res, 200, await student.memory.save(await body(req)));
       if (path === '/api/cases' && method === 'GET') return json(res, 200, { cases });
       if (path === '/api/workspace' && method === 'GET') return json(res, 200, await library.snapshot());
       if (path === '/api/conversations' && method === 'GET')
@@ -119,7 +152,7 @@ export function serve(
         return json(
           res,
           202,
-          await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question),
+          await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment),
         );
       }
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
@@ -135,7 +168,7 @@ export function serve(
         );
       }
       if (method !== 'GET' || path.startsWith('/api/')) throw new RequestError(404, '这个入口不存在。');
-      const appPage = pages.has(path) || /^\/materials\/saved\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
+      const appPage = pages.has(path) || /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path) || /^\/materials\/saved\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
       const file = resolve(root, '.' + decodeURIComponent(appPage ? '/index.html' : path));
       if (!file.startsWith(resolve(root) + sep) || !types[extname(file)])
         throw new RequestError(404, '找不到页面。');

@@ -4,11 +4,11 @@
 
 ## 在本机打开 Mangekyō
 
-打开**今天**可以从一份内置讲义开始，比较骑行时两块码表的读数，或直接做三道变式。**材料**收纳讲义、练习、示例课堂和自己交入的文字。**同伴**接受自由提问，也可以从讲义带着当前主题进入。**我**保存当前学习目标，提供练习与材料的回看入口。
+从**今天**进入自己的材料、当天安排、笔记和练习。可以导入课文、PDF 或照片，在材料页核对识别结果，选段让同伴备课，保存笔记和自编小卷，再独立作答、回看错题或打印。**我**里可以留下教学偏好，让下一次同伴对话接着用。[学生工作区与旧 TLP 的实现对照](docs/evidence/student-workspace/README.md)
 
 普通同伴对话通过 SSE 接收 DeepSeek 的公开正文增量。诊断示例「同一个 45，两份不同的学习史」位于材料中的「示例课堂」。这里会先显示阅读、核对阶段，再呈现经过验证的题目与教研依据。已有会话的旧链接可以继续使用。[浏览器实测与两份真实教学记录](docs/evidence/product-shell/README.md)
 
-![今天页面](docs/evidence/product-shell/home.webp)
+照片识别和 PDF 文字提取使用 macOS 的 Vision、PDFKit 和本机 Swift。原件默认存于当前用户的私人数据目录，设置 `MANGEKYO_INTAKE_DATA_DIR` 可指定位置。其他系统可以导入 UTF-8 文本或手动补充原件文字。
 
 本地开发使用 Node 26、pnpm 10、PostgreSQL 和 Temporal CLI。为这个项目准备独立的本地数据库，设置 `MANGEKYO_DATABASE_URL`。服务默认在该库的 `mangekyo_studio` schema 建表并写入示例。先启动持久化的开发用 Temporal 服务。
 
