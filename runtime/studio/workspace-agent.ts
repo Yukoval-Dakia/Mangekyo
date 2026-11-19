@@ -1,5 +1,5 @@
 import {fileURLToPath} from 'node:url';
-import {createCommandReadContext} from '../../kernel/src/commands/reads.ts';
+import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import {createCommandHandler} from '../../kernel/src/commands/handle.ts';
 import {recordLocalRead} from '../../kernel/src/work/effects.ts';
 import {commandId, factId, type Revision, type Tick} from '../../kernel/src/declarations/ids.ts';
@@ -9,12 +9,13 @@ import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
 import {workspaceDefinitions} from '../../executors/teaching/workspace-tools.ts';
-import {workspaceSearch, workspaceRead} from './workspace-read.ts';
+import type {SourceReadMode, SourceTrack} from './source-read.ts';
+import {workspaceSearch, workspaceRead, workspaceSourceUnavailable} from './workspace-read.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
 
-export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string};
+export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode};
 type Seen = {id: string; title: string; text: string; workspace: true};
 const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
 let declarations: ReturnType<typeof activity> | undefined;
@@ -36,24 +37,37 @@ export function openWorkspaceTools(options: {
     const raw = await recordLocalRead(db, {learner:studioLearner, ownerKind:'session', ownerId:turn,
       stepKey:String(step), label:'local:'+name, input:args}, async tx => {
       const witnesses = new Map<string, WorkspaceWitness>();
-      const track = (fact: FactSnapshot) => witnesses.set(fact.ref.id, {
-        id:fact.ref.id, type:fact.type, rev:fact.ref.rev, epoch:fact.accessEpoch,
+      const track: SourceTrack = (fact, mode) => witnesses.set(fact.ref.id, {
+        id:fact.ref.id, type:fact.type, rev:fact.ref.rev, epoch:fact.accessEpoch, ...(mode ? {mode} : {}),
       });
       const text = await (name === 'read_workspace' ? workspaceRead : workspaceSearch)(tx,args,track,options.maySend);
       return JSON.stringify({text,witnesses:[...witnesses.values()]});
     },options.authorize);
     const {text, witnesses} = JSON.parse(raw) as {text:string; witnesses:WorkspaceWitness[]};
     const value = JSON.parse(text);
+    const current = await db.snapshot({learner: studioLearner}, async tx => {
+      const reader = createCommandReadContext(tx, purpose);
+      try {
+        for (const witness of witnesses) {
+          const input = workspaceInput(witness);
+          const fact = await reader.fact(input.id, input);
+          if (fact.ref.rev !== witness.rev || fact.type !== witness.type ||
+            fact.accessEpoch !== witness.epoch || !options.maySend(fact)) return false;
+        }
+      } catch (error) {
+        if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return false;
+        throw error;
+      }
+      for (const witness of witnesses) options.track(witness);
+      await options.authorize(tx);
+      return true;
+    });
+    if (!current) return workspaceSourceUnavailable;
     const direct = new Set<string>([value.id,args.related,...[...(value.results ?? []), ...(value.observations ?? []),
       ...(value.recentAttempts ?? [])].map(item => item.id)].filter(id => typeof id === 'string'));
-    for (const w of witnesses) {
-      options.track(w);
-      if (direct.has(w.id)) sources.set(w.id,w);
-    }
-    // A journal hit carries its original access epochs; validate even before rendering a receipt.
-    await db.snapshot({learner: studioLearner}, options.authorize);
-    if (name === 'read_workspace' && typeof args.id === 'string' && witnesses.some(w => w.id === args.id)) {
-      opened.set(args.id, {id: args.id, workspace:true, title: String(value.title ?? value.kind ?? '学习记录'), text: String(value.content ?? text).slice(0, 3000)});
+    for (const w of witnesses) if (direct.has(w.id)) sources.set(w.id,w);
+    if (name === 'read_workspace' && typeof value.id === 'string' && witnesses.some(w => w.id === value.id)) {
+      opened.set(value.id, {id: value.id, workspace:true, title: String(value.title ?? value.kind ?? '学习记录'), text: String(value.content ?? text).slice(0, 3000)});
     }
     return text;
   }
@@ -143,5 +157,5 @@ export function openWorkspaceTools(options: {
 }
 export function workspaceInput(w: WorkspaceWitness) {
   return {kind: 'fact' as const, id: factId(w.id), rev: w.rev as Revision, accessEpoch: w.epoch as Tick,
-    mode: w.type === 'activity.workspaceEntry' ? 'pinned' as const : 'following' as const};
+    mode: w.mode ?? (w.type === 'activity.workspaceEntry' ? 'pinned' : 'following')};
 }
