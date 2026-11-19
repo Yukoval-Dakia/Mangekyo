@@ -8,12 +8,15 @@ import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
+import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { textMaterial } from '../../modules/activity/library-values.ts';
 import {
   captureIntakeCommand,
+  completeCloudIntakeCommand,
   correctIntakeCommand,
   correctIntakeInput,
   intakeDocument,
@@ -22,10 +25,12 @@ import {
   intakeMediaTypes,
   intakePurpose,
   intakeTextLimit,
+  type IntakeExtraction,
   type IntakeMediaType,
 } from '../../modules/activity/intake-values.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { cloudIntakeSlot, enqueueCloudIntake, mineruSupports, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
 
 export const intakeSwiftTimeoutMs = 120_000;
 
@@ -36,15 +41,8 @@ export type IntakeMetadata = {
   readonly characterCount: number;
   readonly truncated: boolean;
   readonly fullText: string | null;
-  readonly extraction: {
-    readonly status: 'ok' | 'partial' | 'failed' | 'corrected';
-    readonly method: 'pdfkit' | 'vision' | 'pdfkit+vision' | 'utf8' | 'learner';
-    readonly error: string | null;
-    readonly warnings: readonly string[];
-    readonly pages: number | null;
-    readonly truncated: boolean;
-    readonly characterCount: number;
-  };
+  readonly extraction: IntakeExtraction;
+  readonly requestedExtraction?: 'mineru';
   readonly original: { readonly name: string; readonly mediaType: string; readonly size: number; readonly sha256: string };
   readonly corrected: boolean;
   readonly revision: number;
@@ -55,6 +53,7 @@ type CaptureInput = {
   readonly title?: unknown;
   readonly filename?: unknown;
   readonly declaredType?: unknown;
+  readonly extraction?: unknown;
   readonly bytes: Buffer;
 };
 
@@ -308,10 +307,23 @@ function intakeIdFor(materialId: FactId): FactId {
   return factId(stableId('intake-document', materialId));
 }
 
-export function openIntake(db: Db, activity: LoadedModule) {
+export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks = { async onFactsChanged() {} }) {
   const handle = createCommandHandler(db, {
     modules: [activity],
-    hooks: { async onFactsChanged() {} },
+    hooks: {
+      ...hooks,
+      async onFactsChanged(tx, tick, changes) {
+        await hooks.onFactsChanged(tx, tick, changes);
+        for (const change of changes) {
+          if (change.kind !== 'create' || change.factType !== intakeFactType) continue;
+          const snapshot = await createCommandReadContext(tx, intakePurpose).fact(change.ref.id, {
+            mode: 'pinned', rev: change.ref.rev,
+          });
+          if (intakeDocument(snapshot.value).extraction.status === 'pending')
+            await enqueueCloudIntake(tx, tick, change.ref.id);
+        }
+      },
+    },
   });
   const base = materialBase();
 
@@ -339,7 +351,8 @@ export function openIntake(db: Db, activity: LoadedModule) {
     const material = textMaterial(facts.material.value);
     const document = intakeDocument(facts.document.value);
     if (document.materialId.toString() !== facts.id) throw new RequestError(404, '这份材料的交入记录不匹配。');
-    const fullText = document.extraction.status === 'failed' ? null : document.extraction.text;
+    const fullText = document.extraction.status === 'failed' || document.extraction.status === 'pending'
+      ? null : document.extraction.text;
     const truncated = document.extraction.truncated || (fullText !== null && fullText.length > 4000);
     return {
       id: facts.id,
@@ -350,6 +363,7 @@ export function openIntake(db: Db, activity: LoadedModule) {
       fullText,
       revision: facts.document.ref.rev,
       extraction: document.extraction,
+      ...(document.requestedExtraction ? { requestedExtraction: document.requestedExtraction } : {}),
       original: document.original,
       corrected: document.extraction.status === 'corrected',
     };
@@ -383,22 +397,32 @@ export function openIntake(db: Db, activity: LoadedModule) {
     const detected = detect(input.bytes, cleanName(input.filename), input.declaredType);
     const name = cleanName(input.filename) || '材料原件';
     const title = cleanTitle(input.title, name.replace(/\.[^.]+$/, '') || '材料原件');
+    const requested = input.extraction ?? 'local';
+    if (requested !== 'local' && requested !== 'mineru') throw new RequestError(400, '请选择有效的识别方式。');
+    const cloud = requested === 'mineru';
+    if (cloud && !mineruSupports(detected.mediaType)) throw new RequestError(415, 'MinerU 支持 PDF、PNG 和 JPEG。');
     const sha256 = digest(input.bytes);
     const matches = (prior: IntakeMetadata) => prior.original.sha256 === sha256 && prior.original.name === name &&
-      prior.title === title && prior.original.mediaType === detected.mediaType;
+      prior.title === title && prior.original.mediaType === detected.mediaType &&
+      (prior.requestedExtraction ?? 'local') === requested;
     const prior = await metadataOrNull(materialId.toString());
     if (prior) {
       if (!matches(prior)) throw new RequestError(409, '同一个请求标识已经用于不同文件或标题。');
       return { ...prior, created: false };
     }
+    if (cloud && !mineruToken()) throw new RequestError(503, 'MinerU 云识别尚未配置。');
     const stored = await storeOriginal(base(materialId), materialId, input.bytes, { name, mediaType: detected.mediaType });
-    const extraction = await extract(detected, stored.path, input.bytes);
+    const extraction: IntakeExtraction = cloud ? {
+      status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
+      pages: null, truncated: false, characterCount: 0,
+    } : await extract(detected, stored.path, input.bytes);
     const commandInput = {
       materialId: materialId.toString(),
       intakeId: intakeId.toString(),
       title,
       original: { name, mediaType: detected.mediaType, size: input.bytes.length, sha256 },
       extraction,
+      ...(cloud ? { requestedExtraction: 'mineru' } : {}),
     };
     try {
       await handle({
@@ -420,6 +444,34 @@ export function openIntake(db: Db, activity: LoadedModule) {
       throw error;
     }
     return { ...(await metadataFor(materialId.toString())), created: true };
+  }
+
+  async function cloudOriginal(materialId: string, expectedSha256: string) {
+    const stored = await readStoredOriginal(base(materialId), factId(materialId));
+    const bytes = await readFile(stored.path);
+    if (stored.size !== bytes.length || digest(bytes) !== expectedSha256) throw new Error('Intake original changed');
+    return bytes;
+  }
+
+  async function completeCloud(ref: WorkRef, input: CloudIntakeInput, extraction: IntakeExtraction) {
+    const { document, material } = input;
+    const complete = createCommandHandler(db, {
+      modules: [activity],
+      hooks: {
+        ...hooks,
+        async onFactsChanged(tx, tick, changes) {
+          const work = await readReadyWork(tx, ref);
+          if (work?.slotType !== cloudIntakeSlot || work.slotKey !== document.ref.id)
+            throw new RequestError(409, '交入工作已更改。');
+          await hooks.onFactsChanged(tx, tick, changes);
+        },
+      },
+    });
+    await complete({
+      learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: completeCloudIntakeCommand,
+      id: commandId(stableId('intake-mineru-result', ref.workId, ref.generation)),
+      input: { intakeId: document.ref.id, expectedRev: document.ref.rev, expectedMaterialRev: material.ref.rev, extraction },
+    });
   }
 
   async function correct(input: CorrectInput) {
@@ -453,6 +505,8 @@ export function openIntake(db: Db, activity: LoadedModule) {
     correct,
     metadata: metadataFor,
     original: originalFor,
+    cloudOriginal,
+    completeCloud,
   };
 }
 
@@ -500,6 +554,8 @@ export async function handleIntakeRequest(
   method: string | undefined,
 ): Promise<boolean> {
   const match = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction))?$/.exec(pathname);
+  if (pathname === '/api/intake/options' && method === 'GET')
+    return json(response, 200, { mineru: Boolean(mineruToken()) }), true;
   if (pathname === '/api/intake') {
     if (method !== 'POST') {
       json(response, 405, { error: '这个入口只接受交入请求。' });
@@ -517,7 +573,7 @@ export async function handleIntakeRequest(
         if (!file || typeof file === 'string' || form.getAll('file').length !== 1)
           throw new RequestError(400, '请选择一个文件。');
         result = await intake.capture({requestId: form.get('requestId'), title: form.get('title'),
-          filename: file.name, declaredType: file.type, bytes: Buffer.from(await file.arrayBuffer())});
+          filename: file.name, declaredType: file.type, extraction: form.get('extraction'), bytes: Buffer.from(await file.arrayBuffer())});
       } else {
         const requestId = request.headers['x-request-id'];
         if (typeof requestId !== 'string' || requestId.trim() === '') throw new RequestError(400, '请求标识无效。');
@@ -533,6 +589,7 @@ export async function handleIntakeRequest(
               ? decodeUtf8(request.headers['x-filename'])
               : undefined,
           declaredType: contentType,
+          extraction: request.headers['x-intake-extraction'],
           bytes,
         });
       }

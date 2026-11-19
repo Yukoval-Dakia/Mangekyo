@@ -5,7 +5,7 @@ import { Client, Connection } from '@temporalio/client';
 import { createPgDb } from '../../kernel/src/db/pg.ts';
 import { applyKernelSchema, workerStorage } from '../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
-import { acknowledgeStartedWork, relayPending } from '../../kernel/src/work/index.ts';
+import { acknowledgeStartedWork, readWork, relayPending } from '../../kernel/src/work/index.ts';
 import { startWork } from '../../executors/temporal/src/index.ts';
 import { createWorkWorker } from '../../executors/temporal/src/worker.ts';
 import { openStudio } from './sessions.ts';
@@ -13,6 +13,8 @@ import { recordTerminalFailure, teach } from './teach.ts';
 import { sourceBuildId } from './build.ts';
 import { serve } from './http.ts';
 import { openIntake } from './intake.ts';
+import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
+import { readMineru, submitMineru } from './mineru.ts';
 import { openWorkbook } from './workbook.ts';
 import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';
@@ -39,8 +41,11 @@ if (mode !== 'worker') {
 }
 const storeId = await workerStorage(db);
 const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, pool) : undefined;
+const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
+const intake = openIntake(db, activity);
+const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
+
 async function openWeb() {
-  const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
   const studio = await openStudio(db, activity);
   const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
   const student = { workbook: openWorkbook(db, activity), organizer: openOrganizer(db, activity),
@@ -71,7 +76,9 @@ async function runWorker(storeId: string) {
     deploymentName: queue,
     onTerminalFailure: async (id: string) => {
       const ref = await acknowledgeStartedWork(db, id);
-      if (ref) await recordTerminalFailure(db, ref);
+      if (!ref) return;
+      if ((await readWork(db, ref))?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, true);
+      else await recordTerminalFailure(db, ref);
     },
     buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
   };
@@ -79,7 +86,9 @@ async function runWorker(storeId: string) {
   const client = new Client({ connection, namespace: workerConfig.namespace });
   const { worker, connection: workerConnection } = await createWorkWorker(async (id) => {
     const ref = await acknowledgeStartedWork(db, id);
-    if (ref) await teach(db, ref);
+    if (!ref) return;
+    if ((await readWork(db, ref))?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref);
+    else await teach(db, ref);
   }, workerConfig);
   let stopping = false;
   const running = worker.run();
