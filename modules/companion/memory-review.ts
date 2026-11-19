@@ -158,8 +158,8 @@ export const memoryReviewContract = {
       'same event identity is deduplicated; same origin group keeps one representative source',
       'eventId is the stable identity used for duplicate detection',
       'assertionId links evidence to exactly one reviewed assertion',
-      'originGroupId marks records that retell the same origin',
-      'duplicateOf points to the representative event for retellings',
+      'originGroupId on a retelling must be the original event ID',
+      'retellings point to the original event and do not contribute findings',
       'requestId is carried for caller correlation only',
     ],
     scope: [
@@ -223,18 +223,10 @@ export function reviewMemoryEvidence(input: MemoryReviewRequest): Outcome<Memory
   }
   const deduped = [...byEvent.values()].sort((left, right) => left.eventId.localeCompare(right.eventId));
 
-  const sources: MemoryReviewSource[] = [];
-  const groups = new Map<string, MemoryReviewEvidence[]>();
-  for (const item of deduped) {
-    const group = item.originGroupId ?? item.eventId;
-    groups.set(group, [...(groups.get(group) ?? []), item]);
-  }
-  for (const items of [...groups.values()].sort((left, right) => (left[0]?.eventId ?? '').localeCompare(right[0]?.eventId ?? ''))) {
-    const representative = [...items].sort((left, right) => left.eventId.localeCompare(right.eventId))[0]!;
-    for (const item of items) sources.push(sourceFor(item, items.length > 1 && item.eventId !== representative.eventId ? representative.eventId : null));
-  }
-
-  const usable = deduped.filter(item => compatibleScope(request.assertion.scope, item.scope));
+  const sources = deduped.map(item => sourceFor(item, item.originGroupId === item.eventId ? null : item.originGroupId ?? null));
+  const originals = new Set(sources.filter(item => item.duplicateOf === null).map(item => item.eventId));
+  const missingOriginals = sources.filter(item => item.duplicateOf !== null && !originals.has(item.duplicateOf) && compatibleScope(request.assertion.scope, item.scope));
+  const usable = deduped.filter(item => originals.has(item.eventId) && compatibleScope(request.assertion.scope, item.scope));
   const scoped = usable.filter(item => sameScope(request.assertion.scope, item.scope));
   const broader = usable.filter(item => !sameScope(request.assertion.scope, item.scope));
 
@@ -245,29 +237,28 @@ export function reviewMemoryEvidence(input: MemoryReviewRequest): Outcome<Memory
   const findings = {
     supporting: supporting.length ? [finding('support', supporting.map(item => item.eventId), '同一适用范围内的支持证据。')] : [],
     contradicting: contradicting.length ? [finding('contradict', contradicting.map(item => item.eventId), '同一适用范围内的相反证据；保留双方。')] : [],
-    unresolved: [...unresolvedItems.map(item => finding('unresolved', [item.eventId], '证据方向仍未决。')), ...broader.map(item => finding('unresolved', [item.eventId], '范围相容但不完全相同，需要区分条件。'))],
+    unresolved: [
+      ...unresolvedItems.map(item => finding('unresolved', [item.eventId], '证据方向仍未决。')),
+      ...broader.map(item => finding('unresolved', [item.eventId], '范围相容但不完全相同，需要区分条件。')),
+      ...missingOriginals.map(item => finding('unresolved', [item.eventId], '只有转述，需要打开原始证据。')),
+    ],
   };
 
-  const independentSupport = supporting.filter(item => item.help.exposed === false && item.help.order !== 'before_submission' && item.help.order !== 'unknown');
-  const assistedSupport = supporting.filter(item => item.help.exposed === true || item.help.order === 'before_submission');
-  const unknownSupport = supporting.filter(item => item.help.exposed === 'unknown' || item.help.order === 'unknown');
-  const hasUnknownHelp = unknownSupport.length > 0;
+  const independent = supporting.filter(item => item.help.exposed === false && item.help.order !== 'before_submission' && item.help.order !== 'unknown').length;
+  const assisted = supporting.filter(item => item.help.exposed === true && item.help.order === 'before_submission').length;
+  const hasUnknownHelp = supporting.length > independent + assisted;
 
-  let outcome: MemoryReviewResult['outcome'];
-  let basis: 'independent' | 'assisted' | 'mixed' | 'unresolved' = 'unresolved';
-  if (contradicting.length > 0 && supporting.length === 0) outcome = { kind: 'contradicted' };
-  else if (supporting.length > 0 && contradicting.length === 0) {
-    if (independentSupport.length > 0 && assistedSupport.length === 0 && unknownSupport.length === 0) basis = 'independent';
-    else if (assistedSupport.length > 0 && independentSupport.length === 0) basis = 'assisted';
-    else basis = 'mixed';
-    outcome = { kind: 'supported', basis };
-  } else {
-    outcome = { kind: 'unresolved' };
+  let outcome: MemoryReviewResult['outcome'] = { kind: 'unresolved' };
+  if (contradicting.length && !supporting.length) {
+    outcome = { kind: 'contradicted' };
+  } else if (!contradicting.length && (independent || assisted)) {
+    outcome = { kind: 'supported', basis: independent && assisted ? 'mixed' : independent ? 'independent' : 'assisted' };
   }
 
   const nextEvidence: string[] = [];
   if (contradicting.length && supporting.length) nextEvidence.push('在同一条件下取得可区分支持与反证的新证据。');
   if (broader.length) nextEvidence.push('补充适用范围完全一致的证据，或明确各条件边界。');
+  if (missingOriginals.length) nextEvidence.push('打开转述所引用的原始事件。');
   if (hasUnknownHelp) nextEvidence.push('确认帮助是否实际展示及其相对提交顺序。');
   if (!supporting.length && !contradicting.length) nextEvidence.push('取得与该断言直接相关的已打开证据。');
   if (deduped.some(item => item.counterEvidenceIds?.length)) nextEvidence.push('打开被标为反证的原始事件。');
