@@ -111,6 +111,10 @@ describe('frozen assessment values', () => {
       expect(assessmentResult(candidate, release, subset)).toEqual(candidate);
       expect(readAssessmentScore(candidate, release, subset)).toBeNull();
       expect(() => assessmentResult(withOutcome({ state, ...fields, earned: 0 }), release, subset)).toThrow('字段无效');
+      if (state === 'partial' || state === 'qualitative') {
+        expect(() => assessmentResult(withOutcome({ state, ...fields, evidence: [] }), release, subset)).toThrow('作答证据');
+        expect(() => assessmentResult(withOutcome({ state, ...fields, evidence: [explanation] }), release, subset)).toThrow('已提交的输入');
+      }
     }
     const strictRef = ref(10, 2);
     const strict = assessmentRelease({ releaseRef: strictRef, items: [{ ...calculation, criteria: [{ ...numeric, missingEvidence: 'insufficient-evidence' }] }, draft.items[1]] });

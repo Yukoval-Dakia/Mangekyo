@@ -63,6 +63,16 @@ const proof = (frozenItem: typeof calculation | typeof explanation, samples: rea
   witness: {
     ref: ref(frozenItem === calculation ? 15 : 16), origin: 'independent-solution', releaseRef, frozenItem,
     requiredSampleRefs: samples.map(({ sample }) => sample.sampleRef),
+    requiredCoverage: frozenItem === calculation ? [
+      { kind: 'normal', criterionId: 'rule', sampleRef: ref(20) },
+      { kind: 'alternative', criterionId: 'rule', sampleRef: ref(21) },
+      { kind: 'partial', criterionId: 'rule', sampleRef: ref(23) },
+      { kind: 'negative', criterionId: 'rule', sampleRef: ref(24) },
+    ] : [
+      { kind: 'normal', criterionId: 'rule', sampleRef: ref(25) },
+      { kind: 'partial', criterionId: 'rule', sampleRef: ref(25), applies: false },
+      { kind: 'negative', criterionId: 'rule', sampleRef: ref(25), applies: false },
+    ],
   },
   samples,
 });
@@ -110,4 +120,39 @@ it('keeps the entire release pending when a required sample or its frozen verifi
   const wrongMeaning = example(explanation, 25, ['先乘或先除只改变中间量'], qualitative, { ...qualitative, feedback: '结论缺少依据' });
   expect(verify(release, calculationProof, { ...explanationProof, samples: [wrongMeaning] }))
     .toMatchObject({ state: 'needs-review', issues: [{ stage: 'outcome', itemId: explanation.itemId, criterionId: 'rule' }] });
+});
+
+it('rejects a release whose run receipts only cover one trivial sample', () => {
+  const trivialOnly = verify(release, {
+    witness: { ...calculationProof.witness, requiredSampleRefs: [ref(20)] },
+    samples: calculationSamples.slice(0, 1),
+  });
+  // Every listed sample passed, yet the frozen contract still requires alternative,
+  // partial and negative demonstrations that never ran.
+  expect(trivialOnly.state === 'needs-review' && trivialOnly.issues.every(entry => entry.stage === 'coverage')).toBe(true);
+
+  const missingCoverage = verify(release, {
+    witness: { ...calculationProof.witness, requiredCoverage: calculationProof.witness.requiredCoverage.slice(0, 1) },
+    samples: calculationSamples,
+  });
+  expect(missingCoverage).toMatchObject({ state: 'needs-review', issues: [{ stage: 'coverage', reason: expect.stringContaining('覆盖项') }] });
+
+  const wrongSample = verify(release, {
+    ...calculationProof,
+    witness: {
+      ...calculationProof.witness,
+      requiredCoverage: calculationProof.witness.requiredCoverage.map(entry =>
+        entry.kind === 'partial' ? { ...entry, sampleRef: ref(20) } : entry),
+    },
+  });
+  expect(wrongSample).toMatchObject({ state: 'needs-review', issues: [{ stage: 'plan' }] });
+  const reused = verify(release, {
+    ...calculationProof,
+    witness: {
+      ...calculationProof.witness,
+      requiredCoverage: calculationProof.witness.requiredCoverage.map(entry =>
+        entry.kind === 'alternative' ? { ...entry, sampleRef: ref(20) } : entry),
+    },
+  });
+  expect(reused).toMatchObject({ state: 'needs-review', issues: [{ stage: 'plan' }] });
 });

@@ -2,7 +2,7 @@ import { factId } from '@mangekyo/kernel';
 import {
   assessmentPublicationInput, assessmentRelease, assessmentResult, assessmentSubmission,
   type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentEvaluatorRef,
-  type AssessmentRelease, type AssessmentRevisionRef,
+  type AssessmentRelease, type AssessmentResult, type AssessmentRevisionRef, type AssessmentSubmission,
 } from './assessment-values.ts';
 import { sameWorkbookJson } from './workbook-values.ts';
 
@@ -13,12 +13,28 @@ export type AssessmentPublicationTarget = {
   readonly itemId: string;
 };
 
+// The trusted registry freezes which sample revision must demonstrate each required coverage kind.
+const REQUIRED_COVERAGE_KINDS = ['normal', 'negative', 'alternative', 'partial'] as const;
+export type RequiredCoverageKind = (typeof REQUIRED_COVERAGE_KINDS)[number];
+// A coverage obligation the publication gate must see demonstrated. `kind` names the
+// demonstration; `criterionId` scopes it to one criterion. `applies: false` records an
+// independent disposition that the kind was judged not applicable to that criterion.
+export type RequiredCoverage = {
+  readonly kind: RequiredCoverageKind;
+  readonly criterionId: string;
+  readonly applies?: boolean | undefined;
+};
+
 export type AssessmentPublicationWitness = {
   readonly ref: AssessmentRevisionRef;
   readonly origin: 'independent-solution' | 'trusted-gold';
   readonly releaseRef: AssessmentRevisionRef;
   readonly frozenItem: AssessmentItem;
   readonly requiredSampleRefs: readonly AssessmentRevisionRef[];
+  // The trusted registry's frozen coverage contract, fixed before publication. Each
+  // entry pins which trusted sample revision must demonstrate a coverage kind for a
+  // criterion; `applies: false` records an independent not-applicable disposition.
+  readonly requiredCoverage: readonly (RequiredCoverage & { readonly sampleRef: AssessmentRevisionRef })[];
 };
 
 export type TrustedAssessmentPublicationSample = {
@@ -51,7 +67,7 @@ export type ReadVerifiedAssessmentPublicationEvidence = (
 ) => VerifiedAssessmentPublicationEvidence | null | undefined;
 
 export type AssessmentPublicationIssue = {
-  readonly stage: 'release' | 'witness' | 'contract' | 'coverage' | 'submission' | 'expected' | 'run' | 'evaluator' | 'actual' | 'outcome';
+  readonly stage: 'release' | 'witness' | 'contract' | 'coverage' | 'plan' | 'submission' | 'expected' | 'run' | 'evaluator' | 'actual' | 'outcome';
   readonly reason: string;
   readonly itemId?: string;
   readonly sampleRef?: AssessmentRevisionRef;
@@ -90,6 +106,53 @@ function revisionKey(ref: AssessmentRevisionRef): string {
   return `${factId(ref.id)}:${ref.rev}`;
 }
 
+function revision(value: unknown): AssessmentRevisionRef | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { id, rev } = value as { id?: unknown; rev?: number };
+  if (typeof id !== 'string' || typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 1) return undefined;
+  return { id: factId(id), rev: rev as AssessmentRevisionRef['rev'] };
+}
+
+type Demonstration = { readonly kinds: Set<RequiredCoverageKind>; readonly values: unknown };
+
+/** A successful run must demonstrate the result class required by the trusted sample plan. */
+function coverageKinds(item: AssessmentItem, submission: AssessmentSubmission, expected: AssessmentResult) {
+  const results = new Map<string, Demonstration>();
+  for (const criterion of item.criteria) {
+    const outcome = expected.outcomes.find(entry => entry.criterionId === criterion.criterionId);
+    if (!outcome) continue;
+    const values = criterion.inputs.map(input => submission.answers.find(answer =>
+      answer.itemId === item.itemId && answer.slotId === input.slotId && answer.path === input.path,
+    )?.value ?? null);
+    const kinds = new Set<RequiredCoverageKind>();
+    results.set(criterion.criterionId, { kinds, values });
+    switch (outcome.state) {
+      case 'scored':
+        if (outcome.earned === criterion.maximum) {
+          kinds.add('normal');
+          if (alternativeRequired(criterion)) kinds.add('alternative');
+        } else kinds.add(outcome.earned === 0 ? 'negative' : 'partial');
+        break;
+      case 'qualitative':
+        kinds.add(criterion.maximum === null ? 'normal' : 'partial');
+        break;
+      case 'partial':
+        kinds.add('partial');
+        break;
+      case 'unsubmitted':
+      case 'insufficient-evidence':
+        kinds.add('negative');
+        break;
+    }
+  }
+  return results;
+}
+
+function alternativeRequired(criterion: AssessmentCriterion): boolean {
+  const parameters = criterion.parameters as { alternatives?: unknown; equivalentAnswers?: unknown } | null;
+  return [parameters?.alternatives, parameters?.equivalentAnswers].some(value => Array.isArray(value) && value.length > 1);
+}
+
 function reason(error: unknown): string {
   return error instanceof Error ? error.message : '输入无法核对。';
 }
@@ -120,7 +183,7 @@ function checkSample(
   item: AssessmentItem,
   witnessRef: AssessmentRevisionRef,
   { sample, run }: VerifiedAssessmentPublicationEvidence['samples'][number],
-): SampleEvidence | AssessmentPublicationIssue {
+): (SampleEvidence & { readonly kinds: ReadonlyMap<string, Demonstration> }) | AssessmentPublicationIssue {
   const { sampleRef } = sample;
   let stage: AssessmentPublicationIssue['stage'] = 'submission';
   const issue = (message: string, criterionId?: string): AssessmentPublicationIssue => ({
@@ -165,7 +228,7 @@ function checkSample(
       const difference = observedOutcome ? outcomeDifference(expectedOutcome, observedOutcome) : '缺少标准的实际结论。';
       if (difference) return issue(difference, expectedOutcome.criterionId);
     }
-    return { sampleRef, submissionRef: submission.submissionRef, receiptRef: run.receiptRef };
+    return { sampleRef, submissionRef: submission.submissionRef, receiptRef: run.receiptRef, kinds: coverageKinds(item, submission, expected) };
   } catch (error) {
     return issue(reason(error));
   }
@@ -200,24 +263,83 @@ function checkItem(
     if (!sameWorkbookJson(release, frozen)) return { issues: [issue('题版与独立见证绑定的冻结契约不符。')] };
 
     stage = 'coverage';
-    const remaining = new Map(witness.requiredSampleRefs.map(ref => [revisionKey(ref), ref]));
-    if (remaining.size === 0 || remaining.size !== witness.requiredSampleRefs.length) {
+    const listed = new Map(witness.requiredSampleRefs.map(ref => [revisionKey(ref), ref]));
+    if (listed.size === 0 || listed.size !== witness.requiredSampleRefs.length) {
       return { issues: [issue('冻结覆盖清单须列出互不重复的样例修订。')] };
+    }
+    const criteria = new Set(item.criteria.map(criterion => criterion.criterionId));
+    const coverage = new Map<string, RequiredCoverage & { readonly sampleRef: AssessmentRevisionRef }>();
+    const requirementIssues: AssessmentPublicationIssue[] = [];
+    for (const requirement of witness.requiredCoverage ?? []) {
+      const bad = (message: string) => requirementIssues.push(issue(message, requirement?.sampleRef));
+      if (!requirement || !(REQUIRED_COVERAGE_KINDS as readonly string[]).includes(requirement.kind)) {
+        bad(`覆盖项 ${JSON.stringify(requirement?.kind)} 不是已登记的覆盖类型。`);
+        continue;
+      }
+      if (typeof requirement.criterionId !== 'string' || !criteria.has(requirement.criterionId)) {
+        bad(`覆盖项引用了未冻结的标准 ${JSON.stringify(requirement.criterionId)}。`);
+        continue;
+      }
+      const sampleRef = revision(requirement.sampleRef);
+      if (!sampleRef) {
+        bad('覆盖项须指定明确的样例修订。');
+        continue;
+      }
+      if (!listed.has(revisionKey(sampleRef))) {
+        bad('覆盖项指定的样例不在冻结覆盖清单内。');
+        continue;
+      }
+      const key = `${requirement.kind}:${requirement.criterionId}`;
+      if (coverage.has(key)) {
+        requirementIssues.push(issue(`覆盖项 ${requirement.kind} 在标准 ${requirement.criterionId} 上重复登记。`, sampleRef));
+        continue;
+      }
+      coverage.set(key, { kind: requirement.kind, criterionId: requirement.criterionId, applies: requirement.applies, sampleRef });
+    }
+    if (requirementIssues.length > 0) return { issues: requirementIssues };
+    // normal, negative and partial always need an applicable entry per criterion.
+    // alternative only applies to criteria that froze multiple legitimate solutions.
+    // `applies: false` is an independent disposition that lifts the obligation.
+    for (const criterion of item.criteria) {
+      for (const kind of REQUIRED_COVERAGE_KINDS) {
+        if (kind === 'alternative' && !alternativeRequired(criterion)) continue;
+        const requirement = coverage.get(`${kind}:${criterion.criterionId}`);
+        if (requirement?.applies === false && (kind === 'normal' || kind === 'alternative')) {
+          return { issues: [issue(`标准 ${criterion.criterionId} 的 ${kind} 覆盖项需要实际样例。`)] };
+        }
+        if (!requirement) return { issues: [issue(`冻结覆盖清单缺少标准 ${criterion.criterionId} 的 ${kind} 覆盖项。`)] };
+      }
     }
     const issues: AssessmentPublicationIssue[] = [];
     const samples: SampleEvidence[] = [];
+    const demonstrated = new Map<string, ReadonlyMap<string, Demonstration>>();
     for (const entry of evidence.samples) {
       const { sampleRef } = entry.sample;
-      if (!remaining.delete(revisionKey(sampleRef))) {
+      if (!listed.delete(revisionKey(sampleRef))) {
         issues.push(issue('样例不在冻结覆盖清单内或重复提交。', sampleRef));
         continue;
       }
       const checked = checkSample(release, item, witness.ref, entry);
       if ('stage' in checked) issues.push(checked);
-      else samples.push(checked);
+      else {
+        const { kinds, ...evidence } = checked;
+        samples.push(evidence);
+        demonstrated.set(revisionKey(sampleRef), kinds);
+      }
     }
-    for (const sampleRef of remaining.values()) issues.push(issue('缺少冻结标准要求的可信样例。', sampleRef));
+    for (const sampleRef of listed.values()) issues.push(issue('缺少冻结标准要求的可信样例。', sampleRef));
     if (issues.length > 0) return { issues };
+
+    stage = 'plan';
+    for (const { kind, criterionId, sampleRef, applies } of coverage.values()) {
+      if (applies === false) continue;
+      const actual = demonstrated.get(revisionKey(sampleRef))?.get(criterionId);
+      const normal = kind === 'alternative' ? coverage.get(`normal:${criterionId}`) : undefined;
+      const primary = normal && demonstrated.get(revisionKey(normal.sampleRef))?.get(criterionId);
+      if (!actual?.kinds.has(kind) || (primary && sameWorkbookJson(primary.values, actual.values))) {
+        return { issues: [issue(`样例未在标准 ${criterionId} 上演示已登记的 ${kind} 覆盖。`, sampleRef)] };
+      }
+    }
 
     return {
       ...target,
