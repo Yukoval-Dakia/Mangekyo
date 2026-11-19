@@ -1,7 +1,7 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { presentationCatalog, validateArtifact } from './index.ts';
-import { titration, passage, rhythm } from './examples.ts';
+import { titration, passage, rhythm } from './samples/examples.ts';
 
 test('all three JSON definitions use the published v1 catalog', () => {
   for (const v of [titration, passage, rhythm]) {

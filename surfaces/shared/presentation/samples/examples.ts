@@ -1,5 +1,5 @@
 // Example authors build ordinary data; only the JSON result reaches a renderer.
-import type { Artifact, Drawing, ViewNode } from './catalog.ts';
+import type { Artifact, Drawing, ViewNode } from '../catalog.ts';
 
 const volumes = Array.from({ length: 41 }, (_, ml) => ml);
 const source = 'volume';

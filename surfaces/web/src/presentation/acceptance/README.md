@@ -4,7 +4,7 @@
 
 ## 复核
 
-在仓库根执行 `pnpm build:kernel`、`pnpm --filter @mangekyo/web typecheck` 和 `node --test surfaces/shared/presentation/contract.test.mjs`。启动 `pnpm --filter @mangekyo/web dev`，在其本地地址打开 `/src/presentation/acceptance/index.html?case=0`。参数 0 至 4 分别对应滴定、断句、节奏、未知版本文字版和编辑中收到无效修订内容。动作按钮下的折叠区显示宿主实际收到的请求。
+在仓库根执行 `pnpm build:kernel`、`pnpm --filter @mangekyo/web typecheck` 和 `pnpm exec vitest run surfaces/shared/presentation/contract.test.mjs`。启动 `pnpm --filter @mangekyo/web dev`，在其本地地址打开 `/src/presentation/acceptance/index.html?case=0`。参数 0 至 4 分别对应滴定、断句、节奏、未知版本文字版和编辑中收到无效修订内容。动作按钮下的折叠区显示宿主实际收到的请求。
 
 | 局部浏览器验收 | 观察 |
 | --- | --- |
@@ -18,7 +18,7 @@
 
 ## 宿主接入
 
-通过 `surfaces/shared/presentation/index.ts` 读取可 JSON 序列化的 `presentationCatalog`。将候选作品交给 `validateArtifact(unknown)` 检查结构、全局唯一 ID、类型化绑定和样本长度。三份示例定义在同目录的 `examples.ts`。修订内容应当不可变，定义变更时分配新 revision；同一页面并排渲染的实例各有自己的局部草稿。
+通过 `surfaces/shared/presentation/index.ts` 读取可 JSON 序列化的 `presentationCatalog`。将候选作品交给 `validateArtifact(unknown)` 检查结构、全局唯一 ID、类型化绑定和样本长度。三份示例定义在目录下的 `samples/examples.ts`。修订内容应当不可变，定义变更时分配新 revision；同一页面并排渲染的实例各有自己的局部草稿。
 
 通过 `surfaces/web/src/presentation/index.ts` 挂载 `ArtifactView({view,onAction,resolveAsset})`，在页面加载现有产品基础样式。可选的 resolveAsset 接受宿主资产 ID，返回 Blob、null 或对应 Promise。校验失败时仅显示可读替代内容。
 

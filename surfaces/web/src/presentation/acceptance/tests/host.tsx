@@ -1,9 +1,9 @@
 import { createRoot } from 'react-dom/client';
 import { useState } from 'react';
-import { titration, passage, rhythm } from '../../../../shared/presentation/examples.ts';
-import type { ArtifactAction } from '../../../../shared/presentation/index.ts';
-import { ArtifactView } from '../ArtifactView.tsx';
-import '../../styles.css';
+import { titration, passage, rhythm } from '../../../../../shared/presentation/samples/examples.ts';
+import type { ArtifactAction } from '../../../../../shared/presentation/index.ts';
+import { ArtifactView } from '../../ArtifactView.tsx';
+import '../../../styles.css';
 
 function AcceptanceHost() {
   const index = Number(new URLSearchParams(location.search).get('case') || 0);
