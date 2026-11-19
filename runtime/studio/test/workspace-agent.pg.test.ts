@@ -3,7 +3,8 @@ import {fileURLToPath} from 'node:url';
 import pg from 'pg';
 import {expect,it} from 'vitest';
 import {createPgDb} from '../../../kernel/src/db/pg.ts';
-import {learnerId} from '../../../kernel/src/declarations/ids.ts';
+import {commandId, learnerId} from '../../../kernel/src/declarations/ids.ts';
+import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
 import {kernelSchemaStatements} from '../../../kernel/src/schema.ts';
 import {loadModuleDirectory} from '../../../kernel/src/loader.ts';
 import {studioLearner,stableId} from '../identity.ts';
@@ -81,6 +82,29 @@ it.skipIf(!connectionString)('preserves source links and resolves workspace anch
     await access.setTeaching(first.page.id,{enabled:true,expectedRev:revoked.rev});
     expect(await edit('read_workspace',chosen,2)).toEqual({error:expect.any(String)});
     expect(await edit('read_workspace',chosen,5)).toMatchObject({rev:1,content:'计时'});
+
+    const materialId = stableId('paired material'), intakeId = stableId('intake-document', materialId);
+    const capturedText = '长材料正文。'.repeat(1000);
+    const command = createCommandHandler(db, {modules:[activity], hooks:{async onFactsChanged() {}}});
+    await command({learner:studioLearner, actor:'learner', purpose:'storage', type:'activity.captureIntake',
+      id:commandId(stableId('paired capture')), input:{materialId, intakeId, title:'长材料',
+        original:{name:'study.txt', mediaType:'text/plain', size:1, sha256:'0'.repeat(64)},
+        extraction:{status:'ok', method:'utf8', text:capturedText, error:null, warnings:[], pages:null,
+          truncated:false, characterCount:capturedText.length}}});
+    // Legacy workspaces granted the material and left the paired text storage-only.
+    await command({learner:studioLearner, actor:'learner', purpose:'storage', type:'activity.setWorkspaceTeaching',
+      id:commandId(stableId('legacy material grant')), input:{id:materialId, expectedRev:1, enabled:true}});
+    expect(await access.setTeaching(materialId,{enabled:true,expectedRev:2})).toMatchObject({rev:2, changed:true});
+    const scoped = (blockedId?: string) => db.snapshot({learner:studioLearner}, tx => resolveSource(tx, materialId,
+      {recipient:'workspace', maySend:fact => fact.ref.id !== blockedId}));
+    expect(await scoped()).toMatchObject({content:capturedText, sourceRef:{textFact:{id:intakeId}}});
+    expect(await scoped(intakeId)).toBeUndefined();
+    await db.query('UPDATE facts SET purpose=$3 WHERE learner_id=$1 AND id=$2', [studioLearner,intakeId,['teaching']]);
+    await expect(library.reading(materialId)).rejects.toMatchObject({status:404});
+    await db.query(`UPDATE fact_revs SET data=jsonb_set(data,'{materialId}',to_jsonb($3::text))
+      WHERE learner_id=$1 AND fact_id=$2 AND rev=2`,[studioLearner,intakeId,stableId('different material')]);
+    expect(await scoped()).toBeUndefined();
+    await expect(access.setTeaching(materialId,{enabled:false,expectedRev:2})).rejects.toMatchObject({status:409});
 
     const workbook = openWorkbook(db, activity);
     const paper = await workbook.save({requestId:'source-paper',title:'海风',questions:[

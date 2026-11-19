@@ -662,7 +662,10 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
       }
       const expectedRev = value.expectedRev;
       const enabled = value.enabled;
-      const row = await db.snapshot({ learner: studioLearner }, async (tx) => currentRow(tx, itemId));
+      const {row, link} = await db.snapshot({ learner: studioLearner }, async tx => {
+        const row = await currentRow(tx, itemId);
+        return {row, link: row?.type === materialType ? await materialIntakeLink(tx, itemId) : undefined};
+      });
       if (!row || !allowedTypes.has(row.type) ||
         (row.type === studyRecordType && syntheticStudyRecords.has(row.id))) {
         throw new RequestError(404, '找不到这条学习记录。');
@@ -670,19 +673,11 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
       if (row.current_rev !== expectedRev) {
         throw new RequestError(409, '这条记录已在别处更新。请刷新后再试。');
       }
+      if (link && !link.matches) throw new RequestError(409, '材料与交入记录不匹配。');
       const purposes = purposesOf(row.purpose);
       if (purposes.includes('all')) throw new RequestError(409, '这条记录已设置为全部用途。');
-      const link = row.type === materialType
-        ? await db.snapshot({ learner: studioLearner }, async (tx) => materialIntakeLink(tx, factId(row.id)))
-        : undefined;
-      if (purposes.includes('teaching') === enabled) {
-        // An older material may already be open while its companion intake is
-        // still storage-only; fall through so the command can repair it.
-        if (link && link.purpose.includes('teaching') !== enabled) {
-          // continue to the command below
-        } else {
+      if (purposes.includes('teaching') === enabled && (!link || link.purpose.includes('teaching') === enabled)) {
         return { id: row.id, rev: row.current_rev, teaching: enabled, changed: false };
-        }
       }
       const purpose = purposes[0];
       if (!purpose) throw new RequestError(409, '这条记录当前没有可用的读取用途。');
@@ -696,8 +691,9 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
           input: { id: itemId, expectedRev, enabled, ...(link ? { intakeId: link.id } : {}) } as Json,
         });
         const ref = receipt.wrote.find((written) => written.id === row.id);
-        if (!ref) throw new RequestError(500, '这次设置没有返回记录。');
-        return { id: row.id, rev: ref.rev, teaching: enabled, changed: true };
+        const paired = link && receipt.wrote.some(written => written.id === link.id);
+        if (!ref && !paired) throw new RequestError(500, '这次设置没有返回记录。');
+        return { id: row.id, rev: ref?.rev ?? row.current_rev, teaching: enabled, changed: true };
       } catch (error) {
         throw translate(error);
       }

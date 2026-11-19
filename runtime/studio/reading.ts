@@ -14,12 +14,13 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
     const snapshot = await read.fact(factId(id), {mode: 'following'});
     if (snapshot.type !== materialType) return null;
     const link = await materialIntakeLink(tx, snapshot.ref.id);
-    if (!link || !link.purpose.includes(storagePurpose)) {
+    if (!link) {
       const material = textMaterial(snapshot.value);
       return {id, title: material.title, text: material.text, sourceRef: sourceReference(snapshot, {kind:'whole'})};
     }
-    if (link.materialId !== id || link.retracted) return null;
+    if (!link.matches) return null;
     const source = await read.fact(link.id, {mode: 'following'});
+    if (!isMaterialIntakePair(snapshot.ref.id, source)) return null;
     const document = intakeDocument(source.value);
     return {
       id,
@@ -50,24 +51,30 @@ export function relatedIntakeId(materialId: FactId) {
 export async function materialIntakeLink(tx: ReadTransaction, materialId: FactId) {
   const id = relatedIntakeId(materialId);
   const {rows: [row]} = await tx.query<{
-    rev: number;
+    type: string;
     purpose: string[];
     retracted: boolean;
     materialId: string | null;
   }>(
-    `SELECT f.current_rev AS rev, f.purpose, f.retracted_rev IS NOT NULL AS retracted,
+    `SELECT f.type, f.purpose, f.retracted_rev IS NOT NULL AS retracted,
             r.data->>'materialId' AS "materialId"
      FROM facts f
      LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-     WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3`,
-    [tx.learner, id, intakeFactType],
+     WHERE f.learner_id=$1 AND f.id=$2`,
+    [tx.learner, id],
   );
-  if (!row || (!row.retracted && isSourceFactId(row.materialId) && row.materialId !== materialId)) return;
-  return {id, ...row};
+  if (!row) return;
+  const matches = row.type === intakeFactType && !row.retracted && row.materialId === materialId;
+  return {id, purpose: row.purpose, matches};
 }
 
 export function relatedMaterialId(document: FactSnapshot) {
   return intakeTextOf(document).materialId;
+}
+
+export function isMaterialIntakePair(materialId: FactId, document: FactSnapshot) {
+  return document.ref.id === relatedIntakeId(materialId) && document.type === intakeFactType
+    && relatedMaterialId(document) === materialId;
 }
 
 export function materialIntakeReference(material: FactSnapshot, document: FactSnapshot, anchor: SourceAnchorV1) {

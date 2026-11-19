@@ -14,7 +14,7 @@ import {
 } from '../../modules/activity/workspace-values.ts';
 import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
-import {intakeTextOf, materialIntakeReference, materialTextOf, relatedIntakeId, relatedMaterialId, textSlice} from './reading.ts';
+import {intakeTextOf, isMaterialIntakePair, materialIntakeReference, materialTextOf, relatedIntakeId, relatedMaterialId, textSlice} from './reading.ts';
 
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
@@ -125,12 +125,13 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       if (!rootType(original) || !accepts(original)) return;
       if (textReference) {
         const text = await reader.fact(factId(textReference.fact.id), {mode:'pinned', rev:textReference.fact.rev as Revision});
-        const oldText = text.type === intakeFactType ? intakeTextOf(text).text : '';
+        if (original.type !== materialType || !isMaterialIntakePair(original.ref.id, text) || !accepts(text)) return;
+        const oldText = intakeTextOf(text).text;
         const originalAnchor = anchor.kind === 'text' ? (() => {
           const {offset, nextOffset} = textSlice(oldText, anchor.start, Math.max(0, anchor.end-anchor.start));
           return {...anchor, start:offset, end:nextOffset ?? oldText.length};
         })() : anchor;
-        if (text.type !== intakeFactType || !accepts(text) || !project(text, originalAnchor)) return;
+        if (!project(text, originalAnchor)) return;
       } else if (!project(original, anchor)) return;
     }
     const fact = await visit(id, mode === 'pinned' ? rootRevision : undefined);
@@ -139,30 +140,31 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     let linkedMaterial: FactSnapshot | undefined;
     if (fact.type === materialType || fact.type === intakeFactType) {
       const documentId = fact.type === materialType ? relatedIntakeId(fact.ref.id) : factId(id);
-      const documentRevision = (textReference?.fact.rev ?? (reference?.fact.type === intakeFactType && documentId === reference.fact.id
-        ? reference.fact.rev : undefined)) as Revision | undefined;
-      let pairedDocumentExists = false;
+      if (textReference && (fact.type !== materialType || textReference.fact.type !== intakeFactType
+          || textReference.fact.id !== documentId)) return;
+      const documentRevision = textReference?.fact.rev as Revision | undefined;
+      // Check for a missing current fact before visiting a pinned revision. Only
+      // a genuinely unpaired material may use its own text.
+      let currentDocument: FactSnapshot;
       try {
-        // A paired companion intake exists: it governs the current full text.
-        // Detect existence explicitly so that a plain text material without any
-        // intake falls back to its own preview, while an existing but
-        // unauthorized intake still denies (it must not silently fall back).
-        await reader.fact(documentId, {mode: 'following'});
-        pairedDocumentExists = true;
+        currentDocument = await reader.fact(documentId, {mode: 'following'});
       } catch (error) {
         if (!(error instanceof FactNotFoundError)) throw error;
-      }
-      const document = pairedDocumentExists
-        ? await visit(documentId, mode === 'pinned' ? documentRevision : undefined)
-        : undefined;
-      if (!document || document.type !== intakeFactType) {
-        if (fact.type !== materialType || document) return;
+        if (fact.type !== materialType || textReference) return;
         const projection = project(fact, anchor);
-        if (access.recipient === 'workspace') access.track?.(fact);
-        return projection ? {id: fact.ref.id, sourceRef: sourceReference(fact, anchor), ...projection} : undefined;
+        if (!projection) return;
+        if (access.recipient === 'workspace') access.track?.(fact, reference ? mode : undefined);
+        return {id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), ...projection};
       }
-      const material = fact.type === materialType ? fact : await visit(relatedMaterialId(document));
-      if (!material || material.type !== materialType || relatedIntakeId(material.ref.id) !== documentId) return;
+      if (currentDocument.type !== intakeFactType || !accepts(currentDocument)) return;
+      const material = fact.type === materialType ? fact : await visit(relatedMaterialId(currentDocument));
+      if (!material || material.type !== materialType || !isMaterialIntakePair(material.ref.id, currentDocument)) return;
+      const document = fact.type === intakeFactType ? fact :
+        mode === 'pinned' && documentRevision !== undefined
+          ? await reader.fact(documentId, {mode: 'pinned', rev: documentRevision})
+          : currentDocument;
+      if (!accepts(document) || !isMaterialIntakePair(material.ref.id, document)) return;
+      seen.set(documentId, document);
       linkedMaterial = material;
       body = document;
     }
@@ -171,7 +173,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     const projection = project(body, projectionAnchor);
     if (!projection) return;
     if (access.recipient === 'workspace') {
-      for (const witness of seen.values()) access.track?.(witness, reference && witness === fact ? mode : undefined);
+      for (const witness of seen.values()) {
+        const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
+        access.track?.(witness, isReferenced ? mode : undefined);
+      }
     }
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {
