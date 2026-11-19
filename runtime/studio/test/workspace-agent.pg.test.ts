@@ -10,7 +10,7 @@ import {loadModuleDirectory} from '../../../kernel/src/loader.ts';
 import {studioLearner,stableId} from '../identity.ts';
 import {resolveSource} from '../source-read.ts';
 import {openWorkbook} from '../workbook.ts';
-import {openWorkspaceAccess} from '../workspace-access.ts'; import {openWorkspaceTools} from '../workspace-agent.ts';
+import {openWorkspaceAccess} from '../workspace-access.ts'; import {openWorkspaceTools, type WorkspaceWitness} from '../workspace-agent.ts';
 import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organizer.ts';
 import {learningOverviewPurpose, readLearningOverview} from '../learning-overview.ts';
 import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
@@ -97,14 +97,24 @@ it.skipIf(!connectionString)('preserves source links and resolves workspace anch
     expect(await access.setTeaching(materialId,{enabled:true,expectedRev:2})).toMatchObject({rev:2, changed:true});
     const scoped = (blockedId?: string) => db.snapshot({learner:studioLearner}, tx => resolveSource(tx, materialId,
       {recipient:'workspace', maySend:fact => fact.ref.id !== blockedId}));
-    expect(await scoped()).toMatchObject({content:capturedText, sourceRef:{textFact:{id:intakeId}}});
+    const captured = await scoped();
+    expect(captured).toMatchObject({content:capturedText, sourceRef:{textFact:{id:intakeId,rev:2}}});
     expect(await scoped(intakeId)).toBeUndefined();
+    await command({learner:studioLearner, actor:'learner', purpose:'storage', type:'activity.correctIntakeText',
+      id:commandId(stableId('paired correction')), input:{materialId,intakeId,expectedRev:2,text:'更正后的正文。'}});
+    expect(await scoped()).toMatchObject({content:'更正后的正文。',sourceRef:{textFact:{rev:3}}});
+    const seen: WorkspaceWitness[] = [];
+    const pinnedHost = openWorkspaceTools({db,turn:stableId('pinned material reread'),prior:[],authorize:async () => {},
+      track: item => seen.push(item), maySend:() => true});
+    const pinned = JSON.parse(await pinnedHost.execute('read_workspace',{id:JSON.stringify(captured?.sourceRef)},1));
+    expect(pinned).toMatchObject({content:capturedText.slice(0,4000),sourceRef:captured?.sourceRef});
+    expect(seen).toEqual(expect.arrayContaining([expect.objectContaining({id:intakeId,rev:2,mode:'pinned'})]));
     await db.query('UPDATE facts SET purpose=$3 WHERE learner_id=$1 AND id=$2', [studioLearner,intakeId,['teaching']]);
     await expect(library.reading(materialId)).rejects.toMatchObject({status:404});
     await db.query(`UPDATE fact_revs SET data=jsonb_set(data,'{materialId}',to_jsonb($3::text))
-      WHERE learner_id=$1 AND fact_id=$2 AND rev=2`,[studioLearner,intakeId,stableId('different material')]);
+      WHERE learner_id=$1 AND fact_id=$2 AND rev=3`,[studioLearner,intakeId,stableId('different material')]);
     expect(await scoped()).toBeUndefined();
-    await expect(access.setTeaching(materialId,{enabled:false,expectedRev:2})).rejects.toMatchObject({status:409});
+    await expect(access.setTeaching(materialId,{enabled:false,expectedRev:3})).rejects.toMatchObject({status:409});
 
     const workbook = openWorkbook(db, activity);
     const paper = await workbook.save({requestId:'source-paper',title:'海风',questions:[

@@ -87,8 +87,9 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection |
 
 export async function resolveSource(tx: ReadTransaction, input: unknown, access: SourceAccess, mode: SourceReadMode = 'pinned') {
   const reference = sourceRefV1(input);
-  const textReference = input && typeof input === 'object' && 'textFact' in input ? sourceRefV1({...input, fact:input.textFact}) : undefined;
-  if (input && typeof input === 'object' && 'textFact' in input && !textReference) return;
+  const textReference = reference?.textFact;
+  if (textReference && (reference.fact.type !== materialType || textReference.type !== intakeFactType ||
+      textReference.id !== relatedIntakeId(factId(reference.fact.id)))) return;
   const id = reference?.fact.id ?? input;
   if (!isSourceFactId(id) || (mode !== 'pinned' && mode !== 'following')) return;
   const anchor: SourceAnchorV1 = reference?.anchor ?? {kind: 'whole'};
@@ -124,7 +125,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       const original = await reader.fact(factId(id), {mode:'pinned', rev:rootRevision as Revision});
       if (!rootType(original) || !accepts(original)) return;
       if (textReference) {
-        const text = await reader.fact(factId(textReference.fact.id), {mode:'pinned', rev:textReference.fact.rev as Revision});
+        const text = await reader.fact(factId(textReference.id), {mode:'pinned', rev:textReference.rev as Revision});
         if (original.type !== materialType || !isMaterialIntakePair(original.ref.id, text) || !accepts(text)) return;
         const oldText = intakeTextOf(text).text;
         const originalAnchor = anchor.kind === 'text' ? (() => {
@@ -140,9 +141,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     let linkedMaterial: FactSnapshot | undefined;
     if (fact.type === materialType || fact.type === intakeFactType) {
       const documentId = fact.type === materialType ? relatedIntakeId(fact.ref.id) : factId(id);
-      if (textReference && (fact.type !== materialType || textReference.fact.type !== intakeFactType
-          || textReference.fact.id !== documentId)) return;
-      const documentRevision = textReference?.fact.rev as Revision | undefined;
+      const documentRevision = textReference?.rev as Revision | undefined;
       // Check for a missing current fact before visiting a pinned revision. Only
       // a genuinely unpaired material may use its own text.
       let currentDocument: FactSnapshot;

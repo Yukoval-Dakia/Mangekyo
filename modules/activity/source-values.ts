@@ -5,9 +5,11 @@ export type SourceAnchorV1 =
   | {readonly kind: 'text'; readonly field: string; readonly start: number; readonly end: number}
   | {readonly kind: 'answer-slot'; readonly itemId: string; readonly slotId: string; readonly path?: readonly (string | number)[]};
 
+type SourceFactRef = {readonly id: string; readonly rev: number; readonly type: string};
 export type SourceRefV1 = {
   readonly v: 1;
-  readonly fact: {readonly id: string; readonly rev: number; readonly type: string};
+  readonly fact: SourceFactRef;
+  readonly textFact?: SourceFactRef;
   readonly anchor: SourceAnchorV1;
 };
 
@@ -32,14 +34,22 @@ function identifier(input: unknown): input is string {
   return typeof input === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(input);
 }
 
+function sourceFactRef(input: unknown): SourceFactRef | undefined {
+  const value = record(input);
+  if (!value) return;
+  const {id, rev, type} = value;
+  if (!isSourceFactId(id) || !offset(rev) || rev < 1 || rev > 2_147_483_647 || !identifier(type)) return;
+  return {id, rev, type};
+}
+
 export function sourceRefV1(input: unknown): SourceRefV1 | undefined {
   const value = record(input);
-  const fact = record(value?.fact);
-  const anchor = record(value?.anchor);
-  if (value?.v !== 1 || !fact || !anchor) return;
-  const {id, rev, type} = fact;
-  if (!isSourceFactId(id) || !offset(rev) || rev < 1 || rev > 2_147_483_647 || !identifier(type)) return;
-  const header = {v: 1 as const, fact: {id, rev, type}};
+  if (value?.v !== 1) return;
+  const fact = sourceFactRef(value.fact);
+  const textFact = sourceFactRef(value.textFact);
+  const anchor = record(value.anchor);
+  if (!fact || !anchor || ('textFact' in value && !textFact)) return;
+  const header = {v: 1 as const, fact, ...(textFact ? {textFact} : {})};
   if (anchor.kind === 'whole') return {...header, anchor: {kind: 'whole'}};
   if (anchor.kind === 'text') {
     const {field, start, end} = anchor;
