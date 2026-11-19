@@ -9,7 +9,7 @@ const anthropicProvider = {
   model: 'claude-sonnet-5',
   reasoningEffort: 'default',
 };
-const bodyOf = init => JSON.parse(String(init?.body));
+const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body));
 
 afterEach(() => vi.restoreAllMocks());
 
