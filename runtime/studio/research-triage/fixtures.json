@@ -1,0 +1,2201 @@
+[
+  {
+    "id": "remediate-empty-inventory",
+    "wakeSource": "attempt_submitted twice same misconception",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        },
+        "01K7TRJAGE0000000000000002": {
+          "id": "01K7TRJAGE0000000000000002",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "9",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt2"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        },
+        "01K7TRJAGE0000000000000004": {
+          "event_id": "01K7TRJAGE0000000000000004",
+          "kind": "workbook_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000002",
+          "fact_rev": 4,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "remediate_misconception",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "remediate_misconception",
+          "dedup_key": "triage:remediate_misconception",
+          "goal": "备一份针对该错因的最小补救材料或变式练习。",
+          "trigger": {
+            "kind": "immediate"
+          },
+          "worker_profile": "heavy_tutor_prep",
+          "autonomy_tier": 2,
+          "refs": [
+            "misconception_id",
+            "knowledge_point_ids",
+            "latest_attempt_refs"
+          ],
+          "source_fact_rev": "latest_valid_attempt_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "remediate_misconception"
+    }
+  },
+  {
+    "id": "remediate-existing-inventory",
+    "wakeSource": "attempt_submitted same misconception but inventory ready",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        },
+        "01K7TRJAGE0000000000000002": {
+          "id": "01K7TRJAGE0000000000000002",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "9",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt2"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        },
+        "01K7TRJAGE0000000000000004": {
+          "event_id": "01K7TRJAGE0000000000000004",
+          "kind": "workbook_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000002",
+          "fact_rev": 4,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {
+        "01K7TRJAGE0000000000000006": {
+          "inventory_id": "01K7TRJAGE0000000000000006",
+          "kind": "remediation",
+          "status": "ready",
+          "source_fact_rev": "3",
+          "title": "rem1"
+        }
+      },
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "remediate-pending-todo",
+    "wakeSource": "attempt_submitted same misconception pending todo",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        },
+        "01K7TRJAGE0000000000000002": {
+          "id": "01K7TRJAGE0000000000000002",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "9",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt2"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        },
+        "01K7TRJAGE0000000000000004": {
+          "event_id": "01K7TRJAGE0000000000000004",
+          "kind": "workbook_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000002",
+          "fact_rev": 4,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {
+        "01K7TRJAGE0000000000000007": {
+          "todo_id": "01K7TRJAGE0000000000000007",
+          "dedup_key": "triage:remediate_misconception",
+          "status": "pending",
+          "trigger": "immediate",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "rem-pending"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "forgetting-future-window",
+    "wakeSource": "forecast predicted crossing in 30h",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE000000000000000A": {
+          "id": "01K7TRJAGE000000000000000A",
+          "rev": 2,
+          "fact_type": "activity.studyGoal",
+          "access_epoch": "4",
+          "purpose": "storage",
+          "retracted_rev": 0,
+          "data": {
+            "text": "期末复习"
+          }
+        }
+      },
+      "events": {},
+      "todos": {},
+      "inventory": {},
+      "forecasts": {
+        "01K7TRJAGE0000000000000008": {
+          "forecast_id": "01K7TRJAGE0000000000000008",
+          "knowledge_point_id": "01K7TRJAGE0000000000000009",
+          "predicted_crossing_at": "2026-11-21T06:00:00Z",
+          "confidence": 0.82,
+          "fact_rev": "7",
+          "status": "active"
+        }
+      },
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "preemptive_forgetting_prep",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "preemptive_forgetting_prep",
+          "dedup_key": "triage:preemptive_forgetting_prep",
+          "goal": "到点前备一份低负担复测或保持检查，不自动改正式学习承诺。",
+          "trigger": {
+            "kind": "scheduled",
+            "ref": "snapshot.forecast.predicted_crossing_at_minus_6_to_12h"
+          },
+          "worker_profile": "deterministic_compute",
+          "autonomy_tier": 1,
+          "refs": [
+            "forecast_id",
+            "knowledge_point_id",
+            "inventory_refs"
+          ],
+          "source_fact_rev": "forecast_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "preemptive_forgetting_prep"
+    }
+  },
+  {
+    "id": "forgetting-existing-scheduled",
+    "wakeSource": "forecast but scheduled todo exists",
+    "snapshot": {
+      "facts": {},
+      "events": {},
+      "todos": {
+        "01K7TRJAGE000000000000000B": {
+          "todo_id": "01K7TRJAGE000000000000000B",
+          "dedup_key": "triage:preemptive_forgetting_prep",
+          "status": "scheduled",
+          "trigger": "scheduled",
+          "source_fact_rev": "3",
+          "autonomy_tier": 1,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "sched"
+        }
+      },
+      "inventory": {},
+      "forecasts": {
+        "01K7TRJAGE0000000000000008": {
+          "forecast_id": "01K7TRJAGE0000000000000008",
+          "knowledge_point_id": "01K7TRJAGE0000000000000009",
+          "predicted_crossing_at": "2026-11-21T06:00:00Z",
+          "confidence": 0.82,
+          "fact_rev": "7",
+          "status": "active"
+        }
+      },
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "forgetting-empty-water",
+    "wakeSource": "no forecast queue but ready review inventory",
+    "snapshot": {
+      "facts": {},
+      "events": {},
+      "todos": {},
+      "inventory": {
+        "01K7TRJAGE000000000000000C": {
+          "inventory_id": "01K7TRJAGE000000000000000C",
+          "kind": "review_material",
+          "status": "ready",
+          "source_fact_rev": "3",
+          "title": "review"
+        }
+      },
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "fatigue-cancel-todo",
+    "wakeSource": "user says tired and wants pause",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {},
+      "todos": {
+        "01K7TRJAGE000000000000000D": {
+          "todo_id": "01K7TRJAGE000000000000000D",
+          "dedup_key": "triage:remediate_misconception",
+          "status": "pending",
+          "trigger": "immediate",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "prep"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {
+        "01K7TRJAGE000000000000000E": {
+          "signal_id": "01K7TRJAGE000000000000000E",
+          "kind": "fatigue",
+          "scope": "session",
+          "expires_at": "2026-11-20T23:59:59+09:00",
+          "fact_rev": "5"
+        }
+      },
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "defer_or_cancel_on_fatigue_or_undo",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "update_or_cancel_todo",
+          "todo_id": "01K7TRJAGE000000000000000D",
+          "operation": "cancel",
+          "reason": "用户撤回或目标变化使该待办过时。"
+        }
+      ],
+      "memo_table": [
+        {
+          "key": "fatigue",
+          "value": "本会话结束前不新增重 Todo",
+          "expires_at": "2026-11-20T23:59:59+09:00"
+        }
+      ],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "cancel",
+      "todoId": "01K7TRJAGE000000000000000D"
+    }
+  },
+  {
+    "id": "undo-cancel-dependent",
+    "wakeSource": "user retracts source fact for pending todo",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 3,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {
+        "01K7TRJAGE000000000000000F": {
+          "todo_id": "01K7TRJAGE000000000000000F",
+          "dedup_key": "dependent:attempt1",
+          "status": "pending",
+          "trigger": "immediate",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "dependent"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {
+        "01K7TRJAGE000000000000000G": {
+          "signal_id": "01K7TRJAGE000000000000000G",
+          "kind": "undo",
+          "scope": "fact",
+          "expires_at": "2026-11-20T22:00:00+09:00",
+          "fact_rev": "5"
+        }
+      },
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "defer_or_cancel_on_fatigue_or_undo",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "update_or_cancel_todo",
+          "todo_id": "01K7TRJAGE000000000000000F",
+          "operation": "cancel",
+          "reason": "用户撤回或目标变化使该待办过时。"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "cancel",
+      "todoId": "01K7TRJAGE000000000000000F"
+    }
+  },
+  {
+    "id": "undo-old-revision-current-valid",
+    "wakeSource": "undo targets old revision but current rev valid",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {},
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {
+        "01K7TRJAGE000000000000000H": {
+          "signal_id": "01K7TRJAGE000000000000000H",
+          "kind": "undo",
+          "scope": "fact",
+          "expires_at": "2026-11-20T23:59:59+09:00",
+          "fact_rev": "5"
+        }
+      },
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "goal-shift-replan",
+    "wakeSource": "exam moved from December to January confirmed",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE000000000000000J": {
+          "id": "01K7TRJAGE000000000000000J",
+          "rev": 3,
+          "fact_type": "activity.studyGoal",
+          "access_epoch": "4",
+          "purpose": "storage",
+          "retracted_rev": 0,
+          "data": {
+            "text": "考试改到一月"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE000000000000000N": {
+          "event_id": "01K7TRJAGE000000000000000N",
+          "kind": "goal_changed",
+          "fact_ref": "01K7TRJAGE000000000000000J",
+          "fact_rev": 3,
+          "payload": {
+            "note": "goal-event"
+          }
+        }
+      },
+      "todos": {
+        "01K7TRJAGE000000000000000K": {
+          "todo_id": "01K7TRJAGE000000000000000K",
+          "dedup_key": "plan:december",
+          "status": "pending",
+          "trigger": "scheduled",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "old-plan"
+        }
+      },
+      "inventory": {
+        "01K7TRJAGE000000000000000M": {
+          "inventory_id": "01K7TRJAGE000000000000000M",
+          "kind": "remediation",
+          "status": "ready",
+          "source_fact_rev": "3",
+          "title": "old"
+        }
+      },
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "exam_or_goal_shift_replan",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "exam_or_goal_shift_replan",
+          "dedup_key": "triage:exam_or_goal_shift_replan",
+          "goal": "按新目标/时间/范围重排计划，清理过时 Todo，并列出需要本人确认的冲突。",
+          "trigger": {
+            "kind": "immediate"
+          },
+          "worker_profile": "deep_analyst",
+          "autonomy_tier": 4,
+          "refs": [
+            "goal_fact_ids",
+            "active_todo_ids",
+            "inventory_refs",
+            "proposal_ids"
+          ],
+          "source_fact_rev": "latest_goal_or_schedule_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "exam_or_goal_shift_replan"
+    }
+  },
+  {
+    "id": "goal-shift-unconfirmed-proposal",
+    "wakeSource": "goal change is only proposal",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE000000000000000P": {
+          "id": "01K7TRJAGE000000000000000P",
+          "rev": 2,
+          "fact_type": "activity.studyGoal",
+          "access_epoch": "4",
+          "purpose": "storage",
+          "retracted_rev": 0,
+          "data": {
+            "text": "maybe new goal"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE000000000000000R": {
+          "event_id": "01K7TRJAGE000000000000000R",
+          "kind": "proposal_pending",
+          "fact_ref": "01K7TRJAGE000000000000000P",
+          "fact_rev": 2,
+          "payload": {
+            "note": "proposal"
+          }
+        }
+      },
+      "todos": {
+        "01K7TRJAGE000000000000000Q": {
+          "todo_id": "01K7TRJAGE000000000000000Q",
+          "dedup_key": "todo:old-plan2",
+          "status": "pending",
+          "trigger": "immediate",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "old-plan2"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "work-completed-followup",
+    "wakeSource": "heavy tutor prep completed with usable digest",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE000000000000000V": {
+          "event_id": "01K7TRJAGE000000000000000V",
+          "kind": "work_completed",
+          "fact_ref": "01K7TRJAGE000000000000000W",
+          "fact_rev": 2,
+          "payload": {
+            "digest": "new remediation material ready"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {
+        "01K7TRJAGE000000000000000S": {
+          "work_id": "01K7TRJAGE000000000000000S",
+          "state": "done",
+          "slot_type": "activity.teachingFeedback",
+          "slot_key": "01K7TRJAGE000000000000000T",
+          "generation": "1",
+          "digest": "prep-work"
+        }
+      },
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "chain_post_work_followup",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "chain_post_work_followup",
+          "dedup_key": "triage:chain_post_work_followup",
+          "goal": "评估是否挂下一跳 event/scheduled 验收 Todo；没有明确下一步则 noop。",
+          "trigger": {
+            "kind": "event",
+            "ref": "work_completed"
+          },
+          "worker_profile": "deterministic_compute",
+          "autonomy_tier": 2,
+          "refs": [
+            "completed_work_ref",
+            "digest_fact_refs",
+            "next_candidate_refs"
+          ],
+          "source_fact_rev": "completion_receipt_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "chain_post_work_followup"
+    }
+  },
+  {
+    "id": "work-completed-hop-cap",
+    "wakeSource": "work completed but hop_count at cap and budget empty",
+    "snapshot": {
+      "facts": {},
+      "events": {
+        "01K7TRJAGE000000000000000V": {
+          "event_id": "01K7TRJAGE000000000000000V",
+          "kind": "work_completed",
+          "fact_ref": "01K7TRJAGE000000000000000W",
+          "fact_rev": 2,
+          "payload": {
+            "digest": "new remediation material ready"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {
+        "01K7TRJAGE000000000000000S": {
+          "work_id": "01K7TRJAGE000000000000000S",
+          "state": "done",
+          "slot_type": "activity.teachingFeedback",
+          "slot_key": "01K7TRJAGE000000000000000T",
+          "generation": "1",
+          "digest": "prep-work"
+        }
+      },
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE000000000000000X",
+        "hop_count": "5",
+        "budget_remaining": "0"
+      },
+      "budget": {
+        "remaining": "0",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": null
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "work-completed-duplicate-receipt",
+    "wakeSource": "work completed but only duplicate old receipt",
+    "snapshot": {
+      "facts": {},
+      "events": {
+        "01K7TRJAGE000000000000000Y": {
+          "event_id": "01K7TRJAGE000000000000000Y",
+          "kind": "work_completed",
+          "fact_ref": "01K7TRJAGE000000000000000W",
+          "fact_rev": 2,
+          "payload": {
+            "digest": "same receipt"
+          }
+        }
+      },
+      "todos": {
+        "01K7TRJAGE000000000000000Z": {
+          "todo_id": "01K7TRJAGE000000000000000Z",
+          "dedup_key": "todo:already",
+          "status": "done",
+          "trigger": "immediate",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "already"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {
+        "01K7TRJAGE000000000000000S": {
+          "work_id": "01K7TRJAGE000000000000000S",
+          "state": "done",
+          "slot_type": "activity.teachingFeedback",
+          "slot_key": "01K7TRJAGE000000000000000T",
+          "generation": "1",
+          "digest": "prep-work"
+        }
+      },
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "ambiguous-multi-paper",
+    "wakeSource": "user asks compare three papers across subjects",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        },
+        "01K7TRJAGE0000000000000002": {
+          "id": "01K7TRJAGE0000000000000002",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "9",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt2"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000010": {
+          "event_id": "01K7TRJAGE0000000000000010",
+          "kind": "conversation_signal",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "needs": [
+              "paper1",
+              "paper2",
+              "paper3"
+            ]
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "escalate_ambiguous_deep_case",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "escalate_ambiguous_deep_case",
+          "dedup_key": "triage:escalate_ambiguous_deep_case",
+          "goal": "只收集证据并给出分诊建议；不在前哨内完成深度教学推理。",
+          "trigger": {
+            "kind": "immediate"
+          },
+          "worker_profile": "deep_analyst",
+          "autonomy_tier": 4,
+          "refs": [
+            "ambiguous_event_refs",
+            "material_refs",
+            "attempt_refs",
+            "question_refs"
+          ],
+          "source_fact_rev": "latest_relevant_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "escalate_ambiguous_deep_case"
+    }
+  },
+  {
+    "id": "ambiguous-snapshot-sufficient",
+    "wakeSource": "looks complex but same misconception repeated no inventory",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        },
+        "01K7TRJAGE0000000000000002": {
+          "id": "01K7TRJAGE0000000000000002",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "9",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt2"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        },
+        "01K7TRJAGE0000000000000004": {
+          "event_id": "01K7TRJAGE0000000000000004",
+          "kind": "workbook_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000002",
+          "fact_rev": 4,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "remediate_misconception",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "remediate_misconception",
+          "dedup_key": "triage:remediate_misconception",
+          "goal": "备一份针对该错因的最小补救材料或变式练习。",
+          "trigger": {
+            "kind": "immediate"
+          },
+          "worker_profile": "heavy_tutor_prep",
+          "autonomy_tier": 2,
+          "refs": [
+            "misconception_id",
+            "knowledge_point_ids",
+            "latest_attempt_refs"
+          ],
+          "source_fact_rev": "latest_valid_attempt_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "remediate_misconception"
+    }
+  },
+  {
+    "id": "empty-water-noop",
+    "wakeSource": "scheduled wake with no facts events todos inventory forecasts",
+    "snapshot": {
+      "facts": {},
+      "events": {},
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000011",
+        "hop_count": "0",
+        "budget_remaining": "20"
+      },
+      "budget": {
+        "remaining": "20",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T22:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "time-point-due-todo",
+    "wakeSource": "scheduled todo fire_at reached",
+    "snapshot": {
+      "facts": {},
+      "events": {},
+      "todos": {
+        "01K7TRJAGE0000000000000012": {
+          "todo_id": "01K7TRJAGE0000000000000012",
+          "dedup_key": "deterministic:recheck",
+          "status": "scheduled",
+          "trigger": "scheduled",
+          "source_fact_rev": "3",
+          "autonomy_tier": 1,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "due"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000013",
+        "hop_count": "0",
+        "budget_remaining": "5"
+      },
+      "budget": {
+        "remaining": "5",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": null
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "inventory-withdrawn-remediate",
+    "wakeSource": "same misconception but only withdrawn inventory",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        },
+        "01K7TRJAGE0000000000000002": {
+          "id": "01K7TRJAGE0000000000000002",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "9",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt2"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        },
+        "01K7TRJAGE0000000000000004": {
+          "event_id": "01K7TRJAGE0000000000000004",
+          "kind": "workbook_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000002",
+          "fact_rev": 4,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {
+        "01K7TRJAGE0000000000000014": {
+          "inventory_id": "01K7TRJAGE0000000000000014",
+          "kind": "remediation",
+          "status": "withdrawn",
+          "source_fact_rev": "3",
+          "title": "old-rem"
+        }
+      },
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "remediate_misconception",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "remediate_misconception",
+          "dedup_key": "triage:remediate_misconception",
+          "goal": "备一份针对该错因的最小补救材料或变式练习。",
+          "trigger": {
+            "kind": "immediate"
+          },
+          "worker_profile": "heavy_tutor_prep",
+          "autonomy_tier": 2,
+          "refs": [
+            "misconception_id",
+            "knowledge_point_ids",
+            "latest_attempt_refs"
+          ],
+          "source_fact_rev": "latest_valid_attempt_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "remediate_misconception"
+    }
+  },
+  {
+    "id": "inventory-used-not-ready",
+    "wakeSource": "same misconception inventory already used",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        },
+        "01K7TRJAGE0000000000000002": {
+          "id": "01K7TRJAGE0000000000000002",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "9",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt2"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        },
+        "01K7TRJAGE0000000000000004": {
+          "event_id": "01K7TRJAGE0000000000000004",
+          "kind": "workbook_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000002",
+          "fact_rev": 4,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {
+        "01K7TRJAGE0000000000000015": {
+          "inventory_id": "01K7TRJAGE0000000000000015",
+          "kind": "remediation",
+          "status": "used",
+          "source_fact_rev": "3",
+          "title": "used-rem"
+        }
+      },
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "remediate_misconception",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "remediate_misconception",
+          "dedup_key": "triage:remediate_misconception",
+          "goal": "备一份针对该错因的最小补救材料或变式练习。",
+          "trigger": {
+            "kind": "immediate"
+          },
+          "worker_profile": "heavy_tutor_prep",
+          "autonomy_tier": 2,
+          "refs": [
+            "misconception_id",
+            "knowledge_point_ids",
+            "latest_attempt_refs"
+          ],
+          "source_fact_rev": "latest_valid_attempt_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "remediate_misconception"
+    }
+  },
+  {
+    "id": "fatigue-defer-scheduled",
+    "wakeSource": "user tired but todo is scheduled future review",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {},
+      "todos": {
+        "01K7TRJAGE0000000000000017": {
+          "todo_id": "01K7TRJAGE0000000000000017",
+          "dedup_key": "preempt:ellipse",
+          "status": "scheduled",
+          "trigger": "scheduled",
+          "source_fact_rev": "3",
+          "autonomy_tier": 1,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "future"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {
+        "01K7TRJAGE0000000000000016": {
+          "signal_id": "01K7TRJAGE0000000000000016",
+          "kind": "fatigue",
+          "scope": "session",
+          "expires_at": "2026-11-20T23:59:59+09:00",
+          "fact_rev": "5"
+        }
+      },
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "defer_or_cancel_on_fatigue_or_undo",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "update_or_cancel_todo",
+          "todo_id": "01K7TRJAGE0000000000000017",
+          "operation": "defer",
+          "reason": "用户表达疲劳，推迟到作用域结束。"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "defer",
+      "todoId": "01K7TRJAGE0000000000000017"
+    }
+  },
+  {
+    "id": "withdrawal-wrong-todo",
+    "wakeSource": "undo signal but model cancels unrelated todo",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 3,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {},
+      "todos": {
+        "01K7TRJAGE0000000000000019": {
+          "todo_id": "01K7TRJAGE0000000000000019",
+          "dedup_key": "todo:right",
+          "status": "pending",
+          "trigger": "immediate",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "right"
+        },
+        "01K7TRJAGE000000000000001A": {
+          "todo_id": "01K7TRJAGE000000000000001A",
+          "dedup_key": "todo:wrong",
+          "status": "pending",
+          "trigger": "immediate",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "wrong"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {
+        "01K7TRJAGE0000000000000018": {
+          "signal_id": "01K7TRJAGE0000000000000018",
+          "kind": "undo",
+          "scope": "fact",
+          "expires_at": "2026-11-20T23:59:59+09:00",
+          "fact_rev": "5"
+        }
+      },
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "defer_or_cancel_on_fatigue_or_undo",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "update_or_cancel_todo",
+          "todo_id": "01K7TRJAGE000000000000001A",
+          "operation": "cancel",
+          "reason": "用户撤回或目标变化使该待办过时。"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "cancel",
+      "todoId": "01K7TRJAGE0000000000000019"
+    }
+  },
+  {
+    "id": "missed-remediate",
+    "wakeSource": "same misconception repeated but model noops",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        },
+        "01K7TRJAGE0000000000000002": {
+          "id": "01K7TRJAGE0000000000000002",
+          "rev": 4,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "9",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt2"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        },
+        "01K7TRJAGE0000000000000004": {
+          "event_id": "01K7TRJAGE0000000000000004",
+          "kind": "workbook_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000002",
+          "fact_rev": 4,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "remediate_misconception"
+    }
+  },
+  {
+    "id": "invalid-expression-action",
+    "wakeSource": "noop with extra sql field",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "ok",
+      "actions": [
+        {
+          "kind": "noop",
+          "sql": "select 1"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": null
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "invalid-outside-ref",
+    "wakeSource": "escalate references id outside snapshot",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE0000000000000003": {
+          "event_id": "01K7TRJAGE0000000000000003",
+          "kind": "attempt_submitted",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "misconception": "分段均速分母"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "escalate_ambiguous_deep_case",
+      "reason_brief": "need user",
+      "actions": [
+        {
+          "kind": "escalate_to_user",
+          "tier": 4,
+          "reason": "confirm",
+          "refs": [
+            "01K7TRJAGE000000000000001B"
+          ]
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": null
+    },
+    "expected": {
+      "kind": "escalate",
+      "tier": 4
+    }
+  },
+  {
+    "id": "goal-no-shift-fatigue-only",
+    "wakeSource": "fatigue without goal change",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE000000000000001E": {
+          "id": "01K7TRJAGE000000000000001E",
+          "rev": 1,
+          "fact_type": "activity.studyGoal",
+          "access_epoch": "4",
+          "purpose": "storage",
+          "retracted_rev": 0,
+          "data": {
+            "text": "old"
+          }
+        }
+      },
+      "events": {},
+      "todos": {
+        "01K7TRJAGE000000000000001D": {
+          "todo_id": "01K7TRJAGE000000000000001D",
+          "dedup_key": "todo:old",
+          "status": "pending",
+          "trigger": "immediate",
+          "source_fact_rev": "3",
+          "autonomy_tier": 2,
+          "worker_profile": "heavy_tutor_prep",
+          "goal": "old"
+        }
+      },
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {
+        "01K7TRJAGE000000000000001C": {
+          "signal_id": "01K7TRJAGE000000000000001C",
+          "kind": "fatigue",
+          "scope": "session",
+          "expires_at": "2026-11-20T23:59:59+09:00",
+          "fact_rev": "5"
+        }
+      },
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "forgetting-due-now",
+    "wakeSource": "forecast crossing within advance window no inventory",
+    "snapshot": {
+      "facts": {},
+      "events": {},
+      "todos": {},
+      "inventory": {},
+      "forecasts": {
+        "01K7TRJAGE000000000000001F": {
+          "forecast_id": "01K7TRJAGE000000000000001F",
+          "knowledge_point_id": "01K7TRJAGE000000000000001G",
+          "predicted_crossing_at": "2026-11-20T12:00:00Z",
+          "confidence": 0.9,
+          "fact_rev": "7",
+          "status": "active"
+        }
+      },
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "preemptive_forgetting_prep",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "emit_todo",
+          "skill": "preemptive_forgetting_prep",
+          "dedup_key": "triage:preemptive_forgetting_prep",
+          "goal": "到点前备一份低负担复测或保持检查，不自动改正式学习承诺。",
+          "trigger": {
+            "kind": "scheduled",
+            "ref": "snapshot.forecast.predicted_crossing_at_minus_6_to_12h"
+          },
+          "worker_profile": "deterministic_compute",
+          "autonomy_tier": 1,
+          "refs": [
+            "forecast_id",
+            "knowledge_point_id",
+            "inventory_refs"
+          ],
+          "source_fact_rev": "forecast_fact_rev",
+          "budget_cap": "snapshot.budget.remaining",
+          "chain_id": "snapshot.chain.current_or_new",
+          "hop_count": "snapshot.chain.hop_count_plus_one"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "emit",
+      "skill": "preemptive_forgetting_prep"
+    }
+  },
+  {
+    "id": "forgetting-inventory-ready",
+    "wakeSource": "forecast but review inventory ready",
+    "snapshot": {
+      "facts": {},
+      "events": {},
+      "todos": {},
+      "inventory": {
+        "01K7TRJAGE000000000000001H": {
+          "inventory_id": "01K7TRJAGE000000000000001H",
+          "kind": "review_material",
+          "status": "ready",
+          "source_fact_rev": "3",
+          "title": "review-ready"
+        }
+      },
+      "forecasts": {
+        "01K7TRJAGE000000000000001F": {
+          "forecast_id": "01K7TRJAGE000000000000001F",
+          "knowledge_point_id": "01K7TRJAGE000000000000001G",
+          "predicted_crossing_at": "2026-11-20T12:00:00Z",
+          "confidence": 0.9,
+          "fact_rev": "7",
+          "status": "active"
+        }
+      },
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  },
+  {
+    "id": "ambiguous-tier3-privacy",
+    "wakeSource": "requires privacy external send approval",
+    "snapshot": {
+      "facts": {
+        "01K7TRJAGE0000000000000001": {
+          "id": "01K7TRJAGE0000000000000001",
+          "rev": 3,
+          "fact_type": "activity.workbookAttempt",
+          "access_epoch": "8",
+          "purpose": "teaching",
+          "retracted_rev": 0,
+          "data": {
+            "summary": "attempt1"
+          }
+        }
+      },
+      "events": {
+        "01K7TRJAGE000000000000001J": {
+          "event_id": "01K7TRJAGE000000000000001J",
+          "kind": "conversation_signal",
+          "fact_ref": "01K7TRJAGE0000000000000001",
+          "fact_rev": 3,
+          "payload": {
+            "needs_external": "user must approve"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {},
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE0000000000000005",
+        "hop_count": "1",
+        "budget_remaining": "12"
+      },
+      "budget": {
+        "remaining": "12",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": "escalate_ambiguous_deep_case",
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "escalate_to_user",
+          "tier": 3,
+          "reason": "需要本人确认或超出前哨权限。",
+          "refs": [
+            "01K7TRJAGE000000000000001J"
+          ]
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": "2026-11-20T21:00:00+09:00"
+    },
+    "expected": {
+      "kind": "escalate",
+      "tier": 3
+    }
+  },
+  {
+    "id": "work-failed-no-chain",
+    "wakeSource": "work failed terminal no new usable output",
+    "snapshot": {
+      "facts": {},
+      "events": {
+        "01K7TRJAGE000000000000001N": {
+          "event_id": "01K7TRJAGE000000000000001N",
+          "kind": "work_completed",
+          "fact_ref": "01K7TRJAGE000000000000001P",
+          "fact_rev": 2,
+          "payload": {
+            "digest": "failed terminal"
+          }
+        }
+      },
+      "todos": {},
+      "inventory": {},
+      "forecasts": {},
+      "work": {
+        "01K7TRJAGE000000000000001K": {
+          "work_id": "01K7TRJAGE000000000000001K",
+          "state": "failed",
+          "slot_type": "activity.teachingFeedback",
+          "slot_key": "01K7TRJAGE000000000000001M",
+          "generation": "1",
+          "digest": "failed-work"
+        }
+      },
+      "memos": {},
+      "signals": {},
+      "chain": {
+        "id": "01K7TRJAGE000000000000001Q",
+        "hop_count": "1",
+        "budget_remaining": "3"
+      },
+      "budget": {
+        "remaining": "3",
+        "unit": "usd"
+      }
+    },
+    "response": {
+      "matched_skill": null,
+      "reason_brief": "按快照和唤醒源选择最小动作。",
+      "actions": [
+        {
+          "kind": "noop"
+        }
+      ],
+      "memo_table": [],
+      "next_recheck_hint": null
+    },
+    "expected": {
+      "kind": "noop"
+    }
+  }
+]
