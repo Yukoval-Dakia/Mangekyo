@@ -20,6 +20,7 @@ import type { openWorkbook } from './workbook.ts';
 import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
 import type { openWorkspaceAccess } from './workspace-access.ts';
+import type { openResearch } from './research.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
 import { saveSettings, publicSettings, loadSettings } from './settings.ts';
@@ -81,6 +82,7 @@ export function serve(
     memory: ReturnType<typeof openMemory>;
     intake: ReturnType<typeof openIntake>;
     workspace: ReturnType<typeof openWorkspaceAccess>;
+    research: ReturnType<typeof openResearch>;
   },
   port: number,
 ) {
@@ -120,6 +122,20 @@ export function serve(
       const accessProvider = /^\/api\/workspace\/access\/providers\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})$/.exec(path);
       if (accessProvider?.[1] && method === 'PUT') {
         return json(res, 200, await student.workspace.setProvider(accessProvider[1], await body(req)));
+      }
+      if (path === '/api/research/settings' && method === 'GET') return json(res, 200, await student.research.read());
+      if (path === '/api/research/settings' && method === 'PUT') return json(res, 200, await student.research.configure(await body(req)));
+      const research = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/(research-permission|research)(?:\/([0-9A-HJKMNP-TV-Z]{26})\/source)?$/.exec(path);
+      if (research?.[1] && research[2]) {
+        const [, paperId, attemptId, resource, id] = research;
+        if (resource === 'research-permission' && !id && method === 'GET')
+          return json(res, 200, await student.research.permission(paperId!, attemptId!));
+        if (resource === 'research-permission' && !id && method === 'PUT')
+          return json(res, 200, await student.research.allow(paperId!, attemptId!, await body(req)));
+        if (resource === 'research' && method === 'GET') {
+          if (id) return json(res, 200, await student.research.source(paperId!, attemptId!, id));
+          return json(res, 200, { worksheet: await student.research.worksheet(paperId!, attemptId!) });
+        }
       }
       const reading = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/reading$/.exec(path);
       if (reading?.[1] && method === 'GET') return json(res, 200, await library.reading(reading[1]));

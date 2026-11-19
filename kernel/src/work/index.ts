@@ -135,6 +135,6 @@ export function failWork(db: Db, ref: WorkRef, recordFailure?: WorkAcceptance): 
   return closeWork(db, ref, 'blocked', recordFailure);
 }
 
-export function cancelWork(db: Db, ref: WorkRef): Promise<boolean> {
-  return closeWork(db, ref, 'cancelled');
+export function cancelWork(db: Db, ref: WorkRef, accept?: WorkAcceptance): Promise<boolean> {
+  return closeWork(db, ref, 'cancelled', accept);
 }

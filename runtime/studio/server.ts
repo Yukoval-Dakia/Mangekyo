@@ -22,6 +22,7 @@ import { openMemory } from './memory.ts';
 import { openPractice } from './practice.ts';
 import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
+import { openResearch } from './research.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -44,6 +45,8 @@ if (mode !== 'worker') {
 const storeId = await workerStorage(db);
 const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, pool) : undefined;
 const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
+const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
+const research = openResearch(db, activity, companion);
 const intake = openIntake(db, activity);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
@@ -56,9 +59,12 @@ const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 
 async function openWeb() {
   const studio = await openStudio(db, activity);
-  const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
-  const student = { workbook: openWorkbook(db, activity, workbookAssessment), organizer: openOrganizer(db, activity),
-    memory: openMemory(db, companion), intake, workspace: openWorkspaceAccess(db, activity) };
+  const workbook = openWorkbook(db, activity, {
+    assessment: workbookAssessment,
+    onResearchFactsChanged: research.workbookChanged,
+  });
+  const student = { workbook, organizer: openOrganizer(db, activity), memory: openMemory(db, companion),
+    intake, workspace: openWorkspaceAccess(db, activity), research };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -77,32 +83,30 @@ if (mode === 'web') {
 }
 
 async function runWorker(storeId: string) {
+  await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
+  async function execute(id: string, terminal = false) {
+    const ref = await acknowledgeStartedWork(db, id);
+    if (!ref || await research.execute(ref, terminal)) return;
+    const work = await readWork(db, ref);
+    if (!work) return;
+    if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
+    else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
+    else if (terminal) await recordTerminalFailure(db, ref);
+    else await teach(db, ref);
+  }
   const workerConfig = {
     address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
     namespace: process.env.TEMPORAL_NAMESPACE || 'default',
     taskQueue: queue,
     deploymentName: queue,
-    onTerminalFailure: async (id: string) => {
-      const ref = await acknowledgeStartedWork(db, id);
-      if (!ref) return;
-      const work = await readWork(db, ref);
-      if (work?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, true);
-      else if (work?.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, true);
-      else if (work) await recordTerminalFailure(db, ref);
-    },
+    advanceCoordinator: research.advance,
+    onTerminalFailure: (id: string) => execute(id, true),
     buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
   };
   const connection = await Connection.connect({ address: workerConfig.address });
   const client = new Client({ connection, namespace: workerConfig.namespace });
-  const { worker, connection: workerConnection } = await createWorkWorker(async (id) => {
-    const ref = await acknowledgeStartedWork(db, id);
-    if (!ref) return;
-    const work = await readWork(db, ref);
-    if (work?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref);
-    else if (work?.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref);
-    else if (work) await teach(db, ref);
-  }, workerConfig);
+  const { worker, connection: workerConnection } = await createWorkWorker(execute, workerConfig);
   let stopping = false;
   const running = worker.run();
   void running.catch((error) => {
@@ -131,8 +135,8 @@ async function runWorker(storeId: string) {
     let failed = false;
     while (!stopping) {
       try {
-        await relayPending(db, async (_ref, id) => {
-          await startWork(client, id, { taskQueue: workerConfig.taskQueue });
+        await relayPending(db, async (ref, id) => {
+          if (!(await research.relayWake(client, queue, ref, id))) await startWork(client, id, { taskQueue: queue });
         });
         failed = false;
       } catch {

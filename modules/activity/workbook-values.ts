@@ -3,6 +3,8 @@ import { assessmentRelease, type AssessmentRelease } from './assessment-values.t
 
 export const workbookPaperType = 'activity.workbookPaper';
 export const workbookAttemptType = 'activity.workbookAttempt';
+export const workbookResearchPurpose = 'background-research';
+export const setWorkbookResearchUse = 'activity.setWorkbookResearchUse';
 export const workbookRubricAssessmentType = 'activity.workbookRubricAssessment';
 export const workbookFormalAssessmentType = 'activity.workbookFormalAssessment';
 export const saveWorkbookPaperCommand = 'activity.saveWorkbookPaper';
