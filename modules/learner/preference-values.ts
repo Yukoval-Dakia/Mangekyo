@@ -4,6 +4,7 @@ export const learnerPreferenceType = 'learner.preference';
 export const declarePreferenceCommand = 'learner.declarePreference';
 export const revisePreferenceCommand = 'learner.revisePreference';
 export const retractPreferenceCommand = 'learner.retractPreference';
+export const setPreferenceTeachingCommand = 'learner.setPreferenceTeaching';
 export const storagePurpose = 'storage';
 
 const textLimit = 4000;
@@ -29,7 +30,7 @@ function record(input: unknown): Record<string, unknown> {
 }
 
 function storable(value: string): boolean {
-  return value.isWellFormed() && !value.includes(' ');
+  return value.isWellFormed() && !value.includes('\0');
 }
 
 function optionalText(input: Record<string, unknown>, key: string): string | undefined {
@@ -102,4 +103,10 @@ export function preferenceRetractInput(input: unknown) {
   const value = record(input);
   if (typeof value.id !== 'string') throw new Error('偏好标识无效。');
   return { id: factId(value.id), expectedRev: revision(value, 'expectedRev') };
+}
+
+export function preferenceTeachingInput(input: unknown) {
+  const value = record(input);
+  if (typeof value.enabled !== 'boolean') throw new Error('偏好授权无效。');
+  return { ...preferenceRetractInput(value), enabled: value.enabled };
 }

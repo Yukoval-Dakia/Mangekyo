@@ -10,6 +10,8 @@ import { checkProviderOutcome, providerEndpoint, requestCompletion, TeachingErro
 
 export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   historyNotice?: string;
+  learningMemory?: string;
+  openMemoryRegion?: (input: Record<string, unknown>, step: number) => Promise<string>;
   maxCompletionTokens?: 4096 | 8192;
   tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: WorkspaceTools };
 };
@@ -34,6 +36,10 @@ function definition(name: string) {
 
 const defaultToolBudget = 6;
 const maxReply = 12_000;
+const memoryRegionTool = { type: 'function', function: { name: 'open_memory_region',
+  description: '按本轮 ContextBundle.omitted 中的 expand 对象展开一个已授权的区域。',
+  parameters: { type: 'object', properties: { region: { type: 'string' }, start: { type: 'integer' }, basisDigest: { type: 'string' } },
+    required: ['region', 'start', 'basisDigest'], additionalProperties: false } } };
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type ModelReply = { message?: string; reportedModel?: string; calls?: FunctionCall[]; providerTurn?: ProviderTurn };
 
@@ -74,7 +80,7 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
     return tool;
   }) ?? [];
   const nativeTools = workspace ? workspaceDefinitions : [];
-  const definitions = [...builtins, ...nativeTools, ...Array.from(remotes, ([name, {tool}]) => ({
+  const definitions = [...builtins, ...nativeTools, ...(options.openMemoryRegion ? [memoryRegionTool] : []), ...Array.from(remotes, ([name, {tool}]) => ({
     type: 'function', function: {name, description: tool.description, parameters: tool.inputSchema},
   }))];
   const messages: (Message | ToolMessage)[] = [...initial];
@@ -85,7 +91,8 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
     const body = JSON.stringify({ model, ...(reasoningEffort === 'default' ? {} : {reasoning_effort: reasoningEffort}), stream: true, max_completion_tokens: options.maxCompletionTokens ?? 4096,
       messages: workspace ? projectWorkspaceContext(messages) : messages, ...(available ? { tools: definitions, parallel_tool_calls: false } : {}) });
     const index = round * stride;
-    const raw = await options.runEffect({ index, provider: endpoint, model, requestDigest: hash(JSON.stringify({endpoint, body})) }, async requestId => {
+    const raw = await options.runEffect({ index, provider: endpoint, model, requestDigest: hash(JSON.stringify({endpoint, body})),
+      ...(options.learningMemory ? { learningMemory: true } : {}) }, async requestId => {
       let reportedModel: string | undefined;
       let lastText = '';
       let lastPush = 0;
@@ -137,7 +144,9 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
       const execute = () => remote ? invokeMcpTool(remote, args, connections) : tools.execute(name, args);
       // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
       let output: string;
-      if (workspaceTool) {
+      if (name === memoryRegionTool.function.name && options.openMemoryRegion) {
+        output = await options.openMemoryRegion(args, index + position + 1);
+      } else if (workspaceTool) {
         output = await workspace.execute(name, args, index + position + 1);
       } else if (name === 'read_file' || name === 'write_file') {
         output = await execute();
@@ -155,7 +164,8 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
         output = saved.output;
       }
       const content = output.slice(0, 16_000);
-      trace.push(remote ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + content.slice(0, 600) : summarise(call, args, content));
+      trace.push(name === memoryRegionTool.function.name ? '展开记忆区域' : remote
+        ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + content.slice(0, 600) : summarise(call, args, content));
       messages.push({role: 'tool', tool_call_id: call.id, content});
     }
   }

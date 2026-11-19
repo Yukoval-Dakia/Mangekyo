@@ -1,5 +1,9 @@
+import { createHash } from 'node:crypto';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
 import { currentMemory, memoryId } from './memory.ts';
+import { memoryScopeFromMessage, readMemoryGateway } from './memory-gateway.ts';
+import { applyExplicitMemory } from './explicit-memory.ts';
+import { foregroundDigest } from './foreground-digest.ts';
 import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -55,6 +59,8 @@ export async function teach(db: Db, ref: WorkRef) {
   const inputs = new Map<string, ManifestInput>();
   const assessments = new Map<string, WorkspaceAssessmentBasis>();
   let liveMemoryRevision: number | undefined;
+  let learningMemory: Awaited<ReturnType<typeof readMemoryGateway>>;
+  let expandedMemory: typeof learningMemory;
   let authorizeAssessmentRoute: (() => Promise<void>) | undefined;
   const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
   function trackAssessment(basis: WorkspaceAssessmentBasis) {
@@ -94,6 +100,8 @@ export async function teach(db: Db, ref: WorkRef) {
   }
   async function validInputs(tx: ReadTransaction) {
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
+    const now = new Date().toISOString();
+    if ([learningMemory, expandedMemory].some(item => item?.receipt.expiresAt && item.receipt.expiresAt <= now)) throw new ChangedEvidence();
     if (assessments.size) {
       if (!authorizeAssessmentRoute) throw new ChangedEvidence();
       await authorizeAssessmentRoute();
@@ -114,8 +122,49 @@ export async function teach(db: Db, ref: WorkRef) {
     if ((await revalidateManifest(tx, manifest)).kind !== 'valid') throw new ChangedEvidence();
     return manifest;
   }
+  const settle = (feedback: DisplayTurn) => finishWork(db, ref, async (tx, tick) => {
+    const manifest = await validInputs(tx);
+    const id = stableId('feedback', ref.learner, ref.workId, ref.generation);
+    const sourceIds = [...(feedback.workspaceBasis ?? []).filter(item => item.id !== memoryId),
+      ...(learningMemory?.receipt.sent ?? []), ...(expandedMemory?.receipt.sent ?? [])].map(item => item.id);
+    const digest = feedback.action === 'companion_reply' && feedback.completion !== 'receipts_only'
+      ? foregroundDigest(job.slotKey, manifest, sourceIds, feedback.studyKit ? '本轮完成讲义和练习。'
+        : feedback.writes?.length ? '本轮完成伴学回复并保存工作区变更。'
+        : sourceIds.length ? '本轮依据已授权的学习记录给出伴学回复。' : '本轮完成一次伴学回复。') : undefined;
+    await tx.insert('derivations', {
+      learner_id: learner,
+      id,
+      slot_type: slotType,
+      slot_key: job.slotKey,
+      deriver: methodName,
+      scope_keys: '{}',
+      value: JSON.stringify(digest ? { ...feedback, foregroundDigest: digest } : feedback),
+      lifecycle: 'effective',
+      freshness: 'current',
+      gather_tick: manifest.gatherTick,
+      effective_tick: tick,
+      manifest: JSON.stringify(manifest),
+      is_shadow: false,
+    });
+    await tx.query(
+      'UPDATE slot_state SET current_id=$4,last_id=$4,changed_tick=$5,last_error=NULL WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
+      [learner, slotType, job.slotKey, id, tick],
+    );
+    await completeTurnStream(tx, job.slotKey);
+  });
   try {
     const submission = studyTurn(await read(job.slotKey));
+    if (submission.caseId === 'companion' && submission.answer) {
+      const explicit = await applyExplicitMemory(db, job.slotKey, submission.answer, async tx => {
+        if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
+        await validInputs(tx);
+      });
+      if (explicit) {
+        await settle({ action: 'memory_claim', model: 'local', rationale: '', reads: [], evidenceIds: [],
+          message: explicit.message, ...(explicit.receipt ? { memoryCommand: explicit.receipt } : {}) });
+        return;
+      }
+    }
     const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
     const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
     const settings = await loadSettings(task);
@@ -126,7 +175,7 @@ export async function teach(db: Db, ref: WorkRef) {
         throw new TeachingError('provider_configuration', '这个模型的学习工作区访问已关闭。请开始新会话。');
     };
     if (submission.workspaceRevision) await checkWorkspaceRoute();
-    authorizeAssessmentRoute = async () => {
+    const authorizeWorkspace = authorizeAssessmentRoute = async () => {
       const current = await loadSettings(task);
       if (!submission.workspaceRevision || !sameRoute(submission, current) || current.apiKey !== settings.apiKey ||
           await workspaceRouteRevision(current) !== submission.workspaceRevision) throw new ChangedEvidence();
@@ -155,6 +204,11 @@ export async function teach(db: Db, ref: WorkRef) {
       }
     };
     const runModelEffect: TeachingDependencies['runEffect'] = async (step, invoke) => {
+      const memorySend = step.learningMemory && learningMemory?.context ? {
+        purpose, recipient: { id: settings.activeProviderId, endpoint: step.provider, protocol: settings.protocol,
+          model: step.model, workspaceRevision: submission.workspaceRevision! },
+        requestDigest: step.requestDigest, fragments: [...learningMemory.receipt.sent, ...(expandedMemory?.receipt.sent ?? [])],
+      } : undefined;
       const authorize = async (tx: ReadTransaction) => {
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
         await validInputs(tx);
@@ -175,11 +229,12 @@ export async function teach(db: Db, ref: WorkRef) {
           stepKey: String(step.index),
           label: step.provider.startsWith('tool:') ? step.provider : 'teaching-model',
           input: { digest: step.requestDigest, provider: step.provider, model: step.model,
+            ...(memorySend ? { memoryBasis: [...learningMemory!.receipt.basis, ...(expandedMemory?.receipt.basis ?? [])] } : {}),
             ...(assessments.size ? {assessmentBasis: [...assessments.values()]} : {}) },
         },
         async (requestId) => {
           let pending: Promise<string> | undefined;
-          if (assessments.size) {
+          if (assessments.size || memorySend) {
             try {
               // Start the reserved transport under a fresh authorization lock. The reply is awaited outside it.
               await db.tx(scope, async tx => {
@@ -194,7 +249,8 @@ export async function teach(db: Db, ref: WorkRef) {
             }
           }
           try {
-            return await (pending ?? invoke(requestId));
+            const reply = await (pending ?? invoke(requestId));
+            return memorySend ? { reply, sent: { ...memorySend, requestId } } : reply;
           } catch (error) {
             console.warn('模型调用未能确认', requestId, error instanceof TeachingError ? error.code : 'transport_error');
             throw error;
@@ -203,8 +259,10 @@ export async function teach(db: Db, ref: WorkRef) {
         authorize,
       );
       if (dispatchDenied) throw dispatchDenied;
-      if (assessments.size) await db.snapshot(scope, validInputs);
+      if (assessments.size || memorySend) await db.snapshot(scope, validInputs);
       if (effect.kind === 'unknown') throw new UncertainEffect(effect.providerEffectId);
+      if (memorySend && effect.result && typeof effect.result === 'object' && !Array.isArray(effect.result) &&
+          'reply' in effect.result && typeof effect.result.reply === 'string') return effect.result.reply;
       if (typeof effect.result !== 'string') throw new Error('Invalid stored model response');
       return effect.result;
     };
@@ -220,6 +278,29 @@ export async function teach(db: Db, ref: WorkRef) {
         liveMemoryRevision = value.revision;
         return value.text;
       }) : undefined;
+      const memoryRequest = { db, scope: memoryScopeFromMessage(answer), intent: 'tutoring' as const, maySend,
+        async authorize(tx: ReadTransaction) {
+          if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
+          await validInputs(tx);
+          await authorizeWorkspace();
+        } };
+      function trackMemory(packet: NonNullable<typeof learningMemory>) {
+        for (const entry of packet.receipt.basis) inputs.set('learning-memory:' + entry.id, workspaceInput(entry));
+      }
+      if (submission.caseId === 'companion' && submission.workspaceRevision && !grants.length) {
+        const { rows: [prior] } = await db.query<{ has_sample: boolean; has_memory: boolean }>(
+          `SELECT bool_or(label='teaching-model') AS has_sample, bool_or(label='local:learning-memory') AS has_memory
+           FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2`, [learner, job.slotKey],
+        );
+        // Preserve the payload of turns already journaled by a previous worker build.
+        if (!prior?.has_sample || prior.has_memory) {
+          learningMemory = await readMemoryGateway({ ...memoryRequest, maxBytes: 8192,
+            owner: { kind: 'session', id: job.slotKey, step: 'memory' } });
+          if (!learningMemory) throw new ChangedEvidence();
+          trackMemory(learningMemory);
+        }
+      }
+      const learningMemoryDigest = learningMemory?.context ? learningMemory.receipt.digest : undefined;
       const inherited = new Map<string, WorkspaceWitness>();
       let historyNotice = '';
       const publicHistory = await db.snapshot(scope, async (tx) => {
@@ -243,10 +324,18 @@ export async function teach(db: Db, ref: WorkRef) {
             break;
           }
           const {value: response, manifest} = reply;
+          if (response.action === 'memory_claim') {
+            previousId = previous.parentId;
+            continue;
+          }
           historyBytes += Buffer.byteLength(previous.answer) + Buffer.byteLength(response.message);
           if (submission.workspaceRevision && count > 0 && historyBytes > 12 * 1024) break;
           const priorMemory = response.reads.find(item => item.id === memoryId);
           if (priorMemory && priorMemory.text !== preference) break;
+          if (response.learningMemoryDigest && response.learningMemoryDigest !== learningMemoryDigest) {
+            historyNotice = '记忆范围或依据已变更，本轮从当前学习记录继续。';
+            break;
+          }
           const assessmentSlots = parseManifest(manifest).inputs.filter((input): input is AssessmentSlot =>
             input.kind === 'slot' && input.slotType === workbookRubricAssessmentType);
           if (response.workspaceBasis?.length || assessmentSlots.length) {
@@ -267,7 +356,7 @@ export async function teach(db: Db, ref: WorkRef) {
             for (const w of witnesses) if (!inherited.has(w.id)) inherited.set(w.id, w);
           }
           // Record the predecessor only when its reply enters the model context.
-          if (count === 0) trackFeedback(previousId, reply.id);
+          if (!messages.length) trackFeedback(previousId, reply.id);
           messages.unshift({ role: 'user', content: previous.answer }, { role: 'assistant', content: response.message });
           previousId = previous.parentId;
         }
@@ -299,12 +388,28 @@ export async function teach(db: Db, ref: WorkRef) {
       }) : undefined;
       const result = await runCompanionTurn(answer, publicHistory, material, {
         provider: settings, runEffect: runModelEffect, onProgress, ...(historyNotice ? {historyNotice} : {}),
+        ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
+        ...(learningMemory?.bundle.omitted.some(item => item.reason === 'budget') ? {
+          async openMemoryRegion(input: Record<string, unknown>, step: number) {
+            if (expandedMemory) return JSON.stringify({ code: 'budget', message: '本轮已使用一次记忆区域展开。' });
+            const omitted = learningMemory?.bundle.omitted.find(item => item.reason === 'budget' &&
+              item.expand.region === input.region && item.expand.start === input.start && item.expand.basisDigest === input.basisDigest);
+            if (omitted?.reason !== 'budget') return JSON.stringify({ code: 'not_found', field: 'region', message: '请使用本轮提供的展开位置。' });
+            expandedMemory = await readMemoryGateway({ ...memoryRequest, maxBytes: 16_384, expand: omitted.expand,
+              owner: { kind: 'session', id: job.slotKey, step: `memory-region:${step}` } });
+            if (!expandedMemory) throw new ChangedEvidence();
+            trackMemory(expandedMemory);
+            return expandedMemory.context;
+          },
+        } : {}),
         ...(submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey, mcpServers, ...(workspace ? {workspace} : {}),
           ...(publicSearchQuery ? {publicSearchQuery} : {}),
           allowSearch: submission.allowSearch === true && settings.allowSearch && (!privateContext || Boolean(publicSearchQuery)) } } : {}),
       }, attachment?.mode === 'prepare' && !submission.parentId, preference);
       feedback = {
         ...result, action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : historyNotice,
+        ...(learningMemoryDigest ? { learningMemoryDigest: expandedMemory
+          ? createHash('sha256').update(learningMemoryDigest).update(expandedMemory.receipt.digest).digest('hex') : learningMemoryDigest } : {}),
         ...(workspace?.writes().length ? {writes:workspace.writes()} : {}),
         ...(workspace?.basis().length ? {workspaceBasis: workspace.basis()} : {}),
         evidenceIds: [], reads: [
@@ -369,30 +474,7 @@ export async function teach(db: Db, ref: WorkRef) {
         })),
       };
     }
-    await finishWork(db, ref, async (tx, tick) => {
-      const manifest = await validInputs(tx);
-      const id = stableId('feedback', ref.learner, ref.workId, ref.generation);
-      await tx.insert('derivations', {
-        learner_id: learner,
-        id,
-        slot_type: slotType,
-        slot_key: job.slotKey,
-        deriver: methodName,
-        scope_keys: '{}',
-        value: JSON.stringify(feedback),
-        lifecycle: 'effective',
-        freshness: 'current',
-        gather_tick: manifest.gatherTick,
-        effective_tick: tick,
-        manifest: JSON.stringify(manifest),
-        is_shadow: false,
-      });
-      await tx.query(
-        'UPDATE slot_state SET current_id=$4,last_id=$4,changed_tick=$5,last_error=NULL WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
-        [learner, slotType, job.slotKey, id, tick],
-      );
-      await completeTurnStream(tx, job.slotKey);
-    });
+    await settle(feedback);
   } catch (error) {
     if (
       !(
