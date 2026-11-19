@@ -19,8 +19,9 @@ const learner = learnerId('01KFS4AAA00000000000000000');
 const purpose = 'learn';
 const scope = { knowledgePoint: 'K' };
 const excluded = factId('01KFS4AAA00000000000000001');
+const promotion = factId('01KFS4AAA00000000000000002');
 const gradeSlot = defineSlot({ type: 'note.grade', key: (input: { id: string }) => input.id,
-  policy: 'eager', triggers: [{ kind: 'fact', factType: 'note.entry' }] });
+  policy: 'eager', triggers: [{ kind: 'fact', factType: 'note.entry' }, { kind: 'slot', slotType: 'note.grade' }] });
 const slot = (type: string, key: string): SlotRef => ({ learner, type, key });
 const grade = (id: FactId) => slot(gradeSlot.type, id);
 const mastery = (key: string) => slot('note.mastery', key);
@@ -28,7 +29,12 @@ const plan = (key: string) => slot('note.plan', key);
 const candidatePolicy = (ref: SlotRef) => ({ deriver: ref.type, purpose, slot: { type: ref.type } });
 const hooks = createPropagationHooks([
   { slot: gradeSlot, deriver: gradeSlot.type, targets: (_tx, event) => event.kind === 'fact'
-    ? [{ key: gradeSlot.key(event.change.ref), scopeKeys: scope, evidenceEligible: event.change.ref.id !== excluded }] : [] },
+    ? [{ key: gradeSlot.key(event.change.ref), scopeKeys: scope,
+      evidenceEligible: event.change.ref.id !== excluded && event.change.ref.id !== promotion }]
+    : event.kind === 'slot' && event.slot.key === promotion && event.currentId
+      ? [{ key: promotion, scopeKeys: scope, evidenceEligible: true }] : [] },
+  { slot: { type: 'note.lazy', policy: 'lazy', triggers: [{ kind: 'fact', factType: 'note.entry' }] }, deriver: 'note.lazy',
+    targets: (_tx, event) => event.kind === 'fact' ? [{ key: event.change.ref.id, scopeKeys: {}, evidenceEligible: false }] : [] },
   { slot: { type: 'note.mastery', policy: 'eager', triggers: [{ kind: 'slot', slotType: gradeSlot.type }] }, deriver: 'note.mastery',
     targets: (_tx, event) => event.kind === 'slot' && event.currentId && event.slot.key !== excluded
       ? [{ key: 'K', scopeKeys: {}, evidenceEligible: false }] : [] },
@@ -132,6 +138,11 @@ describe.skipIf(!connectionString)('Production propagation in PostgreSQL', () =>
     await submitCandidate(db, retry, candidatePolicy(g), retryCandidate.id, { kind: 'failed', reason: 'grade failed' }, hooks);
     expect(await producer(m)).toMatchObject({ state: 'blocked' });
     expect(await wait(await request(m), await gather(readRange))).toMatchObject({ kind: 'blocked' });
+
+    const recovered = await request(g);
+    expect(await wait(await request(m), await gather(readRange))).toEqual({ kind: 'waiting' });
+    await publish(g, readFact(id), recovered);
+    expect(await producer(m)).toMatchObject({ state: 'ready' });
   });
 
   it('keeps range/asof behind local and later propagates an exact superseded member invalidation', async () => {
@@ -150,6 +161,8 @@ describe.skipIf(!connectionString)('Production propagation in PostgreSQL', () =>
     expect(await state(grade(excluded))).toMatchObject({ evidence_eligible: false });
     expect(await ledger(m.id)).toMatchObject({ lifecycle: 'effective', freshness: 'current' });
 
+    const active = await request(mastery('K'));
+    const sealed = await seal(mastery('K'), active, readRange);
     const late = factId(newUlid());
     await command('note.record', { id: late, text: '2026-11-17T00:00:00Z' });
     expect(await state(grade(late))).toMatchObject({ current_id: null, evidence_eligible: true });
@@ -158,8 +171,12 @@ describe.skipIf(!connectionString)('Production propagation in PostgreSQL', () =>
     const added = await publish(grade(late), readFact(late), await producer(grade(late)));
     expect(await ledger(m.id)).toMatchObject({ lifecycle: 'effective', freshness: 'behind' });
     expect(await ledger(child.id)).toMatchObject({ lifecycle: 'effective', freshness: 'current' });
-    expect(await producer(mastery('K'))).toMatchObject({ state: 'ready', generation: '2', requested_tick: added.tick });
+    expect(await producer(mastery('K'))).toMatchObject({ state: 'ready', generation: active.generation });
     expect(await producer(mastery('wait'))).toMatchObject({ state: 'ready', generation: '2', requested_tick: added.tick });
+    const published = await submitCandidate(db, active, candidatePolicy(mastery('K')), sealed.id,
+      { kind: 'value', value: sealed.plan.data }, hooks);
+    expect(published).toMatchObject({ kind: 'effective', freshness: 'behind' });
+    expect(await producer(mastery('K'))).toMatchObject({ state: 'ready', generation: '3' });
 
     const replacement = await publish(g, readFact(first, 'pinned'));
     expect(await ledger(following.id)).toMatchObject({ lifecycle: 'stale', invalidated_tick: replacement.tick });
@@ -173,5 +190,16 @@ describe.skipIf(!connectionString)('Production propagation in PostgreSQL', () =>
     expect(await state(g)).toMatchObject({ current_id: replacement.id, last_id: replacement.id, changed_tick: replacement.tick });
     expect(await ledger(added.id)).toMatchObject({ lifecycle: 'effective', freshness: 'current',
       value: { kind: 'value', value: { text: '2026-11-17T00:00:00Z' } } });
+  });
+
+  it('catalogues lazy slots and promotes a published value without scheduling it again', async () => {
+    await command('note.record', { id: promotion, text: 'answer' });
+    const lazy = slot('note.lazy', promotion);
+    expect(await state(lazy)).toMatchObject({ current_id: null });
+    expect(await producer(lazy)).toBeUndefined();
+    const target = grade(promotion);
+    await publish(target, readFact(promotion), await producer(target));
+    expect(await state(target)).toMatchObject({ evidence_eligible: true });
+    expect(await producer(target)).toMatchObject({ generation: '1', state: 'satisfied' });
   });
 });

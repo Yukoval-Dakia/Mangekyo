@@ -79,6 +79,16 @@ async function markBehind(tx: DbTransaction, id: DerivationId) {
   return behind;
 }
 
+async function preservesSealedWork(tx: ReadTransaction, { slotType, slotKey }: SlotAddress) {
+  const result = await tx.query(
+    `SELECT 1 FROM derivations d
+     WHERE d.learner_id = $1 AND d.slot_type = $2 AND d.slot_key = $3
+       AND d.freshness = 'behind' AND ${liveDerivation} AND ${activeCandidate}`,
+    [tx.learner, slotType, slotKey],
+  );
+  return result.rows.length > 0;
+}
+
 function matchesTrigger(trigger: Trigger, event: TriggerEvent) {
   switch (trigger.kind) {
     case 'fact': return event.kind === 'fact' && trigger.factType === event.change.factType;
@@ -197,7 +207,8 @@ export function createPropagationHooks(
             throw new Error(`Conflicting slot catalog projections: ${slotType}/${target.key}`);
           }
           catalog.set(identity, { slotType, slotKey: target.key, scopeKeys, evidenceEligible: target.evidenceEligible });
-          demands.set(identity, { slotType, slotKey: target.key, deriver: policy.deriver });
+          const ownPublication = published?.slot.type === slotType && published.slot.key === target.key;
+          if (!ownPublication) demandEager(slotType, target.key);
         }
       }
     }
@@ -217,7 +228,10 @@ export function createPropagationHooks(
       if (result?.needed) demandEager(result.slotType, result.slotKey);
     }
 
-    for (const work of demands.values()) await requestWork(tx, tick, work);
+    for (const work of demands.values()) {
+      // Publication of this sealed snapshot queues the catch-up if it is still behind.
+      if (!await preservesSealedWork(tx, work)) await requestWork(tx, tick, work);
+    }
     for (const slot of wake.values()) await wakeWaitingWork(tx, tick, slot);
   }
 
