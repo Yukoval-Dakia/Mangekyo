@@ -19,7 +19,9 @@ const cloudIntakeDeriver = 'activity.mineruExtraction';
 type MineruMediaType = 'application/pdf' | 'image/png' | 'image/jpeg';
 type MineruContext = { token: string; dataId: string; signal?: AbortSignal };
 export type MineruClient = {
-  submit(input: MineruContext & { bytes: Buffer; mediaType: MineruMediaType }): Promise<string>;
+  submit(input: MineruContext & {
+    bytes: Buffer; mediaType: MineruMediaType; beforeUpload?: () => Promise<void>;
+  }): Promise<string>;
   read(input: MineruContext & { batchId: string }): Promise<
     { state: 'pending'; pages: number | null } |
     { state: 'done'; text: string; pages: number | null } |
@@ -99,8 +101,7 @@ export function openCloudIntakeWork(db: Db, intake: {
         if (!source || source.document.ref.rev !== original.document.ref.rev ||
             source.material.ref.rev !== original.material.ref.rev ||
             source.document.accessEpoch !== original.document.accessEpoch ||
-            source.material.accessEpoch !== original.material.accessEpoch ||
-            mineruToken() !== token) throw new StoppedCloudIntake();
+            source.material.accessEpoch !== original.material.accessEpoch) throw new StoppedCloudIntake();
       };
       const publish = async (extraction: IntakeExtraction) => {
         await intake.completeCloud(ref, original, extraction);
@@ -112,6 +113,12 @@ export function openCloudIntakeWork(db: Db, intake: {
           : 'MinerU 服务尚未配置，原件已保留。'));
         return;
       }
+      const configurationChanged = () => mineruToken() !== token;
+      const finishConfigurationChange = () => publish(failure('MinerU 服务配置已变更，原件已保留。'));
+      const beforeUpload = async () => {
+        await db.snapshot(scope, authorize);
+        if (configurationChanged()) throw new StoppedCloudIntake();
+      };
       const dataId = original.document.ref.id;
       const submission = await runEffect(db, {
         learner: ref.learner, ownerKind: 'session', ownerId: dataId, stepKey: ref.generation, label: 'intake-mineru',
@@ -119,9 +126,13 @@ export function openCloudIntakeWork(db: Db, intake: {
       }, async () => {
         const bytes = await intake.cloudOriginal(original.material.ref.id, original.sha256).catch(() => null);
         if (bytes === null) return null;
-        await db.snapshot(scope, authorize);
-        return client.submit({ token, dataId, bytes, mediaType: original.mediaType, signal: AbortSignal.timeout(60_000) });
+        await beforeUpload();
+        return client.submit({
+          token, dataId, bytes, mediaType: original.mediaType, beforeUpload, signal: AbortSignal.timeout(60_000),
+        });
       }, authorize);
+      await db.snapshot(scope, authorize);
+      if (configurationChanged()) return finishConfigurationChange();
       if (submission.kind === 'unknown') {
         await publish(failure('无法确认 MinerU 是否收到原件，已停止自动重传。你可以查看原件或手动更正。'));
         return;
@@ -134,18 +145,20 @@ export function openCloudIntakeWork(db: Db, intake: {
       const signal = AbortSignal.timeout(120_000);
       for (;;) {
         await db.snapshot(scope, authorize);
+        if (configurationChanged()) return finishConfigurationChange();
         const result = await client.read({ token, dataId, batchId: submission.result, signal });
+        if (result.state === 'pending') {
+          await delay(pollIntervalMs, undefined, { signal });
+          continue;
+        }
+        await db.snapshot(scope, authorize);
+        if (configurationChanged()) return finishConfigurationChange();
         if (result.state === 'done') {
-          await db.snapshot(scope, authorize);
           await publish(completed(result.text, result.pages));
           return;
         }
-        if (result.state === 'failed') {
-          await db.snapshot(scope, authorize);
-          await publish(failure(result.message));
-          return;
-        }
-        await delay(pollIntervalMs, undefined, { signal });
+        await publish(failure(result.message));
+        return;
       }
     } catch (error) {
       if (!(error instanceof StoppedCloudIntake || error instanceof FactReadDeniedError || error instanceof FactNotFoundError))

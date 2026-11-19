@@ -118,6 +118,26 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     expect(await intake.metadata(pending.id)).toMatchObject({ fullText: '人工更正', extraction: { status: 'corrected' } });
   });
 
+  it('fences the signed upload after manual correction or credential change', async () => {
+    for (const reason of ['correction', 'configuration']) {
+      const pending = await (await capture('mineru-before-upload-' + reason)).json() as IntakeMetadata;
+      const upload = vi.fn(async () => 'batch-test');
+      await openCloudIntakeWork(db, intake, {
+        submit: async ({ beforeUpload }) => {
+          if (reason === 'correction') {
+            await intake.correct({ materialId: pending.id, expectedRev: pending.revision, text: '发送前更正', requestId: 'correction-before-upload' });
+          } else vi.stubEnv('MANGEKYO_MINERU_TOKEN', 'new-test-token');
+          await beforeUpload?.();
+          return upload();
+        },
+        read: async () => { throw new Error('unexpected poll'); },
+      }).execute(await nextWork());
+      expect(upload).not.toHaveBeenCalled();
+      expect((await intake.metadata(pending.id)).extraction.status).toBe(reason === 'correction' ? 'corrected' : 'failed');
+    }
+    vi.stubEnv('MANGEKYO_MINERU_TOKEN', 'test-token');
+  });
+
   it('keeps local text local and rejects unavailable cloud requests', async () => {
     vi.stubEnv('MANGEKYO_MINERU_TOKEN', '');
     expect(await (await fetch(origin + '/api/intake/options')).json()).toEqual({ mineru: false });
