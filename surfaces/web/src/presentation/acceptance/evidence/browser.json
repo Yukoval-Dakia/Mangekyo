@@ -1,0 +1,184 @@
+{
+  "lab": {
+    "version": 1,
+    "artifactId": "acid-base",
+    "revision": "r1",
+    "nodeId": "keep-reading",
+    "intent": "explore",
+    "trace": {
+      "omitted": 0,
+      "steps": [
+        {
+          "kind": "adjust",
+          "nodeId": "volume",
+          "value": 1,
+          "unit": "mL",
+          "objectId": "valve"
+        },
+        {
+          "kind": "adjust",
+          "nodeId": "volume",
+          "value": 2,
+          "unit": "mL",
+          "objectId": "valve"
+        },
+        {
+          "kind": "adjust",
+          "nodeId": "volume",
+          "value": 3,
+          "unit": "mL"
+        }
+      ]
+    },
+    "answers": {
+      "volume": {
+        "kind": "quantity",
+        "value": 3,
+        "unit": "mL"
+      },
+      "inference": {
+        "kind": "text",
+        "text": ""
+      }
+    }
+  },
+  "p": {
+    "version": 1,
+    "artifactId": "analects",
+    "revision": "r1",
+    "nodeId": "send-pauses",
+    "intent": "submit",
+    "trace": {
+      "omitted": 0,
+      "steps": [
+        {
+          "kind": "toggle",
+          "nodeId": "pauses",
+          "objectId": "gap-8",
+          "selected": true
+        },
+        {
+          "kind": "toggle",
+          "nodeId": "pauses",
+          "objectId": "gap-8",
+          "selected": false
+        },
+        {
+          "kind": "toggle",
+          "nodeId": "pauses",
+          "objectId": "gap-8",
+          "selected": true
+        }
+      ]
+    },
+    "answers": {
+      "pauses": {
+        "kind": "selection",
+        "ids": [
+          "gap-8"
+        ]
+      }
+    }
+  },
+  "r": {
+    "version": 1,
+    "artifactId": "duet",
+    "revision": "r1",
+    "nodeId": "send-score",
+    "intent": "submit",
+    "trace": {
+      "omitted": 0,
+      "steps": [
+        {
+          "kind": "toggle",
+          "nodeId": "bass",
+          "objectId": "bass-1",
+          "selected": true
+        },
+        {
+          "kind": "toggle",
+          "nodeId": "bass",
+          "objectId": "bass-3",
+          "selected": true
+        },
+        {
+          "kind": "toggle",
+          "nodeId": "bass",
+          "objectId": "bass-6",
+          "selected": true
+        },
+        {
+          "kind": "toggle",
+          "nodeId": "snare",
+          "objectId": "snare-1",
+          "selected": true
+        },
+        {
+          "kind": "toggle",
+          "nodeId": "snare",
+          "objectId": "snare-4",
+          "selected": true
+        },
+        {
+          "kind": "toggle",
+          "nodeId": "snare",
+          "objectId": "snare-8",
+          "selected": true
+        }
+      ]
+    },
+    "answers": {
+      "bass": {
+        "kind": "selection",
+        "ids": [
+          "bass-1",
+          "bass-3",
+          "bass-6"
+        ]
+      },
+      "snare": {
+        "kind": "selection",
+        "ids": [
+          "snare-1",
+          "snare-4",
+          "snare-8"
+        ]
+      }
+    }
+  },
+  "width": {
+    "document": 375,
+    "viewport": 390
+  },
+  "fallback": "活动文字版\n\n知之者不如好之者好之者不如乐之者。选择要停顿的字后位置。",
+  "audio": "写一小节双声部节奏\n四拍 · 八格\n\n大鼓和小鼓各敲三次，只在第一格同时响。点亮落点，再试听这一小节。\n\n大鼓\n1\n2\n3\n4\n5\n6\n7\n8\n落点　1、3、6\n小鼓\n1\n2\n3\n4\n5\n6\n7\n8\n落点　1、4、8\n试听这一小节 正在试听\n提交两组落点",
+  "recovery": {
+    "frozen": "恢复定义\n为《论语》断句\n\n知之者不如好之者好之者不如乐之者。选择要停顿的字后位置。\n\n当前作答\n\n原文与断点 · 者 (gap-8)\n\n互动内容暂不可用，恢复后可继续编辑。",
+    "restored": {
+      "version": 1,
+      "artifactId": "analects",
+      "revision": "r1",
+      "nodeId": "send-pauses",
+      "intent": "submit",
+      "trace": {
+        "omitted": 0,
+        "steps": [
+          {
+            "kind": "toggle",
+            "nodeId": "pauses",
+            "objectId": "gap-8",
+            "selected": true
+          }
+        ]
+      },
+      "answers": {
+        "pauses": {
+          "kind": "selection",
+          "ids": [
+            "gap-8"
+          ]
+        }
+      }
+    }
+  }
+}

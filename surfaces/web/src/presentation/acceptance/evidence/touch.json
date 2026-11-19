@@ -1,0 +1,111 @@
+{
+  "titration": {
+    "pointer": "touch",
+    "width": 320,
+    "scrollWidth": 320,
+    "request": {
+      "version": 1,
+      "artifactId": "acid-base",
+      "revision": "r1",
+      "nodeId": "keep-reading",
+      "intent": "explore",
+      "trace": {
+        "omitted": 0,
+        "steps": [
+          {
+            "kind": "adjust",
+            "nodeId": "volume",
+            "value": 1,
+            "unit": "mL",
+            "objectId": "valve"
+          }
+        ]
+      },
+      "answers": {
+        "volume": {
+          "kind": "quantity",
+          "value": 1,
+          "unit": "mL"
+        },
+        "inference": {
+          "kind": "text",
+          "text": ""
+        }
+      }
+    }
+  },
+  "passage": {
+    "pointer": "touch",
+    "width": 320,
+    "scrollWidth": 320,
+    "request": {
+      "version": 1,
+      "artifactId": "analects",
+      "revision": "r1",
+      "nodeId": "send-pauses",
+      "intent": "submit",
+      "trace": {
+        "omitted": 0,
+        "steps": [
+          {
+            "kind": "toggle",
+            "nodeId": "pauses",
+            "objectId": "gap-8",
+            "selected": true
+          }
+        ]
+      },
+      "answers": {
+        "pauses": {
+          "kind": "selection",
+          "ids": [
+            "gap-8"
+          ]
+        }
+      }
+    }
+  },
+  "rhythm": {
+    "pointer": "touch",
+    "width": 320,
+    "scrollWidth": 320,
+    "request": {
+      "version": 1,
+      "artifactId": "duet",
+      "revision": "r1",
+      "nodeId": "send-score",
+      "intent": "submit",
+      "trace": {
+        "omitted": 0,
+        "steps": [
+          {
+            "kind": "toggle",
+            "nodeId": "bass",
+            "objectId": "bass-3",
+            "selected": true
+          },
+          {
+            "kind": "toggle",
+            "nodeId": "snare",
+            "objectId": "snare-8",
+            "selected": true
+          }
+        ]
+      },
+      "answers": {
+        "bass": {
+          "kind": "selection",
+          "ids": [
+            "bass-3"
+          ]
+        },
+        "snare": {
+          "kind": "selection",
+          "ids": [
+            "snare-8"
+          ]
+        }
+      }
+    }
+  }
+}

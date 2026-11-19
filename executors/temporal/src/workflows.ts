@@ -1,6 +1,8 @@
 import { ActivityFailure, ApplicationFailure, isCancellation, proxyActivities, workflowInfo } from '@temporalio/workflow';
 import { validateExecutionRef } from './ref.ts';
 
+export { mangekyoCoordinator } from './coordinator-workflow.ts';
+
 const { executeWork } = proxyActivities<{
   executeWork(executionRef: string): Promise<void>;
 }>({

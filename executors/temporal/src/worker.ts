@@ -3,7 +3,10 @@ import { fileURLToPath } from 'node:url';
 import { heartbeat } from '@temporalio/activity';
 import { ApplicationFailure } from '@temporalio/common';
 import { NativeConnection, Worker, type WorkerOptions } from '@temporalio/worker';
+import { createCoordinatorActivity, type AdvanceCoordinator } from './coordinator-activity.ts';
 import { validateExecutionRef } from './ref.ts';
+
+export type { AdvanceCoordinator } from './coordinator-activity.ts';
 
 export interface WorkWorkerConfig {
   address: string;
@@ -12,6 +15,7 @@ export interface WorkWorkerConfig {
   deploymentName: string;
   buildId: string;
   onTerminalFailure: ExecuteWork;
+  advanceCoordinator?: AdvanceCoordinator;
 }
 
 export type ExecuteWork = (executionRef: string) => Promise<unknown>;
@@ -64,6 +68,9 @@ export async function createWorkWorker(
         },
         recordWorkFailure: (executionRef: string) =>
           runOpaqueActivity(config.onTerminalFailure, executionRef, 'WorkFailureRecordingFailed'),
+        ...(config.advanceCoordinator === undefined
+          ? {}
+          : { advanceCoordinator: createCoordinatorActivity(config.advanceCoordinator) }),
       },
     };
     return { worker: await Worker.create(options), connection };

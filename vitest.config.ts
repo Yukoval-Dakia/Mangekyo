@@ -8,6 +8,7 @@ export default defineConfig({
       'executors/**/*.test.ts',
       'runtime/**/test/**/*.test.ts',
       'scripts/**/*.test.mjs',
+      'surfaces/shared/**/*.test.mjs',
     ],
     exclude: ['**/node_modules/**', '**/dist/**', '**/*.pg.test.ts'],
   },

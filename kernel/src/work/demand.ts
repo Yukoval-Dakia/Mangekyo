@@ -68,7 +68,12 @@ export async function writeReadyGeneration(
       execution_ref: executionRef,
     });
   }
-  await setPending(tx, { slotType, slotKey }, 'queued');
+  await tx.query(
+    `UPDATE slot_state SET pending = 'queued',
+        last_error = CASE WHEN last_error->>'status' = 'blocked' THEN NULL ELSE last_error END
+     WHERE learner_id = $1 AND slot_type = $2 AND slot_key = $3`,
+    [tx.learner, slotType, slotKey],
+  );
   await tx.insert('work_outbox', {
     learner_id: tx.learner,
     intent_id: executionRef,
