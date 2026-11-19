@@ -4,6 +4,7 @@ import { canonicalJsonString } from '../commands/canonical.ts';
 import { createCommandReadContext } from '../commands/reads.ts';
 import { derivationId, factId, learnerId, type FactId, type Revision, type Tick } from '../declarations/ids.ts';
 import type { GatherContext, GatherInput, Json, JsonObject, Outcome, ReadContext, SlotRef, Waiting } from '../declarations/types.ts';
+import { checkTargets } from '../work/wait.ts';
 import { parseManifest, type Manifest } from './manifest.ts';
 import { revalidateManifest } from './revalidate.ts';
 
@@ -35,6 +36,16 @@ export type GatherSnapshot = {
 };
 type SlotRow = { current_id: string | null; changed_tick: string; last_error: unknown };
 
+async function slotIdOrWait(tx: ReadTransaction, ref: SlotRef, row: SlotRow | undefined): Promise<string | WaitWitness> {
+  const changedTick = (row?.changed_tick ?? '0') as Tick;
+  // Missing inputs always go through registration, which checks terminal state under the learner lock.
+  if (!row?.current_id || (row.last_error !== null
+      && await checkTargets(tx, [{ slotType: ref.type, slotKey: ref.key, changedTick }]) !== 'ready')) {
+    return { ref, changedTick };
+  }
+  return row.current_id;
+}
+
 /** Only gather runs in this snapshot; effects and derive run after it closes. */
 export async function gatherSnapshot(
   db: Db,
@@ -63,17 +74,14 @@ export async function gatherSnapshot(
         'SELECT current_id, changed_tick::text, last_error FROM slot_state WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
         [tx.learner, ref.type, ref.key],
       );
-      const row = state.rows[0];
-      if (!row?.current_id) {
-        if (row?.last_error) throw new Error('Required slot has failed or is unavailable');
-        throw new MissingSlotInputs([{ ref, changedTick: (row?.changed_tick ?? '0') as Tick }]);
-      }
-      const input = { kind: 'slot' as const, slotType: ref.type, slotKey: ref.key, derivationId: row.current_id, mode: 'following' as const };
+      const id = await slotIdOrWait(tx, ref, state.rows[0]);
+      if (typeof id !== 'string') throw new MissingSlotInputs([id]);
+      const input = { kind: 'slot' as const, slotType: ref.type, slotKey: ref.key, derivationId: id, mode: 'following' as const };
       const checked = parseManifest({ ...manifest, inputs: [input] });
       const verdict = await revalidateManifest(tx, checked);
       if (verdict.kind === 'invalid') throw new Error(verdict.reason);
-      const value = await tx.query<{ value: unknown }>('SELECT value FROM derivations WHERE learner_id=$1 AND id=$2', [tx.learner, row.current_id]);
-      return { id: derivationId(row.current_id), slot: ref, outcome: outcomeSchema.parse(value.rows[0]?.value) as Outcome<Value> };
+      const value = await tx.query<{ value: unknown }>('SELECT value FROM derivations WHERE learner_id=$1 AND id=$2', [tx.learner, id]);
+      return { id: derivationId(id), slot: ref, outcome: outcomeSchema.parse(value.rows[0]?.value) as Outcome<Value> };
     };
     const ctx: GatherContext = { learner: tx.learner, snapshotTick: manifest.gatherTick, read: {
       fact: <Value = Json>(id: FactId, options: Parameters<ReadContext['fact']>[1]) => track(async () => {
@@ -88,9 +96,11 @@ export async function gatherSnapshot(
       }),
       range: <Value = Json>(slotType: string, scope: JsonObject) => track(async () => {
         const rows = await rangeRows(tx, slotType, scope);
-        const missing = rows.filter(row => !row.current_id);
-        if (missing.some(row => row.last_error)) throw new Error('Required range member has failed or is unavailable');
-        const witnesses = missing.map(row => ({ ref: { learner: tx.learner, type: slotType, key: row.slot_key }, changedTick: row.changed_tick as Tick }));
+        const witnesses: WaitWitness[] = [];
+        for (const row of rows) {
+          const id = await slotIdOrWait(tx, { learner: tx.learner, type: slotType, key: row.slot_key }, row);
+          if (typeof id !== 'string') witnesses.push(id);
+        }
         if (witnesses[0]) throw new MissingSlotInputs([witnesses[0], ...witnesses.slice(1)]);
         const members = [];
         for (const row of rows) members.push(await recordSlot<Value>({ learner: tx.learner, type: slotType, key: row.slot_key }));

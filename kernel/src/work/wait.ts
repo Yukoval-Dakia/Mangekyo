@@ -1,5 +1,5 @@
 import { lockLearner } from '../db/learner.ts';
-import type { DbTransaction } from '../db/types.ts';
+import type { DbTransaction, ReadTransaction } from '../db/types.ts';
 import type { Tick } from '../declarations/ids.ts';
 import type { SlotRef } from '../declarations/types.ts';
 import type { WaitWitness } from '../derivations/gather.ts';
@@ -13,7 +13,7 @@ export type WaitRegistration = { readonly kind: 'obsolete' } | { readonly kind: 
 type TargetWitness = { slotType: string; slotKey: string; changedTick: string };
 type WaitDecision = WaitTransition['kind'] | 'waiting';
 
-async function checkTargets(tx: DbTransaction, witnesses: readonly TargetWitness[]): Promise<WaitDecision> {
+export async function checkTargets(tx: ReadTransaction, witnesses: readonly TargetWitness[]): Promise<WaitDecision> {
   const { rows } = await tx.query<{ terminal: string | null; ready: boolean }>(
     `SELECT CASE
          WHEN s.last_error->>'status' IN ('denied', 'unavailable') THEN s.last_error->>'status'

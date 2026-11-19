@@ -50,7 +50,7 @@ export function defineSlot<Key extends JsonObject, Candidate, Presented = Candid
     readonly triggers: readonly Trigger[];
     readonly policy: 'eager' | 'lazy';
     readonly accept?: (
-      ctx: import('./types.ts').CommandContext,
+      ctx: Pick<import('./types.ts').CommandContext, 'learner'>,
       candidate: import('./types.ts').Outcome<Candidate>,
       current: import('./types.ts').DerivationSnapshot<Candidate> | null,
     ) => { readonly ok: true } | { readonly ok: false; readonly reason: string };
