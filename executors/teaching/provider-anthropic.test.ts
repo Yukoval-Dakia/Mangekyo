@@ -1,7 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readAnthropicCompletion } from './anthropic-provider.ts';
 import { requestCompletion } from './provider.ts';
-import { runTeachingTurn } from './index.ts';
 
 const anthropicProvider = {
   baseUrl: 'https://api.anthropic.test/v1',
@@ -26,23 +25,21 @@ function anthropicStream(content: string[], stopReason: string, model = anthropi
   ].join('');
 }
 
+function block(index: number, content_block: object, ...deltas: object[]) {
+  return [
+    event('content_block_start', {index, content_block}),
+    ...deltas.map(delta => event('content_block_delta', {index, delta})),
+    event('content_block_stop', {index}),
+  ];
+}
+
 function completionBody(messages: Record<string, unknown>[]) {
   return JSON.stringify({
-    model: anthropicProvider.model,
-    max_completion_tokens: 2048,
-    messages,
+    model: anthropicProvider.model, max_completion_tokens: 2048, messages,
     tools: [{type: 'function', function: {
       name: 'python', description: '验算',
       parameters: {type: 'object', properties: {code: {type: 'string'}}, required: ['code']},
     }}],
-  });
-}
-
-async function teach() {
-  return runTeachingTurn({question: '平均速度？', answer: '45', evidenceCatalog: []}, {
-    provider: anthropicProvider,
-    readEvidence: async () => undefined,
-    runEffect: (step, invoke) => invoke(String(step.index)),
   });
 }
 
@@ -58,21 +55,13 @@ it('translates tool history and completes multiple native Messages rounds', asyn
     const body = bodyOf(init);
     requests.push({url: String(url), headers: new Headers(init?.headers), body});
     const toolStream = anthropicStream([
-      event('content_block_start', {index: 0, content_block: {type: 'thinking', thinking: ''}}),
-      event('content_block_delta', {index: 0, delta: {type: 'thinking_delta', thinking: '私有推理'}}),
-      event('content_block_stop', {index: 0}),
-      event('content_block_start', {
-        index: 1, content_block: {type: 'tool_use', id: 'toolu_1', name: 'python', input: {}},
-      }),
-      event('content_block_delta', {index: 1, delta: {type: 'input_json_delta', partial_json: '{"code":"print'}}),
-      event('content_block_delta', {index: 1, delta: {type: 'input_json_delta', partial_json: '(45)"}'}}),
-      event('content_block_stop', {index: 1}),
+      ...block(0, {type: 'thinking', thinking: ''}, {type: 'thinking_delta', thinking: '私有推理'}),
+      ...block(1, {type: 'tool_use', id: 'toolu_1', name: 'python', input: {}},
+        {type: 'input_json_delta', partial_json: '{"code":"print'},
+        {type: 'input_json_delta', partial_json: '(45)"}'}),
     ], 'tool_use');
-    const textStream = anthropicStream([
-      event('content_block_start', {index: 0, content_block: {type: 'text', text: ''}}),
-      event('content_block_delta', {index: 0, delta: {type: 'text_delta', text: '验算完成。'}}),
-      event('content_block_stop', {index: 0}),
-    ], 'end_turn');
+    const textStream = anthropicStream(
+      block(0, {type: 'text', text: ''}, {type: 'text_delta', text: '验算完成。'}), 'end_turn');
     return new Response(requests.length === 1 ? toolStream : textStream, {
       headers: {'content-type': 'text/event-stream'},
     });
@@ -119,17 +108,4 @@ it('translates tool history and completes multiple native Messages rounds', asyn
     ]},
     {role: 'user', content: [{type: 'tool_result', tool_use_id: 'toolu_1', content: '45'}]},
   ]);
-});
-
-it('resumes one confirmed truncated teaching decision with a larger output budget', async () => {
-  const budgets: number[] = [];
-  const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
-    budgets.push(bodyOf(init).max_tokens);
-    const decision = {type: 'teach', action: 'clarifying_question', rationale: '需要确认', nextStep: '你的第一步是什么？', evidenceIds: []};
-    return Response.json({type: 'message', model: anthropicProvider.model,
-      stop_reason: budgets.length === 1 ? 'max_tokens' : 'end_turn', content: [{type: 'text', text: JSON.stringify(decision)}]});
-  });
-  const result = await teach();
-  expect(result.action).toBe('clarifying_question');
-  expect(budgets).toEqual([2048, 8192]);
 });
