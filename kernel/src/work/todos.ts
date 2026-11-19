@@ -166,8 +166,14 @@ export async function updateOrCancelTodo(
   const spec = todoSpec.parse({ ...todo.spec, ...change.patch, dedupKey, settingsRevision, parentTodoId });
   // A trigger edit may change timing but cannot attach to a different completion chain.
   if (eventParent(spec) !== eventParent(todo.spec)) return false;
+  const { trigger } = spec;
+  const previous = todo.spec.trigger;
+  const sameEvent = trigger.kind === 'event' && previous.kind === 'event'
+    && trigger.event.type === previous.event.type && trigger.event.subject === previous.event.subject;
+  // Extending or editing the task keeps already-observed events for the same subscription.
+  const registeredTick = sameEvent ? todo.registeredTick : tick;
   await tx.query(`UPDATE working_todos SET spec = $3, revision = revision + 1, registered_tick = $4
-    WHERE learner_id = $1 AND todo_id = $2`, [tx.learner, id, JSON.stringify(spec), tick]);
+    WHERE learner_id = $1 AND todo_id = $2`, [tx.learner, id, JSON.stringify(spec), registeredTick]);
   if (spec.trigger.kind === 'immediate') await dispatch(tx, tick, { ...todo, spec, revision: revision + 1 }, now, eligible);
   return true;
 }

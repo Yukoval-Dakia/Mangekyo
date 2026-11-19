@@ -3,7 +3,6 @@ import { startOrWakeCoordinator } from '../../executors/temporal/src/index.ts';
 import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
@@ -57,13 +56,17 @@ async function settings(tx: ReadTransaction) {
   });
 }
 
+function reviewDedupKey({ id, revision, accessEpoch }: TodoSpec['sourceFactRev']) {
+  return 'review-attempt:' + id + ':' + revision + ':' + accessEpoch;
+}
+
 async function eligibleBasis(tx: ReadTransaction, spec: TodoSpec) {
   // The installed executor serves zero-cost retry sheets only. Other profiles and tiers need their own admission.
   if (spec.workerProfile !== 'deterministic_compute' || spec.goal !== reviewGoal || spec.budgetCap !== 0 ||
       spec.autonomyTier !== 1 || spec.expiresAtMs <= Date.now() || !spec.sourceFactRev.anchor) return null;
   return whenAvailable(async () => {
     const { id, revision, accessEpoch, anchor } = spec.sourceFactRev;
-    if (spec.dedupKey !== 'review-attempt:' + id) return null;
+    if (spec.dedupKey !== reviewDedupKey(spec.sourceFactRev)) return null;
     const basis = researchOrder({ settingsId, settingsRevision: spec.settingsRevision,
       source: { attemptId: id, revision, accessEpoch, questionId: anchor } });
     const read = researchReader(tx);
@@ -98,7 +101,7 @@ async function triage(tx: ReadTransaction, reviewed: Tick, settingsRevision: num
     if (!feedback) continue;
     const sourceFactRev = { id, revision: attempt.ref.rev, accessEpoch: attempt.accessEpoch, anchor: feedback.questionId };
     const resultId = worksheetId(id, attempt.ref.rev, attempt.accessEpoch);
-    const dedupKey = 'review-attempt:' + id;
+    const dedupKey = reviewDedupKey(sourceFactRev);
     const known = await tx.query(
       `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
        UNION ALL SELECT 1 FROM working_todos WHERE learner_id = $1 AND dedup_key = $3
@@ -160,7 +163,14 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
   const workbookChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
     const created = changes.find(change => change.factType === workbookAttemptType && change.kind === 'create');
     if (!created || !(await settings(tx))?.enabled) return;
-    const fact = await createCommandReadContext(tx, storagePurpose).fact(created.ref.id, { mode: 'following' });
+    const permitted = await tx.query(
+      `SELECT 1 FROM facts WHERE learner_id=$1 AND id=$2 AND current_rev=$3
+        AND $4=ANY(purpose) AND retracted_rev IS NULL`,
+      [tx.learner, created.ref.id, created.ref.rev, researchPurpose],
+    );
+    if (!permitted.rowCount) return;
+    const fact = await whenAvailable(() => researchReader(tx).fact(created.ref.id, { mode: 'pinned', rev: created.ref.rev }));
+    if (!fact) return;
     await recordTodoEvent(tx, tick, { type: 'on_attempt_submitted', subject: workbookAttempt(fact.value).paperId });
     await enqueueWork(tx, tick, wake);
   };

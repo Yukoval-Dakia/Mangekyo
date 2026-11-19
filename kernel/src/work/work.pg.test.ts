@@ -216,10 +216,10 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     const sweep = (now: number) => db.tx({ learner }, tx => checkTodoTriggers(tx, now, eligible));
     const root = (await emit(spec))!;
     expect((await emit(spec))?.id).toBe(root.id);
-    const edit = (change: Parameters<typeof updateOrCancelTodo>[4]) => db.tx({ learner }, tx =>
-      tx.withLearnerWrite(tick => updateOrCancelTodo(tx, tick, root.id, root.revision, change, 1, eligible)));
-    expect(await edit({ kind: 'update', patch: { trigger: { kind: 'scheduled', fireAtMs: 8 } } })).toBe(true);
-    expect(await edit({ kind: 'cancel' })).toBe(false);
+    const edit = (todo: { id: string; revision: number }, change: Parameters<typeof updateOrCancelTodo>[4]) =>
+      db.tx({ learner }, tx => tx.withLearnerWrite(tick => updateOrCancelTodo(tx, tick, todo.id, todo.revision, change, 1, eligible)));
+    expect(await edit(root, { kind: 'update', patch: { trigger: { kind: 'scheduled', fireAtMs: 8 } } })).toBe(true);
+    expect(await edit(root, { kind: 'cancel' })).toBe(false);
     const followup = (parent: string, hop: number) => emit({ ...spec, dedupKey: 'followup:' + hop,
       trigger: { kind: 'event', event: { type: 'on_work_completed', subject: parent } } });
     const next = (await followup(root.id, 1))!;
@@ -229,6 +229,7 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect((await inspect(next.id))?.state).toBe('pending');
     const dispatched = (await inspect(root.id))!;
     await db.tx({ learner }, tx => tx.withLearnerWrite(tick => completeTodo(tx, tick, dispatched, source.id)));
+    expect(await edit(next, { kind: 'update', patch: { expiresAtMs: 60 } })).toBe(true);
     expect(await sweep(8)).toMatchObject({ advanced: true });
     expect(await inspect(next.id)).toMatchObject({ state: 'dispatched', chainId: root.id, hopCount: 1 });
     expect(await sweep(8)).toMatchObject({ advanced: false });
