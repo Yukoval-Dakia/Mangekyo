@@ -75,6 +75,8 @@ try {
   const attempts = '/api/papers/' + paper.id + '/attempts';
   const submit = async answer => (await api(attempts, 'POST', { answers: { [questionId]: answer } })).attempts
     .find(attempt => attempt.answers[questionId] === Number(answer));
+  const older = await submit('19');
+  await api(attempts + '/' + older.id + '/research-permission', 'PUT', { revision: 1, allowed: true });
   const old = await submit('20');
   const ungranted = await submit('10');
   const path = attempts + '/' + old.id + '/research';
@@ -88,7 +90,11 @@ try {
   // The enabling client has closed. Observe durable work and retry without requesting the artifact.
   const first = start('worker', 'worker-first');
   await until(isWaiting);
-  const [{ execution_ref: id }] = (await sql.query("SELECT execution_ref FROM work WHERE slot_type = 'companion.researchDelivery'")).rows;
+  const [{ execution_ref: id, slot_key: todoId }] = (await sql.query("SELECT execution_ref, slot_key FROM work WHERE slot_type = 'working.todo'")).rows;
+  const [{ state, spec }] = (await sql.query('SELECT state, spec FROM working_todos WHERE todo_id = $1', [todoId])).rows;
+  assert.equal(state, 'dispatched');
+  assert.deepEqual(spec.trigger, { kind: 'immediate' });
+  assert.equal(spec.workerProfile, 'deterministic_compute');
   const [{ coordinator }] = (await sql.query("SELECT data->>'coordinatorRef' AS coordinator FROM fact_revs WHERE data ? 'coordinatorRef'")).rows;
   const run = temporal.workflow.getHandle(id);
   const before = await run.describe();
@@ -98,12 +104,14 @@ try {
   assert.equal(first.signalCode, 'SIGKILL');
   await sql.query('SELECT pg_advisory_unlock($1)', [barrier]);
   const second = start('worker', 'worker-second');
-  await run.result();
+  await until(async () => (await run.describe()).status.name === 'COMPLETED');
   const reopenedAt = new Date().toISOString();
   const { worksheet } = await api(path);
   assert.equal(worksheet.method, 'deterministic-v1');
   assert.equal(worksheet.cost, 0);
-  assert.equal(worksheet.autonomy, 0);
+  assert.equal(worksheet.tier, 1);
+  assert.equal(worksheet.todoId, todoId);
+  assert.equal(worksheet.digest, '已为这次作答备好第 1 题的复习单。');
   assert.ok(worksheet.steps.length > 0 && worksheet.deliveredAt <= reopenedAt);
   assert.deepEqual(await api(path), { worksheet });
   const source = await api(worksheet.source.href);
@@ -116,14 +124,21 @@ try {
   assert.equal(after.runId, before.runId);
   const history = await run.fetchHistory();
   assert.ok(history.events.some(event => event.activityTaskStartedEventAttributes?.attempt === 2));
-  const receipts = (await sql.query("SELECT type, receipt FROM commands WHERE type IN ('companion.prepareResearch', 'companion.publishWorksheet') ORDER BY tick")).rows;
-  assert.deepEqual(receipts.map(row => row.type), ['companion.prepareResearch', 'companion.publishWorksheet']);
+  const receipts = (await sql.query("SELECT type, receipt FROM commands WHERE type = 'companion.publishWorksheet'")).rows;
+  assert.equal(receipts.length, 1);
+  await until(async () => (await sql.query(
+    `SELECT 1 FROM facts f JOIN working_todo_watermarks w USING (learner_id)
+     WHERE f.id = $1 AND w.fact_tick >= f.changed_tick`, [worksheet.id],
+  )).rowCount);
+  const todos = (await sql.query('SELECT todo_id, dedup_key, state, result_id FROM working_todos')).rows;
+  assert.deepEqual(todos, [{ todo_id: todoId, dedup_key: spec.dedupKey, state: 'completed', result_id: worksheet.id }]);
+  assert.equal((await sql.query("SELECT subject FROM working_todo_events WHERE event_type = 'on_work_completed' AND subject = $1", [todoId])).rowCount, 1);
   assert.deepEqual(await api(permission, 'PUT', { revision: 2, allowed: false }), { allowed: false, revision: 3 });
   assert.deepEqual(await api(path), { worksheet: null });
   await api(worksheet.source.href, 'GET', undefined, 404);
   const report = { schema, namespace: TEMPORAL_NAMESPACE, workerPids: [first.pid, second.pid], taskQueue: after.taskQueue,
     workflowId: id, runId: after.runId, workerBefore: before.raw.pendingActivities[0].lastWorkerIdentity,
-    worksheet, source, receipts, reopenedAt, revoked: { worksheet: null, sourceStatus: 404 } };
+    todos, worksheet, source, receipts, reopenedAt, revoked: { worksheet: null, sourceStatus: 404 } };
   await writeFile(join(dir, 'work-history.json'), JSON.stringify(history, null, 2));
   await writeFile(join(dir, 'coordinator-history.json'), JSON.stringify(
     await temporal.workflow.getHandle('coordinator:' + coordinator).fetchHistory(), null, 2,

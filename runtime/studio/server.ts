@@ -45,7 +45,7 @@ const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules
 const research = openResearch(db, activity, companion);
 async function openWeb() {
   const studio = await openStudio(db, activity);
-  const student = { workbook: openWorkbook(db, activity), organizer: openOrganizer(db, activity),
+  const student = { workbook: openWorkbook(db, activity, research.workbookChanged), organizer: openOrganizer(db, activity),
     memory: openMemory(db, companion), intake: openIntake(db, activity), research };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));

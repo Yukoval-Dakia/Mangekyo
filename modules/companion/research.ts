@@ -5,7 +5,6 @@ export const researchSettingsType = 'companion.researchSettings';
 export const researchOrderType = 'companion.researchOrder';
 export const researchWorksheetType = 'companion.researchWorksheet';
 export const configureResearch = 'companion.configureResearch';
-export const prepareResearch = 'companion.prepareResearch';
 export const publishWorksheet = 'companion.publishWorksheet';
 
 export class ResearchBasisChanged extends Error {}
@@ -34,16 +33,20 @@ export function researchSettings(value: unknown) {
   return { enabled: researchEnabled(enabled), coordinatorRef };
 }
 
-export function researchOrder(value: unknown) {
-  const { settingsId, settingsRevision, source } = object(value);
-  const { attemptId, revision, accessEpoch, questionId } = object(source);
+function researchSource(value: unknown) {
+  const { attemptId, revision, accessEpoch, questionId } = object(value);
   if (typeof accessEpoch !== 'string' || !/^(0|[1-9][0-9]*)$/.test(accessEpoch) ||
       typeof questionId !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(questionId))
     throw new Error('教研来源标识无效。');
+  return { attemptId: factId(String(attemptId)), revision: researchRevision(revision), accessEpoch, questionId };
+}
+
+export function researchOrder(value: unknown) {
+  const { settingsId, settingsRevision, source } = object(value);
   return {
     settingsId: factId(String(settingsId)),
     settingsRevision: researchRevision(settingsRevision),
-    source: { attemptId: factId(String(attemptId)), revision: researchRevision(revision), accessEpoch, questionId },
+    source: researchSource(source),
   };
 }
 export type ResearchOrder = ReturnType<typeof researchOrder>;
@@ -77,9 +80,12 @@ export function worksheetDraft(value: unknown) {
 }
 
 export function researchWorksheet(value: unknown) {
-  const { orderId, draft, method, deliveredAt } = object(value);
+  const { orderId, todoId, source, draft, method, deliveredAt, digest } = object(value);
   if ((method !== 'deterministic-v1' && method !== 'local-agent') ||
       typeof deliveredAt !== 'string' || !Number.isFinite(Date.parse(deliveredAt)))
     throw new Error('复习单交付记录无效。');
-  return { orderId: factId(String(orderId)), draft: worksheetDraft(draft), method, deliveredAt };
+  const body = { draft: worksheetDraft(draft), method, deliveredAt };
+  return todoId === undefined
+    ? { ...body, orderId: factId(String(orderId)) }
+    : { ...body, todoId: factId(String(todoId)), source: researchSource(source), digest: text(digest, 160) };
 }

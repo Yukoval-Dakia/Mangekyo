@@ -1,6 +1,7 @@
 import type { ReviewEntry } from './review.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import {
   createCommandReadContext,
   FactNotFoundError,
@@ -238,10 +239,10 @@ function sameDraft(paper: WorkbookPaper, draft: WorkbookDraft): boolean {
   }, draft);
 }
 
-export function openWorkbook(db: Db, activity: LoadedModule) {
+export function openWorkbook(db: Db, activity: LoadedModule, onFactsChanged: CommandHooks['onFactsChanged'] = async () => {}) {
   const handle = createCommandHandler(db, {
     modules: [activity],
-    hooks: { async onFactsChanged() {} },
+    hooks: { onFactsChanged },
   });
 
   async function get(id: string): Promise<WorkbookDetail> {

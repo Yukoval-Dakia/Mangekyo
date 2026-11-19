@@ -1,19 +1,25 @@
 import type { Client } from '@temporalio/client';
 import { startOrWakeCoordinator } from '../../executors/temporal/src/index.ts';
 import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  acknowledgeStartedWork, cancelWork, failWork, finishWork, readReadyWork, readWork, requestWork, type WorkRef, type WorkRequest,
+  acknowledgeStartedWork, cancelWork, failWork, finishWork, readReadyWork, readWork, type WorkRef,
 } from '../../kernel/src/work/index.ts';
+import {
+  cancelResearchTodos, checkTodoTriggers, completeTodo, emitTodo, endDispatchedTodo, enqueueWork, newFactWatermark,
+  readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoInput, type TodoSpec,
+} from '../../kernel/src/work/todos.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import {
-  configureResearch, prepareResearch, publishWorksheet, readResearchBasis, ResearchBasisChanged,
-  researchOrder, researchOrderType, researchPurpose, researchSettings, researchSettingsType, worksheetDraft,
+  configureResearch, publishWorksheet, readResearchBasis, ResearchBasisChanged, researchOrder, researchPurpose,
+  researchSettings, researchSettingsType, worksheetDraft,
 } from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
 import {
@@ -24,19 +30,12 @@ import { clientRequest, RequestError } from './sessions.ts';
 const scope = { learner: studioLearner };
 const settingsId = factId(stableId('research-settings', studioLearner));
 const wakeSlot = 'companion.researchWake';
-const worksheetSlot = 'companion.researchDelivery';
 const wake = { slotType: wakeSlot, slotKey: settingsId, deriver: 'studio/research-wake-v1' };
+const reviewGoal = '为一份正式错题作答准备复习单';
+const retrySheetLifetimeMs = 24 * 60 * 60 * 1000;
+const idleRecheckMs = 60_000;
 
-async function enqueue(tx: DbTransaction, tick: Tick, work: WorkRequest) {
-  await tx.query(
-    `INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys, changed_tick)
-     VALUES ($1, $2, $3, '{}', $4) ON CONFLICT (learner_id, slot_type, slot_key) DO NOTHING`,
-    [tx.learner, work.slotType, work.slotKey, tick],
-  );
-  return requestWork(tx, tick, work);
-}
-
-/** Runs entirely locally under the zero-cost policy. Pi transport needs its own effect and budget admission. */
+/** Local execution under the zero-cost policy. Pi transport needs effect and budget admission. */
 export type ResearchAgent = (source: ReviewEvidence) =>
   ReturnType<typeof worksheetDraft> | Promise<ReturnType<typeof worksheetDraft>>;
 
@@ -58,16 +57,61 @@ async function settings(tx: ReadTransaction) {
   });
 }
 
-async function hasActiveOrder(tx: ReadTransaction) {
-  const { rowCount } = await tx.query(
-    "SELECT 1 FROM work WHERE learner_id = $1 AND slot_type = $2 AND state = 'ready' LIMIT 1",
-    [tx.learner, worksheetSlot],
-  );
-  return rowCount > 0;
+async function eligibleBasis(tx: ReadTransaction, spec: TodoSpec) {
+  // The installed executor serves zero-cost retry sheets only. Other profiles and tiers need their own admission.
+  if (spec.workerProfile !== 'deterministic_compute' || spec.goal !== reviewGoal || spec.budgetCap !== 0 ||
+      spec.autonomyTier !== 1 || spec.expiresAtMs <= Date.now() || !spec.sourceFactRev.anchor) return null;
+  return whenAvailable(async () => {
+    const { id, revision, accessEpoch, anchor } = spec.sourceFactRev;
+    if (spec.dedupKey !== 'review-attempt:' + id) return null;
+    const basis = researchOrder({ settingsId, settingsRevision: spec.settingsRevision,
+      source: { attemptId: id, revision, accessEpoch, questionId: anchor } });
+    const read = researchReader(tx);
+    for (const ref of spec.refs) {
+      const fact = await read.fact(ref.id, { mode: 'following' });
+      if (fact.ref.rev !== ref.revision || fact.accessEpoch !== ref.accessEpoch) return null;
+    }
+    const source = await readResearchBasis(read, basis);
+    if (workbookAttempt(source.value).feedback.find(item => item.result === 'incorrect')?.questionId !== anchor) return null;
+    return { basis, source };
+  });
 }
 
-function waitForWork() {
-  return { status: 'waiting', recheckAtMs: Date.now() + 5000 } as const;
+async function triage(tx: ReadTransaction, reviewed: Tick, settingsRevision: number, now: number): Promise<TodoInput | null> {
+  // A completion can release a linked event Todo, but it cannot open a fresh chain from old evidence.
+  const fresh = await tx.query(
+    `SELECT 1 FROM facts WHERE learner_id = $1 AND changed_tick > $2
+     AND (type = $3 OR (type = $4 AND $5 = ANY(purpose) AND retracted_rev IS NULL)) LIMIT 1`,
+    [tx.learner, reviewed, researchSettingsType, workbookAttemptType, researchPurpose],
+  );
+  if (!fresh.rowCount) return null;
+  const { rows } = await tx.query<{ id: string }>(
+    `SELECT id FROM facts WHERE learner_id = $1 AND type = $2
+     AND $3 = ANY(purpose) AND retracted_rev IS NULL ORDER BY created_tick DESC, id`,
+    [tx.learner, workbookAttemptType, researchPurpose],
+  );
+  const read = researchReader(tx);
+  for (const row of rows) {
+    const id = factId(row.id);
+    const attempt = await read.fact(id, { mode: 'following' });
+    const feedback = workbookAttempt(attempt.value).feedback.find(item => item.result === 'incorrect');
+    if (!feedback) continue;
+    const sourceFactRev = { id, revision: attempt.ref.rev, accessEpoch: attempt.accessEpoch, anchor: feedback.questionId };
+    const resultId = worksheetId(id, attempt.ref.rev, attempt.accessEpoch);
+    const dedupKey = 'review-attempt:' + id;
+    const known = await tx.query(
+      `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
+       UNION ALL SELECT 1 FROM working_todos WHERE learner_id = $1 AND dedup_key = $3
+        AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5 LIMIT 1`,
+      [tx.learner, resultId, dedupKey, JSON.stringify(sourceFactRev), String(settingsRevision)],
+    );
+    if (!known.rowCount) return {
+      dedupKey, workerProfile: 'deterministic_compute', trigger: { kind: 'immediate' },
+      goal: reviewGoal, refs: [], sourceFactRev, settingsRevision, autonomyTier: 1, budgetCap: 0,
+      expiresAtMs: now + retrySheetLifetimeMs,
+    };
+  }
+  return null;
 }
 
 function settingInput(input: Record<string, unknown>, minimum: number, field: 'enabled' | 'allowed') {
@@ -94,13 +138,11 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     modules: [activity, companion],
     hooks: { async onFactsChanged(tx, tick, changes) {
       for (const change of changes) {
-        if (change.factType === researchSettingsType ||
-            (change.factType === workbookAttemptType && (await settings(tx))?.enabled)) {
-          await enqueue(tx, tick, wake);
-        }
-        if (change.factType === researchOrderType) {
-          if (await hasActiveOrder(tx)) throw new ResearchBasisChanged('已有教研工作单在执行。');
-          await enqueue(tx, tick, { slotType: worksheetSlot, slotKey: change.ref.id, deriver: 'studio/review-v1' });
+        if (change.factType === researchSettingsType) {
+          await cancelResearchTodos(tx);
+          await enqueueWork(tx, tick, wake);
+        } else if (change.factType === workbookAttemptType && (await settings(tx))?.enabled) {
+          await enqueueWork(tx, tick, wake);
         }
       }
     } },
@@ -115,45 +157,31 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     return { allowed: fact.purpose.includes(researchPurpose), revision: fact.ref.rev };
   });
 
-  const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => {
-    const next = await db.snapshot(scope, async tx => {
-      const current = await settings(tx);
-      if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' } as const;
-      if (await hasActiveOrder(tx)) return waitForWork();
-      const { rows } = await tx.query<{ id: string }>(
-        `SELECT id FROM facts WHERE learner_id = $1 AND type = $2
-         AND $3 = ANY(purpose) AND retracted_rev IS NULL ORDER BY created_tick DESC, id`,
-        [tx.learner, workbookAttemptType, researchPurpose],
-      );
-      const available = researchReader(tx);
-      for (const row of rows) {
-        const attemptId = factId(row.id);
-        const attempt = await available.fact(attemptId, { mode: 'following' });
-        const feedback = workbookAttempt(attempt.value).feedback.find(item => item.result === 'incorrect');
-        if (!feedback) continue;
-        const resultId = worksheetId(attemptId, attempt.ref.rev, attempt.accessEpoch);
-        const orderId = factId(stableId('research-order-v1', resultId, String(current.revision)));
-        const known = await tx.query(
-          'SELECT 1 FROM facts WHERE learner_id = $1 AND id IN ($2, $3) LIMIT 1',
-          [tx.learner, resultId, orderId],
-        );
-        if (!known.rowCount) {
-          return { orderId, data: {
-            settingsId, settingsRevision: current.revision,
-            source: { attemptId, revision: attempt.ref.rev, accessEpoch: attempt.accessEpoch, questionId: feedback.questionId },
-          } };
-        }
-      }
-      return { status: 'waiting' } as const;
-    });
-    if ('status' in next) return next;
-    signal.throwIfAborted();
-    const prepared = await whenAvailable(() => handle({
-      ...scope, actor: 'companion', purpose: researchPurpose, type: prepareResearch,
-      id: commandId(stableId('prepare-research', next.orderId)), input: { id: next.orderId, data: next.data },
-    }));
-    return prepared ? { status: 'advanced' } : waitForWork();
+  const workbookChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
+    const created = changes.find(change => change.factType === workbookAttemptType && change.kind === 'create');
+    if (!created || !(await settings(tx))?.enabled) return;
+    const fact = await createCommandReadContext(tx, storagePurpose).fact(created.ref.id, { mode: 'following' });
+    await recordTodoEvent(tx, tick, { type: 'on_attempt_submitted', subject: workbookAttempt(fact.value).paperId });
+    await enqueueWork(tx, tick, wake);
   };
+
+  const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => db.tx(scope, async tx => {
+    await lockLearner(tx, tx.learner);
+    const current = await settings(tx);
+    if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' };
+    signal.throwIfAborted();
+    const now = Date.now();
+    const eligible = async (spec: TodoSpec) => (await eligibleBasis(tx, spec)) !== null;
+    const due = await checkTodoTriggers(tx, now, eligible);
+    if (due.advanced) return { status: 'advanced' };
+    const watermark = await newFactWatermark(tx);
+    if (watermark !== null) {
+      const intent = await triage(tx, watermark.reviewed, current.revision, now);
+      if (intent) await tx.withLearnerWrite(tick => emitTodo(tx, tick, intent, now, eligible));
+      await saveFactWatermark(tx, watermark.observed);
+    }
+    return { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) };
+  });
 
   return {
     read,
@@ -184,6 +212,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       if (result?.worksheet.id !== id) throw new RequestError(404, '这份复习依据当前不可读。');
       return result.source;
     },
+    workbookChanged,
     advance,
     async reconcile() {
       await db.tx(scope, async tx => {
@@ -195,7 +224,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
            WHERE w.learner_id = $1 AND w.slot_type = $2 AND w.state = 'ready' AND o.state = 'pending'`,
           [tx.learner, wakeSlot],
         );
-        if (!pending.rowCount) await tx.withLearnerWrite(tick => enqueue(tx, tick, wake));
+        if (!pending.rowCount) await tx.withLearnerWrite(tick => enqueueWork(tx, tick, wake));
       });
     },
     async relayWake(client: Client, taskQueue: string, ref: WorkRef, id: string) {
@@ -211,41 +240,52 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     async execute(ref: WorkRef, terminal = false) {
       const work = await readWork(db, ref);
       if (!work) return true;
-      if (work.slotType !== worksheetSlot) return false;
-      if (terminal) {
-        await failWork(db, ref);
-        return true;
-      }
-      const orderId = factId(work.slotKey);
-      const prepared = await db.snapshot(scope, tx => whenAvailable(async () => {
-        if (!(await readReadyWork(tx, ref))) return null;
-        const read = researchReader(tx);
-        const order = researchOrder((await read.fact(orderId, { mode: 'following' })).value);
-        const attempt = await readResearchBasis(read, order);
-        const { attemptId, revision, accessEpoch, questionId } = order.source;
-        const id = worksheetId(attemptId, revision, accessEpoch);
-        const delivered = await whenAvailable(() => read.fact(id, { mode: 'following' }));
-        return { id, evidence: delivered ? null : reviewEvidence(attempt.value, questionId) };
-      }));
-      if (!prepared) {
+      if (work.slotType === 'companion.researchDelivery') {
         await cancelWork(db, ref);
         return true;
       }
-      if (prepared.evidence) {
+      if (work.slotType !== todoSlot) return false;
+      const todoId = factId(work.slotKey);
+      if (terminal) {
+        await failWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'failed'));
+        return true;
+      }
+      const prepared = await db.snapshot(scope, async tx => {
+        if (!(await readReadyWork(tx, ref))) return null;
+        const todo = await readTodo(tx, todoId);
+        if (!todo || todo.state !== 'dispatched') return todo?.state === 'completed' ? { status: 'completed' } as const : null;
+        const eligible = await eligibleBasis(tx, todo.spec);
+        if (!eligible) return null;
+        const { basis, source } = eligible;
+        const { attemptId, revision, accessEpoch, questionId } = basis.source;
+        const id = worksheetId(attemptId, revision, accessEpoch);
+        return { status: 'ready', todo, id, basis, evidence: reviewEvidence(source.value, questionId) } as const;
+      });
+      const cancel = () => cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
+      if (!prepared) {
+        await cancel();
+        return true;
+      }
+      if (prepared.status === 'ready') {
         const draft = worksheetDraft(await generate(prepared.evidence));
         const publish = createCommandHandler(db, {
           modules: [companion],
-          hooks: { async onFactsChanged(tx) {
-            if (!(await readReadyWork(tx, ref))) throw new ResearchBasisChanged('工作单已失效。');
+          hooks: { async onFactsChanged(tx, tick) {
+            const current = await readTodo(tx, todoId);
+            if (current?.revision !== prepared.todo.revision || !(await readReadyWork(tx, ref)) ||
+                !(await eligibleBasis(tx, current.spec)) || !await completeTodo(tx, tick, current, prepared.id))
+              throw new ResearchBasisChanged('工作单已失效。');
+            await enqueueWork(tx, tick, wake);
           } },
         });
         const receipt = await whenAvailable(() => publish({
           ...scope, actor: 'companion', purpose: researchPurpose, type: publishWorksheet,
           id: commandId(stableId('publish-worksheet', prepared.id)),
-          input: { id: prepared.id, orderId, draft, method: agent ? 'local-agent' : 'deterministic-v1' },
+          input: { id: prepared.id, todoId, basis: prepared.basis, draft,
+            method: agent ? 'local-agent' : 'deterministic-v1', questionNumber: prepared.evidence.questionNumber },
         }));
         if (!receipt) {
-          await cancelWork(db, ref);
+          await cancel();
           return true;
         }
       }

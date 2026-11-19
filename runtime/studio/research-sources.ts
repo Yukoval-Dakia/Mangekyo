@@ -56,19 +56,21 @@ export async function readWorksheet(tx: ReadTransaction, paperId: string, attemp
   const read = researchReader(tx);
   return whenAvailable(async () => {
     const fact = await read.fact(id, { mode: 'following' });
-    const { orderId, draft, method, deliveredAt } = researchWorksheet(fact.value);
-    const order = researchOrder((await read.fact(orderId, { mode: 'following' })).value);
-    if (order.source.attemptId !== attempt.ref.id || order.source.revision !== attempt.ref.rev ||
-        order.source.accessEpoch !== attempt.accessEpoch) throw new ResearchBasisChanged('复习单来源已变更。');
-    const source = await readResearchSource(read, order.source);
-    const evidence = reviewEvidence(source.value, order.source.questionId);
+    const result = researchWorksheet(fact.value);
+    const fromTodo = 'todoId' in result;
+    const ref = fromTodo ? result.source : researchOrder((await read.fact(result.orderId, { mode: 'following' })).value).source;
+    if (ref.attemptId !== attempt.ref.id || ref.revision !== attempt.ref.rev ||
+        ref.accessEpoch !== attempt.accessEpoch) throw new ResearchBasisChanged('复习单来源已变更。');
+    const source = await readResearchSource(read, ref);
+    const evidence = reviewEvidence(source.value, ref.questionId);
     const href = `/api/papers/${paperId}/attempts/${attemptId}/research/${id}/source`;
     return {
       worksheet: {
-        id, orderId, ...draft, method, deliveredAt, autonomy: 0, cost: 0,
-        source: { ...order.source, href },
+        id, ...result.draft, method: result.method, deliveredAt: result.deliveredAt, tier: 1, cost: 0,
+        ...(fromTodo ? { todoId: result.todoId, digest: result.digest } : { orderId: result.orderId }),
+        source: { ...ref, href },
       },
-      source: { ...order.source, ...evidence },
+      source: { ...ref, ...evidence },
     };
   });
 }
