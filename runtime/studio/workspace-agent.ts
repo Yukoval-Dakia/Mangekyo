@@ -1,6 +1,7 @@
 import {fileURLToPath} from 'node:url';
 import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import {createCommandHandler} from '../../kernel/src/commands/handle.ts';
+import {canonicalJsonString} from '../../kernel/src/commands/canonical.ts';
 import {recordLocalRead} from '../../kernel/src/work/effects.ts';
 import {commandId, factId, type Revision, type Tick} from '../../kernel/src/declarations/ids.ts';
 import {isJson} from '../../kernel/src/declarations/define.ts';
@@ -10,7 +11,8 @@ import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
 import {workspaceDefinitions} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
-import {workspaceSearch, workspaceRead, workspaceSourceUnavailable} from './workspace-read.ts';
+import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
+import {workbookAttempt, workbookAttemptType} from '../../modules/activity/workbook-values.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
@@ -25,6 +27,7 @@ export function openWorkspaceTools(options: {
   authorize: (tx: ReadTransaction) => Promise<void>;
   maySend: (input: FactSnapshot) => boolean;
   track: (input: WorkspaceWitness) => void;
+  trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
   prior: WorkspaceWitness[];
 }) {
   const {db, turn} = options;
@@ -40,11 +43,17 @@ export function openWorkspaceTools(options: {
       const track: SourceTrack = (fact, mode) => witnesses.set(fact.ref.id, {
         id:fact.ref.id, type:fact.type, rev:fact.ref.rev, epoch:fact.accessEpoch, ...(mode ? {mode} : {}),
       });
-      const text = await (name === 'read_workspace' ? workspaceRead : workspaceSearch)(tx,args,track,options.maySend);
-      return JSON.stringify({text,witnesses:[...witnesses.values()]});
+      const assessmentBasis: WorkspaceAssessmentBasis[] = [];
+      const text = name === 'read_workspace'
+        ? await workspaceRead(tx,args,track,options.maySend,options.trackAssessment ? basis => assessmentBasis.push(basis) : undefined)
+        : await workspaceSearch(tx,args,track,options.maySend);
+      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis});
     },options.authorize);
-    const {text, witnesses} = JSON.parse(raw) as {text:string; witnesses:WorkspaceWitness[]};
+    const {text, witnesses, assessmentBasis} = JSON.parse(raw) as {
+      text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[];
+    };
     const value = JSON.parse(text);
+    const legacyWholeAttempt = !assessmentBasis && value.sourceRef?.fact.type === workbookAttemptType && value.sourceRef.anchor.kind === 'whole';
     const current = await db.snapshot({learner: studioLearner}, async tx => {
       const reader = createCommandReadContext(tx, purpose);
       try {
@@ -53,16 +62,27 @@ export function openWorkspaceTools(options: {
           const fact = await reader.fact(input.id, input);
           if (fact.ref.rev !== witness.rev || fact.type !== witness.type ||
             fact.accessEpoch !== witness.epoch || !options.maySend(fact)) return false;
+          // Old whole-attempt receipts could include the frozen rubric inside content.
+          if (legacyWholeAttempt && fact.ref.id === value.id && workbookAttempt(fact.value).paper.questions.some(q => q.kind === 'rubric')) return false;
         }
       } catch (error) {
         if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return false;
         throw error;
       }
+      if (assessmentBasis?.length && !options.trackAssessment) return false;
+      for (const basis of assessmentBasis ?? []) {
+        const actual = await workspaceAssessmentBasis(tx, basis.slot, options.maySend);
+        if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
+      }
       for (const witness of witnesses) options.track(witness);
+      for (const basis of assessmentBasis ?? []) options.trackAssessment?.(basis);
       await options.authorize(tx);
       return true;
     });
-    if (!current) return workspaceSourceUnavailable;
+    if (!current) {
+      if (assessmentBasis?.length || legacyWholeAttempt) throw new TeachingError('evidence_scope', '作答依据已变化，本轮结果无法使用。');
+      return workspaceSourceUnavailable;
+    }
     const direct = new Set<string>([value.id,args.related,...[...(value.results ?? []), ...(value.observations ?? []),
       ...(value.recentAttempts ?? [])].map(item => item.id)].filter(id => typeof id === 'string'));
     for (const w of witnesses) if (direct.has(w.id)) sources.set(w.id,w);

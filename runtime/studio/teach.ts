@@ -2,7 +2,9 @@ import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
 import { currentMemory, memoryId } from './memory.ts';
 import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { derivationId, factId, learnerId } from '../../kernel/src/declarations/ids.ts';
+import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import {
@@ -26,10 +28,12 @@ import {
   type TeachingResponse,
 } from '../../executors/teaching/index.ts';
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
+import { workbookRubricAssessmentType } from '../../modules/activity/workbook-values.ts';
 import { caseId, type DisplayTurn } from './sessions.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
 import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
+import {workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import { loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
 import { methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
@@ -49,7 +53,18 @@ export async function teach(db: Db, ref: WorkRef) {
   const learner = learnerId(ref.learner);
   const scope = { learner };
   const inputs = new Map<string, ManifestInput>();
+  const assessments = new Map<string, WorkspaceAssessmentBasis>();
   let liveMemoryRevision: number | undefined;
+  let authorizeAssessmentRoute: (() => Promise<void>) | undefined;
+  const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
+  function trackAssessment(basis: WorkspaceAssessmentBasis) {
+    const {slot, facts} = basis;
+    assessments.set(slot.derivationId, basis);
+    inputs.set('assessment:' + slot.derivationId, slot);
+    for (const fact of facts) {
+      inputs.set(`assessment-fact:${fact.id}:${fact.rev}:${fact.accessEpoch}:${fact.mode}`, fact);
+    }
+  }
   async function readFact(tx: ReadTransaction, id: string, mode: 'pinned' | 'following' = 'following') {
     const fact = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });
     inputs.set(id, {
@@ -66,8 +81,8 @@ export async function teach(db: Db, ref: WorkRef) {
   async function readFeedback(tx: ReadTransaction, id: string, recordDependency = true) {
     const {
       rows: [row],
-    } = await tx.query<{ id: string; value: DisplayTurn }>(
-      `SELECT d.id, d.value FROM slot_state s JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
+    } = await tx.query<{ id: string; value: DisplayTurn; manifest: unknown }>(
+      `SELECT d.id, d.value, d.manifest FROM slot_state s JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
        WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
       [learner, slotType, id],
     );
@@ -82,10 +97,17 @@ export async function teach(db: Db, ref: WorkRef) {
       });
       await validInputs(tx);
     }
-    return row.value;
+    return row;
   }
   async function validInputs(tx: ReadTransaction) {
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
+    if (assessments.size) {
+      if (!authorizeAssessmentRoute) throw new ChangedEvidence();
+      await authorizeAssessmentRoute();
+      for (const {slot} of assessments.values()) {
+        if (!await workspaceAssessmentBasis(tx, slot, maySend)) throw new ChangedEvidence();
+      }
+    }
     const {
       rows: [clock],
     } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [learner]);
@@ -106,11 +128,16 @@ export async function teach(db: Db, ref: WorkRef) {
     const settings = await loadSettings(task);
     if (!sameRoute(submission, settings))
       throw new TeachingError('provider_configuration', '本轮绑定的模型配置已变更，请切回原配置或新建对话。');
-    const checkWorkspaceRoute = async () => {
-      if (await workspaceRouteRevision(settings) !== submission.workspaceRevision)
+    const checkWorkspaceRoute = async (current = settings) => {
+      if (await workspaceRouteRevision(current) !== submission.workspaceRevision)
         throw new TeachingError('provider_configuration', '这个模型的学习工作区访问已关闭。请开始新会话。');
     };
     if (submission.workspaceRevision) await checkWorkspaceRoute();
+    authorizeAssessmentRoute = async () => {
+      const current = await loadSettings(task);
+      if (!submission.workspaceRevision || !sameRoute(submission, current) || current.apiKey !== settings.apiKey ||
+          await workspaceRouteRevision(current) !== submission.workspaceRevision) throw new ChangedEvidence();
+    };
     const grants = submission.mcpGrants ?? [];
     function checkMcpAccess(current: typeof settings) {
       const servers = resolveMcpGrants(grants, current);
@@ -135,6 +162,17 @@ export async function teach(db: Db, ref: WorkRef) {
       }
     };
     const runModelEffect: TeachingDependencies['runEffect'] = async (step, invoke) => {
+      const authorize = async (tx: ReadTransaction) => {
+        if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
+        await validInputs(tx);
+        const current = await loadSettings(task);
+        if (!sameRoute(submission, current)) throw new ChangedEvidence();
+        if (!step.provider.startsWith('tool:') && current.apiKey !== settings.apiKey) throw new ChangedEvidence();
+        if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new ChangedEvidence();
+        if (grants.length) checkMcpAccess(current);
+        if (submission.workspaceRevision) await checkWorkspaceRoute(current);
+      };
+      let dispatchDenied: ChangedEvidence | TeachingError | undefined;
       const effect = await runEffect(
         db,
         {
@@ -143,27 +181,36 @@ export async function teach(db: Db, ref: WorkRef) {
           ownerId: job.slotKey,
           stepKey: String(step.index),
           label: step.provider.startsWith('tool:') ? step.provider : 'teaching-model',
-          input: { digest: step.requestDigest, provider: step.provider, model: step.model },
+          input: { digest: step.requestDigest, provider: step.provider, model: step.model,
+            ...(assessments.size ? {assessmentBasis: [...assessments.values()]} : {}) },
         },
         async (requestId) => {
+          let pending: Promise<string> | undefined;
+          if (assessments.size) {
+            try {
+              // Start the reserved transport under a fresh authorization lock. The reply is awaited outside it.
+              await db.tx(scope, async tx => {
+                await lockLearner(tx, learner);
+                await authorize(tx);
+                pending = invoke(requestId);
+                void pending.catch(() => {});
+              });
+            } catch (error) {
+              if (error instanceof ChangedEvidence || error instanceof TeachingError) dispatchDenied = error;
+              throw error;
+            }
+          }
           try {
-            return await invoke(requestId);
+            return await (pending ?? invoke(requestId));
           } catch (error) {
             console.warn('模型调用未能确认', requestId, error instanceof TeachingError ? error.code : 'transport_error');
             throw error;
           }
         },
-        async (tx) => {
-          if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
-          await validInputs(tx);
-          const current = await loadSettings(task);
-          if (!sameRoute(submission, current)) throw new ChangedEvidence();
-          if (!step.provider.startsWith('tool:') && current.apiKey !== settings.apiKey) throw new ChangedEvidence();
-          if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new ChangedEvidence();
-          if (grants.length) checkMcpAccess(current);
-          if (submission.workspaceRevision) await checkWorkspaceRoute();
-        },
+        authorize,
       );
+      if (dispatchDenied) throw dispatchDenied;
+      if (assessments.size) await db.snapshot(scope, validInputs);
       if (effect.kind === 'unknown') throw new UncertainEffect(effect.providerEffectId);
       if (typeof effect.result !== 'string') throw new Error('Invalid stored model response');
       return effect.result;
@@ -194,21 +241,29 @@ export async function teach(db: Db, ref: WorkRef) {
           }
           // Each reply follows its immediate predecessor. Recursive manifest
           // validation covers earlier replies without repeating dependency paths.
-          const response = await readFeedback(tx, previousId, count === 0);
+          const {value: response, manifest} = await readFeedback(tx, previousId, count === 0);
           historyBytes += Buffer.byteLength(previous.answer) + Buffer.byteLength(response.message);
           if (submission.workspaceRevision && count > 0 && historyBytes > 12 * 1024) break;
           const priorMemory = response.reads.find(item => item.id === memoryId);
           if (priorMemory && priorMemory.text !== preference) break;
-          if (response.workspaceBasis?.length) {
+          const assessmentSlots = parseManifest(manifest).inputs.filter((input): input is AssessmentSlot =>
+            input.kind === 'slot' && input.slotType === workbookRubricAssessmentType);
+          if (response.workspaceBasis?.length || assessmentSlots.length) {
             if (!submission.workspaceRevision || previous.workspaceRevision !== submission.workspaceRevision) {
               historyNotice = '工作区授权已变更，本轮省略了使用旧授权的对话。';
               break;
             }
-            if (new Set([...inherited.keys(), ...response.workspaceBasis.map(w => w.id)]).size > 48) {
+            const witnesses = response.workspaceBasis ?? [];
+            if (new Set([...inherited.keys(), ...witnesses.map(w => w.id)]).size > 48) {
               historyNotice = '较早的学习记录可按需重新检索，本轮从最近的对话继续。';
               break;
             }
-            for (const w of response.workspaceBasis) if (!inherited.has(w.id)) inherited.set(w.id, w);
+            for (const slot of assessmentSlots) {
+              const basis = await workspaceAssessmentBasis(tx, slot, maySend);
+              if (!basis) throw new ChangedEvidence();
+              trackAssessment(basis);
+            }
+            for (const w of witnesses) if (!inherited.has(w.id)) inherited.set(w.id, w);
           }
           messages.unshift({ role: 'user', content: previous.answer }, { role: 'assistant', content: response.message });
           previousId = previous.parentId;
@@ -229,8 +284,9 @@ export async function teach(db: Db, ref: WorkRef) {
       }
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
         db, turn: job.slotKey, prior: [...inherited.values()],
-        maySend(fact) { return fact.type !== 'companion.memory' || (Boolean(preference) && fact.ref.rev === liveMemoryRevision); },
+        maySend,
         track(w) { inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w)); },
+        trackAssessment,
         async authorize(tx) {
           if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
           await validInputs(tx);
@@ -263,7 +319,7 @@ export async function teach(db: Db, ref: WorkRef) {
       let followUp;
       if (submission.parentId && submission.answer) {
         const parent = submission.parentId;
-        const prev = await db.snapshot(scope, tx => readFeedback(tx, parent));
+        const {value: prev} = await db.snapshot(scope, tx => readFeedback(tx, parent));
         followUp = {
           previous: {
             action: prev.action as TeachingResponse['action'],

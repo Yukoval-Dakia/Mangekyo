@@ -1,12 +1,17 @@
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
+import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import type {Revision} from '../../kernel/src/declarations/ids.ts';
+import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
 import {isSourceFactId, sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workspaceEntryKinds, workspaceEntryType, workspaceAttemptTypes, workspaceShareableTypes} from '../../modules/activity/workspace-values.ts';
-import {workbookPaperType} from '../../modules/activity/workbook-values.ts';
+import {workbookAttempt, workbookAttemptType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
 import {materialType} from '../../modules/activity/library-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
 import {resolveSource, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
-import {syntheticStudyRecords} from './workspace-access.ts';
+import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
+import {purpose} from './identity.ts';
+import {readTeachingAttemptAssessments} from './learning-attempt-read.ts';
 import {textSlice} from './reading.ts';
 
 type Arguments = Record<string, unknown>;
@@ -14,6 +19,44 @@ const legacyKinds: Record<string, string[]> = {
   attempt: workspaceAttemptTypes, paper: [workbookPaperType], material: [materialType], note: [organizerNoteType],
 };
 export const workspaceSourceUnavailable = JSON.stringify({error: '未找到可用于教学的记录。可用 search_workspace 查找当前可读的 id。'});
+export type AssessmentSlot = Extract<ManifestInput, {kind: 'slot'}>;
+export type WorkspaceAssessmentBasis = {slot: AssessmentSlot; facts: Extract<ManifestInput, {kind: 'fact'}>[]};
+
+export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: AssessmentSlot, maySend: WorkspaceSourceRecipient): Promise<WorkspaceAssessmentBasis | undefined> {
+  if (slot.slotType !== workbookRubricAssessmentType || slot.mode !== 'following') return;
+  const {rows: [current]} = await tx.query<{manifest: unknown; attempt_id: string; paper_id: string}>(
+    `SELECT d.manifest,d.scope_keys->>'attemptId' AS attempt_id,d.scope_keys->>'paperId' AS paper_id
+     FROM slot_state s JOIN derivations d
+       ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.current_id)
+     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3 AND s.current_id=$4
+       AND d.lifecycle='effective' AND NOT d.is_shadow AND d.invalidated_tick IS NULL
+       AND d.selection_ended_tick IS NULL AND d.effective_tick >= d.gather_tick`,
+    [tx.learner, slot.slotType, slot.slotKey, slot.derivationId]);
+  if (!current) return;
+  let manifest;
+  try { manifest = parseManifest(current.manifest); }
+  catch { return; }
+  if (manifest.learner !== tx.learner) return;
+  const reader = createCommandReadContext(tx, purpose);
+  const facts: WorkspaceAssessmentBasis['facts'] = [];
+  try {
+    for (const input of manifest.inputs) {
+      // The workbook publisher licenses direct fact inputs. Other input shapes need their own recipient policy.
+      if (input.kind !== 'fact' || syntheticStudyRecords.has(input.id)) return;
+      const mode = input.id === current.attempt_id ? 'following' : input.mode;
+      const fact = await reader.fact(input.id, mode === 'following' ? {mode} : {mode, rev: input.rev as Revision});
+      if (fact.ref.rev !== input.rev || fact.accessEpoch !== input.accessEpoch || !maySend(fact)) return;
+      if ((input.id === current.attempt_id && fact.type !== workbookAttemptType) ||
+          (input.id === current.paper_id && fact.type !== workbookPaperType)) return;
+      facts.push(mode === input.mode ? input : {...input, mode});
+    }
+  } catch (error) {
+    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
+    throw error;
+  }
+  if (!facts.some(fact => fact.id === current.attempt_id) || !facts.some(fact => fact.id === current.paper_id)) return;
+  return {slot, facts};
+}
 
 function legacyKind(type: string) {
   return Object.keys(legacyKinds).find(kind => legacyKinds[kind]?.includes(type));
@@ -82,7 +125,8 @@ export async function workspaceSearch(tx: ReadTransaction, args: Arguments, trac
   }
 }
 
-export async function workspaceRead(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient): Promise<string> {
+export async function workspaceRead(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient,
+  trackAssessment?: (basis: WorkspaceAssessmentBasis) => void): Promise<string> {
   if (args.id === 'learner') {
     const observations = JSON.parse(await workspaceSearch(tx,{kind:'observation'},track,maySend));
     const attempts = JSON.parse(await workspaceSearch(tx,{kind:'attempt'},track,maySend));
@@ -93,12 +137,41 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
   if (!reference) return JSON.stringify({error:'id 可传 search_workspace 的记录 id 或读回的 sourceRef JSON 字符串。查看学情概览时传 learner。'});
   const offset = args.offset ?? 0;
   if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) return JSON.stringify({error:'offset 须为非负整数。'});
-  const record = await resolveSource(tx, reference, {recipient: 'workspace', track, maySend});
+  let attempt: FactSnapshot | undefined;
+  const record = await resolveSource(tx, reference, {recipient: 'workspace', maySend, track(fact, mode) {
+    track(fact, mode);
+    if (fact.type === workbookAttemptType) attempt = fact;
+  }});
   if (!record) return workspaceSourceUnavailable;
-  const {sourceRef, content: original, title, tags, links} = record;
-  const sliced = typeof original === 'string' ? textSlice(original, offset) : {content: original, offset: 0, nextOffset: null};
-  const content = sliced.content;
-  const end = sliced.offset + (typeof content === 'string' ? content.length : 0);
+  const {sourceRef, title, tags, links} = record;
+  let original = record.content;
+  const assessments = [];
+  if (attempt && attempt.ref.id === sourceRef.fact.id && sourceRef.anchor.kind === 'whole' && typeof original === 'string') {
+    let value;
+    try { value = workbookAttempt(attempt.value); }
+    catch { return workspaceSourceUnavailable; }
+    const {paper, feedback} = value;
+    if (paper.questions.some(question => question.kind === 'rubric')) {
+      const rubric = '未随作答共享';
+      original = displayOf(workbookAttemptType, {...value,
+        paper: {...paper, questions: paper.questions.map(question => question.kind === 'rubric'
+          ? {...question, rubric, explanation: null} : question)},
+        feedback: feedback.map(item => item.expected.kind === 'rubric'
+          ? {...item, expected: {...item.expected, rubric}, explanation: null} : item),
+      }).text;
+      if (trackAssessment) {
+        for (const {ref, attempt: _attempt, ...assessment} of await readTeachingAttemptAssessments(tx, attempt, {purpose, recipientEligible: maySend(attempt)})) {
+          const basis = await workspaceAssessmentBasis(tx, ref, maySend);
+          if (!basis) continue;
+          trackAssessment(basis);
+          assessments.push(assessment);
+        }
+      }
+    }
+  }
+  const {content, nextOffset} = typeof original === 'string'
+    ? textSlice(original, offset) : {content: original, nextOffset: null};
   return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? legacyKind(sourceRef.fact.type),
-    title, content, tags, links, sourceRef, ...(typeof original === 'string' && end < original.length ? {nextOffset: end} : {})});
+    title, content, tags, links, sourceRef, ...(assessments.length ? {assessments} : {}),
+    ...(nextOffset === null ? {} : {nextOffset})});
 }
