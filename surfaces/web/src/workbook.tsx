@@ -3,13 +3,14 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
   WorkbookAttemptView,
   WorkbookDetail,
-  WorkbookExpected,
   WorkbookQuestionView,
   WorkbookRubricAssessmentView,
   WorkbookSummary,
 } from '../../../modules/activity/workbook-values.ts';
 import { api, ApiError, remember, remembered, requestId, type Settings } from './api';
 import { PageTitle, ReadState, useResource, type Material, type Resource } from './workspace';
+import { ExpectedView } from './expected-view';
+import { AttemptResearch } from './research';
 import './workbook.css';
 
 export type WorkbookProps = {
@@ -626,22 +627,6 @@ function restoreAttemptDraft(paperId: string): AttemptDraft | null {
   }
 }
 
-function ExpectedView({ expected }: { expected: WorkbookExpected }) {
-  return expected.kind === 'rubric' ? (
-    <span>
-      评分标准（{expected.rubricVersion}）：<span className="workbook-rubric-text">{expected.rubric}</span>
-    </span>
-  ) : expected.kind === 'numeric' ? (
-    <span>
-      参考答案：<strong>{String(expected.value)}</strong> ± {String(expected.tolerance)}
-      {expected.unit ? ' ' + expected.unit : ''}
-    </span>
-  ) : (
-    <span>
-      参考答案：{expected.values.map((value) => <code key={value}>{value}</code>)}
-    </span>
-  );
-}
 
 function selfCheckKey(paperId: string, attemptId: string, questionId: string) {
   return `workbook-selfcheck:${paperId}:${attemptId}:${questionId}`;
@@ -772,7 +757,7 @@ function FeedbackItem({
 function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
-  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
+  const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
   const [assessing, setAssessing] = useState<string | null>(null);
   const settings = modelSettings.data && forTask(modelSettings.data, 'assessment');
   const settingsError = modelSettings.error ? '无法读取模型设置。' : '';
@@ -846,6 +831,14 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         .map((feedback) => feedback.questionId)
     : [];
   const showForm = Boolean(draft) || attempts.length === 0;
+
+  function setSelectedAttemptId(id: string | null) {
+    const url = new URL(location.href);
+    if (id) url.searchParams.set('attempt', id);
+    else url.searchParams.delete('attempt');
+    history.replaceState(history.state, '', url);
+    setAttemptId(id);
+  }
 
   function startRedo(focus: 'wrong' | 'full') {
     const next: AttemptDraft = {
@@ -1061,6 +1054,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </button>
               </div>
             </div>
+            <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} />
             {activeAttempt.feedback.map((feedback) => {
               const question = view.questions.find((item) => item.id === feedback.questionId);
               if (!question) return null;

@@ -3,6 +3,7 @@ import { McpToolPicker } from './mcp-tool-picker';
 import { WorkspaceAccessPanel } from './workspace-access';
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, type Settings } from "./api";
+import { ResearchSettings } from "./research";
 import { Icon } from "./icons";
 import {
   draftFromSettings,
@@ -146,11 +147,12 @@ export function SettingsDialog({ onClose, onSave }: {
     >
       <div className="dialog-heading">
         <div>
-          <h2 id="settings-title">设置</h2>
+          <h2 id="settings-title">学习设置</h2>
           <p>管理模型提供方、学习记录访问、MCP 服务与可选的公开参考搜索。</p>
         </div>
-        <button type="button" className="icon-button" aria-label="关闭设置" disabled={saving} onClick={() => dialog.current?.close()}><Icon name="close" /></button>
+        <button type="button" className="icon-button" aria-label="关闭学习设置" disabled={saving} onClick={() => dialog.current?.close()}><Icon name="close" /></button>
       </div>
+      <ResearchSettings />
       {draft ? (
         <form onSubmit={(event) => void save(event)}>
           <section className="settings-section" aria-labelledby="providers-title">
