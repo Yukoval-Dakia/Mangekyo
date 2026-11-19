@@ -270,3 +270,9 @@ p, h1, h2, h3, ol, ul, figure { margin: 0; }
 .initial-answer { display:flex; align-items:baseline; flex-wrap:wrap; gap:.5rem 1rem; margin:1.25rem 0 0; }
 .initial-answer span { font-size:.8rem; }
 .initial-answer strong { font-size:1.25rem; }
+
+.research-choice { margin-block: 16px; padding-block: 14px; border-block: 1px solid var(--line); }
+.research-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; color: var(--muted); font-size: 14px; }
+.research-sheet { margin-top: 12px; }
+.research-sheet ol { padding-inline-start: 1.6em; line-height: 1.7; }
+.research-sheet blockquote { margin: 8px 0; padding-inline-start: 14px; border-left: 3px solid var(--line); overflow-wrap: anywhere; }
