@@ -37,7 +37,7 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     await db.query('DROP TABLE work_outbox');
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
-    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
+    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -49,9 +49,9 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (5)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (6)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 5');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 6');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
   });
 

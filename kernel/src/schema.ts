@@ -13,7 +13,7 @@ export const kernelSchemaStatements = [
     type text NOT NULL,
     current_rev integer NOT NULL,
     access_epoch bigint NOT NULL DEFAULT 0,
-    purpose text[] NOT NULL DEFAULT '{all}',
+    purpose text[] NOT NULL DEFAULT '{storage}',
     sticky boolean NOT NULL DEFAULT false,
     retracted_rev integer,
     created_tick bigint NOT NULL,
@@ -222,6 +222,9 @@ const migrations = [
       minimum_worker_schema integer NOT NULL CHECK (minimum_worker_schema > 0)
     )`);
     await tx.query('INSERT INTO kernel_runtime_identity(store_id, minimum_worker_schema) VALUES ($1, $2)', [newUlid(), 4]);
+  },
+  async (tx: DbQuery) => {
+    await tx.query("ALTER TABLE facts ALTER COLUMN purpose SET DEFAULT '{storage}'");
   },
 ] as const;
 

@@ -117,7 +117,7 @@ function validateWrite(write: FactWrite, facts: FactRegistry, options: WriteOpti
       id: factId(write.id),
       factType: write.factType,
       data: parseFactData(facts, write.factType, write.data, 'Create write data'),
-      purpose: write.purpose === undefined ? ['all'] : validatePurpose(write.purpose, 'Create write purpose'),
+      purpose: write.purpose === undefined ? ['storage'] : validatePurpose(write.purpose, 'Create write purpose'),
     };
   }
   if (write.kind === 'correct') {
