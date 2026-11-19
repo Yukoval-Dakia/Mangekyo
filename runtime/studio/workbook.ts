@@ -37,7 +37,6 @@ import {
   workbookPaperType,
   workbookQuestionsView,
   workbookRequestId,
-  workbookRubricAssessment,
   workbookRubricAssessmentType,
   workbookRubricAssessmentVersion,
   sameWorkbookJson,
@@ -57,6 +56,7 @@ import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { loadSettings } from './settings.ts';
+import { allAssessments } from './learning-attempt-read.ts';
 
 class UncertainRubricEffect extends Error {}
 
@@ -196,24 +196,6 @@ async function allAttempts(
     }
   }
   return attempts;
-}
-
-async function allAssessments(tx: ReadTransaction, paperId?: string, key?: string) {
-  const { rows } = await tx.query<{ id: string; value: unknown; manifest: unknown }>(
-    `SELECT d.id,d.value,d.manifest FROM derivations d JOIN slot_state s
-       ON s.learner_id=d.learner_id AND s.slot_type=d.slot_type AND s.current_id=d.id
-       WHERE d.learner_id=$1 AND d.slot_type=$2 AND ($3::text IS NULL OR d.scope_keys->>'paperId'=$3)
-       AND ($4::text IS NULL OR s.slot_key=$4)`,
-    [tx.learner, workbookRubricAssessmentType, paperId ?? null, key ?? null]);
-  const result = new Map<string, WorkbookRubricAssessmentView[]>();
-  for (const row of rows) {
-    if ((await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid') continue;
-    const assessment = workbookRubricAssessment(row.value);
-    const current = result.get(assessment.attemptId) ?? [];
-    current.push({id: row.id, ...assessment});
-    result.set(assessment.attemptId, current);
-  }
-  return result;
 }
 
 async function requireSource(db: Db, id: string): Promise<void> {
