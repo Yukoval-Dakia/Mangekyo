@@ -39,7 +39,7 @@ export function WorkspaceRecord({id}:{id:string}) {
   function preparePaper() {
     if (!item?.question) return;
     try {
-      sessionStorage.setItem('mangekyo:paper-proposal',JSON.stringify({title:item.title,questions:[item.question]}));
+      sessionStorage.setItem('mangekyo:paper-proposal',JSON.stringify({title:item.title,questions:[{...item.question, sourceQuestionRef:{id:item.id, rev:item.rev}}]}));
       location.assign('/papers/new?proposal=1');
     } catch { setProblem('浏览器暂时无法保存组卷草稿。'); }
   }

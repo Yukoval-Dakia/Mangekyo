@@ -6,6 +6,7 @@ import type {
   WorkbookQuestionView,
   WorkbookRubricAssessmentView,
   WorkbookSummary,
+  WorkbookSourceQuestionRef,
 } from '../../../modules/activity/workbook-values.ts';
 import { api, ApiError, remember, remembered, requestId, type Settings } from './api';
 import { PageTitle, ReadState, useResource, type Material, type Resource } from './workspace';
@@ -104,7 +105,16 @@ type RubricEditor = {
   rubric: string;
   explanation: string;
 };
-type EditorQuestion = NumericEditor | ExactEditor | RubricEditor;
+type EditorQuestion = (NumericEditor | ExactEditor | RubricEditor) & {
+  sourceQuestionRef?: WorkbookSourceQuestionRef;
+};
+
+function QuestionSource({ source }: { source: WorkbookSourceQuestionRef }) {
+  return <p className="workbook-source-note">
+    引用原题第 {source.rev} 版 · <a href={'/materials/records/' + encodeURIComponent(source.id)}>查看当前记录</a>
+    <br /><small>{source.id}</small>
+  </p>;
+}
 type PaperEditorDraft = {
   requestId: string;
   title: string;
@@ -159,12 +169,13 @@ function proposalFromSession(materials: Material[]): PaperEditorDraft | null {
         ? proposal.materialId
         : null;
     const questions: EditorQuestion[] = questionsValue.map((entry, index) => {
-      const row = entry as { prompt?: unknown; answer?: unknown; rubric?: unknown } | null;
+      const row = entry as { prompt?: unknown; answer?: unknown; rubric?: unknown; sourceQuestionRef?: WorkbookSourceQuestionRef } | null;
       const prompt = row && typeof row.prompt === 'string' ? row.prompt : '';
       const answer = row && typeof row.answer === 'string' ? row.answer : '';
       if (!prompt) throw new Error(`第 ${index + 1} 道题目缺少题面。`);
-      if (typeof row?.rubric === 'string' && row.rubric.trim()) return { ...rubricQuestion(), prompt, rubric: row.rubric, explanation: answer };
-      return { ...exactQuestion(true), prompt, answerLines: answer };
+      const origin = row?.sourceQuestionRef ? { sourceQuestionRef: row.sourceQuestionRef } : {};
+      if (typeof row?.rubric === 'string' && row.rubric.trim()) return { ...rubricQuestion(), ...origin, prompt, rubric: row.rubric, explanation: answer };
+      return { ...exactQuestion(true), ...origin, prompt, answerLines: answer };
     });
     return {
       requestId: requestId(),
@@ -228,9 +239,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const usedProposal = useRef(
-    proposalMode && draft.questions.some((question) => question.kind === 'exact' && question.selfCheck),
-  );
+  const usedProposal = useRef(proposalMode);
 
   useEffect(() => {
     if (!usedProposal.current) return;
@@ -307,6 +316,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
           }
           return {
             kind: 'numeric',
+            sourceQuestionRef: question.sourceQuestionRef,
             prompt: question.prompt,
             answer,
             tolerance,
@@ -320,15 +330,19 @@ function AuthorPage({ materials }: { materials: Material[] }) {
           }
           return {
             kind: 'rubric',
+            sourceQuestionRef: question.sourceQuestionRef,
             prompt: question.prompt,
             rubric: question.rubric,
             explanation: question.explanation,
           };
         }
-        const answers = question.answerLines.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+        const answers = question.sourceQuestionRef
+          ? [question.answerLines]
+          : question.answerLines.split('\n').map((line) => line.trim()).filter(Boolean);
         if (answers.length === 0) throw new Error(`第 ${index + 1} 题需要至少一条参考答案。`);
         return {
           kind: 'exact',
+          sourceQuestionRef: question.sourceQuestionRef,
           prompt: question.prompt,
           answers,
           selfCheck: question.selfCheck,
@@ -350,7 +364,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
     } catch (error) {
       setError(
         error instanceof ApiError
-          ? '保存失败，内容已保留。请检查后重试。'
+          ? '保存失败，内容已保留。' + error.message
           : error instanceof Error ? error.message : '保存失败，内容已保留。',
       );
     } finally {
@@ -434,10 +448,20 @@ function AuthorPage({ materials }: { materials: Material[] }) {
                   </button>
                 </div>
               </header>
+              {question.sourceQuestionRef && <>
+                <QuestionSource source={question.sourceQuestionRef} />
+                <button type="button" className="text-button" disabled={busy} onClick={() => {
+                  setDraft(current => ({ ...current, questions: current.questions.map((item, i) => {
+                    if (i !== index) return item;
+                    const { sourceQuestionRef, ...copy } = item;
+                    return copy;
+                  }) }));
+                }}>解除引用，转为可编辑副本</button>
+              </>}
               <label className="field">
                 <span>题型</span>
                 <select
-                  disabled={busy}
+                  disabled={busy || !!question.sourceQuestionRef}
                   value={question.kind}
                   onChange={(event) => changeKind(index, event.target.value as 'numeric' | 'exact')}
                 >
@@ -449,7 +473,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
               <label className="field">
                 <span>题面</span>
                 <textarea
-                  disabled={busy}
+                  disabled={busy || !!question.sourceQuestionRef}
                   maxLength={4000}
                   required
                   rows={question.kind === 'numeric' ? 3 : 4}
@@ -462,7 +486,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
                   <label className="field">
                     <span>答案</span>
                     <input
-                      disabled={busy}
+                      disabled={busy || !!question.sourceQuestionRef}
                       inputMode="decimal"
                       value={question.answer}
                       onChange={(event) => updateQuestion(index, { answer: event.target.value })}
@@ -471,7 +495,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
                   <label className="field">
                     <span>容差</span>
                     <input
-                      disabled={busy}
+                      disabled={busy || !!question.sourceQuestionRef}
                       inputMode="decimal"
                       value={question.tolerance}
                       onChange={(event) => updateQuestion(index, { tolerance: event.target.value })}
@@ -480,7 +504,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
                   <label className="field">
                     <span>单位（可选）</span>
                     <input
-                      disabled={busy}
+                      disabled={busy || !!question.sourceQuestionRef}
                       maxLength={40}
                       value={question.unit}
                       onChange={(event) => updateQuestion(index, { unit: event.target.value })}
@@ -491,7 +515,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
                 <label className="field">
                   <span>评分标准（只发送本标准和这道题的作答）</span>
                   <textarea
-                    disabled={busy}
+                    disabled={busy || !!question.sourceQuestionRef}
                     maxLength={8000}
                     required
                     rows={6}
@@ -502,9 +526,9 @@ function AuthorPage({ materials }: { materials: Material[] }) {
               ) : (
                 <>
                   <label className="field">
-                    <span>参考答案（每行一条）</span>
+                    <span>{question.sourceQuestionRef ? '原题参考答案' : '参考答案（每行一条）'}</span>
                     <textarea
-                      disabled={busy}
+                      disabled={busy || !!question.sourceQuestionRef}
                       maxLength={5000}
                       rows={3}
                       value={question.answerLines}
@@ -514,7 +538,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
                   <label className="workbook-check">
                     <input
                       type="checkbox"
-                      disabled={busy}
+                      disabled={busy || !!question.sourceQuestionRef}
                       checked={question.selfCheck}
                       onChange={(event) => updateQuestion(index, { selfCheck: event.target.checked })}
                     />
@@ -525,7 +549,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
               <label className="field">
                 <span>解析（交卷后展示）</span>
                 <textarea
-                  disabled={busy}
+                  disabled={busy || !!question.sourceQuestionRef}
                   maxLength={4000}
                   rows={2}
                   value={question.explanation}
@@ -697,6 +721,7 @@ function FeedbackItem({
         <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>
         <span className="workbook-feedback-question">{question.prompt}</span>
       </header>
+      {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
       {feedback.result === 'self-check' && (
         <SelfCheckMarks paperId={paperId} attemptId={attemptId} questionId={feedback.questionId} />
       )}
@@ -970,6 +995,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                           : '评分标准题'}
                     </span>
                   </header>
+                  {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
                   <p className="workbook-answer-prompt">{question.prompt}</p>
                   {question.kind === 'numeric' ? (
                     <label className="field">
