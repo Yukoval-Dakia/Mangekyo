@@ -228,7 +228,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
      WHERE f.learner_id=$1 AND f.retracted_rev IS NULL
        AND 'teaching'=ANY(f.purpose) AND 'teaching'=ANY(r.purpose)
        AND ((f.type=$2 AND $4::jsonb @> (r.data->'scope'))
-         OR (f.type=$3 AND ($4::jsonb->>'subject' IS NULL OR r.data->'scope'->>'subject'=$4::jsonb->>'subject')
+         OR (f.type=$3 AND r.data->'scope'->>'subject'=$4::jsonb->>'subject'
             AND (r.data->'scope'->>'activity' IS NULL OR r.data->'scope'->>'activity'=$4::jsonb->>'activity')
             AND EXISTS (SELECT 1 FROM jsonb_array_elements($5::jsonb) AS matched(link)
                         WHERE r.data->'links' @> jsonb_build_array(matched.link))))
