@@ -1,5 +1,5 @@
 import {
-  allHandlersFinished, ApplicationFailure, condition, continueAsNew, defineSignal,
+  allHandlersFinished, ApplicationFailure, condition, continueAsNew, defineSignal, isCancellation,
   proxyActivities, setHandler, workflowInfo,
 } from '@temporalio/workflow';
 import {
@@ -32,7 +32,17 @@ export async function mangekyoCoordinator(input: CoordinatorRequest): Promise<vo
   for (;;) {
     const request = coordinatorRequest(coordinatorRef, pendingWakeRef);
     pendingWakeRef = undefined;
-    const decision = await advanceCoordinator(request);
+    let decision: CoordinatorDecision;
+    try {
+      decision = await advanceCoordinator(request);
+    } catch (error) {
+      if (isCancellation(error) || !hasWake()) throw error;
+      if (workflowInfo().continueAsNewSuggested) {
+        await condition(allHandlersFinished);
+        return continueAsNew<typeof mangekyoCoordinator>(coordinatorRequest(coordinatorRef, pendingWakeRef));
+      }
+      continue;
+    }
     if (decision.status === 'disabled' && !hasWake()) return;
 
     if (workflowInfo().continueAsNewSuggested) {

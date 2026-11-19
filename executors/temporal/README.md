@@ -24,6 +24,7 @@ Worker 宿主用 `createWorkWorker(..., { ...config, advanceCoordinator })` 注�
 
 - 适配器签名为 `advanceCoordinator({ coordinatorRef, wakeRef? }, signal)`。`AbortSignal` 由 Activity 在宿主进程内传入。宿主按协调器作用域查询当前配置和所有已提交未消费事件，校验用途、暂停及代次，在外发和接受迟到结果前重查授权并按 PG 回执去重。幂等键来自稳定业务身份，跨 Activity 尝试和 Run 复用。外发结果未知时由宿主保留效果记录并进入等待。
 - 首轮即使零待办也调用一次适配器。Signal 只保留一个最新提示，Activity 运行期间收到的提示触发后续复查。`advanced` 表示已取得持久推进且应继续检查。`waiting` 可指定绝对毫秒时点 `recheckAtMs`，定时等待至少五秒且可由 Signal 提前唤醒。省略时点时只等 Signal。`disabled` 在没有待查提示时结束当前运行。
+- Activity 在最后一次尝试失败时，Workflow 先检查运行期间是否已确认新的唤醒：有则携带该提示进入下一轮（必要时在安全等待点 Continue-As-New），不会带着待查提示关闭。没有新提示时当前 Run 有界地以 `FAILED` 关闭；同 Workflow ID 的下一次 `startOrWakeCoordinator` 交付按 `ALLOW_DUPLICATE` 打开新 Run 重新消费，已提交事件与回执仍由 PG 判定。
 - Activity 结束、消息处理完成后，主 Workflow 按服务端建议 Continue-As-New，传递协调器引用和待查提示，新 Run 重新读取宿主当前状态。Temporal 持有等待和恢复状态，PG 持有业务事件、回执和效果。历史中的 Activity 返回值只保留状态与复查时点，异常转为固定错误。
 - 每轮 Activity 最多三次尝试，单次限时一分钟，心跳超时十秒。耗尽后 Workflow 进入 `FAILED`。后续显式唤醒或启动校对可重新交接，已提交事件仍由宿主按回执查收。
 
@@ -61,5 +62,15 @@ git diff --check
 ```
 
 `probe.mjs`、假宿主、基线执行器及机器可读的断言结果保存在本机 `/tmp/mangekyo-unit14.DsgQCV/`，本轮输出和历史位于 `run-NekmUy/`。测试门禁从基线 `1771 / 17589`（`10.0688%`）到 `1771 / 17738`（`9.9842%`），Vitest 通过 47 项。
+
+### P1 修复验收（Signal 在最终尝试失败前确认）
+
+修复后 `coordinator-workflow.ts` 在 `advanceCoordinator` 失败时先判 `hasWake()`：运行期间已确认的 Signal 驱动下一轮 Activity，而不是随 Run 关闭被丢弃。隔离 namespace `p1-mwnmas41`、task queue `p1-mwnmas41-q`、无模型文件宿主下的真实 Worker 验收（源码指纹 `git diff HEAD` 输出 sha256 `847d5233...288589`）：
+
+- 唤醒 A 的 Activity 在第 3 次尝试阻塞时确认 Signal B（历史中 Signal 事件在 `ActivityTaskFailed` 事件 `12` 之前）；同一 Run `dc19740f-e8b2-4239-bafe-564501a49d9b` 于事件 `16` 调度 `wakeRef=...FC1` 的新 Activity，B 回执写入，A 无第 4 次尝试。
+- 唤醒 C 三次失败（`[1, 2, 3]`）且期间无新 Signal，Run 有界关闭 `FAILED`，失败后无额外 Activity 调度，幂等回执仅 `1` 条；后续 `startOrWakeCoordinator` 重投打开新 Run `5dad5e4d-...` 从尝试 `1` 重新消费 C。
+- 旧 `mangekyoWork` 历史（11 事件）经 `Worker.runReplayHistory` 重放通过。历史文本中私有样例值与学习者标识出现次数为 `0`，错误只剩固定 `CoordinatorAdvanceFailed`。
+
+命令：`TEMPORAL_ADDRESS=127.0.0.1:17415 node /tmp/mangekyo-unit14.DsgQCV/p1-probe.mjs "$PWD"`，断言结果位于 `/tmp/mangekyo-unit14.DsgQCV/p1-run-Jm7BvS/proof.json`。
 
 上游接入后需复验实际 PG 配置和 outbox 交接、代次与撤权准入、效果回执及预算、已授权旧作读取和无人值守交付。生产部署、协调器换版及服务器故障恢复另验。
