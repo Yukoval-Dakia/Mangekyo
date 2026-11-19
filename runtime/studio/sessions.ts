@@ -15,6 +15,7 @@ import { readMaterialText } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import { loadSettings } from './settings.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
+import type { ForegroundDigest } from './foreground-digest.ts';
 import {
   stableId,
   sourceId,
@@ -64,8 +65,12 @@ export function clientRequest(value: unknown): string {
 export type DisplayTurn = {
   studyKit?: StudyKit;
   trace?: string[];
+  completion?: 'receipts_only';
   writes?: {id:string; rev:number; title:string}[];
   workspaceBasis?: WorkspaceWitness[];
+  learningMemoryDigest?: string;
+  memoryCommand?: string;
+  foregroundDigest?: ForegroundDigest;
   action: string;
   rationale: string;
   message: string;
