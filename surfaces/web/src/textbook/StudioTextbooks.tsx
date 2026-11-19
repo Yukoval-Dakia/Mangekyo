@@ -1,0 +1,73 @@
+import { useRef, useState, type FormEvent } from 'react';
+import { api, requestId } from '../api';
+import { ListLink, PageTitle, ReadState, useResource } from '../workspace';
+import { TextbookWorkspace, textbookLink, type Page, type Transport } from './index';
+
+const editorPath = '/textbooks/page';
+const pagePath = (id: string) => editorPath + textbookLink({ id });
+const transport: Transport = {
+  async read({ id, rev }) {
+    const page = await api<Page & { kind: string }>('/textbooks/' + encodeURIComponent(id) +
+      (rev === undefined ? '' : '?rev=' + encodeURIComponent(rev)));
+    if (page.kind !== 'textbook') throw new Error('这是一份学习笔记，请从笔记入口打开。');
+    return page;
+  },
+  async revise(request) {
+    const { id, clientEditSeq } = request;
+    const response = await fetch('/api/textbooks/' + encodeURIComponent(id), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...request, requestId: id + '-' + clientEditSeq }),
+    });
+    const result = await response.json();
+    if (response.status === 409 && result.current && result.originalEdit?.clientEditSeq === clientEditSeq)
+      return { kind: 'conflict', clientEditSeq, page: result.current };
+    if (!response.ok) throw new Error(result.error || '教材保存失败。');
+    if (result.id !== id || result.clientEditSeq !== clientEditSeq || result.expectedRev !== request.expectedRev)
+      throw new Error('教材保存回执与编辑不符。');
+    const page = await transport.read({ id, rev: result.rev });
+    return { kind: 'saved', clientEditSeq, page };
+  },
+};
+
+export default function StudioTextbooks({ editor }: { editor: boolean }) {
+  const index = useResource<{ pages: { id: string; title: string }[] }>('/textbooks');
+  const [title, setTitle] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const intent = useRef<{ title: string; id: string } | null>(null);
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !title.trim()) return;
+    if (intent.current?.title !== title) intent.current = { title, id: requestId() };
+    setBusy(true);
+    setError('');
+    try {
+      const { id } = await api<{ id: string }>('/textbooks', {
+        method: 'POST', body: { requestId: intent.current.id, clientEditSeq: 0, page: { title, blocks: [] } },
+      });
+      location.assign(pagePath(id));
+    } catch {
+      setError('创建失败，请重试。');
+      setBusy(false);
+    }
+  }
+  if (editor) return <>
+    <a className="back-link" href="/textbooks">‹ 教材列表</a>
+    <ReadState resource={index} />
+    {index.data && <TextbookWorkspace chapters={[{ title: '我的教材页', pages: index.data.pages }]}
+      initialPage={index.data.pages[0]?.id ?? ''} draftScope="studio" transport={transport} />}
+  </>;
+  return <>
+    <PageTitle title="个人教材" />
+    <form className="study-actions" onSubmit={create}>
+      <label className="field">教材页标题<input required maxLength={240} value={title}
+        disabled={busy} onChange={event => setTitle(event.target.value)} /></label>
+      <button className="primary-button" disabled={busy || !title.trim()}>创建教材页</button>
+    </form>
+    {error && <p role="alert">{error}</p>}
+    <ReadState resource={index} />
+    {index.data?.pages.map(page => <ListLink key={page.id} title={page.title}
+      detail="打开当前版本" href={pagePath(page.id)} icon="book" />)}
+  </>;
+}

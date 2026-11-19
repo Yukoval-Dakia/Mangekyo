@@ -12,6 +12,7 @@ import { openStudio } from './sessions.ts';
 import { recordTerminalFailure, teach } from './teach.ts';
 import { sourceBuildId } from './build.ts';
 import { serve } from './http.ts';
+import { openTextbook } from './textbook.ts';
 import { openIntake } from './intake.ts';
 import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from './mineru.ts';
@@ -23,6 +24,7 @@ import { openPractice } from './practice.ts';
 import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
 import { openResearch } from './research.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -59,11 +61,13 @@ const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 
 async function openWeb() {
   const studio = await openStudio(db, activity);
+  const content = await loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
+  const textbook = openTextbook(db, content, createStudioCommandHooks());
   const workbook = openWorkbook(db, activity, {
     assessment: workbookAssessment,
     onResearchFactsChanged: research.workbookChanged,
   });
-  const student = { workbook, organizer: openOrganizer(db, activity), memory: openMemory(db, companion),
+  const student = { textbook, workbook, organizer: openOrganizer(db, activity), memory: openMemory(db, companion),
     intake, workspace: openWorkspaceAccess(db, activity), research };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));

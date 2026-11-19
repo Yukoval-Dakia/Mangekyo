@@ -1,6 +1,6 @@
 import { forTask } from './model-route';
 import { createRoot } from 'react-dom/client';
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { api, type Session, type Settings } from './api';
 import { DemoClassroom } from './demo';
 import { Companion } from './companion';
@@ -28,6 +28,8 @@ import './styles.css';
 import './shell.css';
 import './learning.css';
 
+const StudioTextbooks = lazy(() => import('./textbook/StudioTextbooks'));
+
 const destinations: { path: string; text: string; icon: IconName }[] = [
   { path: '/today', text: '今天', icon: 'today' },
   { path: '/materials', text: '材料', icon: 'book' },
@@ -40,7 +42,7 @@ function App() {
   const [legacyError, setLegacyError] = useState(false);
   const path = location.pathname === '/' ? '/today' : location.pathname;
   const active =
-    ['/materials','/papers','/practice','/classroom','/intake','/notes','/review'].some(group => path === group || path.startsWith(group+'/'))
+    ['/materials','/papers','/practice','/classroom','/intake','/notes','/review','/textbooks'].some(group => path === group || path.startsWith(group+'/'))
       ? '/materials'
       : path === '/plan' ? '/today' : path;
   const section = destinations.find((x) => x.path === active)?.text ?? '今天';
@@ -102,6 +104,11 @@ function App() {
   else if (path === '/materials') content = <Materials library={library} capture={() => open('material')} />;
   else if (path === '/materials/workspace') content = <WorkspaceLibrary />;
   else if (path.startsWith('/materials/records/')) content = <WorkspaceRecord id={path.split('/')[3]!} />;
+  else if (path === '/textbooks' || path === '/textbooks/page') content = (
+    <Suspense fallback={<p role="status">正在打开教材…</p>}>
+      <StudioTextbooks editor={path.endsWith('/page')} />
+    </Suspense>
+  );
   else if (path === '/intake') content = <Intake />;
   else if (path === '/review') content = <Mistakes />;
   else if (/^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/print$/.test(path)) content = <PrintPaper id={path.split('/')[2]!} />;
