@@ -5,14 +5,14 @@ import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, readReadyWork, readWork, type WorkRef,
 } from '../../kernel/src/work/index.ts';
 import {
   cancelResearchTodos, checkTodoTriggers, completeTodo, emitTodo, endDispatchedTodo, enqueueWork, newFactWatermark,
-  readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoInput, type TodoSpec,
+  readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec,
 } from '../../kernel/src/work/todos.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
@@ -24,14 +24,15 @@ import { stableId, studioLearner } from './identity.ts';
 import {
   readWorksheet, researchReader, reviewEvidence, whenAvailable, workbookSource, worksheetId, type ReviewEvidence,
 } from './research-sources.ts';
+import {
+  prepareResearchTriage, reviewDedupKey, reviewGoal, selectResearchTodo, type ResearchTriageTransport,
+} from './research-triage-host.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
 const scope = { learner: studioLearner };
 const settingsId = factId(stableId('research-settings', studioLearner));
 const wakeSlot = 'companion.researchWake';
 const wake = { slotType: wakeSlot, slotKey: settingsId, deriver: 'studio/research-wake-v1' };
-const reviewGoal = '为一份正式错题作答准备复习单';
-const retrySheetLifetimeMs = 24 * 60 * 60 * 1000;
 const idleRecheckMs = 60_000;
 
 /** Local execution under the zero-cost policy. Pi transport needs effect and budget admission. */
@@ -56,10 +57,6 @@ async function settings(tx: ReadTransaction) {
   });
 }
 
-function reviewDedupKey({ id, revision, accessEpoch }: TodoSpec['sourceFactRev']) {
-  return 'review-attempt:' + id + ':' + revision + ':' + accessEpoch;
-}
-
 async function eligibleBasis(tx: ReadTransaction, spec: TodoSpec) {
   // The installed executor serves zero-cost retry sheets only. Other profiles and tiers need their own admission.
   if (spec.workerProfile !== 'deterministic_compute' || spec.goal !== reviewGoal || spec.budgetCap !== 0 ||
@@ -80,43 +77,6 @@ async function eligibleBasis(tx: ReadTransaction, spec: TodoSpec) {
   });
 }
 
-async function triage(tx: ReadTransaction, reviewed: Tick, settingsRevision: number, now: number): Promise<TodoInput | null> {
-  // A completion can release a linked event Todo, but it cannot open a fresh chain from old evidence.
-  const fresh = await tx.query(
-    `SELECT 1 FROM facts WHERE learner_id = $1 AND changed_tick > $2
-     AND (type = $3 OR (type = $4 AND $5 = ANY(purpose) AND retracted_rev IS NULL)) LIMIT 1`,
-    [tx.learner, reviewed, researchSettingsType, workbookAttemptType, researchPurpose],
-  );
-  if (!fresh.rowCount) return null;
-  const { rows } = await tx.query<{ id: string }>(
-    `SELECT id FROM facts WHERE learner_id = $1 AND type = $2
-     AND $3 = ANY(purpose) AND retracted_rev IS NULL ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookAttemptType, researchPurpose],
-  );
-  const read = researchReader(tx);
-  for (const row of rows) {
-    const id = factId(row.id);
-    const attempt = await read.fact(id, { mode: 'following' });
-    const feedback = workbookAttempt(attempt.value).feedback.find(item => item.result === 'incorrect');
-    if (!feedback) continue;
-    const sourceFactRev = { id, revision: attempt.ref.rev, accessEpoch: attempt.accessEpoch, anchor: feedback.questionId };
-    const resultId = worksheetId(id, attempt.ref.rev, attempt.accessEpoch);
-    const dedupKey = reviewDedupKey(sourceFactRev);
-    const known = await tx.query(
-      `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
-       UNION ALL SELECT 1 FROM working_todos WHERE learner_id = $1 AND dedup_key = $3
-        AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5 LIMIT 1`,
-      [tx.learner, resultId, dedupKey, JSON.stringify(sourceFactRev), String(settingsRevision)],
-    );
-    if (!known.rowCount) return {
-      dedupKey, workerProfile: 'deterministic_compute', trigger: { kind: 'immediate' },
-      goal: reviewGoal, refs: [], sourceFactRev, settingsRevision, autonomyTier: 1, budgetCap: 0,
-      expiresAtMs: now + retrySheetLifetimeMs,
-    };
-  }
-  return null;
-}
-
 function settingInput(input: Record<string, unknown>, minimum: number, field: 'enabled' | 'allowed') {
   const { revision } = input;
   const value = input[field];
@@ -135,7 +95,8 @@ async function updateSettings<T>(action: () => Promise<T>) {
   }
 }
 
-export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule, agent?: ResearchAgent) {
+export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule,
+  agent?: ResearchAgent, triageTransport?: ResearchTriageTransport) {
   const generate = agent ?? deterministicReview;
   const handle = createCommandHandler(db, {
     modules: [activity, companion],
@@ -175,23 +136,43 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     await enqueueWork(tx, tick, wake);
   };
 
-  const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => db.tx(scope, async tx => {
-    await lockLearner(tx, tx.learner);
-    const current = await settings(tx);
-    if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' };
+  const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => {
+    const scan = await db.tx(scope, async tx => {
+      await lockLearner(tx, tx.learner);
+      const current = await settings(tx);
+      if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' } as const;
+      signal.throwIfAborted();
+      const now = Date.now();
+      const eligible = async (spec: TodoSpec) => (await eligibleBasis(tx, spec)) !== null;
+      const due = await checkTodoTriggers(tx, now, eligible);
+      if (due.advanced) return { status: 'advanced' } as const;
+      const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
+      const watermark = await newFactWatermark(tx);
+      if (!watermark) return waiting;
+      const prepared = await prepareResearchTriage(tx, watermark.reviewed, current.revision, now, eligible);
+      if (!prepared) {
+        await saveFactWatermark(tx, watermark.observed);
+        return waiting;
+      }
+      return { status: 'sample', prepared, watermark, waiting, settingsRevision: current.revision } as const;
+    });
+    if (scan.status !== 'sample') return scan;
     signal.throwIfAborted();
-    const now = Date.now();
-    const eligible = async (spec: TodoSpec) => (await eligibleBasis(tx, spec)) !== null;
-    const due = await checkTodoTriggers(tx, now, eligible);
-    if (due.advanced) return { status: 'advanced' };
-    const watermark = await newFactWatermark(tx);
-    if (watermark !== null) {
-      const intent = await triage(tx, watermark.reviewed, current.revision, now);
-      if (intent) await tx.withLearnerWrite(tick => emitTodo(tx, tick, intent, now, eligible));
+    const intent = await selectResearchTodo(scan.prepared, triageTransport, signal);
+    return db.tx(scope, async tx => {
+      await lockLearner(tx, tx.learner);
+      signal.throwIfAborted();
+      const current = await settings(tx);
+      if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' };
+      const watermark = await newFactWatermark(tx);
+      if (current.revision !== scan.settingsRevision || watermark?.observed !== scan.watermark.observed ||
+          watermark.reviewed !== scan.watermark.reviewed) return { status: 'advanced' };
+      if (intent) await tx.withLearnerWrite(tick =>
+        emitTodo(tx, tick, intent, Date.now(), async spec => (await eligibleBasis(tx, spec)) !== null));
       await saveFactWatermark(tx, watermark.observed);
-    }
-    return { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) };
-  });
+      return scan.waiting;
+    });
+  };
 
   return {
     read,
