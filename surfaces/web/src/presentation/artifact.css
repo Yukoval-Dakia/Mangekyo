@@ -1,0 +1,179 @@
+.av-sheet {
+  --av-liquid: #91bfae;
+  container-type: inline-size;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  padding: clamp(16px, 3vw, 32px);
+  max-width: 56rem;
+  min-width: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.av-sheet h2 {
+  font-size: clamp(22px, 3vw, 30px);
+  letter-spacing: -0.04em;
+  line-height: 1.25;
+}
+.av-sheet section {
+  margin-top: 1.4rem;
+}
+.av-sheet h3 {
+  font-size: 17px;
+  margin-bottom: 0.55rem;
+}
+.av-nodes {
+  display: grid;
+  gap: 1rem;
+}
+.av-nodes > div {
+  min-width: 0;
+}
+@container (min-width:34rem) {
+  .av-columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.av-steps {
+  padding: 0;
+  list-style-position: inside;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em 1.5em;
+  color: var(--muted);
+}
+.av-figure {
+  margin: 0;
+  background: var(--canvas);
+  border-radius: 16px;
+  padding: 14px;
+}
+.av-figure figcaption,
+.av-sheet legend,
+.av-sheet label {
+  font-weight: 620;
+}
+.av-sheet svg {
+  width: 100%;
+  display: block;
+  max-height: 250px;
+}
+.av-sheet svg text {
+  fill: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+}
+.av-sheet svg .av-svg-value {
+  font-weight: 700;
+}
+.av-figure p,
+.av-sheet output,
+.av-sheet small {
+  font-size: 14px;
+  color: var(--muted);
+}
+.av-figure button {
+  margin-top: 8px;
+}
+.av-hotspot {
+  fill: var(--primary);
+  cursor: pointer;
+}
+.av-range {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+.av-range input {
+  grid-column: 1/-1;
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--primary);
+}
+.av-sheet output {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+.av-sheet textarea {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  resize: vertical;
+  padding: 10px;
+  border: 1px solid var(--muted);
+  background: var(--surface);
+  color: inherit;
+  border-radius: 12px;
+}
+.av-sheet fieldset {
+  padding: 0;
+  border: 0;
+  margin: 0;
+  min-width: 0;
+}
+.av-sheet legend {
+  padding: 0;
+  margin-bottom: 0.45rem;
+}
+.av-passage,
+.av-beats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 0.5rem;
+}
+.av-passage {
+  font:
+    24px/1.4 'Songti SC',
+    'Noto Serif CJK SC',
+    serif;
+}
+.av-passage button,
+.av-beats button {
+  min-height: 44px;
+  min-width: 44px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  background: var(--surface);
+}
+.av-passage button span {
+  margin-inline-start: 2px;
+  font: 14px system-ui;
+  color: var(--muted);
+}
+.av-passage [aria-pressed='true'] span {
+  color: inherit;
+}
+.av-sheet [aria-pressed='true'] {
+  background: var(--primary);
+  color: white;
+}
+.av-beats button {
+  font-variant-numeric: tabular-nums;
+}
+.av-beats button:nth-child(2n):not(:last-child) {
+  margin-inline-end: 4px;
+}
+.av-sheet img,
+.av-sheet audio {
+  max-width: 100%;
+}
+.av-sheet .primary-button,
+.av-sheet .tonal-button {
+  white-space: normal;
+}
+.av-columns .av-figure {
+  height: 100%;
+}
+@container (max-width:30rem) {
+  .av-beats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(44px, 1fr));
+  }
+  .av-beats button:nth-child(2n) {
+    margin: 0;
+  }
+}
