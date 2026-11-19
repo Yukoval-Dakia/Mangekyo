@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { api, remember, remembered, requestId } from './api';
+import { api, remember, remembered, requestId, type Settings } from './api';
 import { Icon } from './icons';
 import { LearningMemory } from './study-tools';
 import { MaterialOriginal } from './intake';
@@ -9,7 +9,7 @@ export type Workspace = { materials: Material[]; goal: string | null };
 export type ChatLink = { id: string; title: string; caseId: string };
 export type Resource<T> = { data: T | undefined; error: boolean; reload: () => void };
 
-export function useResource<T>(path: string): Resource<T> {
+export function useResource<T>(path: string): Resource<T> & {replace: (value: T) => void} {
   const [data, setData] = useState<T>();
   const [error, setError] = useState(false);
   const [version, setVersion] = useState(0);
@@ -25,7 +25,8 @@ export function useResource<T>(path: string): Resource<T> {
       });
     return () => controller.abort();
   }, [path, version]);
-  return { data, error, reload: () => setVersion((n) => n + 1) };
+  return { data, error, reload: () => setVersion((n) => n + 1),
+    replace(value) { setData(value); setError(false); setVersion(n => n + 1); } };
 }
 
 export function ReadState({ resource }: { resource: Resource<unknown> }) {
@@ -226,7 +227,7 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
   return (
     <>
       <PageTitle title="材料"><a className="tonal-button" href="/intake"><Icon name="plus" /> 导入文件</a></PageTitle>
-      <div className="study-actions library-actions"><a href="/papers">我的题库</a><a href="/notes">学习笔记</a><button className="text-button" onClick={capture}>交入文字</button></div>
+      <div className="study-actions library-actions"><a href="/papers">我的题库</a><a href="/notes">学习笔记</a><a href="/materials/workspace">同伴工作区</a><button className="text-button" onClick={capture}>交入文字</button></div>
       <div className="library-controls">
         <label className="search-box">
           <Icon name="search" />
@@ -296,12 +297,12 @@ export function Me({
   library,
   chats,
   editGoal,
-  endpoint,
+  settings,
 }: {
   library: Resource<Workspace>;
   chats: Resource<ChatLink[]>;
   editGoal: () => void;
-  endpoint: string | undefined;
+  settings: Settings | undefined;
 }) {
   return (
     <>
@@ -318,7 +319,7 @@ export function Me({
           <p>{library.data.goal || '你最近希望弄懂什么？'}</p>
         </section>
       )}
-      <LearningMemory endpoint={endpoint} />
+      <LearningMemory settings={settings} />
       <section className="surface-section profile-records">
         <div className="subhead">
           <h2>我的学习记录</h2>

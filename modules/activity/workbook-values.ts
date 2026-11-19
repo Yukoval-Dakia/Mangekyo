@@ -178,6 +178,9 @@ export type WorkbookRubricAssessment = {
   rubricVersion: string;
   rubric: string;
   providerBaseUrl: string;
+  requestedModel?: string;
+  providerId?: string;
+  providerProtocol?: string;
   verdict: WorkbookAssessmentVerdict;
   score?: { earned: number; maximum: number };
   feedback: string;
@@ -750,6 +753,9 @@ export function workbookRubricAssessment(input: unknown): WorkbookRubricAssessme
     rubricVersion: row.rubricVersion,
     rubric: text(row.rubric, '评分标准', 8000),
     providerBaseUrl: text(row.providerBaseUrl, '模型端点', 2000),
+    ...(row.requestedModel ? {requestedModel: text(row.requestedModel, '请求模型', 256)} : {}),
+    ...(row.providerId ? {providerId: text(row.providerId, '模型配置', 160)} : {}),
+    ...(row.providerProtocol ? {providerProtocol: text(row.providerProtocol, '模型协议', 30)} : {}),
     ...(row.consent === workbookAssessmentConsent ? {consent: workbookAssessmentConsent} : {}),
     ...(row.publicSearchQuery ? {publicSearchQuery: text(row.publicSearchQuery, '公开检索词', 400)} : {}),
     ...workbookAssessmentResult(row),

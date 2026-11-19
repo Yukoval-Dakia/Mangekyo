@@ -11,7 +11,8 @@ import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingProgress } from '../../executors/teaching/index.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
-import { RequestError } from './sessions.ts';
+import { RequestError, unavailableReplyMessage } from './sessions.ts';
+import { workspaceGrantChecker } from './harness.ts';
 
 type Phase = TeachingProgress['phase'];
 type StreamSession = {
@@ -152,10 +153,12 @@ export async function listenForSessionEvents(db: Db, pool: Pool): Promise<() => 
 }
 
 async function readSessionEvent(db: Db, sessionId: string) {
+  const grantCurrent = workspaceGrantChecker();
   return db.snapshot({ learner: studioLearner }, async (tx) => {
     const { rows: [row] } = await tx.query<{
       turnId: string;
       message: string | null;
+      settled: boolean;
       status: 'failed' | 'unknown' | null;
       manifest: unknown;
       phase: Phase | null;
@@ -163,7 +166,7 @@ async function readSessionEvent(db: Db, sessionId: string) {
       draft: string | null;
       draftManifest: unknown;
     }>(
-      `SELECT f.id AS "turnId", d.value->>'message' AS message, s.last_error->>'status' AS status,
+      `SELECT f.id AS "turnId", d.value->>'message' AS message, s.last_id IS NOT NULL AS settled, s.last_error->>'status' AS status,
               d.manifest, p.phase, p.revision, p.message AS draft, p.manifest AS "draftManifest"
        FROM facts f
        JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
@@ -183,11 +186,14 @@ async function readSessionEvent(db: Db, sessionId: string) {
         }
         throw error;
       });
-    const status = row.status ?? (row.message === null ? 'pending' : 'ready');
+    const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
-    if (manifest && (await revalidateManifest(tx, parseManifest(manifest))).kind !== 'valid') {
+    const invalid = !await grantCurrent(submission) ||
+      (manifest && (await revalidateManifest(tx, parseManifest(manifest))).kind !== 'valid');
+    if (invalid && status === 'pending') {
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     }
+    if (status === 'ready' && (invalid || row.message === null)) row.message = unavailableReplyMessage;
     const session: StreamSession = {
       id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status,
       ...(status !== 'ready' && submission.answer ? { pendingAnswer: submission.answer } : {}),

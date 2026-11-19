@@ -22,6 +22,12 @@ const correct = defineCommand({ type: 'note.correct', destructive: true,
   } },
   write: (_ctx,input):readonly FactWrite[] => [{kind:'correct',id:input.id,expectedRev:input.rev as import('../../src/declarations/ids.ts').Revision,data:{text:input.text}}],
 });
+const revise = defineCommand({ type: 'note.revise', schema: correct.schema, destructive: false,
+  write: (_ctx, input): readonly FactWrite[] => [{
+    kind: 'revise', id: input.id, expectedRev: input.rev as import('../../src/declarations/ids.ts').Revision,
+    data: {text: input.text},
+  }],
+});
 export function noteModule(purpose?: readonly string[]): LoadedModule {
   const record = defineCommand({ type: 'note.record', schema, destructive: false,
     write: (_ctx, input): readonly FactWrite[] => [{
@@ -29,5 +35,5 @@ export function noteModule(purpose?: readonly string[]): LoadedModule {
       ...(purpose === undefined ? {} : { purpose }),
     }],
   });
- return {definition:defineModule({name:'note'}),facts:new Map([[note.type,note]]),commands:new Map<string, Record<string, unknown>>([[record.type,record],[correct.type,correct]]),slots:new Map(),derivers:new Map()};
+ return {definition:defineModule({name:'note'}),facts:new Map([[note.type,note]]),commands:new Map<string, Record<string, unknown>>([[record.type,record],[correct.type,correct],[revise.type,revise]]),slots:new Map(),derivers:new Map()};
 }

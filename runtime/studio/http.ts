@@ -1,3 +1,4 @@
+import { browseMcpTools } from '../../executors/teaching/mcp-client.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
@@ -18,6 +19,7 @@ import { handleIntakeRequest, type openIntake } from './intake.ts';
 import type { openWorkbook } from './workbook.ts';
 import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
+import type { openWorkspaceAccess } from './workspace-access.ts';
 import type { openResearch } from './research.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
@@ -62,7 +64,7 @@ const types: Record<string, string> = {
 const pages = new Set([
   '/',
   '/today', '/papers', '/papers/new', '/plan', '/notes', '/review', '/intake',
-  '/materials',
+  '/materials', '/materials/workspace',
   '/materials/riding',
   '/practice/riding',
   '/companion',
@@ -79,6 +81,7 @@ export function serve(
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
     intake: ReturnType<typeof openIntake>;
+    workspace: ReturnType<typeof openWorkspaceAccess>;
     research: ReturnType<typeof openResearch>;
   },
   port: number,
@@ -100,8 +103,26 @@ export function serve(
         req.headers['sec-fetch-site'] === 'cross-site'
       )
         throw new RequestError(403, '此入口仅供本机页面使用。');
-      const path = new URL(req.url ?? '/', 'http://' + host).pathname;
+      const url = new URL(req.url ?? '/', 'http://' + host);
+      const path = url.pathname;
       const method = req.method;
+      if (path === '/api/workspace/access' && method === 'GET') {
+        return json(res, 200, await student.workspace.list(url.searchParams));
+      }
+      if (path === '/api/workspace/access/providers' && method === 'GET') {
+        return json(res, 200, await student.workspace.providers());
+      }
+      const accessRecord = /^\/api\/workspace\/access\/records\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path);
+      if (accessRecord?.[1] && method === 'GET') {
+        return json(res, 200, await student.workspace.record(accessRecord[1], url.searchParams));
+      }
+      if (accessRecord?.[1] && method === 'PUT') {
+        return json(res, 200, await student.workspace.setTeaching(accessRecord[1], await body(req)));
+      }
+      const accessProvider = /^\/api\/workspace\/access\/providers\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})$/.exec(path);
+      if (accessProvider?.[1] && method === 'PUT') {
+        return json(res, 200, await student.workspace.setProvider(accessProvider[1], await body(req)));
+      }
       if (path === '/api/research/settings' && method === 'GET') return json(res, 200, await student.research.read());
       if (path === '/api/research/settings' && method === 'PUT') return json(res, 200, await student.research.configure(await body(req)));
       const research = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/(research-permission|research)(?:\/([0-9A-HJKMNP-TV-Z]{26})\/source)?$/.exec(path);
@@ -159,6 +180,18 @@ export function serve(
         return json(res, 200, await practice.submit(await body(req)));
       if (path === '/api/settings' && method === 'GET')
         return json(res, 200, publicSettings(await loadSettings()));
+      if (path === '/api/settings/mcp-tools' && method === 'POST') {
+        const input = await body(req);
+        if (typeof input.id !== 'string' || typeof input.url !== 'string' ||
+            (input.token !== undefined && typeof input.token !== 'string')) throw new RequestError(400, 'MCP 地址或凭据无效。');
+        const saved = (await loadSettings()).mcpServers.find(item => item.id === input.id && item.url === input.url);
+        const token = input.token === undefined ? saved?.token : input.token;
+        try {
+          return json(res, 200, await browseMcpTools({id: input.id, url: input.url, allowedTools: [], ...(token ? {token} : {})}));
+        } catch {
+          throw new RequestError(422, '无法读取 MCP 工具。请核对 Streamable HTTP 地址和访问令牌。');
+        }
+      }
       if (path === '/api/settings' && method === 'PUT') {
         const input = await body(req);
         try {
@@ -172,7 +205,7 @@ export function serve(
         return json(
           res,
           202,
-          await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment),
+          await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment, input.mcpGrants, input.route),
         );
       }
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
@@ -184,11 +217,11 @@ export function serve(
         return json(
           res,
           202,
-          await studio.answer(match[1], input.parentId, input.answer, clientRequest(input.requestId)),
+          await studio.answer(match[1], input.parentId, input.answer, clientRequest(input.requestId), input.mcpGrants, input.route),
         );
       }
       if (method !== 'GET' || path.startsWith('/api/')) throw new RequestError(404, '这个入口不存在。');
-      const appPage = pages.has(path) || /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path) || /^\/materials\/saved\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
+      const appPage = pages.has(path) || /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path) || /^\/materials\/(?:saved|records)\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
       const file = resolve(root, '.' + decodeURIComponent(appPage ? '/index.html' : path));
       if (!file.startsWith(resolve(root) + sep) || !types[extname(file)])
         throw new RequestError(404, '找不到页面。');

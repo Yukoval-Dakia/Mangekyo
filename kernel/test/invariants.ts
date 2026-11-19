@@ -64,6 +64,17 @@ export function invariants(postgres = false) {
       await db.query("UPDATE facts SET purpose='{}' WHERE learner_id=$1", [learner]);
       await expect(db.tx({ learner }, tx => createCommandReadContext(tx, request.purpose).fact(id, { mode: 'pinned', rev: 1 as never }))).rejects.toThrow();
     });
+    it('allows a companion to revise its own draft until the learner edits it', async () => {
+      const agent = { ...request, actor: 'companion' as const };
+      const revise = { ...agent, type: 'note.revise', id: commandId('01KFS4AAA00000000000000003'), input: { id, text: 'revision', rev: 1 } };
+      await handle()(agent);
+      expect((await handle()(revise)).wrote[0]?.rev).toBe(2);
+      await handle()({ ...request, type: 'note.correct', id: commandId('01KFS4AAA00000000000000004'), input: { id, text: 'my edit', rev: 2 } });
+      await expect(handle()({ ...revise, id: commandId('01KFS4AAA00000000000000005'), input: { ...revise.input, rev: 3 } })).rejects.toThrow('unedited companion');
+      const own = factId('01KFS4AAA00000000000000006');
+      await handle()({ ...request, id: commandId('01KFS4AAA00000000000000007'), input: { id: own, text: 'learner' } });
+      await expect(handle()({ ...revise, id: commandId('01KFS4AAA00000000000000008'), input: { ...revise.input, id: own } })).rejects.toThrow('unedited companion');
+    });
     it('rolls back the fact, registration, receipt and tick together', async () => {
       await db.query('CREATE TABLE handoff(tick bigint)');
       const fail = createCommandHandler(db, { modules: [noteModule()], hooks: { onFactsChanged: async (tx, tick) => {

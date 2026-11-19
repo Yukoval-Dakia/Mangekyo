@@ -21,6 +21,7 @@ import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';
 import { openPractice } from './practice.ts';
 import { openLibrary } from './library.ts';
+import { openWorkspaceAccess } from './workspace-access.ts';
 import { openResearch } from './research.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 
@@ -63,7 +64,7 @@ async function openWeb() {
     onResearchFactsChanged: research.workbookChanged,
   });
   const student = { workbook, organizer: openOrganizer(db, activity), memory: openMemory(db, companion),
-    intake, research };
+    intake, workspace: openWorkspaceAccess(db, activity), research };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }

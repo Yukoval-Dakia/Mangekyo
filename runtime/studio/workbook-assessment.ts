@@ -170,8 +170,7 @@ function boundedReply(value: Json): Json {
 const effectLabel = 'workbook-assessment';
 
 export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}) {
-  const onFactsChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
-    await propagation.onFactsChanged(tx, tick, changes);
+  const afterFactsChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
     const read = createCommandReadContext(tx, storagePurpose);
     for (const { ref, kind, factType } of changes) {
       if (factType === workbookPaperType && kind === 'create') {
@@ -310,7 +309,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
     }
   }
 
-  return { onFactsChanged, execute };
+  return { afterFactsChanged, execute };
 }
 
 function evaluation(

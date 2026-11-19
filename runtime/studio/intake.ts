@@ -29,6 +29,7 @@ import {
   type IntakeMediaType,
   type IntakeOriginal,
 } from '../../modules/activity/intake-values.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { cloudIntakeSlot, enqueueCloudIntake, mineruSupports, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
@@ -293,7 +294,7 @@ function intakeIdFor(materialId: FactId): FactId {
   return factId(stableId('intake-document', materialId));
 }
 
-export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks = { async onFactsChanged() {} }) {
+export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
   const handle = createCommandHandler(db, { modules: [activity], hooks });
   const base = materialBase();
 

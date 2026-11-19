@@ -1,3 +1,4 @@
+import { forTask } from './model-route';
 import { createRoot } from 'react-dom/client';
 import { useEffect, useRef, useState } from 'react';
 import { api, type Session, type Settings } from './api';
@@ -6,6 +7,7 @@ import { Companion } from './companion';
 import { Icon, Mark, type IconName } from './icons';
 import { SettingsDialog } from './settings';
 import { StarterLesson, StarterPractice } from './starter';
+import {WorkspaceLibrary, WorkspaceRecord} from './workspace-records';
 import { Workbook } from './workbook';
 import { Organizer } from './organizer';
 import { Intake } from './intake';
@@ -98,6 +100,8 @@ function App() {
     );
   else if (path === '/today') content = <Today library={library} chats={chats} />;
   else if (path === '/materials') content = <Materials library={library} capture={() => open('material')} />;
+  else if (path === '/materials/workspace') content = <WorkspaceLibrary />;
+  else if (path.startsWith('/materials/records/')) content = <WorkspaceRecord id={path.split('/')[3]!} />;
   else if (path === '/intake') content = <Intake />;
   else if (path === '/review') content = <Mistakes />;
   else if (/^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/print$/.test(path)) content = <PrintPaper id={path.split('/')[2]!} />;
@@ -105,7 +109,7 @@ function App() {
     const id = path.slice('/papers/'.length);
     content = id === 'new' && !library.data ? <ReadState resource={library} /> : <>
       {id && id !== 'new' && <a className="text-button" href={'/papers/'+id+'/print'}>打开打印版</a>}
-      <Workbook {...(id ? {id} : {})} materials={library.data?.materials ?? []} />
+      <Workbook modelSettings={settings} {...(id ? {id} : {})} materials={library.data?.materials ?? []} />
     </>;
   }
   else if (path === '/plan' || path === '/notes') content = <Organizer section={path === '/plan' ? 'plan' : 'notes'} materials={library.data?.materials ?? []} />;
@@ -116,13 +120,13 @@ function App() {
   else if (path === '/classroom/first45')
     content = (
       <DemoClassroom
-        configured={!!settings.data?.model}
+        settings={settings.data && forTask(settings.data, 'diagnostic')}
         needsSetup={settings.error}
         openSettings={() => open('settings')}
       />
     );
-  else if (path === '/companion') content = <Companion chats={chats} />;
-  else if (path === '/me') content = <Me library={library} chats={chats} endpoint={settings.data?.baseUrl} editGoal={() => open('goal')} />;
+  else if (path === '/companion') content = <Companion chats={chats} settings={settings.data} />;
+  else if (path === '/me') content = <Me library={library} chats={chats} settings={settings.data && forTask(settings.data, 'companion')} editGoal={() => open('goal')} />;
   return (
     <div className="product-shell">
       <a className="skip-content" href="#main-content">
@@ -166,8 +170,8 @@ function App() {
       {dialog === 'settings' && (
         <SettingsDialog
           onClose={close}
-          onSave={() => {
-            settings.reload();
+          onSave={value => {
+            settings.replace(value);
             setNotice('设置已保存。');
           }}
         />

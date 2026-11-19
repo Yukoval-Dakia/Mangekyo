@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type SessionEvent, type StudyAttachment } from "./api";
+import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type Settings, type SessionEvent, type StudyAttachment } from "./api";
 
+import {selectedRoute, type Route, type McpGrant} from './model-route';
 type Operation =
-  | { kind: "create"; requestId: string; question?: string; attachment?: StudyAttachment }
-  | { kind: "answer"; requestId: string; sessionId: string; parentId: string; answer: string };
+  | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
+  | { kind: "answer"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; sessionId: string; parentId: string; answer: string };
 
 const progressLabels: Record<NonNullable<SessionEvent["phase"]>, string> = {
   queued: "正在等待同伴…",
@@ -158,11 +159,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const result = operation.kind === "create"
         ? await api<Session>("/sessions", {
           method: "POST",
-          body: { caseId, requestId: operation.requestId, question: operation.question, attachment: operation.attachment },
+          body: { route: operation.route, mcpGrants: operation.mcpGrants, caseId, requestId: operation.requestId, question: operation.question, attachment: operation.attachment },
         })
         : await api<Session>(`${sessionPath(operation.sessionId)}/answers`, {
           method: "POST",
-          body: { answer: operation.answer, parentId: operation.parentId, requestId: operation.requestId },
+          body: { route: operation.route, mcpGrants: operation.mcpGrants, answer: operation.answer, parentId: operation.parentId, requestId: operation.requestId },
         });
       remember(sessionKey, result.id);
       if (operation.kind === "create") remember(createKey, null);
@@ -194,19 +195,19 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     }
   }
 
-  function start(question?: string, attachment?: StudyAttachment) {
+  function start(question?: string, attachment?: StudyAttachment, mcpGrants?: McpGrant[], settings?: Settings) {
     if (inFlight.current || retryOperation) return;
     const text = question?.trim();
     const id = text ? requestId() : remembered(createKey) ?? requestId();
     if (!text) remember(createKey, id);
-    void perform({ kind: "create", requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
+    void perform({ kind: "create", route: selectedRoute(settings), mcpGrants, requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
   }
 
-  function send() {
+  function send(mcpGrants?: McpGrant[], settings?: Settings) {
     const answer = draft?.text.trim();
     const parentId = session?.currentTurnId;
     if (!session || session.status !== "ready" || !answer || !parentId || draft?.parentId !== parentId || retryOperation) return;
-    void perform({ kind: "answer", requestId: requestId(), sessionId: session.id, parentId, answer });
+    void perform({ kind: "answer", route: selectedRoute(settings), mcpGrants, requestId: requestId(), sessionId: session.id, parentId, answer });
   }
 
   function editDraft(text: string) {

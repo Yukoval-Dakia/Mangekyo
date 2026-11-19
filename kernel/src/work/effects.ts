@@ -91,3 +91,46 @@ export async function runEffect(
   }));
   return outcome;
 }
+
+/** A local read and its replay receipt commit together. A database failure leaves no claim. */
+export async function recordLocalRead(
+  db: Db,
+  request: EffectRequest,
+  read: (tx: ReadTransaction) => Promise<string>,
+  authorize: (tx: ReadTransaction) => Promise<void>,
+): Promise<string> {
+  const learner = learnerId(request.learner);
+  const identity = [learner, request.ownerKind, request.ownerId, request.stepKey, request.label] as const;
+  const digest = createHash('sha256').update(canonicalJsonString(request.input)).digest('hex');
+  return db.tx({ learner }, async tx => {
+    await lockLearner(tx, learner);
+    await authorize(tx);
+    const { rows: [saved] } = await tx.query<Pick<EffectRow, 'state' | 'result' | 'input_digest'>>(
+      `SELECT state, result, input_digest FROM effects
+       WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5`,
+      identity,
+    );
+    if (saved) {
+      if (saved.input_digest !== digest || saved.state !== 'done' || typeof saved.result !== 'string') {
+        throw new Error('Workspace read receipt does not match the request');
+      }
+      return saved.result;
+    }
+    const result = await read(tx);
+    return tx.withLearnerWrite(async tick => {
+      await tx.insert('effects', {
+        learner_id: learner,
+        owner_kind: request.ownerKind,
+        owner_id: request.ownerId,
+        step_key: request.stepKey,
+        label: request.label,
+        input_digest: digest,
+        state: 'done',
+        result: JSON.stringify(result),
+        started_tick: tick,
+        ended_tick: tick,
+      });
+      return result;
+    });
+  });
+}

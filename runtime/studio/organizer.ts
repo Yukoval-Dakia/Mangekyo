@@ -1,3 +1,4 @@
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import {
   createCommandReadContext,
@@ -27,6 +28,7 @@ import {
   type OrganizerNote,
   type OrganizerTask,
 } from '../../modules/activity/organizer-values.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
@@ -84,11 +86,8 @@ function written(receipt: Awaited<ReturnType<ReturnType<typeof createCommandHand
   return { id: ref.id, rev: ref.rev };
 }
 
-export function openOrganizer(db: Db, activity: LoadedModule) {
-  const handle = createCommandHandler(db, {
-    modules: [activity],
-    hooks: { async onFactsChanged() {} },
-  });
+export function openOrganizer(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
+  const handle = createCommandHandler(db, { modules: [activity], hooks });
 
   async function write(type: string, requestId: string, input: unknown) {
     try {

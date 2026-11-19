@@ -15,6 +15,11 @@ async function api(path, data) {
 }
 
 const settings = await api('settings');
+const providerId = settings.routes?.assessment ?? settings.activeProviderId;
+const provider = settings.providers.find(profile => profile.id === providerId);
+assert.ok(provider);
+const route = {providerId, protocol: provider.protocol, model: provider.model,
+  baseUrl: provider.baseUrl, reasoningEffort: provider.reasoningEffort};
 const paper = await api('papers', {
   requestId: randomUUID(), title: '矩形的面积与周长', materialId: null,
   questions: [{kind: 'rubric', prompt: '矩形长 293 厘米，宽 137 厘米。算出面积和周长。',
@@ -27,9 +32,12 @@ const answer = '面积为 40141 平方厘米，周长为 440 厘米。';
 const {attempts: [attempt]} = await api(path + '/attempts', {requestId: randomUUID(), answers: {[question.id]: answer}});
 assert.equal(attempt.feedback[0].result, 'pending');
 const target = path + '/attempts/' + attempt.id + '/assessments';
-const consent = {requestId: randomUUID(), questionId: question.id, providerBaseUrl: settings.baseUrl, consent: 'send-question-answer-rubric'};
+const consent = {requestId: randomUUID(), questionId: question.id, providerBaseUrl: provider.baseUrl, route, consent: 'send-question-answer-rubric'};
 const graded = await api(target, consent);
 const assessment = graded.attempts[0].assessments[0];
+assert.equal(assessment.requestedModel, provider.model);
+assert.equal(assessment.providerId, providerId);
+assert.equal(assessment.providerProtocol, provider.protocol);
 assert.equal(assessment.verdict, 'partial');
 assert.deepEqual(assessment.score, {earned: 2, maximum: 3});
 assert.ok(assessment.evidence.length && assessment.evidence.every(quote => answer.includes(quote)));

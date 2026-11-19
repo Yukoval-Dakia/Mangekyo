@@ -1,12 +1,13 @@
+import { forTask } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { remembered, remember, sessionPath, type Session, type StudyAttachment } from './api';
+import { remembered, remember, sessionPath, type Session, type Settings, type StudyAttachment } from './api';
 import { useConversation } from './conversation';
 import { Icon, Mark } from './icons';
 import { Message } from './message';
 import { TeachingTurn } from './demo';
 import { chatPath, materialPath, PageTitle, ReadState, useResource, type ChatLink, type Material, type Resource } from './workspace';
 
-function LinkedChat({ id, chats }: { id: string; chats: Resource<ChatLink[]> }) {
+function LinkedChat({ id, chats, settings }: { settings: Settings | undefined; id: string; chats: Resource<ChatLink[]> }) {
   const record = useResource<Session>(sessionPath(id));
   if (!record.data)
     return (
@@ -25,21 +26,21 @@ function LinkedChat({ id, chats }: { id: string; chats: Resource<ChatLink[]> }) 
         <a href={'/classroom/first45?session=' + encodeURIComponent(id)}>打开这次教研记录</a>
       </>
     );
-  return <ChatRoom mode={record.data.caseId} initial={record.data} chats={chats} />;
+  return <ChatRoom mode={record.data.caseId} initial={record.data} chats={chats} settings={settings} />;
 }
 
-function MaterialChat({id, prepare, chats}: {id: string; prepare: boolean; chats: Resource<ChatLink[]>}) {
+function MaterialChat({id, prepare, chats, settings}: {settings: Settings | undefined; id: string; prepare: boolean; chats: Resource<ChatLink[]>}) {
   const source = useResource<Material>('/materials/'+encodeURIComponent(id)+'/reading');
   if (!source.data) return <><PageTitle title="读取材料" /><ReadState resource={source} /><a href="/materials">返回材料</a></>;
-  return <ChatRoom mode="companion" chats={chats} source={source.data} prepare={prepare} />;
+  return <ChatRoom mode="companion" chats={chats} settings={settings} source={source.data} prepare={prepare} />;
 }
-export function Companion({ chats }: { chats: Resource<ChatLink[]> }) {
+export function Companion({ chats, settings }: { settings: Settings | undefined; chats: Resource<ChatLink[]> }) {
   const [query] = useState(() => new URLSearchParams(location.search));
   const id = query.get('session');
-  if (id) return <LinkedChat id={id} chats={chats} />;
+  if (id) return <LinkedChat id={id} chats={chats} settings={settings} />;
   const materialId = query.get('material');
-  if (materialId) return <MaterialChat id={materialId} prepare={query.get('mode') === 'prepare'} chats={chats} />;
-  return <ChatRoom mode={query.get('context') === 'riding' ? 'riding' : 'companion'} chats={chats} />;
+  if (materialId) return <MaterialChat id={materialId} prepare={query.get('mode') === 'prepare'} chats={chats} settings={settings} />;
+  return <ChatRoom mode={query.get('context') === 'riding' ? 'riding' : 'companion'} chats={chats} settings={settings} />;
 }
 
 function ChatRoom({
@@ -47,16 +48,24 @@ function ChatRoom({
   initial,
   chats,
   source,
+  settings: allSettings,
   prepare = false,
 }: {
   mode: string;
   initial?: Session;
   chats: Resource<ChatLink[]>;
   source?: Material;
+  settings: Settings | undefined;
   prepare?: boolean;
 }) {
   const chat = useConversation(mode, true, initial, false);
   const { session, sessionId, busy, streamingReply, progressLabel, reconnecting } = chat;
+  const preparing = initial ? initial.attachment?.mode === 'prepare' : prepare;
+  const settings = allSettings && forTask(allSettings, preparing ? 'preparation' : 'companion');
+  const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const grants = (settings?.mcpServers ?? []).filter(server => server.enabled && server.allowedTools.length)
+    .map(({id, url, allowedTools}) => ({id, url, allowedTools}));
+  const permitted = grants.filter(server => selectedTools.includes(JSON.stringify(server)));
   const draftKey = 'free-chat:' + (sessionId ?? (source ? source.id + ':' + prepare : mode));
   const [opening, setOpening] = useState(() => remembered(draftKey) ?? (prepare ? '请结合这段材料准备一份短讲义和可以自测的练习题。' : new URLSearchParams(location.search).has('review') ? '根据我这些实际错答，我在哪一步可能有困难？请引用其中一题，给我一道能验证你判断的追问。' : ''));
   const [excerpt, setExcerpt] = useState(() => source?.text.slice(0, 3000) ?? '');
@@ -97,13 +106,14 @@ function ChatRoom({
       chat.refreshingConflict
     )
       return;
-    if (sessionId) chat.send();
+    if (sessionId) chat.send(permitted, settings);
     else if (excerptValid) {
       const attachment: StudyAttachment | undefined = source
         ? { id: source.id, title: source.title, text: excerpt, mode: prepare ? 'prepare' : 'ask' }
         : undefined;
-      chat.start(value.trim(), attachment);
+      chat.start(value.trim(), attachment, permitted, settings);
     }
+    setSelectedTools([]);
   }
   const historyList = chats.data ?? [];
   return (
@@ -188,6 +198,19 @@ function ChatRoom({
             </div>
           )}
           <form className="chat-composer" onSubmit={submit}>
+            {settings && <small>{settings.model} · {settings.baseUrl}</small>}
+            {grants.length > 0 && <fieldset disabled={pending || unavailable || !!chat.retryOperation}>
+              <legend>本轮允许使用的 MCP 工具</legend>
+              <p className="field-help">选中的服务可收到同伴为调用工具传入的内容，其中可能包含本轮材料、对话或备忘。</p>
+              {grants.map(server => {
+                const key = JSON.stringify(server);
+                return <label key={key} className="workbook-check">
+                  <input type="checkbox" checked={selectedTools.includes(key)} onChange={e =>
+                    setSelectedTools(current => e.target.checked ? [...current, key] : current.filter(item => item !== key))} />
+                  <span>{server.id} · {server.allowedTools.join('、')}<br/><small>{server.url}</small></span>
+                </label>;
+              })}
+            </fieldset>}
             <textarea
               ref={textarea}
               aria-label="给同伴的话"

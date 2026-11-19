@@ -112,7 +112,7 @@ export type FactWrite =
     readonly purpose?: readonly string[];
   }
   | {
-    readonly kind: 'correct';
+    readonly kind: 'correct' | 'revise';
     readonly id: FactId;
     readonly expectedRev: Revision;
     readonly data: Json;

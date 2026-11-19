@@ -31,7 +31,7 @@ type PreparedWrite =
     readonly purpose: readonly string[];
   }
   | {
-    readonly kind: 'correct';
+    readonly kind: 'correct' | 'revise';
     readonly id: FactId;
     readonly expectedRev: Revision;
     data: Json;
@@ -120,11 +120,12 @@ function validateWrite(write: FactWrite, facts: FactRegistry, options: WriteOpti
       purpose: write.purpose === undefined ? ['storage'] : validatePurpose(write.purpose, 'Create write purpose'),
     };
   }
-  if (write.kind === 'correct') {
+  if (write.kind === 'correct' || write.kind === 'revise') {
     assertKnownFields(write, ['kind', 'id', 'expectedRev', 'data']);
-    if (options.actor !== 'learner') throw new Error('Correct writes are learner-only');
+    if (write.kind === 'correct' && options.actor !== 'learner') throw new Error('Correct writes are learner-only');
+    if (write.kind === 'revise' && options.actor !== 'companion') throw new Error('Only a companion may revise its own draft');
     return {
-      kind: 'correct',
+      kind: write.kind,
       id: factId(write.id),
       expectedRev: validatedRevision(write.expectedRev),
       data: validateJson(write.data, 'Correct write data'),
@@ -255,7 +256,13 @@ export async function applyFactWrites(
       const currentData = await readCurrentData(tx, write.id, validatedRevision(row.current_rev));
       write.data = currentData;
     }
-    if (write.kind === 'correct') {
+    if (write.kind === 'revise') {
+      const birth = await tx.query<{author: string}>(
+        'SELECT author FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1', [tx.learner, write.id],
+      );
+      if (row.sticky || birth.rows[0]?.author !== 'companion') throw new Error('Only an unedited companion draft can be revised');
+    }
+    if (write.kind === 'correct' || write.kind === 'revise') {
       write.data = parseFactData(facts, row.type, write.data, 'Correct write data');
     }
     rows.set(write.id, row);

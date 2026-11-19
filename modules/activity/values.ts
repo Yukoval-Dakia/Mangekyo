@@ -9,6 +9,22 @@ function field(input: Record<string, unknown>, key: string, limit = 4000): strin
   if (typeof value !== 'string' || !value.trim() || value.length > limit) throw new Error('记录字段无效');
   return value;
 }
+export function studyMcpGrants(input: unknown) {
+  if (input === undefined) return [];
+  if (!Array.isArray(input) || input.length > 32) throw new Error('MCP 服务选择无效。');
+  const ids = new Set<string>();
+  return input.map(item => {
+    const server = object(item);
+    const id = field(server, 'id', 100);
+    const url = field(server, 'url', 2000);
+    const names = server.allowedTools;
+    if (ids.has(id) || !Array.isArray(names) || !names.length || names.length > 128 ||
+        !names.every((name): name is string => typeof name === 'string' && name.length > 0 && name.length <= 256) ||
+        new Set(names).size !== names.length) throw new Error('MCP 工具选择无效。');
+    ids.add(id);
+    return {id, url, allowedTools: [...names].sort()};
+  }).sort((a,b) => a.id.localeCompare(b.id));
+}
 export function studyTurn(input: unknown) {
   const value = object(input);
   const answer = value.answer === null ? null : field(value, 'answer');
@@ -18,7 +34,12 @@ export function studyTurn(input: unknown) {
     parentId: value.parentId === null ? null : factId(field(value, 'parentId')),
     answer,
     ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),
+    ...(value.workspaceRevision === undefined ? {} : {workspaceRevision: field(value, 'workspaceRevision', 80)}),
     ...(value.attachment === undefined ? {} : { attachment: studyAttachment(value.attachment) }),
+    ...(value.providerId === undefined ? {} : {providerId: field(value, 'providerId', 100)}),
+    ...(value.protocol === undefined ? {} : {protocol: field(value, 'protocol', 32)}),
+    ...(value.mcpRevision === undefined ? {} : {mcpRevision: field(value, 'mcpRevision', 64)}),
+    ...(value.mcpGrants === undefined ? {} : {mcpGrants: studyMcpGrants(value.mcpGrants)}),
     model: field(value, 'model', 200),
     ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: field(value, 'reasoningEffort', 40) }),
     baseUrl: field(value, 'baseUrl', 2000),

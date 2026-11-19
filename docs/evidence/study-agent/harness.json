@@ -1,0 +1,52 @@
+{
+  "date": "2026-11-19",
+  "environment": "Local Studio with PostgreSQL and Temporal",
+  "companion": {
+    "requestedModel": "auto/deepseek-v4.1-flash",
+    "requestedEffort": "high",
+    "reportedModel": "group/auto-deepseek-v4-1-flash",
+    "session": "5FDE6F90C962FCCC1AE1181083",
+    "trace": [
+      "MCP · library / lesson_reference\n资料回执 02b45a69fbef"
+    ],
+    "message": "资料回执 02b45a69fbef",
+    "transport": "Streamable HTTP",
+    "serverSdk": "@modelcontextprotocol/sdk@1.32.2",
+    "browserSession": "284ABA13A877DC3B13AF431A1C"
+  },
+  "providerRouting": {
+    "companion": "DeepSeek via the local Magpie provider",
+    "assessment": "Local Anthropic Messages protocol fixture",
+    "assessmentPaper": "3AA3ACC5B2A913C7E8D5708365",
+    "messagesCompanion": "ED5E61F1A3110A0EFD357FEA97",
+    "fixtureModel": "study-messages-fixture",
+    "previousConversationWithDifferentRouteHttp": 422,
+    "ungrantedToolHttp": 409
+  },
+  "revocation": {
+    "session": "E84C54D5C7E558EF57A6236F90",
+    "condition": "Saved bearer token removed between tools/list and tools/call",
+    "externalCallsAfterRevocation": 0
+  },
+  "liveAssessment": {
+    "paper": "2D0B58A15AFE3D5202D4024D9B",
+    "requestedModel": "auto/deepseek-v4.1-flash",
+    "reportedModel": "group/auto-deepseek-v4-1-flash",
+    "score": {
+      "earned": 2,
+      "maximum": 3
+    },
+    "trace": [
+      "Python 验算 · 40141 860\n程序 · print(293*137, 2*(293+137))"
+    ]
+  },
+  "first45": {
+    "independent": "979827126AC09B8781C9B6D64A",
+    "firstAction": "transfer_question",
+    "workedExample": "BF809A9436BE1D9B8728E923AA",
+    "actions": [
+      "diagnostic_question",
+      "targeted_explanation"
+    ]
+  }
+}

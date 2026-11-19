@@ -7,7 +7,7 @@ import {
   FactNotFoundError,
   FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
-import { commandId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { commandId, derivationId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -38,7 +38,6 @@ import {
   workbookPaperType,
   workbookQuestionsView,
   workbookRequestId,
-  workbookRubricAssessment,
   workbookRubricAssessmentType,
   workbookRubricAssessmentVersion,
   sameWorkbookJson,
@@ -54,9 +53,12 @@ import {
   type WorkbookSourceView,
   type WorkbookSummary,
 } from '../../modules/activity/workbook-values.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
+import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { loadSettings } from './settings.ts';
+import { allAssessments } from './learning-attempt-read.ts';
 import {
   frozenSubmission, openWorkbookAssessment, prepareWorkbookRelease, readWorkbookAssessment,
 } from './workbook-assessment.ts';
@@ -201,24 +203,6 @@ async function allAttempts(
   return attempts;
 }
 
-async function allAssessments(tx: ReadTransaction, paperId?: string, key?: string) {
-  const { rows } = await tx.query<{ id: string; value: unknown; manifest: unknown }>(
-    `SELECT d.id,d.value,d.manifest FROM derivations d JOIN slot_state s
-       ON s.learner_id=d.learner_id AND s.slot_type=d.slot_type AND s.current_id=d.id
-       WHERE d.learner_id=$1 AND d.slot_type=$2 AND ($3::text IS NULL OR d.scope_keys->>'paperId'=$3)
-       AND ($4::text IS NULL OR s.slot_key=$4)`,
-    [tx.learner, workbookRubricAssessmentType, paperId ?? null, key ?? null]);
-  const result = new Map<string, WorkbookRubricAssessmentView[]>();
-  for (const row of rows) {
-    if ((await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid') continue;
-    const assessment = workbookRubricAssessment(row.value);
-    const current = result.get(assessment.attemptId) ?? [];
-    current.push({id: row.id, ...assessment});
-    result.set(assessment.attemptId, current);
-  }
-  return result;
-}
-
 async function requireSource(db: Db, id: string): Promise<void> {
   const exists = await db.snapshot({ learner: studioLearner }, async (tx) => {
     if (await factType(tx, factId(id)) !== materialType) return false;
@@ -253,14 +237,15 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   assessment?: ReturnType<typeof openWorkbookAssessment>;
   onResearchFactsChanged?: CommandHooks['onFactsChanged'];
 } = {}) {
+  const hooks = createStudioCommandHooks({
+    async afterFactsChanged(tx, tick, changes) {
+      await assessment.afterFactsChanged(tx, tick, changes);
+      await onResearchFactsChanged?.(tx, tick, changes);
+    },
+  });
   const handle = createCommandHandler(db, {
     modules: [activity],
-    hooks: {
-      async onFactsChanged(tx, tick, changes) {
-        await assessment.onFactsChanged(tx, tick, changes);
-        await onResearchFactsChanged?.(tx, tick, changes);
-      },
-    },
+    hooks,
   });
 
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
@@ -545,9 +530,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           manifest, existing: (await allAssessments(tx, paperId, id)).get(attemptId)?.[0],
         };
       });
-      const settings = await loadSettings();
+      const settings = await loadSettings('assessment');
       if (request.publicSearchQuery && !settings.allowSearch) throw new RequestError(400, '请在设置中启用公开检索。');
-      if (request.providerBaseUrl !== settings.baseUrl) {
+      if (request.providerBaseUrl !== settings.baseUrl || !routeMatchesInput((input as Record<string, unknown>).route, settings)) {
         throw new RequestError(409, '模型端点已经变化，请重新确认本次批改。');
       }
       const prior = selected.existing;
@@ -577,7 +562,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           },
           providerEffectId => invoke(providerEffectId),
           async tx => {
-            if (step.provider === 'tool:exa_search' && !(await loadSettings()).allowSearch) throw new RequestError(409, '公开检索授权已撤回。');
+            const current = await loadSettings('assessment');
+            if (!sameActiveProvider(settings, current) || current.apiKey !== settings.apiKey) throw new RequestError(409, '模型配置已变化，请重新确认批改。');
+            if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new RequestError(409, '公开检索授权已撤回。');
             if ((await revalidateManifest(tx, selected.manifest)).kind !== 'valid') throw new RequestError(409, '批改依据已经变化。');
           },
         );
@@ -631,6 +618,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         rubricVersion: selected.question.rubricVersion,
         rubric: selected.question.rubric,
         providerBaseUrl: settings.baseUrl,
+        requestedModel: settings.model,
+        providerProtocol: settings.protocol,
+        providerId: settings.activeProviderId,
         ...result,
       };
       await db.tx({learner: studioLearner}, async tx => {
@@ -639,7 +629,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         const latest = (await allAssessments(tx, paperId, selected.assessmentId)).get(attemptId)?.[0];
         if (latest?.id !== prior?.id) return;
         await tx.withLearnerWrite(async tick => {
-          const id = stableId('rubric-result', selected.assessmentId, generation, request.requestId);
+          const id = derivationId(stableId('rubric-result', selected.assessmentId, generation, request.requestId));
           if (prior) await tx.query("UPDATE derivations SET lifecycle='superseded',selection_ended_tick=$3 WHERE learner_id=$1 AND id=$2", [tx.learner,prior.id,tick]);
           await tx.insert('derivations', {
             learner_id: tx.learner, id, slot_type: workbookRubricAssessmentType, slot_key: selected.assessmentId,
@@ -651,6 +641,13 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
             VALUES ($1,$2,$3,$4,$4,$5,$6) ON CONFLICT (learner_id,slot_type,slot_key)
             DO UPDATE SET current_id=EXCLUDED.current_id,last_id=EXCLUDED.last_id,changed_tick=EXCLUDED.changed_tick`,
             [tx.learner,workbookRubricAssessmentType,selected.assessmentId,id,tick,JSON.stringify({paperId,attemptId})]);
+          await hooks.onSlotChanged(tx, tick, {
+            kind: 'effective',
+            slot: { learner: tx.learner, type: workbookRubricAssessmentType, key: selected.assessmentId },
+            id,
+            previousCurrent: prior ? derivationId(prior.id) : null,
+            freshness: 'current',
+          });
         });
       });
       return get(paperId);
