@@ -1,10 +1,16 @@
 import pg from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPgDb } from '../db/pg.ts';
-import type { Db } from '../db/types.ts';
+import type { Db, DbTransaction } from '../db/types.ts';
 import { learnerId } from '../declarations/ids.ts';
+import type { Json, Outcome } from '../declarations/types.ts';
+import { gatherSnapshot } from '../derivations/gather.ts';
 import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../schema.ts';
-import { acknowledgeStartedWork, cancelWork, finishWork, relayPending, requestWork, runEffect } from './index.ts';
+import { newUlid } from './identity.ts';
+import {
+  acknowledgeStartedWork, cancelWork, failWork, finishWork, registerWorkWait, relayPending, requestWork, runEffect, wakeWaitingWork,
+  type WorkRef,
+} from './index.ts';
 
 const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
@@ -23,6 +29,146 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     await db.close();
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.close();
+  });
+
+  const slot = (key: string) => ({ learner, type: 'test.grade', key });
+  const scope = { knowledgePoint: 'K' };
+  async function addSlot(key: string, eligible = false) {
+    await db.query(
+      "INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys, evidence_eligible) VALUES ($1, 'test.grade', $2, $3, $4)",
+      [learner, key, JSON.stringify(scope), eligible],
+    );
+  }
+  const request = (slotKey: string) => db.tx({ learner }, tx =>
+    tx.withLearnerWrite(tick => requestWork(tx, tick, { slotType: 'test.grade', slotKey, deriver: 'derive' })));
+  const gatherRange = () => gatherSnapshot(db, { learner, purpose: 'study' }, async ctx => {
+    const range = await ctx.read.range('test.grade', scope);
+    return { kind: 'input', data: range.members.map(member => member.outcome), effects: [] };
+  });
+  const register = (ref: WorkRef, snapshot: Awaited<ReturnType<typeof gatherRange>>) =>
+    db.tx({ learner }, tx => registerWorkWait(tx, ref, snapshot.waits));
+
+  function publish(tx: DbTransaction, key: string, outcome: Outcome<Json>) {
+    return tx.withLearnerWrite(async tick => {
+      const id = newUlid();
+      await tx.insert('derivations', {
+        id, learner_id: learner, slot_type: 'test.grade', slot_key: key, deriver: 'derive',
+        lifecycle: 'effective', freshness: 'current', gather_tick: tick, effective_tick: tick,
+        manifest: JSON.stringify({ version: 1, learner, purpose: 'study', gatherTick: tick, inputs: [] }),
+        scope_keys: JSON.stringify(scope), value: JSON.stringify(outcome),
+      });
+      await tx.query(
+        "UPDATE slot_state SET current_id = $3, last_id = $3, changed_tick = $4 WHERE learner_id = $1 AND slot_type = 'test.grade' AND slot_key = $2",
+        [learner, key, id, tick],
+      );
+      return wakeWaitingWork(tx, tick, slot(key));
+    });
+  }
+
+  async function race(first: (tx: DbTransaction) => Promise<unknown>, second: () => Promise<unknown>) {
+    const entered = Promise.withResolvers<number>();
+    const release = Promise.withResolvers<void>();
+    const held = db.tx({ learner }, async tx => {
+      const result = await first(tx);
+      const { rows: [row] } = await tx.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+      entered.resolve(row!.pid);
+      await release.promise;
+      return result;
+    });
+    void held.catch(entered.reject);
+    let contender: Promise<unknown> | undefined;
+    try {
+      const pid = await entered.promise;
+      contender = second();
+      await vi.waitFor(async () => {
+        const { rows: [row] } = await admin.query<{ blocked: boolean }>(
+          'SELECT EXISTS (SELECT FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked',
+          [pid],
+        );
+        expect(row?.blocked).toBe(true);
+      });
+    } finally {
+      release.resolve();
+      await Promise.all([held, contender]);
+    }
+  }
+
+  it.each(['wait first', 'target first'])('resumes strict range demand with concurrent writes (%s)', async order => {
+    await applyKernelSchema(db);
+    await addSlot('grade', true);
+    await addSlot('unknown', true);
+    await addSlot('summary');
+    const unknown = { kind: 'unknown', reason: 'grading evidence inconclusive' } as const;
+    await db.tx({ learner }, tx => publish(tx, 'grade', { kind: 'value', value: 2 }));
+    await db.tx({ learner }, tx => publish(tx, 'unknown', unknown));
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+      await tx.query(
+        "UPDATE derivations SET lifecycle = 'stale', invalidated_tick = $2 WHERE learner_id = $1 AND slot_key = 'grade'",
+        [learner, tick],
+      );
+      await tx.query(
+        "UPDATE slot_state SET current_id = NULL, changed_tick = $2 WHERE learner_id = $1 AND slot_key = 'grade'",
+        [learner, tick],
+      );
+    }));
+    const ref = await request('summary');
+    const snapshot = await gatherRange();
+    expect(snapshot.plan.kind).toBe('waiting');
+    expect(snapshot.waits).toEqual([{ ref: slot('grade'), changedTick: '3' }]);
+
+    const wait = (tx: DbTransaction) => registerWorkWait(tx, ref, snapshot.waits);
+    const grade = { kind: 'value', value: 6 } as const;
+    const accept = (tx: DbTransaction) => publish(tx, 'grade', grade);
+    if (order === 'wait first') await race(wait, () => db.tx({ learner }, accept));
+    else await race(accept, () => db.tx({ learner }, wait));
+
+    const restart = { ...ref, generation: '2' };
+    const starts: WorkRef[] = [];
+    expect(await relayPending(db, async next => { starts.push(next); })).toBe(1);
+    expect(starts).toEqual([restart]);
+    expect((await db.query('SELECT clock::text FROM learners WHERE id = $1', [learner])).rows).toEqual([{ clock: '5' }]);
+    expect((await db.query('SELECT work_id FROM work_waits WHERE learner_id = $1', [learner])).rows).toEqual([]);
+    expect((await gatherRange()).plan).toEqual({ kind: 'input', data: [grade, unknown], effects: [] });
+    expect(await finishWork(db, ref)).toBe(false);
+    expect(await finishWork(db, restart)).toBe(true);
+    expect(await register(restart, snapshot)).toEqual({ kind: 'obsolete' });
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+      expect(await wakeWaitingWork(tx, tick, slot('grade'))).toEqual([]);
+    }));
+    expect(await relayPending(db, async () => {})).toBe(0);
+  });
+
+  it.each(['blocked', 'unavailable', 'denied', 'stale'])('reconciles %s on either side of registration', async status => {
+    await applyKernelSchema(db);
+    await addSlot('grade', true);
+    await addSlot('before');
+    await addSlot('after');
+    const before = await request('before');
+    const after = await request('after');
+    const snapshot = await gatherRange();
+    expect(await register(before, snapshot)).toEqual({ kind: 'waiting' });
+    expect((await db.query('SELECT observed_change_tick::text AS tick FROM work_waits WHERE learner_id = $1', [learner])).rows).toEqual([{ tick: '0' }]);
+    const expected = (ref: WorkRef) => status === 'stale'
+      ? { kind: 'ready', ref: { ...ref, generation: '2' } }
+      : { kind: status, ref };
+    if (status === 'blocked') {
+      expect(await failWork(db, await request('grade'), async (tx, tick) => {
+        expect(await wakeWaitingWork(tx, tick, slot('grade'))).toEqual([expected(before)]);
+      })).toBe(true);
+    } else {
+      await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+        await tx.query(
+          "UPDATE slot_state SET last_error = $2, changed_tick = $3 WHERE learner_id = $1 AND slot_type = 'test.grade' AND slot_key = 'grade'",
+          [learner, JSON.stringify({ status }), tick],
+        );
+        expect(await wakeWaitingWork(tx, tick, slot('grade'))).toEqual([expected(before)]);
+      }));
+    }
+    expect(await register(after, snapshot)).toEqual(expected(after));
+    const state = status === 'stale' ? 'ready' : status;
+    expect((await db.query('SELECT DISTINCT state FROM work WHERE learner_id = $1', [learner])).rows).toEqual([{ state }]);
+    expect((await db.query('SELECT work_id FROM work_waits WHERE learner_id = $1', [learner])).rows).toEqual([]);
+    expect(await relayPending(db, async () => {})).toBe(status === 'stale' ? 2 : 0);
   });
 
   it('rolls back a failed migration and serializes concurrent migration of legacy work', async () => {
