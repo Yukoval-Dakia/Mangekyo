@@ -31,6 +31,7 @@ import {
   projectArtifactSnapshot,
   type ArtifactMountV1,
 } from './artifact-presentation.ts';
+import { workspaceGrantChecker } from './harness.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner, purpose, slotType } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
@@ -100,28 +101,36 @@ export async function mountArtifact(
 }
 
 type ActionRecord = { stateRev: number; requestId: string; action: ArtifactAction; prediction: boolean };
+class MountUnavailable extends Error {}
+
+function unavailableMount(error: unknown) {
+  return error instanceof MountUnavailable || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+}
+
 async function readMount(tx: ReadTransaction, sessionId: string, mountId: string) {
   try {
-    return await projectMount(tx, sessionId, mountId);
+    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker());
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError)
-      throw conflict('作品或依据已不可读。');
+    if (unavailableMount(error)) throw conflict(error instanceof MountUnavailable ? error.message : '作品或依据已不可读。');
     throw error;
   }
 }
 
-async function projectMount(tx: ReadTransaction, sessionId: string, mountId: string) {
+async function projectMount(
+  tx: ReadTransaction, sessionId: string, mountId: string, grantCurrent: ReturnType<typeof workspaceGrantChecker>,
+) {
   const reader = createCommandReadContext(tx, purpose);
   const source = await reader.fact(factId(mountId), { mode: 'following' });
-  if (source.type !== 'content.mountedArtifact' || source.ref.rev !== 1) throw conflict('作品不可用。');
+  if (source.type !== 'content.mountedArtifact' || source.ref.rev !== 1) throw new MountUnavailable('作品不可用。');
   const data = artifactMount(source.value);
-  if (data.sessionId !== sessionId) throw conflict('作品不属于本次对话。');
+  if (data.sessionId !== sessionId) throw new MountUnavailable('作品不属于本次对话。');
   const turn = await reader.fact(data.turnId, { mode: 'following' });
+  const submission = studyTurn(turn.value);
   if (
-    studyTurn(turn.value).sessionId !== sessionId ||
+    submission.sessionId !== sessionId || !(await grantCurrent(submission)) ||
     (await revalidateManifest(tx, parseManifest(data.manifest))).kind !== 'valid'
   )
-    throw conflict('作品的依据已变更。');
+    throw new MountUnavailable('作品的依据已变更。');
   const {
     rows: [work],
   } = await tx.query<{ failed: boolean }>(
@@ -129,9 +138,9 @@ async function projectMount(tx: ReadTransaction, sessionId: string, mountId: str
     FROM slot_state WHERE learner_id=$1 AND slot_key=$2 AND slot_type=$3`,
     [tx.learner, data.turnId, slotType],
   );
-  if (!work || work.failed) throw conflict('此回合已停止。');
+  if (!work || work.failed) throw new MountUnavailable('此回合已停止。');
   const result = validateArtifact(data.view);
-  if (!result.ok) throw conflict('无法读取这个作品版本。');
+  if (!result.ok) throw new MountUnavailable('无法读取这个作品版本。');
   const events = await tx.query<{ id: string; receipt: CommandReceipt | null }>(
     `SELECT f.id,c.receipt FROM facts f JOIN fact_revs r ON
     r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev LEFT JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
@@ -141,7 +150,7 @@ async function projectMount(tx: ReadTransaction, sessionId: string, mountId: str
   const history = [];
   for (const { id, receipt } of events.rows) {
     const fact = await reader.fact<ActionRecord>(factId(id), { mode: 'following' });
-    if (fact.ref.rev !== 1) throw conflict('操作记录的版本已变化。');
+    if (fact.ref.rev !== 1) throw new MountUnavailable('操作记录的版本已变化。');
     history.push({ ...fact.value, id, receipt });
   }
   const prediction = history.find((e) => e.prediction);
@@ -233,7 +242,7 @@ async function projectMount(tx: ReadTransaction, sessionId: string, mountId: str
     ),
   };
   const projected = projectArtifactSnapshot(mount, grant);
-  if (!projected.ok) throw conflict(projected.code);
+  if (!projected.ok) throw new MountUnavailable(projected.code);
   // For each input return its most recent checkpoint. Full action records stay in activity.
   const covered = new Set<string>();
   const saved = [];
@@ -271,7 +280,16 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
     AND r.data->>'sessionId'=$2 AND r.data->>'turnId'=$3 ORDER BY f.created_tick`,
     [tx.learner, session, turn],
   );
-  return Promise.all(rows.rows.map(async (row) => (await readMount(tx, session, row.id)).snapshot));
+  const grantCurrent = workspaceGrantChecker();
+  const snapshots = [];
+  for (const { id } of rows.rows) {
+    try {
+      snapshots.push((await projectMount(tx, session, id, grantCurrent)).snapshot);
+    } catch (error) {
+      if (!unavailableMount(error)) throw error;
+    }
+  }
+  return snapshots;
 }
 
 // Freeze the submitted inputs at the version the learner saw. The assessment executor can
