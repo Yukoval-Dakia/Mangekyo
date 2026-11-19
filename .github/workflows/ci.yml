@@ -31,6 +31,9 @@ jobs:
       - &install
         name: Install workspace dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
+      - &build-kernel
+        name: Build the kernel package for test imports
+        run: pnpm build:kernel
       - name: Load the Python test image
         env:
           PYTHON_TEST_IMAGE: python@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
@@ -86,6 +89,7 @@ jobs:
       - *pnpm
       - *node
       - *install
+      - *build-kernel
       - name: Run PostgreSQL tests
         env:
           POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
