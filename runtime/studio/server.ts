@@ -49,7 +49,7 @@ async function openWeb() {
   const studio = await openStudio(db, activity);
   const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
   const student = { workbook: openWorkbook(db, activity), organizer: openOrganizer(db, activity),
-    memory: openMemory(db, companion), intake: openIntake(db, activity) };
+    memory: openMemory(db, companion), intake };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }

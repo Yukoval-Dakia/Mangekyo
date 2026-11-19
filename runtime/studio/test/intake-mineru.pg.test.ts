@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,7 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
   let server: ReturnType<typeof createServer>;
   let directory: string;
   let origin: string;
+  let failCapture = false;
   const schema = 'mineru_intake_' + process.pid;
   const refs: WorkRef[] = [];
   const pdf = Buffer.from('%PDF-1.7\n% synthetic upload');
@@ -34,7 +35,11 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     await applyKernelSchema(db);
     await db.query('INSERT INTO learners(id) VALUES ($1)', [studioLearner]);
     const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity', import.meta.url)));
-    intake = openIntake(db, activity);
+    intake = openIntake(db, activity, {
+      async onFactsChanged() {
+        if (failCapture) throw new Error('simulated save failure');
+      },
+    });
     server = createServer((req, res) => {
       void handleIntakeRequest(intake, req, res, new URL(req.url!, 'http://127.0.0.1').pathname, req.method);
     });
@@ -136,6 +141,35 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
       expect((await intake.metadata(pending.id)).extraction.status).toBe(reason === 'correction' ? 'corrected' : 'failed');
     }
     vi.stubEnv('MANGEKYO_MINERU_TOKEN', 'test-token');
+  });
+
+  it('rejects ambiguous or invalid intake and leaves a failed save retryable', async () => {
+    const originals = () => readdir(join(directory, 'intake'));
+    const before = await originals();
+    const form = new FormData();
+    form.set('requestId', 'mineru-invalid-fields');
+    form.set('extraction', 'mineru');
+    form.append('extraction', 'local');
+    form.set('file', new Blob([pdf], { type: 'application/pdf' }), 'exam.pdf');
+    expect((await fetch(origin + '/api/intake', { method: 'POST', body: form })).status).toBe(400);
+    form.delete('extraction');
+    form.set('extraction', 'mineru');
+    form.set('file', new Blob([pdf], { type: 'application/pdf' }), 'exam?.pdf');
+    expect((await fetch(origin + '/api/intake', { method: 'POST', body: form })).status).toBe(400);
+
+    failCapture = true;
+    try { expect((await capture('mineru-retry-save')).status).toBe(500); }
+    finally { failCapture = false; }
+    expect(await originals()).toEqual(before);
+    const reply = await capture('mineru-retry-save');
+    expect(reply.status).toBe(201);
+    const { id } = await reply.json() as IntakeMetadata;
+    expect((await intake.original(id)).stored.size).toBe(pdf.length);
+    await openCloudIntakeWork(db, intake, {
+      submit: async () => 'batch-test',
+      read: async () => ({ state: 'done', text: '正文', pages: 1_001 }),
+    }).execute(await nextWork());
+    expect(await intake.metadata(id)).toMatchObject({ fullText: '正文', extraction: { status: 'ok', pages: null } });
   });
 
   it('keeps local text local and rejects unavailable cloud requests', async () => {

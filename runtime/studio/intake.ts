@@ -7,6 +7,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
+import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
@@ -20,13 +21,13 @@ import {
   correctIntakeCommand,
   correctIntakeInput,
   intakeDocument,
-  intakeFactType,
   intakeFileLimit,
-  intakeMediaTypes,
+  intakeOriginal,
   intakePurpose,
   intakeTextLimit,
   type IntakeExtraction,
   type IntakeMediaType,
+  type IntakeOriginal,
 } from '../../modules/activity/intake-values.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
@@ -60,7 +61,6 @@ type CaptureInput = {
 type CorrectInput = { readonly expectedRev: unknown; readonly materialId: unknown; readonly requestId: unknown; readonly text: unknown };
 
 type StoredOriginal = {
-  readonly created: boolean;
   readonly path: string;
   readonly name: string;
   readonly mediaType: IntakeMediaType;
@@ -106,7 +106,7 @@ function cleanName(value: unknown) {
   let name = typeof value === 'string' ? value : '';
   name = name.replace(/\\/g, '/').split('/').at(-1) ?? '';
   name = name.replace(/[\u0000-\u001f\u007f]/g, '').trim();
-  return name.slice(0, 180);
+  return name.slice(0, 180).toWellFormed();
 }
 
 function extensionOf(name: string) {
@@ -117,7 +117,7 @@ function cleanTitle(value: unknown, fallback: string) {
   let title = typeof value === 'string' ? value.trim() : '';
   title = title.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 240);
   if (!title || !title.isWellFormed() || title.includes('\u0000')) title = fallback;
-  if (title.length > 240) title = title.slice(0, 240);
+  title = title.slice(0, 240).toWellFormed();
   return title || '未命名材料';
 }
 
@@ -155,32 +155,19 @@ function detect(bytes: Buffer, filename: string, declaredType: unknown): Detecte
   throw new RequestError(415, '只支持 PDF、照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF）和 UTF-8 的 txt/Markdown。');
 }
 
-async function storeOriginal(
-  base: string,
-  materialId: FactId,
-  bytes: Buffer,
-  original: { readonly name: string; readonly mediaType: IntakeMediaType },
-): Promise<StoredOriginal> {
-  const value = { ...original, size: bytes.length, sha256: digest(bytes) };
+async function stageOriginal(base: string, bytes: Buffer, original: IntakeOriginal) {
   const parent = dirname(base);
   await mkdir(parent, { recursive: true, mode: 0o700 });
-  const staging = await mkdtemp(join(parent, '.incoming-'));
+  const directory = await mkdtemp(join(parent, '.incoming-'));
+  const path = join(directory, 'original');
   try {
-    await writeFile(join(staging, 'original'), bytes, { mode: 0o600 });
-    await writeFile(join(staging, 'meta.json'), JSON.stringify(value), { mode: 0o600 });
-    try {
-      await rename(staging, base);
-    } catch (error) {
-      if (!['EEXIST','ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-      const stored = await readStoredOriginal(base, materialId);
-      if (stored.sha256 !== value.sha256 || stored.name !== value.name || stored.mediaType !== value.mediaType)
-        throw new RequestError(409, '同一个请求标识已经用于不同文件。');
-      return stored;
-    }
-    return { created: true, path: join(base, 'original'), ...value };
-  } finally {
-    await rm(staging, {recursive: true, force: true});
+    await writeFile(path, bytes, { mode: 0o600 });
+    await writeFile(join(directory, 'meta.json'), JSON.stringify(original), { mode: 0o600 });
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
   }
+  return { directory, path };
 }
 
 async function readStoredOriginal(base: string, materialId: FactId): Promise<StoredOriginal> {
@@ -192,7 +179,6 @@ async function readStoredOriginal(base: string, materialId: FactId): Promise<Sto
   if (!originalStat || !meta) throw new RequestError(404, '原件暂不可读取。');
   const stored: Record<string, unknown> = JSON.parse(meta) as Record<string, unknown>;
   return {
-    created: false,
     path: originalPath,
     name: typeof stored.name === 'string' ? stored.name : materialId,
     mediaType: typeof stored.mediaType === 'string' ? (stored.mediaType as IntakeMediaType) : 'application/octet-stream' as IntakeMediaType,
@@ -308,23 +294,7 @@ function intakeIdFor(materialId: FactId): FactId {
 }
 
 export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks = { async onFactsChanged() {} }) {
-  const handle = createCommandHandler(db, {
-    modules: [activity],
-    hooks: {
-      ...hooks,
-      async onFactsChanged(tx, tick, changes) {
-        await hooks.onFactsChanged(tx, tick, changes);
-        for (const change of changes) {
-          if (change.kind !== 'create' || change.factType !== intakeFactType) continue;
-          const snapshot = await createCommandReadContext(tx, intakePurpose).fact(change.ref.id, {
-            mode: 'pinned', rev: change.ref.rev,
-          });
-          if (intakeDocument(snapshot.value).extraction.status === 'pending')
-            await enqueueCloudIntake(tx, tick, change.ref.id);
-        }
-      },
-    },
-  });
+  const handle = createCommandHandler(db, { modules: [activity], hooks });
   const base = materialBase();
 
   async function factsFor(materialId: string) {
@@ -402,7 +372,14 @@ export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks =
     const cloud = requested === 'mineru';
     if (cloud && !mineruSupports(detected.mediaType)) throw new RequestError(415, 'MinerU 支持 PDF、PNG 和 JPEG。');
     const sha256 = digest(input.bytes);
-    const matches = (prior: IntakeMetadata) => prior.original.sha256 === sha256 && prior.original.name === name &&
+    let original: IntakeOriginal;
+    try {
+      original = intakeOriginal({ name, mediaType: detected.mediaType, size: input.bytes.length, sha256 });
+      textMaterial({ title, text: '原件' });
+    } catch (error) {
+      throw new RequestError(400, error instanceof Error ? error.message : '交入材料无效。');
+    }
+    const matches = (prior: IntakeMetadata) => prior.original.sha256 === sha256 && prior.original.name === original.name &&
       prior.title === title && prior.original.mediaType === detected.mediaType &&
       (prior.requestedExtraction ?? 'local') === requested;
     const prior = await metadataOrNull(materialId.toString());
@@ -411,39 +388,55 @@ export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks =
       return { ...prior, created: false };
     }
     if (cloud && !mineruToken()) throw new RequestError(503, 'MinerU 云识别尚未配置。');
-    const stored = await storeOriginal(base(materialId), materialId, input.bytes, { name, mediaType: detected.mediaType });
-    const extraction: IntakeExtraction = cloud ? {
-      status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
-      pages: null, truncated: false, characterCount: 0,
-    } : await extract(detected, stored.path, input.bytes);
-    const commandInput = {
-      materialId: materialId.toString(),
-      intakeId: intakeId.toString(),
-      title,
-      original: { name, mediaType: detected.mediaType, size: input.bytes.length, sha256 },
-      extraction,
-      ...(cloud ? { requestedExtraction: 'mineru' } : {}),
-    };
+    const destination = base(materialId);
+    const staged = await stageOriginal(destination, input.bytes, original);
+    let installed = false;
     try {
-      await handle({
-        learner: studioLearner,
-        actor: 'learner',
-        purpose: intakePurpose,
-        type: captureIntakeCommand,
+      const extraction: IntakeExtraction = cloud ? {
+        status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
+        pages: null, truncated: false, characterCount: 0,
+      } : await extract(detected, staged.path, input.bytes);
+      const commandInput = {
+        materialId, intakeId, title, original, extraction,
+        ...(cloud ? { requestedExtraction: 'mineru' } : {}),
+      };
+      const save = createCommandHandler(db, {
+        modules: [activity],
+        hooks: {
+          async onFactsChanged(tx, tick, changes) {
+            // The capture command has inserted both facts under the learner lock.
+            // Any previous directory at this ID is from an uncommitted capture.
+            await rm(destination, { recursive: true, force: true });
+            await rename(staged.directory, destination);
+            installed = true;
+            if (cloud) await enqueueCloudIntake(tx, tick, intakeId);
+            await hooks.onFactsChanged(tx, tick, changes);
+          },
+        },
+      });
+      await save({
+        learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: captureIntakeCommand,
         id: commandId(stableId('intake-capture', requestId)),
         input: commandInput,
       });
     } catch (error) {
-      const raced = await metadataOrNull(materialId.toString());
-      if (raced) {
-        if (matches(raced)) return { ...raced, created: false };
+      if (installed) {
+        await db.tx({ learner: studioLearner }, async tx => {
+          await lockLearner(tx, studioLearner);
+          const committed = await tx.query('SELECT id FROM facts WHERE learner_id=$1 AND id=$2', [studioLearner, materialId]);
+          if (committed.rows.length === 0) await rm(destination, { recursive: true, force: true });
+        }).catch(() => undefined);
       }
-      if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
+      const raced = await metadataOrNull(materialId.toString());
+      if (raced && matches(raced)) return { ...raced, created: false };
+      if (raced || (error instanceof Error && error.message === 'Command ID already used with a different command identity')) {
         throw new RequestError(409, '同一个请求标识已经用于不同内容。');
       }
       throw error;
+    } finally {
+      await rm(staged.directory, { recursive: true, force: true });
     }
-    return { ...(await metadataFor(materialId.toString())), created: true };
+    return { ...(await metadataFor(materialId.toString())), created: installed };
   }
 
   async function cloudOriginal(materialId: string, expectedSha256: string) {
@@ -533,6 +526,15 @@ function decodeUtf8(value: string) {
   return Buffer.from(value, 'latin1').toString('utf8');
 }
 
+function intakeFormText(form: FormData, field: 'requestId' | 'title' | 'extraction') {
+  const values = form.getAll(field);
+  if (values.length === 0) return undefined;
+  if (values.length !== 1 || typeof values[0] !== 'string') {
+    throw new RequestError(400, '交入表单包含重复或无效的字段：' + field);
+  }
+  return values[0];
+}
+
 async function sendOriginal(response: ServerResponse, metadata: IntakeMetadata, stored: StoredOriginal) {
   const stream = createReadStream(stored.path);
   stream.on('error', () => response.destroy());
@@ -572,8 +574,12 @@ export async function handleIntakeRequest(
         const file = form.get('file');
         if (!file || typeof file === 'string' || form.getAll('file').length !== 1)
           throw new RequestError(400, '请选择一个文件。');
-        result = await intake.capture({requestId: form.get('requestId'), title: form.get('title'),
-          filename: file.name, declaredType: file.type, extraction: form.get('extraction'), bytes: Buffer.from(await file.arrayBuffer())});
+        result = await intake.capture({
+          requestId: intakeFormText(form, 'requestId'),
+          title: intakeFormText(form, 'title'),
+          extraction: intakeFormText(form, 'extraction'),
+          filename: file.name, declaredType: file.type, bytes: Buffer.from(await file.arrayBuffer()),
+        });
       } else {
         const requestId = request.headers['x-request-id'];
         if (typeof requestId !== 'string' || requestId.trim() === '') throw new RequestError(400, '请求标识无效。');

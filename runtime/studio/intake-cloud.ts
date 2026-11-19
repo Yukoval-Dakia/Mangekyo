@@ -60,7 +60,11 @@ async function cloudInput(tx: ReadTransaction, intakeId: string) {
 export type CloudIntakeInput = NonNullable<Awaited<ReturnType<typeof cloudInput>>>;
 
 function failure(error: string): IntakeExtraction {
-  return { status: 'failed', method: 'mineru', error, text: '', characterCount: 0, pages: null, warnings: [], truncated: false };
+  const message = error.replaceAll(String.fromCharCode(0), '').trim().slice(0, 1_000).toWellFormed();
+  return {
+    status: 'failed', method: 'mineru', error: message || 'MinerU 识别失败。',
+    text: '', characterCount: 0, pages: null, warnings: [], truncated: false,
+  };
 }
 
 function completed(text: string, pages: number | null): IntakeExtraction {
@@ -68,14 +72,20 @@ function completed(text: string, pages: number | null): IntakeExtraction {
     return failure('MinerU 没有返回可用正文。');
   const truncated = text.length > intakeTextLimit;
   const content = truncated ? text.slice(0, intakeTextLimit).toWellFormed() : text;
+  if (!content.trim()) return failure('MinerU 没有返回可用正文。');
   return {
-    status: truncated ? 'partial' : 'ok', method: 'mineru', text: content, pages, error: null,
+    status: truncated ? 'partial' : 'ok', method: 'mineru', text: content,
+    pages: pages !== null && Number.isSafeInteger(pages) && pages >= 0 && pages <= 1_000 ? pages : null, error: null,
     warnings: truncated ? ['识别正文超过保存上限，已保留前 200 万字。'] : [],
     truncated, characterCount: content.length,
   };
 }
 
 class StoppedCloudIntake extends Error {}
+
+function intakeStopped(error: unknown) {
+  return error instanceof StoppedCloudIntake || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+}
 
 export function openCloudIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
@@ -115,9 +125,15 @@ export function openCloudIntakeWork(db: Db, intake: {
       }
       const configurationChanged = () => mineruToken() !== token;
       const finishConfigurationChange = () => publish(failure('MinerU 服务配置已变更，原件已保留。'));
+      let stoppedBeforeUpload = false;
       const beforeUpload = async () => {
-        await db.snapshot(scope, authorize);
-        if (configurationChanged()) throw new StoppedCloudIntake();
+        try {
+          await db.snapshot(scope, authorize);
+          if (configurationChanged()) throw new StoppedCloudIntake();
+        } catch (error) {
+          stoppedBeforeUpload = intakeStopped(error);
+          throw error;
+        }
       };
       const dataId = original.document.ref.id;
       const submission = await runEffect(db, {
@@ -126,10 +142,15 @@ export function openCloudIntakeWork(db: Db, intake: {
       }, async () => {
         const bytes = await intake.cloudOriginal(original.material.ref.id, original.sha256).catch(() => null);
         if (bytes === null) return null;
-        await beforeUpload();
-        return client.submit({
-          token, dataId, bytes, mediaType: original.mediaType, beforeUpload, signal: AbortSignal.timeout(60_000),
-        });
+        try {
+          await beforeUpload();
+          return await client.submit({
+            token, dataId, bytes, mediaType: original.mediaType, beforeUpload, signal: AbortSignal.timeout(60_000),
+          });
+        } catch (error) {
+          if (stoppedBeforeUpload) return false;
+          throw error;
+        }
       }, authorize);
       await db.snapshot(scope, authorize);
       if (configurationChanged()) return finishConfigurationChange();
@@ -139,6 +160,10 @@ export function openCloudIntakeWork(db: Db, intake: {
       }
       if (submission.result === null) {
         await publish(failure('本地原件无法读取，未发送给 MinerU。'));
+        return;
+      }
+      if (submission.result === false) {
+        await publish(failure('任务已中止，未向 MinerU 发送原件。'));
         return;
       }
       if (typeof submission.result !== 'string') throw new Error('Invalid OCR submission receipt');
@@ -161,8 +186,7 @@ export function openCloudIntakeWork(db: Db, intake: {
         return;
       }
     } catch (error) {
-      if (!(error instanceof StoppedCloudIntake || error instanceof FactReadDeniedError || error instanceof FactNotFoundError))
-        throw error;
+      if (!intakeStopped(error)) throw error;
       await cancelWork(db, ref);
     }
   }
