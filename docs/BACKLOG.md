@@ -117,7 +117,7 @@
 按[主 Agent 记忆与工具升级](design/always-doing-and-agent-tools.md#3-主-agent-的记忆装配与写入边界)接入 Memory Gateway、意图预算与统一 Digest。工具 P1–P5 的切分与合入顺序见[开发与合入顺序](design/always-doing-and-agent-tools.md#5-开发与合入顺序)。
 
 - **[契约] 依赖：** 11、17、40；开工前独立设计评审。
-- **产出：** 工作单、用途/预算、业务问答；Vercel AI SDK 与 Temporal 集成，Python 能力按需接 Pydantic AI；工具从命令/槽位生成，Temporal 唯一恢复执行进度。
+- **产出：** 工作单、用途/预算、业务问答；Pi SDK 承接每次采样与工具批次，Temporal 唯一恢复执行进度；Python 能力按需接 Pydantic AI；工具从命令/槽位生成。
 - **验收：** 真实三步工具会话中断后由新 Worker 恢复，已记录效果复用，不重复写事实/盲重付；动态读取记入依据，越界失败；不重跑已确认收费，不维护第二个步骤游标。工作流重放不能绕过当前用途。
 
 ### 单元 15：预测、对账与证据视图
