@@ -2,8 +2,8 @@ import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId, type Revision} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
-import {intakeDocument, intakeFactType} from '../../modules/activity/intake-values.ts';
-import {materialType, storagePurpose, textMaterial} from '../../modules/activity/library-values.ts';
+import {intakeFactType} from '../../modules/activity/intake-values.ts';
+import {materialType, storagePurpose} from '../../modules/activity/library-values.ts';
 import {organizerNote, organizerNoteType} from '../../modules/activity/organizer-values.ts';
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';
@@ -14,6 +14,7 @@ import {
 } from '../../modules/activity/workspace-values.ts';
 import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
 import {purpose, stableId} from './identity.ts';
+import {intakeTextOf, materialTextOf} from './reading.ts';
 
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
@@ -29,14 +30,16 @@ type SourceProjection = {
   links?: readonly string[];
 };
 
+function intakeDocumentForRead(fact: FactSnapshot) {
+  const document = intakeTextOf(fact);
+  return {content: document.extraction.text, field: 'text', title: document.title};
+}
+
 function sourceText(fact: FactSnapshot) {
   switch (fact.type) {
-    case materialType: return {field: 'text', ...textMaterial(fact.value)};
+    case materialType: return materialTextOf(fact);
     case 'activity.studyRecord': return {field: 'text', ...studyRecord(fact.value)};
-    case intakeFactType: {
-      const document = intakeDocument(fact.value);
-      return {field: 'text', title: document.title, text: document.extraction.text};
-    }
+    case intakeFactType: return intakeTextOf(fact);
     case organizerNoteType: {
       const note = organizerNote(fact.value);
       return {field: 'markdown', title: note.title, text: note.markdown};
@@ -63,8 +66,7 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection |
       const content = source.text.slice(anchor.start, anchor.end);
       if (content.isWellFormed()) return {title: source.title, content};
     } else if (fact.type === intakeFactType) {
-      const document = intakeDocument(fact.value);
-      return {title: document.title, content: document.extraction.text};
+      return {title:intakeTextOf(fact).title, content:intakeTextOf(fact).extraction.text};
     } else {
       const {title, text, kind, links} = displayOf(fact.type, fact.value);
       const tags = fact.type === workspaceEntryType ? workspaceEntry(fact.value).tags : undefined;
@@ -87,7 +89,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const accepts = (fact: FactSnapshot) => access.recipient === 'learner' || access.maySend(fact);
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
-    (workspaceShareableTypes.includes(fact.type) || (fact.type === intakeFactType && access.recipient === 'learner'));
+    (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType);
 
   async function visit(key: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.has(key) || path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(key)) return;
@@ -117,9 +119,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     const projection = project(fact, anchor);
     if (!projection) return;
     if (fact.type === intakeFactType) {
-      const document = intakeDocument(fact.value);
-      if (stableId('intake-document', document.materialId) !== id ||
-        (await reader.fact(document.materialId, {mode: 'following'})).type !== materialType) return;
+      const document = intakeTextOf(fact);
+      if (stableId('intake-document', document.materialId) !== id) return;
+      const material = await reader.fact(document.materialId, {mode: 'following'});
+      if (material.type !== materialType || !accepts(material)) return;
     }
     if (access.recipient === 'workspace') {
       for (const witness of seen.values()) access.track?.(witness, reference && witness === fact ? mode : undefined);
