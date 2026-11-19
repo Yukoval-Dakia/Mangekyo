@@ -227,7 +227,7 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
   return (
     <>
       <PageTitle title="材料"><a className="tonal-button" href="/intake"><Icon name="plus" /> 导入文件</a></PageTitle>
-      <div className="study-actions library-actions"><a href="/papers">我的题库</a><a href="/notes">学习笔记</a><button className="text-button" onClick={capture}>交入文字</button></div>
+      <div className="study-actions library-actions"><a href="/papers">我的题库</a><a href="/notes">学习笔记</a><a href="/materials/workspace">同伴工作区</a><button className="text-button" onClick={capture}>交入文字</button></div>
       <div className="library-controls">
         <label className="search-box">
           <Icon name="search" />

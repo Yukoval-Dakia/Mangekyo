@@ -77,12 +77,13 @@ export interface SettingsUpdate {
 export type StudyAttachment = { id: string; title: string; text: string; mode: 'ask' | 'prepare' };
 export interface Turn {
   trace?: string[];
+  writes?: {id:string; rev:number; title:string}[];
   studyKit?: { title: string; lesson: string; questions: { prompt: string; answer: string; rubric?: string }[] };
   answer?: string;
   action: "diagnostic_question" | "transfer_question" | "targeted_explanation" | "clarifying_question" | "companion_reply";
   rationale: string;
   message: string;
-  reads: { id: string; title: string; text: string }[];
+  reads: { id: string; title: string; text: string; workspace?: boolean }[];
   evidenceIds: string[];
   model: string;
   reasoningEffort?: string;

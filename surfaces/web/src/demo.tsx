@@ -59,6 +59,9 @@ export function TeachingTurn({ turn, materialId, discuss }: { turn: Turn; materi
       <article className="companion-turn">
         <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
         <Message text={turn.message} />
+        {!!turn.writes?.length && <ul className="read-list" aria-label="已保存到学习工作区">{turn.writes.map(item =>
+          <li key={item.id}><a href={'/materials/records/' + item.id}>{item.title}</a> · 第 {item.rev} 版</li>
+        )}</ul>}
         {turn.studyKit && <StudyCards kit={turn.studyKit} materialId={materialId} discuss={discuss} />}
         <details className="evidence">
           <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
@@ -67,7 +70,7 @@ export function TeachingTurn({ turn, materialId, discuss }: { turn: Turn; materi
             {turn.trace && turn.trace.length > 0 && <ol aria-label="本轮工具记录">{turn.trace.map((step, index) => <li key={index}>{step}</li>)}</ol>}
             {turn.reads.length > 0 && <ul className="read-list">{turn.reads.map((read) => (
               <li key={read.id}>
-                <div className="read-heading"><strong>{read.title}</strong>{turn.evidenceIds.includes(read.id) && <span>本轮引用</span>}</div>
+                <div className="read-heading"><strong>{read.workspace ? <a href={'/materials/records/'+read.id}>{read.title}</a> : read.title}</strong>{turn.evidenceIds.includes(read.id) ? <span>本轮引用</span> : turn.action === 'companion_reply' ? <span>实际调阅</span> : null}</div>
                 <p>{read.text}</p>
               </li>
             ))}</ul>}

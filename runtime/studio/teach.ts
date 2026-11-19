@@ -28,7 +28,8 @@ import {
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
 import { caseId, type DisplayTurn } from './sessions.ts';
 import { turnTask } from './model-routes.ts';
-import { sameRoute, resolveMcpGrants, mcpRevision } from './harness.ts';
+import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
+import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
 import { loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
 import { methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
@@ -105,6 +106,11 @@ export async function teach(db: Db, ref: WorkRef) {
     const settings = await loadSettings(task);
     if (!sameRoute(submission, settings))
       throw new TeachingError('provider_configuration', '本轮绑定的模型配置已变更，请切回原配置或新建对话。');
+    const checkWorkspaceRoute = async () => {
+      if (await workspaceRouteRevision(settings) !== submission.workspaceRevision)
+        throw new TeachingError('provider_configuration', '这个模型的学习工作区访问已关闭。请开始新会话。');
+    };
+    if (submission.workspaceRevision) await checkWorkspaceRoute();
     const grants = submission.mcpGrants ?? [];
     function checkMcpAccess(current: typeof settings) {
       const servers = resolveMcpGrants(grants, current);
@@ -155,6 +161,7 @@ export async function teach(db: Db, ref: WorkRef) {
           if (!step.provider.startsWith('tool:') && current.apiKey !== settings.apiKey) throw new ChangedEvidence();
           if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new ChangedEvidence();
           if (grants.length) checkMcpAccess(current);
+          if (submission.workspaceRevision) await checkWorkspaceRoute();
         },
       );
       if (effect.kind === 'unknown') throw new UncertainEffect(effect.providerEffectId);
@@ -173,10 +180,14 @@ export async function teach(db: Db, ref: WorkRef) {
         liveMemoryRevision = value.revision;
         return value.text;
       }) : undefined;
+      const inherited = new Map<string, WorkspaceWitness>();
+      let historyNotice = '';
       const publicHistory = await db.snapshot(scope, async (tx) => {
         const messages: CompanionMessage[] = [];
         let previousId = submission.parentId;
-        for (let count = 0; previousId && count < 3; count++) {
+        let historyBytes = 0;
+        const historyLimit = submission.workspaceRevision ? 32 : 3;
+        for (let count = 0; previousId && count < historyLimit; count++) {
           const previous = studyTurn(await readFact(tx, previousId));
           if (previous.sessionId !== submission.sessionId || previous.caseId !== submission.caseId || !sameRoute(previous, settings) || !previous.answer) {
             throw new ChangedEvidence();
@@ -184,8 +195,21 @@ export async function teach(db: Db, ref: WorkRef) {
           // Each reply follows its immediate predecessor. Recursive manifest
           // validation covers earlier replies without repeating dependency paths.
           const response = await readFeedback(tx, previousId, count === 0);
+          historyBytes += Buffer.byteLength(previous.answer) + Buffer.byteLength(response.message);
+          if (submission.workspaceRevision && count > 0 && historyBytes > 12 * 1024) break;
           const priorMemory = response.reads.find(item => item.id === memoryId);
           if (priorMemory && priorMemory.text !== preference) break;
+          if (response.workspaceBasis?.length) {
+            if (!submission.workspaceRevision || previous.workspaceRevision !== submission.workspaceRevision) {
+              historyNotice = '工作区授权已变更，本轮省略了使用旧授权的对话。';
+              break;
+            }
+            if (new Set([...inherited.keys(), ...response.workspaceBasis.map(w => w.id)]).size > 48) {
+              historyNotice = '较早的学习记录可按需重新检索，本轮从最近的对话继续。';
+              break;
+            }
+            for (const w of response.workspaceBasis) if (!inherited.has(w.id)) inherited.set(w.id, w);
+          }
           messages.unshift({ role: 'user', content: previous.answer }, { role: 'assistant', content: response.message });
           previousId = previous.parentId;
         }
@@ -198,16 +222,34 @@ export async function teach(db: Db, ref: WorkRef) {
         ? `《${title}》：全程 ${distanceKm} 公里，移动 ${movingMinutes} 分钟，停车 ${stoppedMinutes} 分钟。移动均速 ${averageSpeed(distanceKm, movingMinutes)} 公里/小时，全程均速 ${averageSpeed(distanceKm, movingMinutes + stoppedMinutes)} 公里/小时。`
         : attachment ? `《${attachment.title}》\n${attachment.text}` : undefined;
       const publicSearchQuery = /(?:^|\n)公开检索[：:]([^\n]{1,400})(?:\n|$)/u.exec(answer)?.[1]?.trim();
-      const privateContext = Boolean(material || preference || publicHistory.length);
+      const privateContext = Boolean(material || preference || publicHistory.length || submission.workspaceRevision);
+      if (preference && liveMemoryRevision !== undefined) {
+        const w = inputs.get(memoryId);
+        if (w?.kind === 'fact') inherited.set(memoryId, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
+      }
+      const workspace = submission.workspaceRevision ? openWorkspaceTools({
+        db, turn: job.slotKey, prior: [...inherited.values()],
+        maySend(fact) { return fact.type !== 'companion.memory' || (Boolean(preference) && fact.ref.rev === liveMemoryRevision); },
+        track(w) { inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w)); },
+        async authorize(tx) {
+          if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
+          await validInputs(tx);
+          if (!sameRoute(submission, await loadSettings(task))) throw new ChangedEvidence();
+          await checkWorkspaceRoute();
+        },
+      }) : undefined;
       const result = await runCompanionTurn(answer, publicHistory, material, {
-        provider: settings, runEffect: runModelEffect, onProgress,
-        ...(submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey, mcpServers,
+        provider: settings, runEffect: runModelEffect, onProgress, ...(historyNotice ? {historyNotice} : {}),
+        ...(submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey, mcpServers, ...(workspace ? {workspace} : {}),
           ...(publicSearchQuery ? {publicSearchQuery} : {}),
           allowSearch: submission.allowSearch === true && settings.allowSearch && (!privateContext || Boolean(publicSearchQuery)) } } : {}),
       }, attachment?.mode === 'prepare' && !submission.parentId, preference);
       feedback = {
-        ...result, action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : '',
+        ...result, action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : historyNotice,
+        ...(workspace?.writes().length ? {writes:workspace.writes()} : {}),
+        ...(workspace?.basis().length ? {workspaceBasis: workspace.basis()} : {}),
         evidenceIds: [], reads: [
+          ...(workspace?.reads() ?? []),
           ...(attachment ? [{ id: attachment.id, title: attachment.title, text: attachment.text }] : []),
           ...(preference ? [{ id: memoryId, title: '本人保存的同伴备忘', text: preference }] : []),
         ],

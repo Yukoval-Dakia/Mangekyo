@@ -50,6 +50,7 @@ function ListPage() {
         <a className="primary-button" href="/papers/new">
           新建试卷
         </a>
+        <a className="tonal-button" href="/materials/workspace?kind=question">同伴存入的题目</a>
       </div>
       <ReadState resource={papers} />
       {papers.data && (

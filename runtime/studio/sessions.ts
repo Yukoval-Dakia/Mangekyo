@@ -7,8 +7,9 @@ import { requestWork } from '../../kernel/src/work/index.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { first45Answer, first45Histories, first45Question } from '../../executors/teaching/examples.ts';
+import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
-import { sameRoute, resolveMcpGrants, routeMatchesInput, mcpRevision } from './harness.ts';
+import { sameRoute, resolveMcpGrants, workspaceRouteRevision, routeMatchesInput, mcpRevision } from './harness.ts';
 import { studyAttachment, studyMcpGrants, studyTurn } from '../../modules/activity/values.ts';
 import { readMaterialText } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
@@ -62,6 +63,8 @@ export function clientRequest(value: unknown): string {
 export type DisplayTurn = {
   studyKit?: StudyKit;
   trace?: string[];
+  writes?: {id:string; rev:number; title:string}[];
+  workspaceBasis?: WorkspaceWitness[];
   action: string;
   rationale: string;
   message: string;
@@ -210,6 +213,8 @@ export async function openStudio(db: Db, activity: LoadedModule) {
     }
     if (origin && !sameRoute(origin, settings))
       throw new RequestError(422, '这次对话已绑定原模型配置，请切回该配置或新建对话。');
+    const workspaceRevision = selected === 'companion' && !origin?.attachment && !attachment
+      ? await workspaceRouteRevision(settings) : undefined;
     const data = {
       caseId: selected,
       sessionId: session,
@@ -217,6 +222,7 @@ export async function openStudio(db: Db, activity: LoadedModule) {
       answer,
       ...(attachment ? { attachment } : {}),
       ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),
+      ...(workspaceRevision ? {workspaceRevision} : {}),
       model: settings.model, reasoningEffort: settings.reasoningEffort,
       providerId: settings.activeProviderId, protocol: settings.protocol,
       ...(grants?.length ? {mcpGrants: grants, mcpRevision: mcpRevision(grants, settings)} : {}),

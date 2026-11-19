@@ -1,5 +1,6 @@
 import { taskLabels, type ModelTask } from './model-route';
 import { McpToolPicker } from './mcp-tool-picker';
+import { WorkspaceAccessPanel } from './workspace-access';
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, type Settings } from "./api";
 import { Icon } from "./icons";
@@ -145,8 +146,8 @@ export function SettingsDialog({ onClose, onSave }: {
     >
       <div className="dialog-heading">
         <div>
-          <h2 id="settings-title">模型与工具</h2>
-          <p>管理模型提供方、MCP 服务与可选的公开参考搜索。</p>
+          <h2 id="settings-title">设置</h2>
+          <p>管理模型提供方、学习记录访问、MCP 服务与可选的公开参考搜索。</p>
         </div>
         <button type="button" className="icon-button" aria-label="关闭设置" disabled={saving} onClick={() => dialog.current?.close()}><Icon name="close" /></button>
       </div>
@@ -191,6 +192,7 @@ export function SettingsDialog({ onClose, onSave }: {
               </select>
             </label>)}
           </section>
+          <WorkspaceAccessPanel disabled={saving} />
           <section className="settings-section" aria-labelledby="mcp-title">
             <div className="settings-section-heading">
               <h3 id="mcp-title">MCP 服务</h3>

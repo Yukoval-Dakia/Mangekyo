@@ -19,6 +19,7 @@ import { handleIntakeRequest, type openIntake } from './intake.ts';
 import type { openWorkbook } from './workbook.ts';
 import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
+import type { openWorkspaceAccess } from './workspace-access.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
 import { saveSettings, publicSettings, loadSettings } from './settings.ts';
@@ -62,7 +63,7 @@ const types: Record<string, string> = {
 const pages = new Set([
   '/',
   '/today', '/papers', '/papers/new', '/plan', '/notes', '/review', '/intake',
-  '/materials',
+  '/materials', '/materials/workspace',
   '/materials/riding',
   '/practice/riding',
   '/companion',
@@ -79,6 +80,7 @@ export function serve(
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
     intake: ReturnType<typeof openIntake>;
+    workspace: ReturnType<typeof openWorkspaceAccess>;
   },
   port: number,
 ) {
@@ -99,8 +101,26 @@ export function serve(
         req.headers['sec-fetch-site'] === 'cross-site'
       )
         throw new RequestError(403, '此入口仅供本机页面使用。');
-      const path = new URL(req.url ?? '/', 'http://' + host).pathname;
+      const url = new URL(req.url ?? '/', 'http://' + host);
+      const path = url.pathname;
       const method = req.method;
+      if (path === '/api/workspace/access' && method === 'GET') {
+        return json(res, 200, await student.workspace.list(url.searchParams));
+      }
+      if (path === '/api/workspace/access/providers' && method === 'GET') {
+        return json(res, 200, await student.workspace.providers());
+      }
+      const accessRecord = /^\/api\/workspace\/access\/records\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path);
+      if (accessRecord?.[1] && method === 'GET') {
+        return json(res, 200, await student.workspace.record(accessRecord[1], url.searchParams));
+      }
+      if (accessRecord?.[1] && method === 'PUT') {
+        return json(res, 200, await student.workspace.setTeaching(accessRecord[1], await body(req)));
+      }
+      const accessProvider = /^\/api\/workspace\/access\/providers\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})$/.exec(path);
+      if (accessProvider?.[1] && method === 'PUT') {
+        return json(res, 200, await student.workspace.setProvider(accessProvider[1], await body(req)));
+      }
       const reading = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/reading$/.exec(path);
       if (reading?.[1] && method === 'GET') return json(res, 200, await library.reading(reading[1]));
       if (await handleIntakeRequest(student.intake, req, res, path, method)) return;
@@ -185,7 +205,7 @@ export function serve(
         );
       }
       if (method !== 'GET' || path.startsWith('/api/')) throw new RequestError(404, '这个入口不存在。');
-      const appPage = pages.has(path) || /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path) || /^\/materials\/saved\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
+      const appPage = pages.has(path) || /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path) || /^\/materials\/(?:saved|records)\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
       const file = resolve(root, '.' + decodeURIComponent(appPage ? '/index.html' : path));
       if (!file.startsWith(resolve(root) + sep) || !types[extname(file)])
         throw new RequestError(404, '找不到页面。');

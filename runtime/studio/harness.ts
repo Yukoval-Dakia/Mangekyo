@@ -1,3 +1,4 @@
+import {loadWorkspaceAccessRoutes} from './workspace-access.ts';
 import { createHash } from 'node:crypto';
 import { TeachingError } from '../../executors/teaching/provider.ts';
 import type { studyTurn, studyMcpGrants } from '../../modules/activity/values.ts';
@@ -40,4 +41,10 @@ export function routeMatchesInput(input: unknown, settings: Pick<Settings, 'acti
   const route = input as Record<string, unknown>;
   return route.providerId === settings.activeProviderId && route.protocol === settings.protocol &&
     route.baseUrl === settings.baseUrl && route.model === settings.model && route.reasoningEffort === settings.reasoningEffort;
+}
+
+export async function workspaceRouteRevision(settings: Settings) {
+  const grant = (await loadWorkspaceAccessRoutes())[settings.activeProviderId];
+  return grant?.enabled && grant.baseUrl === settings.baseUrl && grant.protocol === settings.protocol
+    ? grant.revision : undefined;
 }

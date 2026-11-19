@@ -4,6 +4,8 @@
 
 Owner 后续决定：采用 §1 推荐的技术组合，转入产品功能与实现方式讨论。下述能力比较和待验证项继续保留；技术选择已获采用，不代表候选引擎的运行验收已经完成。
 
+2026-11-19 更新。Agent SDK 采用 [Pi Agent Core 与 Pi AI](../adr/0010-pi-agent-sdk.md)。本文下方的 Vercel 建议是当时的选型记录。
+
 ## 1. 建议
 
 建议采用 **TypeScript 业务内核与产品模块 + Temporal 持久执行 + Python 计算执行器 + PostgreSQL/S3 + React PWA**。

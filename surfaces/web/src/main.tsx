@@ -7,6 +7,7 @@ import { Companion } from './companion';
 import { Icon, Mark, type IconName } from './icons';
 import { SettingsDialog } from './settings';
 import { StarterLesson, StarterPractice } from './starter';
+import {WorkspaceLibrary, WorkspaceRecord} from './workspace-records';
 import { Workbook } from './workbook';
 import { Organizer } from './organizer';
 import { Intake } from './intake';
@@ -99,6 +100,8 @@ function App() {
     );
   else if (path === '/today') content = <Today library={library} chats={chats} />;
   else if (path === '/materials') content = <Materials library={library} capture={() => open('material')} />;
+  else if (path === '/materials/workspace') content = <WorkspaceLibrary />;
+  else if (path.startsWith('/materials/records/')) content = <WorkspaceRecord id={path.split('/')[3]!} />;
   else if (path === '/intake') content = <Intake />;
   else if (path === '/review') content = <Mistakes />;
   else if (/^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/print$/.test(path)) content = <PrintPaper id={path.split('/')[2]!} />;
@@ -139,7 +142,7 @@ function App() {
         </button>
         {browse('desktop-nav')}
         <button className="nav-settings" onClick={() => open('settings')}>
-          <Icon name="settings" /> 模型设置
+          <Icon name="settings" /> 设置
         </button>
       </aside>
       <div className="shell-body">
@@ -151,7 +154,7 @@ function App() {
             <button className="icon-button" aria-label="交入材料" onClick={() => open('material')}>
               <Icon name="plus" />
             </button>
-            <button className="icon-button" aria-label="模型设置" onClick={() => open('settings')}>
+            <button className="icon-button" aria-label="设置" onClick={() => open('settings')}>
               <Icon name="settings" />
             </button>
           </div>

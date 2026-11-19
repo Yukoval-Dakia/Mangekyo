@@ -2,13 +2,16 @@ import { createHash } from 'node:crypto';
 import type { TeachingDependencies } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
 import { loadMcpTools, invokeMcpTool } from './mcp-tools.ts';
+import {projectWorkspaceContext} from './workspace-context.ts';
+import { workspaceDefinitions, type WorkspaceTools } from './workspace-tools.ts';
 import { createStudyTools } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 
 export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
+  historyNotice?: string;
   maxCompletionTokens?: 4096 | 8192;
-  tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[] };
+  tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: WorkspaceTools };
 };
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 type ToolMessage = { role: 'assistant'; tool_calls: FunctionCall[]; providerTurn?: ProviderTurn; content: null } |
@@ -29,7 +32,7 @@ function definition(name: string) {
   } } };
 }
 
-const maxToolCalls = 6;
+const defaultToolBudget = 6;
 const maxReply = 12_000;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type ModelReply = { message?: string; reportedModel?: string; calls?: FunctionCall[]; providerTurn?: ProviderTurn };
@@ -40,6 +43,9 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'exa_search': return 'Exa 检索 · ' + String(args.query).slice(0, 150) + '\n' + output.slice(0, 1400);
     case 'write_file': return '写文件 · ' + String(args.name).slice(0, 96) + ' · ' + output.slice(0, 120);
     case 'read_file': return '读文件 · ' + String(args.name).slice(0, 96) + ' · ' + output.slice(0, 120);
+    case 'search_workspace': return '检索学习记录 · ' + String(args.query ?? args.kind ?? '最近记录') + '\n' + output.slice(0, 700);
+    case 'read_workspace': return '读取学习原文 · ' + String(args.id) + '\n' + output.slice(0, 900);
+    case 'save_workspace': return '保存学习记录 · ' + String(args.title) + '\n' + output.slice(0, 500);
     default: return '工具不可用';
   }
 }
@@ -56,6 +62,9 @@ export async function runStudyAgent(initial: Message[], options: StudyAgentOptio
 
 async function runStudyRounds(initial: Message[], options: StudyAgentOptions, streamReply: boolean, connections: McpTurnConnections) {
   const tools = options.tools && createStudyTools(options.tools);
+  const workspace = options.tools?.workspace;
+  const maxToolCalls = workspace ? 12 : defaultToolBudget;
+  const stride = workspace ? 16 : 8;
   const pinnedQuery = options.tools?.publicSearchQuery?.trim();
   const { model, reasoningEffort } = profileFor(options.provider);
   const remotes = await loadMcpTools(options.tools?.mcpServers ?? [], model, options.runEffect, connections);
@@ -64,7 +73,8 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
     if (name === 'exa_search' && pinnedQuery) tool.function.description += ' 本轮只会检索学生指定的公开主题：' + pinnedQuery;
     return tool;
   }) ?? [];
-  const definitions = [...builtins, ...Array.from(remotes, ([name, {tool}]) => ({
+  const nativeTools = workspace ? workspaceDefinitions : [];
+  const definitions = [...builtins, ...nativeTools, ...Array.from(remotes, ([name, {tool}]) => ({
     type: 'function', function: {name, description: tool.description, parameters: tool.inputSchema},
   }))];
   const messages: (Message | ToolMessage)[] = [...initial];
@@ -73,8 +83,8 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
   for (let round = 0; round <= maxToolCalls; round++) {
     const available = trace.length < maxToolCalls && definitions.length > 0;
     const body = JSON.stringify({ model, ...(reasoningEffort === 'default' ? {} : {reasoning_effort: reasoningEffort}), stream: true, max_completion_tokens: options.maxCompletionTokens ?? 4096,
-      messages, ...(available ? { tools: definitions, parallel_tool_calls: false } : {}) });
-    const index = round * 8;
+      messages: workspace ? projectWorkspaceContext(messages) : messages, ...(available ? { tools: definitions, parallel_tool_calls: false } : {}) });
+    const index = round * stride;
     const raw = await options.runEffect({ index, provider: endpoint, model, requestDigest: hash(JSON.stringify({endpoint, body})) }, async requestId => {
       let reportedModel: string | undefined;
       let lastText = '';
@@ -99,6 +109,9 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
     checkProviderOutcome(reply);
     if (reply.reportedModel) verifyTeachingModel(reply.reportedModel, options.provider.apiKey, model);
     if (!reply.calls) {
+      if (!reply.message?.trim() && workspace?.writes().length)
+        return {message:'已完成的写入见下方回执。模型没有返回本轮的文字说明。',
+          completion:'receipts_only' as const, trace, ...(reply.reportedModel ? {reportedModel:reply.reportedModel} : {})};
       if (!reply.message?.trim() || reply.message.length > maxReply) throw new TeachingError('provider_response', '模型没有返回可用的答复。');
       return { message: reply.message, ...(reply.reportedModel ? { reportedModel: reply.reportedModel } : {}), ...(trace.length ? {trace} : {}) };
     }
@@ -114,16 +127,19 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
       const args = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
       if (name === 'exa_search' && pinnedQuery) args.query = pinnedQuery;
       const remote = remotes.get(name);
-      if (remote && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
-        const content = '工具参数须为 JSON 对象，请修正参数后重试。';
-        trace.push('参数错误 · ' + remote.server.id + ' / ' + remote.tool.name);
+      const workspaceTool = workspace && nativeTools.some(item => item.function.name === name);
+      if ((remote || workspaceTool) && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
+        const content = JSON.stringify({error: name + ' 需要一个 JSON 对象，请将字段直接放在对象里。'});
+        trace.push('参数错误 · ' + name);
         messages.push({role: 'tool', tool_call_id: call.id, content});
         continue;
       }
       const execute = () => remote ? invokeMcpTool(remote, args, connections) : tools.execute(name, args);
       // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
       let output: string;
-      if (name === 'read_file' || name === 'write_file') {
+      if (workspaceTool) {
+        output = await workspace.execute(name, args, index + position + 1);
+      } else if (name === 'read_file' || name === 'write_file') {
         output = await execute();
       } else {
         const raw = await options.runEffect({ index: index + position + 1, model, provider: remote ? 'tool:mcp:' + remote.server.id : 'tool:' + name,

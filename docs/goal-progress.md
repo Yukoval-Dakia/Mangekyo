@@ -6,6 +6,8 @@
 
 **接手基线。** 产品代码截至 `5e202b9` 已包含真实 SSE 对话、材料备课、个人笔记与小卷、逐题保存的 LLM 评分标准，以及同伴和评阅共用的 Python、任务文件和 Exa 工具。先重跑有代表性的学生路径，再对缺口派工。当前主工作区的 `docs/product-spec.md` 有未提交的产品规格修订，新对话须从该工作区读取并保留；新建的干净 worktree 需要一并取得这一版需求。[学生工作区记录](evidence/student-workspace/README.md) · [同一个 45，两份学习史](evidence/unit40/README.md) · [真实工具与 2/3 判分](evidence/study-agent/observed.json)
 
+**常驻同伴的验收。** 所有客户端关闭、待办为空时，让后台自行发现并推进一项值得回看的旧作修订。用离开期间的实际读取与产物时间验证，随后重启后台并观察它自行接续。学生再次打开页面时直接读到成果。此项待实现。[单元 14](BACKLOG.md#单元-14常驻同伴与后台教研)
+
 ### Generative UI 从旧 TLP 学什么
 
 以下是旧主线 `c40e375` 的静态源码证据。此次没有运行旧应用。新 UI 使用 Mangekyō 的 Material 3 Expressive 设计。

@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {recordLocalRead} from './effects.ts';
 import { createPgDb } from '../db/pg.ts';
 import type { Db, DbTransaction } from '../db/types.ts';
 import { learnerId } from '../declarations/ids.ts';
@@ -229,6 +230,17 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(accept).toHaveBeenCalledTimes(1);
   });
 
+  it('replays one authorized local snapshot and rolls back a failed read', async () => {
+    const step = {learner, ownerKind:'session' as const, ownerId:'turn', stepKey:'1', label:'local:search', input:{query:'old'}};
+    const allow = async () => {};
+    await expect(recordLocalRead(db, step, async () => {throw new Error('interrupted');}, allow)).rejects.toThrow('interrupted');
+    const read = vi.fn(async () => 'original');
+    const results = await Promise.all([recordLocalRead(db, step, read, allow), recordLocalRead(db, step, read, allow)]);
+    expect(results).toEqual(['original','original']);
+    expect(read).toHaveBeenCalledTimes(1);
+    await expect(recordLocalRead(db,step,read,async () => {throw new Error('revoked');})).rejects.toThrow('revoked');
+    await expect(recordLocalRead(db,{...step,input:{query:'new'}},read,allow)).rejects.toThrow('does not match');
+  });
   it('authorizes effect reservations and replays while reusing the durable outcome', async () => {
     await applyKernelSchema(db);
     const request = { learner, ownerKind: 'session', ownerId: 'session', stepKey: 'answer', label: 'model', input: {} } as const;

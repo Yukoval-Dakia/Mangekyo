@@ -18,6 +18,7 @@ import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';
 import { openPractice } from './practice.ts';
 import { openLibrary } from './library.ts';
+import { openWorkspaceAccess } from './workspace-access.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -44,7 +45,8 @@ async function openWeb() {
   const studio = await openStudio(db, activity);
   const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
   const student = { workbook: openWorkbook(db, activity), organizer: openOrganizer(db, activity),
-    memory: openMemory(db, companion), intake: openIntake(db, activity) };
+    memory: openMemory(db, companion), intake: openIntake(db, activity),
+    workspace: openWorkspaceAccess(db, activity) };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
