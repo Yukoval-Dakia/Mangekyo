@@ -1,24 +1,12 @@
 # 表现层局部验收
 
-本目录是开发用 React 宿主。会话、教材和卷面的生产入口由集成批次接入。
+本目录保存局部浏览器验收结果。三份交互和受控预测的复跑宿主在提交 `f3c01c33`，从该提交启动 Web 后打开 `/src/presentation/acceptance/index.html?case=0`。开发宿主留在该次证据提交，当前 CI 从仓库根运行 `pnpm exec vitest run surfaces/shared/presentation/contract.test.mjs`，覆盖作品加载、宿主确认后的状态推进及无效输入回退。
 
-## 复核
-
-在仓库根执行 `pnpm build:kernel`、`pnpm --filter @mangekyo/web typecheck` 和 `pnpm exec vitest run surfaces/shared/presentation/contract.test.mjs`。启动 `pnpm --filter @mangekyo/web dev`，在其本地地址打开 `/src/presentation/acceptance/index.html?case=0`。参数 0 至 4 分别对应滴定、断句、节奏、未知版本文字版和编辑中收到无效修订内容。5 可模拟整份 view 中断、撤权和换挂载，6 是预测滴定，7 是超出预算的作品。动作按钮下的折叠区显示宿主实际收到的请求。
-
-| 局部浏览器验收 | 观察 |
-| --- | --- |
-| 滴定 | 点击阀门、等价按钮，再按滑块右键。设备读数为 3 mL，曲线为 pH 1.13，记录按钮交出带单位的体积和三次调整。 |
-| 断句 | 390px 视口下点第八字、空格取消、Enter 恢复。提交位置为 `gap-8`。 |
-| 节奏 | 大鼓 1、3、6，小鼓 1、4、8。试听进入播放状态，提交保留两组独立 ID。未做扬声器录音或听感验收。 |
-| 触屏 | 本机 Chrome 启用 320px 移动视口和触摸模拟，发出 touchStart/touchEnd。三例均记录到 touch 指针，文档宽 320px。断句稳定 ID 与键盘一致；未使用物理手机。 |
-| 降级 | 未知版本显示原文题意。同作品同修订在编辑中收到无效内容，保留可读的本地作答，恢复定义后仍可提交原断点。 |
-
-[evidence/browser.json](evidence/browser.json) 保存初版表现层的预览宿主读数、内部动作和恢复结果。[evidence/touch.json](evidence/touch.json) 保存触摸模拟回调。[滴定台](evidence/titration.png)、[断句](evidence/passage.png) 和 [双声部](evidence/rhythm.png) 为实测截图。
+[浏览器记录](evidence/browser.json) · [滴定台](evidence/titration.png) · [断句](evidence/passage.png) · [双声部](evidence/rhythm.png)
 
 ## 宿主接入
 
-通过 `surfaces/shared/presentation/index.ts` 读取可 JSON 序列化的 `presentationCatalog`。将候选作品交给 `validateArtifact(unknown)` 检查结构、全局唯一 ID、类型化绑定和样本长度。三份示例定义在目录下的 `samples/examples.ts`。修订内容应当不可变，定义变更时分配新 revision；同一页面并排渲染的实例各有自己的局部草稿。
+通过 `surfaces/shared/presentation/index.ts` 读取可 JSON 序列化的 `presentationCatalog`。将候选作品交给 `validateArtifact(unknown)` 检查结构、全局唯一 ID、类型化绑定和样本长度。修订内容应当不可变，定义变更时分配新 revision；同一页面并排渲染的实例各有自己的局部草稿。
 
 通过 `surfaces/web/src/presentation/index.ts` 挂载 `ArtifactView({view,mount,hostState,onAction,resolveAsset})`。mount 取获准快照的 mountId 与 stateRev。掉线时保留该 mount 并传入缺失的 view；撤权时传 null。新挂载使用新的 mountId。组件卸载会清理内存草稿。可选的 resolveAsset 将宿主资产 ID 解析为 Blob 或 null，也可返回 Promise。
 
