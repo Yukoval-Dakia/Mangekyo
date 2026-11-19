@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, type Settings } from "./api";
+import { ResearchSettings } from "./research";
 import { Icon } from "./icons";
 
 export function SettingsDialog({ onClose, onSave }: {
@@ -84,11 +85,12 @@ export function SettingsDialog({ onClose, onSave }: {
     >
       <div className="dialog-heading">
         <div>
-          <h2 id="settings-title">模型与搜索</h2>
-          <p>管理教研同伴的模型端点，以及可选的公开参考搜索。</p>
+          <h2 id="settings-title">学习设置</h2>
         </div>
-        <button type="button" className="icon-button" aria-label="关闭模型与搜索设置" disabled={saving} onClick={() => dialog.current?.close()}><Icon name="close" /></button>
+        <button type="button" className="icon-button" aria-label="关闭学习设置" disabled={saving} onClick={() => dialog.current?.close()}><Icon name="close" /></button>
       </div>
+      <ResearchSettings />
+      <h3>模型与搜索</h3>
       {settings ? (
         <form onSubmit={(event) => void save(event)}>
           <label className="field">

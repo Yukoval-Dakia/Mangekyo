@@ -138,7 +138,7 @@ function App() {
         </button>
         {browse('desktop-nav')}
         <button className="nav-settings" onClick={() => open('settings')}>
-          <Icon name="settings" /> 模型设置
+          <Icon name="settings" /> 学习设置
         </button>
       </aside>
       <div className="shell-body">
@@ -150,7 +150,7 @@ function App() {
             <button className="icon-button" aria-label="交入材料" onClick={() => open('material')}>
               <Icon name="plus" />
             </button>
-            <button className="icon-button" aria-label="模型设置" onClick={() => open('settings')}>
+            <button className="icon-button" aria-label="学习设置" onClick={() => open('settings')}>
               <Icon name="settings" />
             </button>
           </div>
