@@ -8,6 +8,9 @@ import { gatherSnapshot } from '../derivations/gather.ts';
 import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../schema.ts';
 import { newUlid } from './identity.ts';
 import {
+  checkTodoTriggers, completeTodo, emitTodo, maxTodoHops, newFactWatermark, readTodo, updateOrCancelTodo, type TodoInput,
+} from './todos.ts';
+import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, registerWorkWait, relayPending, requestWork, runEffect, wakeWaitingWork,
   type WorkRef,
 } from './index.ts';
@@ -183,7 +186,7 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     await db.query('DROP TABLE work_outbox');
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
-    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -195,10 +198,50 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (6)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (7)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 6');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 7');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
+  });
+
+  it('dispatches scheduled and enumerated completion Todos through the same deduped outbox', async () => {
+    await applyKernelSchema(db);
+    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const spec: TodoInput = { dedupKey: 'scheduled', goal: 'Prepare review', workerProfile: 'deterministic_compute',
+      trigger: { kind: 'scheduled', fireAtMs: 5 }, refs: [], sourceFactRev: source, autonomyTier: 1,
+      budgetCap: 0, settingsRevision: 1, expiresAtMs: 50 };
+    const eligible = vi.fn(async () => true);
+    const emit = (intent: TodoInput) => db.tx({ learner }, tx => tx.withLearnerWrite(tick => emitTodo(tx, tick, intent, 1, eligible)));
+    const inspect = (id: string) => db.snapshot({ learner }, tx => readTodo(tx, id));
+    const sweep = (now: number) => db.tx({ learner }, tx => checkTodoTriggers(tx, now, eligible));
+    const root = (await emit(spec))!;
+    expect((await emit(spec))?.id).toBe(root.id);
+    const edit = (todo: { id: string; revision: number }, change: Parameters<typeof updateOrCancelTodo>[4]) =>
+      db.tx({ learner }, tx => tx.withLearnerWrite(tick => updateOrCancelTodo(tx, tick, todo.id, todo.revision, change, 1, eligible)));
+    expect(await edit(root, { kind: 'update', patch: { trigger: { kind: 'scheduled', fireAtMs: 8 } } })).toBe(true);
+    expect(await edit(root, { kind: 'cancel' })).toBe(false);
+    const followup = (parent: string, hop: number) => emit({ ...spec, dedupKey: 'followup:' + hop,
+      trigger: { kind: 'event', event: { type: 'on_work_completed', subject: parent } } });
+    const next = (await followup(root.id, 1))!;
+    expect(await sweep(5)).toEqual({ advanced: false, nextAt: 8 });
+    expect(eligible).not.toHaveBeenCalled();
+    expect(await sweep(8)).toMatchObject({ advanced: true });
+    expect((await inspect(next.id))?.state).toBe('pending');
+    const dispatched = (await inspect(root.id))!;
+    await db.tx({ learner }, tx => tx.withLearnerWrite(tick => completeTodo(tx, tick, dispatched, source.id)));
+    expect(await edit(next, { kind: 'update', patch: { expiresAtMs: 60 } })).toBe(true);
+    expect(await sweep(8)).toMatchObject({ advanced: true });
+    expect(await inspect(next.id)).toMatchObject({ state: 'dispatched', chainId: root.id, hopCount: 1 });
+    expect(await sweep(8)).toMatchObject({ advanced: false });
+    expect((await db.query('SELECT intent_id FROM work_outbox')).rowCount).toBe(2);
+    expect(await db.snapshot({ learner }, newFactWatermark)).toBeNull();
+    let tail = next;
+    for (let hop = 2; hop <= maxTodoHops; hop++) tail = (await followup(tail.id, hop))!;
+    expect(tail.hopCount).toBe(maxTodoHops);
+    expect(await followup(tail.id, maxTodoHops + 1)).toBeNull();
+    expect(await db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
+      updateOrCancelTodo(tx, tick, tail.id, tail.revision, { kind: 'cancel' }, 8, eligible)))).toBe(true);
+    expect((await inspect(tail.id))?.state).toBe('cancelled');
   });
 
   it('registers transactionally, retries the same handoff and fences late and competing completions', async () => {

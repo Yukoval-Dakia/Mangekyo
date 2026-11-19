@@ -18,6 +18,7 @@ import { handleIntakeRequest, type openIntake } from './intake.ts';
 import type { openWorkbook } from './workbook.ts';
 import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
+import type { openResearch } from './research.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
 import { saveSettings, publicSettings, loadSettings } from './settings.ts';
@@ -78,6 +79,7 @@ export function serve(
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
     intake: ReturnType<typeof openIntake>;
+    research: ReturnType<typeof openResearch>;
   },
   port: number,
 ) {
@@ -100,6 +102,20 @@ export function serve(
         throw new RequestError(403, '此入口仅供本机页面使用。');
       const path = new URL(req.url ?? '/', 'http://' + host).pathname;
       const method = req.method;
+      if (path === '/api/research/settings' && method === 'GET') return json(res, 200, await student.research.read());
+      if (path === '/api/research/settings' && method === 'PUT') return json(res, 200, await student.research.configure(await body(req)));
+      const research = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/(research-permission|research)(?:\/([0-9A-HJKMNP-TV-Z]{26})\/source)?$/.exec(path);
+      if (research?.[1] && research[2]) {
+        const [, paperId, attemptId, resource, id] = research;
+        if (resource === 'research-permission' && !id && method === 'GET')
+          return json(res, 200, await student.research.permission(paperId!, attemptId!));
+        if (resource === 'research-permission' && !id && method === 'PUT')
+          return json(res, 200, await student.research.allow(paperId!, attemptId!, await body(req)));
+        if (resource === 'research' && method === 'GET') {
+          if (id) return json(res, 200, await student.research.source(paperId!, attemptId!, id));
+          return json(res, 200, { worksheet: await student.research.worksheet(paperId!, attemptId!) });
+        }
+      }
       const reading = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/reading$/.exec(path);
       if (reading?.[1] && method === 'GET') return json(res, 200, await library.reading(reading[1]));
       if (await handleIntakeRequest(student.intake, req, res, path, method)) return;

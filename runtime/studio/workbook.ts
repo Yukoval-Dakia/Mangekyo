@@ -1,6 +1,7 @@
 import type { ReviewEntry } from './review.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import {
   createCommandReadContext,
   FactNotFoundError,
@@ -245,10 +246,21 @@ type WorkbookDetailWithAssessment = WorkbookDetail & {
   attempts: (WorkbookAttemptView & { formalAssessment?: FormalAssessmentView })[];
 };
 
-export function openWorkbook(db: Db, activity: LoadedModule, assessment = openWorkbookAssessment(db)) {
+export function openWorkbook(db: Db, activity: LoadedModule, {
+  assessment = openWorkbookAssessment(db),
+  onResearchFactsChanged,
+}: {
+  assessment?: ReturnType<typeof openWorkbookAssessment>;
+  onResearchFactsChanged?: CommandHooks['onFactsChanged'];
+} = {}) {
   const handle = createCommandHandler(db, {
     modules: [activity],
-    hooks: { onFactsChanged: assessment.onFactsChanged },
+    hooks: {
+      async onFactsChanged(tx, tick, changes) {
+        await assessment.onFactsChanged(tx, tick, changes);
+        await onResearchFactsChanged?.(tx, tick, changes);
+      },
+    },
   });
 
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
