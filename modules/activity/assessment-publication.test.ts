@@ -115,37 +115,21 @@ it('keeps the entire release pending when a required sample or its frozen verifi
     .toMatchObject({ state: 'needs-review', issues: [{ stage: 'outcome', itemId: explanation.itemId, criterionId: 'rule' }] });
 });
 
-it('rejects a release whose run receipts only cover one trivial sample', () => {
-  const trivialOnly = verify(release, {
-    witness: { ...calculationProof.witness, requiredSampleRefs: [ref(20)] },
-    samples: calculationSamples.slice(0, 1),
-  });
-  // Every listed sample passed, yet the frozen contract still requires alternative,
-  // partial and negative demonstrations that never ran.
-  expect(trivialOnly.state === 'needs-review' && trivialOnly.issues.every(entry => entry.stage === 'coverage')).toBe(true);
-
-  const missingCoverage = verify(release, {
-    witness: { ...calculationProof.witness, requiredCoverage: calculationProof.witness.requiredCoverage.slice(0, 1) },
-    samples: calculationSamples,
-  });
-  expect(missingCoverage).toMatchObject({ state: 'needs-review', issues: [{ stage: 'coverage', reason: expect.stringContaining('覆盖项') }] });
-
-  const wrongSample = verify(release, {
-    ...calculationProof,
-    witness: {
-      ...calculationProof.witness,
-      requiredCoverage: calculationProof.witness.requiredCoverage.map(entry =>
-        entry.kind === 'partial' ? { ...entry, sampleRef: ref(20) } : entry),
-    },
-  });
-  expect(wrongSample).toMatchObject({ state: 'needs-review', issues: [{ stage: 'plan' }] });
-  const reused = verify(release, {
-    ...calculationProof,
-    witness: {
-      ...calculationProof.witness,
-      requiredCoverage: calculationProof.witness.requiredCoverage.map(entry =>
-        entry.kind === 'alternative' ? { ...entry, sampleRef: ref(20) } : entry),
-    },
-  });
-  expect(reused).toMatchObject({ state: 'needs-review', issues: [{ stage: 'plan' }] });
+it('rejects incomplete or reused coverage even when every listed sample passed', () => {
+  const coverage = calculationProof.witness.requiredCoverage;
+  const verifyCoverage = (requiredCoverage = coverage, samples = calculationSamples) =>
+    verify(release, {
+      witness: { ...calculationProof.witness, requiredCoverage,
+        requiredSampleRefs: samples.map(({ sample }) => sample.sampleRef) },
+      samples,
+    });
+  const trivial = verifyCoverage(coverage, calculationSamples.slice(0, 1));
+  expect(trivial).toMatchObject({ state: 'needs-review' });
+  if (trivial.state === 'needs-review') expect(trivial.issues.every(issue => issue.stage === 'coverage')).toBe(true);
+  expect(verifyCoverage(coverage.slice(0, 1)))
+    .toMatchObject({ state: 'needs-review', issues: [{ stage: 'coverage', reason: expect.stringContaining('覆盖项') }] });
+  for (const kind of ['partial', 'alternative']) {
+    expect(verifyCoverage(coverage.map(entry => entry.kind === kind ? { ...entry, sampleRef: ref(20) } : entry)))
+      .toMatchObject({ state: 'needs-review', issues: [{ stage: 'plan' }] });
+  }
 });
