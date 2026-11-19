@@ -32,14 +32,31 @@ function fingerprint(file: File) {
 }
 
 type Extraction = 'local' | 'mineru';
-type IntakeIntent = { fingerprint: string; extraction?: Extraction; requestId: string };
+type PendingRequest = { requestId: string; conflict?: boolean };
 
-function readIntent(): IntakeIntent | null {
+// Match the intake endpoint's title, including its filename fallback.
+function intakeTitle(input: string, file: File) {
+  const controls = /[\u0000-\u001f\u007f]/g;
+  const title = input.trim().replace(controls, '').slice(0, 240);
+  const name = file.name.replace(/\\/g, '/').split('/').pop()!.replace(controls, '').trim().slice(0, 180);
+  return title && title.isWellFormed() ? title : name.replace(/\.[^.]+$/, '') || '材料原件';
+}
+
+type StoredRequest = PendingRequest & { fingerprint?: string; extraction?: Extraction };
+
+function storedRequest(key: string): StoredRequest | null {
   try {
-    return JSON.parse(remembered('intake-pending') ?? 'null');
+    const value = JSON.parse(remembered(key) ?? 'null');
+    return value && typeof value.requestId === 'string' && value.requestId.length > 0 ? value : null;
   } catch {
     return null;
   }
+}
+
+function legacyRequest(identity: string, extraction: Extraction): PendingRequest | null {
+  const value = storedRequest('intake-pending');
+  if (value?.fingerprint !== identity || (value.extraction ?? 'local') !== extraction) return null;
+  return { requestId: value.requestId };
 }
 
 function supportsMineru(file: File) {
@@ -67,7 +84,7 @@ export function Intake({}: Record<string, never>) {
   const [title, setTitle] = useState('');
   const [mineruAvailable, setMineruAvailable] = useState(false);
   const [extraction, setExtraction] = useState<Extraction>('local');
-  const intent = useRef<IntakeIntent | null>(null);
+  const pending = useRef(new Map<string, PendingRequest>());
   const fileInput = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -89,12 +106,18 @@ export function Intake({}: Record<string, never>) {
     if (!selected && fileInput.current) fileInput.current.value = '';
   }
 
-  const lastAttempt = intent.current;
-  const methodChanged = file && lastAttempt?.fingerprint === fingerprint(file) && lastAttempt.extraction !== extraction;
+  const identity = file ? fingerprint(file) : '';
+  const normalizedTitle = file ? intakeTitle(title, file) : '';
+  const intentKey = 'intake-pending:v2:' + JSON.stringify([identity, extraction, normalizedTitle]);
   const cloudAllowed = mineruAvailable && file !== null && supportsMineru(file);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  function matchingRequest(): PendingRequest | null {
+    return storedRequest(intentKey) ?? pending.current.get(intentKey) ?? legacyRequest(identity, extraction);
+  }
+
+  const previous = file && matchingRequest();
+
+  async function submit(startNew = false) {
     if (busy || !file) return;
     if (file.size === 0) {
       setError('这个文件是空的，请换一个。');
@@ -108,13 +131,16 @@ export function Intake({}: Record<string, never>) {
       setError('这份文件无法使用 MinerU，请选择本机抽取。');
       return;
     }
-    const identity = fingerprint(file);
-    const previous = intent.current ?? readIntent();
-    const request = previous?.fingerprint === identity && (previous.extraction ?? 'local') === extraction
-      && typeof previous.requestId === 'string' ? previous.requestId : requestId();
-    intent.current = { fingerprint: identity, extraction, requestId: request };
-    const stored = JSON.stringify(intent.current);
-    remember('intake-pending', stored);
+    const existing = matchingRequest();
+    if (startNew !== (existing?.conflict === true)) return;
+    const request = (!startNew && existing?.requestId) || requestId();
+    const record: PendingRequest = { requestId: request };
+    remember(intentKey, JSON.stringify(record));
+    if (extraction === 'mineru' && storedRequest(intentKey)?.requestId !== request) {
+      setError('浏览器无法保存重试标识。请允许本地存储后再发送给 MinerU。');
+      return;
+    }
+    pending.current.set(intentKey, record);
     const form = new FormData();
     form.set('extraction', extraction);
     form.set('requestId', request);
@@ -124,15 +150,26 @@ export function Intake({}: Record<string, never>) {
     setError('');
     try {
       const response = await fetch('/api/intake', { method: 'POST', body: form });
-      const value = (await response.json().catch(() => ({}))) as { error?: string } & Partial<IntakeMetadata>;
-      if (!response.ok) throw new Error(value.error ?? '交入失败，文件还在，请再试一次。');
-      setResult(value as IntakeMetadata);
-      if (remembered('intake-pending') === stored) remember('intake-pending', null);
-      intent.current = null;
+      if (!response.ok) {
+        if (response.status === 409) {
+          const conflict = { requestId: request, conflict: true };
+          pending.current.set(intentKey, conflict);
+          remember(intentKey, JSON.stringify(conflict));
+        }
+        const failure = await response.json().catch(() => null);
+        throw new Error(failure?.error ?? '交入未确认，请再试一次。');
+      }
+      const value: IntakeMetadata = await response.json();
+      if (!value?.id || !value.original || !value.extraction) throw new Error('未收到完整回执，请继续原提交。');
+      setResult(value);
+      if (storedRequest(intentKey)?.requestId === request) remember(intentKey, null);
+      if (storedRequest('intake-pending')?.requestId === request) remember('intake-pending', null);
+      pending.current.delete(intentKey);
       selectFile(null);
       setTitle('');
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : '交入失败，文件还在，请再试一次。');
+      setError(submitError instanceof Error && !(submitError instanceof TypeError || submitError instanceof SyntaxError)
+        ? submitError.message : '交入结果尚未确认。请继续原提交以取回回执。');
     } finally {
       setBusy(false);
     }
@@ -142,7 +179,7 @@ export function Intake({}: Record<string, never>) {
     <>
       <PageTitle title="交入材料" meta="原件保存在这台电脑的私人数据目录。" />
       <section className="intake-panel">
-        <form onSubmit={(event) => void submit(event)}>
+        <form onSubmit={event => { event.preventDefault(); void submit(); }}>
           <label className="intake-drop">
             <input
               type="file"
@@ -162,7 +199,7 @@ export function Intake({}: Record<string, never>) {
               value={title}
               disabled={busy}
               maxLength={240}
-              onChange={(event) => setTitle(event.target.value)}
+              onChange={event => { setTitle(event.target.value); setError(''); }}
               placeholder="例如：第三章错题卷"
             />
           </label>
@@ -187,10 +224,14 @@ export function Intake({}: Record<string, never>) {
               <p className="field-help" id="extraction-destination">
                 {extraction === 'mineru' ? '提交后会把这份原件发送给 MinerU 识别。' : '文件仅在本机处理。'}
               </p>
-              {methodChanged && <p className="field-help">更换抽取方式后提交，会作为一次新的交入。</p>}
             </fieldset>
           )}
           {!cloudAllowed && <p className="field-help">文件仅在本机处理。macOS 支持 PDF 和照片识别，UTF-8 文本可直接读取。</p>}
+          {file && <p className="field-help">
+            {previous?.conflict ? <>原提交标识有冲突，请先到<a href="/materials">材料列表</a>核对。另开一次会创建新材料{extraction === 'mineru' ? '，并可能再次产生识别费用' : ''}。</>
+              : previous ? '有尚未确认的提交。继续会沿用原请求标识。'
+              : '本次将新建材料。更改标题或抽取方式会另开一次交入；切回原选项可继续未确认的提交。'}
+          </p>}
           {error && (
             <p className="error-text" role="alert">
               {error}
@@ -200,9 +241,12 @@ export function Intake({}: Record<string, never>) {
             <button type="button" className="text-button" disabled={busy || !file} onClick={() => selectFile(null)}>
               重选
             </button>
-            <button type="submit" className="primary-button" disabled={busy || !file}>
-              {busy ? '正在保存…' : extraction === 'mineru' ? '保存并发送给 MinerU' : '保存并抽取'}
-            </button>
+            {previous?.conflict && <button type="button" className="primary-button" disabled={busy} onClick={() => void submit(true)}>
+              {extraction === 'mineru' ? '另开一次并发送给 MinerU' : '另开一次本机交入'}
+            </button>}
+            {!previous?.conflict && <button type="submit" className="primary-button" disabled={busy || !file}>
+              {busy ? '正在保存…' : extraction === 'mineru' ? (previous ? '继续原提交给 MinerU' : '保存并发送给 MinerU') : (previous ? '继续原提交' : '保存并抽取')}
+            </button>}
           </div>
         </form>
       </section>
@@ -227,45 +271,57 @@ export function Intake({}: Record<string, never>) {
   );
 }
 
-type OriginalProps = { id: string; receipt?: IntakeMetadata; changed?: () => void };
+type OriginalProps = { id: string; receipt?: IntakeMetadata; previewText?: string; changed?: () => void };
 
 export function MaterialOriginal(props: OriginalProps) {
   return <OriginalDetails key={props.id} {...props} />;
 }
 
-function OriginalDetails({ id, receipt, changed }: OriginalProps) {
+function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
   const [metadata, setMetadata] = useState<IntakeMetadata | null>(receipt ?? null);
+  const latest = useRef(receipt);
+  const readGeneration = useRef(0);
   const [refresh, setRefresh] = useState(0);
   const [pollPaused, setPollPaused] = useState(false);
   const currentIsPending = useEffectEvent(() => metadata?.extraction.status === 'pending');
-  const notifyChanged = useEffectEvent(() => changed?.());
+  const syncPreview = useEffectEvent((text: string) => {
+    if (previewText !== text) changed?.();
+  });
   const [plain, setPlain] = useState(false);
   const [error, setError] = useState('');
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionText, setCorrectionText] = useState('');
   const [correctionBusy, setCorrectionBusy] = useState(false);
   const [correctionError, setCorrectionError] = useState('');
-  const correctionIntent = useRef<{ text: string; requestId: string } | null>(null);
+  const correctionIntent = useRef<{ text: string; revision: number; requestId: string } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
     let timer: ReturnType<typeof setTimeout>;
     let attempts = 0;
+    const generation = readGeneration.current;
+    const stale = () => signal.aborted || generation !== readGeneration.current;
     setPollPaused(false);
     setError('');
 
     async function read(wasPending: boolean) {
+      if (stale()) return;
       try {
         const value = await api<IntakeMetadata>('/materials/' + encodeURIComponent(id), { signal });
-        if (signal.aborted) return;
+        if (stale()) return;
+        if (latest.current && latest.current.revision > value.revision) {
+          if (latest.current.extraction.status === 'pending') schedule();
+          return;
+        }
+        latest.current = value;
         setMetadata(value);
         setPlain(false);
         setError('');
         if (value.extraction.status === 'pending') schedule();
-        else if (wasPending || refresh > 0) notifyChanged();
+        else syncPreview(value.text);
       } catch (loadError) {
-        if (signal.aborted) return;
+        if (stale()) return;
         if (wasPending) {
           setError('暂时无法更新识别状态。');
           schedule();
@@ -298,17 +354,24 @@ function OriginalDetails({ id, receipt, changed }: OriginalProps) {
     event.preventDefault();
     if (correctionBusy || !metadata) return;
     const text = correctionText;
-    const next = correctionIntent.current?.text === text ? correctionIntent.current.requestId : requestId();
-    correctionIntent.current = { text, requestId: next };
+    const revision = metadata.revision;
+    const previous = correctionIntent.current;
+    const next = previous?.text === text && previous.revision === revision ? previous.requestId : requestId();
+    correctionIntent.current = { text, revision, requestId: next };
     setCorrectionBusy(true);
     setCorrectionError('');
     try {
-      setMetadata(
-        await api<IntakeMetadata>('/materials/' + encodeURIComponent(metadata.id) + '/correction', {
-          method: 'POST',
-          body: { requestId: next, text, expectedRev: metadata.revision },
-        }),
-      );
+      const value = await api<IntakeMetadata>('/materials/' + encodeURIComponent(metadata.id) + '/correction', {
+        method: 'POST',
+        body: { requestId: next, text, expectedRev: revision },
+      });
+      if (!latest.current || value.revision >= latest.current.revision) {
+        readGeneration.current += 1;
+        latest.current = value;
+        setMetadata(value);
+        setError('');
+        setPollPaused(false);
+      }
       correctionIntent.current = null;
       setCorrectionText(text);
       setCorrectionOpen(false);
@@ -370,13 +433,13 @@ function OriginalDetails({ id, receipt, changed }: OriginalProps) {
         </details>
       )}
       {metadata.truncated && <p className="field-help">材料卡片只显示前 4000 字，完整文字和原件都在这里。</p>}
-      {metadata.extraction.status !== 'pending' && <button className="text-button intake-correction-toggle" type="button" onClick={() => {
+      <button className="text-button intake-correction-toggle" type="button" onClick={() => {
         if (!correctionOpen) setCorrectionText(metadata.fullText ?? '');
         setCorrectionOpen((open) => !open);
         setCorrectionError('');
       }}>
         {metadata.extraction.status === 'corrected' ? '再更正文字' : '手动补充或更正文字'}
-      </button>}
+      </button>
       {correctionOpen && (
         <form className="intake-correction" onSubmit={(event) => void saveCorrection(event)}>
           <textarea
