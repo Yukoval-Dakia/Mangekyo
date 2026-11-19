@@ -23,5 +23,6 @@ export function artifactActionRecord(input: unknown) {
     mountId: factId(input.mountId),
     turnId: factId(input.turnId),
     sessionId: factId(input.sessionId),
+    ...(input.submission === undefined ? {} : { submission: input.submission }),
   };
 }

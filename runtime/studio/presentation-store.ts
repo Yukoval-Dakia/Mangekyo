@@ -13,7 +13,7 @@ import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
-import { assessmentSubmission } from '../../modules/activity/assessment-values.ts';
+import { assessmentRelease, assessmentSubmission, type AssessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import {
@@ -31,6 +31,10 @@ import {
   projectArtifactSnapshot,
   type ArtifactMountV1,
 } from './artifact-presentation.ts';
+import {
+  artifactAssessmentPolicy, qualifyArtifactAssessment, readArtifactAssessment, type ReadArtifactAssessmentWitness,
+} from './artifact-assessment.ts';
+import { registerFormalAssessment } from './formal-assessment.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner, purpose, slotType } from './identity.ts';
@@ -55,6 +59,7 @@ export async function mountArtifact(
   step: number,
   args: Record<string, unknown>,
   authorize: (tx: ReadTransaction) => Promise<Manifest>,
+  readWitness?: ReadArtifactAssessmentWitness,
 ) {
   const checked = validateArtifact(args.view);
   if (!checked.ok) return { error: checked.error };
@@ -63,6 +68,15 @@ export async function mountArtifact(
     return { error: '预测提示应为 1–160 字。' };
   const id = stableId('artifact-mount', turnId, String(step));
   const view = { ...checked.view, id: 'work-' + id.toLowerCase() };
+  let assessment: ReturnType<typeof qualifyArtifactAssessment> | undefined;
+  if (args.sentenceBreaks !== undefined) {
+    if (!prompt) return { error: '正式断句须先保存预测。' };
+    try {
+      assessment = qualifyArtifactAssessment({ id: factId(id), rev: 1 as Revision }, view, prompt, args.sentenceBreaks, readWitness);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : '正式断句无法发放。' };
+    }
+  }
   const data = await db.snapshot(scope, async (tx) => {
     const manifest = await authorize(tx);
     const reader = createCommandReadContext(tx, purpose);
@@ -78,6 +92,7 @@ export async function mountArtifact(
       manifest: { ...manifest, gatherTick: existing.rows[0]?.tick ?? manifest.gatherTick },
       view,
       predictionPrompt: prompt,
+      ...(assessment ? { assessment } : {}),
     };
   });
   const handle = createCommandHandler(db, {
@@ -222,7 +237,9 @@ async function projectMount(
       unavailable[node.id] = '此作品尚未绑定帮助或揭示命令。';
     else if (node.inputs.some((id) => locks.has(id))) unavailable[node.id] = '所需输入尚未开放。';
   }
-  const submitted = history.some((e) => e.action.intent === 'submit');
+  const submissionEvent = history.find((e) => e.action.intent === 'submit');
+  const submitted = Boolean(submissionEvent);
+  const release = data.assessment ? assessmentRelease(data.assessment.release) : undefined;
   const mount: ArtifactMountV1 = {
     ...base,
     viewSeq: stateRev,
@@ -266,11 +283,15 @@ async function projectMount(
     submitted,
     predicting,
     unavailable,
-    prediction: prediction ? { id: prediction.id, answer: prediction.action.answers.estimate } : null,
+    prediction: prediction ? { id: prediction.id, ...(release ? { rev: 1 } : {}), answer: prediction.action.answers.estimate } : null,
+    ...(release ? { questionRef: release.releaseRef } : {}),
+    ...(release && submissionEvent ? {
+      assessment: await readArtifactAssessment(tx, release.releaseRef, { id: factId(submissionEvent.id), rev: 1 as Revision }),
+    } : {}),
     saved,
     commandId: latest?.receipt?.commandId ?? null,
   };
-  return { mount, grant, history, snapshot };
+  return { mount, grant, history, snapshot, release, source };
 }
 
 export async function turnArtifacts(tx: ReadTransaction, session: string, turn: string) {
@@ -292,9 +313,20 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
   return snapshots;
 }
 
-// Freeze the submitted inputs at the version the learner saw. The assessment executor can
-// bind criteria later; this handoff contains no inferred score or attested process evidence.
-function submissionFor(mount: ArtifactMountV1, view: Artifact, id: string, action: ArtifactAction) {
+// Exploration also records a structured handoff, using its original slot contract.
+function submissionFor(mount: ArtifactMountV1, view: Artifact, id: string, action: ArtifactAction, release?: AssessmentRelease) {
+  if (release) {
+    const item = release.items[0]!;
+    const slot = item.slots[0]!;
+    const answer = action.answers[slot.slotId];
+    return assessmentSubmission({
+      releaseRef: release.releaseRef, submissionRef: { id, rev: 1 },
+      answers: answer?.kind === 'selection' && answer.ids.length ? [{
+        itemId: item.itemId, slotId: slot.slotId, schemaVersion: slot.schemaVersion, path: '',
+        value: { kind: 'structured', value: answer },
+      }] : [],
+    }, release);
+  }
   const releaseRef = { id: factId(mount.mountId), rev: 1 as Revision };
   const schemaVersion = 'artifact-v1';
   const itemId = action.nodeId;
@@ -327,7 +359,7 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
     throw new RequestError(400, '作品标识无效。');
   const mountId = raw.mountId;
   const read = () => db.snapshot(scope, (tx) => readMount(tx, session, mountId));
-  const { mount, grant, history, snapshot } = await read();
+  const { mount, grant, history, snapshot, release } = await read();
   const key = artifactIntentCommandId(requestId);
   function confirmed(state: typeof snapshot, receipt: CommandReceipt | null | undefined) {
     if (receipt?.state !== 'done' || receipt.commandId !== key) throw conflict('操作回执尚未确认。');
@@ -366,14 +398,18 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
       prediction: snapshot.predicting,
       predictionRef: snapshot.prediction?.id ?? null,
       ...(action.intent === 'submit'
-        ? { submission: submissionFor(mount, snapshot.view, id, action), traceSource: 'learner-reported' }
+        ? { submission: submissionFor(mount, snapshot.view, id, action, release), traceSource: 'learner-reported' }
         : {}),
     };
     const handle = createCommandHandler(db, {
       modules: [await (activity ??= load('activity'))],
       hooks: createStudioCommandHooks({
-        afterFactsChanged: async (tx) => {
-          await readMount(tx, session, mountId);
+        afterFactsChanged: async (tx, tick) => {
+          const current = await readMount(tx, session, mountId);
+          if (current.release && action.intent === 'submit') {
+            const submitted = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });
+            await registerFormalAssessment(tx, tick, artifactAssessmentPolicy, current.source, submitted);
+          }
           await notify(tx, session);
         },
       }),

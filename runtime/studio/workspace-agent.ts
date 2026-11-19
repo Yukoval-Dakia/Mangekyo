@@ -22,11 +22,13 @@ import {createStudioCommandHooks} from './command-hooks.ts';
 import {presentationCatalog} from '../../surfaces/shared/presentation/index.ts';
 import type {Manifest} from '../../kernel/src/derivations/manifest.ts';
 import {mountArtifact} from './presentation-store.ts';
+import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 
 const presentationTool = {type:'function',function:{name:'mount_artifact',
-  description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。'+presentationCatalog.bindings,
+  description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+presentationCatalog.bindings,
   parameters:{type:'object',required:['view'],additionalProperties:false,properties:{
-    view:presentationCatalog.schema,predictionPrompt:{type:'string',maxLength:160}
+    view:presentationCatalog.schema,predictionPrompt:{type:'string',maxLength:160},
+    sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:{type:'string'}}}
   }}}};
 export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode};
 type Seen = {id: string; title: string; text: string; workspace: true};
@@ -40,9 +42,11 @@ export function openWorkspaceTools(options: {
   track: (input: WorkspaceWitness) => void;
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
+  readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
 }) {
   const {db, turn} = options;
+  let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));
   const overviewBasis = new Map<string, WorkspaceWitness>();
   const opened = new Map<string, Seen>();
@@ -181,11 +185,13 @@ export function openWorkspaceTools(options: {
     ...(options.presentationManifest ? {presentationTool} : {}),
     async execute(name: string, args: Record<string, unknown>, step: number) {
       if (name === 'mount_artifact' && options.presentationManifest) {
-        if (Object.keys(args).some(key => !['view','predictionPrompt'].includes(key))) return JSON.stringify({error:'仅支持 view 和 predictionPrompt。'});
-        return JSON.stringify(await mountArtifact(db,turn,step,args,async tx => {
+        if (Object.keys(args).some(key => !['view','predictionPrompt','sentenceBreaks'].includes(key))) return JSON.stringify({error:'仅支持 view、predictionPrompt 和 sentenceBreaks。'});
+        const result = await mountArtifact(db,turn,step,args,async tx => {
           await options.authorize(tx);
           return options.presentationManifest!(tx);
-        }));
+        },options.readArtifactAssessmentWitness);
+        if (args.sentenceBreaks !== undefined && result.state === 'done') publishedFormalArtifact = true;
+        return JSON.stringify(result);
       }
       const tool = workspaceDefinitions.find(tool => tool.function.name === name);
       if (!tool) return JSON.stringify({error:'请从本轮提供的工作区工具中选择。'});
@@ -194,6 +200,7 @@ export function openWorkspaceTools(options: {
       if (unknown) return JSON.stringify({error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
       return name === 'save_workspace' ? save(args, step) : read(name, args, step);
     },
+    publishedFormalArtifact: () => publishedFormalArtifact,
     reads: () => [...opened.values()],
     writes: () => [...receipts.values()],
     basis: () => [...new Map([...sources, ...overviewBasis]).values()],
