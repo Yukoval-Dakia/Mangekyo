@@ -13,6 +13,8 @@ import {
   RequestError,
   type openStudio,
 } from './sessions.ts';
+import { TextbookConflictError, type openTextbook } from './textbook.ts';
+import { studioLearner } from './identity.ts';
 import type { openLibrary } from './library.ts';
 import type { openPractice } from './practice.ts';
 import { handleIntakeRequest, type openIntake } from './intake.ts';
@@ -65,6 +67,7 @@ const pages = new Set([
   '/',
   '/today', '/papers', '/papers/new', '/plan', '/notes', '/review', '/intake',
   '/materials', '/materials/workspace',
+  '/textbooks', '/textbooks/page',
   '/materials/riding',
   '/practice/riding',
   '/companion',
@@ -77,6 +80,7 @@ export function serve(
   library: ReturnType<typeof openLibrary>,
   practice: ReturnType<typeof openPractice>,
   student: {
+    textbook: ReturnType<typeof openTextbook>;
     workbook: ReturnType<typeof openWorkbook>;
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
@@ -136,6 +140,24 @@ export function serve(
           if (id) return json(res, 200, await student.research.source(paperId!, attemptId!, id));
           return json(res, 200, { worksheet: await student.research.worksheet(paperId!, attemptId!) });
         }
+      }
+      if (path === '/api/textbooks' && method === 'GET')
+        return json(res, 200, await student.textbook.list({ learner: studioLearner }));
+      if (path === '/api/textbooks' && method === 'POST') {
+        const { requestId, clientEditSeq, page } = await body(req);
+        return json(res, 201, await student.textbook.create({ learner: studioLearner, requestId, clientEditSeq, page }));
+      }
+      const textbook = /^\/api\/textbooks\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path);
+      if (textbook?.[1] && method === 'GET') {
+        const rev = url.searchParams.has('rev') ? Number(url.searchParams.get('rev')) : undefined;
+        if (rev !== undefined && (!Number.isInteger(rev) || rev < 1 || rev > 2147483647))
+          throw new RequestError(400, '教材版本无效。');
+        return json(res, 200, await student.textbook.get({ learner: studioLearner, id: textbook[1], rev }));
+      }
+      if (textbook?.[1] && method === 'POST') {
+        const { requestId, clientEditSeq, expectedRev, edits } = await body(req);
+        return json(res, 200, await student.textbook.revise({ learner: studioLearner, id: textbook[1],
+          requestId, expectedRev, clientEditSeq, edits }));
       }
       const reading = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/reading$/.exec(path);
       if (reading?.[1] && method === 'GET') return json(res, 200, await library.reading(reading[1]));
@@ -230,6 +252,7 @@ export function serve(
       });
       res.writeHead(200, { 'Content-Type': types[extname(file)]! }).end(bytes);
     } catch (error) {
+      if (error instanceof TextbookConflictError) return json(res, 409, error.toJSON());
       if (!(error instanceof RequestError))
         console.error('studio request failed', error instanceof Error ? error.name : 'error');
       json(res, error instanceof RequestError ? error.status : 500, {

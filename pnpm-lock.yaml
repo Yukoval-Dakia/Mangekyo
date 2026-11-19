@@ -63,6 +63,12 @@ importers:
         specifier: workspace:*
         version: link:../../kernel
 
+  modules/content:
+    dependencies:
+      '@mangekyo/kernel':
+        specifier: workspace:*
+        version: link:../../kernel
+
   modules/learner:
     dependencies:
       '@mangekyo/kernel':
