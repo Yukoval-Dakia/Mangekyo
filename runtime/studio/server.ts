@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client, Connection } from '@temporalio/client';
 import { createPgDb } from '../../kernel/src/db/pg.ts';
@@ -16,6 +16,7 @@ import { openIntake } from './intake.ts';
 import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from './mineru.ts';
 import { openWorkbook } from './workbook.ts';
+import { openWorkbookAssessment, workbookAssessmentSlot, type WorkbookAssessmentHost } from './workbook-assessment.ts';
 import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';
 import { openPractice } from './practice.ts';
@@ -45,11 +46,18 @@ const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, pool) : 
 const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
 const intake = openIntake(db, activity);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
+// This module is trusted deployment configuration, shared by the HTTP and Worker processes.
+const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
+const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
+  ? (await import(pathToFileURL(assessmentModule).href)).workbookAssessmentHost
+  : undefined;
+if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模块须导出 workbookAssessmentHost');
+const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 
 async function openWeb() {
   const studio = await openStudio(db, activity);
   const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
-  const student = { workbook: openWorkbook(db, activity), organizer: openOrganizer(db, activity),
+  const student = { workbook: openWorkbook(db, activity, workbookAssessment), organizer: openOrganizer(db, activity),
     memory: openMemory(db, companion), intake, workspace: openWorkspaceAccess(db, activity) };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
@@ -78,8 +86,10 @@ async function runWorker(storeId: string) {
     onTerminalFailure: async (id: string) => {
       const ref = await acknowledgeStartedWork(db, id);
       if (!ref) return;
-      if ((await readWork(db, ref))?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, true);
-      else await recordTerminalFailure(db, ref);
+      const work = await readWork(db, ref);
+      if (work?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, true);
+      else if (work?.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, true);
+      else if (work) await recordTerminalFailure(db, ref);
     },
     buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
   };
@@ -88,8 +98,10 @@ async function runWorker(storeId: string) {
   const { worker, connection: workerConnection } = await createWorkWorker(async (id) => {
     const ref = await acknowledgeStartedWork(db, id);
     if (!ref) return;
-    if ((await readWork(db, ref))?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref);
-    else await teach(db, ref);
+    const work = await readWork(db, ref);
+    if (work?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref);
+    else if (work?.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref);
+    else if (work) await teach(db, ref);
   }, workerConfig);
   let stopping = false;
   const running = worker.run();
