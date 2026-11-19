@@ -284,7 +284,7 @@ export function SavedMaterial({ library, id }: { library: Resource<Workspace>; i
             <a href={'/notes?material='+m.id}>写笔记</a>
             <a href={'/papers/new?material='+m.id}>自己编卷</a>
           </div>
-          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} changed={library.reload} />
+          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} previewText={m.text} changed={library.reload} />
         </article>
       ) : (
         library.data && <h1>未找到这份材料</h1>

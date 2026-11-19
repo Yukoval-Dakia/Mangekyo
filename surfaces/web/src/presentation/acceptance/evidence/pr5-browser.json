@@ -1,0 +1,197 @@
+{
+  "phase": {
+    "before": {
+      "buttonDisabled": true,
+      "hasCurve": false,
+      "rangeDisabled": true,
+      "reading": "0 mL"
+    },
+    "waiting": {
+      "buttonDisabled": true,
+      "hasCurve": false,
+      "rangeDisabled": true,
+      "reading": "0 mL"
+    },
+    "after": {
+      "buttonDisabled": false,
+      "hasCurve": true,
+      "rangeDisabled": false,
+      "reading": "0 mL"
+    },
+    "first": {
+      "action": {
+        "answers": {
+          "estimate": {
+            "kind": "text",
+            "text": "我预测 20 mL 附近。"
+          }
+        },
+        "artifactId": "predict-titration",
+        "intent": "submit",
+        "nodeId": "submit-prediction",
+        "revision": "r1",
+        "trace": {
+          "omitted": 0,
+          "steps": []
+        },
+        "version": 1
+      },
+      "baseStateRev": 0,
+      "mountId": "mount-a",
+      "requestId": "f3cfda56-5625-454a-ab01-5bca9dc46276",
+      "version": 1
+    },
+    "retry": {
+      "action": {
+        "answers": {
+          "estimate": {
+            "kind": "text",
+            "text": "我预测 20 mL 附近。"
+          }
+        },
+        "artifactId": "predict-titration",
+        "intent": "submit",
+        "nodeId": "submit-prediction",
+        "revision": "r1",
+        "trace": {
+          "omitted": 0,
+          "steps": []
+        },
+        "version": 1
+      },
+      "baseStateRev": 0,
+      "mountId": "mount-a",
+      "requestId": "f3cfda56-5625-454a-ab01-5bca9dc46276",
+      "version": 1
+    },
+    "second": {
+      "action": {
+        "answers": {
+          "estimate": {
+            "kind": "text",
+            "text": "我预测 20 mL 附近。"
+          }
+        },
+        "artifactId": "predict-titration",
+        "intent": "submit",
+        "nodeId": "submit-prediction",
+        "revision": "r1",
+        "trace": {
+          "omitted": 0,
+          "steps": []
+        },
+        "version": 1
+      },
+      "baseStateRev": 0,
+      "mountId": "mount-a",
+      "requestId": "b7755ac0-0c7d-45a0-aea3-ae2922532b26",
+      "version": 1
+    },
+    "record": {
+      "action": {
+        "answers": {
+          "inference": {
+            "kind": "text",
+            "text": ""
+          },
+          "volume": {
+            "kind": "quantity",
+            "unit": "mL",
+            "value": 2
+          }
+        },
+        "artifactId": "predict-titration",
+        "intent": "explore",
+        "nodeId": "keep-reading",
+        "revision": "r1",
+        "trace": {
+          "omitted": 0,
+          "steps": [
+            {
+              "kind": "adjust",
+              "nodeId": "volume",
+              "objectId": "valve",
+              "unit": "mL",
+              "value": 1
+            },
+            {
+              "kind": "adjust",
+              "nodeId": "volume",
+              "objectId": "valve",
+              "unit": "mL",
+              "value": 2
+            }
+          ]
+        },
+        "version": 1
+      },
+      "baseStateRev": 1,
+      "mountId": "mount-a",
+      "requestId": "bf9068a3-02dc-41aa-a7f2-b7a96745fea2",
+      "version": 1
+    }
+  },
+  "missing": "恢复定义撤回挂载切换挂载\n为《论语》断句\n\n知之者不如好之者好之者不如乐之者。选择要停顿的字后位置。\n\n当前作答\n\n原文与断点 · 者 (gap-8)\n\n互动内容暂不可用，恢复后可继续编辑。",
+  "restored": {
+    "action": {
+      "answers": {
+        "pauses": {
+          "ids": [
+            "gap-8"
+          ],
+          "kind": "selection"
+        }
+      },
+      "artifactId": "analects",
+      "intent": "submit",
+      "nodeId": "send-pauses",
+      "revision": "r1",
+      "trace": {
+        "omitted": 0,
+        "steps": [
+          {
+            "kind": "toggle",
+            "nodeId": "pauses",
+            "objectId": "gap-8",
+            "selected": true
+          }
+        ]
+      },
+      "version": 1
+    },
+    "baseStateRev": 0,
+    "mountId": "mount-a",
+    "requestId": "952c692f-3819-495c-8aad-53414bb93c09",
+    "version": 1
+  },
+  "revoked": "中断更新重新授权切换挂载\n\n此活动当前不可用。",
+  "regranted": "false",
+  "replaced": "恢复定义撤回挂载切换挂载\n活动文字版\n\n此版本暂时无法显示互动内容。",
+  "other": {
+    "action": {
+      "answers": {
+        "pauses": {
+          "ids": [],
+          "kind": "selection"
+        }
+      },
+      "artifactId": "analects",
+      "intent": "submit",
+      "nodeId": "send-pauses",
+      "revision": "r1",
+      "trace": {
+        "omitted": 0,
+        "steps": []
+      },
+      "version": 1
+    },
+    "baseStateRev": 0,
+    "mountId": "mount-b",
+    "requestId": "2f0259be-578a-4574-88de-ce949e1793c9",
+    "version": 1
+  },
+  "giant": {
+    "text": "活动文字版\n\n在 20 mL 盐酸中逐步加入等浓度的氢氧化钠。记录 pH 跃变时加入的体积，并解释判断依据。",
+    "objects": 0
+  }
+}

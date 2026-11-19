@@ -68,6 +68,9 @@ importers:
       '@temporalio/client':
         specifier: 1.26.0
         version: 1.26.0(long@5.3.2)(protobufjs@8.8.1)
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       pg:
         specifier: ^8.23.1
         version: 8.23.1
@@ -1014,6 +1017,9 @@ packages:
     peerDependenciesMeta:
       picomatch:
         optional: true
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
   fs-monkey@1.1.0:
     resolution: {integrity: sha512-QMUezzXWII9EV5aTFXW1UBVUO77wYPpjqIF8/AviUCThNeSYZykpoTixUeaNNBwmCev0AMDWMAni+f8Hxb1IFw==}
@@ -2617,6 +2623,8 @@ snapshots:
   fdir@6.5.0(picomatch@4.0.7):
     optionalDependencies:
       picomatch: 4.0.7
+
+  fflate@0.8.3: {}
 
   fs-monkey@1.1.0: {}
 

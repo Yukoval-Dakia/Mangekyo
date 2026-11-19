@@ -1,0 +1,49 @@
+{
+  "before": "0",
+  "pointer": "touch",
+  "width": 390,
+  "scrollWidth": 390,
+  "request": {
+    "version": 1,
+    "requestId": "6bc2d7a0-9dae-46f0-ad4e-4c70adbf7674",
+    "mountId": "mount-a",
+    "baseStateRev": 1,
+    "action": {
+      "version": 1,
+      "artifactId": "predict-titration",
+      "revision": "r1",
+      "nodeId": "keep-reading",
+      "intent": "explore",
+      "trace": {
+        "omitted": 0,
+        "steps": [
+          {
+            "kind": "adjust",
+            "nodeId": "volume",
+            "value": 1,
+            "unit": "mL",
+            "objectId": "valve"
+          },
+          {
+            "kind": "adjust",
+            "nodeId": "volume",
+            "value": 2,
+            "unit": "mL",
+            "objectId": "valve"
+          }
+        ]
+      },
+      "answers": {
+        "volume": {
+          "kind": "quantity",
+          "value": 2,
+          "unit": "mL"
+        },
+        "inference": {
+          "kind": "text",
+          "text": ""
+        }
+      }
+    }
+  }
+}
