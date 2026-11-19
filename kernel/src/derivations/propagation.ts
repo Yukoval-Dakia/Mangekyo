@@ -191,9 +191,9 @@ export function createPropagationHooks(
 
     if (change) wake.set(slotIdentity(change.slot.type, change.slot.key), change.slot);
     const published = change?.kind === 'effective' && !invalidated.has(change.id) ? change : undefined;
-    if (published) {
-      events.push({ kind: 'slot', slot: published.slot, currentId: published.id });
-      if (published.freshness === 'behind') demandEager(published.slot.type, published.slot.key);
+    if (published) events.push({ kind: 'slot', slot: published.slot, currentId: published.id });
+    if (change && change.kind !== 'invalidated' && change.freshness === 'behind') {
+      demandEager(change.slot.type, change.slot.key);
     }
     for (const event of events) {
       for (const policy of byType.values()) {
@@ -229,7 +229,7 @@ export function createPropagationHooks(
     }
 
     for (const work of demands.values()) {
-      // Publication of this sealed snapshot queues the catch-up if it is still behind.
+      // Settling this sealed snapshot queues the catch-up if it is still behind.
       if (!await preservesSealedWork(tx, work)) await requestWork(tx, tick, work);
     }
     for (const slot of wake.values()) await wakeWaitingWork(tx, tick, slot);

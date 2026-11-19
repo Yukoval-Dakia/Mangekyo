@@ -58,7 +58,9 @@ export type SubmitResult = Obsolete | Retry | { readonly kind: 'unbound' } | Ter
   | { readonly kind: 'effective'; readonly tick: Tick; readonly freshness: Freshness };
 
 export type SlotChange = { readonly slot: SlotRef; readonly id: DerivationId; readonly previousCurrent: DerivationId | null }
-  & ({ readonly kind: 'effective'; readonly freshness: Freshness } | { readonly kind: 'invalidated'; readonly reason: string } | TerminalFailure);
+  & ({ readonly kind: 'effective'; readonly freshness: Freshness }
+    | { readonly kind: 'invalidated'; readonly reason: string }
+    | (TerminalFailure & { readonly freshness: Freshness | null }));
 export type CandidateHooks = {
   /** Propagate the change, reconcile waits and register downstream demand using this transaction and tick. */
   readonly onSlotChanged: (tx: DbTransaction, tick: Tick, change: SlotChange) => void | Promise<void>;
@@ -217,7 +219,8 @@ async function closeWork(tx: DbTransaction, ref: WorkRef, state: 'satisfied' | '
 }
 
 function blockCandidate(
-  tx: DbTransaction, ref: WorkRef, change: Pick<SlotChange, 'id' | 'slot' | 'previousCurrent'>,
+  tx: DbTransaction, ref: WorkRef,
+  change: Pick<SlotChange, 'id' | 'slot' | 'previousCurrent'> & { readonly freshness: Freshness | null },
   failure: TerminalFailure, value: string | null, hooks: CandidateHooks,
 ): Promise<TerminalFailure> {
   return tx.withLearnerWrite(async tick => {
@@ -252,14 +255,15 @@ export function submitCandidate(
     const outcome = submissionSchema.parse(result);
     const slot = { learner: tx.learner, type: work.slotType, key: work.slotKey };
     const previousCurrent = work.current_id === null ? null : derivationId(work.current_id);
-    const change = { slot, id, previousCurrent };
+    const change = { slot, id, previousCurrent, freshness: checked.freshness };
     const previous = previousCurrent && await readCurrent(tx, slot, previousCurrent, policy.purpose);
     if (previousCurrent && previous?.kind === 'invalid') {
       return clearInvalidCurrent(tx, slot, previousCurrent, work, sealed, hooks);
     }
     if (outcome.kind === 'failed') return blockCandidate(tx, ref, change, outcome, null, hooks);
     if (previous?.kind === 'denied') {
-      return blockCandidate(tx, ref, change, { kind: 'rejected', reason: 'The selected value is unavailable for this purpose' }, null, hooks);
+      return blockCandidate(tx, ref, { ...change, freshness: null },
+        { kind: 'rejected', reason: 'The selected value is unavailable for this purpose' }, null, hooks);
     }
 
     const value = canonicalJsonString(outcome);
@@ -294,7 +298,7 @@ export function submitCandidate(
          WHERE learner_id = $1 AND slot_type = $2 AND slot_key = $3`,
         [tx.learner, slot.type, slot.key, id, tick],
       );
-      await hooks.onSlotChanged(tx, tick, { ...change, kind: 'effective', freshness: checked.freshness });
+      await hooks.onSlotChanged(tx, tick, { ...change, kind: 'effective' });
       if (commands.length) await hooks.adopt?.(tx, tick, id, commands);
       return { kind: 'effective', tick, freshness: checked.freshness };
     });

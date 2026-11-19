@@ -192,6 +192,25 @@ describe.skipIf(!connectionString)('Production propagation in PostgreSQL', () =>
       value: { kind: 'value', value: { text: '2026-11-17T00:00:00Z' } } });
   });
 
+  it.each(['failed', 'rejected'] as const)('queues new evidence after a %s sealed outcome', async kind => {
+    const target = mastery('K');
+    const work = await request(target);
+    const candidate = await seal(target, work, readRange);
+    const late = factId(newUlid());
+    await command('note.record', { id: late, text: 'new evidence' });
+    await publish(grade(late), readFact(late), await producer(grade(late)));
+    expect(await producer(target)).toMatchObject({ generation: work.generation, state: 'ready' });
+    const outcome = kind === 'failed' ? { kind, reason: 'compute failed' } : { kind: 'value', value: [] };
+    const policy = { ...candidatePolicy(target), slot: { type: target.type,
+      accept: () => ({ ok: false as const, reason: 'accept rejected' }) } };
+    expect(await submitCandidate(db, work, policy, candidate.id, outcome, hooks)).toMatchObject({ kind });
+    const catchUp = await producer(target);
+    expect(catchUp).toMatchObject({ generation: '2', state: 'ready' });
+    const result = await publish(target, readRange, catchUp);
+    expect(await ledger(result.id)).toMatchObject({ lifecycle: 'effective', freshness: 'current',
+      value: { kind: 'value', value: [{ kind: 'value', value: { text: 'new evidence' } }] } });
+  });
+
   it('catalogues lazy slots and promotes a published value without scheduling it again', async () => {
     await command('note.record', { id: promotion, text: 'answer' });
     const lazy = slot('note.lazy', promotion);
