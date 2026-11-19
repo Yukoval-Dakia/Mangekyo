@@ -16,8 +16,12 @@ export function SceneFigure({
   node,
   read,
   advance,
+  locks,
+  equivalents,
 }: {
   node: Scene;
+  equivalents: ReadonlySet<string>;
+  locks: ReadonlyMap<string, string>;
   read: (id: string) => Reading;
   advance: (id: string, objectId: string) => void;
 }) {
@@ -58,7 +62,11 @@ export function SceneFigure({
       }
       case 'stepTarget':
         return (
-          <g className="av-hotspot" onClick={() => advance(o.source, o.id)}>
+          <g
+            className="av-hotspot"
+            aria-disabled={locks.has(o.source)}
+            onClick={locks.has(o.source) ? undefined : () => advance(o.source, o.id)}
+          >
             <title>{o.label}</title>
             <circle cx={o.x} cy={o.y} r="11" />
             <path d={`M ${o.x - 5} ${o.y} h 10 M ${o.x} ${o.y - 5} v 10`} stroke="white" />
@@ -79,12 +87,15 @@ export function SceneFigure({
       <p>{node.description}</p>
       {node.objects
         .filter((o) => o.kind === 'stepTarget')
+        .filter((o) => !equivalents.has(o.id))
         .map((o) => (
           <button
             key={o.id}
             type="button"
             className="tonal-button"
-            disabled={read(o.source).index + 1 >= read(o.source).range.values.length}
+            disabled={
+              locks.has(o.source) || read(o.source).index + 1 >= read(o.source).range.values.length
+            }
             onClick={() => advance(o.source, o.id)}
           >
             {o.label}

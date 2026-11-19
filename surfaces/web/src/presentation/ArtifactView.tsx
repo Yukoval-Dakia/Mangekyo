@@ -4,16 +4,23 @@ import {
   type Interaction,
   type Answer,
   type Artifact,
+  operationLocks,
+  type ArtifactIntentV1,
+  type ArtifactMount,
+  type HostStateV1,
   type ArtifactAction,
   type ViewNode,
 } from '../../../shared/presentation/index.ts';
+import { requestId } from '../api.ts';
 import { SceneFigure, CurveFigure, type Reading } from './graphics.tsx';
 import { Asset, Audition, type ResolveAsset } from './media.tsx';
 import './artifact.css';
 
 export interface ArtifactViewProps {
   view: unknown;
-  onAction: (request: ArtifactAction) => void;
+  mount: ArtifactMount | null;
+  hostState?: HostStateV1 | undefined;
+  onAction: (request: ArtifactIntentV1) => void;
   resolveAsset?: ResolveAsset;
 }
 
@@ -22,28 +29,34 @@ function fallback(input: unknown) {
     input &&
     typeof input === 'object' &&
     'fallback' in input &&
-    typeof input.fallback === 'string' &&
-    input.fallback.trim()
-  )
-    return input.fallback.slice(0, 2048);
+    typeof input.fallback === 'string'
+  ) {
+    const text = input.fallback.slice(0, 2048);
+    if (text.trim()) return text;
+  }
   return '此版本暂时无法显示互动内容。';
 }
-export function ArtifactView({ view, onAction, resolveAsset }: ArtifactViewProps) {
-  const result = useMemo(() => validateArtifact(view), [view]);
-  const identity =
-    view &&
-    typeof view === 'object' &&
-    'id' in view &&
-    'revision' in view &&
-    typeof view.id === 'string' &&
-    typeof view.revision === 'string'
-      ? JSON.stringify([view.id, view.revision])
-      : '';
+export function ArtifactView({
+  view,
+  mount,
+  onAction,
+  resolveAsset,
+  hostState,
+}: ArtifactViewProps) {
+  if (
+    !mount ||
+    typeof mount.mountId !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,100}$/.test(mount.mountId) ||
+    !Number.isSafeInteger(mount.stateRev) ||
+    mount.stateRev < 0
+  )
+    return <p role="status">此活动当前不可用。</p>;
   return (
     <Revision
-      key={identity}
-      result={result}
-      alternative={fallback(view)}
+      key={mount.mountId}
+      view={view}
+      mount={mount}
+      hostState={hostState}
       onAction={onAction}
       resolve={resolveAsset}
     />
@@ -51,16 +64,19 @@ export function ArtifactView({ view, onAction, resolveAsset }: ArtifactViewProps
 }
 
 function Revision({
-  result,
-  alternative,
+  view,
+  mount,
+  hostState,
   onAction,
   resolve,
 }: {
-  result: ReturnType<typeof validateArtifact>;
-  alternative: string;
+  view: unknown;
+  mount: ArtifactMount;
+  hostState: HostStateV1 | undefined;
   onAction: ArtifactViewProps['onAction'];
   resolve: ResolveAsset | undefined;
 }) {
+  const result = useMemo(() => validateArtifact(view), [view]);
   // A malformed refresh of this revision must not unmount its local draft.
   const [previous, setPrevious] = useState<Artifact | null>(null);
   useEffect(() => {
@@ -71,15 +87,18 @@ function Revision({
     return (
       <section className="av-sheet" aria-label="活动文字版">
         <h2>活动文字版</h2>
-        <p>{alternative}</p>
+        <p>{fallback(view)}</p>
       </section>
     );
   return (
     <Editor
+      key={JSON.stringify([definition.id, definition.revision])}
+      mount={mount}
+      hostState={hostState}
       view={definition}
       onAction={onAction}
       resolve={resolve}
-      alternative={result.ok ? undefined : alternative}
+      alternative={result.ok ? undefined : definition.fallback}
     />
   );
 }
@@ -92,17 +111,30 @@ function initial(n: Control): Answer {
 }
 
 function Editor({
+  mount,
+  hostState,
   view,
   onAction,
   resolve,
   alternative,
 }: {
+  mount: ArtifactMount;
+  hostState: HostStateV1 | undefined;
   alternative: string | undefined;
   view: Artifact;
   onAction: ArtifactViewProps['onAction'];
   resolve: ResolveAsset | undefined;
 }) {
+  const locks = operationLocks(view, mount, hostState);
   const nodes = view.sections.flatMap((s) => s.nodes);
+  const equivalents = new Set(nodes.filter((n) => n.kind === 'stepControl').map((n) => n.target));
+  const stepTargets = new Map(
+    nodes.flatMap((n) =>
+      n.kind === 'scene'
+        ? n.objects.filter((o) => o.kind === 'stepTarget').map((o) => [o.id, o] as const)
+        : [],
+    ),
+  );
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const [answers, setAnswers] = useState<Record<string, Answer>>(() =>
     Object.fromEntries(
@@ -138,6 +170,7 @@ function Editor({
     }
   }
   function move(id: string, index: number, objectId?: string) {
+    if (locks.has(id)) return;
     const { range } = read(id);
     const value = range.values[Math.min(index, range.values.length - 1)]!;
     if (value === range.values[read(id).index]) return;
@@ -147,20 +180,27 @@ function Editor({
     update(id, { kind: 'quantity', value, unit: range.unit });
   }
   function dispatch(action: Extract<ViewNode, { kind: 'action' }>) {
+    if (locks.has(action.id)) return;
     for (const id of pending.current.keys()) settle(id);
     const allowed = new Set(action.inputs);
     const payload = Object.fromEntries(action.inputs.map((id) => [id, answers[id]!]));
     onAction({
       version: 1,
-      artifactId: view.id,
-      revision: view.revision,
-      nodeId: action.id,
-      intent: action.intent,
-      trace: {
-        omitted: trace.current.omitted,
-        steps: structuredClone(trace.current.steps.filter((step) => allowed.has(step.nodeId))),
+      requestId: requestId(),
+      mountId: mount.mountId,
+      baseStateRev: mount.stateRev,
+      action: {
+        version: 1,
+        artifactId: view.id,
+        revision: view.revision,
+        nodeId: action.id,
+        intent: action.intent,
+        trace: {
+          omitted: trace.current.omitted,
+          steps: structuredClone(trace.current.steps.filter((step) => allowed.has(step.nodeId))),
+        },
+        answers: structuredClone(payload),
       },
-      answers: structuredClone(payload),
     });
   }
   function render(n: ViewNode) {
@@ -180,9 +220,25 @@ function Editor({
           <SceneFigure
             node={n}
             read={read}
+            locks={locks}
+            equivalents={equivalents}
             advance={(id, objectId) => move(id, read(id).index + 1, objectId)}
           />
         );
+      case 'stepControl': {
+        const object = stepTargets.get(n.target)!;
+        const { range, index } = read(object.source);
+        return (
+          <button
+            type="button"
+            className="tonal-button"
+            disabled={locks.has(range.id) || index + 1 >= range.values.length}
+            onClick={() => move(range.id, index + 1, object.id)}
+          >
+            {n.label}
+          </button>
+        );
+      }
       case 'curve':
         return <CurveFigure node={n} reading={read(n.source)} />;
       case 'range': {
@@ -195,6 +251,7 @@ function Editor({
             </output>
             <input
               type="range"
+              disabled={locks.has(n.id)}
               min="0"
               max={n.values.length - 1}
               value={index}
@@ -287,7 +344,12 @@ function Editor({
         return <Asset id={n.assetId} label={n.label} media={n.media} resolve={resolve} />;
       case 'action':
         return (
-          <button type="button" className="primary-button" onClick={() => dispatch(n)}>
+          <button
+            type="button"
+            disabled={locks.has(n.id)}
+            className="primary-button"
+            onClick={() => dispatch(n)}
+          >
             {n.label}
           </button>
         );
@@ -332,6 +394,7 @@ function Editor({
             {s.nodes.map((n) => (
               <div key={n.id} data-node={n.id}>
                 {render(n)}
+                {locks.has(n.id) && <small>{locks.get(n.id)}</small>}
               </div>
             ))}
           </div>

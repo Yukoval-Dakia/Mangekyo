@@ -1,3 +1,4 @@
+import { artifactLimits } from '../../../shared/presentation/budget.ts';
 import { useEffect, useRef, useState } from 'react';
 export type ResolveAsset = (assetId: string) => Blob | null | Promise<Blob | null>;
 const accepted = {
@@ -26,7 +27,7 @@ export function Asset({
         if (
           active &&
           blob instanceof Blob &&
-          blob.size <= 16 * 1024 * 1024 &&
+          blob.size <= artifactLimits.bytesPerAsset &&
           accepted[media].includes(blob.type)
         ) {
           owned = URL.createObjectURL(blob);

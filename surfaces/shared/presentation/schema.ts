@@ -72,7 +72,10 @@ export function checkShape(schema: Schema, value: unknown, path: string): string
       if (!Object.hasOwn(schema.properties, key)) return invalid('unexpected property ' + key);
     }
     for (const [key, field] of Object.entries(schema.properties)) {
-      if (!Object.hasOwn(value, key)) return invalid('missing ' + key);
+      if (!Object.hasOwn(value, key)) {
+        if (schema.required?.includes(key)) return invalid('missing ' + key);
+        continue;
+      }
       const error = checkShape(field, value[key], path + '.' + key);
       if (error) return error;
     }

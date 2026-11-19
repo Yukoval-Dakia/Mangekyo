@@ -1,6 +1,8 @@
 import { artifactSchema, type Artifact, type Drawing, type ViewNode } from './catalog.ts';
+import { checkBudget } from './budget.ts';
 import { checkShape } from './schema.ts';
 export * from './catalog.ts';
+export * from './mount.ts';
 
 export type Answer =
   | { kind: 'quantity'; value: number; unit: string }
@@ -29,6 +31,11 @@ function samples(shape: Drawing) {
 function checkBindings(view: Artifact): string | undefined {
   const nodes = view.sections.flatMap((section) => section.nodes);
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const stepTargets = new Set(
+    nodes.flatMap((n) =>
+      n.kind === 'scene' ? n.objects.filter((o) => o.kind === 'stepTarget').map((o) => o.id) : [],
+    ),
+  );
   const seen = new Set<string>();
   const ids = [
     ...view.sections,
@@ -46,12 +53,33 @@ function checkBindings(view: Artifact): string | undefined {
     if (seen.has(id)) return 'duplicate ID ' + id;
     seen.add(id);
   }
+  if (view.interaction) {
+    const { inputs, operations } = view.interaction;
+    const domains = new Map(inputs.map((input) => [input.id, new Set(input.values)]));
+    if (
+      domains.size !== inputs.length ||
+      inputs.some((input) => domains.get(input.id)!.size !== input.values.length)
+    )
+      return 'duplicate host input or state value';
+    const targets = new Set<string>();
+    for (const op of operations) {
+      const kind = byId.get(op.target)?.kind;
+      if (
+        (kind !== 'range' && kind !== 'action') ||
+        targets.has(op.target) ||
+        !domains.get(op.input)?.has(op.equals)
+      )
+        return 'invalid gated operation ' + op.target;
+      targets.add(op.target);
+    }
+  }
   function range(source: string, length?: number) {
     const n = byId.get(source);
     return n?.kind === 'range' && (length === undefined || n.values.length === length);
   }
   for (const n of nodes) {
     let valid = true;
+    if (n.kind === 'stepControl') valid = stepTargets.has(n.target);
     if (n.kind === 'range')
       valid =
         Number.isInteger(n.initial) &&
@@ -100,7 +128,7 @@ function checkBindings(view: Artifact): string | undefined {
 export function validateArtifact(
   input: unknown,
 ): { ok: true; view: Artifact } | { ok: false; error: string } {
-  const error = checkShape(artifactSchema, input, 'view');
+  const error = checkBudget(input) ?? checkShape(artifactSchema, input, 'view');
   if (error) return { ok: false, error };
   const view = input as Artifact;
   const binding = checkBindings(view);

@@ -177,3 +177,7 @@
     margin: 0;
   }
 }
+.av-hotspot[aria-disabled='true'] {
+  fill: var(--muted);
+  cursor: default;
+}

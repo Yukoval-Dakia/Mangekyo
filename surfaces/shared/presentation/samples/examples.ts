@@ -241,3 +241,75 @@ export const rhythm: Artifact = {
     },
   ],
 };
+
+// Issued prediction phase has no curve samples or solution assets in its payload.
+export const predictionLab: Artifact = {
+  ...titration,
+  id: 'predict-titration',
+  revision: 'r1',
+  title: '预测跃变，再开阀验证',
+  interaction: {
+    version: 1,
+    logic: { id: 'prediction-phase', revision: 'r1' },
+    inputs: [{ id: 'phase', values: ['predict', 'experiment'] }],
+    operations: [
+      {
+        target: 'volume',
+        input: 'phase',
+        equals: 'experiment',
+        unavailable: '宿主确认预测后可开阀。',
+      },
+      {
+        target: 'keep-reading',
+        input: 'phase',
+        equals: 'experiment',
+        unavailable: '开阀实验后可记录观察。',
+      },
+      {
+        target: 'submit-prediction',
+        input: 'phase',
+        equals: 'predict',
+        unavailable: '本次预测已交。',
+      },
+    ],
+  },
+  sections: [
+    {
+      id: 'prediction',
+      title: '实验前预测',
+      layout: 'stack',
+      nodes: [
+        { kind: 'note', id: 'estimate', label: '预测加入多少毫升时 pH 变化最快？' },
+        {
+          kind: 'action',
+          id: 'submit-prediction',
+          label: '提交预测',
+          intent: 'submit',
+          inputs: ['estimate'],
+        },
+      ],
+    },
+    ...titration.sections.map((section) => ({
+      ...section,
+      nodes: section.nodes.filter((n) => n.kind !== 'curve'),
+    })),
+    {
+      id: 'manual',
+      title: '器材操作',
+      layout: 'stack',
+      nodes: [
+        { kind: 'stepControl', id: 'valve-control', target: 'valve', label: '打开阀门，加入 1 mL' },
+      ],
+    },
+  ],
+};
+
+// The fixture host can deliver the approved curve in its next projection.
+export const openedPredictionLab: Artifact = {
+  ...predictionLab,
+  sections: predictionLab.sections.map((section) =>
+    section.id === 'bench'
+      ? { ...section, nodes: titration.sections.find((s) => s.id === 'bench')!.nodes }
+      : section,
+  ),
+};
