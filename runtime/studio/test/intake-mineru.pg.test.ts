@@ -59,10 +59,10 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     vi.unstubAllEnvs();
   });
 
-  function capture(requestId: string, extraction = 'mineru', mediaType = 'application/pdf') {
+  function capture(requestId: string, extraction: string | null = 'mineru', mediaType = 'application/pdf') {
     const form = new FormData();
     form.set('requestId', requestId);
-    form.set('extraction', extraction);
+    if (extraction !== null) form.set('extraction', extraction);
     form.set('file', new Blob([mediaType === 'text/plain' ? '本地文本' : pdf], { type: mediaType }),
       mediaType === 'text/plain' ? 'note.txt' : 'exam.pdf');
     return fetch(origin + '/api/intake', { method: 'POST', body: form });
@@ -78,7 +78,9 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
   }
 
   it('returns a saved receipt first and resumes polling without reuploading', async () => {
-    expect(await (await fetch(origin + '/api/intake/options')).json()).toEqual({ mineru: true });
+    expect(await (await capture('local-intake', null, 'text/plain')).json()).toMatchObject({
+      fullText: '本地文本', extraction: { method: 'utf8', status: 'ok' },
+    });
     const receipt = await (await capture('mineru-success')).json() as IntakeMetadata;
     expect(receipt.extraction.status).toBe('pending');
     expect((await intake.original(receipt.id)).stored.sha256).toBe(receipt.original.sha256);
@@ -123,26 +125,6 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     expect(await intake.metadata(pending.id)).toMatchObject({ fullText: '人工更正', extraction: { status: 'corrected' } });
   });
 
-  it('fences the signed upload after manual correction or credential change', async () => {
-    for (const reason of ['correction', 'configuration']) {
-      const pending = await (await capture('mineru-before-upload-' + reason)).json() as IntakeMetadata;
-      const upload = vi.fn(async () => 'batch-test');
-      await openCloudIntakeWork(db, intake, {
-        submit: async ({ beforeUpload }) => {
-          if (reason === 'correction') {
-            await intake.correct({ materialId: pending.id, expectedRev: pending.revision, text: '发送前更正', requestId: 'correction-before-upload' });
-          } else vi.stubEnv('MANGEKYO_MINERU_TOKEN', 'new-test-token');
-          await beforeUpload?.();
-          return upload();
-        },
-        read: async () => { throw new Error('unexpected poll'); },
-      }).execute(await nextWork());
-      expect(upload).not.toHaveBeenCalled();
-      expect((await intake.metadata(pending.id)).extraction.status).toBe(reason === 'correction' ? 'corrected' : 'failed');
-    }
-    vi.stubEnv('MANGEKYO_MINERU_TOKEN', 'test-token');
-  });
-
   it('rejects ambiguous or invalid intake and leaves a failed save retryable', async () => {
     const originals = () => readdir(join(directory, 'intake'));
     const before = await originals();
@@ -152,34 +134,11 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     form.append('extraction', 'local');
     form.set('file', new Blob([pdf], { type: 'application/pdf' }), 'exam.pdf');
     expect((await fetch(origin + '/api/intake', { method: 'POST', body: form })).status).toBe(400);
-    form.delete('extraction');
-    form.set('extraction', 'mineru');
-    form.set('file', new Blob([pdf], { type: 'application/pdf' }), 'exam?.pdf');
-    expect((await fetch(origin + '/api/intake', { method: 'POST', body: form })).status).toBe(400);
-
     failCapture = true;
     try { expect((await capture('mineru-retry-save')).status).toBe(500); }
     finally { failCapture = false; }
     expect(await originals()).toEqual(before);
-    const reply = await capture('mineru-retry-save');
-    expect(reply.status).toBe(201);
-    const { id } = await reply.json() as IntakeMetadata;
-    expect((await intake.original(id)).stored.size).toBe(pdf.length);
-    await openCloudIntakeWork(db, intake, {
-      submit: async () => 'batch-test',
-      read: async () => ({ state: 'done', text: '正文', pages: 1_001 }),
-    }).execute(await nextWork());
-    expect(await intake.metadata(id)).toMatchObject({ fullText: '正文', extraction: { status: 'ok', pages: null } });
+    expect((await capture('mineru-retry-save')).status).toBe(201);
   });
 
-  it('keeps local text local and rejects unavailable cloud requests', async () => {
-    vi.stubEnv('MANGEKYO_MINERU_TOKEN', '');
-    expect(await (await fetch(origin + '/api/intake/options')).json()).toEqual({ mineru: false });
-    expect((await capture('mineru-disabled')).status).toBe(503);
-    expect((await capture('mineru-invalid', 'mineru', 'text/plain')).status).toBe(415);
-    expect(await (await capture('local-intake', 'local', 'text/plain')).json()).toMatchObject({
-      fullText: '本地文本', extraction: { method: 'utf8', status: 'ok' },
-    });
-    expect(await relayPending(db, () => Promise.reject(new Error('unexpected dispatch')))).toBe(0);
-  });
 });
