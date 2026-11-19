@@ -1,9 +1,11 @@
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { memoryValue } from '../../modules/companion/memory.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { routeMatchesInput } from './harness.ts';
 import { loadSettings } from './settings.ts';
@@ -19,8 +21,8 @@ export async function currentMemory(tx: ReadTransaction) {
     return { text: '', endpoint: '', providerId: 'default', protocol: 'openai', revision: 0 };
   }
 }
-export function openMemory(db: Db, module: LoadedModule) {
-  const handle = createCommandHandler(db, { modules: [module], hooks: { async onFactsChanged() {} } });
+export function openMemory(db: Db, module: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
+  const handle = createCommandHandler(db, { modules: [module], hooks });
   const read = () => db.snapshot({ learner: studioLearner }, currentMemory);
   return { read, async save(input: Record<string, unknown>) {
     const request = clientRequest(input.requestId);

@@ -1,4 +1,5 @@
 import type { Db } from '../../kernel/src/db/types.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
@@ -13,6 +14,7 @@ import {
   studyGoal,
   textMaterial,
 } from '../../modules/activity/library-values.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { readMaterialText } from './reading.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
@@ -25,11 +27,8 @@ function validate<Value>(parse: (input: unknown) => Value, input: unknown, messa
   }
 }
 
-export function openLibrary(db: Db, activity: LoadedModule) {
-  const handle = createCommandHandler(db, {
-    modules: [activity],
-    hooks: { async onFactsChanged() {} },
-  });
+export function openLibrary(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
+  const handle = createCommandHandler(db, { modules: [activity], hooks });
   async function write(type: string, requestId: string, input: Json) {
     try {
       return await handle({

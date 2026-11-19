@@ -28,6 +28,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import { sourceId, stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import {
   loadSettings,
   type ProviderProtocol,
@@ -521,7 +522,7 @@ export function saveWorkspaceAccessRoute(input: unknown) {
 export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
   const handle = createCommandHandler(db, {
     modules: [activity],
-    hooks: { async onFactsChanged() {} },
+    hooks: createStudioCommandHooks(),
   });
 
   async function providerList() {

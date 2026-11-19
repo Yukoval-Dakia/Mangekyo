@@ -1,3 +1,4 @@
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import {
   createCommandReadContext,
@@ -18,14 +19,12 @@ import {
   type PracticeInput,
   type PracticeView,
 } from '../../modules/activity/practice-values.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
-export function openPractice(db: Db, activity: LoadedModule) {
-  const handle = createCommandHandler(db, {
-    modules: [activity],
-    hooks: { async onFactsChanged() {} },
-  });
+export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
+  const handle = createCommandHandler(db, { modules: [activity], hooks });
 
   async function read(selected?: FactId): Promise<PracticeView> {
     return db.snapshot({ learner: studioLearner }, async (tx) => {

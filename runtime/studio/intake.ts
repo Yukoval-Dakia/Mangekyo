@@ -7,6 +7,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
@@ -24,6 +25,7 @@ import {
   intakeTextLimit,
   type IntakeMediaType,
 } from '../../modules/activity/intake-values.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
@@ -308,11 +310,8 @@ function intakeIdFor(materialId: FactId): FactId {
   return factId(stableId('intake-document', materialId));
 }
 
-export function openIntake(db: Db, activity: LoadedModule) {
-  const handle = createCommandHandler(db, {
-    modules: [activity],
-    hooks: { async onFactsChanged() {} },
-  });
+export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
+  const handle = createCommandHandler(db, { modules: [activity], hooks });
   const base = materialBase();
 
   async function factsFor(materialId: string) {

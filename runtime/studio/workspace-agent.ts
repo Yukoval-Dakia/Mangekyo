@@ -12,6 +12,7 @@ import {workspaceDefinitions} from '../../executors/teaching/workspace-tools.ts'
 import {workspaceSearch, workspaceRead} from './workspace-read.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
+import {createStudioCommandHooks} from './command-hooks.ts';
 
 export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string};
 type Seen = {id: string; title: string; text: string; workspace: true};
@@ -102,7 +103,7 @@ export function openWorkspaceTools(options: {
       basisById.set(w.id,{id:w.id,rev:w.rev,epoch:w.epoch});
     const basis = [...basisById.values()];
     const handle = createCommandHandler(db, {modules: [await (declarations ??= activity())],
-      hooks: {async onFactsChanged(tx) { await options.authorize(tx); }}});
+      hooks: createStudioCommandHooks({afterFactsChanged: tx => options.authorize(tx)})});
     const key = commandId(stableId('workspace-command',turn,String(step)));
     // Readiness is checked again while holding the command transaction's learner lock.
     await db.snapshot({learner: studioLearner}, options.authorize);

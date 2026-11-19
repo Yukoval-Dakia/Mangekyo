@@ -14,6 +14,7 @@ import { studyAttachment, studyMcpGrants, studyTurn } from '../../modules/activi
 import { readMaterialText } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import { loadSettings } from './settings.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import {
   stableId,
   sourceId,
@@ -161,10 +162,10 @@ export async function getSession(db: Db, session: string) {
 export async function openStudio(db: Db, activity: LoadedModule) {
   const handle = createCommandHandler(db, {
     modules: [activity],
-    hooks: {
-      async onFactsChanged(tx, tick, changes) {
+    hooks: createStudioCommandHooks({
+      async afterFactsChanged(tx, tick, changes) {
         for (const change of changes) {
-          if (change.factType !== 'activity.studyTurn') continue;
+          if (change.factType !== 'activity.studyTurn' || change.kind !== 'create') continue;
           const { id } = change.ref;
           await tx.insert('slot_state', {
             learner_id: tx.learner,
@@ -176,7 +177,7 @@ export async function openStudio(db: Db, activity: LoadedModule) {
           await requestWork(tx, tick, { slotType, slotKey: id, deriver: methodName });
         }
       },
-    },
+    }),
   });
   await db.query('INSERT INTO learners(id) VALUES($1) ON CONFLICT DO NOTHING', [studioLearner]);
   for (const studyCase of cases)

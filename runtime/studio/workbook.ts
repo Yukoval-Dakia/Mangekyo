@@ -6,7 +6,7 @@ import {
   FactNotFoundError,
   FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
-import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, derivationId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -52,6 +52,7 @@ import {
   type WorkbookSourceView,
   type WorkbookSummary,
 } from '../../modules/activity/workbook-values.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
@@ -240,9 +241,10 @@ function sameDraft(paper: WorkbookPaper, draft: WorkbookDraft): boolean {
 }
 
 export function openWorkbook(db: Db, activity: LoadedModule) {
+  const hooks = createStudioCommandHooks();
   const handle = createCommandHandler(db, {
     modules: [activity],
-    hooks: { async onFactsChanged() {} },
+    hooks,
   });
 
   async function get(id: string): Promise<WorkbookDetail> {
@@ -627,7 +629,7 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
         const latest = (await allAssessments(tx, paperId, selected.assessmentId)).get(attemptId)?.[0];
         if (latest?.id !== prior?.id) return;
         await tx.withLearnerWrite(async tick => {
-          const id = stableId('rubric-result', selected.assessmentId, generation, request.requestId);
+          const id = derivationId(stableId('rubric-result', selected.assessmentId, generation, request.requestId));
           if (prior) await tx.query("UPDATE derivations SET lifecycle='superseded',selection_ended_tick=$3 WHERE learner_id=$1 AND id=$2", [tx.learner,prior.id,tick]);
           await tx.insert('derivations', {
             learner_id: tx.learner, id, slot_type: workbookRubricAssessmentType, slot_key: selected.assessmentId,
@@ -639,6 +641,13 @@ export function openWorkbook(db: Db, activity: LoadedModule) {
             VALUES ($1,$2,$3,$4,$4,$5,$6) ON CONFLICT (learner_id,slot_type,slot_key)
             DO UPDATE SET current_id=EXCLUDED.current_id,last_id=EXCLUDED.last_id,changed_tick=EXCLUDED.changed_tick`,
             [tx.learner,workbookRubricAssessmentType,selected.assessmentId,id,tick,JSON.stringify({paperId,attemptId})]);
+          await hooks.onSlotChanged(tx, tick, {
+            kind: 'effective',
+            slot: { learner: tx.learner, type: workbookRubricAssessmentType, key: selected.assessmentId },
+            id,
+            previousCurrent: prior ? derivationId(prior.id) : null,
+            freshness: 'current',
+          });
         });
       });
       return get(paperId);
