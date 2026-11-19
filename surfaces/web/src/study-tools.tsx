@@ -2,37 +2,60 @@ import type {Settings} from './api';
 import {selectedRoute} from './model-route';
 import { useRef, useState } from 'react';
 import { api, ApiError, requestId, type Turn } from './api';
+import { RecallCards, type RecallTransport } from './recall-cards';
 import { ReadState, useResource } from './workspace';
 
-type Kit = NonNullable<Turn['studyKit']>;
+type Kit = NonNullable<Turn['recall']>;
 type Discuss = (question: string, answer: string) => void;
 
-function RecallCard({question, number, discuss}: {question: Kit['questions'][number]; number: number; discuss?: Discuss | undefined}) {
-  const [answer, setAnswer] = useState('');
-  return <article className="recall-card">
-    <label className="field"><span>{number}. {question.prompt}</span>
-      <input value={answer} maxLength={1000} onChange={event => setAnswer(event.target.value)} placeholder="先试着用自己的话回答" /></label>
-    <div className="study-actions">
-      <details><summary>核对参考答案</summary><p>{question.answer}</p></details>
-      {discuss && <button type="button" className="text-button" disabled={!answer.trim()} onClick={() => discuss(question.prompt, answer.trim())}>带着我的回答追问</button>}
-    </div>
-  </article>;
+function recallTransport(sessionId: string): RecallTransport {
+  const path = '/sessions/' + encodeURIComponent(sessionId) + '/recall/';
+  return {
+    readState: ({ mount }) => api(path + 'state?' + new URLSearchParams(mount)),
+    submit: body => api(path + 'submit', { method: 'POST', body }),
+    async requestReveal(body) {
+      const response = await fetch('/api' + path + 'reveal', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const token = response.headers.get('x-recall-display-token');
+      if (!response.ok || !token) throw new Error('无法获取揭示回执。');
+      return { ...await response.json(), token, requestId: body.requestId };
+    },
+    async confirmDisplay({ mount, grant }) {
+      const response = await fetch('/api' + path + 'display', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-recall-display-token': grant.token },
+        body: JSON.stringify({ mount, revealId: grant.revealId, requestId: grant.requestId, observed: 'mounted-visible' }),
+      });
+      if (!response.ok) throw new Error('无法确认显示。');
+      return response.json();
+    },
+  };
 }
 
-export function StudyCards({ kit, materialId, discuss }: { kit: Kit; materialId?: string | undefined; discuss?: Discuss | undefined }) {
+export function StudyCards({ kit, sessionId, materialId, discuss }: {
+  kit: Kit; sessionId: string; materialId?: string | undefined; discuss?: Discuss | undefined;
+}) {
   const [problem, setProblem] = useState('');
   const [saving, setSaving] = useState(false);
-  function editPaper() {
+  const transport = recallTransport(sessionId);
+  // Export includes solutions only when the learner explicitly chooses that action.
+  const questions = () => Promise.all(kit.items.map(async ({ turnId, derivationId, itemId, prompt }) => {
+    const grant = await transport.requestReveal({ mount: { turnId, derivationId, itemId }, requestId: requestId() });
+    return { prompt, answer: grant.reference, rubric: grant.rubric };
+  }));
+  async function editPaper() {
+    if (saving) return;
+    setSaving(true);
     try {
-      sessionStorage.setItem('mangekyo:paper-proposal', JSON.stringify({ ...kit, materialId }));
+      sessionStorage.setItem('mangekyo:paper-proposal', JSON.stringify({ title: kit.title, questions: await questions(), materialId }));
       location.assign('/papers/new?proposal=1');
-    } catch { setProblem('浏览器暂时无法保留草稿。你仍可在这次对话中查看讲义和题目。'); }
+    } catch { setSaving(false); setProblem('浏览器暂时无法保留草稿。你仍可在这次对话中查看讲义和题目。'); }
   }
   async function saveNote() {
     if (saving) return;
     setSaving(true);
     try {
-      const markdown = [kit.lesson, ...kit.questions.map((q, i) => (i + 1) + '. ' + q.prompt + '\n\n' + q.answer)].join('\n\n');
+      const markdown = [kit.lesson, ...(await questions()).map((q, i) => (i + 1) + '. ' + q.prompt + '\n\n' + q.answer)].join('\n\n');
       const payload = { title: kit.title, markdown, materialId: materialId ?? null };
       const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(location.search + JSON.stringify(payload)));
       const key = Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('');
@@ -41,12 +64,11 @@ export function StudyCards({ kit, materialId, discuss }: { kit: Kit; materialId?
     } catch { setSaving(false); setProblem('保存结果暂时无法确认，可以在这里重试。'); }
   }
   return <section className="study-cards" aria-label="同伴准备的练习">
-    <h3>{kit.title}</h3>
-    <p>先自己回答，再展开核对。可以把这些题编辑成一份单独作答的小卷。</p>
-    {kit.questions.map((q, index) => <RecallCard key={q.prompt} question={q} number={index+1} discuss={discuss} />)}
+    <RecallCards title={kit.title} items={kit.items} scope={sessionId} transport={transport}
+      {...discuss && { onDiscuss: ({ prompt, answer }) => discuss(prompt, answer) }} />
     <div className="study-actions">
-      <button className="primary-button" onClick={editPaper}>编辑并收进题库</button>
-      <button className="tonal-button" disabled={saving} onClick={() => void saveNote()}>保存为笔记</button>
+      <button className="primary-button" disabled={saving} onClick={() => void editPaper()}>含参考答案编辑小卷</button>
+      <button className="tonal-button" disabled={saving} onClick={() => void saveNote()}>含参考答案保存为笔记</button>
     </div>
     {problem && <p role="alert">{problem}</p>}
   </section>;

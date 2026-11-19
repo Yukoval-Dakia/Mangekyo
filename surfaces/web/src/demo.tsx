@@ -54,13 +54,14 @@ function Question({ teachingCase }: { teachingCase: TeachingCase }) {
   );
 }
 
-export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, materialId, discuss }: {
+export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, sessionId, materialId, discuss }: {
   turn?: Turn | undefined;
   answer?: string | undefined;
   message?: string | undefined;
   progress?: string | undefined;
   mounts?: ArtifactSnapshotV1[] | undefined;
   applySnapshot?: ApplySnapshot;
+  sessionId?: string | undefined;
   materialId?: string | undefined;
   discuss?: ((question: string, answer: string) => void) | undefined;
 }) {
@@ -86,7 +87,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
           <li key={item.id}><a href={'/materials/records/' + item.id}>{item.title}</a> · 第 {item.rev} 版</li>
         )}</ul>}
 
-          {turn.studyKit && <StudyCards kit={turn.studyKit} materialId={materialId} discuss={discuss} />}
+          {turn.recall && sessionId && <StudyCards kit={turn.recall} sessionId={sessionId} materialId={materialId} discuss={discuss} />}
           <details className="evidence">
             <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
             <div className="evidence-content">
@@ -168,7 +169,7 @@ function Conversation({ teachingCase, active, settings, needsSetup, openSettings
           {(session || invalidated) && <button type="button" className="tonal-button" disabled={!settings || waiting || Boolean(retryOperation)} onClick={() => conversation.start(undefined, undefined, undefined, settings)}><Icon name="plus" /> 新对话</button>}
         </header>
         <div className="feed" ref={feed} role="region" aria-label="对话记录" tabIndex={0}>
-          {turns.length > 0 && <ol className="turns">{turns.map((turn, index) => <TeachingTurn turn={turn} key={turn.turnId ?? index} mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={conversation.applySnapshot} />)}</ol>}
+          {turns.length > 0 && <ol className="turns">{turns.map((turn, index) => <TeachingTurn turn={turn} sessionId={session?.id} key={turn.turnId ?? index} mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={conversation.applySnapshot} />)}</ol>}
           {pendingAnswer && <div className="learner-message pending-answer"><span>你的作答</span><p>{pendingAnswer}</p></div>}
           {!sessionId && !waiting && !problem && (
             <div className="start-state">

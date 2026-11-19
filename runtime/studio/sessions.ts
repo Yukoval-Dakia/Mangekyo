@@ -1,6 +1,6 @@
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { factId, commandId } from '../../kernel/src/declarations/ids.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
@@ -13,6 +13,7 @@ import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChec
 import { studyAttachment, studyMcpGrants, studyTurn } from '../../modules/activity/values.ts';
 import { readMaterialText } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
+import type { RecallHttp } from './recall-http.ts';
 import { loadSettings } from './settings.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
@@ -89,6 +90,7 @@ type TurnView = {
   id: string;
   submission: ReturnType<typeof studyTurn>;
   feedback: DisplayTurn | null;
+  derivationId: string | null;
   status: Status;
   error?: string;
 };
@@ -96,11 +98,12 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
   const { rows } = await tx.query<{
     id: string;
     value: DisplayTurn | null;
+    derivationId: string | null;
     manifest: unknown;
     settled: boolean;
     error: { status: Status; message: string } | null;
   }>(
-    `SELECT f.id, d.value, d.manifest, s.last_id IS NOT NULL AS settled, s.last_error AS error FROM facts f
+    `SELECT f.id, d.value, d.id AS "derivationId", d.manifest, s.last_id IS NOT NULL AS settled, s.last_error AS error FROM facts f
      JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
      LEFT JOIN slot_state s ON s.learner_id=f.learner_id AND s.slot_type=$3 AND s.slot_key=f.id
      LEFT JOIN derivations d ON d.learner_id=f.learner_id AND d.id=s.current_id
@@ -111,7 +114,13 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
   const result: TurnView[] = [];
   const grantCurrent = workspaceGrantChecker();
   for (const row of rows) {
-    const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' });
+    const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' })
+      .catch((error: unknown) => {
+        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) {
+          throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
+        }
+        throw error;
+      });
     const submission = studyTurn(snapshot.value);
     let feedback = row.value;
     if (feedback && (!await grantCurrent(submission) ||
@@ -122,6 +131,7 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
       id: row.id,
       submission,
       feedback,
+      derivationId: row.derivationId,
       status: row.error?.status ?? (feedback ? 'ready' : 'pending'),
       ...(row.error ? { error: row.error.message } : {}),
     });
@@ -152,8 +162,8 @@ export function recentConversations(db: Db) {
     return result;
   });
 }
-export async function getSession(db: Db, session: string) {
-  return db.snapshot({learner:studioLearner},async tx => {
+export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project']) {
+  const { turns, ...view } = await db.snapshot({ learner: studioLearner }, async tx => {
     const timeline = await history(tx, session);
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
@@ -165,16 +175,29 @@ export async function getSession(db: Db, session: string) {
       status: last.status,
       ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
       ...(last.error ? { error: last.error } : {}),
-      ...(last.status === 'pending' ? {artifacts:await turnArtifacts(tx,session,last.id)} : {}),
-      turns: (await Promise.all(timeline.map(async (row) =>
-        row.feedback
-          ? [{ ...row.feedback, turnId:row.id, artifacts:await turnArtifacts(tx,session,row.id), ...(row.submission.answer ? { answer: row.submission.answer } : {}) }]
-          : [],
-      ))).flat(),
+      ...(last.status === 'pending' ? { artifacts: await turnArtifacts(tx, session, last.id) } : {}),
+      turns: await Promise.all(timeline.filter(row => row.feedback).map(async row => ({
+        row, artifacts: await turnArtifacts(tx, session, row.id),
+      }))),
     };
   });
+  const projected = [];
+  for (const { row, artifacts } of turns) {
+    if (!row.feedback) continue;
+    const { studyKit, ...feedback } = row.feedback;
+    const recall = row.derivationId && studyKit
+      ? await projectRecall?.(session, row.id, row.derivationId, studyKit)
+      : undefined;
+    projected.push({
+      ...feedback, turnId: row.id, artifacts,
+      ...(studyKit === undefined ? {} : { message: recall?.lesson ?? '' }),
+      ...(recall ? { recall } : {}),
+      ...(row.submission.answer ? { answer: row.submission.answer } : {}),
+    });
+  }
+  return { ...view, turns: projected };
 }
-export async function openStudio(db: Db, activity: LoadedModule) {
+export async function openStudio(db: Db, activity: LoadedModule, { projectRecall }: { projectRecall?: RecallHttp['project'] } = {}) {
   const handle = createCommandHandler(db, {
     modules: [activity],
     hooks: createStudioCommandHooks({
@@ -252,7 +275,7 @@ export async function openStudio(db: Db, activity: LoadedModule) {
       type: 'activity.submitTurn',
       input: { id, data },
     });
-    return getSession(db, session);
+    return getSession(db, session, projectRecall);
   }
   async function replay(
     req: string,
@@ -285,7 +308,7 @@ export async function openStudio(db: Db, activity: LoadedModule) {
     ) {
       throw new RequestError(409, '同一个提交标识已经用于不同内容。');
     }
-    return getSession(db, session);
+    return getSession(db, session, projectRecall);
   }
   function requestedGrants(value: unknown) {
     try { return studyMcpGrants(value); }

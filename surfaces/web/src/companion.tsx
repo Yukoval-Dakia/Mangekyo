@@ -154,7 +154,7 @@ function ChatRoom({
             <ol className="turns chat-thread">
               {[
                 ...(session?.turns ?? []).map((turn, i) =>
-                  <TeachingTurn key={turn.turnId ?? i} turn={turn} materialId={shared?.id}
+                  <TeachingTurn key={turn.turnId ?? i} turn={turn} sessionId={session?.id} materialId={shared?.id}
                     mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={chat.applySnapshot}
                     discuss={pending || unavailable ? undefined : (question, answer) => {
                       chat.editDraft('题目：' + question + '\n我的回答：' + answer + '\n请根据我的回答指出下一步。');

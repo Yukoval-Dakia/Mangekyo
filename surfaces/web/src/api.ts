@@ -80,7 +80,7 @@ export interface Turn {
   artifacts?: unknown;
   trace?: string[];
   writes?: {id:string; rev:number; title:string}[];
-  studyKit?: { title: string; lesson: string; questions: { prompt: string; answer: string; rubric?: string }[] };
+  recall?: { title: string; lesson: string; items: import('./recall-cards').RecallItem[] };
   answer?: string;
   action: "diagnostic_question" | "transfer_question" | "targeted_explanation" | "clarifying_question" | "companion_reply";
   rationale: string;

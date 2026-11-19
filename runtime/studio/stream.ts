@@ -13,6 +13,8 @@ import type { TeachingProgress } from '../../executors/teaching/index.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
 import { RequestError, unavailableReplyMessage } from './sessions.ts';
 import { workspaceGrantChecker } from './harness.ts';
+import type { RecallHttp } from './recall-http.ts';
+import { RecallRequestError } from './recall.ts';
 
 import {turnArtifacts} from './presentation-store.ts';
 
@@ -159,8 +161,11 @@ async function readSessionEvent(db: Db, sessionId: string) {
   return db.snapshot({ learner: studioLearner }, async (tx) => {
     const { rows: [row] } = await tx.query<{
       turnId: string;
+      derivationId: string | null;
       message: string | null;
       settled: boolean;
+      studyKit: unknown;
+      hasStudyKit: boolean | null;
       status: 'failed' | 'unknown' | null;
       manifest: unknown;
       phase: Phase | null;
@@ -168,7 +173,8 @@ async function readSessionEvent(db: Db, sessionId: string) {
       draft: string | null;
       draftManifest: unknown;
     }>(
-      `SELECT f.id AS "turnId", d.value->>'message' AS message, s.last_id IS NOT NULL AS settled, s.last_error->>'status' AS status,
+      `SELECT f.id AS "turnId", d.id AS "derivationId", d.value->>'message' AS message,
+              d.value->'studyKit' AS "studyKit", d.value ? 'studyKit' AS "hasStudyKit", s.last_id IS NOT NULL AS settled, s.last_error->>'status' AS status,
               d.manifest, p.phase, p.revision, p.message AS draft, p.manifest AS "draftManifest"
        FROM facts f
        JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
@@ -195,7 +201,10 @@ async function readSessionEvent(db: Db, sessionId: string) {
     if (invalid && status === 'pending') {
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     }
-    if (status === 'ready' && (invalid || row.message === null)) row.message = unavailableReplyMessage;
+    if (status === 'ready' && (invalid || row.message === null)) {
+      row.message = unavailableReplyMessage;
+      row.hasStudyKit = false;
+    }
     const session: StreamSession = {
       id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status,
       ...(status !== 'ready' && submission.answer ? { pendingAnswer: submission.answer } : {}),
@@ -204,7 +213,9 @@ async function readSessionEvent(db: Db, sessionId: string) {
   });
 }
 
-export async function serveSessionEvents(db: Db, sessionId: string, _req: IncomingMessage, res: ServerResponse) {
+export async function serveSessionEvents(
+  db: Db, sessionId: string, _req: IncomingMessage, res: ServerResponse, projectRecall: RecallHttp['project'],
+) {
   const subscribers = subscriptions.get(db);
   if (res.destroyed) return;
   if (!subscribers) {
@@ -250,8 +261,14 @@ export async function serveSessionEvents(db: Db, sessionId: string, _req: Incomi
         if (dirty) continue;
         const { currentTurnId, status } = session;
         if (status !== 'pending') {
-          const message = status === 'ready' ? row.message : undefined;
-          res.end(event('complete', currentTurnId + ':' + status, { session, ...(message ? { message } : {}) }));
+          const recall = status === 'ready' && row.derivationId && row.hasStudyKit
+            ? await projectRecall(sessionId, currentTurnId, row.derivationId, row.studyKit) : undefined;
+          if (closed) return;
+          if (dirty) continue;
+          const message = status === 'ready' ? recall?.lesson ?? row.message : undefined;
+          res.end(event('complete', currentTurnId + ':' + status, {
+            session, ...(message ? { message } : {}), ...(recall ? { recall } : {}),
+          }));
           return;
         }
         const eventId = [currentTurnId,row.revision ?? 0,...artifacts.map(a => a.mountId+'-'+a.viewSeq)].join(':');
@@ -273,7 +290,7 @@ export async function serveSessionEvents(db: Db, sessionId: string, _req: Incomi
       }
     } catch (error) {
       if (closed) return;
-      if (error instanceof RequestError && (error.status === 404 || error.status === 409)) {
+      if ((error instanceof RequestError || error instanceof RecallRequestError) && [403, 404, 409].includes(error.status)) {
         res.end(event('session-error', undefined, { status: error.status }));
       } else {
         // Dropping the stream makes EventSource reconnect and reload a fresh snapshot.
