@@ -117,12 +117,17 @@ export function openCloudIntakeWork(db: Db, intake: {
         learner: ref.learner, ownerKind: 'session', ownerId: dataId, stepKey: ref.generation, label: 'intake-mineru',
         input: { mediaType: original.mediaType, sha256: original.sha256, revision: original.document.ref.rev },
       }, async () => {
-        const bytes = await intake.cloudOriginal(original.material.ref.id, original.sha256);
+        const bytes = await intake.cloudOriginal(original.material.ref.id, original.sha256).catch(() => null);
+        if (bytes === null) return null;
         await db.snapshot(scope, authorize);
         return client.submit({ token, dataId, bytes, mediaType: original.mediaType, signal: AbortSignal.timeout(60_000) });
       }, authorize);
       if (submission.kind === 'unknown') {
         await publish(failure('无法确认 MinerU 是否收到原件，已停止自动重传。你可以查看原件或手动更正。'));
+        return;
+      }
+      if (submission.result === null) {
+        await publish(failure('本地原件无法读取，未发送给 MinerU。'));
         return;
       }
       if (typeof submission.result !== 'string') throw new Error('Invalid OCR submission receipt');
