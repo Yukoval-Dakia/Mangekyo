@@ -114,8 +114,10 @@
 
 ### 单元 12：会话宿主
 
+按[主 Agent 记忆与工具升级](design/always-doing-and-agent-tools.md#3-主-agent-的记忆装配与写入边界)接入 Memory Gateway、意图预算与统一 Digest。工具 P1–P5 的切分与合入顺序见[开发与合入顺序](design/always-doing-and-agent-tools.md#5-开发与合入顺序)。
+
 - **[契约] 依赖：** 11、17、40；开工前独立设计评审。
-- **产出：** [会话宿主与学习工具](design/agent-harness-and-tools.md)定义完整会话的工作单、回合内输入、上下文、执行、交付及全部学习数据的读取与操作。采用 [Pi Agent Core 与 Pi AI](adr/0010-pi-agent-sdk.md)，工具从命令和槽位生成，Temporal 唯一负责执行恢复。Python 能力经受控计算接入，按需评估 Pydantic AI。
+- **产出：** [会话宿主与学习工具](design/agent-harness-and-tools.md)定义完整会话的工作单、回合内输入、上下文、执行、交付及全部学习数据的读取与操作。由 [Pi Agent Core 与 Pi AI](adr/0010-pi-agent-sdk.md) 承接采样与工具批次，工具从命令和槽位生成。Temporal 唯一负责执行恢复。Python 能力经受控计算接入，按需评估 Pydantic AI。
 - **验收：** 真实多步工具会话中断后由新 Worker 恢复，动态读取记入依据，已确认写入和收费结果复用。核对学生中途更正进入下一次采样，混合正文和回执重开可见，越界、撤权和外部效果未知有准确状态。工具从正常学生入口可查找并操作实际对象。[贯通验收](design/agent-harness-and-tools.md#6-实施衔接与验收)
 
 ### 单元 15：预测、对账与证据视图
@@ -125,6 +127,8 @@
 - **验收：** §2.5：先留预测，后独立提交，再展示预测与结果；未知有依据，可选探测活动真的可做。重放拟合不混入事前预测记录。
 
 ### 单元 14：常驻同伴与后台教研
+
+按[Always-Doing 分层编排](design/always-doing-and-agent-tools.md)衔接已合入的 Temporal 协调器。首批先通 PG Todo、前哨派发、执行回执与真实学习产物，再接快照、轻量分诊和黄金样例。
 
 按[四级自治与自研遗忘](design/autonomy-and-forgetting.md)交付「今天」与后台整理。日常结果直接可用，本人已编辑页的建议仅在该页呈现。真实后测与候选保持模型对照分别验收。
 
