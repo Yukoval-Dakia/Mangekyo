@@ -2,7 +2,7 @@ import {loadWorkspaceAccessRoutes} from './workspace-access.ts';
 import { createHash } from 'node:crypto';
 import { TeachingError } from '../../executors/teaching/provider.ts';
 import type { studyTurn, studyMcpGrants } from '../../modules/activity/values.ts';
-import type { loadSettings } from './settings.ts';
+import { loadSettings } from './settings.ts';
 
 type Settings = Awaited<ReturnType<typeof loadSettings>>;
 type StoredTurn = ReturnType<typeof studyTurn>;
@@ -43,8 +43,26 @@ export function routeMatchesInput(input: unknown, settings: Pick<Settings, 'acti
     route.baseUrl === settings.baseUrl && route.model === settings.model && route.reasoningEffort === settings.reasoningEffort;
 }
 
-export async function workspaceRouteRevision(settings: Settings) {
-  const grant = (await loadWorkspaceAccessRoutes())[settings.activeProviderId];
+type WorkspaceRoutes = Awaited<ReturnType<typeof loadWorkspaceAccessRoutes>>;
+
+function revisionForRoute(routes: WorkspaceRoutes, settings: Pick<Settings, 'activeProviderId' | 'baseUrl' | 'protocol'>) {
+  const grant = routes[settings.activeProviderId];
   return grant?.enabled && grant.baseUrl === settings.baseUrl && grant.protocol === settings.protocol
     ? grant.revision : undefined;
+}
+
+export async function workspaceRouteRevision(settings: Settings) {
+  return revisionForRoute(await loadWorkspaceAccessRoutes(), settings);
+}
+
+export function workspaceGrantChecker() {
+  let current: Promise<[Settings, WorkspaceRoutes]> | undefined;
+  return async (turn: StoredTurn) => {
+    if (!turn.workspaceRevision) return true;
+    const [settings, routes] = await (current ??= Promise.all([loadSettings(), loadWorkspaceAccessRoutes()]));
+    const provider = settings.providers.find(profile => profile.id === (turn.providerId ?? 'default'));
+    if (!provider || provider.baseUrl !== turn.baseUrl || provider.protocol !== (turn.protocol ?? 'openai')) return false;
+    return revisionForRoute(routes, { activeProviderId: provider.id, baseUrl: provider.baseUrl, protocol: provider.protocol })
+      === turn.workspaceRevision;
+  };
 }

@@ -9,7 +9,7 @@ import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { first45Answer, first45Histories, first45Question } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
-import { sameRoute, resolveMcpGrants, workspaceRouteRevision, routeMatchesInput, mcpRevision } from './harness.ts';
+import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, routeMatchesInput, mcpRevision } from './harness.ts';
 import { studyAttachment, studyMcpGrants, studyTurn } from '../../modules/activity/values.ts';
 import { readMaterialText } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
@@ -102,11 +102,13 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
     [tx.learner, session, slotType],
   );
   const result: TurnView[] = [];
+  const grantCurrent = workspaceGrantChecker();
   for (const row of rows) {
     const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' });
     const submission = studyTurn(snapshot.value);
     let feedback = row.value;
-    if (feedback && (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid') feedback = null;
+    if (feedback && (!await grantCurrent(submission) ||
+      (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid')) feedback = null;
     if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
       rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: [] };
     result.push({

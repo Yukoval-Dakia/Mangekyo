@@ -12,6 +12,7 @@ import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingProgress } from '../../executors/teaching/index.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
 import { RequestError, unavailableReplyMessage } from './sessions.ts';
+import { workspaceGrantChecker } from './harness.ts';
 
 type Phase = TeachingProgress['phase'];
 type StreamSession = {
@@ -152,6 +153,7 @@ export async function listenForSessionEvents(db: Db, pool: Pool): Promise<() => 
 }
 
 async function readSessionEvent(db: Db, sessionId: string) {
+  const grantCurrent = workspaceGrantChecker();
   return db.snapshot({ learner: studioLearner }, async (tx) => {
     const { rows: [row] } = await tx.query<{
       turnId: string;
@@ -186,7 +188,8 @@ async function readSessionEvent(db: Db, sessionId: string) {
       });
     const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
-    const invalid = manifest && (await revalidateManifest(tx, parseManifest(manifest))).kind !== 'valid';
+    const invalid = !await grantCurrent(submission) ||
+      (manifest && (await revalidateManifest(tx, parseManifest(manifest))).kind !== 'valid');
     if (invalid && status === 'pending') {
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     }
