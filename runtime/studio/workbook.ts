@@ -34,6 +34,7 @@ import {
   workbookAssessmentResult,
   workbookCorrectCount,
   workbookDraft,
+  WorkbookSourceMismatch,
   workbookPaper,
   workbookPaperType,
   workbookQuestionsView,
@@ -411,6 +412,8 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           input: { id: paperId, data },
         });
       } catch (error) {
+        if (error instanceof WorkbookSourceMismatch) throw new RequestError(409, error.message);
+        if (error instanceof FactNotFoundError) throw new RequestError(409, '找不到引用的来源版本。');
         if (error instanceof FactReadDeniedError) {
           throw new RequestError(409, '来源材料已撤回，不能保存这份试卷。');
         }

@@ -1,5 +1,11 @@
 import { factId } from '@mangekyo/kernel';
+import type { Revision } from '@mangekyo/kernel';
 import { assessmentRelease, type AssessmentRelease } from './assessment-values.ts';
+
+const pinnedPromptLimit = 8000;
+const pinnedAnswerLimit = 4000;
+
+export class WorkbookSourceMismatch extends Error {}
 
 export const workbookPaperType = 'activity.workbookPaper';
 export const workbookAttemptType = 'activity.workbookAttempt';
@@ -21,6 +27,11 @@ const questionIdPattern = /^[A-Za-z0-9_-]{1,40}$/;
 const rubricVersionPattern = /^rubric-v[1-9][0-9]{0,3}$/;
 const maxQuestions = 100;
 
+export type WorkbookSourceQuestionRef = {
+  readonly id: string;
+  readonly rev: Revision;
+};
+
 export type WorkbookNumericQuestion = {
   id: string;
   kind: 'numeric';
@@ -29,6 +40,7 @@ export type WorkbookNumericQuestion = {
   tolerance: number;
   unit: string | null;
   explanation: string | null;
+  sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
 
 export type WorkbookExactQuestion = {
@@ -38,6 +50,7 @@ export type WorkbookExactQuestion = {
   answers: string[];
   selfCheck: boolean;
   explanation: string | null;
+  sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
 
 export type WorkbookRubricQuestion = {
@@ -47,12 +60,33 @@ export type WorkbookRubricQuestion = {
   rubric: string;
   rubricVersion: string;
   explanation: string | null;
+  sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
 
 export type WorkbookQuestion =
   | WorkbookNumericQuestion
   | WorkbookExactQuestion
   | WorkbookRubricQuestion;
+
+function sourceQuestionRef(value: unknown): WorkbookSourceQuestionRef | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('来源题目引用必须是 {id, rev}。');
+  }
+  const row = value as Record<string, unknown>;
+  if (row.id === undefined || row.rev === undefined) {
+    throw new Error('来源题目引用必须是 {id, rev}。');
+  }
+  if (typeof row.id !== 'string' || !row.id) throw new Error('来源题目标识无效。');
+  if (typeof row.rev !== 'number' || !Number.isSafeInteger(row.rev) || row.rev < 1 || row.rev > 2_147_483_647) {
+    throw new Error('来源题目版本无效。');
+  }
+  try {
+    return { id: factId(row.id), rev: row.rev as Revision };
+  } catch {
+    throw new Error('来源题目标识无效。');
+  }
+}
 
 export type WorkbookPaper = {
   title: string;
@@ -62,7 +96,7 @@ export type WorkbookPaper = {
   assessmentRelease?: AssessmentRelease;
 };
 
-export type WorkbookQuestionDraft =
+export type WorkbookQuestionDraft = { sourceQuestionRef?: WorkbookSourceQuestionRef } & (
   | {
     kind: 'numeric';
     prompt: string;
@@ -83,7 +117,7 @@ export type WorkbookQuestionDraft =
     prompt: string;
     rubric: string;
     explanation?: string | null;
-  };
+  });
 
 export type WorkbookDraft = {
   title: string;
@@ -126,13 +160,26 @@ export type WorkbookAttemptRequest = {
 };
 
 export type WorkbookQuestionView =
-  | { id: string; kind: 'numeric'; prompt: string; unit: string | null }
-  | { id: string; kind: 'exact'; prompt: string; selfCheck: boolean }
+  | {
+    id: string;
+    kind: 'numeric';
+    prompt: string;
+    unit: string | null;
+    sourceQuestionRef?: WorkbookSourceQuestionRef;
+  }
+  | {
+    id: string;
+    kind: 'exact';
+    prompt: string;
+    selfCheck: boolean;
+    sourceQuestionRef?: WorkbookSourceQuestionRef;
+  }
   | {
     id: string;
     kind: 'rubric';
     prompt: string;
     rubricVersion: string;
+    sourceQuestionRef?: WorkbookSourceQuestionRef;
   };
 
 export type WorkbookSourceView = {
@@ -219,13 +266,13 @@ function canStore(text: string): boolean {
   return text.isWellFormed() && !text.includes('\u0000');
 }
 
-function text(value: unknown, label: string, limit: number): string {
+function text(value: unknown, label: string, limit: number, preserveWhitespace = false): string {
   if (typeof value !== 'string') throw new Error(`${label}必须是文字。`);
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.length > limit || !canStore(trimmed)) {
+  const result = preserveWhitespace ? value : value.trim();
+  if (!result.trim() || result.length > limit || !canStore(result)) {
     throw new Error(`${label}长度无效。`);
   }
-  return trimmed;
+  return result;
 }
 
 function optionalText(value: unknown, label: string, limit: number): string | null {
@@ -262,13 +309,13 @@ function materialReference(value: unknown): string | null {
   return factId(value);
 }
 
-function alternatives(value: unknown): string[] {
+function alternatives(value: unknown, limit: number): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 20) {
     throw new Error('精确答案至少需要一条，最多二十条。');
   }
   const seen = new Set<string>();
   const answers = value.map((entry, index) => {
-    const answer = text(entry, `第 ${index + 1} 条精确答案`, 500);
+    const answer = text(entry, `第 ${index + 1} 条精确答案`, limit);
     const key = normalizeExact(answer);
     if (seen.has(key)) throw new Error('精确答案不能重复。');
     seen.add(key);
@@ -280,7 +327,8 @@ function alternatives(value: unknown): string[] {
 function draftQuestion(value: unknown, index: number, stored = false): WorkbookQuestion {
   const row = record(value);
   const kind = row.kind;
-  const prompt = text(row.prompt, `第 ${index + 1} 题题面`, 4000);
+  const source = sourceQuestionRef(row.sourceQuestionRef);
+  const prompt = text(row.prompt, `第 ${index + 1} 题题面`, source ? pinnedPromptLimit : 4000, !!source);
   const explanation = optionalText(row.explanation, `第 ${index + 1} 题解析`, 4000);
   const id = `q${index + 1}`;
   if (kind === 'numeric') {
@@ -294,6 +342,7 @@ function draftQuestion(value: unknown, index: number, stored = false): WorkbookQ
       tolerance,
       unit: optionalText(row.unit, `第 ${index + 1} 题单位`, 40),
       explanation,
+      ...(source === undefined ? {} : { sourceQuestionRef: source }),
     };
   }
   if (kind === 'exact') {
@@ -304,9 +353,10 @@ function draftQuestion(value: unknown, index: number, stored = false): WorkbookQ
       id,
       kind,
       prompt,
-      answers: alternatives(row.answers),
+      answers: alternatives(row.answers, source ? pinnedAnswerLimit : 500),
       selfCheck: row.selfCheck === true,
       explanation,
+      ...(source === undefined ? {} : { sourceQuestionRef: source }),
     };
   }
   if (kind === 'rubric') {
@@ -324,6 +374,7 @@ function draftQuestion(value: unknown, index: number, stored = false): WorkbookQ
       rubric: text(row.rubric, `第 ${index + 1} 题评分标准`, 8000),
       rubricVersion: stored ? String(row.rubricVersion) : workbookRubricVersion,
       explanation,
+      ...(source === undefined ? {} : { sourceQuestionRef: source }),
     };
   }
   throw new Error(`第 ${index + 1} 题类型无效。`);
@@ -576,7 +627,7 @@ function storedExpected(
   return {
     kind: 'exact',
     values: row.values.map((entry, answerIndex) =>
-      text(entry, `第 ${index + 1} 题第 ${answerIndex + 1} 条参考答案`, 500),
+      text(entry, `第 ${index + 1} 题第 ${answerIndex + 1} 条参考答案`, question.sourceQuestionRef ? pinnedAnswerLimit : 500),
     ),
   };
 }
@@ -678,16 +729,16 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
 }
 
 export function workbookQuestionView(question: WorkbookQuestion): WorkbookQuestionView {
-  return question.kind === 'numeric'
-    ? { id: question.id, kind: 'numeric', prompt: question.prompt, unit: question.unit }
-    : question.kind === 'exact'
-      ? { id: question.id, kind: 'exact', prompt: question.prompt, selfCheck: question.selfCheck }
-      : {
-        id: question.id,
-        kind: 'rubric',
-        prompt: question.prompt,
-        rubricVersion: question.rubricVersion,
-      };
+  const base = { id: question.id, prompt: question.prompt };
+  const source = question.sourceQuestionRef;
+  const ref = source === undefined ? {} : { sourceQuestionRef: source };
+  if (question.kind === 'numeric') {
+    return { ...base, kind: 'numeric', unit: question.unit, ...ref };
+  }
+  if (question.kind === 'exact') {
+    return { ...base, kind: 'exact', selfCheck: question.selfCheck, ...ref };
+  }
+  return { ...base, kind: 'rubric', rubricVersion: question.rubricVersion, ...ref };
 }
 
 export function workbookQuestionsView(paper: WorkbookPaper): WorkbookQuestionView[] {
