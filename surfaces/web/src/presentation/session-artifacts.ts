@@ -9,6 +9,7 @@ import {
 } from '../../../shared/presentation/index.ts';
 import { isRecord } from '../../../shared/presentation/schema.ts';
 import { api, sessionPath, type Session } from '../api.ts';
+import { decodeAssessment, sameAssessment, type ArtifactAssessment } from './artifact-assessment.ts';
 
 export interface ArtifactSnapshotV1 {
   version: 1;
@@ -23,6 +24,7 @@ export interface ArtifactSnapshotV1 {
   saved: Pick<ArtifactAction, 'answers' | 'trace'>[];
   commandId: string | null;
   submitted: boolean;
+  assessment?: ArtifactAssessment;
   predicting: boolean;
   prediction: { id: string; answer: { kind: 'text'; text: string } } | null;
 }
@@ -94,6 +96,7 @@ function decode(input: unknown, sessionId: string, turnId: string): ArtifactSnap
     )
       return;
   }
+  const assessment = submitted ? decodeAssessment(input.assessment) : undefined;
   return {
     version: 1,
     sessionId,
@@ -104,6 +107,7 @@ function decode(input: unknown, sessionId: string, turnId: string): ArtifactSnap
     view: result.view,
     submitted,
     predicting,
+    ...(assessment && { assessment }),
     commandId,
     saved,
     prediction: prediction as ArtifactSnapshotV1['prediction'],
@@ -135,15 +139,22 @@ function step(value: unknown): value is Interaction {
   );
 }
 
-function accept(mounts: ArtifactSnapshotV1[], withdrawn: ReadonlySet<string>, snapshot: ArtifactSnapshotV1) {
+function accept(mounts: ArtifactSnapshotV1[], withdrawn: ReadonlySet<string>, snapshot: ArtifactSnapshotV1, fromRead = false) {
   const old = mounts.find((m) => m.mountId === snapshot.mountId);
-  if (
-    withdrawn.has(snapshot.mountId) ||
-    (old &&
-      (old.turnId !== snapshot.turnId || snapshot.viewSeq <= old.viewSeq || snapshot.stateRev < old.stateRev))
-  )
-    return mounts;
-  return old ? mounts.map((m) => (m === old ? snapshot : m)) : [...mounts, snapshot];
+  if (withdrawn.has(snapshot.mountId)) return mounts;
+  if (!old) return [...mounts, snapshot];
+  if (old.turnId !== snapshot.turnId || snapshot.viewSeq < old.viewSeq || snapshot.stateRev < old.stateRev) return mounts;
+  if (snapshot.viewSeq === old.viewSeq) {
+    // Settlement changes the authorized assessment without advancing the artifact action clock.
+    const next = snapshot.assessment;
+    if (snapshot.stateRev !== old.stateRev || !old.assessment || !next || !sameAssessment(old.assessment, next) ||
+        next.state === 'queued' || (!fromRead && old.assessment.state !== 'queued')) return mounts;
+    snapshot = { ...old, assessment: next };
+  } else if (old.assessment && snapshot.assessment && sameAssessment(old.assessment, snapshot.assessment) &&
+      old.assessment.state !== 'queued' && snapshot.assessment.state === 'queued') {
+    snapshot = { ...snapshot, assessment: old.assessment };
+  }
+  return mounts.map(m => m === old ? snapshot : m);
 }
 
 // Only a session read (or its session header on the stream) grants a turn.
@@ -186,7 +197,7 @@ export function readSession(
       withdrawn.add(m.mountId);
       return false;
     });
-    for (const snapshot of incoming) mounts = accept(mounts, withdrawn, snapshot);
+    for (const snapshot of incoming) mounts = accept(mounts, withdrawn, snapshot, true);
   }
   for (const turn of current.turns) {
     if (turn.turnId) read(turn.turnId, turn.artifacts);

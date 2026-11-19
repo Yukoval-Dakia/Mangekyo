@@ -47,6 +47,10 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [progressLabel, setProgressLabel] = useState<string>();
   const [reconnecting, setReconnecting] = useState(false);
 
+  const readAssessment = useRef<(() => Promise<void>) | undefined>(undefined);
+  const queuedSubmissions = JSON.stringify(session?.mounts.flatMap(m => m.assessment?.state === 'queued'
+    ? [[m.turnId, m.mountId, m.assessment.submissionRef.id, m.assessment.submissionRef.rev]] : []) ?? []);
+
   useEffect(() => {
     if (!active || !sessionId || busy || retryOperation) return;
     const controller = new AbortController();
@@ -55,6 +59,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     let terminal = false;
     let didHydrate = Boolean(baseline);
     let readNumber = 0;
+    let reading = false;
 
     function clearReadProblem() {
       setRefreshingConflict(false);
@@ -79,12 +84,14 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       });
     }
 
-    async function hydrate(final: boolean, completed?: SessionEvent["session"]) {
+    async function hydrate(mode: 'stream' | 'complete' | 'assessment', completed?: SessionEvent["session"]) {
+      if (mode === 'assessment' && reading) return;
+      reading = true;
       const number = ++readNumber;
       const atRequest = sessionRef.current;
       try {
         const current = await api<Session>(sessionPath(sessionId!), { signal: controller.signal });
-        if (controller.signal.aborted || number !== readNumber || (!final && terminal)) return;
+        if (controller.signal.aborted || number !== readNumber || (mode === 'stream' && terminal)) return;
         const latest = sessionRef.current;
         if (completed && (completed.currentTurnId !== current.currentTurnId || completed.status !== current.status)) {
           invalidate(0);
@@ -96,20 +103,24 @@ export function useConversation(caseId: string, active: boolean, initialSession?
             (latest?.currentTurnId === current.currentTurnId && latest?.status === "ready" && current.status === "pending")) return;
         setSession(readSession(current, latest, atRequest));
         clearReadProblem();
-        if (final) {
+        if (mode === 'complete') {
           setStreamingReply(undefined);
           setProgressLabel(undefined);
         }
       } catch (error) {
-        if (controller.signal.aborted || number !== readNumber || (!final && terminal)) return;
+        if (controller.signal.aborted || number !== readNumber || (mode === 'stream' && terminal)) return;
         const status = error instanceof ApiError ? error.status : 0;
-        if (final || [401, 403, 404, 409].includes(status)) {
+        if (mode === 'complete' || [401, 403, 404, 409].includes(status)) {
           terminal = true;
           source.close();
           invalidate(status);
         }
+      } finally {
+        if (number === readNumber) reading = false;
       }
     }
+
+    readAssessment.current = () => hydrate('assessment');
 
     function receive(event: MessageEvent<string>): SessionEvent | undefined {
       let update: SessionEvent;
@@ -135,11 +146,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       // Restore prior turns for a remembered session while the current one streams.
       if (!didHydrate) {
         didHydrate = true;
-        void hydrate(false);
+        void hydrate('stream');
       }
     });
 
-    if (refresh) void hydrate(false);
+    if (refresh) void hydrate('stream');
 
     source.addEventListener("artifact-snapshot", (event: MessageEvent<string>) => {
       if (controller.signal.aborted || terminal) return;
@@ -162,7 +173,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       // learner's authorized session view once. The stream never carries audit fields.
       setStreamingReply(update.message);
       setProgressLabel(undefined);
-      void hydrate(true, update.session);
+      void hydrate('complete', update.session);
     });
 
     source.addEventListener("session-error", (event: MessageEvent<string>) => {
@@ -179,14 +190,32 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     source.onerror = () => {
       if (controller.signal.aborted || terminal) return;
       setReconnecting(true);
-      void hydrate(source.readyState === EventSource.CLOSED);
+      void hydrate(source.readyState === EventSource.CLOSED ? 'complete' : 'stream');
     };
 
     return () => {
       source.close();
       controller.abort();
+      readAssessment.current = undefined;
     };
   }, [active, busy, caseId, refresh, retryOperation, sessionId, sessionKey]);
+
+  // All queued works in this session share one bounded sequence of authorized reads.
+  useEffect(() => {
+    if (!active || busy || retryOperation || queuedSubmissions === '[]') return;
+    const delays = [1000, 2000, 4000, 8000, 15000, 30000];
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    function schedule(index: number) {
+      if (cancelled || index >= delays.length) return;
+      timer = setTimeout(async () => {
+        await readAssessment.current?.();
+        schedule(index + 1);
+      }, delays[index]);
+    }
+    schedule(0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [active, busy, retryOperation, sessionId, queuedSubmissions]);
 
   async function perform(operation: Operation) {
     if (inFlight.current) return;
