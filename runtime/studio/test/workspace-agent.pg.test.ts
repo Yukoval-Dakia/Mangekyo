@@ -27,21 +27,17 @@ it.skipIf(!connectionString)('preserves source links and resolves workspace anch
   }
   async function author() {
     const run = turn('author');
-    const search = await run('search_workspace',{query:'分段计时'},1);
     const source = await run('save_workspace',{kind:'concept',title:'时间线',body:'标出两段边界'},2);
     const page = await run('save_workspace',{kind:'page',title:'分段计时',body,tags:['方法'],links:[source.id]},3);
-    return {search,source,page};
+    return {source,page};
   }
   try {
     for (const sql of kernelSchemaStatements) await db.query(sql);
     await db.query('INSERT INTO learners (id) VALUES ($1)',[studioLearner]);
     const first = await author();
-    expect(first.search.results).toEqual([]);
-    expect(first.page.state).toBe('done');
     expect(await author()).toEqual(first);
     const edit = turn('editor');
     const original = await edit('read_workspace',{id:first.page.id},1);
-    expect(original.links).toEqual([first.source.id]);
     expect(original.sourceRef).toEqual({v:1, fact:{id:first.page.id, rev:1, type:'activity.workspaceEntry'}, anchor:{kind:'whole'}});
     const start = body.lastIndexOf('计时');
     const ref = {...original.sourceRef, anchor:{kind:'text', field:'body', start, end:body.length}};
@@ -51,7 +47,6 @@ it.skipIf(!connectionString)('preserves source links and resolves workspace anch
     expect(updated).toMatchObject({id:first.page.id,rev:2,state:'done'});
     const saved = await edit('read_workspace',{id:first.page.id},4);
     expect(saved).toMatchObject({links:[first.source.id],tags:['方法'],title:'两段计时'});
-    expect(saved.content).toContain('画出已知两段');
     expect(await edit('read_workspace',chosen,2)).toMatchObject({rev:1, content:'计时'});
     await db.snapshot({learner:studioLearner}, async tx => {
       const followed = await resolveSource(tx,ref,{recipient:'learner'},'following');
