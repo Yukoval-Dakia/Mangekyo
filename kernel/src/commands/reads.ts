@@ -39,6 +39,7 @@ type ParsedFactOptions =
   | { readonly mode: 'pinned'; readonly rev: number };
 
 type FactRow = {
+  readonly type: string;
   readonly current_rev: number;
   readonly access_epoch: string | bigint | number;
   readonly purpose: unknown;
@@ -125,7 +126,7 @@ async function readFact<Value = Json>(
   const parsed = parseFactOptions(options);
 
   const factResult = await tx.query<FactRow>(
-    `SELECT current_rev, access_epoch, purpose, retracted_rev
+    `SELECT type, current_rev, access_epoch, purpose, retracted_rev
      FROM facts
      WHERE learner_id = $1 AND id = $2`,
     [tx.learner, factId],
@@ -175,6 +176,7 @@ async function readFact<Value = Json>(
 
   return {
     ref: { learner: tx.learner, id: factId, rev: revision.rev as Revision },
+    type: fact.type,
     accessEpoch: toTick(fact.access_epoch),
     value: data as Value,
     purpose: revisionPurpose,

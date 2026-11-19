@@ -5,6 +5,7 @@ export const intakePurpose = storagePurpose;
 export const intakeFactType = 'activity.intakeDocument';
 export const captureIntakeCommand = 'activity.captureIntake';
 export const correctIntakeCommand = 'activity.correctIntakeText';
+export const completeCloudIntakeCommand = 'activity.completeCloudIntake';
 
 export const materialTextLimit = 4000;
 export const intakeTextLimit = 2_000_000;
@@ -27,8 +28,10 @@ export type IntakeMediaType = (typeof intakeMediaTypes)[number];
 export const intakeFailureText =
   '这份原件已保存，但未能自动抽取文字。请打开材料详情下载原件，或在这里手动补充文字。';
 
-export type IntakeExtractionStatus = 'ok' | 'partial' | 'failed' | 'corrected';
-export type IntakeExtractionMethod = 'pdfkit' | 'vision' | 'pdfkit+vision' | 'utf8' | 'learner';
+const intakePendingText = '原件已保存，正在由 MinerU 云识别。';
+
+export type IntakeExtractionStatus = 'ok' | 'partial' | 'failed' | 'corrected' | 'pending';
+export type IntakeExtractionMethod = 'pdfkit' | 'vision' | 'pdfkit+vision' | 'utf8' | 'learner' | 'mineru';
 
 export type IntakeOriginal = {
   readonly name: string;
@@ -53,6 +56,7 @@ export type IntakeDocument = {
   readonly title: string;
   readonly original: IntakeOriginal;
   readonly extraction: IntakeExtraction;
+  readonly requestedExtraction?: 'mineru';
 };
 
 export type CaptureIntakeInput = {
@@ -129,25 +133,28 @@ export function intakeExtraction(input: unknown): IntakeExtraction {
   const value = object(input);
   const status = value.status;
   const method = value.method;
-  if (status !== 'ok' && status !== 'partial' && status !== 'failed' && status !== 'corrected') {
+  if (status !== 'ok' && status !== 'partial' && status !== 'failed' && status !== 'corrected' && status !== 'pending') {
     throw new Error('抽取状态无效。');
   }
   if (method !== 'pdfkit' && method !== 'vision' && method !== 'pdfkit+vision' &&
-      method !== 'utf8' && method !== 'learner') {
+      method !== 'utf8' && method !== 'learner' && method !== 'mineru') {
     throw new Error('抽取方式无效。');
   }
   const warnings = value.warnings;
   if (!Array.isArray(warnings) || warnings.length > 8) throw new Error('抽取提示无效。');
   const warningTexts = warnings.map((item) => text(item, '抽取提示', 500, true));
-  const textValue = text(value.text, '抽取文字', intakeTextLimit, status === 'failed');
-  if (status === 'failed' && textValue.length !== 0) throw new Error('失败的抽取不能包含文字。');
-  if (status !== 'failed' && !textValue.trim()) throw new Error('成功的抽取必须包含文字。');
+  const awaitingText = status === 'failed' || status === 'pending';
+  const textValue = text(value.text, '抽取文字', intakeTextLimit, awaitingText);
+  if (awaitingText && textValue.length !== 0) throw new Error('尚无抽取结果时不能保存正文。');
+  if (!awaitingText && !textValue.trim()) throw new Error('成功的抽取必须包含文字。');
   const pageNumber = value.pages;
   if (pageNumber !== null && (typeof pageNumber !== 'number' || !Number.isSafeInteger(pageNumber) || pageNumber < 0 || pageNumber > 1_000)) {
     throw new Error('页数无效。');
   }
   const error = value.error === null ? null : text(value.error, '抽取错误', 1_000, true);
-  if (status === 'ok' || status === 'corrected') {
+  if (status === 'pending' && (method !== 'mineru' || pageNumber !== null || value.truncated !== false))
+    throw new Error('待识别结果格式无效。');
+  if (status === 'ok' || status === 'corrected' || status === 'pending') {
     if (error !== null) throw new Error('成功状态不能有抽取错误。');
   }
   if (status === 'failed' && (error === null || !error.trim())) throw new Error('失败状态必须说明原因。');
@@ -168,11 +175,17 @@ export function intakeExtraction(input: unknown): IntakeExtraction {
 
 export function intakeDocument(input: unknown): IntakeDocument {
   const value = object(input);
-  const document = {
+  if (value.requestedExtraction !== undefined && value.requestedExtraction !== 'mineru')
+    throw new Error('交入识别方式无效。');
+  const extraction = intakeExtraction(value.extraction);
+  if (extraction.method === 'mineru' && value.requestedExtraction !== 'mineru')
+    throw new Error('云识别结果缺少对应的交入请求。');
+  const document: IntakeDocument = {
     materialId: factId(text(value.materialId, '材料标识', 26, false)),
     title: textMaterial({ title: value.title, text: '占位' }).title,
     original: intakeOriginal(value.original),
-    extraction: intakeExtraction(value.extraction),
+    extraction,
+    ...(value.requestedExtraction === 'mineru' ? { requestedExtraction: 'mineru' } : {}),
   };
   if (document.materialId.length !== 26) throw new Error('材料标识无效。');
   return document;
@@ -184,28 +197,26 @@ export function materialPreview(text: string): { readonly text: string; readonly
   while (prefixLength >= 0) {
     const suffix =
       `\n\n…（全文共 ${text.length} 字；材料卡片只显示前 ${prefixLength} 字，完整抽取与原件见材料详情。）`;
-    if (prefixLength + suffix.length <= materialTextLimit) {
+    if (prefixLength + suffix.length <= materialTextLimit && text.slice(0, prefixLength).isWellFormed()) {
       return { text: text.slice(0, prefixLength) + suffix, truncated: true };
     }
     prefixLength--;
   }
-  return { text: text.slice(0, materialTextLimit), truncated: true };
+  return { text: text.slice(0, materialTextLimit).toWellFormed(), truncated: true };
+}
+
+export function intakePreview(extraction: IntakeExtraction): string {
+  if (extraction.status === 'pending') return intakePendingText;
+  if (extraction.status === 'failed') return intakeFailureText;
+  return materialPreview(extraction.text).text;
 }
 
 export function captureIntakeInput(input: unknown): CaptureIntakeInput {
   const value = object(input);
   const materialId = factId(text(value.materialId, '材料标识', 26));
   const intakeId = factId(text(value.intakeId, '交入记录标识', 26));
-  const extraction = intakeExtraction(value.extraction);
-  const title = textMaterial({ title: value.title, text: '占位' }).title;
-  const rawText = extraction.status === 'failed' ? intakeFailureText : materialPreview(extraction.text).text;
-  const material = textMaterial({ title, text: rawText });
-  const document: IntakeDocument = {
-    materialId,
-    title,
-    original: intakeOriginal(value.original),
-    extraction,
-  };
+  const document = intakeDocument({ ...value, materialId });
+  const material = textMaterial({ title: document.title, text: intakePreview(document.extraction) });
   return { materialId, intakeId, data: { material, document } };
 }
 
