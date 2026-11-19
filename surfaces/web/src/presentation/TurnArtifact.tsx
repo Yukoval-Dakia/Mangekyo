@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { ApiError } from '../api';
+import { assessmentMessage } from './artifact-assessment';
 import { ArtifactView } from './ArtifactView';
 import { sendIntent, type ArtifactIntentV1, type ArtifactSnapshotV1 } from './session-artifacts';
 
@@ -59,6 +60,7 @@ export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1
       )}
       {problem && retry.current && <button onClick={() => dispatch(retry.current!)}>重发原请求</button>}
       <div className="artifact-status" role="status">
+        {snapshot.assessment && <p><strong>{assessmentMessage(snapshot.assessment)}</strong></p>}
         {receipt && <p>{receipt}</p>}
         {pending && <p>正在等待操作回执…</p>}
         {problem && <p>{problem}</p>}
