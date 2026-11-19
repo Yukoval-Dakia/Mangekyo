@@ -20,7 +20,7 @@ export function invariants(postgres = false) {
     const schema = `invariants_${process.pid}`;
     const learner = learnerId('01KFS4AAA00000000000000000');
     const id = factId('01KFS4AAA00000000000000001');
-    const request = { learner, id: commandId('01KFS4AAA00000000000000002'), type: 'note.record', input: { id, text: 'original' }, actor: 'learner' as const, purpose: 'learn' };
+    const request = { learner, id: commandId('01KFS4AAA00000000000000002'), type: 'note.record', input: { id, text: 'original' }, actor: 'learner' as const, purpose: 'storage' };
     const hooks = { onFactsChanged: async () => {} };
     const handle = () => createCommandHandler(db, { modules: [noteModule()], hooks });
     beforeEach(async () => {
@@ -45,7 +45,7 @@ export function invariants(postgres = false) {
         : [await handle()(request), await handle()(request)];
       for (const receipt of receipts) expect(receipt).toEqual(receipts[0]);
       await expect(handle()({ ...request, input: { id, text: 'different' } })).rejects.toThrow();
-      expect((await db.query('SELECT * FROM fact_revs')).rows).toHaveLength(1);
+      expect((await db.query('SELECT purpose FROM fact_revs')).rows).toEqual([{ purpose: ['storage'] }]);
       expect((await db.query<{clock:string}>('SELECT clock::text FROM learners')).rows[0]?.clock).toBe('1');
       expect(await createCommandHandler(db, { modules: [], hooks })(request)).toEqual(receipts[0]);
       await handle()({ ...request, id: commandId('01KFS4AAA00000000000000003'), input: { id: factId('01KFS4AAA00000000000000004'), text: 'original' } });
@@ -59,10 +59,10 @@ export function invariants(postgres = false) {
       expect(results.filter(r => r.status === 'rejected')).toHaveLength(1);
       if (postgres) expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
       expect((await db.query('SELECT current_rev,sticky FROM facts')).rows[0]).toEqual({ current_rev: 2, sticky: true });
-      const old = await db.tx({ learner }, tx => createCommandReadContext(tx, 'learn').fact(id, { mode: 'pinned', rev: 1 as never }));
+      const old = await db.tx({ learner }, tx => createCommandReadContext(tx, request.purpose).fact(id, { mode: 'pinned', rev: 1 as never }));
       expect(old.value).toEqual({ text: 'original' });
       await db.query("UPDATE facts SET purpose='{}' WHERE learner_id=$1", [learner]);
-      await expect(db.tx({ learner }, tx => createCommandReadContext(tx, 'learn').fact(id, { mode: 'pinned', rev: 1 as never }))).rejects.toThrow();
+      await expect(db.tx({ learner }, tx => createCommandReadContext(tx, request.purpose).fact(id, { mode: 'pinned', rev: 1 as never }))).rejects.toThrow();
     });
     it('rolls back the fact, registration, receipt and tick together', async () => {
       await db.query('CREATE TABLE handoff(tick bigint)');
