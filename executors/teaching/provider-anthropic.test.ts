@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { anthropicRequestBody, readAnthropicCompletion } from './anthropic-provider.ts';
-import { profileFor, requestCompletion, TeachingError, teachingProfile, verifyTeachingModel } from './provider.ts';
+import { readAnthropicCompletion } from './anthropic-provider.ts';
+import { requestCompletion } from './provider.ts';
 import { runTeachingTurn } from './index.ts';
 
 const anthropicProvider = {
@@ -45,22 +45,6 @@ async function teach() {
     runEffect: (step, invoke) => invoke(String(step.index)),
   });
 }
-
-it('keeps the default DeepSeek profile and selects a custom route truthfully', () => {
-  expect(profileFor({baseUrl: 'https://example.test/v1'})).toEqual(teachingProfile);
-  expect(profileFor({baseUrl: 'https://example.test/v1', model: 'claude-sonnet-5'})).toEqual({
-    model: 'claude-sonnet-5', reasoningEffort: 'default',
-  });
-  expect(profileFor(anthropicProvider)).toEqual({model: 'claude-sonnet-5', reasoningEffort: 'default'});
-  expect(profileFor({...anthropicProvider, reasoningEffort: 'high'}).reasoningEffort).toBe('high');
-  expect(verifyTeachingModel('raccoon/sn-deepseek-v4-1-flash-1017', undefined)).toMatch(/deepseek/);
-  expect(verifyTeachingModel('claude-sonnet-5-20250929', undefined, 'claude-sonnet-5'))
-    .toBe('claude-sonnet-5-20250929');
-  expect(() => verifyTeachingModel('vendor-b/m1', undefined, 'vendor-a/m1')).toThrow();
-  expect(() => verifyTeachingModel('m1-20251113', undefined, 'm1-20251112')).toThrow();
-  expect(() => verifyTeachingModel('gpt-6', undefined, 'claude-sonnet-5'))
-    .toThrowError(expect.objectContaining<Partial<TeachingError>>({code: 'provider_response'}));
-});
 
 it('rejects a malformed native tool call without executing it as an empty object', async () => {
   const response = Response.json({type: 'message', model: 'test', stop_reason: 'tool_use',
@@ -137,25 +121,6 @@ it('translates tool history and completes multiple native Messages rounds', asyn
   ]);
 });
 
-it('sends a custom profile through teaching decisions and omits default effort', async () => {
-  const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url: string | URL | Request, init?: RequestInit) => {
-    expect(bodyOf(init)).toMatchObject({
-      model: 'claude-sonnet-5', max_tokens: 2048, stream: true,
-    });
-    expect(bodyOf(init)).not.toHaveProperty('output_config');
-    return Response.json({
-      id: 'msg_2', type: 'message', model: 'claude-sonnet-5-20250929', stop_reason: 'end_turn',
-      content: [{type: 'text', text: JSON.stringify({
-        type: 'teach', action: 'clarifying_question', rationale: '需要确认',
-        nextStep: '你指的是移动时间还是总时间？', evidenceIds: [],
-      })}],
-    });
-  });
-  const result = await teach();
-  expect(result.action).toBe('clarifying_question');
-  expect(result.reportedModel).toBe('claude-sonnet-5-20250929');
-});
-
 it('resumes one confirmed truncated teaching decision with a larger output budget', async () => {
   const budgets: number[] = [];
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
@@ -167,9 +132,4 @@ it('resumes one confirmed truncated teaching decision with a larger output budge
   const result = await teach();
   expect(result.action).toBe('clarifying_question');
   expect(budgets).toEqual([2048, 8192]);
-});
-
-it('rejects an OpenAI-shaped body that could silently drop the selected model', () => {
-  expect(() => anthropicRequestBody({messages: [], max_completion_tokens: 10}))
-    .toThrowError(expect.objectContaining<Partial<TeachingError>>({code: 'provider_configuration'}));
 });

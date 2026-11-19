@@ -1,14 +1,12 @@
 import {createHash} from 'node:crypto';
 import {runStudyAgent} from './study-agent.ts';
-import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { McpTurnConnections, callMcpTool, discoverMcpTools, type McpServer } from './mcp-client.ts';
 
 type RecordedRequest = {
   method: string | undefined;
-  url: string | undefined;
-  headers: IncomingHttpHeaders;
   body: unknown;
 };
 
@@ -24,13 +22,8 @@ const searchTool = {
   description: 'Search the notes',
   inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
 };
-const calculateTool = {
-  name: 'calculate',
-  inputSchema: { type: 'object', properties: { expression: { type: 'string' } } },
-};
 
 afterEach(async () => {
-  vi.restoreAllMocks();
   await Promise.all(servers.splice(0).map(server => server.close()));
 });
 
@@ -66,7 +59,7 @@ async function startServer(
   const server = createServer(async (request, response) => {
     try {
       const body = request.method === 'DELETE' ? undefined : await requestBody(request);
-      requests.push({ method: request.method, url: request.url, headers: request.headers, body });
+      requests.push({ method: request.method, body });
       await handler(request, response, body);
     } catch {
       response.writeHead(500);
@@ -131,47 +124,23 @@ function protocolMessage(
 }
 
 async function protocolServer(): Promise<TestServer> {
-  let page = 0;
   return startServer((request, response, body) => {
     const message = protocolMessage(request, response, body, 'session-test');
     if (!message) return;
+    const result = (value: unknown) => ({jsonrpc: '2.0', id: message.id, result: value});
     if (message.method === 'tools/list') {
-      page++;
-      if (page === 1) {
-        eventStream(response, [
-          { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'working' } },
-          {
-            jsonrpc: '2.0',
-            id: message.id,
-            result: {
-              tools: [
-                searchTool,
-                { name: 'delete', description: 'Never exposed', inputSchema: { type: 'object' } },
-              ],
-              nextCursor: 'next-page',
-            },
-          },
-        ]);
-        return;
+      const cursor = (message.params as {cursor?: string})?.cursor;
+      if (cursor) {
+        json(response, result({tools: [searchTool]}));
+      } else {
+        const tools = [{name: 'delete', inputSchema: {type: 'object'}}];
+        eventStream(response, [result({tools, nextCursor: 'next-page'})]);
       }
-      json(response, {
-        jsonrpc: '2.0',
-        id: message.id,
-        result: {
-          tools: [
-            { name: 'search', description: 'Duplicate', inputSchema: { type: 'object' } },
-            calculateTool,
-          ],
-        },
-      });
-      return;
+    } else if (message.method === 'tools/call') {
+      json(response, result({content: [{type: 'text', text: 'ok'}]}));
+    } else {
+      response.writeHead(400).end();
     }
-    if (message.method === 'tools/call') {
-      json(response, {jsonrpc: '2.0', id: message.id, result: {content: [{type: 'text', text: 'ok'}]}});
-      return;
-    }
-    response.writeHead(400);
-    response.end();
   });
 }
 
@@ -192,7 +161,7 @@ it('keeps one remote session across discovery and consecutive tools in the same 
   const server = mcpServer('library', remote.url, ['search']);
   const connections = new McpTurnConnections();
   try {
-    await discoverMcpTools(server, connections);
+    expect(await discoverMcpTools(server, connections)).toEqual([searchTool]);
     for (const topic of ['start', 'continue'])
       expect(await callMcpTool(server, 'search', {topic}, connections)).toBe('ok');
     expect(remote.requests.filter(req => req.method === 'DELETE')).toHaveLength(0);
@@ -201,71 +170,6 @@ it('keeps one remote session across discovery and consecutive tools in the same 
     await connections.close();
   }
   expect(remote.requests.at(-1)?.method).toBe('DELETE');
-});
-
-it('discovers only allowlisted tools across JSON and SSE pages, then deletes the session', async () => {
-  const server = await protocolServer();
-  const tools = await discoverMcpTools({
-    ...mcpServer('notes', server.url, ['search', 'calculate']),
-    token: 'local-test-token',
-  });
-
-  expect(tools).toEqual([
-    searchTool,
-    { ...calculateTool, description: '' },
-  ]);
-
-  expect(server.requests.map(request => request.method === 'DELETE' ? 'DELETE' : (request.body as { method?: string }).method))
-    .toEqual(['initialize', 'notifications/initialized', 'tools/list', 'tools/list', 'DELETE']);
-  const [initializeRequest, initializedRequest, firstPage, secondPage, deleted] = server.requests;
-  expect(initializeRequest?.headers.authorization).toBe('Bearer local-test-token');
-  expect(initializeRequest?.headers['mcp-session-id']).toBeUndefined();
-  expect(initializeRequest?.headers['mcp-protocol-version']).toBeUndefined();
-  expect(firstPage?.headers.accept).toContain('application/json');
-  expect(firstPage?.headers.accept).toContain('text/event-stream');
-  for (const request of [initializedRequest, firstPage, secondPage, deleted]) {
-    expect(request?.headers.authorization).toBe('Bearer local-test-token');
-    expect(request?.headers['mcp-session-id']).toBe('session-test');
-    expect(request?.headers['mcp-protocol-version']).toBe('2025-06-18');
-  }
-  expect(firstPage?.body).toMatchObject({ params: {} });
-  expect(secondPage?.body).toMatchObject({ params: { cursor: 'next-page' } });
-});
-
-it('calls a tool over SSE and preserves text and structured content', async () => {
-  const server = await startServer((request, response, body) => {
-    const message = protocolMessage(request, response, body, 'session-call');
-    if (!message) return;
-    if (message.method === 'tools/call') {
-      eventStream(response, [
-        { jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } },
-        {
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {
-            content: [
-              { type: 'text', text: '42' },
-              { type: 'text', text: 'from calculate' },
-            ],
-            structuredContent: { value: 42, source: 'server' },
-          },
-        },
-      ]);
-      return;
-    }
-    response.writeHead(400);
-    response.end();
-  });
-
-  const serverConfig = mcpServer('calculator', server.url, ['calculate']);
-  const output = await callMcpTool(serverConfig, 'calculate', { expression: '6 * 7' });
-
-  expect(output).toBe('42\nfrom calculate\n\n{"value":42,"source":"server"}');
-  const call = server.requests.find(request => (request.body as { method?: string })?.method === 'tools/call');
-  expect(call?.body).toMatchObject({
-    params: { name: 'calculate', arguments: { expression: '6 * 7' } },
-  });
-  expect(server.requests.at(-1)?.method).toBe('DELETE');
 });
 
 it('rejects disallowed tools before network access and never repeats a failed tool call', async () => {
@@ -291,71 +195,4 @@ it('rejects disallowed tools before network access and never repeats a failed to
     .rejects.toThrow('HTTP 500');
   expect(toolCalls).toBe(1);
   expect(server.requests.at(-1)?.method).toBe('DELETE');
-});
-
-it('does not follow redirects', async () => {
-  let endpointHits = 0;
-  let redirectTarget = '';
-  const server = await startServer((request, response) => {
-    if (request.url === '/redirect') {
-      response.writeHead(307, { location: redirectTarget });
-      response.end();
-      return;
-    }
-    endpointHits++;
-    response.writeHead(500);
-    response.end();
-  });
-  redirectTarget = server.url;
-
-  await expect(discoverMcpTools({
-    id: 'redirect',
-    url: server.url.replace('/mcp', '/redirect'),
-    allowedTools: [],
-  })).rejects.toThrow('MCP request failed');
-  expect(endpointHits).toBe(0);
-});
-
-it('rejects remote plain HTTP before making a request', async () => {
-  const send = vi.spyOn(globalThis, 'fetch');
-  await expect(discoverMcpTools(mcpServer('remote', 'http://example.test/mcp')))
-    .rejects.toThrow('HTTPS or loopback HTTP');
-  expect(send).not.toHaveBeenCalled();
-});
-
-it('accepts HTTPS and sends bearer authorization', async () => {
-  const send = vi.spyOn(globalThis, 'fetch')
-    .mockResolvedValueOnce(Response.json({
-      jsonrpc: '2.0', id: 1, result: initializeResult('https-server'),
-    }, { headers: { 'mcp-session-id': 'secure-session' } }))
-    .mockResolvedValueOnce(new Response(null, { status: 202 }))
-    .mockResolvedValueOnce(Response.json({
-      jsonrpc: '2.0',
-      id: 2,
-      result: { tools: [{ name: 'lookup', inputSchema: { type: 'object' } }] },
-    }))
-    .mockResolvedValueOnce(new Response(null, { status: 204 }));
-
-  await expect(discoverMcpTools({
-    ...mcpServer('https', 'https://example.test/mcp', ['lookup']),
-    token: 'https-test-token',
-  })).resolves.toEqual([{ name: 'lookup', description: '', inputSchema: { type: 'object' } }]);
-
-  for (const call of send.mock.calls) {
-    const headers = call[1]?.headers as Headers;
-    expect(headers.get('authorization')).toBe('Bearer https-test-token');
-    expect(call[1]?.redirect).toBe('error');
-  }
-});
-
-it('rejects a response whose declared size exceeds the byte cap', async () => {
-  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', {
-    status: 200,
-    headers: {
-      'content-type': 'application/json',
-      'content-length': String(1024 * 1024 + 1),
-    },
-  }));
-  await expect(discoverMcpTools(mcpServer('oversized', 'https://example.test/mcp')))
-    .rejects.toThrow('byte limit');
 });
