@@ -76,6 +76,8 @@ export interface SettingsUpdate {
 
 export type StudyAttachment = { id: string; title: string; text: string; mode: 'ask' | 'prepare' };
 export interface Turn {
+  turnId?: string;
+  artifacts?: unknown;
   trace?: string[];
   writes?: {id:string; rev:number; title:string}[];
   studyKit?: { title: string; lesson: string; questions: { prompt: string; answer: string; rubric?: string }[] };
@@ -91,6 +93,7 @@ export interface Turn {
 }
 
 export interface Session {
+  artifacts?: unknown;
   attachment?: StudyAttachment;
   id: string;
   caseId: string;

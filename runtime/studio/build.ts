@@ -32,6 +32,8 @@ export async function sourceBuildId() {
     'kernel/src',
     'kernel/dist',
     'modules/activity',
+    'modules/content',
+    'surfaces/shared/presentation',
     'modules/companion',
     'executors/temporal/src',
     'executors/teaching',

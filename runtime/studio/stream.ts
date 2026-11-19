@@ -14,6 +14,8 @@ import { purpose, slotType, studioLearner } from './identity.ts';
 import { RequestError, unavailableReplyMessage } from './sessions.ts';
 import { workspaceGrantChecker } from './harness.ts';
 
+import {turnArtifacts} from './presentation-store.ts';
+
 type Phase = TeachingProgress['phase'];
 type StreamSession = {
   id: string;
@@ -198,7 +200,7 @@ async function readSessionEvent(db: Db, sessionId: string) {
       id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status,
       ...(status !== 'ready' && submission.answer ? { pendingAnswer: submission.answer } : {}),
     };
-    return { session, row };
+    return {session,row,artifacts:status === 'pending' ? await turnArtifacts(tx,sessionId,row.turnId) : []};
   });
 }
 
@@ -243,7 +245,7 @@ export async function serveSessionEvents(db: Db, sessionId: string, _req: Incomi
     try {
       while (dirty && !closed) {
         dirty = false;
-        const { session, row } = await readSessionEvent(db, sessionId);
+        const { session, row, artifacts } = await readSessionEvent(db, sessionId);
         if (closed) return;
         if (dirty) continue;
         const { currentTurnId, status } = session;
@@ -252,12 +254,12 @@ export async function serveSessionEvents(db: Db, sessionId: string, _req: Incomi
           res.end(event('complete', currentTurnId + ':' + status, { session, ...(message ? { message } : {}) }));
           return;
         }
-        const eventId = currentTurnId + ':' + (row.revision ?? 0);
+        const eventId = [currentTurnId,row.revision ?? 0,...artifacts.map(a => a.mountId+'-'+a.viewSeq)].join(':');
         if (eventId === lastEventId) continue;
         lastEventId = eventId;
         // Each event carries cumulative state, including on Last-Event-ID reattachment.
         const data = { session, phase: row.phase ?? 'queued', ...(row.draft ? { message: row.draft } : {}) };
-        if (!res.write(event('progress', eventId, data))) {
+        if (!res.write(event('progress', eventId, data) + artifacts.map(a => event('artifact-snapshot',eventId,a)).join(''))) {
           await new Promise<void>((resolve) => {
             const ready = () => {
               res.off('drain', ready);

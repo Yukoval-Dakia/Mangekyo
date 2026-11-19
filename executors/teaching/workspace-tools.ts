@@ -23,6 +23,7 @@ export const workspaceDefinitions = [
   }),
 ];
 export type WorkspaceTools = {
+  presentationTool?: (typeof workspaceDefinitions)[number];
   writes: () => readonly {id:string; rev:number; title:string}[];
   execute: (name: string, args: Record<string, unknown>, step: number) => Promise<string>;
 };

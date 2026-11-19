@@ -51,6 +51,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'read_file': return '读文件 · ' + String(args.name).slice(0, 96) + ' · ' + output.slice(0, 120);
     case 'search_workspace': return '检索学习记录 · ' + String(args.query ?? args.kind ?? '最近记录') + '\n' + output.slice(0, 700);
     case 'read_workspace': return '读取学习原文 · ' + String(args.id) + '\n' + output.slice(0, 900);
+    case 'mount_artifact': return '挂载交互作品 · ' + output.slice(0, 360);
     case 'save_workspace': return '保存学习记录 · ' + String(args.title) + '\n' + output.slice(0, 500);
     default: return '工具不可用';
   }
@@ -79,7 +80,9 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
     if (name === 'exa_search' && pinnedQuery) tool.function.description += ' 本轮只会检索学生指定的公开主题：' + pinnedQuery;
     return tool;
   }) ?? [];
-  const nativeTools = workspace ? workspaceDefinitions : [];
+  const nativeTools = workspace
+    ? [...workspaceDefinitions, ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
+    : [];
   const definitions = [...builtins, ...nativeTools, ...(options.openMemoryRegion ? [memoryRegionTool] : []), ...Array.from(remotes, ([name, {tool}]) => ({
     type: 'function', function: {name, description: tool.description, parameters: tool.inputSchema},
   }))];

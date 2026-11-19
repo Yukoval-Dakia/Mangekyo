@@ -3,7 +3,6 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { remembered, remember, sessionPath, type Session, type Settings, type StudyAttachment } from './api';
 import { useConversation } from './conversation';
 import { Icon, Mark } from './icons';
-import { Message } from './message';
 import { TeachingTurn } from './demo';
 import { chatPath, materialPath, PageTitle, ReadState, useResource, type ChatLink, type Material, type Resource } from './workspace';
 
@@ -19,6 +18,7 @@ function LinkedChat({ id, chats, settings }: { settings: Settings | undefined; i
         </a>
       </>
     );
+  if (record.data.id !== id) return <p role="alert">无法读取这次对话。</p>;
   if (!['companion', 'riding'].includes(record.data.caseId))
     return (
       <>
@@ -150,31 +150,27 @@ function ChatRoom({
               </p>
             </div>
           )}
-          {session?.turns.length ? (
+          {Boolean(session?.turns.length || pending) && (
             <ol className="turns chat-thread">
-              {session.turns.map((t, i) => (
-                <TeachingTurn key={i} turn={t} materialId={shared?.id} discuss={pending || unavailable ? undefined : (question, answer) => {
-                  chat.editDraft('题目：' + question + '\n我的回答：' + answer + '\n请根据我的回答指出下一步。');
-                  textarea.current?.focus();
-                }} />
-              ))}
+              {[
+                ...(session?.turns ?? []).map((turn, i) =>
+                  <TeachingTurn key={turn.turnId ?? i} turn={turn} materialId={shared?.id}
+                    mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={chat.applySnapshot}
+                    discuss={pending || unavailable ? undefined : (question, answer) => {
+                      chat.editDraft('题目：' + question + '\n我的回答：' + answer + '\n请根据我的回答指出下一步。');
+                      textarea.current?.focus();
+                    }} />),
+                pending && <TeachingTurn key={session?.status === 'pending' ? session.currentTurnId : 'sending'}
+                  answer={chat.sendingAnswer || session?.pendingAnswer} message={streamingReply}
+                  progress={reconnecting ? '正在重连…' : progressLabel || '正在连接同伴…'}
+                  mounts={session?.status === 'pending' ? session.mounts.filter(m => m.turnId === session.currentTurnId) : []}
+                  applySnapshot={chat.applySnapshot} />,
+              ]}
             </ol>
-          ) : null}
-          {(chat.sendingAnswer || session?.pendingAnswer) && (
-            <div className="learner-message">
-              <span>你</span>
-              <p>{chat.sendingAnswer || session?.pendingAnswer}</p>
-            </div>
           )}
-          {pending && (
-            <div className="live-response">
-              <span className="live-status" role="status">
-                <i />
-                {reconnecting ? '正在重连…' : progressLabel || '正在连接同伴…'}
-              </span>
-              {streamingReply && <Message text={streamingReply} />}
-            </div>
-          )}
+          {!pending && session?.pendingAnswer && <div className="learner-message">
+            <span>你</span><p>{session.pendingAnswer}</p>
+          </div>}
           <div ref={feedEnd} />
           {unavailable && (
             <p className="notice problem" role="status">

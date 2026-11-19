@@ -17,6 +17,8 @@ import { Asset, Audition, type ResolveAsset } from './media.tsx';
 import './artifact.css';
 
 export interface ArtifactViewProps {
+  unavailable?: Record<string,string> | undefined;
+  saved?: Pick<ArtifactAction,'answers'|'trace'>[] | undefined;
   view: unknown;
   mount: ArtifactMount | null;
   hostState?: HostStateV1 | undefined;
@@ -41,7 +43,7 @@ export function ArtifactView({
   mount,
   onAction,
   resolveAsset,
-  hostState,
+  hostState, saved, unavailable,
 }: ArtifactViewProps) {
   if (
     !mount ||
@@ -54,7 +56,7 @@ export function ArtifactView({
   return (
     <Revision
       key={mount.mountId}
-      view={view}
+      unavailable={unavailable} saved={saved} view={view}
       mount={mount}
       hostState={hostState}
       onAction={onAction}
@@ -68,8 +70,10 @@ function Revision({
   mount,
   hostState,
   onAction,
-  resolve,
+  resolve, saved, unavailable,
 }: {
+  saved: ArtifactViewProps["saved"];
+  unavailable: ArtifactViewProps["unavailable"];
   view: unknown;
   mount: ArtifactMount;
   hostState: HostStateV1 | undefined;
@@ -95,7 +99,7 @@ function Revision({
       key={JSON.stringify([definition.id, definition.revision])}
       mount={mount}
       hostState={hostState}
-      view={definition}
+      unavailable={unavailable} saved={saved} view={definition}
       onAction={onAction}
       resolve={resolve}
       alternative={result.ok ? undefined : definition.fallback}
@@ -116,8 +120,10 @@ function Editor({
   view,
   onAction,
   resolve,
-  alternative,
+  alternative, saved, unavailable,
 }: {
+  saved: ArtifactViewProps["saved"];
+  unavailable: ArtifactViewProps["unavailable"];
   mount: ArtifactMount;
   hostState: HostStateV1 | undefined;
   alternative: string | undefined;
@@ -126,6 +132,7 @@ function Editor({
   resolve: ResolveAsset | undefined;
 }) {
   const locks = operationLocks(view, mount, hostState);
+  for (const [id, reason] of Object.entries(unavailable ?? {})) locks.set(id,reason);
   const nodes = view.sections.flatMap((s) => s.nodes);
   const equivalents = new Set(nodes.filter((n) => n.kind === 'stepControl').map((n) => n.target));
   const stepTargets = new Map(
@@ -137,11 +144,11 @@ function Editor({
   );
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const [answers, setAnswers] = useState<Record<string, Answer>>(() =>
-    Object.fromEntries(
+    Object.assign(Object.fromEntries(
       nodes
         .filter((n) => n.kind === 'range' || n.kind === 'selection' || n.kind === 'note')
         .map((n) => [n.id, initial(n)]),
-    ),
+    ), ...(saved ?? []).map(entry => entry.answers)),
   );
   const update = (id: string, value: Answer) => setAnswers((old) => ({ ...old, [id]: value }));
   const selected = (id: string) => {
@@ -153,7 +160,19 @@ function Editor({
     const a = answers[id];
     return { range, index: a?.kind === 'quantity' ? range.values.indexOf(a.value) : range.initial };
   }
-  const trace = useRef<ArtifactAction['trace']>({ omitted: 0, steps: [] });
+  const [restoredTrace] = useState(() => {
+    // Each receipt contains cumulative edits for its declared inputs.
+    let steps: Interaction[] = [];
+    let omitted = 0;
+    for (const entry of saved ?? []) {
+      const retained = steps.filter(step => !Object.hasOwn(entry.answers,step.nodeId));
+      steps = [...retained,...entry.trace.steps];
+      omitted = Math.max(omitted,entry.trace.omitted,steps.length-128);
+      steps = steps.slice(-128);
+    }
+    return {omitted,steps};
+  });
+  const trace = useRef<ArtifactAction['trace']>(restoredTrace);
   function record(step: Interaction) {
     if (trace.current.steps.length === 128) {
       trace.current.steps.shift();
