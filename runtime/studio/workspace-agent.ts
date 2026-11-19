@@ -13,6 +13,8 @@ import {workspaceDefinitions} from '../../executors/teaching/workspace-tools.ts'
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {workbookAttempt, workbookAttemptType} from '../../modules/activity/workbook-values.ts';
+import {goalType} from '../../modules/activity/library-values.ts';
+import {organizerTaskType} from '../../modules/activity/organizer-values.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
@@ -32,6 +34,7 @@ export function openWorkspaceTools(options: {
 }) {
   const {db, turn} = options;
   const sources = new Map(options.prior.map(input => [input.id, input]));
+  const overviewBasis = new Map<string, WorkspaceWitness>();
   const opened = new Map<string, Seen>();
   const produced = new Map<string, number>();
   const receipts = new Map<string,{id:string;rev:number;title:string}>();
@@ -86,6 +89,9 @@ export function openWorkspaceTools(options: {
     const direct = new Set<string>([value.id,args.related,...[...(value.results ?? []), ...(value.observations ?? []),
       ...(value.recentAttempts ?? [])].map(item => item.id)].filter(id => typeof id === 'string'));
     for (const w of witnesses) if (direct.has(w.id)) sources.set(w.id,w);
+    if (name === 'read_workspace' && args.id === 'learner') {
+      for (const w of witnesses) if (w.type === goalType || w.type === organizerTaskType) overviewBasis.set(w.id, w);
+    }
     if (name === 'read_workspace' && typeof value.id === 'string' && witnesses.some(w => w.id === value.id)) {
       opened.set(value.id, {id: value.id, workspace:true, title: String(value.title ?? value.kind ?? '学习记录'), text: String(value.content ?? text).slice(0, 3000)});
     }
@@ -172,7 +178,7 @@ export function openWorkspaceTools(options: {
     },
     reads: () => [...opened.values()],
     writes: () => [...receipts.values()],
-    basis: () => [...sources.values()],
+    basis: () => [...new Map([...sources, ...overviewBasis]).values()],
   };
 }
 export function workspaceInput(w: WorkspaceWitness) {

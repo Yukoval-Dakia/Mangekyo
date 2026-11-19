@@ -77,6 +77,7 @@ export type DisplayTurn = {
   answer?: string;
 };
 type Status = 'pending' | 'ready' | 'failed' | 'unknown';
+export const unavailableReplyMessage = '本轮已完成，依据已变更，旧回复已隐藏。';
 type TurnView = {
   id: string;
   submission: ReturnType<typeof studyTurn>;
@@ -89,9 +90,10 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
     id: string;
     value: DisplayTurn | null;
     manifest: unknown;
+    settled: boolean;
     error: { status: Status; message: string } | null;
   }>(
-    `SELECT f.id, d.value, d.manifest, s.last_error AS error FROM facts f
+    `SELECT f.id, d.value, d.manifest, s.last_id IS NOT NULL AS settled, s.last_error AS error FROM facts f
      JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
      LEFT JOIN slot_state s ON s.learner_id=f.learner_id AND s.slot_type=$3 AND s.slot_key=f.id
      LEFT JOIN derivations d ON d.learner_id=f.learner_id AND d.id=s.current_id
@@ -103,14 +105,15 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
   for (const row of rows) {
     const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' });
     const submission = studyTurn(snapshot.value);
-    if (row.value && (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid') {
-      throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
-    }
+    let feedback = row.value;
+    if (feedback && (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid') feedback = null;
+    if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
+      rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: [] };
     result.push({
       id: row.id,
       submission,
-      feedback: row.value,
-      status: row.error?.status ?? (row.value ? 'ready' : 'pending'),
+      feedback,
+      status: row.error?.status ?? (feedback ? 'ready' : 'pending'),
       ...(row.error ? { error: row.error.message } : {}),
     });
   }

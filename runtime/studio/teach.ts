@@ -78,7 +78,7 @@ export async function teach(db: Db, ref: WorkRef) {
   }
   const read = (id: string) => db.snapshot(scope, (tx) => readFact(tx, id));
 
-  async function readFeedback(tx: ReadTransaction, id: string, recordDependency = true) {
+  async function readFeedback(tx: ReadTransaction, id: string) {
     const {
       rows: [row],
     } = await tx.query<{ id: string; value: DisplayTurn; manifest: unknown }>(
@@ -86,18 +86,11 @@ export async function teach(db: Db, ref: WorkRef) {
        WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
       [learner, slotType, id],
     );
-    if (!row) throw new ChangedEvidence();
-    if (recordDependency) {
-      inputs.set('feedback:' + id, {
-        kind: 'slot',
-        slotType,
-        slotKey: id,
-        derivationId: derivationId(row.id),
-        mode: 'following',
-      });
-      await validInputs(tx);
-    }
-    return row;
+    if (row && (await revalidateManifest(tx, parseManifest(row.manifest))).kind === 'valid') return row;
+    return undefined;
+  }
+  function trackFeedback(id: string, replyId: string) {
+    inputs.set('feedback:' + id, { kind: 'slot', slotType, slotKey: id, derivationId: derivationId(replyId), mode: 'following' });
   }
   async function validInputs(tx: ReadTransaction) {
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
@@ -239,9 +232,17 @@ export async function teach(db: Db, ref: WorkRef) {
           if (previous.sessionId !== submission.sessionId || previous.caseId !== submission.caseId || !sameRoute(previous, settings) || !previous.answer) {
             throw new ChangedEvidence();
           }
-          // Each reply follows its immediate predecessor. Recursive manifest
-          // validation covers earlier replies without repeating dependency paths.
-          const {value: response, manifest} = await readFeedback(tx, previousId, count === 0);
+          // Legacy overview replies can lack workspaceBasis. The saved route still bounds their reuse.
+          if (previous.workspaceRevision && previous.workspaceRevision !== submission.workspaceRevision) {
+            historyNotice = '工作区授权已变更，本轮省略了使用旧授权的对话。';
+            break;
+          }
+          const reply = await readFeedback(tx, previousId);
+          if (!reply) {
+            historyNotice = '旧回复的依据已变更，本轮从当前消息继续。';
+            break;
+          }
+          const {value: response, manifest} = reply;
           historyBytes += Buffer.byteLength(previous.answer) + Buffer.byteLength(response.message);
           if (submission.workspaceRevision && count > 0 && historyBytes > 12 * 1024) break;
           const priorMemory = response.reads.find(item => item.id === memoryId);
@@ -265,6 +266,8 @@ export async function teach(db: Db, ref: WorkRef) {
             }
             for (const w of witnesses) if (!inherited.has(w.id)) inherited.set(w.id, w);
           }
+          // Record the predecessor only when its reply enters the model context.
+          if (count === 0) trackFeedback(previousId, reply.id);
           messages.unshift({ role: 'user', content: previous.answer }, { role: 'assistant', content: response.message });
           previousId = previous.parentId;
         }
@@ -319,7 +322,10 @@ export async function teach(db: Db, ref: WorkRef) {
       let followUp;
       if (submission.parentId && submission.answer) {
         const parent = submission.parentId;
-        const {value: prev} = await db.snapshot(scope, tx => readFeedback(tx, parent));
+        const reply = await db.snapshot(scope, tx => readFeedback(tx, parent));
+        if (!reply) throw new ChangedEvidence();
+        trackFeedback(parent, reply.id);
+        const prev = reply.value;
         followUp = {
           previous: {
             action: prev.action as TeachingResponse['action'],
