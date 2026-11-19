@@ -5,7 +5,7 @@ import { Client, Connection } from '@temporalio/client';
 import { createPgDb } from '../../kernel/src/db/pg.ts';
 import { applyKernelSchema, workerStorage } from '../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
-import { acknowledgeStartedWork, relayPending } from '../../kernel/src/work/index.ts';
+import { acknowledgeStartedWork, readWork, relayPending } from '../../kernel/src/work/index.ts';
 import { startWork } from '../../executors/temporal/src/index.ts';
 import { createWorkWorker } from '../../executors/temporal/src/worker.ts';
 import { openStudio } from './sessions.ts';
@@ -13,6 +13,8 @@ import { recordTerminalFailure, teach } from './teach.ts';
 import { sourceBuildId } from './build.ts';
 import { serve } from './http.ts';
 import { openIntake } from './intake.ts';
+import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
+import { readMineru, submitMineru } from './mineru.ts';
 import { openWorkbook } from './workbook.ts';
 import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';
@@ -43,10 +45,13 @@ const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, pool) : 
 const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
 const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
 const research = openResearch(db, activity, companion);
+const intake = openIntake(db, activity);
+const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
+
 async function openWeb() {
   const studio = await openStudio(db, activity);
   const student = { workbook: openWorkbook(db, activity, research.workbookChanged), organizer: openOrganizer(db, activity),
-    memory: openMemory(db, companion), intake: openIntake(db, activity), research };
+    memory: openMemory(db, companion), intake, research };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -67,24 +72,25 @@ if (mode === 'web') {
 async function runWorker(storeId: string) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
+  async function execute(id: string, terminal = false) {
+    const ref = await acknowledgeStartedWork(db, id);
+    if (!ref || await research.execute(ref, terminal)) return;
+    if ((await readWork(db, ref))?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
+    else if (terminal) await recordTerminalFailure(db, ref);
+    else await teach(db, ref);
+  }
   const workerConfig = {
     address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
     namespace: process.env.TEMPORAL_NAMESPACE || 'default',
     taskQueue: queue,
     deploymentName: queue,
     advanceCoordinator: research.advance,
-    onTerminalFailure: async (id: string) => {
-      const ref = await acknowledgeStartedWork(db, id);
-      if (ref && !(await research.execute(ref, true))) await recordTerminalFailure(db, ref);
-    },
+    onTerminalFailure: (id: string) => execute(id, true),
     buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
   };
   const connection = await Connection.connect({ address: workerConfig.address });
   const client = new Client({ connection, namespace: workerConfig.namespace });
-  const { worker, connection: workerConnection } = await createWorkWorker(async (id) => {
-    const ref = await acknowledgeStartedWork(db, id);
-    if (ref && !(await research.execute(ref))) await teach(db, ref);
-  }, workerConfig);
+  const { worker, connection: workerConnection } = await createWorkWorker(execute, workerConfig);
   let stopping = false;
   const running = worker.run();
   void running.catch((error) => {

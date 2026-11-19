@@ -30,6 +30,7 @@ export type SlotRef = {
 };
 
 export type FactSnapshot<Value = Json> = {
+  readonly type: string;
   readonly ref: FactRef;
   readonly accessEpoch: Tick;
   readonly value: Value;

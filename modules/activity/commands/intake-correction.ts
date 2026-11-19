@@ -35,9 +35,7 @@ export default defineCommand({
         id: input.intakeId,
         expectedRev: document.ref.rev,
         data: {
-          materialId: archived.materialId,
-          title: archived.title,
-          original: archived.original,
+          ...archived,
           extraction: corrected,
         },
       },
