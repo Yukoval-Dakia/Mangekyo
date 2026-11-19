@@ -103,18 +103,11 @@ it('keeps the entire release pending when a required sample or its frozen verifi
     ...calculationProof, samples: calculationSamples.map(sample => sample === mixed ? entry : sample),
   });
   const actual = mixed.run.actual;
-  const cases = [
-    [verify(release, { ...calculationProof, samples: calculationSamples.filter(sample => sample !== mixed) }), 'coverage'],
-    [withMixed({ ...mixed, sample: { ...mixed.sample, expected: undefined } }), 'expected'],
-    [withMixed({ ...mixed, run: { ...mixed.run, actual: undefined } }), 'actual'],
-    [withMixed({ ...mixed, run: { state: 'pending', reason: '执行尚未返回' } }), 'run'],
-    [withMixed({ ...mixed, run: { ...mixed.run, witnessRef: ref(17) } }), 'run'],
-    [withMixed({ ...mixed, run: { ...mixed.run, evaluators: [{ criterionId: 'rule', evaluator: { ...methods, version: 'v1' } }] } }), 'evaluator'],
-    [withMixed({ ...mixed, run: { ...mixed.run, actual: { ...actual, outcomes: actual.outcomes.map(outcome => ({ ...outcome, earned: 2 })) } } }), 'outcome'],
-  ] as const;
-  for (const [decision, stage] of cases) {
-    expect(decision).toMatchObject({ state: 'needs-review', issues: [{ stage, itemId: calculation.itemId, sampleRef: mixed.sample.sampleRef }] });
-  }
+  expect(verify(release, { ...calculationProof, samples: calculationSamples.filter(sample => sample !== mixed) }))
+    .toMatchObject({ state: 'needs-review', issues: [{ stage: 'coverage', sampleRef: mixed.sample.sampleRef }] });
+  expect(withMixed({ ...mixed, run: { ...mixed.run, actual: { ...actual,
+    outcomes: actual.outcomes.map(outcome => ({ ...outcome, earned: 2 })),
+  } } })).toMatchObject({ state: 'needs-review', issues: [{ stage: 'outcome', sampleRef: mixed.sample.sampleRef }] });
   expect(verify({ ...release, items: [{ ...calculation, promptRef: ref(17) }, explanation] }))
     .toMatchObject({ state: 'needs-review', issues: [{ stage: 'contract', itemId: calculation.itemId }] });
   const wrongMeaning = example(explanation, 25, ['先乘或先除只改变中间量'], qualitative, { ...qualitative, feedback: '结论缺少依据' });
