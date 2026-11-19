@@ -12,9 +12,6 @@ const note = defineFact({ type: 'note.entry', schema: { parse(input: unknown) {
   if (typeof input !== 'object' || input === null || !('text' in input) || typeof input.text !== 'string') throw new Error('Invalid note data');
   return { text: input.text };
 } } });
-const record = defineCommand({ type: 'note.record', schema, destructive: false,
-  write: (_ctx, input): readonly FactWrite[] => [{kind:'create', id:input.id, factType:'note.entry',data:{text:input.text}}],
-});
 const correct = defineCommand({ type: 'note.correct', destructive: true,
   schema: { parse(input: unknown) {
     const parsed = schema.parse(input);
@@ -25,6 +22,12 @@ const correct = defineCommand({ type: 'note.correct', destructive: true,
   } },
   write: (_ctx,input):readonly FactWrite[] => [{kind:'correct',id:input.id,expectedRev:input.rev as import('../../src/declarations/ids.ts').Revision,data:{text:input.text}}],
 });
-export function noteModule(): LoadedModule {
+export function noteModule(purpose?: readonly string[]): LoadedModule {
+  const record = defineCommand({ type: 'note.record', schema, destructive: false,
+    write: (_ctx, input): readonly FactWrite[] => [{
+      kind: 'create', id: input.id, factType: 'note.entry', data: { text: input.text },
+      ...(purpose === undefined ? {} : { purpose }),
+    }],
+  });
  return {definition:defineModule({name:'note'}),facts:new Map([[note.type,note]]),commands:new Map<string, Record<string, unknown>>([[record.type,record],[correct.type,correct]]),slots:new Map(),derivers:new Map()};
 }
