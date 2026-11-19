@@ -125,10 +125,10 @@ async function sealMaterials(tx: ReadTransaction, attachment: ReturnType<typeof 
   }
   const read = createCommandReadContext(tx, storagePurpose);
   const material = await read.fact(attachment.id, { mode: 'following' });
-  const original = source.sourceRef.fact;
+  const textFact = source.sourceRef.textFact;
   const facts = [material];
-  if (original.id !== attachment.id) {
-    facts.push(await read.fact(factId(original.id), { mode: 'pinned', rev: original.rev as Revision }));
+  if (textFact) {
+    facts.push(await read.fact(factId(textFact.id), { mode: 'pinned', rev: textFact.rev as Revision }));
   }
   return facts.map(({ ref: { id, rev }, accessEpoch }) => ({ ref: { id, rev }, accessEpoch }));
 }

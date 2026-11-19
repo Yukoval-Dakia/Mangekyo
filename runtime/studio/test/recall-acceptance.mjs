@@ -30,8 +30,17 @@ try {
   await db.query('INSERT INTO learners (id) VALUES ($1)', [studioLearner]);
   const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity', import.meta.url)));
   const handle = createCommandHandler(db, { modules: [activity], hooks: { async onFactsChanged() {} } });
+  const materialId = stableId('recall material');
+  const intakeId = stableId('intake-document', materialId);
+  const attachment = { id: materialId, title: '分组', text: '每组三枚', mode: 'prepare' };
+  await handle({ ...scope, id: materialId, actor: 'learner', type: 'activity.captureIntake', purpose: 'storage', input: {
+    materialId, intakeId, title: attachment.title,
+    original: { name: 'groups.txt', mediaType: 'text/plain', size: 12, sha256: 'a'.repeat(64) },
+    extraction: { method: 'utf8', status: 'ok', text: attachment.text, characterCount: attachment.text.length,
+      pages: null, error: null, warnings: [], truncated: false },
+  } });
   await handle({ ...scope, id: turnId, actor: 'learner', type: 'activity.submitTurn', purpose, input: {
-    id: turnId, data: { sessionId: turnId, parentId: null, caseId: 'companion', answer: '备课', model: 'fixture', baseUrl: 'fixture' },
+    id: turnId, data: { sessionId: turnId, parentId: null, attachment, caseId: 'companion', answer: '备课', model: 'fixture', baseUrl: 'fixture' },
   } });
   await db.tx(scope, tx => tx.withLearnerWrite(async tick => {
     const manifest = JSON.stringify({ version: 1, ...scope, purpose, gatherTick: tick, inputs: [
@@ -57,6 +66,9 @@ try {
   await assert.rejects(recall.mount({ ...mount, turnId: stableId('other turn') }), { status: 404 });
   const first = await recall.mount(mount);
   assert.deepEqual(first, { ...mount, prompt, issuanceId: first.issuanceId, responseId: 'answer' });
+  const { rows: [issuance] } = await db.query('SELECT data FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1',
+    [studioLearner, first.issuanceId]);
+  assert.deepEqual(issuance.data.materials.map(witness => witness.ref), [{ id: materialId, rev: 1 }, { id: intakeId, rev: 1 }]);
   assert.deepEqual(await recall.get(mount), first);
   const submit = requestId => ({ mount, requestId, answer: '12' });
   const unknown = await recall.submit(submit('before_help'));
