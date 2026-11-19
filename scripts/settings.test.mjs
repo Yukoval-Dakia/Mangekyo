@@ -8,14 +8,16 @@ import { loadSettings, publicSettings, saveSettings } from '../runtime/studio/se
 let directory = '';
 let file = '';
 
+const saveProviders = (providers, values = {}) => saveSettings({providers, ...values});
+const providerKey = (settings, id) => settings.providers.find(provider => provider.id === id)?.apiKey;
+
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'mangekyo-settings-'));
   file = join(directory, 'provider.json');
   process.env.MANGEKYO_SETTINGS_FILE = file;
-  process.env.MANGEKYO_EXA_API_KEY = '';
-  process.env.EXA_API_KEY = '';
-  process.env.MANGEKYO_LLM_BASE_URL = '';
-  process.env.MANGEKYO_LLM_API_KEY = '';
+  for (const name of ['MANGEKYO_EXA_API_KEY', 'EXA_API_KEY', 'MANGEKYO_LLM_BASE_URL', 'MANGEKYO_LLM_API_KEY']) {
+    process.env[name] = '';
+  }
 });
 
 afterEach(async () => {
@@ -50,68 +52,46 @@ describe('unified settings', () => {
   });
 
   it('keeps a key when the endpoint is unchanged and clears it when moved', async () => {
-    await saveSettings({
-      providers: [{
-        id: 'one',
-        label: 'One',
-        baseUrl: 'https://one.example/v1',
-        protocol: 'openai',
-        model: 'auto/deepseek-v4.1-flash',
-        reasoningEffort: 'high',
-        apiKey: 'one-secret',
-      }],
-      activeProviderId: 'one',
-      mcpServers: [],
-    });
+    await saveProviders([{
+      id: 'one', label: 'One', baseUrl: 'https://one.example/v1', protocol: 'openai',
+      model: 'auto/deepseek-v4.1-flash', reasoningEffort: 'high', apiKey: 'one-secret',
+    }], {activeProviderId: 'one', mcpServers: []});
 
-    await saveSettings({
-      providers: [{
-        id: 'one',
-        label: 'One renamed',
-        baseUrl: 'https://one.example/v1',
-        model: 'auto/deepseek-v4.1-flash',
-        reasoningEffort: 'medium',
-      }],
-    });
+    await saveProviders([{
+      id: 'one', label: 'One renamed', baseUrl: 'https://one.example/v1',
+      model: 'auto/deepseek-v4.1-flash', reasoningEffort: 'medium',
+    }]);
     expect((await loadSettings()).apiKey).toBe('one-secret');
 
-    await saveSettings({
-      providers: [{
-        id: 'one',
-        label: 'One moved',
-        baseUrl: 'https://two.example/v1',
-        model: 'auto/deepseek-v4.1-flash',
-      }],
-    });
+    await saveProviders([{
+      id: 'one', label: 'One moved', baseUrl: 'https://two.example/v1', model: 'auto/deepseek-v4.1-flash',
+    }]);
     const moved = await loadSettings();
     expect(moved.baseUrl).toBe('https://two.example/v1');
     expect(moved.apiKey).toBe('');
     expect(moved.providers).toHaveLength(1);
-    await saveSettings({ providers: [{id: 'one', apiKey: 'original', model: 'different-model'}] });
+    await saveProviders([{id: 'one', apiKey: 'original', model: 'different-model'}]);
     expect((await loadSettings()).reasoningEffort).toBe('default');
-    await saveSettings({ providers: [{id: 'one', protocol: 'anthropic'}] });
+    await saveProviders([{id: 'one', protocol: 'anthropic'}]);
     expect((await loadSettings()).apiKey).toBe('');
   });
 
   it('stores independent profiles and never copies secrets between them', async () => {
-    await saveSettings({
-      providers: [
-        { id: 'first', label: 'First', baseUrl: 'https://first.example/v1', apiKey: 'first-secret' },
-        { id: 'second', label: 'Second', baseUrl: 'https://second.example/v1' },
-      ],
-      activeProviderId: 'second',
-    });
+    await saveProviders([
+      {id: 'first', label: 'First', baseUrl: 'https://first.example/v1', apiKey: 'first-secret'},
+      {id: 'second', label: 'Second', baseUrl: 'https://second.example/v1'},
+    ], {activeProviderId: 'second'});
     let loaded = await loadSettings();
     expect(loaded.activeProviderId).toBe('second');
     expect(loaded.baseUrl).toBe('https://second.example/v1');
     expect(loaded.apiKey).toBe('');
-    expect(loaded.providers.find((provider) => provider.id === 'first')?.apiKey).toBe('first-secret');
+    expect(providerKey(loaded, 'first')).toBe('first-secret');
 
     await saveSettings({ activeProviderId: 'first' });
     loaded = await loadSettings();
     expect(loaded.baseUrl).toBe('https://first.example/v1');
     expect(loaded.apiKey).toBe('first-secret');
-    expect(loaded.providers.find((provider) => provider.id === 'second')?.apiKey).toBe('');
+    expect(providerKey(loaded, 'second')).toBe('');
 
     await saveSettings({
       providers: loaded.providers
@@ -166,56 +146,37 @@ describe('unified settings', () => {
   });
 
   it('validates and persists MCP servers with a tool allowlist', async () => {
-    const saved = await saveSettings({
-      mcpServers: [{
-        id: 'docs',
-        label: 'Docs',
-        url: 'http://127.0.0.1:8765/mcp',
-        token: 'mcp-secret',
-        allowedTools: ['search', 'fetch_page', 'search'],
-        enabled: true,
-      }],
-    });
+    const saved = await saveSettings({mcpServers: [{
+      id: 'docs', label: 'Docs', url: 'http://127.0.0.1:8765/mcp', token: 'mcp-secret',
+      allowedTools: ['search', 'fetch_page', 'search'], enabled: true,
+    }]});
     expect(JSON.stringify(saved)).not.toContain('mcp-secret');
     expect(saved.mcpServers[0].hasToken).toBe(true);
     expect(saved.mcpServers[0].allowedTools).toEqual(['search', 'fetch_page']);
 
-    await saveSettings({
-      mcpServers: [{
-        id: 'docs',
-        label: 'Docs',
-        url: 'http://127.0.0.1:8765/mcp',
-        allowedTools: ['search'],
-        enabled: false,
-      }],
-    });
+    await saveSettings({mcpServers: [{
+      id: 'docs', label: 'Docs', url: 'http://127.0.0.1:8765/mcp', allowedTools: ['search'], enabled: false,
+    }]});
     const kept = await loadSettings();
     expect(kept.mcpServers[0].token).toBe('mcp-secret');
     expect(kept.mcpServers[0].enabled).toBe(false);
 
-    await saveSettings({
-      mcpServers: [{
-        id: 'docs',
-        url: 'http://localhost:9000/mcp',
-        allowedTools: ['search'],
-        enabled: false,
-      }],
-    });
+    await saveSettings({mcpServers: [{
+      id: 'docs', url: 'http://localhost:9000/mcp', allowedTools: ['search'], enabled: false,
+    }]});
     expect((await loadSettings()).mcpServers[0].token).toBe('');
   });
 
-  it('rejects non-local HTTP endpoints and malformed settings', async () => {
-    await expect(saveSettings({ baseUrl: 'http://remote.example/v1' })).rejects.toThrow(/HTTPS/);
-    await expect(
-      saveSettings({ mcpServers: [{ id: 'bad', url: 'http://remote.example/mcp' }] }),
-    ).rejects.toThrow(/HTTPS/);
-    await expect(
-      saveSettings({ baseUrl: 'https://user:pass@remote.example/v1' }),
-    ).rejects.toThrow(/HTTPS|凭据/);
-    await expect(saveSettings({ providers: [] })).rejects.toThrow(/至少保留/);
-    await expect(
-      saveSettings({ mcpServers: [{ id: 'bad', url: 'https://example.com/mcp', allowedTools: ['bad tool'] }] }),
-    ).rejects.toThrow(/工具名称/);
+  it.for([
+    ['remote provider HTTP', {baseUrl: 'http://remote.example/v1'}, /HTTPS/],
+    ['remote MCP HTTP', {mcpServers: [{id: 'bad', url: 'http://remote.example/mcp'}]}, /HTTPS/],
+    ['URL credentials', {baseUrl: 'https://user:pass@remote.example/v1'}, /HTTPS|凭据/],
+    ['empty providers', {providers: []}, /至少保留/],
+    ['malformed tool name', {
+      mcpServers: [{id: 'bad', url: 'https://example.com/mcp', allowedTools: ['bad tool']}],
+    }, /工具名称/],
+  ])('rejects %s', async ([, input, error]) => {
+    await expect(saveSettings(input)).rejects.toThrow(error);
   });
 
   it('writes atomically and serializes concurrent saves', async () => {

@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { anthropicRequestBody, readAnthropicCompletion } from './anthropic-provider.ts';
 import { profileFor, requestCompletion, TeachingError, teachingProfile, verifyTeachingModel } from './provider.ts';
 import { runTeachingTurn } from './index.ts';
@@ -9,6 +9,9 @@ const anthropicProvider = {
   model: 'claude-sonnet-5',
   reasoningEffort: 'default',
 };
+const bodyOf = init => JSON.parse(String(init?.body));
+
+afterEach(() => vi.restoreAllMocks());
 
 function event(type: string, value: Record<string, unknown>) {
   return `event: ${type}\ndata: ${JSON.stringify({type, ...value})}\n\n`;
@@ -21,6 +24,26 @@ function anthropicStream(content: string[], stopReason: string, model = anthropi
     event('message_delta', {delta: {stop_reason: stopReason}, usage: {output_tokens: 1}}),
     event('message_stop', {}),
   ].join('');
+}
+
+function completionBody(messages: Record<string, unknown>[]) {
+  return JSON.stringify({
+    model: anthropicProvider.model,
+    max_completion_tokens: 2048,
+    messages,
+    tools: [{type: 'function', function: {
+      name: 'python', description: '验算',
+      parameters: {type: 'object', properties: {code: {type: 'string'}}, required: ['code']},
+    }}],
+  });
+}
+
+async function teach() {
+  return runTeachingTurn({question: '平均速度？', answer: '45', evidenceCatalog: []}, {
+    provider: anthropicProvider,
+    readEvidence: async () => undefined,
+    runEffect: (step, invoke) => invoke(String(step.index)),
+  });
 }
 
 it('keeps the default DeepSeek profile and selects a custom route truthfully', () => {
@@ -48,7 +71,7 @@ it('rejects a malformed native tool call without executing it as an empty object
 it('translates tool history and completes multiple native Messages rounds', async () => {
   const requests: {url: string; headers: Headers; body: Record<string, any>}[] = [];
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body));
+    const body = bodyOf(init);
     requests.push({url: String(url), headers: new Headers(init?.headers), body});
     const toolStream = anthropicStream([
       event('content_block_start', {index: 0, content_block: {type: 'thinking', thinking: ''}}),
@@ -70,74 +93,56 @@ it('translates tool history and completes multiple native Messages rounds', asyn
       headers: {'content-type': 'text/event-stream'},
     });
   });
-  try {
-    const endpoint = `${anthropicProvider.baseUrl}/messages`;
-    const first = await requestCompletion(endpoint, JSON.stringify({
-      model: anthropicProvider.model,
-      max_completion_tokens: 2048,
-      messages: [{role: 'system', content: '系统'}, {role: 'user', content: '算一下'}],
-      tools: [{type: 'function', function: {
-        name: 'python', description: '验算',
-        parameters: {type: 'object', properties: {code: {type: 'string'}}, required: ['code']},
-      }}],
-    }), 'secret', 'request-1', {allowTools: true}, anthropicProvider);
-    expect(first).toMatchObject({
-      model: 'claude-sonnet-5',
-      toolCalls: [{id: 'toolu_1', function: {name: 'python', arguments: '{"code":"print(45)"}'}}],
-    });
-    expect(first).toMatchObject({
-      providerTurn: {protocol: 'anthropic', content: [
-        {type: 'thinking', thinking: '私有推理'},
-        {type: 'tool_use', id: 'toolu_1', name: 'python', input: {code: 'print(45)'}},
-      ]},
-    });
+  const endpoint = `${anthropicProvider.baseUrl}/messages`;
+  const first = await requestCompletion(endpoint, completionBody([
+    {role: 'system', content: '系统'}, {role: 'user', content: '算一下'},
+  ]), 'secret', 'request-1', {allowTools: true}, anthropicProvider);
+  expect(first).toMatchObject({
+    model: 'claude-sonnet-5',
+    toolCalls: [{id: 'toolu_1', function: {name: 'python', arguments: '{"code":"print(45)"}'}}],
+  });
+  expect(first).toMatchObject({
+    providerTurn: {protocol: 'anthropic', content: [
+      {type: 'thinking', thinking: '私有推理'},
+      {type: 'tool_use', id: 'toolu_1', name: 'python', input: {code: 'print(45)'}},
+    ]},
+  });
 
-    const second = await requestCompletion(endpoint, JSON.stringify({
-      model: anthropicProvider.model,
-      max_completion_tokens: 2048,
-      messages: [
-        {role: 'system', content: '系统'},
-        {role: 'user', content: '算一下'},
-        {role: 'assistant', content: null, tool_calls: [{
-          id: 'toolu_1', type: 'function', function: {name: 'python', arguments: '{"code":"print(45)"}'},
-        }], providerTurn: 'providerTurn' in first ? first.providerTurn : undefined},
-        {role: 'tool', tool_call_id: 'toolu_1', content: '45'},
-      ],
-      tools: [{type: 'function', function: {
-        name: 'python', description: '验算',
-        parameters: {type: 'object', properties: {code: {type: 'string'}}, required: ['code']},
-      }}],
-    }), 'secret', 'request-2', {allowTools: true}, anthropicProvider);
-    expect(second).toMatchObject({content: '验算完成。', model: 'claude-sonnet-5'});
+  const second = await requestCompletion(endpoint, completionBody([
+    {role: 'system', content: '系统'},
+    {role: 'user', content: '算一下'},
+    {role: 'assistant', content: null, tool_calls: [{
+      id: 'toolu_1', type: 'function', function: {name: 'python', arguments: '{"code":"print(45)"}'},
+    }], providerTurn: 'providerTurn' in first ? first.providerTurn : undefined},
+    {role: 'tool', tool_call_id: 'toolu_1', content: '45'},
+  ]), 'secret', 'request-2', {allowTools: true}, anthropicProvider);
+  expect(second).toMatchObject({content: '验算完成。', model: 'claude-sonnet-5'});
 
-    expect(requests[0]?.url).toBe('https://api.anthropic.test/v1/messages');
-    expect(requests[0]?.headers.get('x-api-key')).toBe('secret');
-    expect(requests[0]?.headers.get('anthropic-version')).toBe('2023-06-01');
-    expect(requests[0]?.headers.get('authorization')).toBeNull();
-    expect(requests[0]?.body).toMatchObject({
-      model: 'claude-sonnet-5', max_tokens: 2048, stream: true, system: '系统',
-      tools: [{name: 'python', input_schema: {type: 'object'}}],
-    });
-    expect(requests[0]?.body).not.toHaveProperty('output_config');
-    expect(requests[1]?.body.messages).toEqual([
-      {role: 'user', content: [{type: 'text', text: '算一下'}]},
-      {role: 'assistant', content: [
-        {type: 'thinking', thinking: '私有推理'},
-        {type: 'tool_use', id: 'toolu_1', name: 'python', input: {code: 'print(45)'}},
-      ]},
-      {role: 'user', content: [{type: 'tool_result', tool_use_id: 'toolu_1', content: '45'}]},
-    ]);
-  } finally {
-    fetch.mockRestore();
-  }
+  expect(requests[0]?.url).toBe('https://api.anthropic.test/v1/messages');
+  expect(requests[0]?.headers.get('x-api-key')).toBe('secret');
+  expect(requests[0]?.headers.get('anthropic-version')).toBe('2023-06-01');
+  expect(requests[0]?.headers.get('authorization')).toBeNull();
+  expect(requests[0]?.body).toMatchObject({
+    model: 'claude-sonnet-5', max_tokens: 2048, stream: true, system: '系统',
+    tools: [{name: 'python', input_schema: {type: 'object'}}],
+  });
+  expect(requests[0]?.body).not.toHaveProperty('output_config');
+  expect(requests[1]?.body.messages).toEqual([
+    {role: 'user', content: [{type: 'text', text: '算一下'}]},
+    {role: 'assistant', content: [
+      {type: 'thinking', thinking: '私有推理'},
+      {type: 'tool_use', id: 'toolu_1', name: 'python', input: {code: 'print(45)'}},
+    ]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: 'toolu_1', content: '45'}]},
+  ]);
 });
 
 it('sends a custom profile through teaching decisions and omits default effort', async () => {
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url: string | URL | Request, init?: RequestInit) => {
-    expect(JSON.parse(String(init?.body))).toMatchObject({
+    expect(bodyOf(init)).toMatchObject({
       model: 'claude-sonnet-5', max_tokens: 2048, stream: true,
     });
-    expect(JSON.parse(String(init?.body))).not.toHaveProperty('output_config');
+    expect(bodyOf(init)).not.toHaveProperty('output_config');
     return Response.json({
       id: 'msg_2', type: 'message', model: 'claude-sonnet-5-20250929', stop_reason: 'end_turn',
       content: [{type: 'text', text: JSON.stringify({
@@ -146,34 +151,22 @@ it('sends a custom profile through teaching decisions and omits default effort',
       })}],
     });
   });
-  try {
-    const result = await runTeachingTurn({question: '平均速度？', answer: '45', evidenceCatalog: []}, {
-      provider: anthropicProvider,
-      readEvidence: async () => undefined,
-      runEffect: (step, invoke) => invoke(String(step.index)),
-    });
-    expect(result.action).toBe('clarifying_question');
-    expect(result.reportedModel).toBe('claude-sonnet-5-20250929');
-  } finally {
-    fetch.mockRestore();
-  }
+  const result = await teach();
+  expect(result.action).toBe('clarifying_question');
+  expect(result.reportedModel).toBe('claude-sonnet-5-20250929');
 });
 
 it('resumes one confirmed truncated teaching decision with a larger output budget', async () => {
   const budgets: number[] = [];
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
-    budgets.push(JSON.parse(String(init?.body)).max_tokens);
+    budgets.push(bodyOf(init).max_tokens);
     const decision = {type: 'teach', action: 'clarifying_question', rationale: '需要确认', nextStep: '你的第一步是什么？', evidenceIds: []};
     return Response.json({type: 'message', model: anthropicProvider.model,
       stop_reason: budgets.length === 1 ? 'max_tokens' : 'end_turn', content: [{type: 'text', text: JSON.stringify(decision)}]});
   });
-  try {
-    const result = await runTeachingTurn({question: '平均速度？', answer: '45', evidenceCatalog: []}, {
-      provider: anthropicProvider, readEvidence: async () => undefined, runEffect: (step, invoke) => invoke(String(step.index)),
-    });
-    expect(result.action).toBe('clarifying_question');
-    expect(budgets).toEqual([2048, 8192]);
-  } finally { fetch.mockRestore(); }
+  const result = await teach();
+  expect(result.action).toBe('clarifying_question');
+  expect(budgets).toEqual([2048, 8192]);
 });
 
 it('rejects an OpenAI-shaped body that could silently drop the selected model', () => {

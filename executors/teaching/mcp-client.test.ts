@@ -19,6 +19,15 @@ type TestServer = {
 };
 
 const servers: TestServer[] = [];
+const searchTool = {
+  name: 'search',
+  description: 'Search the notes',
+  inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+};
+const calculateTool = {
+  name: 'calculate',
+  inputSchema: { type: 'object', properties: { expression: { type: 'string' } } },
+};
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -81,38 +90,51 @@ async function startServer(
   return testServer;
 }
 
-function initialize(id: number, sessionId: string) {
+function mcpServer(id: string, url: string, allowedTools: string[] = []): McpServer {
+  return {id, url, allowedTools};
+}
+
+function initializeResult(serverName = 'test-server') {
   return {
-    jsonrpc: '2.0',
-    id,
-    result: {
-      protocolVersion: '2025-06-18',
-      capabilities: { tools: {} },
-      serverInfo: { name: 'test-server', version: '1' },
-    },
-    sessionId,
+    protocolVersion: '2025-06-18',
+    capabilities: { tools: {} },
+    serverInfo: { name: serverName, version: '1' },
   };
+}
+
+function initialize(response: ServerResponse, id: number, sessionId: string): void {
+  json(response, {jsonrpc: '2.0', id, result: initializeResult()}, sessionId);
+}
+
+function protocolMessage(
+  request: IncomingMessage,
+  response: ServerResponse,
+  body: unknown,
+  sessionId: string,
+): Record<string, unknown> | undefined {
+  if (request.method === 'DELETE') {
+    response.writeHead(204);
+    response.end();
+    return undefined;
+  }
+  const message = body as Record<string, unknown>;
+  if (message.method === 'initialize') {
+    initialize(response, Number(message.id), sessionId);
+    return undefined;
+  }
+  if (message.method === 'notifications/initialized') {
+    response.writeHead(202);
+    response.end();
+    return undefined;
+  }
+  return message;
 }
 
 async function protocolServer(): Promise<TestServer> {
   let page = 0;
   return startServer((request, response, body) => {
-    const message = body as Record<string, unknown>;
-    if (request.method === 'DELETE') {
-      response.writeHead(204);
-      response.end();
-      return;
-    }
-    if (message.method === 'initialize') {
-      const init = initialize(Number(message.id), 'session-test');
-      json(response, { jsonrpc: '2.0', id: init.id, result: init.result }, init.sessionId);
-      return;
-    }
-    if (message.method === 'notifications/initialized') {
-      response.writeHead(202);
-      response.end();
-      return;
-    }
+    const message = protocolMessage(request, response, body, 'session-test');
+    if (!message) return;
     if (message.method === 'tools/list') {
       page++;
       if (page === 1) {
@@ -123,11 +145,7 @@ async function protocolServer(): Promise<TestServer> {
             id: message.id,
             result: {
               tools: [
-                {
-                  name: 'search',
-                  description: 'Search the notes',
-                  inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
-                },
+                searchTool,
                 { name: 'delete', description: 'Never exposed', inputSchema: { type: 'object' } },
               ],
               nextCursor: 'next-page',
@@ -142,7 +160,7 @@ async function protocolServer(): Promise<TestServer> {
         result: {
           tools: [
             { name: 'search', description: 'Duplicate', inputSchema: { type: 'object' } },
-            { name: 'calculate', inputSchema: { type: 'object', properties: { expression: { type: 'string' } } } },
+            calculateTool,
           ],
         },
       });
@@ -158,7 +176,7 @@ async function protocolServer(): Promise<TestServer> {
 }
 
 it('stops a recovered stateful turn before a new external tool request', async () => {
-  const server = {id: 'library', url: 'https://unused.invalid/mcp', allowedTools: ['next']};
+  const server = mcpServer('library', 'https://unused.invalid/mcp', ['next']);
   const name = 'mcp_next_' + createHash('sha256').update(JSON.stringify(['library', 'next'])).digest('hex').slice(0, 12);
   const result = runStudyAgent([{role: 'user', content: '继续'}], {provider: {baseUrl: 'https://unused.invalid'}, tools: {mcpServers: [server]},
     runEffect: async (step, invoke) => {
@@ -171,7 +189,7 @@ it('stops a recovered stateful turn before a new external tool request', async (
 
 it('keeps one remote session across discovery and consecutive tools in the same turn', async () => {
   const remote = await protocolServer();
-  const server = {id: 'library', url: remote.url, allowedTools: ['search']};
+  const server = mcpServer('library', remote.url, ['search']);
   const connections = new McpTurnConnections();
   try {
     await discoverMcpTools(server, connections);
@@ -188,23 +206,13 @@ it('keeps one remote session across discovery and consecutive tools in the same 
 it('discovers only allowlisted tools across JSON and SSE pages, then deletes the session', async () => {
   const server = await protocolServer();
   const tools = await discoverMcpTools({
-    id: 'notes',
-    url: server.url,
+    ...mcpServer('notes', server.url, ['search', 'calculate']),
     token: 'local-test-token',
-    allowedTools: ['search', 'calculate'],
   });
 
   expect(tools).toEqual([
-    {
-      name: 'search',
-      description: 'Search the notes',
-      inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
-    },
-    {
-      name: 'calculate',
-      description: '',
-      inputSchema: { type: 'object', properties: { expression: { type: 'string' } } },
-    },
+    searchTool,
+    { ...calculateTool, description: '' },
   ]);
 
   expect(server.requests.map(request => request.method === 'DELETE' ? 'DELETE' : (request.body as { method?: string }).method))
@@ -226,22 +234,8 @@ it('discovers only allowlisted tools across JSON and SSE pages, then deletes the
 
 it('calls a tool over SSE and preserves text and structured content', async () => {
   const server = await startServer((request, response, body) => {
-    const message = body as Record<string, unknown>;
-    if (request.method === 'DELETE') {
-      response.writeHead(204);
-      response.end();
-      return;
-    }
-    if (message.method === 'initialize') {
-      const init = initialize(Number(message.id), 'session-call');
-      json(response, { jsonrpc: '2.0', id: init.id, result: init.result }, init.sessionId);
-      return;
-    }
-    if (message.method === 'notifications/initialized') {
-      response.writeHead(202);
-      response.end();
-      return;
-    }
+    const message = protocolMessage(request, response, body, 'session-call');
+    if (!message) return;
     if (message.method === 'tools/call') {
       eventStream(response, [
         { jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } },
@@ -263,11 +257,8 @@ it('calls a tool over SSE and preserves text and structured content', async () =
     response.end();
   });
 
-  const output = await callMcpTool({
-    id: 'calculator',
-    url: server.url,
-    allowedTools: ['calculate'],
-  }, 'calculate', { expression: '6 * 7' });
+  const serverConfig = mcpServer('calculator', server.url, ['calculate']);
+  const output = await callMcpTool(serverConfig, 'calculate', { expression: '6 * 7' });
 
   expect(output).toBe('42\nfrom calculate\n\n{"value":42,"source":"server"}');
   const call = server.requests.find(request => (request.body as { method?: string })?.method === 'tools/call');
@@ -280,22 +271,8 @@ it('calls a tool over SSE and preserves text and structured content', async () =
 it('rejects disallowed tools before network access and never repeats a failed tool call', async () => {
   let toolCalls = 0;
   const server = await startServer((request, response, body) => {
-    const message = body as Record<string, unknown>;
-    if (request.method === 'DELETE') {
-      response.writeHead(204);
-      response.end();
-      return;
-    }
-    if (message.method === 'initialize') {
-      const init = initialize(Number(message.id), 'session-once');
-      json(response, { jsonrpc: '2.0', id: init.id, result: init.result }, init.sessionId);
-      return;
-    }
-    if (message.method === 'notifications/initialized') {
-      response.writeHead(202);
-      response.end();
-      return;
-    }
+    const message = protocolMessage(request, response, body, 'session-once');
+    if (!message) return;
     if (message.method === 'tools/call') {
       toolCalls++;
       response.writeHead(500, { 'content-type': 'application/json' });
@@ -305,11 +282,7 @@ it('rejects disallowed tools before network access and never repeats a failed to
     response.writeHead(400);
     response.end();
   });
-  const serverConfig: McpServer = {
-    id: 'write-once',
-    url: server.url,
-    allowedTools: ['write'],
-  };
+  const serverConfig = mcpServer('write-once', server.url, ['write']);
 
   await expect(callMcpTool(serverConfig, 'delete', {})).rejects.toThrow('not allowed');
   expect(server.requests).toHaveLength(0);
@@ -345,24 +318,15 @@ it('does not follow redirects', async () => {
 
 it('rejects remote plain HTTP before making a request', async () => {
   const send = vi.spyOn(globalThis, 'fetch');
-  await expect(discoverMcpTools({
-    id: 'remote',
-    url: 'http://example.test/mcp',
-    allowedTools: [],
-  })).rejects.toThrow('HTTPS or loopback HTTP');
+  await expect(discoverMcpTools(mcpServer('remote', 'http://example.test/mcp')))
+    .rejects.toThrow('HTTPS or loopback HTTP');
   expect(send).not.toHaveBeenCalled();
 });
 
 it('accepts HTTPS and sends bearer authorization', async () => {
   const send = vi.spyOn(globalThis, 'fetch')
     .mockResolvedValueOnce(Response.json({
-      jsonrpc: '2.0',
-      id: 1,
-      result: {
-        protocolVersion: '2025-06-18',
-        capabilities: { tools: {} },
-        serverInfo: { name: 'https-server', version: '1' },
-      },
+      jsonrpc: '2.0', id: 1, result: initializeResult('https-server'),
     }, { headers: { 'mcp-session-id': 'secure-session' } }))
     .mockResolvedValueOnce(new Response(null, { status: 202 }))
     .mockResolvedValueOnce(Response.json({
@@ -373,10 +337,8 @@ it('accepts HTTPS and sends bearer authorization', async () => {
     .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
   await expect(discoverMcpTools({
-    id: 'https',
-    url: 'https://example.test/mcp',
+    ...mcpServer('https', 'https://example.test/mcp', ['lookup']),
     token: 'https-test-token',
-    allowedTools: ['lookup'],
   })).resolves.toEqual([{ name: 'lookup', description: '', inputSchema: { type: 'object' } }]);
 
   for (const call of send.mock.calls) {
@@ -394,9 +356,6 @@ it('rejects a response whose declared size exceeds the byte cap', async () => {
       'content-length': String(1024 * 1024 + 1),
     },
   }));
-  await expect(discoverMcpTools({
-    id: 'oversized',
-    url: 'https://example.test/mcp',
-    allowedTools: [],
-  })).rejects.toThrow('byte limit');
+  await expect(discoverMcpTools(mcpServer('oversized', 'https://example.test/mcp')))
+    .rejects.toThrow('byte limit');
 });
