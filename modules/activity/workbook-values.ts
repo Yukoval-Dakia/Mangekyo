@@ -2,6 +2,8 @@ import { factId } from '@mangekyo/kernel';
 
 export const workbookPaperType = 'activity.workbookPaper';
 export const workbookAttemptType = 'activity.workbookAttempt';
+export const workbookResearchPurpose = 'background-research';
+export const setWorkbookResearchUse = 'activity.setWorkbookResearchUse';
 export const workbookRubricAssessmentType = 'activity.workbookRubricAssessment';
 export const saveWorkbookPaperCommand = 'activity.saveWorkbookPaper';
 export const submitWorkbookAttemptCommand = 'activity.submitWorkbookAttempt';
