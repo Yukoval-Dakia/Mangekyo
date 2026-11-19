@@ -13,8 +13,8 @@ import {
   type WorkspaceEntryKind,
 } from '../../modules/activity/workspace-values.ts';
 import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
-import {purpose, stableId} from './identity.ts';
-import {intakeTextOf, materialTextOf} from './reading.ts';
+import {purpose} from './identity.ts';
+import {intakeTextOf, materialIntakeReference, materialTextOf, relatedIntakeId, relatedMaterialId, textSlice} from './reading.ts';
 
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
@@ -62,8 +62,15 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection |
         return {title: attempt.paper.title, content: answer};
     } else if (anchor.kind === 'text') {
       const source = sourceText(fact);
-      if (!source || source.field !== anchor.field || anchor.end > source.text.length) return;
-      const content = source.text.slice(anchor.start, anchor.end);
+      if (!source || source.field !== anchor.field) return;
+      if (anchor.end > source.text.length) return;
+      let start = anchor.start;
+      let end = Math.min(anchor.end, source.text.length);
+      if (start > 0 && start < source.text.length && source.text.charCodeAt(start-1) >= 0xd800 && source.text.charCodeAt(start-1) <= 0xdbff &&
+          source.text.charCodeAt(start) >= 0xdc00 && source.text.charCodeAt(start) <= 0xdfff) start--;
+      if (end < source.text.length && source.text.charCodeAt(end-1) >= 0xd800 && source.text.charCodeAt(end-1) <= 0xdbff &&
+          source.text.charCodeAt(end) >= 0xdc00 && source.text.charCodeAt(end) <= 0xdfff) end--;
+      const content = source.text.slice(start, end);
       if (content.isWellFormed()) return {title: source.title, content};
     } else if (fact.type === intakeFactType) {
       return {title:intakeTextOf(fact).title, content:intakeTextOf(fact).extraction.text};
@@ -80,6 +87,8 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection |
 
 export async function resolveSource(tx: ReadTransaction, input: unknown, access: SourceAccess, mode: SourceReadMode = 'pinned') {
   const reference = sourceRefV1(input);
+  const textReference = input && typeof input === 'object' && 'textFact' in input ? sourceRefV1({...input, fact:input.textFact}) : undefined;
+  if (input && typeof input === 'object' && 'textFact' in input && !textReference) return;
   const id = reference?.fact.id ?? input;
   if (!isSourceFactId(id) || (mode !== 'pinned' && mode !== 'following')) return;
   const anchor: SourceAnchorV1 = reference?.anchor ?? {kind: 'whole'};
@@ -110,24 +119,48 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     return fact;
   }
   try {
+    const rootRevision = reference?.fact.rev as Revision | undefined;
     if (reference && mode === 'following') {
-      const original = await reader.fact(factId(id), {mode: 'pinned', rev: reference.fact.rev as Revision});
-      if (!rootType(original) || !accepts(original) || !project(original, anchor)) return;
+      const original = await reader.fact(factId(id), {mode:'pinned', rev:rootRevision as Revision});
+      if (!rootType(original) || !accepts(original)) return;
+      if (textReference) {
+        const text = await reader.fact(factId(textReference.fact.id), {mode:'pinned', rev:textReference.fact.rev as Revision});
+        const oldText = text.type === intakeFactType ? intakeTextOf(text).text : '';
+        const originalAnchor = anchor.kind === 'text' ? (() => {
+          const {offset, nextOffset} = textSlice(oldText, anchor.start, Math.max(0, anchor.end-anchor.start));
+          return {...anchor, start:offset, end:nextOffset ?? oldText.length};
+        })() : anchor;
+        if (text.type !== intakeFactType || !accepts(text) || !project(text, originalAnchor)) return;
+      } else if (!project(original, anchor)) return;
     }
-    const fact = await visit(id, mode === 'pinned' ? reference?.fact.rev as Revision | undefined : undefined);
+    const fact = await visit(id, mode === 'pinned' ? rootRevision : undefined);
     if (!fact) return;
-    const projection = project(fact, anchor);
-    if (!projection) return;
-    if (fact.type === intakeFactType) {
-      const document = intakeTextOf(fact);
-      if (stableId('intake-document', document.materialId) !== id) return;
-      const material = await reader.fact(document.materialId, {mode: 'following'});
-      if (material.type !== materialType || !accepts(material)) return;
+    let body = fact;
+    let linkedMaterial: FactSnapshot | undefined;
+    if (fact.type === materialType || fact.type === intakeFactType) {
+      const documentId = fact.type === materialType ? relatedIntakeId(fact) : factId(id);
+      const documentRevision = (textReference?.fact.rev ?? (reference?.fact.type === intakeFactType && documentId === reference.fact.id
+        ? reference.fact.rev : undefined)) as Revision | undefined;
+      const document = await visit(documentId, mode === 'pinned' ? documentRevision : undefined);
+      if (!document || document.type !== intakeFactType) {
+        if (fact.type !== materialType || document || reference || mode === 'following') return;
+        const projection = project(fact, anchor);
+        if (access.recipient === 'workspace') access.track?.(fact);
+        return projection ? {id: fact.ref.id, sourceRef: sourceReference(fact, anchor), ...projection} : undefined;
+      }
+      const material = fact.type === materialType ? fact : await visit(relatedMaterialId(document));
+      if (!material || material.type !== materialType || relatedIntakeId(material) !== documentId) return;
+      linkedMaterial = material;
+      body = document;
     }
+    const projectionAnchor = (mode === 'following' && anchor.kind === 'text' && body.type === intakeFactType)
+      ? {...anchor, end:Math.min(anchor.end, intakeTextOf(body).text.length)} : anchor;
+    const projection = project(body, projectionAnchor);
+    if (!projection) return;
     if (access.recipient === 'workspace') {
       for (const witness of seen.values()) access.track?.(witness, reference && witness === fact ? mode : undefined);
     }
-    return {sourceRef: sourceReference(fact, anchor), ...projection};
+    return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkspaceInputError) return;
     throw error;

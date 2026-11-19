@@ -7,6 +7,7 @@ import {materialType} from '../../modules/activity/library-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
 import {resolveSource, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {syntheticStudyRecords} from './workspace-access.ts';
+import {textSlice} from './reading.ts';
 
 type Arguments = Record<string, unknown>;
 const legacyKinds: Record<string, string[]> = {
@@ -95,8 +96,9 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
   const record = await resolveSource(tx, reference, {recipient: 'workspace', track, maySend});
   if (!record) return workspaceSourceUnavailable;
   const {sourceRef, content: original, title, tags, links} = record;
-  const content = typeof original === 'string' ? original.slice(offset, offset + 4000) : original;
-  const end = offset + (typeof content === 'string' ? content.length : 0);
+  const sliced = typeof original === 'string' ? textSlice(original, offset) : {content: original, offset: 0, nextOffset: null};
+  const content = sliced.content;
+  const end = sliced.offset + (typeof content === 'string' ? content.length : 0);
   return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? legacyKind(sourceRef.fact.type),
     title, content, tags, links, sourceRef, ...(typeof original === 'string' && end < original.length ? {nextOffset: end} : {})});
 }
