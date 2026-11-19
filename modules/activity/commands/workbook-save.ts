@@ -4,6 +4,7 @@ import { textMaterial } from '../library-values.ts';
 import { creation } from '../values.ts';
 import {
   saveWorkbookPaperCommand,
+  workbookAssessmentPurpose,
   workbookPaper,
   workbookPaperType,
 } from '../workbook-values.ts';
@@ -18,7 +19,10 @@ export default defineCommand({
       textMaterial(source.value);
     }
     return [
-      { kind: 'create', id, factType: workbookPaperType, data, purpose: [storagePurpose] },
+      {
+        kind: 'create', id, factType: workbookPaperType, data,
+        purpose: data.assessmentRelease ? [storagePurpose, workbookAssessmentPurpose] : [storagePurpose],
+      },
     ];
   },
 });

@@ -4,6 +4,7 @@ import { creation } from '../values.ts';
 import {
   gradeWorkbook,
   submitWorkbookAttemptCommand,
+  workbookAssessmentPurpose,
   workbookAttemptRequest,
   workbookAttemptType,
   workbookGradingVersion,
@@ -17,7 +18,12 @@ export default defineCommand({
   schema: creation(workbookAttemptRequest),
   write: async (ctx, { id, data }) => {
     const fact = await ctx.read.fact(factId(data.paperId), { mode: 'following' });
-    const paper = workbookPaper(fact.value);
+    const current = workbookPaper(fact.value);
+    const release = current.assessmentRelease?.releaseRef;
+    if (release && release.id !== fact.ref.id) throw new Error('评估发放与试卷不匹配。');
+    const paper = release
+      ? workbookPaper((await ctx.read.fact(release.id, { mode: 'pinned', rev: release.rev })).value)
+      : current;
     const graded = gradeWorkbook(paper, data.answers);
     return [
       {
@@ -34,8 +40,9 @@ export default defineCommand({
           paper,
           answers: graded.answers,
           feedback: graded.feedback,
+          ...(data.assessmentConsent === undefined ? {} : { assessmentConsent: data.assessmentConsent }),
         },
-        purpose: [storagePurpose],
+        purpose: paper.assessmentRelease ? [storagePurpose, workbookAssessmentPurpose] : [storagePurpose],
       },
     ];
   },

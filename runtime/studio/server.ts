@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client, Connection } from '@temporalio/client';
 import { createPgDb } from '../../kernel/src/db/pg.ts';
@@ -16,6 +16,7 @@ import { openIntake } from './intake.ts';
 import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from './mineru.ts';
 import { openWorkbook } from './workbook.ts';
+import { openWorkbookAssessment, workbookAssessmentSlot, type WorkbookAssessmentHost } from './workbook-assessment.ts';
 import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';
 import { openPractice } from './practice.ts';
@@ -47,11 +48,22 @@ const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules
 const research = openResearch(db, activity, companion);
 const intake = openIntake(db, activity);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
+// This module is trusted deployment configuration, shared by the HTTP and Worker processes.
+const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
+const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
+  ? (await import(pathToFileURL(assessmentModule).href)).workbookAssessmentHost
+  : undefined;
+if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模块须导出 workbookAssessmentHost');
+const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 
 async function openWeb() {
   const studio = await openStudio(db, activity);
-  const student = { workbook: openWorkbook(db, activity, research.workbookChanged), organizer: openOrganizer(db, activity),
-    memory: openMemory(db, companion), intake, research };
+  const workbook = openWorkbook(db, activity, {
+    assessment: workbookAssessment,
+    onResearchFactsChanged: research.workbookChanged,
+  });
+  const student = { workbook, organizer: openOrganizer(db, activity), memory: openMemory(db, companion),
+    intake, research };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -75,7 +87,10 @@ async function runWorker(storeId: string) {
   async function execute(id: string, terminal = false) {
     const ref = await acknowledgeStartedWork(db, id);
     if (!ref || await research.execute(ref, terminal)) return;
-    if ((await readWork(db, ref))?.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
+    const work = await readWork(db, ref);
+    if (!work) return;
+    if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
+    else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
     else if (terminal) await recordTerminalFailure(db, ref);
     else await teach(db, ref);
   }
