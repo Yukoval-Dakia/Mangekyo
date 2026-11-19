@@ -181,3 +181,26 @@
   fill: var(--muted);
   cursor: default;
 }
+
+.turn-artifact {
+  margin-block: 12px;
+  min-width: 0;
+}
+.turn-artifact .av-sheet {
+  padding: clamp(12px, 2vw, 20px);
+  border-radius: 16px;
+}
+.turn-artifact .av-sheet h2 {
+  font-size: 20px;
+}
+.artifact-status p {
+  margin: 6px 4px;
+  font-size: 14px;
+}
+@media (max-width: 760px) {
+  .turn-artifact :is(button, input, textarea, [tabindex]) {
+    scroll-margin-block: 64px calc(72px + env(safe-area-inset-bottom));
+  }
+}
+
+.artifact-controls { border: 0; margin: 0; padding: 0; min-width: 0; }

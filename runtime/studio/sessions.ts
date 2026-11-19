@@ -28,6 +28,8 @@ import {
   slotType,
 } from './identity.ts';
 
+import {turnArtifacts} from './presentation-store.ts';
+
 export class RequestError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -151,23 +153,26 @@ export function recentConversations(db: Db) {
   });
 }
 export async function getSession(db: Db, session: string) {
-  const timeline = await loadHistory(db, session);
-  const last = timeline.at(-1);
-  if (!last) throw new RequestError(404, '这次学习会话不存在。');
-  return {
-    id: session,
-    caseId: last.submission.caseId,
-    currentTurnId: last.id,
-    ...(timeline[0]?.submission.attachment ? { attachment: timeline[0].submission.attachment } : {}),
-    status: last.status,
-    ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
-    ...(last.error ? { error: last.error } : {}),
-    turns: timeline.flatMap((row) =>
-      row.feedback
-        ? [{ ...row.feedback, ...(row.submission.answer ? { answer: row.submission.answer } : {}) }]
-        : [],
-    ),
-  };
+  return db.snapshot({learner:studioLearner},async tx => {
+    const timeline = await history(tx, session);
+    const last = timeline.at(-1);
+    if (!last) throw new RequestError(404, '这次学习会话不存在。');
+    return {
+      id: session,
+      caseId: last.submission.caseId,
+      currentTurnId: last.id,
+      ...(timeline[0]?.submission.attachment ? { attachment: timeline[0].submission.attachment } : {}),
+      status: last.status,
+      ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
+      ...(last.error ? { error: last.error } : {}),
+      ...(last.status === 'pending' ? {artifacts:await turnArtifacts(tx,session,last.id)} : {}),
+      turns: (await Promise.all(timeline.map(async (row) =>
+        row.feedback
+          ? [{ ...row.feedback, turnId:row.id, artifacts:await turnArtifacts(tx,session,row.id), ...(row.submission.answer ? { answer: row.submission.answer } : {}) }]
+          : [],
+      ))).flat(),
+    };
+  });
 }
 export async function openStudio(db: Db, activity: LoadedModule) {
   const handle = createCommandHandler(db, {

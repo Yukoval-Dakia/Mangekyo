@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type Settings, type SessionEvent, type StudyAttachment } from "./api";
 
 import {selectedRoute, type Route, type McpGrant} from './model-route';
+import { readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
+
 type Operation =
   | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
   | { kind: "answer"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; sessionId: string; parentId: string; answer: string };
@@ -18,7 +20,18 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const sessionKey = `session:${caseId}`;
   const createKey = `create:${caseId}`;
   const [sessionId, setSessionId] = useState(() => initialSession?.id ?? (restore ? remembered(sessionKey) : null));
-  const [session, setSession] = useState(initialSession);
+  const [session, renderSession] = useState(() => initialSession && readSession(initialSession));
+  const sessionRef = useRef(session);
+  function setSession(value: MountedSession | undefined) {
+    sessionRef.current = value;
+    renderSession(value);
+  }
+  function applySnapshot(sent: ArtifactSnapshotV1, input: unknown) {
+    const latest = sessionRef.current;
+    if (!latest?.mounts.some(m => m.sessionId === sent.sessionId && m.turnId === sent.turnId && m.mountId === sent.mountId)) return;
+    if (input === undefined) setRefresh(n => n + 1);
+    else setSession(receiptSnapshot(latest, sent, input));
+  }
   const [draft, setDraft] = useState<{ text: string; parentId: string }>();
   const [conflict, setConflict] = useState(false);
   const [refreshingConflict, setRefreshingConflict] = useState(false);
@@ -33,8 +46,6 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [streamingReply, setStreamingReply] = useState<string>();
   const [progressLabel, setProgressLabel] = useState<string>();
   const [reconnecting, setReconnecting] = useState(false);
-  const sessionRef = useRef(session);
-  useEffect(() => { sessionRef.current = session; }, [session]);
 
   useEffect(() => {
     if (!active || !sessionId || busy || retryOperation) return;
@@ -43,6 +54,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     const baseline = sessionRef.current?.id === sessionId ? sessionRef.current : undefined;
     let terminal = false;
     let didHydrate = Boolean(baseline);
+    let readNumber = 0;
 
     function clearReadProblem() {
       setRefreshingConflict(false);
@@ -51,7 +63,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     }
 
     function invalidate(status: number) {
-      if (status === 404) {
+      if ([401, 403, 404].includes(status)) {
         if (remembered(sessionKey) === sessionId) remember(sessionKey, null);
         setSessionId(null);
         setSession(undefined);
@@ -67,25 +79,44 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       });
     }
 
-    async function hydrate(final: boolean) {
+    async function hydrate(final: boolean, completed?: SessionEvent["session"]) {
+      const number = ++readNumber;
+      const atRequest = sessionRef.current;
       try {
         const current = await api<Session>(sessionPath(sessionId!), { signal: controller.signal });
-        if (controller.signal.aborted || (!final && terminal)) return;
-        setSession(current);
+        if (controller.signal.aborted || number !== readNumber || (!final && terminal)) return;
+        const latest = sessionRef.current;
+        if (completed && (completed.currentTurnId !== current.currentTurnId || completed.status !== current.status)) {
+          invalidate(0);
+          return;
+        }
+        if (current.id !== sessionId || current.caseId !== caseId || !Array.isArray(current.turns) ||
+            (latest?.currentTurnId !== current.currentTurnId && latest?.turns.some(t => t.turnId && t.turnId === current.currentTurnId)) ||
+            (latest !== atRequest && latest?.currentTurnId !== current.currentTurnId) ||
+            (latest?.currentTurnId === current.currentTurnId && latest?.status === "ready" && current.status === "pending")) return;
+        setSession(readSession(current, latest, atRequest));
         clearReadProblem();
         if (final) {
           setStreamingReply(undefined);
           setProgressLabel(undefined);
         }
       } catch (error) {
-        if (controller.signal.aborted || (!final && terminal)) return;
-        if (final) invalidate(error instanceof ApiError ? error.status : 0);
+        if (controller.signal.aborted || number !== readNumber || (!final && terminal)) return;
+        const status = error instanceof ApiError ? error.status : 0;
+        if (final || [401, 403, 404, 409].includes(status)) {
+          terminal = true;
+          source.close();
+          invalidate(status);
+        }
       }
     }
 
     function receive(event: MessageEvent<string>): SessionEvent | undefined {
-      const update = JSON.parse(event.data) as SessionEvent;
-      if (update.session?.id !== sessionId || controller.signal.aborted) return;
+      let update: SessionEvent;
+      try { update = JSON.parse(event.data); } catch { return; }
+      if (terminal || controller.signal.aborted || update?.session?.id !== sessionId ||
+          update.session.caseId !== caseId || typeof update.session.currentTurnId !== "string" ||
+          (update.message !== undefined && typeof update.message !== "string")) return;
       clearReadProblem();
       setReconnecting(false);
       return update;
@@ -93,13 +124,12 @@ export function useConversation(caseId: string, active: boolean, initialSession?
 
     source.addEventListener("progress", (event: MessageEvent<string>) => {
       const update = receive(event);
-      if (!update) return;
-      setSession(previous => {
-        if (previous?.id === sessionId && previous.currentTurnId === update.session.currentTurnId && previous.status !== "pending") {
-          return previous;
-        }
-        return { ...update.session, turns: previous?.id === sessionId ? previous.turns : [] };
-      });
+      if (!update || update.session.status !== "pending") return;
+      const previous = sessionRef.current;
+      if ((previous?.currentTurnId === update.session.currentTurnId && previous?.status !== "pending") ||
+          previous?.turns.some(t => t.turnId === update.session.currentTurnId)) return;
+      setSession({ ...previous, ...update.session, turns: previous?.turns ?? [], withdrawn: previous?.withdrawn ?? new Set(),
+        mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] });
       setProgressLabel(update.phase ? progressLabels[update.phase] : undefined);
       setStreamingReply(update.message);
       // Restore prior turns for a remembered session while the current one streams.
@@ -109,12 +139,21 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       }
     });
 
+    if (refresh) void hydrate(false);
+
+    source.addEventListener("artifact-snapshot", (event: MessageEvent<string>) => {
+      if (controller.signal.aborted || terminal) return;
+      let input: unknown;
+      try { input = JSON.parse(event.data); } catch { return; }
+      setSession(streamSnapshot(sessionRef.current, input));
+    });
+
     source.addEventListener("complete", (event: MessageEvent<string>) => {
       const update = receive(event);
       if (!update) return;
       terminal = true;
       source.close();
-      if (baseline?.currentTurnId === update.session.currentTurnId && baseline?.status === update.session.status) {
+      if (!refresh && baseline?.currentTurnId === update.session.currentTurnId && baseline?.status === update.session.status) {
         setStreamingReply(undefined);
         setProgressLabel(undefined);
         return;
@@ -123,27 +162,31 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       // learner's authorized session view once. The stream never carries audit fields.
       setStreamingReply(update.message);
       setProgressLabel(undefined);
-      void hydrate(true);
+      void hydrate(true, update.session);
     });
 
     source.addEventListener("session-error", (event: MessageEvent<string>) => {
+      if (controller.signal.aborted || terminal) return;
+      let status: number;
+      try { status = JSON.parse(event.data).status; } catch { return; }
       terminal = true;
+      ++readNumber;
       source.close();
       setReconnecting(false);
-      invalidate((JSON.parse(event.data) as { status: number }).status);
+      invalidate(status);
     });
 
     source.onerror = () => {
       if (controller.signal.aborted || terminal) return;
-      if (source.readyState === EventSource.CLOSED) invalidate(0);
-      else setReconnecting(true);
+      setReconnecting(true);
+      void hydrate(source.readyState === EventSource.CLOSED);
     };
 
     return () => {
       source.close();
       controller.abort();
     };
-  }, [active, busy, refresh, retryOperation, sessionId, sessionKey]);
+  }, [active, busy, caseId, refresh, retryOperation, sessionId, sessionKey]);
 
   async function perform(operation: Operation) {
     if (inFlight.current) return;
@@ -165,10 +208,13 @@ export function useConversation(caseId: string, active: boolean, initialSession?
           method: "POST",
           body: { route: operation.route, mcpGrants: operation.mcpGrants, answer: operation.answer, parentId: operation.parentId, requestId: operation.requestId },
         });
+      if (result.caseId !== caseId || (operation.kind === "answer" && result.id !== operation.sessionId)) {
+        throw new Error("Session identity mismatch");
+      }
       remember(sessionKey, result.id);
       if (operation.kind === "create") remember(createKey, null);
       setSessionId(result.id);
-      setSession(result);
+      setSession(readSession(result, sessionRef.current));
       setRefreshingConflict(false);
       setInvalidated(false);
       setDraft(undefined);
@@ -228,6 +274,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   return {
     sessionId,
     session,
+    applySnapshot,
     draft: draft?.text ?? "",
     outdatedDraft: Boolean(draft?.text.trim() && draft.parentId !== session?.currentTurnId),
     editDraft,

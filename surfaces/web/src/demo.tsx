@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
 import { useConversation } from "./conversation";
 import { Message } from "./message";
 import { StudyCards } from "./study-tools";
 import { Icon, Mark } from "./icons";
+
+import { TurnArtifact, type ApplySnapshot } from "./presentation/TurnArtifact";
+import type { ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 
 const actionNames: Record<Turn["action"], string> = {
   companion_reply: "学习同伴",
@@ -51,36 +54,58 @@ function Question({ teachingCase }: { teachingCase: TeachingCase }) {
   );
 }
 
-export function TeachingTurn({ turn, materialId, discuss }: { turn: Turn; materialId?: string | undefined; discuss?: ((question: string, answer: string) => void) | undefined }) {
-  const rationale = turn.reads.reduce((text, read) => text.replaceAll(read.id, read.title), turn.rationale);
+export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, materialId, discuss }: {
+  turn?: Turn | undefined;
+  answer?: string | undefined;
+  message?: string | undefined;
+  progress?: string | undefined;
+  mounts?: ArtifactSnapshotV1[] | undefined;
+  applySnapshot?: ApplySnapshot;
+  materialId?: string | undefined;
+  discuss?: ((question: string, answer: string) => void) | undefined;
+}) {
+  const item = useRef<HTMLLIElement>(null);
+  const complete = Boolean(turn);
+  useLayoutEffect(() => {
+    const focus = document.activeElement;
+    if (complete && focus instanceof HTMLElement && item.current?.contains(focus)) {
+      focus.scrollIntoView({ block: 'nearest' });
+    }
+  }, [complete]);
+  const rationale = turn?.reads.reduce((text, read) => text.replaceAll(read.id, read.title), turn.rationale);
   return (
-    <li className="turn">
-      {turn.answer && <div className="learner-message"><span>{turn.action === "companion_reply" ? "你" : "你的作答"}</span><p>{turn.answer}</p></div>}
+    <li className="turn" ref={item}>
+      {answer && <div className="learner-message"><span>{!turn || turn.action === "companion_reply" ? "你" : "你的作答"}</span><p>{answer}</p></div>}
       <article className="companion-turn">
-        <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
-        <Message text={turn.message} />
+        {turn ? <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
+          : <span className="live-status" role="status"><i />{progress}</span>}
+        {message && <Message text={message} />}
+        {applySnapshot && mounts?.map(snapshot => <TurnArtifact key={snapshot.mountId} snapshot={snapshot} apply={applySnapshot} />)}
+        {turn && <>
         {!!turn.writes?.length && <ul className="read-list" aria-label="已保存到学习工作区">{turn.writes.map(item =>
           <li key={item.id}><a href={'/materials/records/' + item.id}>{item.title}</a> · 第 {item.rev} 版</li>
         )}</ul>}
-        {turn.studyKit && <StudyCards kit={turn.studyKit} materialId={materialId} discuss={discuss} />}
-        <details className="evidence">
-          <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
-          <div className="evidence-content">
-            {rationale && <p>{rationale}</p>}
-            {turn.trace && turn.trace.length > 0 && <ol aria-label="本轮工具记录">{turn.trace.map((step, index) => <li key={index}>{step}</li>)}</ol>}
-            {turn.reads.length > 0 && <ul className="read-list">{turn.reads.map((read) => (
-              <li key={read.id}>
-                <div className="read-heading"><strong>{read.workspace ? <a href={'/materials/records/'+read.id}>{read.title}</a> : read.title}</strong>{turn.evidenceIds.includes(read.id) ? <span>本轮引用</span> : turn.action === 'companion_reply' ? <span>实际调阅</span> : null}</div>
-                <p>{read.text}</p>
-              </li>
-            ))}</ul>}
-            {(turn.model || turn.reportedModel) && <div className="model-info">
-              {turn.model && <small>配置路由 · {turn.model}</small>}
-              {turn.reasoningEffort && <small>请求思考强度 · {turn.reasoningEffort}</small>}
-              <small>返回模型 · {turn.reportedModel ?? "服务未报告"}</small>
-            </div>}
-          </div>
-        </details>
+
+          {turn.studyKit && <StudyCards kit={turn.studyKit} materialId={materialId} discuss={discuss} />}
+          <details className="evidence">
+            <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
+            <div className="evidence-content">
+              {rationale && <p>{rationale}</p>}
+              {turn.trace && turn.trace.length > 0 && <ol aria-label="本轮工具记录">{turn.trace.map((step, index) => <li key={index}>{step}</li>)}</ol>}
+              {turn.reads.length > 0 && <ul className="read-list">{turn.reads.map((read) => (
+                <li key={read.id}>
+                  <div className="read-heading"><strong>{read.title}</strong>{turn.evidenceIds.includes(read.id) && <span>本轮引用</span>}</div>
+                  <p>{read.text}</p>
+                </li>
+              ))}</ul>}
+              {(turn.model || turn.reportedModel) && <div className="model-info">
+                {turn.model && <small>配置路由 · {turn.model}</small>}
+                {turn.reasoningEffort && <small>请求思考强度 · {turn.reasoningEffort}</small>}
+                <small>返回模型 · {turn.reportedModel ?? "服务未报告"}</small>
+              </div>}
+            </div>
+          </details>
+        </>}
       </article>
     </li>
   );
@@ -143,7 +168,7 @@ function Conversation({ teachingCase, active, settings, needsSetup, openSettings
           {(session || invalidated) && <button type="button" className="tonal-button" disabled={!settings || waiting || Boolean(retryOperation)} onClick={() => conversation.start(undefined, undefined, undefined, settings)}><Icon name="plus" /> 新对话</button>}
         </header>
         <div className="feed" ref={feed} role="region" aria-label="对话记录" tabIndex={0}>
-          {turns.length > 0 && <ol className="turns">{turns.map((turn, index) => <TeachingTurn turn={turn} key={`${sessionId}-${index}`} />)}</ol>}
+          {turns.length > 0 && <ol className="turns">{turns.map((turn, index) => <TeachingTurn turn={turn} key={turn.turnId ?? index} mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={conversation.applySnapshot} />)}</ol>}
           {pendingAnswer && <div className="learner-message pending-answer"><span>你的作答</span><p>{pendingAnswer}</p></div>}
           {!sessionId && !waiting && !problem && (
             <div className="start-state">
@@ -226,6 +251,7 @@ export function DemoClassroom({ settings, needsSetup, openSettings }: {
     const controller = new AbortController();
     api<Session>(sessionPath(linkedId), { signal: controller.signal }).then((result) => {
       if (controller.signal.aborted) return;
+      if (result.id !== linkedId) { setLinkProblem(true); return; }
       remember(`session:${result.caseId}`, result.id);
       selectCase(result.caseId);
       setLinkedSession(result);

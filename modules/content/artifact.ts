@@ -1,0 +1,24 @@
+import { factId, isJson } from '@mangekyo/kernel';
+
+export function artifactMount(input: unknown) {
+  if (
+    !isJson(input) ||
+    !input ||
+    typeof input !== 'object' ||
+    Array.isArray(input) ||
+    !('turnId' in input) ||
+    typeof input.turnId !== 'string' ||
+    typeof input.sessionId !== 'string' ||
+    !input.view ||
+    !input.manifest ||
+    (input.predictionPrompt !== null && typeof input.predictionPrompt !== 'string')
+  )
+    throw new Error('作品版本或会话引用无效。');
+  return {
+    sessionId: factId(input.sessionId),
+    turnId: factId(input.turnId),
+    view: input.view,
+    manifest: input.manifest,
+    predictionPrompt: input.predictionPrompt,
+  };
+}

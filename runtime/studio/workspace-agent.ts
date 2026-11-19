@@ -19,6 +19,15 @@ import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEnt
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
 
+import {presentationCatalog} from '../../surfaces/shared/presentation/index.ts';
+import type {Manifest} from '../../kernel/src/derivations/manifest.ts';
+import {mountArtifact} from './presentation-store.ts';
+
+const presentationTool = {type:'function',function:{name:'mount_artifact',
+  description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。'+presentationCatalog.bindings,
+  parameters:{type:'object',required:['view'],additionalProperties:false,properties:{
+    view:presentationCatalog.schema,predictionPrompt:{type:'string',maxLength:160}
+  }}}};
 export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode};
 type Seen = {id: string; title: string; text: string; workspace: true};
 const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
@@ -30,6 +39,7 @@ export function openWorkspaceTools(options: {
   maySend: (input: FactSnapshot) => boolean;
   track: (input: WorkspaceWitness) => void;
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
+  presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   prior: WorkspaceWitness[];
 }) {
   const {db, turn} = options;
@@ -168,7 +178,15 @@ export function openWorkspaceTools(options: {
     }
   }
   return {
+    ...(options.presentationManifest ? {presentationTool} : {}),
     async execute(name: string, args: Record<string, unknown>, step: number) {
+      if (name === 'mount_artifact' && options.presentationManifest) {
+        if (Object.keys(args).some(key => !['view','predictionPrompt'].includes(key))) return JSON.stringify({error:'仅支持 view 和 predictionPrompt。'});
+        return JSON.stringify(await mountArtifact(db,turn,step,args,async tx => {
+          await options.authorize(tx);
+          return options.presentationManifest!(tx);
+        }));
+      }
       const tool = workspaceDefinitions.find(tool => tool.function.name === name);
       if (!tool) return JSON.stringify({error:'请从本轮提供的工作区工具中选择。'});
       const fields = tool.function.parameters.properties;

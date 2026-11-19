@@ -259,7 +259,12 @@ function answerValue(value: unknown, kind: AnswerKind): AssessmentAnswerValue {
   }
 }
 
-export function assessmentSubmission(value: unknown, release: AssessmentRelease): AssessmentSubmission {
+// Input validation needs only the frozen answer slots. A caller with a slot contract
+// can validate the handoff before a scoring contract has been published.
+export function assessmentSubmission(value: unknown, release: {
+  readonly releaseRef: AssessmentRevisionRef;
+  readonly items: readonly Pick<AssessmentItem, 'itemId' | 'slots'>[];
+}): AssessmentSubmission {
   const row = record(value, '提交', ['releaseRef', 'submissionRef', 'answers']);
   const releaseRef = revisionRef(row.releaseRef, '提交的发放');
   matchRef(releaseRef, release.releaseRef, '提交的发放');

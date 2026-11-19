@@ -375,7 +375,7 @@ export async function teach(db: Db, ref: WorkRef) {
         if (w?.kind === 'fact') inherited.set(memoryId, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
       }
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
-        db, turn: job.slotKey, prior: [...inherited.values()],
+        db, turn: job.slotKey, presentationManifest:validInputs, prior: [...inherited.values()],
         maySend,
         track(w) { inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w)); },
         trackAssessment,

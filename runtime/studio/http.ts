@@ -27,6 +27,8 @@ import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
 import { saveSettings, publicSettings, loadSettings } from './settings.ts';
 
+import {actOnArtifact} from './presentation-store.ts';
+
 async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   if (req.headers['content-type']?.split(';')[0] !== 'application/json')
     throw new RequestError(415, '需要 JSON 请求。');
@@ -230,6 +232,8 @@ export function serve(
           await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment, input.mcpGrants, input.route),
         );
       }
+      const actionPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/artifact-actions$/.exec(path);
+      if (actionPath?.[1] && method === 'POST') return json(res,200,await actOnArtifact(db,actionPath[1],await body(req)));
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
       if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], req, res);
       const match = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})(\/answers)?$/.exec(path);
