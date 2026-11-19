@@ -23,6 +23,8 @@ import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
 import type { openWorkspaceAccess } from './workspace-access.ts';
 import type { openResearch } from './research.ts';
+import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
+import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
 import { saveSettings, publicSettings, loadSettings } from './settings.ts';
@@ -89,6 +91,7 @@ export function serve(
     intake: ReturnType<typeof openIntake>;
     workspace: ReturnType<typeof openWorkspaceAccess>;
     research: ReturnType<typeof openResearch>;
+    recall: RecallHttp;
   },
   port: number,
 ) {
@@ -235,9 +238,23 @@ export function serve(
       const actionPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/artifact-actions$/.exec(path);
       if (actionPath?.[1] && method === 'POST') return json(res,200,await actOnArtifact(db,actionPath[1],await body(req)));
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
-      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], req, res);
+      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], req, res, student.recall.project);
+      const recall = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/recall\/(state|reveal|display|submit)$/.exec(path);
+      if (recall?.[1] && recall[2] === 'state' && method === 'GET') {
+        return json(res, 200, await student.recall.readState(recall[1], url.searchParams));
+      }
+      if (recall?.[1] && recall[2] !== 'state' && method === 'POST') {
+        const input = await body(req);
+        if (recall[2] === 'reveal') {
+          const { data, token } = await student.recall.reveal(recall[1], input);
+          res.setHeader(recallDisplayToken, token);
+          return json(res, 200, data);
+        }
+        if (recall[2] === 'display') return json(res, 200, await student.recall.display(recall[1], input, req.headers));
+        return json(res, 200, await student.recall.submit(recall[1], input));
+      }
       const match = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})(\/answers)?$/.exec(path);
-      if (match?.[1] && !match[2] && method === 'GET') return json(res, 200, await getSession(db, match[1]));
+      if (match?.[1] && !match[2] && method === 'GET') return json(res, 200, await getSession(db, match[1], student.recall.project));
       if (match?.[1] && match[2] && method === 'POST') {
         const input = await body(req);
         return json(
@@ -257,10 +274,11 @@ export function serve(
       res.writeHead(200, { 'Content-Type': types[extname(file)]! }).end(bytes);
     } catch (error) {
       if (error instanceof TextbookConflictError) return json(res, 409, error.toJSON());
-      if (!(error instanceof RequestError))
+      const expected = error instanceof RequestError || error instanceof RecallRequestError;
+      if (!expected)
         console.error('studio request failed', error instanceof Error ? error.name : 'error');
-      json(res, error instanceof RequestError ? error.status : 500, {
-        error: error instanceof RequestError ? error.message : '服务未能完成请求。',
+      json(res, expected ? error.status : 500, {
+        error: expected ? error.message : '服务未能完成请求。',
       });
     }
   });

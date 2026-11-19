@@ -25,6 +25,7 @@ import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
 import { openResearch } from './research.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
+import { openRecallHttp } from './recall-http.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -60,7 +61,8 @@ if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模�
 const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 
 async function openWeb() {
-  const studio = await openStudio(db, activity);
+  const recall = openRecallHttp(db, activity, createStudioCommandHooks());
+  const studio = await openStudio(db, activity, { projectRecall: recall.project });
   const content = await loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
   const textbook = openTextbook(db, content, createStudioCommandHooks());
   const workbook = openWorkbook(db, activity, {
@@ -68,7 +70,7 @@ async function openWeb() {
     onResearchFactsChanged: research.workbookChanged,
   });
   const student = { textbook, workbook, organizer: openOrganizer(db, activity), memory: openMemory(db, companion),
-    intake, workspace: openWorkspaceAccess(db, activity), research };
+    intake, workspace: openWorkspaceAccess(db, activity), research, recall };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
