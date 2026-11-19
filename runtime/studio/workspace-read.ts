@@ -13,6 +13,7 @@ import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {readTeachingAttemptAssessments} from './learning-attempt-read.ts';
 import {textSlice} from './reading.ts';
+import {readLearningOverview} from './learning-overview.ts';
 
 type Arguments = Record<string, unknown>;
 const legacyKinds: Record<string, string[]> = {
@@ -130,8 +131,11 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
   if (args.id === 'learner') {
     const observations = JSON.parse(await workspaceSearch(tx,{kind:'observation'},track,maySend));
     const attempts = JSON.parse(await workspaceSearch(tx,{kind:'attempt'},track,maySend));
+    const overview = await readLearningOverview(tx, {callerPurpose: purpose, maySend: (_, snapshot) => maySend(snapshot), track});
+    const goal = overview.goal.state === 'set' ? overview.goal.text : null;
+    const tasks = 'items' in overview.tasks ? overview.tasks.items : [];
     return JSON.stringify({id:'learner', title:'学习者模型', observations:observations.results, recentAttempts:attempts.results,
-      note:'观察关联具体作答。按 id 打开依据，未观察到的能力保留未知。'});
+      goal, tasks, note:'观察关联具体作答。按 id 打开依据，未观察到的能力保留未知。'});
   }
   const reference = referenceFromId(args.id);
   if (!reference) return JSON.stringify({error:'id 可传 search_workspace 的记录 id 或读回的 sourceRef JSON 字符串。查看学情概览时传 learner。'});
