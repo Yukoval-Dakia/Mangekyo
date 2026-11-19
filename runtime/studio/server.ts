@@ -17,6 +17,9 @@ import { openIntake } from './intake.ts';
 import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from './mineru.ts';
 import { openWorkbook } from './workbook.ts';
+import {
+  artifactAssessmentSlot, executeArtifactAssessment, type ReadArtifactAssessmentWitness,
+} from './artifact-assessment.ts';
 import { openWorkbookAssessment, workbookAssessmentSlot, type WorkbookAssessmentHost } from './workbook-assessment.ts';
 import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';
@@ -59,6 +62,12 @@ const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
   : undefined;
 if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模块须导出 workbookAssessmentHost');
 const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
+const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
+const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
+  ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
+  : undefined;
+if (artifactAssessmentModule && mode !== 'web' && typeof readArtifactAssessmentWitness !== 'function')
+  throw new Error('作品评估宿主模块须导出 readArtifactAssessmentWitness');
 
 async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());
@@ -98,8 +107,9 @@ async function runWorker(storeId: string) {
     if (!work) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
+    else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
     else if (terminal) await recordTerminalFailure(db, ref);
-    else await teach(db, ref);
+    else await teach(db, ref, readArtifactAssessmentWitness);
   }
   const workerConfig = {
     address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',

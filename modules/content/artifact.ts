@@ -11,6 +11,9 @@ export function artifactMount(input: unknown) {
     typeof input.sessionId !== 'string' ||
     !input.view ||
     !input.manifest ||
+    (input.assessment !== undefined && (!input.assessment || typeof input.assessment !== 'object' ||
+      Array.isArray(input.assessment) || !('release' in input.assessment) || !('qualification' in input.assessment) ||
+      !Array.isArray(input.assessment.runs))) ||
     (input.predictionPrompt !== null && typeof input.predictionPrompt !== 'string')
   )
     throw new Error('作品版本或会话引用无效。');
@@ -20,5 +23,6 @@ export function artifactMount(input: unknown) {
     view: input.view,
     manifest: input.manifest,
     predictionPrompt: input.predictionPrompt,
+    ...(input.assessment === undefined ? {} : { assessment: input.assessment }),
   };
 }

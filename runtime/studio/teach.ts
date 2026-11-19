@@ -36,6 +36,7 @@ import { workbookRubricAssessmentType } from '../../modules/activity/workbook-va
 import { caseId, type DisplayTurn } from './sessions.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
+import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
 import {workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import { loadSettings } from './settings.ts';
@@ -49,7 +50,7 @@ class UncertainEffect extends Error {
 }
 class ChangedEvidence extends Error {}
 
-export async function teach(db: Db, ref: WorkRef) {
+export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness) {
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
@@ -375,7 +376,7 @@ export async function teach(db: Db, ref: WorkRef) {
         if (w?.kind === 'fact') inherited.set(memoryId, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
       }
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
-        db, turn: job.slotKey, presentationManifest:validInputs, prior: [...inherited.values()],
+        db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()],
         maySend,
         track(w) { inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w)); },
         trackAssessment,
@@ -387,7 +388,13 @@ export async function teach(db: Db, ref: WorkRef) {
         },
       }) : undefined;
       const result = await runCompanionTurn(answer, publicHistory, material, {
-        provider: settings, runEffect: runModelEffect, onProgress, ...(historyNotice ? {historyNotice} : {}),
+        provider: settings, runEffect: runModelEffect,
+        async onProgress(progress) {
+          // The generated tool call included private answers. The host owns the public
+          // confirmation once a formal artifact has been mounted.
+          if (progress.phase !== 'replying' || !workspace?.publishedFormalArtifact()) await onProgress(progress);
+        },
+        ...(historyNotice ? {historyNotice} : {}),
         ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
         ...(learningMemory?.bundle.omitted.some(item => item.reason === 'budget') ? {
           async openMemoryRegion(input: Record<string, unknown>, step: number) {
@@ -407,7 +414,9 @@ export async function teach(db: Db, ref: WorkRef) {
           allowSearch: submission.allowSearch === true && settings.allowSearch && (!privateContext || Boolean(publicSearchQuery)) } } : {}),
       }, attachment?.mode === 'prepare' && !submission.parentId, preference);
       feedback = {
-        ...result, action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : historyNotice,
+        ...result,
+        ...(workspace?.publishedFormalArtifact() ? { message: '断句题已发放。请先保存预测。', trace: [] } : {}),
+        action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : historyNotice,
         ...(learningMemoryDigest ? { learningMemoryDigest: expandedMemory
           ? createHash('sha256').update(learningMemoryDigest).update(expandedMemory.receipt.digest).digest('hex') : learningMemoryDigest } : {}),
         ...(workspace?.writes().length ? {writes:workspace.writes()} : {}),

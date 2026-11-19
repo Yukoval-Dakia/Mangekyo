@@ -1,0 +1,170 @@
+import { createHash } from 'node:crypto';
+import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
+import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { factId, learnerId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
+import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
+import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
+import { failWork, readWork, type WorkRef } from '../../kernel/src/work/index.ts';
+import {
+  checkAssessmentPublication, type AssessmentPublicationRun, type AssessmentPublicationTarget, type AssessmentPublicationWitness,
+  type TrustedAssessmentPublicationSample,
+} from '../../modules/activity/assessment-publication.ts';
+import {
+  assessmentRelease, assessmentSubmission, readAssessmentScore, type AssessmentRelease, type AssessmentResult, type AssessmentRevisionRef,
+  type AssessmentSubmission,
+} from '../../modules/activity/assessment-values.ts';
+import { artifactActionRecord } from '../../modules/activity/artifact-action.ts';
+import {
+  evaluateSentenceBreaks, mixesSentenceBreakSolutions, sentenceBreakEvaluator, sentenceBreakRelease, submittedBreaks,
+} from '../../modules/activity/sentence-break-assessment.ts';
+import slot from '../../modules/activity/slots/artifact-formal-assessment.ts';
+import { artifactMount } from '../../modules/content/artifact.ts';
+import type { Artifact } from '../../surfaces/shared/presentation/index.ts';
+import {
+  assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, type AssessmentScope,
+} from './formal-assessment.ts';
+import { purpose, stableId } from './identity.ts';
+
+export const artifactAssessmentSlot = slot.type;
+export const artifactAssessmentPolicy: CandidatePolicy = { slot, purpose, deriver: 'activity/artifact-formal-assessment-v1' };
+const propagation = createPropagationHooks([]);
+type FrozenInputs = { release: AssessmentRelease; submission: AssessmentSubmission };
+
+/** Deployment-owned source. It attests an exact frozen question and provides expected results.
+ * The host runs the evaluator locally and constructs the execution evidence.
+ */
+export type ReadArtifactAssessmentWitness = (
+  target: AssessmentPublicationTarget, view: Artifact, predictionPrompt: string,
+) => {
+  witness: AssessmentPublicationWitness;
+  samples: readonly TrustedAssessmentPublicationSample[];
+} | null | undefined;
+
+export function artifactAssessmentDigest(view: Artifact, predictionPrompt: string) {
+  return createHash('sha256').update(canonicalJsonString({ view, predictionPrompt })).digest('hex');
+}
+
+export function qualifyArtifactAssessment(
+  releaseRef: AssessmentRevisionRef, view: Artifact, predictionPrompt: string, alternatives: unknown,
+  readWitness?: ReadArtifactAssessmentWitness,
+) {
+  const nodes = view.sections.flatMap(section => section.nodes);
+  const submits = nodes.filter(node => node.kind === 'action' && node.intent === 'submit');
+  const submit = submits[0];
+  const input = submit?.kind === 'action' ? nodes.find(node => node.id === submit.inputs[0]) : undefined;
+  if (submits.length !== 1 || submit?.kind !== 'action' || submit.inputs.length !== 1 ||
+      input?.kind !== 'selection' || input.layout !== 'passage' || input.selected.length)
+    throw new Error('正式断句须有一个提交动作和一个初始为空的断点作答位。');
+  const release = sentenceBreakRelease(releaseRef, submit.id, input.id, input.items.map(({ id }) => id),
+    artifactAssessmentDigest(view, predictionPrompt), alternatives);
+  const runs: (Extract<AssessmentPublicationRun, { state: 'completed' }> & { actual: AssessmentResult })[] = [];
+  const decision = checkAssessmentPublication(release, [sentenceBreakEvaluator], target => {
+    const trusted = readWitness?.(target, view, predictionPrompt);
+    if (!trusted) return null;
+    const { witness } = trusted;
+    // The general gate allows a trusted registry to declare some coverage inapplicable.
+    // For this evaluator both the mixed and missing cases are required.
+    if (!(['negative', 'partial'] as const).every(kind =>
+      witness.requiredCoverage.some(entry => entry.kind === kind && entry.applies !== false))) return null;
+    return {
+      witness,
+      samples: trusted.samples.map(sample => {
+        try {
+          const submission = assessmentSubmission(sample.submission, release);
+          const ids = submittedBreaks(release, submission);
+          for (const entry of witness.requiredCoverage) {
+            if (entry.sampleRef.id !== sample.sampleRef.id || entry.sampleRef.rev !== sample.sampleRef.rev) continue;
+            if ((entry.kind === 'negative' && ids.length) ||
+                (entry.kind === 'partial' && !mixesSentenceBreakSolutions(release, ids))) {
+              // These two cases must be distinguished from a wrong single solution or missing coverage.
+              return { sample, run: { state: 'failed', reason: '样例须分别演示互斥拼接与缺交。' } };
+            }
+          }
+          const run = {
+            state: 'completed' as const, witnessRef: witness.ref, sampleRef: sample.sampleRef,
+            receiptRef: {
+              id: factId(stableId('sentence-break-verification', releaseRef.id, String(releaseRef.rev), witness.ref.id,
+                String(witness.ref.rev), sample.sampleRef.id, String(sample.sampleRef.rev))),
+              rev: 1 as Revision,
+            },
+            evaluators: [{ criterionId: release.items[0]!.criteria[0]!.criterionId, evaluator: sentenceBreakEvaluator }],
+            actual: evaluateSentenceBreaks(release, submission),
+          };
+          runs.push(run);
+          // Canonical order keeps permutations of one answer from counting as distinct solutions.
+          return {
+            sample: { ...sample, submission: { ...submission, answers: submission.answers.map(answer => ({
+              ...answer, value: { kind: 'structured', value: { kind: 'selection', ids } },
+            })) } },
+            run,
+          };
+        } catch {
+          return { sample, run: { state: 'failed', reason: '冻结样例无法执行。' } };
+        }
+      }),
+    };
+  });
+  const qualification = decision.state === 'eligible' ? decision.items[0] : undefined;
+  if (!qualification) throw new Error('正式断句需要宿主独立核验。');
+  return { release, qualification, runs };
+}
+
+class ArtifactAssessmentInputUnavailable extends Error {}
+
+export function readArtifactAssessment(
+  tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submissionRef: AssessmentRevisionRef,
+) {
+  return readFormalAssessment(tx, artifactAssessmentSlot, releaseRef, submissionRef, purpose);
+}
+
+export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFailure: boolean) {
+  const learner = learnerId(ref.learner);
+  const work = await readWork(db, ref);
+  if (work?.slotType !== artifactAssessmentSlot || work.deriver !== artifactAssessmentPolicy.deriver) return;
+  const { rows: [row] } = await db.query<{ scope_keys: AssessmentScope }>(
+    'SELECT scope_keys FROM slot_state WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
+    [learner, artifactAssessmentSlot, work.slotKey],
+  );
+  if (!row) throw new Error('Artifact assessment is missing its frozen scope');
+  const { releaseRef, submissionRef, releaseEpoch, submissionEpoch } = row.scope_keys;
+  try {
+    const snapshot = await gatherSnapshot(db, { learner, purpose }, async ({ read }) => {
+      const mount = await read.fact(releaseRef.id, { mode: 'pinned', rev: releaseRef.rev });
+      const action = await read.fact(submissionRef.id, { mode: 'pinned', rev: submissionRef.rev });
+      if (mount.type !== 'content.mountedArtifact' || action.type !== 'activity.artifactAction' ||
+          mount.accessEpoch !== releaseEpoch || action.accessEpoch !== submissionEpoch)
+        throw new ArtifactAssessmentInputUnavailable();
+      const { assessment } = artifactMount(mount.value);
+      const record = artifactActionRecord(action.value);
+      if (!assessment || record.mountId !== mount.ref.id) throw new ArtifactAssessmentInputUnavailable();
+      const release = assessmentRelease(assessment.release);
+      const submission = assessmentSubmission(record.submission, release);
+      if (release.releaseRef.id !== releaseRef.id || release.releaseRef.rev !== releaseRef.rev ||
+          submission.submissionRef.id !== submissionRef.id || submission.submissionRef.rev !== submissionRef.rev)
+        throw new ArtifactAssessmentInputUnavailable();
+      return { kind: 'input', data: { release, submission }, effects: [] };
+    });
+    const sealed = await sealCandidate(db, ref, artifactAssessmentPolicy, snapshot);
+    if (sealed.kind !== 'sealed') return;
+    if (terminalFailure) {
+      await submitCandidate(db, ref, artifactAssessmentPolicy, sealed.id,
+        { kind: 'failed', reason: assessmentExecutionFailed }, propagation);
+      return;
+    }
+    const { release, submission } = sealed.plan.data as FrozenInputs;
+    const result = evaluateSentenceBreaks(release, submission);
+    const criteria = release.items.flatMap(({ itemId, criteria }) =>
+      criteria.map(({ criterionId, evaluator, source, maximum }) => ({ itemId, criterionId, evaluator, source, maximum })));
+    const value = { result, score: readAssessmentScore(result, release, submission), criteria, receipts: [] };
+    await submitCandidate(db, ref, artifactAssessmentPolicy, sealed.id, { kind: 'value', value }, propagation);
+  } catch (error) {
+    if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
+        error instanceof ArtifactAssessmentInputUnavailable)) throw error;
+    await failWork(db, ref, async tx => {
+      await tx.query('UPDATE slot_state SET last_error=$4 WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
+        [learner, artifactAssessmentSlot, work.slotKey, JSON.stringify({ status: 'blocked', reason: assessmentInputsBlocked })]);
+    });
+  }
+}

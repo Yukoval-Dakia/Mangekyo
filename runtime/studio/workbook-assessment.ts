@@ -7,14 +7,13 @@ import { learnerId, type FactId, type Revision } from '../../kernel/src/declarat
 import type { Json, JsonObject } from '../../kernel/src/declarations/types.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
-import { failWork, readReadyWork, readWork, requestWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
+import { failWork, readReadyWork, readWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
 import { checkAssessmentPublication, type ReadVerifiedAssessmentPublicationEvidence } from '../../modules/activity/assessment-publication.ts';
 import {
   assessmentRelease, assessmentResult, assessmentSubmission, readAssessmentScore,
-  type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease, type AssessmentResult,
+  type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease,
   type AssessmentRevisionRef, type AssessmentSubmission,
 } from '../../modules/activity/assessment-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
@@ -23,7 +22,9 @@ import {
   sameWorkbookJson, workbookAssessmentConsent, workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
   workbookFormalAssessmentType, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookDraft,
 } from '../../modules/activity/workbook-values.ts';
-import { stableId } from './identity.ts';
+import {
+  assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment, type AssessmentScope,
+} from './formal-assessment.ts';
 import { RequestError } from './sessions.ts';
 
 export const workbookAssessmentSlot = workbookFormalAssessmentType;
@@ -36,7 +37,6 @@ const policy: CandidatePolicy = {
 const propagation = createPropagationHooks([]);
 const maxOutputTokens = 512;
 const maxAnswerLength = 16_000;
-const executionFailed = '自动评估执行失败。';
 
 type RouteCharge = {
   readonly learner: string;
@@ -68,12 +68,6 @@ export type WorkbookAssessmentHost = {
   readonly resolveAssessmentRoute?: (routeId: string) => Promise<WorkbookAssessmentRoute | null>;
 };
 
-type AssessmentScope = {
-  releaseRef: AssessmentRevisionRef;
-  submissionRef: AssessmentRevisionRef;
-  releaseEpoch: string;
-  submissionEpoch: string;
-};
 type FrozenInputs = {
   release: AssessmentRelease;
   submission: AssessmentSubmission;
@@ -141,10 +135,6 @@ export function frozenSubmission(release: AssessmentRelease, submissionRef: Asse
   }, release);
 }
 
-function slotKey(release: AssessmentRevisionRef, submission: AssessmentRevisionRef) {
-  return stableId(workbookAssessmentSlot, release.id, String(release.rev), submission.id, String(submission.rev));
-}
-
 class AssessmentInputUnavailable extends Error {}
 
 function readFailure(error: unknown) {
@@ -187,17 +177,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
       const release = attempt.paper.assessmentRelease;
       if (!release) continue;
       const paper = await read.fact(release.releaseRef.id, { mode: 'pinned', rev: release.releaseRef.rev });
-      const scope: AssessmentScope = {
-        releaseRef: release.releaseRef, submissionRef: { id: ref.id, rev: ref.rev },
-        releaseEpoch: paper.accessEpoch, submissionEpoch: fact.accessEpoch,
-      };
-      const key = slotKey(scope.releaseRef, scope.submissionRef);
-      const inserted = await tx.query(
-        `INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys, changed_tick)
-         VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-        [tx.learner, workbookAssessmentSlot, key, JSON.stringify(scope), tick],
-      );
-      if (inserted.rowCount) await requestWork(tx, tick, { slotType: workbookAssessmentSlot, slotKey: key, deriver: policy.deriver });
+      await registerFormalAssessment(tx, tick, policy, paper, fact);
     }
   };
 
@@ -239,7 +219,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
       const sealed = await sealCandidate(db, ref, policy, snapshot);
       if (sealed.kind !== 'sealed') return;
       if (terminalFailure) {
-        await submitCandidate(db, ref, policy, sealed.id, { kind: 'failed', reason: executionFailed }, propagation);
+        await submitCandidate(db, ref, policy, sealed.id, { kind: 'failed', reason: assessmentExecutionFailed }, propagation);
         return;
       }
       // Only this adapter writes the versioned gather plan. Use the sealed copy on activity retry.
@@ -303,7 +283,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
       await failWork(db, ref, async tx => {
         await tx.query(
           'UPDATE slot_state SET last_error=$4 WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
-          [learner, workbookAssessmentSlot, work.slotKey, JSON.stringify({ status: 'blocked', reason: '冻结依据已变化或不可读取。' })],
+          [learner, workbookAssessmentSlot, work.slotKey, JSON.stringify({ status: 'blocked', reason: assessmentInputsBlocked })],
         );
       });
     }
@@ -349,42 +329,6 @@ function evaluation(
   return { outcome: { ...key, state: 'failed', reason: '评估结论、分值或引文无法与冻结标准和作答核对。' }, receipt: trace };
 }
 
-type FormalAssessmentValue = {
-  result: AssessmentResult;
-  score: ReturnType<typeof readAssessmentScore>;
-  criteria: (Pick<AssessmentCriterion, 'criterionId' | 'evaluator' | 'source' | 'maximum'> & { itemId: string })[];
-  receipts: (NonNullable<Evaluation['receipt']> & { itemId: string; criterionId: string })[];
-};
-
-export async function readWorkbookAssessment(tx: ReadTransaction, release: AssessmentRelease, submissionRef: AssessmentRevisionRef) {
-  const releaseRef = release.releaseRef;
-  const { rows: [slot] } = await tx.query<{
-    current_id: string | null; last_error: { status: string; reason: string } | null;
-    value: { kind: 'value'; value: FormalAssessmentValue } | null; manifest: unknown;
-  }>(
-    `SELECT s.current_id, s.last_error, d.value, d.manifest FROM slot_state s
-     LEFT JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
-       AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
-     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
-    [tx.learner, workbookAssessmentSlot, slotKey(releaseRef, submissionRef)],
-  );
-  const refs = { releaseRef, submissionRef };
-  if (slot?.value?.kind === 'value' && slot.current_id) {
-    const manifest = parseManifest(slot.manifest);
-    if ((await revalidateManifest(tx, manifest)).kind !== 'valid' ||
-        (await revalidateManifest(tx, manifest, storagePurpose)).kind !== 'valid')
-      return { ...refs, state: 'blocked' as const, reason: '冻结依据已变化或不可读取。', score: null };
-    const { outcomes } = slot.value.value.result;
-    const state = outcomes.some(({ state }) => state === 'failed') ? 'failed'
-      : outcomes.some(({ state }) => state === 'blocked') ? 'blocked'
-      : outcomes.every(({ state }) => state === 'scored' || state === 'qualitative') ? 'complete' : 'incomplete';
-    return { ...refs, ...slot.value.value, state, derivationId: slot.current_id };
-  }
-  if (slot?.last_error) return {
-    ...refs, state: slot.last_error.reason === executionFailed ? 'failed' as const : 'blocked' as const,
-    reason: slot.last_error.reason, score: null,
-  };
-  return slot
-    ? { ...refs, state: 'queued' as const, score: null }
-    : { ...refs, state: 'blocked' as const, reason: '缺少自动评估工作记录。', score: null };
+export function readWorkbookAssessment(tx: ReadTransaction, release: AssessmentRelease, submissionRef: AssessmentRevisionRef) {
+  return readFormalAssessment(tx, workbookAssessmentSlot, release.releaseRef, submissionRef, storagePurpose);
 }
