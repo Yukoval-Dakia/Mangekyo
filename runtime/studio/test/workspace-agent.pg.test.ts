@@ -4,13 +4,15 @@ import pg from 'pg';
 import {expect,it} from 'vitest';
 import {createPgDb} from '../../../kernel/src/db/pg.ts';
 import {learnerId} from '../../../kernel/src/declarations/ids.ts';
-import {loadModuleDirectory} from '../../../kernel/src/loader.ts';
 import {kernelSchemaStatements} from '../../../kernel/src/schema.ts';
+import {loadModuleDirectory} from '../../../kernel/src/loader.ts';
 import {studioLearner,stableId} from '../identity.ts';
 import {resolveSource} from '../source-read.ts';
 import {openWorkbook} from '../workbook.ts';
-import {openWorkspaceAccess} from '../workspace-access.ts';
-import {openWorkspaceTools} from '../workspace-agent.ts';
+import {openWorkspaceAccess} from '../workspace-access.ts'; import {openWorkspaceTools} from '../workspace-agent.ts';
+import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organizer.ts';
+import {learningOverviewPurpose, readLearningOverview} from '../learning-overview.ts';
+import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
 
 const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 it.skipIf(!connectionString)('preserves source links and resolves workspace anchors under revision and purpose changes', async () => {
@@ -75,7 +77,21 @@ it.skipIf(!connectionString)('preserves source links and resolves workspace anch
     expect(hidden.content).toBeUndefined();
 
     const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity',import.meta.url)));
-    const access = openWorkspaceAccess(db, activity);
+    const access = openWorkspaceAccess(db, activity); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
+    const overview = (callerPurpose = learningOverviewPurpose, maySend: (fact: LearningOverviewFact) => boolean = () => true) =>
+      db.snapshot({learner: studioLearner}, tx => readLearningOverview(tx, {callerPurpose, maySend}));
+    const library = openLibrary(db, activity), organizer = openOrganizer(db, activity);
+    expect((await overview()).goal).toMatchObject({state: 'empty'});
+    await library.setGoal({requestId: 'overview-old', text: '旧目标'}); await library.setGoal({requestId: 'overview-current', text: '保持每日法语输入'});
+    const task = await organizer.task({requestId: 'overview-task', title: '复习动词', date: '2026-11-19'});
+    await access.setTeaching(stableId('study-goal', 'overview-old'), {enabled: true, expectedRev: 1});
+    const goal = await access.setTeaching(stableId('study-goal', 'overview-current'), {enabled: true, expectedRev: 1}); const openedTask = await access.setTeaching(task.id, {enabled: true, expectedRev: task.rev}); expect((await overview('research')).witnesses).toEqual([]);
+    const current = await overview();
+    expect(current).toMatchObject({goal: {state: 'set', text: '保持每日法语输入', witness: {id: goal.id, rev: goal.rev, accessEpoch: '1'}},
+      tasks: {state: 'available', items: [{id: task.id, rev: openedTask.rev, title: '复习动词', date: '2026-11-19', done: false}]}, witnesses: [{id: goal.id}, {id: task.id}]});
+    expect(await overview(learningOverviewPurpose, fact => fact.id !== task.id)).toMatchObject({tasks: {state: 'empty'}, witnesses: current.witnesses.slice(0, 1)});
+    await access.setTeaching(task.id, {enabled: false, expectedRev: openedTask.rev}); await access.setTeaching(goal.id, {enabled: false, expectedRev: goal.rev});
+    expect((await overview()).witnesses).toEqual([]);
     const revoked = await access.setTeaching(first.page.id,{enabled:false,expectedRev:updated.rev});
     await access.setTeaching(first.page.id,{enabled:true,expectedRev:revoked.rev});
     expect(await edit('read_workspace',chosen,2)).toEqual({error:expect.any(String)});
@@ -97,8 +113,6 @@ it.skipIf(!connectionString)('preserves source links and resolves workspace anch
     const wrongSlot = {...answer,anchor:{...answer.anchor,slotId:'expected'}};
     expect(await edit('read_workspace',{id:JSON.stringify(wrongSlot)},8)).toEqual({error:expect.any(String)});
   } finally {
-    await db.close();
-    await admin.query('DROP SCHEMA '+schema+' CASCADE');
-    await admin.close();
+    await db.close(); await admin.query('DROP SCHEMA '+schema+' CASCADE'); await admin.close();
   }
 });

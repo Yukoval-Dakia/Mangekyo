@@ -12,8 +12,8 @@ import { commandId, factId, type FactId } from '../../kernel/src/declarations/id
 import type { Json } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction, SqlValue } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { materialType, textMaterial } from '../../modules/activity/library-values.ts';
-import { organizerNote, organizerNoteType } from '../../modules/activity/organizer-values.ts';
+import { goalType, materialType, studyGoal, textMaterial } from '../../modules/activity/library-values.ts';
+import { organizerNote, organizerNoteType, organizerTask, organizerTaskType } from '../../modules/activity/organizer-values.ts';
 import { practiceSubmission, ridingPracticeType } from '../../modules/activity/practice-values.ts';
 import { studyRecord } from '../../modules/activity/values.ts';
 import {
@@ -57,6 +57,8 @@ const categories: readonly AccessCategory[] = [
   { id: 'note', label: '笔记', types: [organizerNoteType] },
   { id: 'material', label: '材料', types: [materialType] },
   { id: 'record', label: '学习记录', types: [studyRecordType] },
+  { id: 'goal', label: '目标', types: [goalType] },
+  { id: 'task', label: '任务', types: [organizerTaskType] },
   { id: 'entry', label: '生成条目', types: [workspaceEntryType] },
 ];
 const allowedTypes = new Set(categories.flatMap((category) => category.types));
@@ -289,6 +291,21 @@ function studyRecordDisplay(value: unknown): Display {
   };
 }
 
+function goalDisplay(value: unknown): Display {
+  const goal = studyGoal(value);
+  if (goal.text === null) {
+    return { title: '未设置目标', excerpt: '当前没有学习目标。', text: '当前没有学习目标。' };
+  }
+  return { title: '学习目标', excerpt: summary(goal.text), text: cleanText(goal.text) };
+}
+
+function taskDisplay(value: unknown): Display {
+  const task = organizerTask(value);
+  const status = task.done ? '已完成' : '未完成';
+  const text = task.title + '\n日期：' + task.date + '\n状态：' + status;
+  return { title: task.title, excerpt: status + ' · ' + task.date, text: cleanText(text) };
+}
+
 function entryDisplay(value: unknown): Display {
   const {kind,title,body,tags,links,answer,rubric} = workspaceEntry(value);
   const details = [
@@ -316,6 +333,8 @@ export function displayOf(type: string, value: unknown): Display {
     if (type === organizerNoteType) return noteDisplay(value);
     if (type === materialType) return materialDisplay(value);
     if (type === studyRecordType) return studyRecordDisplay(value);
+    if (type === goalType) return goalDisplay(value);
+    if (type === organizerTaskType) return taskDisplay(value);
     if (type === workspaceEntryType) return entryDisplay(value);
   } catch {
     // A malformed legacy fact must not make the learner's whole access page disappear.

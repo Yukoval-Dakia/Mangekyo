@@ -7,7 +7,9 @@ import {
 } from '@mangekyo/kernel';
 import {ridingPracticeType} from './practice-values.ts';
 import {workbookAttemptType, workbookPaperType} from './workbook-values.ts';
-import {materialType} from './library-values.ts';
+import {goalType, materialType} from './library-values.ts';
+import {organizerTaskType} from './organizer-values.ts';
+import type {OrganizerTask} from './organizer-values.ts';
 import {organizerNoteType} from './organizer-values.ts';
 
 export class WorkspaceInputError extends Error {}
@@ -269,7 +271,63 @@ export function setWorkspaceTeachingInput(input: unknown): SetWorkspaceTeachingI
 }
 
 export const workspaceAttemptTypes = ['activity.studyRecord', ridingPracticeType, workbookAttemptType];
-export const workspaceShareableTypes = [...workspaceAttemptTypes, workbookPaperType, materialType, organizerNoteType, workspaceEntryType];
+export const workspaceShareableTypes = [
+  ...workspaceAttemptTypes,
+  workbookPaperType,
+  materialType,
+  organizerNoteType,
+  goalType,
+  organizerTaskType,
+  workspaceEntryType,
+];
+export const workspaceOverviewTypes = workspaceShareableTypes;
+
+export type LearningOverviewFact = {
+  readonly id: string;
+  readonly rev: number;
+  readonly type: string;
+  readonly value: unknown;
+  readonly accessEpoch: string;
+};
+
+export type LearningOverviewWitness = {
+  readonly id: string;
+  readonly rev: number;
+  readonly type: string;
+  readonly accessEpoch: string;
+};
+
+export type LearningOverviewTask = OrganizerTask & Pick<LearningOverviewWitness, 'id' | 'rev'>;
+
+export type LearningOverviewGoal =
+  | { readonly state: 'empty' }
+  | { readonly state: 'unavailable' }
+  | { readonly state: 'set'; readonly text: string | null; readonly witness: LearningOverviewWitness };
+
+export type LearningOverviewTasks =
+  | {
+    readonly state: 'empty' | 'unavailable';
+    readonly witnesses: readonly [];
+  }
+  | {
+    readonly state: 'partial' | 'available';
+    readonly items: readonly LearningOverviewTask[];
+    readonly witnesses: readonly LearningOverviewWitness[];
+  };
+
+export type LearningOverview = {
+  readonly goal: LearningOverviewGoal;
+  readonly tasks: LearningOverviewTasks;
+  readonly witnesses: readonly LearningOverviewWitness[];
+};
+
+export type LearningOverviewRecipient = (fact: LearningOverviewFact) => boolean;
+
+export const learningOverviewConsumerContract = {
+  purpose: 'teaching',
+  behavior: 'Current-revision reads require caller purpose and recipient permission; witnesses identify actual reads.',
+  futureConsumers: ['today-learning-state', 'review', 'proposal'],
+} as const;
 
 export async function verifyWorkspaceEntry(
   ctx: CommandContext, id: FactId, entry: WorkspaceEntryFields, basis: readonly WorkspaceEntryBasis[],
