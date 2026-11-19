@@ -1,0 +1,23 @@
+{
+  "hostCommit": "8aa2e128995a3e71c83e4c9bdb2372c222abf353",
+  "adapter": "local in-memory command adapter",
+  "original": {
+    "ok": true,
+    "kind": "command-done",
+    "commandId": "CF83D43A6FFB261F328FF6169F"
+  },
+  "replayed": {
+    "ok": true,
+    "kind": "command-done",
+    "commandId": "CF83D43A6FFB261F328FF6169F"
+  },
+  "next": {
+    "ok": true,
+    "kind": "command-done",
+    "commandId": "888960803AA3AE292D9CAF075B"
+  },
+  "distinctCommandIds": 2,
+  "changedPayload": "request-conflict",
+  "stale": "stale-state",
+  "observation": "verified"
+}
