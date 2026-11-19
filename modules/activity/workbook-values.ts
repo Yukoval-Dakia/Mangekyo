@@ -1,8 +1,10 @@
 import { factId } from '@mangekyo/kernel';
+import { assessmentRelease, type AssessmentRelease } from './assessment-values.ts';
 
 export const workbookPaperType = 'activity.workbookPaper';
 export const workbookAttemptType = 'activity.workbookAttempt';
 export const workbookRubricAssessmentType = 'activity.workbookRubricAssessment';
+export const workbookFormalAssessmentType = 'activity.workbookFormalAssessment';
 export const saveWorkbookPaperCommand = 'activity.saveWorkbookPaper';
 export const submitWorkbookAttemptCommand = 'activity.submitWorkbookAttempt';
 export const workbookGradingVersion = 'workbook-v1';
@@ -10,6 +12,7 @@ export const workbookRubricGradingVersion = 'workbook-v2';
 export const workbookRubricVersion = 'rubric-v1';
 export const workbookRubricAssessmentVersion = 'workbook-rubric-assessment-v1';
 export const workbookAssessmentConsent = 'send-question-answer-rubric';
+export const workbookAssessmentPurpose = 'workbook-assessment';
 
 const requestPattern = /^[A-Za-z0-9_-]{8,100}$/;
 const questionIdPattern = /^[A-Za-z0-9_-]{1,40}$/;
@@ -54,6 +57,7 @@ export type WorkbookPaper = {
   materialId: string | null;
   savedAt: string;
   questions: WorkbookQuestion[];
+  assessmentRelease?: AssessmentRelease;
 };
 
 export type WorkbookQuestionDraft =
@@ -108,6 +112,7 @@ export type WorkbookAttempt = {
   paper: WorkbookPaper;
   answers: Record<string, WorkbookAnswer>;
   feedback: WorkbookFeedback[];
+  assessmentConsent?: typeof workbookAssessmentConsent;
 };
 
 export type WorkbookAttemptRequest = {
@@ -115,6 +120,7 @@ export type WorkbookAttemptRequest = {
   requestId: string;
   submittedAt: string;
   answers: Record<string, string | null>;
+  assessmentConsent?: typeof workbookAssessmentConsent;
 };
 
 export type WorkbookQuestionView =
@@ -358,6 +364,7 @@ export function workbookPaper(input: unknown): WorkbookPaper {
     materialId: materialReference(row.materialId),
     savedAt: timestamp(row.savedAt, '保存时间'),
     questions: parsed,
+    ...(row.assessmentRelease === undefined ? {} : { assessmentRelease: assessmentRelease(row.assessmentRelease) }),
   };
 }
 
@@ -383,7 +390,14 @@ export function workbookAttemptRequest(input: unknown): WorkbookAttemptRequest {
     requestId: workbookRequestId(row.requestId),
     submittedAt: timestamp(row.submittedAt, '提交时间'),
     answers: given,
+    ...assessmentConsent(row.assessmentConsent),
   };
+}
+
+function assessmentConsent(value: unknown): Pick<WorkbookAttemptRequest, 'assessmentConsent'> {
+  if (value === undefined) return {};
+  if (value !== workbookAssessmentConsent) throw new Error('自动评阅授权格式无效。');
+  return { assessmentConsent: value };
 }
 
 export function workbookAssessmentRequest(input: unknown): WorkbookAssessmentRequest {
@@ -654,6 +668,7 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     paper: pap,
     answers,
     feedback,
+    ...assessmentConsent(row.assessmentConsent),
   };
 }
 
