@@ -27,6 +27,7 @@ import {
   type WorkbookExpected,
 } from '../../modules/activity/workbook-values.ts';
 import { sourceId, stableId, studioLearner } from './identity.ts';
+import { materialIntakeLink } from './reading.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { carryRubricAssessments } from './learning-attempt-read.ts';
@@ -671,8 +672,17 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
       }
       const purposes = purposesOf(row.purpose);
       if (purposes.includes('all')) throw new RequestError(409, '这条记录已设置为全部用途。');
+      const link = row.type === materialType
+        ? await db.snapshot({ learner: studioLearner }, async (tx) => materialIntakeLink(tx, factId(row.id)))
+        : undefined;
       if (purposes.includes('teaching') === enabled) {
+        // An older material may already be open while its companion intake is
+        // still storage-only; fall through so the command can repair it.
+        if (link && link.purpose.includes('teaching') !== enabled) {
+          // continue to the command below
+        } else {
         return { id: row.id, rev: row.current_rev, teaching: enabled, changed: false };
+        }
       }
       const purpose = purposes[0];
       if (!purpose) throw new RequestError(409, '这条记录当前没有可用的读取用途。');
@@ -683,11 +693,11 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
           purpose,
           type: setWorkspaceTeachingCommand,
           id: commandId(stableId('workspace-teaching', itemId, String(expectedRev), String(enabled))),
-          input: { id: itemId, expectedRev, enabled } as Json,
+          input: { id: itemId, expectedRev, enabled, ...(link ? { intakeId: link.id } : {}) } as Json,
         });
-        const ref = receipt.wrote[0];
+        const ref = receipt.wrote.find((written) => written.id === row.id);
         if (!ref) throw new RequestError(500, '这次设置没有返回记录。');
-        return { id: ref.id, rev: ref.rev, teaching: enabled, changed: true };
+        return { id: row.id, rev: ref.rev, teaching: enabled, changed: true };
       } catch (error) {
         throw translate(error);
       }

@@ -138,18 +138,31 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     let body = fact;
     let linkedMaterial: FactSnapshot | undefined;
     if (fact.type === materialType || fact.type === intakeFactType) {
-      const documentId = fact.type === materialType ? relatedIntakeId(fact) : factId(id);
+      const documentId = fact.type === materialType ? relatedIntakeId(fact.ref.id) : factId(id);
       const documentRevision = (textReference?.fact.rev ?? (reference?.fact.type === intakeFactType && documentId === reference.fact.id
         ? reference.fact.rev : undefined)) as Revision | undefined;
-      const document = await visit(documentId, mode === 'pinned' ? documentRevision : undefined);
+      let pairedDocumentExists = false;
+      try {
+        // A paired companion intake exists: it governs the current full text.
+        // Detect existence explicitly so that a plain text material without any
+        // intake falls back to its own preview, while an existing but
+        // unauthorized intake still denies (it must not silently fall back).
+        await reader.fact(documentId, {mode: 'following'});
+        pairedDocumentExists = true;
+      } catch (error) {
+        if (!(error instanceof FactNotFoundError)) throw error;
+      }
+      const document = pairedDocumentExists
+        ? await visit(documentId, mode === 'pinned' ? documentRevision : undefined)
+        : undefined;
       if (!document || document.type !== intakeFactType) {
-        if (fact.type !== materialType || document || reference || mode === 'following') return;
+        if (fact.type !== materialType || document) return;
         const projection = project(fact, anchor);
         if (access.recipient === 'workspace') access.track?.(fact);
         return projection ? {id: fact.ref.id, sourceRef: sourceReference(fact, anchor), ...projection} : undefined;
       }
       const material = fact.type === materialType ? fact : await visit(relatedMaterialId(document));
-      if (!material || material.type !== materialType || relatedIntakeId(material) !== documentId) return;
+      if (!material || material.type !== materialType || relatedIntakeId(material.ref.id) !== documentId) return;
       linkedMaterial = material;
       body = document;
     }

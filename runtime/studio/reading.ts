@@ -1,6 +1,6 @@
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId } from '../../kernel/src/declarations/ids.ts';
+import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { materialType, storagePurpose, textMaterial } from '../../modules/activity/library-values.ts';
 import { intakeDocument, intakeFactType } from '../../modules/activity/intake-values.ts';
@@ -13,18 +13,20 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
   try {
     const snapshot = await read.fact(factId(id), {mode: 'following'});
     if (snapshot.type !== materialType) return null;
-    const material = textMaterial(snapshot.value);
-    try {
-      const source = await read.fact(factId(stableId('intake-document', id)), {mode: 'following'});
-      if (source.type !== intakeFactType) return null;
-      const document = intakeDocument(source.value);
-      return document.materialId === id
-        ? {id, title: document.title, text: document.extraction.text, sourceRef: sourceReference(source, {kind:'whole'})}
-        : null;
-    } catch (error) {
-      if (!(error instanceof FactNotFoundError)) throw error;
+    const link = await materialIntakeLink(tx, snapshot.ref.id);
+    if (!link || !link.purpose.includes(storagePurpose)) {
+      const material = textMaterial(snapshot.value);
       return {id, title: material.title, text: material.text, sourceRef: sourceReference(snapshot, {kind:'whole'})};
     }
+    if (link.materialId !== id || link.retracted) return null;
+    const source = await read.fact(link.id, {mode: 'following'});
+    const document = intakeDocument(source.value);
+    return {
+      id,
+      title: document.title,
+      text: document.extraction.text,
+      sourceRef: materialIntakeReference(snapshot, source, {kind:'whole'}),
+    };
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return null;
     throw error;
@@ -41,8 +43,27 @@ export function intakeTextOf(fact: FactSnapshot) {
   return {field: 'text', ...document, text: document.extraction.text};
 }
 
-export function relatedIntakeId(material: FactSnapshot) {
-  return factId(stableId('intake-document', material.ref.id));
+export function relatedIntakeId(materialId: FactId) {
+  return factId(stableId('intake-document', materialId));
+}
+
+export async function materialIntakeLink(tx: ReadTransaction, materialId: FactId) {
+  const id = relatedIntakeId(materialId);
+  const {rows: [row]} = await tx.query<{
+    rev: number;
+    purpose: string[];
+    retracted: boolean;
+    materialId: string | null;
+  }>(
+    `SELECT f.current_rev AS rev, f.purpose, f.retracted_rev IS NOT NULL AS retracted,
+            r.data->>'materialId' AS "materialId"
+     FROM facts f
+     LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+     WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3`,
+    [tx.learner, id, intakeFactType],
+  );
+  if (!row || (!row.retracted && isSourceFactId(row.materialId) && row.materialId !== materialId)) return;
+  return {id, ...row};
 }
 
 export function relatedMaterialId(document: FactSnapshot) {
