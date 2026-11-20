@@ -2,13 +2,12 @@ import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, derivationId, factId, type CommandId, type FactId } from '../../kernel/src/declarations/ids.ts';
-import type { DerivationSnapshot, FactSnapshot, Json, Outcome, ReadContext, SlotRef } from '../../kernel/src/declarations/types.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { commandId, factId, type CommandId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import type { DerivationSnapshot, FactSnapshot, Json, ReadContext, SlotRef } from '../../kernel/src/declarations/types.ts';
+import { readEffectiveSlotVersion } from '../../kernel/src/derivations/revalidate.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { issuedPosttestPaper, posttestIssuanceType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import { printedWorkbookPresentation, recordWorkbookPresentationCommand, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
@@ -34,33 +33,13 @@ const printKinds = new Map<string, 'workbook' | 'posttest' | 'question' | 'textb
 ]);
 const previewLayout = { lines: 60, columns: 80 };
 
-async function openSlot<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string, pinnedId?: string) {
-  const { rows: [row] } = await tx.query<{ id: string; value: Outcome<Value>; manifest: unknown; gather_tick: string }>(
-    `SELECT d.id,d.value,d.manifest,d.gather_tick::text
-       FROM slot_state s JOIN derivations d USING (learner_id,slot_type,slot_key)
-      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3 AND d.deriver=$4
-        AND d.effective_tick>=d.gather_tick AND NOT d.is_shadow AND d.invalidated_tick IS NULL
-        AND (($5::text IS NULL AND d.id=s.current_id AND d.lifecycle='effective'
-              AND d.freshness='current' AND d.selection_ended_tick IS NULL)
-          OR ($5 IS NOT NULL AND d.id=$5 AND d.lifecycle IN ('effective','superseded')))`,
-    [slot.learner, slot.type, slot.key, deriver, pinnedId ?? null],
-  );
-  if (!row || row.value?.kind !== 'value') throw new RequestError(409, conflict);
-  const manifest = parseManifest(row.manifest);
-  if (manifest.gatherTick !== row.gather_tick) throw new RequestError(409, conflict);
-  for (const requested of new Set([manifest.purpose, use])) {
-    const verdict = await revalidateManifest(tx, manifest, requested);
-    if (verdict.kind !== 'valid' || (!pinnedId && verdict.freshness !== 'current')) throw new RequestError(409, conflict);
-  }
-  return { manifest, deriver, snapshot: { id: derivationId(row.id), slot, outcome: row.value } };
-}
 
 function bindRead(tx: ReadTransaction, base: ReadContext, use: string) {
   const readExtraction: PaperExtractionReader = async ({ learner, source, extraction }, mode) => {
     if (learner !== tx.learner) throw new RequestError(409, conflict);
-    const row = await openSlot<LayeredExtractionValue>(tx, { learner, type: layeredExtractionSlot, key: source.id },
+    const row = await readEffectiveSlotVersion<LayeredExtractionValue>(tx, { learner, type: layeredExtractionSlot, key: source.id },
       layeredExtractionDeriver, use, mode === 'pinned' ? extraction.derivationId : undefined);
-    if (row.snapshot.id !== extraction.derivationId) throw new RequestError(409, conflict);
+    if (!row || row.snapshot.id !== extraction.derivationId) throw new RequestError(409, conflict);
     return row;
   };
   const readQuestionSlot: ReadContext['slot'] = async <Value = Json>(
@@ -68,7 +47,9 @@ function bindRead(tx: ReadTransaction, base: ReadContext, use: string) {
   ) => {
     if (slot.learner !== tx.learner || slot.type !== questionVerificationType || options.mode !== 'following')
       throw new RequestError(409, conflict);
-    const { manifest, snapshot } = await openSlot<QuestionVerification>(tx, slot, 'content/question-verification', use);
+    const result = await readEffectiveSlotVersion<QuestionVerification>(tx, slot, 'content/question-verification', use);
+    if (!result) throw new RequestError(409, conflict);
+    const { manifest, snapshot } = result;
     const basis = snapshot.outcome.value?.basis;
     if (!basis || questionVerificationKey(basis) !== slot.key || !manifest.inputs.some(input =>
       input.kind === 'fact' && input.mode === 'following' && input.id === basis.id &&
@@ -136,8 +117,10 @@ async function printCandidate(tx: ReadTransaction, read: ReadContext, fact: Fact
   };
   if (kind === 'photo' || kind === 'pdf') {
     const layered = await ifAvailable(async () => {
-      const { snapshot } = await openSlot<LayeredExtractionValue>(tx,
+      const version = await readEffectiveSlotVersion<LayeredExtractionValue>(tx,
         { learner: tx.learner, type: layeredExtractionSlot, key: id }, layeredExtractionDeriver, purpose);
+      if (!version) throw new RequestError(409, conflict);
+      const { snapshot } = version;
       const { basis } = snapshot.outcome.value;
       const extraction = { derivationId: snapshot.id, sourceRev: basis.target.rev, modelMethod: basis.modelMethod };
       return project({ ...definition, extraction });
@@ -222,10 +205,8 @@ export function openCapturePapers(db: Db, capture: LoadedModule, activity: Loade
     return paperRequest(() => db.tx(scope, async tx => {
       await lockLearner(tx, tx.learner);
       const read = learnerRead(tx);
-      const handle = createCommandHandler({ ...db, query: tx.query, tx: async (inner, execute) => {
-        if (inner.learner !== tx.learner) throw new RequestError(409, conflict);
-        return execute(tx);
-      } }, { modules: [capture, activity], hooks, bindCommandRead: (inner, request, base) => bindRead(inner, base, request.purpose) });
+      const handle = createCommandHandler(withinLearnerTransaction(db, tx), {
+        modules: [capture, activity], hooks, bindCommandRead: (inner, request, base) => bindRead(inner, base, request.purpose) });
       return run(read, async (type, data, id = commandId(stableId(type,canonicalJsonString(data))), deletionWatermark) => {
         const receipt = await handle({learner:tx.learner,actor:'learner',purpose,type,id,input:data,
           ...(deletionWatermark === undefined ? {} : {deletionWatermark})});
