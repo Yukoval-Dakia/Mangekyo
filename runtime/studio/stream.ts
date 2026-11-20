@@ -200,7 +200,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
     if (!allowed && status === 'pending')
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     const authority = !allowed ? 'withdrawn' : manifest
-      ? await teachingResultAuthority(tx, submission, manifest, grantCurrent, check) : 'authorized';
+      ? (await teachingResultAuthority(tx, row.turnId, submission, manifest, grantCurrent, check)).state : 'authorized';
     if (authority !== 'authorized') row.draft = null;
     if (status === 'ready' && (authority !== 'authorized' || row.message === null)) {
       row.message = authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage;

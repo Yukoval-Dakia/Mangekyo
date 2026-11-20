@@ -1,6 +1,6 @@
 import { attachmentCurrent } from './reading.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
-import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAllowed, type CheckNotionRead, type NotionRecipient } from './notion.ts';
+import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
 import { providerEndpoint } from '../../executors/teaching/provider.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { createHash } from 'node:crypto';
@@ -138,10 +138,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (!row) return;
     const prior = await createCommandReadContext(tx, purpose).fact(factId(id), {mode: 'following'});
     const manifest = parseManifest(row.manifest);
-    const memoryBasis = await teachingMemoryBasis(tx, manifest, id);
-    if (memoryBasis && prior.type === 'activity.studyTurn' &&
-        await teachingResultAllowed(tx, studyTurn(prior.value), manifest, workspaceGrantChecker(tx), check)) return {...row, manifest, memoryBasis};
-    return undefined;
+    if (prior.type !== 'activity.studyTurn') return;
+    const authority = await teachingResultAuthority(tx, id, studyTurn(prior.value), manifest, workspaceGrantChecker(tx), check);
+    if (authority.state !== 'authorized') return;
+    return {...row, manifest, memoryBasis: authority.memoryBasis};
   }
   function trackFeedback(id: string, reply: NonNullable<Awaited<ReturnType<typeof readFeedback>>>) {
     inputs.set('feedback:' + id, {kind: 'slot', slotType, slotKey: id, derivationId: derivationId(reply.id), mode: 'following'});

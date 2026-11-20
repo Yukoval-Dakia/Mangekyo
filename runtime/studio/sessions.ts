@@ -157,10 +157,12 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
       materialAvailable = await attachmentCurrent(tx,stored) && await grantCurrent(stored);
     const {attachment: _attachment, ...withoutAttachment} = stored;
     const submission = materialAvailable ? stored : withoutAttachment;
-    const authority = !materialAvailable ? 'withdrawn' : row.value && check &&
-      await teachingResultAuthority(tx, stored, row.manifest, grantCurrent, check);
-    let feedback = (!authority || authority === 'authorized') && row.value &&
-      await teachingMemoryBasis(tx, parseManifest(row.manifest), row.id) ? row.value : null;
+    let authority: 'authorized' | 'unconfirmed' | 'withdrawn' = 'withdrawn';
+    if (materialAvailable && row.value) {
+      if (check) authority = (await teachingResultAuthority(tx, row.id, stored, row.manifest, grantCurrent, check)).state;
+      else if (await teachingMemoryBasis(tx, parseManifest(row.manifest), row.id)) authority = 'authorized';
+    }
+    let feedback = authority === 'authorized' ? row.value : null;
     if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
       rationale: '', message: authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage, reads: [], evidenceIds: [] };
     result.push({
