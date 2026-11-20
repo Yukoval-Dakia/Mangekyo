@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { loadTriageFixtures, scoreTriageFixtures } from '../research-triage/fixtures.ts';
 import { scoreTriageFixture, type TriageFixture } from '../research-triage/fixtures.ts';
 import { parseTriageResponse, TriageResponseError } from '../research-triage/response.ts';
-import { allowedTriageIds, parseTriageSnapshot } from '../research-triage/snapshot.ts';
+import { parseTriageSnapshot } from '../research-triage/snapshot.ts';
 import { selectTriageCards, triageSkillCards, triagePromptBlock } from '../research-triage/skills.ts';
 
 const fixtureUrl = new URL('../research-triage/fixtures.json', import.meta.url);
@@ -103,7 +103,7 @@ describe('research triage cards', () => {
 describe('research triage response validation', () => {
   it('accepts a strict noop response', () => {
     const snapshot = parseTriageSnapshot(snapshotWithTodo());
-    expect(parseTriageResponse(JSON.stringify(validResponse), snapshot, allowedTriageIds(snapshot)).actions).toEqual([{ kind: 'noop' }]);
+    expect(parseTriageResponse(JSON.stringify(validResponse), snapshot).actions).toEqual([{ kind: 'noop' }]);
   });
 
   it('accepts the real kernel initial access_epoch 0 decimal string', () => {
@@ -122,22 +122,21 @@ describe('research triage response validation', () => {
       },
     });
     expect(Object.keys(snapshot.facts)).toEqual(['01K7TRJAGE0000000000000009']);
-    expect(parseTriageResponse(JSON.stringify(validResponse), snapshot, allowedTriageIds(snapshot)).actions).toEqual([{ kind: 'noop' }]);
+    expect(parseTriageResponse(JSON.stringify(validResponse), snapshot).actions).toEqual([{ kind: 'noop' }]);
   });
 
   it('rejects IDs outside the snapshot and expression-like fields', () => {
     const snapshot = parseTriageSnapshot(snapshotWithTodo());
-    const allowed = allowedTriageIds(snapshot);
     const outside = {
       ...validResponse,
       actions: [{ kind: 'update_or_cancel_todo', todo_id: '01K7TRJAGE00000000000000FF', operation: 'cancel', reason: 'x' }],
     };
-    expect(() => parseTriageResponse(JSON.stringify(outside), snapshot, allowed)).toThrow(TriageResponseError);
+    expect(() => parseTriageResponse(JSON.stringify(outside), snapshot)).toThrow(TriageResponseError);
     const expression = {
       ...validResponse,
       actions: [{ kind: 'noop', expression: 'facts.current_rev = 2' }],
     };
-    expect(() => parseTriageResponse(JSON.stringify(expression), snapshot, allowed)).toThrow(TriageResponseError);
+    expect(() => parseTriageResponse(JSON.stringify(expression), snapshot)).toThrow(TriageResponseError);
   });
 
   it('scores a correct first action plus an extra wrong action as false positive', () => {

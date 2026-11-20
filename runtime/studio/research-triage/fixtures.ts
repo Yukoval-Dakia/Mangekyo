@@ -1,4 +1,4 @@
-import { allowedTriageIds, parseTriageSnapshot, type TriageSnapshot } from './snapshot.ts';
+import { parseTriageSnapshot, type TriageSnapshot } from './snapshot.ts';
 import { parseTriageResponse, type TriageResponse } from './response.ts';
 import { triageSkillById, type TriageSkillCard } from './skills.ts';
 
@@ -122,7 +122,7 @@ export function scoreTriageFixture(fixture: TriageFixture): TriageFixtureResult 
   let response: TriageResponse;
   try {
     snapshot = parseTriageSnapshot(fixture.snapshot);
-    response = parseTriageResponse(JSON.stringify(fixture.response), snapshot, allowedTriageIds(snapshot));
+    response = parseTriageResponse(JSON.stringify(fixture.response), snapshot);
   } catch (error) {
     return {
       id: fixture.id,
