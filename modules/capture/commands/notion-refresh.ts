@@ -1,5 +1,5 @@
 import { defineCommand } from '@mangekyo/kernel';
-import { notionRevisionDiff, notionSourceTarget, readNotionSourceTarget, refreshNotionSourceCommand } from '../notion-source.ts';
+import { checkNotionAdmission, notionRevisionDiff, notionSourceTarget, readNotionSourceTarget, refreshNotionSourceCommand } from '../notion-source.ts';
 import { notionRecord } from '../notion-values.ts';
 import { reviseSourceWrite, sourceEnvelope } from '../source.ts';
 
@@ -13,6 +13,7 @@ export default defineCommand({
   },
   async write(ctx, input) {
     const { current, source } = await readNotionSourceTarget(ctx, input);
+    await checkNotionAdmission(ctx, input.id, input.envelope, current.purpose);
     const write = reviseSourceWrite(current, input.expectedRev, input.envelope);
     const diff = notionRevisionDiff(source, input.envelope);
     if (source.occurredAt === input.envelope.occurredAt && source.unit.title === input.envelope.unit.title &&

@@ -1,30 +1,35 @@
-export default async function({ db, learner, load, send, assert }) {
+export default async function({ db, learner, load, send, assert, read, stableId }) {
   const { createAuthorizedFactReader } = await load('kernel/src/commands/reads.ts');
-  const { captureSourceCommand, sourceEnvelope } = await load('modules/capture/source.ts');
+  const { captureSourceCommand } = await load('modules/capture/source.ts');
   const {
-    notionRevisionDiff, notionSourceRecipient,
+    notionRevisionDiff, openSelectedNotionSource,
     prepareNotionIngest, prepareNotionRevision, refreshNotionSourceCommand, revokeNotionSourceCommand, setNotionPurposeCommand,
   } = await load('modules/capture/notion-source.ts');
   const uuid = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
   const at = '2026-11-20T01:00:00.000Z';
-  const selection = { learner, id: 'chemistry', root: { kind: 'page', id: uuid(1) }, preset: 'learning' };
+  const { readNotionSelection, notionSelectionWitness } = await load('modules/capture/notion-selection.ts');
+  const settings = { selectionId: 'chemistry', root: { kind: 'page', id: uuid(1) }, preset: 'learning', recipients: [{id:'notebook',purpose:'teaching'}] };
+  const grant = (expectedEpoch, changes, options) => send('capture.grantNotionSelection', { ...settings, expectedEpoch, ...changes }, options);
+  const selected = () => read(ctx => readNotionSelection(ctx, learner, settings.selectionId));
+  const firstGrant = { commandId: stableId('grant-chemistry') };
+  await grant('0', {}, firstGrant);
+  const selection = await selected();
   const todo = (n, checked = false, parentId = null) => ({
     id: uuid(n), parentId, text: `任务 ${n}`, body: { type: 'to_do', data: { checked } },
   });
-  const page = { pageId: selection.root.id, title: '滴定', lastEditedTime: at,
+  const page = { root: selection.root, dispatch: notionSelectionWitness(selection), pageId: selection.root.id, title: '滴定', lastEditedTime: at,
     blocks: [todo(2), todo(3), todo(4, false, uuid(3)), todo(5), todo(7)] };
   const updated = { ...page, blocks: [todo(7), todo(2, true), todo(3), todo(4), todo(6)] };
   const ingest = await prepareNotionIngest(selection, page, at);
   const target = { id: ingest.id, expectedRev: 1, accessEpoch: '0', selectionId: selection.id };
-  const open = (rev, purpose = 'teaching') => db.snapshot({ learner }, tx => createAuthorizedFactReader(tx, purpose,
-    notionSourceRecipient(selection, purpose, purpose === 'storage' ? 'learner' : 'workspace'))
-    .fact(ingest.id, { mode: 'pinned', rev }));
+  const open = (rev, purpose = 'teaching', recipientId = purpose === 'storage' ? learner : 'notebook', id = ingest.id) => db.snapshot({ learner }, tx =>
+    openSelectedNotionSource({ learner, purpose, recipientId, selectionRead: createAuthorizedFactReader(tx, 'storage', () => true),
+      sourceRead: createAuthorizedFactReader(tx, purpose, () => true) }, id, { mode: 'pinned', rev }));
   const sync = input => send(refreshNotionSourceCommand, input, { actor: 'companion' });
   assert.deepEqual((await send(captureSourceCommand, ingest, { actor: 'companion' })).wrote, [{ learner, id: ingest.id, rev: 1 }]);
   const envelope = await prepareNotionRevision(selection, updated, '2026-11-20T01:01:00.000Z');
   assert.deepEqual((await sync({ ...target, envelope })).wrote, [{ learner, id: ingest.id, rev: 2 }]);
-  const before = sourceEnvelope((await open(1)).value);
-  const after = sourceEnvelope((await open(2)).value);
+  const [before, after] = await Promise.all([1, 2].map(async rev => (await open(rev)).value));
   assert.deepEqual(notionRevisionDiff(before, after), { added: [uuid(6)], removed: [uuid(5)], edited: [uuid(2)], moved: [uuid(7), uuid(4)] });
   const checked = source => source.unit.blocks.find(block => block.id === uuid(2)).body.notionBody.data.checked;
   assert.deepEqual([checked(before), checked(after)], [false, true]);
@@ -36,6 +41,23 @@ export default async function({ db, learner, load, send, assert }) {
   const storage = await open(3, 'storage');
   assert.deepEqual(storage.purpose, ['storage']);
   assert.equal(storage.accessEpoch, '1');
+  await assert.rejects(open(3, 'storage', 'other'), /选源不可用/);
+  const withdraw = () => send('capture.revokeNotionSelection', { selectionId: selection.id, expectedEpoch: '1', recipient: settings.recipients[0] });
+  const race = await Promise.allSettled([withdraw(), withdraw()]);
+  assert.equal(race.filter(result => result.status === 'fulfilled').length, 1);
+  await assert.rejects(open(3, 'storage'), /选源不可用/);
+  await send('capture.revokeNotionSelection', { selectionId: selection.id, expectedEpoch: '2' });
+  await grant('0', {}, firstGrant);
+  assert.equal((await selected()).active, false);
+  await grant('3', {});
+  const renewed = await selected();
+  await assert.rejects(prepareNotionIngest(renewed, page, at), /拉取见证已变更/);
+  await assert.rejects(sync({ ...target, expectedRev: 3, accessEpoch: '1', envelope }), /选源或用途已变更/);
+  const newSource = await prepareNotionIngest(renewed, { ...page, dispatch: notionSelectionWitness(renewed) }, at);
+  assert.notEqual(newSource.id, ingest.id);
+  await send(captureSourceCommand, newSource, { actor: 'companion' });
+  assert.equal((await open(1, 'teaching', 'notebook', newSource.id)).ref.id, newSource.id);
+  await assert.rejects(open(3, 'storage'), /选源不可用/);
   await send(revokeNotionSourceCommand, { ...target, expectedRev: 3, accessEpoch: storage.accessEpoch });
   await assert.rejects(open(1, 'storage'), { reason: 'retracted' });
 

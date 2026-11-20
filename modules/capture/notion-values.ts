@@ -57,8 +57,8 @@ export async function notionHash(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function notionSourceId(learner: LearnerId, selectionId: string, pageId: string) {
-  const digest = await notionHash(JSON.stringify(['capture.notion.v1', learner, notionSelectionId(selectionId), notionId(pageId)]));
+export async function notionSourceId(learner: LearnerId, selectionId: string, pageId: string, selectionEpoch: string) {
+  const digest = await notionHash(JSON.stringify(['capture.notion.v2', learner, notionSelectionId(selectionId), selectionEpoch, notionId(pageId)]));
   return factId(digest.slice(0, 26).toUpperCase());
 }
 
