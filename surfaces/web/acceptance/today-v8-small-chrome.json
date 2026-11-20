@@ -1,0 +1,796 @@
+{
+  "uiParent": "838b308492705404849b31b271e71c19f97f2c72",
+  "host": "f1d55359511d5582e2b2a6307d9282c1f324f572",
+  "browserOrigin": "http://127.0.0.1:39372",
+  "hostOrigin": "http://127.0.0.1:49416",
+  "staticAssets": {
+    "assets/index-CqG5ZPuH.css": "6cfded384cbaed1e345513d85032f4147182c3380bdfd278f944738d5fbb33b3",
+    "assets/index-DPDvOQ5N.js": "50be697345a1c1fd94dcef546b95070f56f92c57ff2dcd179798e7ed959e960c"
+  },
+  "sourceSha256": {
+    "surfaces/web/src/main.tsx": "2fb25e592c39116b8db5164a54962591605aa981c6f4ed4e9c003e0234f43a2f",
+    "surfaces/web/src/today-pack.tsx": "5355b6f7285ea89c75f064eb61ea5f713a19759de5ef41bed13711ce0b3262a8",
+    "surfaces/web/src/today.css": "c979d59c92db2d93a63d71ff889a3bd97d92dce8e6f2892487215ae136af0e89",
+    "surfaces/web/src/today.tsx": "b6c0f6514d0faa9fa66da16f579e5a1e7845fc6a7b147230c8cc91d1c0faf9e8",
+    "surfaces/web/src/workspace.tsx": "2a2098d4e3b9bc99d9e14d63bb3a609320f169a7684e60ef5baa76410efcd0f6"
+  },
+  "checks": {
+    "uiBudget": {
+      "production": 42882,
+      "tests": 4574,
+      "ratio": 0.09638401888064733,
+      "limit": 0.1
+    },
+    "hostBudget": {
+      "production": 42374,
+      "tests": 4574,
+      "ratio": 0.09742694044474738,
+      "limit": 0.1
+    },
+    "compositionBudget": {
+      "production": 43023,
+      "tests": 4574,
+      "ratio": 0.09609849360253797,
+      "limit": 0.1
+    },
+    "uiStructure": 14993,
+    "hostAndCompositionStructure": 15055,
+    "runtimeLimit": 15000
+  },
+  "planAndOffline": {
+    "run": "09944849",
+    "base": "http://127.0.0.1:39372",
+    "events": [
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/rules",
+        "method": "POST",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/rules",
+        "method": "POST",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/rules",
+        "method": "POST",
+        "status": 403,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/rules",
+        "method": "POST",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A58.497Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/rules",
+        "method": "POST",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A58.497Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=one-hand&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A58.557Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/rules",
+        "method": "POST",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=one-hand&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A58.557Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/rules",
+        "method": "POST",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=one-hand&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A58.557Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/rules",
+        "method": "POST",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=one-hand&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A58.557Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/open?kind=pack&id=pack%2Freading&rev=1",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/open?kind=pack&id=pack%2Freading&rev=1",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/submit",
+        "method": "POST",
+        "status": 200,
+        "watermark": "0"
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A58.947Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A59.383Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today/open?kind=activity&id=90308F1754528C9B1B0B501868&rev=1",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo&lastOpenedAt=2026-11-20T17%3A55%3A59.437Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      },
+      {
+        "path": "/api/today?mode=any&timeZone=Asia%2FTokyo&lastOpenedAt=2026-10-29T17%3A55%3A59.678Z",
+        "method": "GET",
+        "status": 200,
+        "watermark": null
+      }
+    ],
+    "errors": [],
+    "chrome": "157.0.8103.52",
+    "empty": {
+      "day": "2026-11-21",
+      "minutes": 6,
+      "budget": "可用时间未知，暂按 15 分钟列出可调整的建议。",
+      "items": [
+        {
+          "title": "检查一次推断",
+          "open": {
+            "kind": "pack",
+            "id": "pack/inference",
+            "rev": 1
+          },
+          "minutes": 3,
+          "basis": "一段短文、一次点选和订正，内容包估时 3 分钟。"
+        },
+        {
+          "title": "读一条借阅规则",
+          "open": {
+            "kind": "pack",
+            "id": "pack/reading",
+            "rev": 1
+          },
+          "minutes": 3,
+          "basis": "一段短文、一次点选和订正，内容包估时 3 分钟。"
+        }
+      ]
+    },
+    "concurrent_lock": "这份材料当前无法链接。 请核对最新安排。",
+    "swap": [
+      "pack/inference",
+      "pack/reading"
+    ],
+    "three_minutes_open": {
+      "path": "/today?mode=one-hand&kind=pack&id=pack%2Freading&rev=1",
+      "body": {
+        "kind": "pack",
+        "id": "pack/reading",
+        "rev": 1,
+        "source": "Mangekyō 原创阅读与推理包 v1",
+        "title": "读一条借阅规则",
+        "prompt": "图书馆公告：“周三下午只接受还书。预约的书可以保留至周五。”小禾已预约一本书，周三下午可以做什么？",
+        "choices": [
+          "领取预约书",
+          "归还手中的书",
+          "预约自动取消"
+        ]
+      }
+    },
+    "offline_restored": {
+      "before": {
+        "choice": 1,
+        "requestId": "38bccd7b-7f8e-4e08-ba80-8c4b28d4971f",
+        "watermark": "0"
+      },
+      "after": {
+        "choice": 1,
+        "requestId": "38bccd7b-7f8e-4e08-ba80-8c4b28d4971f",
+        "watermark": "0"
+      }
+    },
+    "consented_submit": {
+      "request": {
+        "id": "pack/reading",
+        "rev": 1,
+        "requestId": "38bccd7b-7f8e-4e08-ba80-8c4b28d4971f",
+        "choice": 1,
+        "deletionWatermark": "0",
+        "consent": "teaching"
+      },
+      "receipt": {
+        "id": "8ED7CC808E7265E5A1127064BB",
+        "rev": 1,
+        "result": "correct",
+        "explanation": "预约保留期限和办理业务的时段是两个条件。周三下午只办理还书。"
+      },
+      "head": "0"
+    },
+    "without_consent": {
+      "status": 400,
+      "body": {
+        "error": "请确认保存本次学习记录。"
+      }
+    },
+    "conflicting_choice": {
+      "status": 409,
+      "body": {
+        "error": "同一个请求标识已经用于不同内容。"
+      }
+    },
+    "after_pack": {
+      "protected": [
+        "读一条借阅规则"
+      ],
+      "minutes": 0
+    },
+    "history_candidate": {
+      "id": "90308F1754528C9B1B0B501868@1",
+      "title": "今天实测自编卷 09944849",
+      "open": {
+        "kind": "activity",
+        "id": "90308F1754528C9B1B0B501868",
+        "rev": 1
+      },
+      "minutes": 3,
+      "durationBasis": "按每题约 3 分钟估算。"
+    },
+    "history_completion": {
+      "path": "/papers/90308F1754528C9B1B0B501868",
+      "protected": [
+        "90308F1754528C9B1B0B501868@1",
+        "pack/reading"
+      ]
+    },
+    "returning": {
+      "retained": [],
+      "faded": [],
+      "unknown": [
+        "今天实测自编卷 09944849",
+        "范围限定",
+        "条件推理",
+        "失分定位"
+      ]
+    }
+  },
+  "devicesAndDeletion": {
+    "run": "3f952e45",
+    "base": "http://127.0.0.1:39372",
+    "events": [],
+    "errors": [],
+    "lost_response_retry": {
+      "receipt": {
+        "id": "4C56A2C3D5CA6841F71DCA8B33",
+        "rev": 1,
+        "result": "correct",
+        "explanation": "洒水也能让操场变湿，同一个结果可以有不同的原因。"
+      },
+      "request": {
+        "id": "pack/inference",
+        "rev": 1,
+        "requestId": "2400a124-3229-4bcc-96e0-22876ad2c212",
+        "choice": 0,
+        "deletionWatermark": "0",
+        "consent": "teaching"
+      },
+      "watermark": "0"
+    },
+    "second_device": {
+      "watermark": "0",
+      "receipt": {
+        "id": "C99A18CB4C3DB2E5544C6D0757",
+        "rev": 1,
+        "result": "correct",
+        "explanation": "洒水也能让操场变湿，同一个结果可以有不同的原因。"
+      },
+      "request": {
+        "id": "pack/inference",
+        "rev": 1,
+        "requestId": "45444747-73d5-4fc5-8f48-a957930021ff",
+        "choice": 0,
+        "deletionWatermark": "0",
+        "consent": "teaching"
+      }
+    },
+    "known_stale": {
+      "before": {
+        "choice": 1,
+        "requestId": "bdec8df3-9585-4d60-a373-c37c2a1ea978",
+        "watermark": "0"
+      },
+      "erasure_generation": "21",
+      "reconnect_posts": [],
+      "deleted_draft": true
+    },
+    "fresh": {
+      "request": {
+        "id": "pack/inference",
+        "rev": 1,
+        "requestId": "eb01b24e-dfd3-47c7-aa4b-b45d10b0e61d",
+        "choice": 1,
+        "deletionWatermark": "21",
+        "consent": "teaching"
+      },
+      "receipt": {
+        "id": "290950FA6AD215BD2E1C78A2D7",
+        "rev": 1,
+        "result": "incorrect",
+        "explanation": "洒水也能让操场变湿，同一个结果可以有不同的原因。"
+      },
+      "watermark": "21"
+    },
+    "deleted_after_preflight": {
+      "request": {
+        "id": "pack/inference",
+        "rev": 1,
+        "requestId": "2702396f-2252-4968-b7c8-534c5fb215d4",
+        "choice": 0,
+        "deletionWatermark": "21",
+        "consent": "teaching"
+      },
+      "erasure": {
+        "id": "8720DD17F653D17983F6C76DEF",
+        "generation": "25",
+        "blocked": true,
+        "original": "removed",
+        "copies": "unverified",
+        "backups": "unverified",
+        "devices": "unverified"
+      },
+      "status": 409,
+      "body": {
+        "error": "删除状态已变化。请丢弃旧请求并同步设备。",
+        "code": "deletion_watermark_stale"
+      }
+    }
+  },
+  "goalsAndRules": {
+    "run": "e8890be0",
+    "base": "http://127.0.0.1:39372",
+    "events": [],
+    "errors": [],
+    "stale_goal": {
+      "prior_rev": 1,
+      "current_rev": 2,
+      "status": "paused",
+      "error": "这条记录已在别处更新。请刷新后再试。 请核对最新安排。"
+    },
+    "lost_rule_receipt": {
+      "receipt": {
+        "id": "7B2D875F97C5978A31BC37237F",
+        "rev": 1
+      },
+      "request": {
+        "expectedRev": null,
+        "data": {
+          "kind": "rest",
+          "date": "2026-11-21"
+        },
+        "requestId": "69dc2746-f016-4c93-a7f8-06d2a8f23ae3"
+      }
+    },
+    "goal_restored": {
+      "id": "FFD7684F32349F2C30D75018A2",
+      "rev": 2,
+      "text": "短文范围限定",
+      "status": "paused"
+    }
+  },
+  "nonzeroColdStart": {
+    "browser": "157.0.8103.52",
+    "path": "http://127.0.0.1:39372/today?mode=one-hand&kind=pack&id=pack%2Freading&rev=1",
+    "host_watermark": "25",
+    "delayed_real_responses": [
+      {
+        "status": 200,
+        "head": "25"
+      },
+      {
+        "status": 200,
+        "head": "25"
+      },
+      {
+        "status": 200,
+        "head": "25"
+      },
+      {
+        "status": 200,
+        "head": "25"
+      }
+    ],
+    "cold_before_release": {
+      "watermark": null,
+      "bindings": {},
+      "draft": null
+    },
+    "chosen": {
+      "watermark": "25",
+      "bindings": {
+        "mangekyo:command-watermark:2afde977-0d9d-43b4-b251-ebf0b2aac2ae": "25"
+      },
+      "draft": {
+        "choice": 1,
+        "requestId": "2afde977-0d9d-43b4-b251-ebf0b2aac2ae"
+      }
+    },
+    "restored_before_release": {
+      "watermark": "25",
+      "bindings": {
+        "mangekyo:command-watermark:2afde977-0d9d-43b4-b251-ebf0b2aac2ae": "25"
+      },
+      "draft": {
+        "choice": 1,
+        "requestId": "2afde977-0d9d-43b4-b251-ebf0b2aac2ae"
+      }
+    },
+    "offline_refresh": {
+      "watermark": "25",
+      "bindings": {
+        "mangekyo:command-watermark:2afde977-0d9d-43b4-b251-ebf0b2aac2ae": "25"
+      },
+      "draft": {
+        "choice": 1,
+        "requestId": "2afde977-0d9d-43b4-b251-ebf0b2aac2ae"
+      }
+    },
+    "submit": {
+      "request": {
+        "id": "pack/reading",
+        "rev": 1,
+        "requestId": "2afde977-0d9d-43b4-b251-ebf0b2aac2ae",
+        "choice": 1,
+        "deletionWatermark": "25",
+        "consent": "teaching"
+      },
+      "response": {
+        "id": "29FA1D080118CC072F4B2B9EC0",
+        "rev": 1,
+        "result": "correct",
+        "explanation": "预约保留期限和办理业务的时段是两个条件。周三下午只办理还书。"
+      },
+      "head": "25"
+    },
+    "events": [
+      [
+        "GET",
+        "/api/lifecycle"
+      ],
+      [
+        "GET",
+        "/api/lifecycle"
+      ],
+      [
+        "GET",
+        "/api/lifecycle"
+      ],
+      [
+        "GET",
+        "/api/lifecycle"
+      ],
+      [
+        "GET",
+        "/api/lifecycle"
+      ],
+      [
+        "GET",
+        "/api/lifecycle"
+      ],
+      [
+        "GET",
+        "/api/lifecycle"
+      ],
+      [
+        "POST",
+        "/api/today/submit"
+      ]
+    ]
+  },
+  "lowerServerWatermark": {
+    "input_from_previous_isolated_run": {
+      "watermark": "25",
+      "bindings": {
+        "mangekyo:command-watermark:00a8e452-d4de-4f08-b4d8-3276499ce3fa": "25"
+      },
+      "draft": {
+        "choice": 1,
+        "requestId": "00a8e452-d4de-4f08-b4d8-3276499ce3fa"
+      }
+    },
+    "server_reported": "0",
+    "retained": {
+      "choice": 1,
+      "requestId": "00a8e452-d4de-4f08-b4d8-3276499ce3fa"
+    },
+    "posts": []
+  },
+  "routes": {
+    "/": {
+      "heading": "今天",
+      "active": "今天",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    "/today?posttest=absent": {
+      "heading": "今天",
+      "active": "今天",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    "/materials": {
+      "heading": "材料",
+      "active": "材料",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    "/me": {
+      "heading": "我",
+      "active": "我",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    "/companion": {
+      "heading": "同伴",
+      "active": "同伴",
+      "width": 375,
+      "scrollWidth": 375
+    },
+    "unavailable": {
+      "status": "当前无法取得服务端的今日安排。 重试",
+      "items": 0
+    }
+  },
+  "lostResponseHeaders": {
+    "lost": {
+      "status": 200,
+      "head": "25",
+      "body": {
+        "id": "2AF6B51A4BBC659E308875F01E",
+        "rev": 1,
+        "result": "incorrect",
+        "explanation": "洒水也能让操场变湿，同一个结果可以有不同的原因。"
+      },
+      "request": {
+        "id": "pack/inference",
+        "rev": 1,
+        "requestId": "f5bc1060-d757-42d7-ac88-b5f069a22df7",
+        "choice": 1,
+        "deletionWatermark": "25",
+        "consent": "teaching"
+      }
+    },
+    "reauthorized": {
+      "status": 200,
+      "head": "25",
+      "body": {
+        "id": "2AF6B51A4BBC659E308875F01E",
+        "rev": 1,
+        "result": "incorrect",
+        "explanation": "洒水也能让操场变湿，同一个结果可以有不同的原因。"
+      },
+      "request": {
+        "id": "pack/inference",
+        "rev": 1,
+        "requestId": "f5bc1060-d757-42d7-ac88-b5f069a22df7",
+        "choice": 1,
+        "deletionWatermark": "25",
+        "consent": "teaching"
+      }
+    },
+    "older_committed_request_after_erasure": {
+      "status": 409,
+      "head": null,
+      "body": {
+        "error": "删除状态已变化。请丢弃旧请求并同步设备。",
+        "code": "deletion_watermark_stale"
+      },
+      "request": {
+        "id": "pack/inference",
+        "rev": 1,
+        "requestId": "2400a124-3229-4bcc-96e0-22876ad2c212",
+        "choice": 0,
+        "deletionWatermark": "0",
+        "consent": "teaching"
+      }
+    }
+  },
+  "postgres": {
+    "schema": "web_today_small_final",
+    "sql": "SELECT (SELECT COUNT(*)::int FROM facts WHERE id=$1 AND type='activity.studyRecord') facts,\n (SELECT COUNT(*)::int FROM fact_revs WHERE fact_id=$1 AND command_id=$2) revisions,\n (SELECT COUNT(*)::int FROM commands WHERE id=$2 AND type='activity.submitOfflinePack' AND state='done') commands,\n (SELECT data->'offlinePack' FROM fact_revs WHERE fact_id=$1 AND rev=1) AS frozen",
+    "journeys": [
+      {
+        "name": "consented",
+        "requestId": "38bccd7b-7f8e-4e08-ba80-8c4b28d4971f",
+        "fact": "8ED7CC808E7265E5A1127064BB",
+        "command": "E3E6641E72182A1A512B0F962C",
+        "facts": 1,
+        "revisions": 1,
+        "commands": 1,
+        "frozen": {
+          "id": "pack/reading",
+          "rev": 1,
+          "choice": 1,
+          "result": "correct"
+        }
+      },
+      {
+        "name": "lost_receipt",
+        "requestId": "2400a124-3229-4bcc-96e0-22876ad2c212",
+        "fact": "4C56A2C3D5CA6841F71DCA8B33",
+        "command": "32E5730B00ED2C491C1102CEA4",
+        "facts": 1,
+        "revisions": 1,
+        "commands": 1,
+        "frozen": {
+          "id": "pack/inference",
+          "rev": 1,
+          "choice": 0,
+          "result": "correct"
+        }
+      },
+      {
+        "name": "second_device",
+        "requestId": "45444747-73d5-4fc5-8f48-a957930021ff",
+        "fact": "C99A18CB4C3DB2E5544C6D0757",
+        "command": "4404DFB7D4E629C9420BF0245C",
+        "facts": 1,
+        "revisions": 1,
+        "commands": 1,
+        "frozen": {
+          "id": "pack/inference",
+          "rev": 1,
+          "choice": 0,
+          "result": "correct"
+        }
+      },
+      {
+        "name": "stale_before_preflight",
+        "requestId": "bdec8df3-9585-4d60-a373-c37c2a1ea978",
+        "fact": "1566FE218EF0A15E8245175F4E",
+        "command": "76EB7530375642E3A5157C5694",
+        "facts": 0,
+        "revisions": 0,
+        "commands": 0,
+        "frozen": null
+      },
+      {
+        "name": "new_after_erasure",
+        "requestId": "eb01b24e-dfd3-47c7-aa4b-b45d10b0e61d",
+        "fact": "290950FA6AD215BD2E1C78A2D7",
+        "command": "F837BB024798106B558D6C3945",
+        "facts": 1,
+        "revisions": 1,
+        "commands": 1,
+        "frozen": {
+          "id": "pack/inference",
+          "rev": 1,
+          "choice": 1,
+          "result": "incorrect"
+        }
+      },
+      {
+        "name": "stale_after_preflight",
+        "requestId": "2702396f-2252-4968-b7c8-534c5fb215d4",
+        "fact": "DE3E5CE9D46043CD1163D3F0A7",
+        "command": "390F04BC860949184716E59A05",
+        "facts": 0,
+        "revisions": 0,
+        "commands": 0,
+        "frozen": null
+      },
+      {
+        "name": "cold_nonzero",
+        "requestId": "2afde977-0d9d-43b4-b251-ebf0b2aac2ae",
+        "fact": "29FA1D080118CC072F4B2B9EC0",
+        "command": "ED264307E48B73ED8A34406D55",
+        "facts": 1,
+        "revisions": 1,
+        "commands": 1,
+        "frozen": {
+          "id": "pack/reading",
+          "rev": 1,
+          "choice": 1,
+          "result": "correct"
+        }
+      },
+      {
+        "name": "lost_receipt_nonzero",
+        "requestId": "f5bc1060-d757-42d7-ac88-b5f069a22df7",
+        "fact": "2AF6B51A4BBC659E308875F01E",
+        "command": "E9BB18A4BCF15C753D4B0BF645",
+        "facts": 1,
+        "revisions": 1,
+        "commands": 1,
+        "frozen": {
+          "id": "pack/inference",
+          "rev": 1,
+          "choice": 1,
+          "result": "incorrect"
+        }
+      }
+    ],
+    "total": 6
+  }
+}
