@@ -6,6 +6,7 @@ export function stableId(...parts: string[]): string {
 }
 export const studioLearner = learnerId(stableId('studio', 'synthetic-histories-v1'));
 export const requestCommand = (request: string) => commandId(stableId('submission', request));
+export const textbookUndoId = (token: string) => commandId(stableId('undo-textbook-write', token));
 export const firstTurn = (request: string) => factId(stableId('session', request));
 export const nextTurn = (session: string, parent: string) => factId(stableId('answer', session, parent));
 export const sourceId = (studyCase: string, id: string) =>

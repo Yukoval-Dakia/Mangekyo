@@ -1,6 +1,6 @@
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { factId, commandId } from '../../kernel/src/declarations/ids.ts';
@@ -30,6 +30,7 @@ import {
   purpose,
   methodName,
   slotType,
+  textbookUndoId,
 } from './identity.ts';
 
 import {turnArtifacts} from './presentation-store.ts';
@@ -167,20 +168,26 @@ export function recentConversations(db: Db) {
   });
 }
 type WriteState = {status: 'changed'} | {status: 'withdrawn'};
-export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory'> & {
+export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page'> & {
   observation?: NonNullable<WorkspaceWriteReceipt['observation']> | WriteState;
   memory?: NonNullable<WorkspaceWriteReceipt['memory']> | WriteState;
+  page?: NonNullable<WorkspaceWriteReceipt['page']> | WriteState | {status:'reverted'};
 };
 
 async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[]): Promise<WorkspaceWriteView[]> {
-  const ids = writes.filter(write => write.observation || write.memory).map(write => write.id);
+  const ids = writes.filter(write => write.observation || write.memory || write.page?.status === 'saved').map(write => write.id);
   if (!ids.length) return writes;
   const {rows} = await tx.query<{id: string; current_rev: number; retracted_rev: number | null}>(
     'SELECT id,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
   const facts = new Map(rows.map(row => [row.id, row]));
   return Promise.all(writes.map(async write => {
-    if (!write.observation && !write.memory) return write;
     const fact = facts.get(write.id);
+    if (write.page?.status === 'saved') {
+      if (fact && fact.retracted_rev === null && fact.current_rev === write.rev) return write;
+      const undone = await readRecordedCommand(tx,textbookUndoId(write.page.undo_token));
+      return {...write,page:{status:undone?.state === 'done' ? write.rev === 1 ? 'withdrawn' : 'reverted' : 'changed'}};
+    }
+    if (!write.observation && !write.memory) return write;
     if (fact && fact.retracted_rev === null && fact.current_rev === write.rev &&
         (!write.memory || await areMemoryClaimsCurrent(tx, [write.id]))) return write;
     const state: WriteState = {status: fact?.retracted_rev ? 'withdrawn' : 'changed'};

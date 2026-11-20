@@ -17,6 +17,7 @@ export type CrossModuleWrites = Readonly<Record<string, Readonly<Partial<Record<
 export type WriteOptions = { readonly actor: Actor; readonly purpose: string; readonly commandId: CommandId };
 export type FactChange = { readonly ref: FactRef; readonly factType: string; readonly kind: FactWrite['kind'] };
 export type CommandHooks = {
+  readonly beforeProposal?: (tx: DbTransaction, request: CommandRequest) => Promise<void>;
   // Required transactional handoff. Propagation/scheduling owns the implementation in unit 4.
   readonly onFactsChanged: (tx: DbTransaction, tick: Tick, changes: readonly FactChange[]) => Promise<void>;
 };

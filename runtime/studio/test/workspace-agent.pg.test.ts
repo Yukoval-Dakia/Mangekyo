@@ -82,8 +82,19 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     await expect(textbook.get(pageInput)).rejects.toMatchObject({status:403});
     expect(await access.setTeaching(teachingPage.id,{enabled:true,expectedRev:1})).toMatchObject({rev:2,teaching:true});
     expect(await textbook.get(pageInput)).toMatchObject({rev:2,accessEpoch:'1'});
+    const textbookTool = turn('native textbook block');
+    expect(await textbookTool('open_learning',{refs:teachingPage.id},1)).toMatchObject({ok:true,items:[{
+      blocks:[{id:'intro',parentId:null,kind:'text'}],
+    }]});
+    const openedBlock = await textbookTool('open_learning',{refs:teachingPage.id,part:'block:intro'},2);
+    expect(openedBlock).toMatchObject({ok:true,items:[{content:'比对分段计时',sourceRef:{
+      fact:{id:teachingPage.id,rev:2},anchor:{kind:'block',blockId:'intro'},
+    }}]});
+    const blockRef = {refs:JSON.stringify(openedBlock.items[0].sourceRef)};
+    expect(await textbookTool('open_learning',blockRef,3)).toMatchObject({ok:true,items:[{content:'比对分段计时'}]});
     await expect(textbook.get({...pageInput,rev:1})).rejects.toMatchObject({status:403});
     await access.setTeaching(teachingPage.id,{enabled:false,expectedRev:2});
+    expect(await textbookTool('open_learning',blockRef,4)).toMatchObject({ok:false,code:'access_revoked'});
     await expect(textbook.get({...pageInput,rev:2})).rejects.toMatchObject({status:403});
     expect(await textbook.get({...pageInput,purpose:'storage'})).toMatchObject({rev:3,accessEpoch:'2',title:'我的教材'});
     const overview = (callerPurpose = learningOverviewPurpose, maySend: (fact: LearningOverviewFact) => boolean = () => true) =>

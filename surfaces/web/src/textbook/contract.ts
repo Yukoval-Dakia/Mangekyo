@@ -6,9 +6,10 @@ import type {
 } from '../../../../modules/content/textbook-page.ts';
 import type { TextbookEdit } from '../../../../modules/content/textbook-edits.ts';
 
-export type { TextbookBlock as Block, TextbookBlockBody as Body, TextbookEdit as Edit };
+export type { TextbookBlock as Block, TextbookBlockBody as Body };
+export type Edit = Extract<TextbookEdit, { kind: 'rewrite' | 'insert' | 'move' }>;
 export type Page = TextbookPage & { id: string; rev: number; purpose?: readonly string[] };
-export type Request = { id: string; expectedRev: number; clientEditSeq: number; edits: [TextbookEdit] };
+export type Request = { id: string; expectedRev: number; clientEditSeq: number; edits: [Edit] };
 export type Address = { id: string; rev?: number; block?: string };
 export type Chapter = { title: string; pages: { id: string; title: string }[] };
 export type Receipt =

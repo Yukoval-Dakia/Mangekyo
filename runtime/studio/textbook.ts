@@ -1,4 +1,4 @@
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import { createCommandHandler, readCommandProposals, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import {
   createCommandReadContext,
   FactNotFoundError,
@@ -17,8 +17,9 @@ import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { organizerNote, organizerNoteType } from '../../modules/activity/organizer-values.ts';
 import { editSequence, key, pageId, revision } from '../../modules/content/parse.ts';
-import { parseTextbookRevision, type TextbookRevision } from '../../modules/content/textbook-edits.ts';
+import { parseTextbookRevision, previewTextbookRevision, selectTextbookEdits, type TextbookRevision } from '../../modules/content/textbook-edits.ts';
 import {
+  checkTextbookBasis,
   openTextbookBlock,
   openTextbookReference,
   parseTextbookPage,
@@ -26,12 +27,13 @@ import {
   textbookPageType,
   type TextbookBlockBody,
 } from '../../modules/content/textbook-page.ts';
-import { stableId } from './identity.ts';
+import { purpose as teaching, stableId, textbookUndoId } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { createTextbookCommand as createCommand, reviseTextbookCommand as reviseCommand, reviseTextbookDraftCommand,
+  undoTextbookCommand } from './workspace-textbook.ts';
 
 const storage = 'storage';
-const createCommand = 'content.createTextbookPage';
-const reviseCommand = 'content.reviseTextbookPage';
+const decisionId = (proposalId: string) => commandId(stableId('textbook-proposal-decision', proposalId));
 
 export type TextbookReadInput = {
   readonly learner: unknown;
@@ -187,6 +189,11 @@ function translateWrite(error: unknown): never {
     if (error.message.startsWith('Fact purpose does not allow this write: ')) {
       throw new RequestError(403, '当前用途不能编辑这份教材。');
     }
+    if (error.message === '教材依据已变更。') throw new RequestError(403, '教材来源已变更。');
+    if (error.message === 'Proposal not found') throw new RequestError(404, '找不到教材提议。');
+    if (error.message === 'Proposal already decided' || error.message.startsWith('Fact revision conflict: ') ||
+        error.message === 'Only an unedited companion draft can be revised')
+      throw new RequestError(409, '教材或提议已变更，请刷新。');
     if (/^(教材|引用|插入位置|来源)/.test(error.message)) throw new RequestError(400, error.message);
   }
   throw error;
@@ -226,6 +233,30 @@ async function readFact(tx: ReadTransaction, purpose: string, id: string, rev?: 
 
 export function openTextbook(db: Db, contentModule: LoadedModule, hooks: CommandHooks) {
   const handle = createCommandHandler(db, { modules: [contentModule], hooks });
+  type Proposal = Awaited<ReturnType<typeof readCommandProposals>>[number];
+
+  async function previewProposal(tx: ReadTransaction, input: unknown) {
+    const edit = parseTextbookRevision(input);
+    const read = createCommandReadContext(tx, teaching);
+    const pinned = await read.fact(edit.id,{mode:'pinned',rev:edit.expectedRev});
+    await checkTextbookBasis(read, textbookPageFrom(pinned).basis ?? []);
+    await checkTextbookBasis(read, edit.basis ?? []);
+    return previewTextbookRevision({learner:tx.learner,read},edit);
+  }
+
+  async function proposalView(tx: ReadTransaction, proposal: Proposal) {
+    const {base,items} = await previewProposal(tx,proposal.input);
+    const current = await readFact(tx,storage,base.id);
+    const decision = await readRecordedCommand(tx,decisionId(proposal.id));
+    const output = (decision?.receipt as CommandReceipt | undefined)?.output;
+    const blockIds = output && typeof output === 'object' && 'selection' in output && Array.isArray(output.selection)
+      ? output.selection as readonly string[] : [];
+    const written = (decision?.receipt as CommandReceipt | undefined)?.wrote[0];
+    const status = proposal.state === 'confirmed' ? 'applied' : proposal.state === 'rejected' ? 'rejected' :
+      proposal.state === 'conflict' || current.ref.rev !== base.rev ? 'conflict' : 'proposed';
+    return {proposalId:proposal.id,status,base,items,blockIds,
+      result:written ? {id:written.id,rev:written.rev,undo_token:decisionId(proposal.id)} : null};
+  }
 
   async function get(input: TextbookGetInput): Promise<TextbookPageView | LegacyNoteView> {
     const learner = scopedLearner(input.learner);
@@ -270,6 +301,78 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
   }
 
   return {
+    async proposals(input: TextbookGetInput) {
+      const learner = scopedLearner(input.learner);
+      const id = parseInput(() => pageId(input.id));
+      return db.snapshot({learner},async tx => {
+        textbookPageFrom(await readFact(tx,storage,id));
+        const proposals = [];
+        for (const proposal of await readCommandProposals(tx,reviseCommand,{id})) {
+          try {
+            const {proposalId,status,base} = await proposalView(tx,proposal);
+            proposals.push({proposalId,status,base});
+          } catch (error) {
+            if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
+                (error instanceof Error && error.message === '教材依据已变更。'))) throw error;
+          }
+        }
+        return {proposals};
+      }).catch(translateWrite);
+    },
+    async proposal(input: TextbookGetInput, proposalId: string, selection?: { blockIds: unknown }) {
+      const learner = scopedLearner(input.learner);
+      const id = parseInput(() => pageId(input.id));
+      const proposalKey = commandId(proposalId);
+      if (selection) {
+        const {blockIds} = selection;
+        if (!Array.isArray(blockIds) || blockIds.length > 24) invalid('请选择教材块。');
+        const selected = parseInput(() => blockIds.map(key).sort());
+        if (new Set(selected).size !== selected.length) invalid('请勿重复选择教材块。');
+        await db.snapshot({learner},async tx => {
+          const [proposal] = await readCommandProposals(tx,reviseCommand,{id},proposalKey);
+          if (!proposal) throw new RequestError(404, '找不到教材提议。');
+        });
+        await handle.decideProposal({learner, purpose:storage, type:reviseCommand, id:decisionId(proposalKey),
+          proposalId:proposalKey, selection:selected}, async (tx, proposedInput) => {
+          const edit = parseTextbookRevision(proposedInput);
+          if (edit.id !== id) throw new RequestError(404, '找不到教材提议。');
+          const preview = await previewProposal(tx,proposedInput);
+          if (!selected.length) return null;
+          if ((await readFact(tx,storage,id)).ref.rev !== edit.expectedRev)
+            throw new RequestError(409, '教材已更新。');
+          return parseInput(() => selectTextbookEdits(preview,selected));
+        }).catch(translateWrite);
+      }
+      return db.snapshot({learner},async tx => {
+        const [proposal] = await readCommandProposals(tx,reviseCommand,{id},proposalKey);
+        if (!proposal) throw new RequestError(404, '找不到教材提议。');
+        return proposalView(tx,proposal);
+      }).catch(translateWrite);
+    },
+    async undo(input: TextbookGetInput, token: unknown) {
+      const learner = scopedLearner(input.learner);
+      const id = parseInput(() => pageId(input.id));
+      const undoToken = parseInput(() => commandId(key(token)));
+      const {rows:[original]} = await db.query<{rev:number; priorRev:number|null}>(
+        `SELECT r.rev,r.corrects_rev AS "priorRev"
+         FROM fact_revs r JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+         JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+         WHERE r.learner_id=$1 AND r.fact_id=$2 AND c.id=$3 AND c.state='done' AND f.type=$4
+           AND ((c.type=ANY($5::text[]) AND r.author='companion') OR
+             (c.type=$6 AND r.author='learner' AND c.input->'input' ? 'proposalId'))`,
+        [learner,id,undoToken,textbookPageType,[createCommand,reviseTextbookDraftCommand],reviseCommand]);
+      if (!original) throw new RequestError(404, '找不到可撤回的教材变更。');
+      const receipt = await handle({learner, actor:'learner', purpose:storage,
+        id:textbookUndoId(undoToken), type:undoTextbookCommand,
+        input:{id,expectedRev:original.rev,priorRev:original.priorRev},
+      }).catch(error => {
+        if (error instanceof FactReadDeniedError && error.reason === 'retracted')
+          throw new RequestError(409, '教材已撤回。');
+        return translateWrite(error);
+      });
+      return {status:original.priorRev === null ? 'withdrawn' : 'reverted',ref:{id,rev:receipt.wrote[0]!.rev}};
+    },
+
     async list(input: TextbookReadInput) {
       const learner = scopedLearner(input.learner);
       const purpose = accessPurpose(input.purpose);

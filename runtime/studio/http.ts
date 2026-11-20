@@ -161,6 +161,19 @@ export function serve(
         const { requestId, clientEditSeq, page } = await body(req);
         return json(res, 201, await student.textbook.create({ learner: studioLearner, requestId, clientEditSeq, page }));
       }
+      const textbookAction = /^\/api\/textbooks\/([0-9A-HJKMNP-TV-Z]{26})\/(proposals(?:\/([0-9A-HJKMNP-TV-Z]{26}))?|undo)$/.exec(path);
+      if (textbookAction?.[1]) {
+        const [,id,action,proposalId] = textbookAction;
+        const input = {learner:studioLearner,id};
+        if (proposalId && method === 'GET') return json(res,200,await student.textbook.proposal(input,proposalId));
+        if (proposalId && method === 'POST') {
+          const {blockIds} = await body(req);
+          return json(res,200,await student.textbook.proposal(input,proposalId,{blockIds}));
+        }
+        if (action === 'proposals' && method === 'GET') return json(res,200,await student.textbook.proposals(input));
+        if (action === 'undo' && method === 'POST')
+          return json(res,200,await student.textbook.undo(input,(await body(req)).undo_token));
+      }
       const textbook = /^\/api\/textbooks\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path);
       if (textbook?.[1] && method === 'GET') {
         const rev = url.searchParams.has('rev') ? Number(url.searchParams.get('rev')) : undefined;

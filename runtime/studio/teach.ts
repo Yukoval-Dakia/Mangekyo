@@ -434,9 +434,14 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         const w = inputs.get(memoryId);
         if (w?.kind === 'fact') inherited.set(`${memoryId}:${w.rev}`, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
       }
+      const turnInput = inputs.get(job.slotKey);
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()], currentObject,
         maySend,
+        pageBasis: [
+          ...(turnInput?.kind === 'fact' ? [{id:turnInput.id,rev:turnInput.rev,epoch:turnInput.accessEpoch,type:'activity.studyTurn'}] : []),
+          ...(learningMemory?.receipt.basis ?? []),
+        ],
         track(w, checkAtDispatch) {
           inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
           if (checkAtDispatch) protectWorkspaceDispatch = true;
@@ -449,7 +454,6 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           await checkWorkspaceRoute();
         },
       }) : undefined;
-      const turnInput = inputs.get(job.slotKey);
       const turnMemory = memoryTurn && learningMemory && turnInput?.kind === 'fact' ? openTurnMemory({
         db, turn: memoryTurn, answer, source: turnInput, ...(currentObject ? {currentObject} : {}),
         authorize: memoryRequest.authorize,

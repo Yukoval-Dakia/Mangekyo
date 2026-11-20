@@ -1,0 +1,18 @@
+.page-write, .proposal-review, .page-proposals {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.page-write > :is(a, button), .proposal-review > :is(a, button) { justify-self: start; }
+.page-proposals { margin-block: 24px; }
+.proposal-details summary { cursor: pointer; color: var(--primary); padding-block: 8px; }
+.proposal-review { margin-top: 8px; }
+.proposal-item { background: var(--canvas); border-radius: 16px; padding: 12px; }
+.proposal-item label { display: flex; align-items: center; gap: 8px; min-height: 40px; }
+.proposal-item input { accent-color: var(--primary); width: 18px; height: 18px; }
+.proposal-diff { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 6px; }
+.proposal-version { min-width: 0; overflow: auto; padding: 12px; background: var(--surface); border-radius: 10px; }
+.proposal-version:last-child { background: var(--question); }
+.proposal-version small { display: block; color: var(--muted); }
+.proposal-version p { white-space: pre-wrap; }

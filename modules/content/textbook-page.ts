@@ -1,7 +1,9 @@
-import { learnerId, type CommandContext, type FactRef, type FactSnapshot, type ReadContext } from '@mangekyo/kernel';
+import { learnerId, type FactRef, type FactSnapshot, type ReadContext } from '@mangekyo/kernel';
 import { fields, key, list, optionalKey, pageId, record, revision, text } from './parse.ts';
 
 export const textbookPageType = 'content.textbookPage';
+type TextbookReader = { fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot> };
+export type TextbookReadContext = { learner: FactRef['learner']; read: TextbookReader };
 
 export type TextbookAnchor =
   | { readonly kind: 'whole' }
@@ -39,7 +41,41 @@ export type TextbookBlock = {
 export type TextbookPage = {
   readonly title: string;
   readonly blocks: readonly TextbookBlock[];
+  readonly tags?: readonly string[];
+  readonly basis?: readonly TextbookBasis[];
 };
+
+export type TextbookBasis = { readonly id: FactRef['id']; readonly rev: FactRef['rev']; readonly epoch: string; readonly type: string };
+
+export function parseTextbookBasis(input: unknown): readonly TextbookBasis[] {
+  const basis = list(input).map(item => {
+    const value = record(item);
+    fields(value, 'id', 'rev', 'epoch', 'type');
+    const epoch = text(value.epoch, '依据授权版本');
+    if (!/^(0|[1-9][0-9]*)$/.test(epoch)) throw new Error('依据授权版本无效。');
+    return { id: pageId(value.id), rev: revision(value.rev), epoch, type: key(value.type) };
+  });
+  if (basis.length > 128 || new Set(basis.map(item => `${item.id}:${item.rev}`)).size !== basis.length)
+    throw new Error('教材依据重复或超过上限。');
+  return basis;
+}
+
+export async function checkTextbookBasis(read: TextbookReader, basis: readonly TextbookBasis[]) {
+  for (const {id, rev, epoch, type} of basis) {
+    const fact = await read.fact(id, {mode:'pinned', rev});
+    if (fact.type !== type || fact.accessEpoch !== epoch) throw new Error('教材依据已变更。');
+  }
+}
+
+export function mergeTextbookBasis(previous: readonly TextbookBasis[] | undefined, added: readonly TextbookBasis[]) {
+  return parseTextbookBasis([...new Map([...(previous ?? []), ...added].map(source => [`${source.id}:${source.rev}`, source])).values()]);
+}
+
+export function requireTextbookBodyBasis(body: TextbookBlockBody, basis: readonly TextbookBasis[]) {
+  const source = textbookBodyReference(body);
+  if (source && !basis.some(w => w.id === source.fact.id && w.rev === source.fact.rev && w.type === source.type))
+    throw new Error('请先打开教材块引用的来源版本。');
+}
 
 function parseAnchor(input: unknown): TextbookAnchor {
   const value = record(input);
@@ -149,7 +185,7 @@ export function checkTextbookTree(blocks: readonly TextbookBlock[]): void {
 
 export function parseTextbookPage(input: unknown): TextbookPage {
   const value = record(input);
-  fields(value, 'title', 'blocks');
+  fields(value, 'title', 'blocks', 'tags', 'basis');
   const title = text(value.title, '标题').trim();
   if (title.length > 240) throw new Error('标题超过 240 字。');
   const blocks = list(value.blocks).map(input => {
@@ -158,7 +194,10 @@ export function parseTextbookPage(input: unknown): TextbookPage {
     return { id: key(block.id), parentId: optionalKey(block.parentId), body: parseTextbookBlockBody(block.body) };
   });
   checkTextbookTree(blocks);
-  return { title, blocks };
+  const tags = value.tags === undefined ? undefined : list(value.tags).map(tag => text(tag, '标签').trim());
+  if (tags && (tags.length > 24 || tags.some(tag => tag.length > 120) || new Set(tags).size !== tags.length))
+    throw new Error('教材标签重复或超过上限。');
+  return { title, blocks, ...(tags ? {tags} : {}), ...(value.basis === undefined ? {} : {basis:parseTextbookBasis(value.basis)}) };
 }
 
 export function textbookPageFrom(fact: FactSnapshot): TextbookPage {
@@ -180,7 +219,7 @@ function blockAt(fact: FactSnapshot, blockId: string) {
   return { ...position, ref: fact.ref, accessEpoch: fact.accessEpoch };
 }
 
-async function pinnedFact(read: ReadContext, ref: FactRef): Promise<FactSnapshot> {
+async function pinnedFact(read: TextbookReader, ref: FactRef): Promise<FactSnapshot> {
   const fact = await read.fact(ref.id, { mode: 'pinned', rev: ref.rev });
   if (fact.ref.learner !== ref.learner || fact.ref.id !== ref.id || fact.ref.rev !== ref.rev) {
     throw new Error('引用与打开的事实版本不一致。');
@@ -189,7 +228,7 @@ async function pinnedFact(read: ReadContext, ref: FactRef): Promise<FactSnapshot
 }
 
 export async function openTextbookBlock(
-  read: ReadContext,
+  read: TextbookReader,
   ref: FactRef,
   blockId: string,
   mode: 'pinned' | 'following' = 'pinned',
@@ -200,7 +239,7 @@ export async function openTextbookBlock(
   return blockAt(current, blockId);
 }
 
-export async function openTextbookReference(read: ReadContext, reference: TextbookReference) {
+export async function openTextbookReference(read: TextbookReader, reference: TextbookReference) {
   const { anchor } = reference;
   const fact = await pinnedFact(read, reference.fact);
   if (fact.type !== reference.type) throw new Error('引用的事实类型不符。');
@@ -218,8 +257,12 @@ export async function openTextbookReference(read: ReadContext, reference: Textbo
   return { ref: fact.ref, type: fact.type, anchor, accessEpoch: fact.accessEpoch };
 }
 
-export async function verifyTextbookBodyReference(ctx: CommandContext, body: TextbookBlockBody) {
-  const reference = body.kind === 'image' ? body.source : body.kind === 'reference' ? body.target : null;
+export function textbookBodyReference(body: TextbookBlockBody) {
+  return body.kind === 'image' ? body.source : body.kind === 'reference' ? body.target : null;
+}
+
+export async function verifyTextbookBodyReference(ctx: TextbookReadContext, body: TextbookBlockBody) {
+  const reference = textbookBodyReference(body);
   if (reference === null) return null;
   if (reference.fact.learner !== ctx.learner) throw new Error('教材引用必须属于当前学习者。');
   return openTextbookReference(ctx.read, reference);

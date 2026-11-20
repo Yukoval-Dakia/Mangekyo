@@ -9,7 +9,7 @@ import {
 import { isJson } from '../declarations/define.ts';
 import { canonicalJsonString } from './canonical.ts';
 import type { FactRef, FactWrite, Json } from '../declarations/types.ts';
-import type { DbTransaction } from '../db/types.ts';
+import type { DbTransaction, ReadTransaction } from '../db/types.ts';
 import type { FactChange, FactWriteTarget, WriteOptions } from './contracts.ts';
 
 type FactSchema = { parse(value: unknown): unknown };
@@ -186,7 +186,7 @@ function storedJson(value: unknown): Json {
   throw new Error('Stored fact data is invalid');
 }
 
-async function readFactRow(tx: DbTransaction, id: FactId): Promise<FactRow | null> {
+async function readFactRow(tx: ReadTransaction, id: FactId): Promise<FactRow | null> {
   const result = await tx.query<Record<string, unknown>>(
     `SELECT type, current_rev, purpose, sticky, retracted_rev
      FROM facts WHERE learner_id = $1 AND id = $2`,
@@ -194,6 +194,14 @@ async function readFactRow(tx: DbTransaction, id: FactId): Promise<FactRow | nul
   );
   const row = result.rows[0];
   return row === undefined ? null : factRow(row, id);
+}
+
+export async function isUneditedCompanionDraft(tx: ReadTransaction, id: FactId, sticky?: boolean) {
+  if (sticky ?? (await readFactRow(tx, id))?.sticky ?? true) return false;
+  const {rows:[birth]} = await tx.query<{author: string}>(
+    'SELECT author FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1', [tx.learner, id],
+  );
+  return birth?.author === 'companion';
 }
 
 async function readCurrentData(tx: DbTransaction, id: FactId, rev: Revision): Promise<Json> {
@@ -256,12 +264,8 @@ export async function applyFactWrites(
       const currentData = await readCurrentData(tx, write.id, validatedRevision(row.current_rev));
       write.data = currentData;
     }
-    if (write.kind === 'revise') {
-      const birth = await tx.query<{author: string}>(
-        'SELECT author FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1', [tx.learner, write.id],
-      );
-      if (row.sticky || birth.rows[0]?.author !== 'companion') throw new Error('Only an unedited companion draft can be revised');
-    }
+    if (write.kind === 'revise' && !await isUneditedCompanionDraft(tx, write.id, row.sticky))
+      throw new Error('Only an unedited companion draft can be revised');
     if (write.kind === 'correct' || write.kind === 'revise') {
       write.data = parseFactData(declaration, row.type, write.data, 'Correct write data');
     }

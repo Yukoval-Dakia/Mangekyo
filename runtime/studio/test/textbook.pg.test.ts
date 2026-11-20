@@ -77,6 +77,20 @@ it.skipIf(!connectionString)('serves nested pages, retains conflicting edits, an
       .rejects.toMatchObject({ status: 403 });
     const { rows: doneCommands } = await db.query<{ count: number }>("SELECT count(*)::int AS count FROM commands WHERE state='done'");
     expect(doneCommands[0]?.count).toBe(5);
+    const patch = { ...edit('local-patch', 4, 3, 'sixth', ''), edits: [
+      { kind: 'replace_anchor', blockId: 'sixth', anchor: '新稿', replacement: '修订' },
+      { kind: 'insert_after', blockId: 'example', afterId: 'sixth', body: { kind: 'text', text: '例子' } },
+    ] };
+    expect(await textbook.revise(patch)).toMatchObject({ rev: 4 });
+    expect(await textbook.openBlock({ learner, id: created.id, blockId: 'sixth' }))
+      .toMatchObject({ block: { body: { text: '第一端的修订' } } });
+    expect(await textbook.openBlock({ learner, id: created.id, blockId: 'example' }))
+      .toMatchObject({ block: { parentId: 'fifth' }, siblingIndex: 1 });
+    expect(await textbook.revise({ ...edit('delete-example', 5, 4, 'example', ''), edits: [
+      { kind: 'delete_block', blockId: 'example' },
+    ] })).toMatchObject({ rev: 5 });
+    expect(await textbook.openBlock({ learner, id: created.id, rev: 4, blockId: 'example' }))
+      .toMatchObject({ block: { id: 'example' } });
 
     const noteId = factId(stableId('legacy', 'note'));
     await createCommandHandler(db, { modules: [activity], hooks: { async onFactsChanged() {} } })({

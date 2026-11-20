@@ -11,6 +11,7 @@ it('keeps a later block change selectable when the first block is missing', asyn
     accessEpoch: '0' as Tick, purpose: ['storage'],
     value: { title: '平均速度', blocks: [
       { id: 'formula', parentId: null, body: { kind: 'formula', latex: 's/t' } },
+      { id: 'explanation', parentId: null, body: { kind: 'text', text: '时间比时间；全程。' } },
     ] },
   };
   const unavailable = async (): Promise<never> => { throw new Error('Only fact reads are expected'); };
@@ -24,4 +25,18 @@ it('keeps a later block change selectable when the first block is missing', asyn
   expect(preview.items[1]?.before?.block.body).toEqual({ kind: 'formula', latex: 's/t' });
   expect(selectTextbookEdits(preview, ['formula'])).toEqual({ id, expectedRev: 2, clientEditSeq: 4, edits: [rewrite] });
   expect(() => selectTextbookEdits(preview, ['missing'])).toThrow('请选择有效');
+  const patches = await previewTextbookRevision({ learner, read }, {
+    id, expectedRev: 2, clientEditSeq: 5,
+    edits: [
+      { kind: 'replace_anchor', blockId: 'explanation', anchor: '时间', replacement: '路程' },
+      { kind: 'insert_after', blockId: 'example', afterId: 'explanation', body: { kind: 'text', text: '新例子' } },
+      { kind: 'delete_block', blockId: 'formula' },
+    ],
+  });
+  expect(patches.items).toMatchObject([
+    { state: 'invalid', reason: '教材文本锚点必须恰好匹配一处。' },
+    { state: 'ready', before: null, after: { block: { id: 'example' }, siblingIndex: 2 } },
+    { state: 'ready', before: { block: { id: 'formula' } }, after: null },
+  ]);
+  expect(selectTextbookEdits(patches, ['example']).edits).toHaveLength(1);
 });
