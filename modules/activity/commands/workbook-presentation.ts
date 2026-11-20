@@ -28,13 +28,14 @@ export default defineCommand({
     if (!data.items.every(id => paper.questions.some(question => question.id === id))) {
       throw new WorkbookPresentationError('呈现题项与卷面不匹配。');
     }
-    if (data.kind === 'solution') {
-      const submission = await ctx.read.fact(data.submission.id, { mode: 'pinned', rev: data.submission.rev });
+    const submitted = data.kind === 'solution' ? data.submission : data.attemptRef;
+    if (submitted) {
+      const submission = await ctx.read.fact(submitted.id, {mode:'pinned',rev:submitted.rev});
       if (submission.type !== workbookAttemptType) throw new WorkbookPresentationError('需要已送达的作答反馈。');
       const attempt = workbookAttempt(submission.value);
       if (attempt.paperId !== shown.ref.id || !sameWorkbookJson(attempt.paper, paper) ||
-          !data.items.every(id => attempt.feedback.some(item => item.questionId === id &&
-            item.result !== 'unanswered' && item.expected.kind !== 'rubric'))) {
+          (data.kind === 'solution' && !data.items.every(id => attempt.feedback.some(item => item.questionId === id &&
+            item.result !== 'unanswered' && item.expected.kind !== 'rubric')))) {
         throw new WorkbookPresentationError('参考答案与实际反馈不匹配。');
       }
     }

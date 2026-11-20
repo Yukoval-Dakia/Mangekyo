@@ -18,6 +18,7 @@ import { openIntake } from './intake.ts';
 import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
+import { workbookBacktrace } from './workbook-backtrace.ts';
 import {
   artifactAssessmentSlot, executeArtifactAssessment, type ReadArtifactAssessmentWitness,
 } from './artifact-assessment.ts';
@@ -91,6 +92,7 @@ async function openWeb() {
   const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
     assessment: workbookAssessment,
+    context: {backtrace:workbookBacktrace},
     onResearchFactsChanged: research.workbookChanged,
   });
   const student = { textbook, relationReview:openRelationReview(db,content),
