@@ -1,5 +1,4 @@
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import { notionReadScope } from './notion.ts';
 import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
@@ -232,9 +231,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
 
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
     const paperId = factIdOf(id, '找不到这份试卷。');
-    return notionReadScope(db,studioLearner).read(async (tx,check) => {
+    return db.snapshot({learner:studioLearner},async tx => {
       if (await factType(tx,paperId) === posttestIssuanceType) {
-        try { return await capsules.issued(tx,paperId,check); }
+        try { return await capsules.issued(tx,paperId); }
         catch (error) { mapReadFailure(error,'找不到已发放的后测。','后测当前不可读取。'); }
       }
       const { paper, revision, epoch } = await readPaperSnapshot(tx, paperId);
@@ -252,7 +251,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           throw error;
         }
         const mount = await historicalWorkbookMount(tx,paperId,fact,read);
-        const questions = mount ? await capsules.questions(tx,attempt.paper,mount,check) : [];
+        const questions = mount ? await capsules.questions(tx,attempt.paper,mount) : [];
         const release = attempt.paper.assessmentRelease;
         const formal = release && await readWorkbookAssessment(tx, release, { id: attemptId, rev });
         const view = workbookAttemptView(attemptId, attempt, assessments.get(attemptId) ?? [],
@@ -265,7 +264,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         title: paper.title,
         savedAt: paper.savedAt,
         source,
-        questions: await capsules.questions(tx,paper,{paper:{id:paperId,rev:revision},epoch},check),
+        questions: await capsules.questions(tx,paper,{paper:{id:paperId,rev:revision},epoch}),
         ...(paper.assessmentRelease ? { assessmentReleaseRef: paper.assessmentRelease.releaseRef } : {}),
         attempts,
       };
@@ -285,6 +284,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     },
 
     get,
+    readingLabels: (id: string, query: URLSearchParams, signal: AbortSignal) => capsules.labels(factIdOf(id,'找不到这份试卷。'),query,signal),
     readingContext: (id: string, input: Record<string,unknown>) => capsules.event(factIdOf(id,'找不到这份试卷。'),input),
     async sheet(id: string) {
       return db.snapshot({ learner: studioLearner }, async tx => {

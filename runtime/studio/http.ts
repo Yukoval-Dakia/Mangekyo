@@ -295,6 +295,17 @@ export function serve(
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));
       if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return await offlineSubmission(200,input => student.workbook.submit(paper[1]!,input));
+      if (paper?.[1] && method === 'GET' && paper[2] === 'reading-context') {
+        const controller = new AbortController();
+        res.once('close',() => controller.abort());
+        try {
+          const labels = await student.workbook.readingLabels(paper[1],url.searchParams,controller.signal);
+          if (!controller.signal.aborted) json(res,200,labels);
+        } catch (error) {
+          if (!controller.signal.aborted) throw error;
+        }
+        return;
+      }
       if (paper?.[1] && method === 'POST' && paper[2] === 'reading-context')
         return json(res, 200, await student.workbook.readingContext(paper[1], await body(req)));
       if (paper?.[1] && method === 'POST' && paper[2] === 'presentation')
