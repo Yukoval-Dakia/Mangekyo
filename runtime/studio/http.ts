@@ -217,7 +217,7 @@ export function serve(
       if (method === 'GET' && path === '/api/capture/papers') return json(res, 200, await student.capturePapers.list());
       const paperOperation = path.slice('/api/capture/papers/'.length);
       if (method === 'POST' && path.startsWith('/api/capture/papers/') &&
-          (paperOperation === 'issue' || paperOperation === 'collect' || paperOperation === 'reprint')) {
+          (paperOperation === 'issue' || paperOperation === 'collect' || paperOperation === 'reprint' || paperOperation === 'displayed')) {
         return json(res, 200, await student.capturePapers[paperOperation](await body(req)));
       }
       if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());

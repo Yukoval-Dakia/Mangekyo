@@ -10,6 +10,8 @@ import type { DerivationSnapshot, FactSnapshot, Json, Outcome, ReadContext, Slot
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
+import { issuedPosttestPaper, posttestIssuanceType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
+import { printedWorkbookPresentation, recordWorkbookPresentationCommand, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
 import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { layeredExtractionDeriver, layeredExtractionSlot, type LayeredExtractionValue } from '../../modules/capture/extraction.ts';
 import {
@@ -17,17 +19,18 @@ import {
   paperIssuanceType, paperRun, paperRunType, projectIssuedPaper, projectNewPaper, type PaperExtractionReader, type PaperIssuance,
 } from '../../modules/capture/paper.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
-import { assetType, textbookPageType } from '../../modules/content/asset.ts';
+import { AssetBasisError, assetType, textbookPageType } from '../../modules/content/asset.ts';
 import { questionVerificationKey, questionVerificationType, type QuestionVerification } from '../../modules/content/question-state.ts';
 import type { IntakeOriginal } from '../../modules/capture/intake-values.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { readPosttestIssuance } from './retention-posttest.ts';
 import { RequestError } from './sessions.ts';
 
 const purpose = 'storage';
 const scope = { learner: studioLearner };
 const conflict = '卷面、题目发放状态或回收依据已变化。';
-const printKinds = new Map<string, 'workbook' | 'question' | 'textbook'>([
-  [workbookPaperType, 'workbook'], [assetType, 'question'], [textbookPageType, 'textbook'],
+const printKinds = new Map<string, 'workbook' | 'posttest' | 'question' | 'textbook'>([
+  [workbookPaperType, 'workbook'], [posttestIssuanceType, 'posttest'], [assetType, 'question'], [textbookPageType, 'textbook'],
 ]);
 const previewLayout = { lines: 60, columns: 80 };
 
@@ -77,11 +80,24 @@ function bindRead(tx: ReadTransaction, base: ReadContext, use: string) {
 
 const learnerRead = (tx: ReadTransaction) => bindRead(tx, createCommandReadContext(tx, purpose), purpose);
 
-async function readIssuedPaper(read: ReadContext, id: FactId, fact: FactSnapshot) {
-  if (fact.type !== paperIssuanceType) throw new RequestError(404, '找不到已发行纸卷。');
-  const issue = paperIssuance(fact.value);
+async function admitSource(tx: ReadTransaction, read: ReadContext, { source }: PaperIssuance) {
+  const fact = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
+  if (fact.type === retentionPaperType) throw new RequestError(404, '后测卷尚无可用的发放题项。');
+  if (fact.type === posttestIssuanceType) {
+    const { issuance, fact: released } = await readPosttestIssuance(tx, read, source.id);
+    if (released.ref.rev !== source.rev) throw new RequestError(409, conflict);
+    await issuedPosttestPaper(createCommandReadContext(tx, retentionTeachingPurpose), issuance);
+  }
+  return fact;
+}
+
+async function readIssuance(tx: ReadTransaction, read: ReadContext, id: FactId,
+  fact?: FactSnapshot) {
+  const stored = fact ?? await read.fact(id, { mode: 'following' });
+  if (stored.type !== paperIssuanceType || stored.ref.rev !== 1) throw new RequestError(404, '找不到已发行纸卷。');
+  const issue = paperIssuance(stored.value);
   if (await paperIssuanceId(issue) !== id) throw new RequestError(409, conflict);
-  return projectIssuedPaper(read, issue);
+  return { issue, source: await admitSource(tx, read, issue) };
 }
 
 function input<T>(parse: () => T): T {
@@ -95,7 +111,8 @@ async function paperRequest<T>(work: () => Promise<T>) {
     if (error instanceof LifecycleError) throw error;
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError)
       throw new RequestError(404, '找不到当前可读取的纸面依据。');
-    if (error instanceof Error && error.constructor === Error) throw new RequestError(409, conflict);
+    if (error instanceof AssetBasisError || error instanceof WorkbookPresentationError ||
+        (error instanceof Error && error.constructor === Error)) throw new RequestError(409, conflict);
     throw error;
   }
 }
@@ -103,15 +120,16 @@ async function paperRequest<T>(work: () => Promise<T>) {
 async function ifAvailable<T>(work: () => Promise<T>) {
   try { return await paperRequest(work); }
   catch (error) {
-    if (error instanceof RequestError && (error.status === 404 || error.status === 409)) return undefined;
+    if (error instanceof RequestError && ([404, 409, 422].includes(error.status))) return undefined;
     throw error;
   }
 }
 
 async function printCandidate(tx: ReadTransaction, read: ReadContext, fact: FactSnapshot,
-  kind: 'workbook' | 'question' | 'textbook' | 'photo' | 'pdf') {
+  kind: 'workbook' | 'posttest' | 'question' | 'textbook' | 'photo' | 'pdf') {
   const { id, rev } = fact.ref;
   const definition = { source: { id, rev }, epoch: fact.accessEpoch, layout: previewLayout };
+  await admitSource(tx, read, definition);
   const project = async ({ layout, ...ref }: PaperIssuance) => {
     const { title } = await projectNewPaper(read, { layout, ...ref });
     return { kind, title, ...ref };
@@ -141,7 +159,10 @@ async function listPapers(tx: ReadTransaction) {
     const fact = await ifAvailable(() => read.fact(id, { mode: 'following' }));
     if (!fact) continue;
     if (fact.type === paperIssuanceType) {
-      const paper = await ifAvailable(() => readIssuedPaper(read, id, fact));
+      const paper = await ifAvailable(async () => {
+        const { issue } = await readIssuance(tx, read, id, fact);
+        return projectIssuedPaper(read, issue);
+      });
       if (paper) issued.push({ issuanceId: paper.issuanceId, title: paper.title, pageCount: paper.pages.length });
     } else {
       const captured = fact.type === captureSourceType ? await ifAvailable(async () => sourceEnvelope(fact.value)) : undefined;
@@ -182,7 +203,21 @@ async function collect(read: ReadContext, command: PaperCommand, data: Collect) 
   return {run,receipt:{issuanceId:data.issuanceId,runId,rev:run.ref.rev,page:data.page,independence:'unknown' as const}};
 }
 
-export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandHooks) {
+async function present(read: ReadContext, command: PaperCommand, { issue, source }: Awaited<ReturnType<typeof readIssuance>>,
+  permit?: FactId) {
+  const printed = await projectIssuedPaper(read, issue);
+  if (source.type !== workbookPaperType) {
+    if (permit) throw new RequestError(409, conflict);
+    return { ...printed, presentation: null };
+  }
+  // The learner lock commits the #65 permit before the HTTP response can carry these prompts.
+  const data = printedWorkbookPresentation(issue.source, printed, permit);
+  const id = commandId(stableId(recordWorkbookPresentationCommand, canonicalJsonString(data)));
+  await command(recordWorkbookPresentationCommand, { id, data }, id);
+  return { ...printed, presentation: { paper: data.paper, items: data.items, permit: id } };
+}
+
+export function openCapturePapers(db: Db, capture: LoadedModule, activity: LoadedModule, hooks: CommandHooks) {
   async function write<T>(run: (read: ReadContext, command: PaperCommand, tx: ReadTransaction) => Promise<T>) {
     return paperRequest(() => db.tx(scope, async tx => {
       await lockLearner(tx, tx.learner);
@@ -190,7 +225,7 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
       const handle = createCommandHandler({ ...db, query: tx.query, tx: async (inner, execute) => {
         if (inner.learner !== tx.learner) throw new RequestError(409, conflict);
         return execute(tx);
-      } }, { modules: [capture], hooks, bindCommandRead: (inner, request, base) => bindRead(inner, base, request.purpose) });
+      } }, { modules: [capture, activity], hooks, bindCommandRead: (inner, request, base) => bindRead(inner, base, request.purpose) });
       return run(read, async (type, data, id = commandId(stableId(type,canonicalJsonString(data))), deletionWatermark) => {
         const receipt = await handle({learner:tx.learner,actor:'learner',purpose,type,id,input:data,
           ...(deletionWatermark === undefined ? {} : {deletionWatermark})});
@@ -204,15 +239,16 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
     async issue(body: Record<string, unknown>) {
       const issue = input(() => paperIssuance(body));
       const id = await paperIssuanceId(issue);
-      return write(async (read, command) => {
+      return write(async (read, command, tx) => {
         let existing: FactSnapshot | undefined;
         try { existing = await read.fact(id, { mode: 'following' }); }
         catch (error) { if (!(error instanceof FactNotFoundError)) throw error; }
-        if (existing) return readIssuedPaper(read, id, existing);
+        if (existing) return present(read, command, await readIssuance(tx, read, id, existing));
         const current = await read.fact(issue.source.id, { mode: 'following' });
         if (current.ref.rev !== issue.source.rev || current.accessEpoch !== issue.epoch) throw new RequestError(409, conflict);
+        await admitSource(tx, read, issue);
         await command('capture.issuePaper', issue);
-        return readIssuedPaper(read, id, await read.fact(id, { mode: 'following' }));
+        return present(read, command, await readIssuance(tx, read, id));
       });
     },
     async upload(selection: ReturnType<typeof paperReturnSelection>, upload: {
@@ -233,6 +269,7 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
           kind:'paper-return',retentionPolicy:'retained',occurredAt:null,recordedAt,
           originals:[{...upload.original,blobRef:id}],unit:{kind:'capture',title:upload.title,blocks:[]},
         },purpose:selectedPurpose === purpose ? [purpose] : [purpose,selectedPurpose]},upload.command,upload.deletionWatermark);
+        await readIssuance(tx, read, assignment.issuanceId);
         const {run,receipt} = await collect(read,command,{...assignment,source});
         const target = paperRun(run.value).pages.find(page => page.number === assignment.page);
         if (target?.source.id !== id || target.source.rev !== rev)
@@ -252,6 +289,7 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
         throw new RequestError(400,'回收页码或原图索引无效。');
       return write(async (read,command,tx) => {
         await assertUnburned(tx,'fact',[source.id]);
+        await readIssuance(tx, read, data.issuanceId);
         const {rows:[row]} = await tx.query<{assignment: unknown}>(
           `SELECT c.input#>'{input,paperReturn}' AS assignment FROM fact_revs r
           JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
@@ -267,10 +305,18 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
         if (Object.keys(body).length !== 1 || typeof body.issuanceId !== 'string') throw new Error();
         return factId(body.issuanceId);
       });
-      return paperRequest(() => db.snapshot(scope, async tx => {
-        const read = learnerRead(tx);
-        return readIssuedPaper(read, id, await read.fact(id, { mode: 'following' }));
-      }));
+      return write(async (read, command, tx) => present(read, command, await readIssuance(tx, read, id)));
+    },
+    async displayed(body: Record<string, unknown>) {
+      const [id, permit] = input(() => {
+        if (Object.keys(body).length !== 2 || typeof body.issuanceId !== 'string' || typeof body.permit !== 'string')
+          throw new Error();
+        return [factId(body.issuanceId), factId(body.permit)] as const;
+      });
+      return write(async (read, command, tx) => {
+        await present(read, command, await readIssuance(tx, read, id), permit);
+        return { recorded: true };
+      });
     },
   };
 }
