@@ -77,7 +77,7 @@ async function run({db,learner,stableId,load,send,assert}) {
   assert.equal(proposal.state,'proposed');
   assert.equal((await read(learnerId)).ref.rev,1);
 
-  const {gatherLayeredExtraction,settleLayeredExtraction,mergeLayeredSource,layeredExtractionSlot,layeredExtractionDeriver} = await load('modules/capture/extraction.ts');
+  const {gatherLayeredExtraction,settleLayeredExtraction,mergeLayeredSource,clarificationRegions,layeredExtractionSlot,layeredExtractionDeriver} = await load('modules/capture/extraction.ts');
   const {gatherSnapshot} = await load('kernel/src/derivations/gather.ts');
   const {sealCandidate,submitCandidate} = await load('kernel/src/derivations/candidate.ts');
   const {requestWork,runEffect} = await load('kernel/src/work/index.ts');
@@ -105,6 +105,9 @@ async function run({db,learner,stableId,load,send,assert}) {
   assert.equal(submitted.kind,'effective');
   assert.equal((await read(learnerId)).ref.rev,1);
   assert.equal(mergeLayeredSource(await read(learnerId),outcome).source.unit.blocks.length,blocks.length);
+  const [region] = clarificationRegions(savedSource, outcome);
+  assert.equal(region.originalSha256, savedSource.value.originals[0].sha256);
+  assert.equal(region.id, 'unknown');
   const clarify = { target: { id: learnerId, rev: 1 }, blockId: 'unknown', anchor: unknowable };
   const asked = await send('capture.clarifyExtraction', clarify);
   assert.equal(asked.wrote[0].rev, 2);
@@ -117,6 +120,7 @@ async function run({db,learner,stableId,load,send,assert}) {
   const live=mergeLayeredSource(await read(learnerId),current.plan.data);
   assert.equal(live.differences[0].blockId,'unknown');
   assert.equal(live.source.unit.blocks.find(b=>b.id==='unknown').body.text,'0.5');
+  assert.deepEqual(clarificationRegions(await read(learnerId), outcome), []);
   assert.deepEqual(live.source.originals,savedSource.value.originals);
   console.log(JSON.stringify({checked:'capture slot pg',manifest:gathered.manifest.inputs,modelMethod:effect.input.modelMethod,
     derivation:sealed.id,sourceRev:fixed.wrote[0].rev,stickyDifferences:live.differences.length}));

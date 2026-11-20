@@ -84,16 +84,19 @@ function sameJson(left: unknown, right: unknown): boolean {
     Object.hasOwn(right, key) && sameJson(Reflect.get(left, key), Reflect.get(right, key)));
 }
 
+function extractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue> | null) {
+  if (outcome?.kind !== 'value') return null;
+  const { basis, originals, blocks } = outcome.value;
+  if (basis.target.id !== fact.ref.id || basis.learner !== fact.ref.learner || basis.target.rev > fact.ref.rev ||
+      basis.accessEpoch !== fact.accessEpoch || !sameJson(originals, source.originals)) return null;
+  return extractedBlocks(source, blocks);
+}
+
 export function mergeLayeredSource(fact: FactSnapshot, outcome: Outcome<LayeredExtractionValue> | null) {
   if (fact.type !== captureSourceType) throw new Error('不是捕获原件。');
   const source = sourceEnvelope(fact.value);
-  if (outcome?.kind !== 'value') return { source, differences: [] };
-  const { basis, originals, blocks } = outcome.value;
-  if (basis.target.id !== fact.ref.id || basis.learner !== fact.ref.learner || basis.target.rev > fact.ref.rev ||
-      basis.accessEpoch !== fact.accessEpoch || !sameJson(originals, source.originals))
-    return { source, differences: [] };
-
-  const candidate = extractedBlocks(source, blocks);
+  const candidate = extractionForSource(fact, source, outcome);
+  if (!candidate) return { source, differences: [] };
   const byId = new Map(candidate.map(block => [block.id, block]));
   const byCrop = new Map(candidate.map(block => [cropKey(block), block]));
   const differences = source.unit.blocks.flatMap(previous => {
@@ -249,4 +252,25 @@ export function waitingAnswerSlots(blocks: readonly Block[]) {
   return blocks.flatMap(({ id, body }) => body.status === 'unknown' && body.itemId && (body.layer === 'handwriting' || body.layer === 'prompt')
     ? [{ blockId: id, itemId: body.itemId, slotId: body.slotId ?? null, status: 'waiting' as const }]
     : []);
+}
+
+/** Call with the recipient-authorized original and slot. Region coordinates are normalized to one source page. */
+export function clarificationRegions(fact: FactSnapshot, outcome: Outcome<LayeredExtractionValue> | null) {
+  if (fact.type !== captureSourceType) return [];
+  const source = sourceEnvelope(fact.value);
+  const candidate = extractionForSource(fact, source, outcome);
+  if (!candidate) return [];
+  const locations = new Set(candidate.filter(block => block.body.status === 'unknown').map(cropKey));
+  return mergeExtraction(source, candidate).flatMap(block => {
+    const { id, body } = block;
+    if (body.status !== 'unknown' || !locations.has(cropKey(block))) return [];
+    const { original, page, bbox: [left, top, right, bottom] } = body.crop_ref;
+    const blob = source.originals[original];
+    if (!blob) return [];
+    return [{
+      id, origin: 'ocr' as const, sourceId: fact.ref.id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch,
+      originalSha256: blob.sha256, page, crop: { left, top, width: right - left, height: bottom - top },
+      clarification: body.clarification,
+    }];
+  });
 }
