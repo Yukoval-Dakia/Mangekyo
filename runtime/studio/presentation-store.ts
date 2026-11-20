@@ -14,25 +14,20 @@ import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
-import { assessmentRelease, assessmentSubmission, type AssessmentRelease } from '../../modules/activity/assessment-values.ts';
+import { assessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import {
   validateArtifact,
-  exerciseView,
   savedArtifactCheckpoints,
-  operationLocks,
-  type Artifact,
   type ArtifactAction,
   type ArtifactIntentV1,
-  type HostStateV1,
 } from '../../surfaces/shared/presentation/index.ts';
 import {
   artifactIntentCommandId,
-  artifactViewDigest,
   handleArtifactIntent,
-  projectArtifactSnapshot,
-  type ArtifactMountV1,
+  projectArtifactMountState,
+  projectArtifactSubmission,
 } from './artifact-presentation.ts';
 import {
   artifactAssessmentPolicy, qualifyArtifactAssessment, readArtifactAssessment, type ReadArtifactAssessmentWitness,
@@ -121,7 +116,7 @@ function unavailableMount(error: unknown) {
 
 async function readMount(tx: ReadTransaction, sessionId: string, mountId: string, check: CheckNotionRead) {
   try {
-    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(), check);
+    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(tx), check);
   } catch (error) {
     if (error instanceof NotionReadUnconfirmed) throw new RequestError(503, '暂时无法核对作品来源，请重试。');
     if (unavailableMount(error)) throw conflict(error instanceof MountUnavailable ? error.message : '作品或依据已不可读。');
@@ -165,63 +160,10 @@ async function projectMount(
     if (fact.ref.rev !== 1) throw new MountUnavailable('操作记录的版本已变化。');
     history.push({ ...fact.value, id, receipt });
   }
-  const prediction = history.find((e) => e.prediction);
-  const predicting = Boolean(data.predictionPrompt && !prediction);
-  const view = exerciseView(result.view, predicting ? data.predictionPrompt : null);
-  const stateRev = history.length;
-  const base = {
-    learnerId: tx.learner,
-    sessionId,
-    turnId: data.turnId,
-    mountId,
-    artifactId: view.id,
-    revision: view.revision,
-    stateRev,
-  };
-  const hostState: HostStateV1 | undefined =
-    view.interaction?.logic.id === 'prediction-phase' &&
-    view.interaction.logic.revision === 'r1' &&
-    prediction
-      ? {
-          version: 1,
-          artifactId: view.id,
-          revision: view.revision,
-          mountId,
-          stateRev,
-          logic: view.interaction.logic,
-          inputs: { phase: 'experiment' },
-        }
-      : undefined;
-  const locks = operationLocks(view, base, hostState);
-  const unavailable: Record<string, string> = {};
-  for (const node of view.sections.flatMap((section) => section.nodes)) {
-    if (node.kind !== 'action') continue;
-    if (node.intent === 'requestHelp' || node.intent === 'requestReveal')
-      unavailable[node.id] = '此作品尚未绑定帮助或揭示命令。';
-    else if (node.inputs.some((id) => locks.has(id))) unavailable[node.id] = '所需输入尚未开放。';
-  }
-  const submissionEvent = history.find((e) => e.action.intent === 'submit');
-  const submitted = Boolean(submissionEvent);
+  const { mount, grant, projected, hostState, submitted, predicting, unavailable, prediction, submissionEvent } =
+    projectArtifactMountState(result.view, data.predictionPrompt, history,
+      { learnerId: tx.learner, sessionId, turnId: data.turnId, mountId });
   const release = data.assessment ? assessmentRelease(data.assessment.release) : undefined;
-  const mount: ArtifactMountV1 = {
-    ...base,
-    viewSeq: stateRev,
-    status: submitted ? 'readOnly' : 'open',
-    presentation: { phase: 'exercise', view },
-  };
-  const grant = {
-    ...base,
-    phase: 'exercise' as const,
-    viewDigest: artifactViewDigest(view),
-    actions: view.sections.flatMap((s) =>
-      s.nodes.flatMap((n) =>
-        n.kind === 'action' && !locks.has(n.id) && !Object.hasOwn(unavailable, n.id)
-          ? [{ nodeId: n.id, intent: n.intent, inputs: n.inputs }]
-          : [],
-      ),
-    ),
-  };
-  const projected = projectArtifactSnapshot(mount, grant);
   if (!projected.ok) throw new MountUnavailable(projected.code);
   const latest = history.at(-1);
   const snapshot = {
@@ -248,7 +190,7 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
     AND r.data->>'sessionId'=$2 AND r.data->>'turnId'=$3 ORDER BY f.created_tick`,
     [tx.learner, session, turn],
   );
-  const grantCurrent = workspaceGrantChecker();
+  const grantCurrent = workspaceGrantChecker(tx);
   const snapshots = [];
   const unconfirmed: string[] = [];
   for (const { id } of rows.rows) {
@@ -267,46 +209,6 @@ export function mountPermissionFields(unconfirmed: readonly string[], known: Rea
     mountPermissionsPartial: true as const,
     unconfirmedMountIds: unconfirmed.filter(id => known.has(id)),
   } : {};
-}
-
-// Exploration also records a structured handoff, using its original slot contract.
-function submissionFor(mount: ArtifactMountV1, view: Artifact, id: string, action: ArtifactAction, release?: AssessmentRelease) {
-  if (release) {
-    const item = release.items[0]!;
-    const slot = item.slots[0]!;
-    const answer = action.answers[slot.slotId];
-    return assessmentSubmission({
-      releaseRef: release.releaseRef, submissionRef: { id, rev: 1 },
-      answers: answer?.kind === 'selection' && answer.ids.length ? [{
-        itemId: item.itemId, slotId: slot.slotId, schemaVersion: slot.schemaVersion, path: '',
-        value: { kind: 'structured', value: answer },
-      }] : [],
-    }, release);
-  }
-  const releaseRef = { id: factId(mount.mountId), rev: 1 as Revision };
-  const schemaVersion = 'artifact-v1';
-  const itemId = action.nodeId;
-  const declared = view.sections.flatMap((section) => section.nodes).find((n) => n.id === itemId);
-  if (declared?.kind !== 'action' || declared.intent !== 'submit') throw conflict('提交动作未声明。');
-  const slots = declared.inputs.map((slotId) => ({
-    slotId,
-    schemaVersion,
-    fields: [{ path: '', kind: 'structured' as const }],
-  }));
-  return assessmentSubmission(
-    {
-      releaseRef,
-      submissionRef: { id, rev: 1 },
-      answers: slots.map(({ slotId }) => ({
-        itemId,
-        slotId,
-        path: '',
-        schemaVersion,
-        value: { kind: 'structured', value: action.answers[slotId] },
-      })),
-    },
-    { releaseRef, items: [{ itemId, slots }] },
-  );
 }
 
 export async function actOnArtifact(db: Db, session: string, raw: Record<string, unknown>) {
@@ -345,6 +247,8 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
     if (action.intent === 'submit' && action.trace.omitted) throw conflict('操作轨迹不完整。');
     const stateRev = mount.stateRev + 1;
     const id = stableId('artifact-action', mountId, String(stateRev));
+    const submission = action.intent === 'submit' ? projectArtifactSubmission(mountId, snapshot.view, id, action, release) : undefined;
+    if (action.intent === 'submit' && !submission) throw conflict('提交动作未声明。');
     const data = {
       stateRev,
       mountId,
@@ -354,9 +258,7 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
       action: { ...action },
       prediction: snapshot.predicting,
       predictionRef: snapshot.prediction?.id ?? null,
-      ...(action.intent === 'submit'
-        ? { submission: submissionFor(mount, snapshot.view, id, action, release), traceSource: 'learner-reported' }
-        : {}),
+      ...(submission ? { submission, traceSource: 'learner-reported' } : {}),
     };
     const handle = createCommandHandler(db, {
       modules: [await (activity ??= load('activity'))],

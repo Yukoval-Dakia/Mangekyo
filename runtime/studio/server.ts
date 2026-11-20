@@ -37,6 +37,8 @@ import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
+import { confirmedTeachingMethod } from './identity.ts';
+import type { StudioJitCounter } from './first-turn-jit.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MANGEKYO_PORT 无效');
@@ -86,10 +88,16 @@ const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined =
   : undefined;
 if (artifactAssessmentModule && mode !== 'web' && typeof readArtifactAssessmentWitness !== 'function')
   throw new Error('作品评估宿主模块须导出 readArtifactAssessmentWitness');
+const jitModule = process.env.MANGEKYO_STUDIO_JIT_MODULE;
+const jitCounters: readonly StudioJitCounter[] = jitModule
+  ? (await import(pathToFileURL(jitModule).href)).studioJitCounters
+  : [];
+if (!Array.isArray(jitCounters)) throw new Error('首轮计数模块须导出 studioJitCounters');
 
 async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());
-  const studio = await openStudio(db, activity, { projectRecall: recall.project });
+  const studio = await openStudio(db, activity, {projectRecall:recall.project,jitCounters,
+    enableJit:process.env.MANGEKYO_STUDIO_ENABLE_JIT === '1'});
   const plan = await loadModuleDirectory(fileURLToPath(new URL('../../modules/plan', import.meta.url)));
   const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
@@ -128,14 +136,14 @@ async function runWorker(storeId: string) {
   async function executeDefault(ref: WorkRef, terminal: boolean) {
     if (await research.execute(ref, terminal)) return;
     const work = await readWork(db, ref);
-    if (!work) return;
+    if (!work || work.deriver === confirmedTeachingMethod) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
     else if (work.slotType === retentionComparisonWork) await retentionComparison.execute(ref, work.slotKey, terminal);
     else if (isRetentionSlot(work.slotType)) await retention.execute(ref, terminal);
     else if (terminal) await recordTerminalFailure(db, ref);
-    else await teach(db, ref, readArtifactAssessmentWitness);
+    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters);
   }
   const workerConfig = {
     address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
@@ -144,8 +152,16 @@ async function runWorker(storeId: string) {
   };
   const connection = await Connection.connect({ address: workerConfig.address });
   const client = new Client({ connection, namespace: workerConfig.namespace });
+  const confirmedRoute = { deriver: confirmedTeachingMethod };
+  async function executeGuarded(ref: WorkRef, terminal: boolean) {
+    const work = await readWork(db, ref);
+    if (work?.deriver !== confirmedTeachingMethod) return;
+    if (terminal) await recordTerminalFailure(db, ref);
+    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters);
+  }
   const lanes = [
     { queue, route: undefined, run: executeDefault },
+    { queue: capabilityTaskQueue(queue, 'teaching-confirmed-v1'), route: confirmedRoute, run: executeGuarded },
     ...(mineruToken() ? [{ queue: capabilityTaskQueue(queue, 'ocr-v1'), route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
   ];
   const workers = await Promise.all(lanes.map(lane => {

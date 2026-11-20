@@ -66,3 +66,9 @@ node runtime/studio/test/mcp-acceptance.mjs http://127.0.0.1:4317 服务ID 工�
 - 教研室是第一项智能验收。自由对话和起步课堂已接入产品导航。四页真实拍卷、个人化排课、跨设备和删除生命周期仍按工作单推进。[工作单](docs/BACKLOG.md)
 - 从旧 TLP 的实现记录和愿景中盘点了 73 项候选，Mangekyō 纳入 70 项、部分纳入 1 项、排除 2 项。学生在新版怎样使用这些能力，见[产品概览](docs/product-overview.md)；范围和验收见[功能去向](docs/feature-disposition.md)。
 - 产品行为以 [PRD](docs/PRD.md) 与[产品规格](docs/product-spec.md)为准，内核实现遵循[内核规格](docs/kernel-design.md)与[实现契约](docs/implementation-contract.md)。较早的命令、边界和生成器检查见[历史验证记录](docs/verification.md)。
+
+### 教学账户确认的滚动切换
+
+1. 暂停旧 Web 的附件、受账户约束的续轮和 JIT 流量，等这些写入完成。确认仍可能处理这些任务且缺少最终发前锁的 Worker 已退出，包括 v8。保留原部署、构建 ID 和 Temporal 历史，供屏障完成后恢复普通 PINNED 任务。
+2. 用具备触发器安装权限的数据库身份启动新版 Studio Web。它先在同一学习者锁内安装写入屏障并封存待处理的旧受保护教学任务，然后开始监听。屏障保留旧事实、效果凭据和 outbox 身份。已开始发送的旧请求可能仍到达提供方，其在途回复无法在屏障之后被采纳。旧 Web 如仍服务普通流量，受保护的读写均应切到新版 Web。历史回放沿用原回执。重新授权时由本人以新请求标识开启一轮。
+3. 使用相同的基础队列启动新版 Worker。用 `capabilityTaskQueue(baseQueue, 'teaching-confirmed-v1')` 算出专用部署，单独把新版设为 current。原 `jit-v1`、普通队列和 `ocr-v1` 的 current 与已 PINNED 执行沿各自发布流程处理。新部署激活前，新受保护任务可以排队。JIT 保持关闭时，此部署继续处理已确认的附件及续轮。

@@ -1,8 +1,8 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type Settings, type SessionEvent, type StudyAttachment } from "./api";
+import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type SessionEvent, type StudyAttachment } from "./api";
 
 import type { CurrentObject } from "./current-record";
-import {selectedRoute, type Route, type McpGrant} from './model-route';
+import type { Route, McpGrant } from './model-route';
 import { mountBatches, mountQuery } from "./presentation/mount-coverage.ts";
 import { editorDrafts } from "./presentation/editor-draft";
 import { useMountPermissions } from "./presentation/mount-permissions";
@@ -74,6 +74,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const [retryOperation, setRetryOperation] = useState<Operation>();
+  const [accountConflict, setAccountConflict] = useState(false);
   const [sendingAnswer, setSendingAnswer] = useState<string>();
   const [problem, setProblem] = useState<{ source: "read" | "write"; message: string }>();
   const [refresh, setRefresh] = useState(0);
@@ -355,6 +356,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       setDraft(undefined);
       setRetryOperation(undefined);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && error.code === 'provider_account_confirmation_required') {
+        setAccountConflict(true);
+        setRetryOperation(undefined);
+        return;
+      }
       if (operation.kind === "answer" && error instanceof ApiError && error.status === 409) {
         setRetryOperation(undefined);
         setConflict(true);
@@ -379,19 +385,20 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     }
   }
 
-  function start(question?: string, attachment?: StudyAttachment, mcpGrants?: McpGrant[], settings?: Settings, currentObject?: CurrentObject) {
+  function start(question?: string, attachment?: StudyAttachment, mcpGrants?: McpGrant[], route?: Route, currentObject?: CurrentObject) {
     if (inFlight.current || retryOperation) return;
+    setAccountConflict(false);
     const text = question?.trim();
     const id = text ? requestId() : remembered(createKey) ?? requestId();
     if (!text) remember(createKey, id);
-    void perform({ kind: "create", currentObject, route: selectedRoute(settings), mcpGrants, requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
+    void perform({ kind: "create", currentObject, route, mcpGrants, requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
   }
 
-  function send(mcpGrants?: McpGrant[], settings?: Settings, currentObject?: CurrentObject) {
+  function send(mcpGrants?: McpGrant[], route?: Route, currentObject?: CurrentObject) {
     const answer = draft?.text.trim();
     const parentId = session?.currentTurnId;
-    if (!session || session.status !== "ready" || !answer || !parentId || draft?.parentId !== parentId || retryOperation) return;
-    void perform({ kind: "answer", currentObject, route: selectedRoute(settings), mcpGrants, requestId: requestId(), sessionId: session.id, parentId, answer });
+    if (!session || session.status !== "ready" || !answer || !parentId || draft?.parentId !== parentId || retryOperation || accountConflict) return;
+    void perform({ kind: "answer", currentObject, route, mcpGrants, requestId: requestId(), sessionId: session.id, parentId, answer });
   }
 
   function editDraft(text: string) {
@@ -425,6 +432,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     progressLabel,
     reconnecting,
     retryOperation,
+    accountConflict,
     problem,
     start,
     send,
