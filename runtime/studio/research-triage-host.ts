@@ -3,8 +3,8 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
 import { readTodo, type TodoInput, type TodoSpec } from '../../kernel/src/work/todos.ts';
-import { goalType } from '../../modules/activity/library-values.ts';
-import { organizerTaskType } from '../../modules/activity/organizer-values.ts';
+import { goalType } from '../../modules/plan/goal-values.ts';
+import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import {
   researchPurpose, researchSettingsType, researchWorksheetType, retentionReviewPermissionType,

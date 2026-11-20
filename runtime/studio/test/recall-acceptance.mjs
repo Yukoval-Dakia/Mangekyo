@@ -7,6 +7,7 @@ import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
 import { createPgDb } from '../../../kernel/src/db/pg.ts';
 import { createPgliteDb } from '../../../kernel/src/db/pglite.ts';
 import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
+import { intakeWriteTargets } from '../intake.ts';
 import { applyKernelSchema } from '../../../kernel/src/schema.ts';
 import { methodName, purpose, slotType, stableId, studioLearner } from '../identity.ts';
 import { openRecall, recallItemId } from '../recall.ts';
@@ -29,7 +30,13 @@ try {
   await applyKernelSchema(db);
   await db.query('INSERT INTO learners (id) VALUES ($1)', [studioLearner]);
   const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity', import.meta.url)));
-  const handle = createCommandHandler(db, { modules: [activity], hooks: { async onFactsChanged() {} } });
+  const capture = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/capture', import.meta.url)));
+  const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
+  const handle = createCommandHandler(db, {
+    modules: [activity, capture, content],
+    hooks: { async onFactsChanged() {} },
+    crossModuleWrites: intakeWriteTargets,
+  });
   const materialId = stableId('recall material');
   const intakeId = stableId('intake-document', materialId);
   const attachment = { id: materialId, title: '分组', text: '每组三枚', mode: 'prepare' };

@@ -13,8 +13,11 @@ import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts'
 import type { Db, ReadTransaction, SqlValue } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { goalType, materialType, studyGoal, textMaterial } from '../../modules/activity/library-values.ts';
-import { organizerNote, organizerNoteType, organizerTask, organizerTaskType } from '../../modules/activity/organizer-values.ts';
+import { materialType, textMaterial } from '../../modules/activity/library-values.ts';
+import { goalType, studyGoal } from '../../modules/plan/goal-values.ts';
+import { organizerNote, organizerNoteType } from '../../modules/activity/organizer-values.ts';
+import { organizerTask, organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
+import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { practiceSubmission, ridingPracticeType } from '../../modules/activity/practice-values.ts';
 import { studyRecord } from '../../modules/activity/values.ts';
 import {
@@ -583,10 +586,14 @@ function saveWorkspaceAccessRoute(db: Db, input: unknown) {
   });
 }
 
-export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: LoadedModule) {
+export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: LoadedModule,
+  capture: LoadedModule, plan: LoadedModule) {
   const handle = createCommandHandler(db, {
-    modules: [activity, content],
+    modules: [activity, content, capture, plan],
     hooks: createStudioCommandHooks({ afterFactsChanged: carryRubricAssessments }),
+    crossModuleWrites: {
+      [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType, goalType, organizerTaskType] },
+    },
   });
 
   async function providerList() {

@@ -3,7 +3,7 @@ import {
   organizerTask,
   organizerTaskDoneInput,
   setOrganizerTaskDone,
-} from '../organizer-values.ts';
+} from '../organizer-task-values.ts';
 
 export default defineCommand({
   type: setOrganizerTaskDone,

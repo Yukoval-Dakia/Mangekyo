@@ -6,23 +6,14 @@ import {
 } from '@mangekyo/kernel';
 import { textMaterial } from './library-values.ts';
 
-export const organizerTaskType = 'activity.organizerTask';
 export const organizerNoteType = 'activity.organizerNote';
 
-export const createOrganizerTask = 'activity.organizerCreateTask';
-export const setOrganizerTaskDone = 'activity.organizerSetTaskDone';
 export const createOrganizerNote = 'activity.organizerCreateNote';
 export const saveOrganizerNote = 'activity.organizerSaveNote';
 export const restoreOrganizerNote = 'activity.organizerRestoreNote';
 
 const titleLimit = 240;
 const markdownLimit = 8000;
-
-export type OrganizerTask = {
-  readonly title: string;
-  readonly date: string;
-  readonly done: boolean;
-};
 
 export type OrganizerNoteSource = {
   readonly id: FactId;
@@ -62,26 +53,6 @@ function title(input: unknown, key = 'title'): string {
   return text(record(input), key, titleLimit, '标题').trim();
 }
 
-function calendarDate(input: Record<string, unknown>): string {
-  const value = text(input, 'date', 10, '日期');
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) throw new Error('请选择有效日期。');
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const parsed = new Date(Date.UTC(year, month - 1, day));
-  if (
-    year < 1900 ||
-    year > 2200 ||
-    parsed.getUTCFullYear() !== year ||
-    parsed.getUTCMonth() !== month - 1 ||
-    parsed.getUTCDate() !== day
-  ) {
-    throw new Error('请选择有效日期。');
-  }
-  return value;
-}
-
 function revision(input: Record<string, unknown>, key: string): Revision {
   const value = input[key];
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
@@ -104,32 +75,10 @@ function parsedSource(value: unknown): OrganizerNoteSource | null {
   return { id: factId(source.id), title: title(source) };
 }
 
-export function organizerTask(input: unknown): OrganizerTask {
-  const value = record(input);
-  const done = value.done;
-  if (typeof done !== 'boolean') throw new Error('完成状态无效。');
-  return { title: title(value), date: calendarDate(value), done };
-}
-
 export function organizerNote(input: unknown): OrganizerNote {
   const value = record(input);
   const markdown = text(value, 'markdown', markdownLimit, '笔记正文');
   return { title: title(value), markdown, source: parsedSource(value.source) };
-}
-
-export function organizerTaskDraft(input: unknown): OrganizerTask {
-  return organizerTask({ ...record(input), done: false });
-}
-
-export function organizerTaskDoneInput(input: unknown) {
-  const value = record(input);
-  if (typeof value.id !== 'string') throw new Error('任务标识无效。');
-  if (typeof value.done !== 'boolean') throw new Error('完成状态无效。');
-  return {
-    id: factId(value.id),
-    expectedRev: revision(value, 'expectedRev'),
-    done: value.done,
-  };
 }
 
 export function organizerNoteDraft(input: unknown): OrganizerNoteDraft {

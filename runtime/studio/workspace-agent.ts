@@ -17,8 +17,9 @@ import {learningToolError, openLearningBatch, parseLearningReference, parseOpenL
 import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
 import {sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
-import {goalType} from '../../modules/activity/library-values.ts';
-import {organizerNoteType, organizerTaskType} from '../../modules/activity/organizer-values.ts';
+import {goalType} from '../../modules/plan/goal-values.ts';
+import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
+import {organizerTaskType} from '../../modules/plan/organizer-task-values.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';

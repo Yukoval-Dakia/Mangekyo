@@ -12,22 +12,24 @@ import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import {
   createOrganizerNote,
-  createOrganizerTask,
   organizerNote,
   organizerNoteDraft,
   organizerNoteRestoreInput,
   organizerNoteSaveInput,
   organizerNoteType,
+  restoreOrganizerNote,
+  saveOrganizerNote,
+  type OrganizerNote,
+} from '../../modules/activity/organizer-values.ts';
+import {
+  createOrganizerTask,
   organizerTask,
   organizerTaskDoneInput,
   organizerTaskDraft,
   organizerTaskType,
-  restoreOrganizerNote,
-  saveOrganizerNote,
   setOrganizerTaskDone,
-  type OrganizerNote,
   type OrganizerTask,
-} from '../../modules/activity/organizer-values.ts';
+} from '../../modules/plan/organizer-task-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
@@ -86,8 +88,9 @@ function written(receipt: Awaited<ReturnType<ReturnType<typeof createCommandHand
   return { id: ref.id, rev: ref.rev };
 }
 
-export function openOrganizer(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
-  const handle = createCommandHandler(db, { modules: [activity], hooks });
+export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule,
+  hooks: CommandHooks = createStudioCommandHooks()) {
+  const handle = createCommandHandler(db, { modules: [activity, plan], hooks });
 
   async function write(type: string, requestId: string, input: unknown) {
     try {

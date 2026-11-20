@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
-import { materialType, goalType } from '../../modules/activity/library-values.ts';
-import { organizerNoteType, organizerTaskType } from '../../modules/activity/organizer-values.ts';
+import { materialType } from '../../modules/activity/library-values.ts';
+import { goalType } from '../../modules/plan/goal-values.ts';
+import { organizerNoteType } from '../../modules/activity/organizer-values.ts';
+import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import {

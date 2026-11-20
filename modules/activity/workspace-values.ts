@@ -7,9 +7,9 @@ import {
 } from '@mangekyo/kernel';
 import {ridingPracticeType} from './practice-values.ts';
 import {workbookAttemptType, workbookPaperType} from './workbook-values.ts';
-import {goalType, materialType} from './library-values.ts';
-import {organizerTaskType} from './organizer-values.ts';
-import type {OrganizerTask} from './organizer-values.ts';
+import goal from '@mangekyo/module-plan/facts/goal';
+import organizerTask from '@mangekyo/module-plan/facts/organizer-task';
+import {materialType} from './library-values.ts';
 import {organizerNoteType} from './organizer-values.ts';
 
 export class WorkspaceInputError extends Error {}
@@ -276,8 +276,8 @@ export const workspaceShareableTypes = [
   workbookPaperType,
   materialType,
   organizerNoteType,
-  goalType,
-  organizerTaskType,
+  goal.type,
+  organizerTask.type,
   workspaceEntryType,
 ];
 export const workspaceOverviewTypes = workspaceShareableTypes;
@@ -297,7 +297,7 @@ export type LearningOverviewWitness = {
   readonly accessEpoch: string;
 };
 
-export type LearningOverviewTask = OrganizerTask & Pick<LearningOverviewWitness, 'id' | 'rev'>;
+export type LearningOverviewTask = ReturnType<typeof organizerTask.schema.parse> & Pick<LearningOverviewWitness, 'id' | 'rev'>;
 
 export type LearningOverviewGoal =
   | { readonly state: 'empty' }

@@ -1,5 +1,5 @@
 import { defineFact } from '@mangekyo/kernel';
-import { organizerTask, organizerTaskType, type OrganizerTask } from '../organizer-values.ts';
+import { organizerTask, organizerTaskType, type OrganizerTask } from '../organizer-task-values.ts';
 
 export default defineFact<OrganizerTask>({
   type: organizerTaskType,

@@ -13,6 +13,7 @@ import {resolveSource} from '../source-read.ts';
 import {openWorkbook} from '../workbook.ts';
 import {openWorkspaceAccess} from '../workspace-access.ts'; import {openWorkspaceTools, type WorkspaceWitness} from '../workspace-agent.ts';
 import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organizer.ts';
+import {intakeWriteTargets} from '../intake.ts';
 import {learningOverviewPurpose, readLearningOverview} from '../learning-overview.ts';
 import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
 import {workspaceQuery} from '../workspace-read.ts';
@@ -67,8 +68,10 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(hidden.content).toBeUndefined();
 
     const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity',import.meta.url)));
+    const capture = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/capture', import.meta.url)));
     const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
-    const access = openWorkspaceAccess(db, activity, content); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
+    const plan = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/plan', import.meta.url)));
+    const access = openWorkspaceAccess(db, activity, content, capture, plan); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
     const textbook = openTextbook(db, content, {async onFactsChanged() {}});
     const teachingPage = await textbook.create({learner:studioLearner, requestId:'textbook-teaching', clientEditSeq:0,
       page:{title:'我的教材', blocks:[{id:'intro', parentId:null, body:{kind:'text',text:'比对分段计时'}}]}});
@@ -85,7 +88,7 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(await textbook.get({...pageInput,purpose:'storage'})).toMatchObject({rev:3,accessEpoch:'2',title:'我的教材'});
     const overview = (callerPurpose = learningOverviewPurpose, maySend: (fact: LearningOverviewFact) => boolean = () => true) =>
       db.snapshot({learner: studioLearner}, tx => readLearningOverview(tx, {callerPurpose, maySend}));
-    const library = openLibrary(db, activity), organizer = openOrganizer(db, activity);
+    const library = openLibrary(db, capture, content, plan), organizer = openOrganizer(db, activity, plan);
     const noteSource = await library.capture({requestId:'private-note-source', title:'仅本人可见的来源', text:'来源正文'});
     const note = await organizer.note({requestId:'linked-note', materialId:noteSource.id, title:'关联笔记', markdown:'本人记录'});
     const noteGrant = await access.setTeaching(note.id,{enabled:true,expectedRev:1});
@@ -119,12 +122,26 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
 
     const materialId = stableId('paired material'), intakeId = stableId('intake-document', materialId);
     const capturedText = '长材料正文。'.repeat(1000);
-    const command = createCommandHandler(db, {modules:[activity], hooks:{async onFactsChanged() {}}});
-    await command({learner:studioLearner, actor:'learner', purpose:'storage', type:'activity.captureIntake',
+    const hooks = {async onFactsChanged() {}};
+    const command = createCommandHandler(db, {
+      modules: [activity, capture, content],
+      hooks,
+      crossModuleWrites: {
+        ...intakeWriteTargets,
+        'activity.setWorkspaceTeaching': {set_purpose: ['activity.textMaterial']},
+      },
+    });
+    const captureRequest = {learner:studioLearner, actor:'learner', purpose:'storage', type:'activity.captureIntake',
       id:commandId(stableId('paired capture')), input:{materialId, intakeId, title:'长材料',
         original:{name:'study.txt', mediaType:'text/plain', size:1, sha256:'0'.repeat(64)},
         extraction:{status:'ok', method:'utf8', text:capturedText, error:null, warnings:[], pages:null,
-          truncated:false, characterCount:capturedText.length}}});
+          truncated:false, characterCount:capturedText.length}}} as const;
+    const correctOnly = createCommandHandler(db, {
+      modules: [capture, content], hooks,
+      crossModuleWrites: {'activity.captureIntake': {correct: ['activity.textMaterial']}},
+    });
+    await expect(correctOnly(captureRequest)).rejects.toThrow('Create write must target a registry-owned fact type');
+    await command(captureRequest);
     // Legacy workspaces granted the material and left the paired text storage-only.
     await command({learner:studioLearner, actor:'learner', purpose:'storage', type:'activity.setWorkspaceTeaching',
       id:commandId(stableId('legacy material grant')), input:{id:materialId, expectedRev:1, enabled:true}});

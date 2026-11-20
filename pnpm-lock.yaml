@@ -56,6 +56,24 @@ importers:
       '@mangekyo/kernel':
         specifier: workspace:*
         version: link:../../kernel
+      '@mangekyo/module-capture':
+        specifier: workspace:*
+        version: link:../capture
+      '@mangekyo/module-content':
+        specifier: workspace:*
+        version: link:../content
+      '@mangekyo/module-plan':
+        specifier: workspace:*
+        version: link:../plan
+
+  modules/capture:
+    dependencies:
+      '@mangekyo/kernel':
+        specifier: workspace:*
+        version: link:../../kernel
+      '@mangekyo/module-content':
+        specifier: workspace:*
+        version: link:../content
 
   modules/companion:
     dependencies:
@@ -70,6 +88,12 @@ importers:
         version: link:../../kernel
 
   modules/learner:
+    dependencies:
+      '@mangekyo/kernel':
+        specifier: workspace:*
+        version: link:../../kernel
+
+  modules/plan:
     dependencies:
       '@mangekyo/kernel':
         specifier: workspace:*

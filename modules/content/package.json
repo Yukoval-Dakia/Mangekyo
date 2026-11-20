@@ -6,7 +6,8 @@
   "exports": {
     ".": "./module.ts",
     "./facts/textbook-page": "./textbook-page.ts",
-    "./knowledge-edge": "./knowledge-edge.ts"
+    "./knowledge-edge": "./knowledge-edge.ts",
+    "./facts/material": "./facts/material.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"

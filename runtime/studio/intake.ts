@@ -9,12 +9,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
+import type { CommandHooks, CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
-import { textMaterial } from '../../modules/activity/library-values.ts';
+import { materialType, textMaterial } from '../../modules/content/text-material.ts';
 import {
   captureIntakeCommand,
   completeCloudIntakeCommand,
@@ -28,7 +28,7 @@ import {
   type IntakeExtraction,
   type IntakeMediaType,
   type IntakeOriginal,
-} from '../../modules/activity/intake-values.ts';
+} from '../../modules/capture/intake-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
@@ -313,8 +313,16 @@ function intakeIdFor(materialId: FactId): FactId {
   return factId(stableId('intake-document', materialId));
 }
 
-export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
-  const handle = createCommandHandler(db, { modules: [activity], hooks });
+export const intakeWriteTargets = {
+  [captureIntakeCommand]: { create: [materialType] },
+  [correctIntakeCommand]: { correct: [materialType] },
+  [completeCloudIntakeCommand]: { correct: [materialType] },
+} satisfies CrossModuleWrites;
+
+export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedModule,
+  hooks: CommandHooks = createStudioCommandHooks()) {
+  const runtime = { modules: [captureModule, content], crossModuleWrites: intakeWriteTargets };
+  const handle = createCommandHandler(db, { ...runtime, hooks });
   const base = materialBase();
 
   async function factsFor(materialId: string) {
@@ -421,7 +429,7 @@ export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks =
         ...(cloud ? { requestedExtraction: 'mineru' } : {}),
       };
       const save = createCommandHandler(db, {
-        modules: [activity],
+        ...runtime,
         hooks: {
           async onFactsChanged(tx, tick, changes) {
             // The capture command has inserted both facts under the learner lock.
@@ -469,7 +477,7 @@ export function openIntake(db: Db, activity: LoadedModule, hooks: CommandHooks =
   async function completeCloud(ref: WorkRef, input: CloudIntakeInput, extraction: IntakeExtraction) {
     const { document, material } = input;
     const complete = createCommandHandler(db, {
-      modules: [activity],
+      ...runtime,
       hooks: {
         ...hooks,
         async onFactsChanged(tx, tick, changes) {

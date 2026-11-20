@@ -2,8 +2,8 @@ import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
-import {goalType, studyGoal} from '../../modules/activity/library-values.ts';
-import {organizerTask, organizerTaskType} from '../../modules/activity/organizer-values.ts';
+import {goalType, studyGoal} from '../../modules/plan/goal-values.ts';
+import {organizerTask, organizerTaskType} from '../../modules/plan/organizer-task-values.ts';
 import {type LearningOverview, type LearningOverviewFact, type LearningOverviewTask, type LearningOverviewWitness,
 } from '../../modules/activity/workspace-values.ts';
 

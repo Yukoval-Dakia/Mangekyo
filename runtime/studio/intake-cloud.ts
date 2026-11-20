@@ -10,7 +10,7 @@ import {
   intakeTextLimit,
   materialType,
   type IntakeExtraction,
-} from '../../modules/activity/intake-values.ts';
+} from '../../modules/capture/intake-values.ts';
 import { studioLearner } from './identity.ts';
 
 export const cloudIntakeSlot = 'activity.intakeCloudExtraction';

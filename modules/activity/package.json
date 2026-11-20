@@ -1,1 +1,12 @@
-{"name":"@mangekyo/module-activity","version":"0.0.0","private":true,"type":"module","dependencies":{"@mangekyo/kernel":"workspace:*"}}
+{
+  "name": "@mangekyo/module-activity",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mangekyo/kernel": "workspace:*",
+    "@mangekyo/module-capture": "workspace:*",
+    "@mangekyo/module-content": "workspace:*",
+    "@mangekyo/module-plan": "workspace:*"
+  }
+}

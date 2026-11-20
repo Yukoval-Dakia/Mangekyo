@@ -1,7 +1,9 @@
 import { factId, type FactId } from '@mangekyo/kernel';
-import { materialType, storagePurpose, textMaterial } from './library-values.ts';
+import materialFact from '@mangekyo/module-content/facts/material';
 
-export const intakePurpose = storagePurpose;
+export const intakePurpose = 'storage';
+export const materialType = materialFact.type;
+export const captureMaterial = 'activity.captureTextMaterial';
 export const intakeFactType = 'activity.intakeDocument';
 export const captureIntakeCommand = 'activity.captureIntake';
 export const correctIntakeCommand = 'activity.correctIntakeText';
@@ -182,7 +184,7 @@ export function intakeDocument(input: unknown): IntakeDocument {
     throw new Error('云识别结果缺少对应的交入请求。');
   const document: IntakeDocument = {
     materialId: factId(text(value.materialId, '材料标识', 26, false)),
-    title: textMaterial({ title: value.title, text: '占位' }).title,
+    title: materialFact.schema.parse({ title: value.title, text: '占位' }).title,
     original: intakeOriginal(value.original),
     extraction,
     ...(value.requestedExtraction === 'mineru' ? { requestedExtraction: 'mineru' } : {}),
@@ -216,7 +218,7 @@ export function captureIntakeInput(input: unknown): CaptureIntakeInput {
   const materialId = factId(text(value.materialId, '材料标识', 26));
   const intakeId = factId(text(value.intakeId, '交入记录标识', 26));
   const document = intakeDocument({ ...value, materialId });
-  const material = textMaterial({ title: document.title, text: intakePreview(document.extraction) });
+  const material = materialFact.schema.parse({ title: document.title, text: intakePreview(document.extraction) });
   return { materialId, intakeId, data: { material, document } };
 }
 
@@ -234,4 +236,3 @@ export function correctIntakeInput(input: unknown): CorrectIntakeInput {
 
 export const captureIntakeSchema = { parse: captureIntakeInput };
 export const correctIntakeSchema = { parse: correctIntakeInput };
-export { materialType };

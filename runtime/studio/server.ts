@@ -53,9 +53,11 @@ if (mode !== 'worker') {
 const storeId = await workerStorage(db);
 const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, pool) : undefined;
 const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
+const capture = await loadModuleDirectory(fileURLToPath(new URL('../../modules/capture', import.meta.url)));
+const content = await loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
 const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
 const research = openResearch(db, activity, companion);
-const intake = openIntake(db, activity);
+const intake = openIntake(db, capture, content);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
 const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
@@ -76,15 +78,15 @@ if (artifactAssessmentModule && mode !== 'web' && typeof readArtifactAssessmentW
 async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());
   const studio = await openStudio(db, activity, { projectRecall: recall.project });
-  const content = await loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
+  const plan = await loadModuleDirectory(fileURLToPath(new URL('../../modules/plan', import.meta.url)));
   const textbook = openTextbook(db, content, createStudioCommandHooks());
   const workbook = openWorkbook(db, activity, {
     assessment: workbookAssessment,
     onResearchFactsChanged: research.workbookChanged,
   });
-  const student = { textbook, workbook, organizer: openOrganizer(db, activity), memory: openMemory(db, companion),
-    intake, workspace: openWorkspaceAccess(db, activity, content), research, recall, retention, retentionComparison };
-  return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
+  const student = { textbook, workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
+    intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan), research, recall, retention, retentionComparison };
+  return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
 const server = mode === 'worker' ? undefined : await openWeb();
