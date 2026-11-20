@@ -22,6 +22,15 @@ describe('post-activity understanding', () => {
     expect(() => parse({...entry, stable:true})).toThrow();
   });
 
+  it('keeps a linked objective result scoped to the observed item and submission', () => {
+    const question = {...source, fragments: [{...source.fragments[0]!, independence: 'unknown' as const, result: 'incorrect'}]};
+    const selected = {...entry, kind: 'observation', scope: {kind: 'object', object: ref.id}, ttl: null};
+    const read = (input: object) => extractUnderstandings(JSON.stringify({entries: [input]}), question, at);
+    expect(read(selected)[0]?.data.text).toBe('题项 area 的作答片段为「6 + 4」，客观评阅为错误。');
+    expect(() => read({...selected, kind: 'misconception'})).toThrow();
+    expect(() => read({...selected, scope: {kind: 'general'}})).toThrow();
+  });
+
   it('keeps unsupported stable labels weak even after a learner edit', () => {
     const draft = parse({...entry, kind:'playbook', ttl:null})[0]!.data;
     const value = extractedUnderstanding({...draft, version:2, sticky:true, undo_token:ref.id});

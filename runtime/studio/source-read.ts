@@ -204,7 +204,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         if (!source || source.ref.rev !== witness.rev || source.accessEpoch !== witness.epoch) return;
         if (access.recipient === 'workspace' && (entry.kind === 'observation' || entry.kind === 'annotation') &&
             source.type === workbookAttemptType && !checkedAttempts.has(witness.id)) {
-          const opened = await openWorkbookQuestionSources(tx, source, {maySend: accepts, track: (...proof) => questionSources.push(proof)});
+          const opened = await openWorkbookQuestionSources(tx, source, {purpose: sourcePurpose(access), maySend: access.maySend, track: (...proof) => questionSources.push(proof)});
           if (!opened) return;
           checkedAttempts.add(witness.id);
         }

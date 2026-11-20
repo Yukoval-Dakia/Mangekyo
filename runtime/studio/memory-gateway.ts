@@ -13,7 +13,7 @@ import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import { learnerPreferenceType, type PreferenceScope } from '../../modules/learner/preference-values.ts';
 import {
-  extractedUnderstanding, isExtractedUnderstanding, reviewUnderstanding, understandingPresentation, understandingProjection,
+  extractedUnderstanding, isExtractedUnderstanding, reviewUnderstanding, teachingCitation, understandingPresentation, understandingProjection,
 } from '../../modules/companion/understanding.ts';
 import { claimRecallValue, hypothesisStatus, recallClaimEvidence, workbookRecallValue } from '../../modules/companion/belief.ts';
 import { openObjectiveCitations } from './belief-evidence.ts';
@@ -148,7 +148,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       if (!requested.includes(region)) continue;
       const review = reviewUnderstanding(fact.ref.id, value, sources);
       add(region, {value: {id, rev: fact.ref.rev, kind, text: value.text, scope: value.scope,
-        ttl: value.ttl, sticky: value.sticky, evidence_refs: value.evidence_refs.map(({basis_digest, ...citation}) => citation), review},
+        ttl: value.ttl, sticky: value.sticky, evidence_refs: value.evidence_refs.map(teachingCitation), review},
       sent: [witness(fact), ...sources.map(source => source.basis[0]!)],
       basis: sources.flatMap(source => source.basis.slice(1)), ...(value.ttl ? {expiresAt: value.ttl} : {})});
     }
