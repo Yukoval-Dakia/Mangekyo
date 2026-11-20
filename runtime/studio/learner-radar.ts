@@ -1,10 +1,9 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { guardAccess, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { derivationId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { derivationId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Outcome } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
-import { helpExposureType } from '../../modules/activity/help-exposure-values.ts';
 import { isSourceFactId, sourceReference } from '../../modules/activity/source-values.ts';
 import { workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { forecastType, reconciliationType, type RetentionForecast, type RetentionObservation, reconcileRetention } from '../../modules/learner/retention.ts';
@@ -28,8 +27,6 @@ type Selection = {
 // Its private fact types can support the result without opening their raw payloads to the companion.
 const retentionPaper = 'activity.retentionPaper';
 const posttestSubmission = 'activity.retentionPosttestSubmission';
-const evidenceTypes = new Set([workbookPaperType, workbookAttemptType, helpExposureType,
-  retentionPaper, posttestSubmission, 'activity.retentionPosttest']);
 const candidateLimit = 16;
 const detailLimit = 3;
 const unknown = { state: 'unknown' } as const;
@@ -68,7 +65,7 @@ async function readSelection(tx: ReadTransaction, row: Selection, access: Access
   if (row.value.kind !== 'value') return;
   const manifest = await validRetentionManifest(tx, row, access.callerPurpose);
   if (!manifest) return;
-  const reader = createCommandReadContext(tx, access.callerPurpose);
+  const actor = { purpose: access.callerPurpose, maySend: access.maySend };
   const facts: { input: FactInput; fact: FactSnapshot }[] = [];
   let forecast: { row: Selection; value: RetentionForecast } | undefined;
   for (const input of manifest.inputs) {
@@ -84,10 +81,7 @@ async function readSelection(tx: ReadTransaction, row: Selection, access: Access
     }
     if (input.kind !== 'fact') return;
     try {
-      const fact = await reader.fact(input.id, input.mode === 'following' ? { mode: 'following' } :
-        { mode: 'pinned', rev: input.rev as Revision });
-      if (fact.ref.rev !== input.rev || fact.accessEpoch !== input.accessEpoch ||
-          !evidenceTypes.has(fact.type) || !access.maySend(fact)) return;
+      const fact = await guardAccess(tx, input, actor);
       facts.push({ input, fact });
     } catch (error) {
       if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
