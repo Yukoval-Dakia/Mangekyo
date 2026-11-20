@@ -274,6 +274,11 @@ export function serve(
         const [mine, riding] = await Promise.all([student.workbook.review(), practice.read()]);
         return json(res, 200, [...mine, ...ridingReview(riding)]);
       }
+      if (method === 'GET' && path === '/api/today') return json(res, 200, await student.organizer.today(url.searchParams));
+      if (method === 'GET' && path === '/api/today/open') return json(res, 200, await student.organizer.open(url.searchParams));
+      if (method === 'POST' && path === '/api/today/rules') return json(res, 200, await student.organizer.rule(await body(req)));
+      if (method === 'POST' && path === '/api/today/goal') return json(res, 200, await student.organizer.goal(await body(req)));
+      if (method === 'POST' && path === '/api/today/submit') return await offlineSubmission(200, student.organizer.submit);
       if (path === '/api/organizer/index' && method === 'GET') {
         const { tasks, notes } = await student.organizer.snapshot(false);
         return json(res, 200, { tasks, notes: notes.map(({id, title}) => ({id, title})) });
