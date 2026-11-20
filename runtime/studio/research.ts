@@ -71,7 +71,8 @@ const retentionReviewDraft = {
 async function settings(tx: ReadTransaction) {
   return whenAvailable(async () => {
     const fact = await researchReader(tx).fact(settingsId, { mode: 'following' });
-    return { ...researchSettings(fact.value), revision: fact.ref.rev };
+    const { enabled, coordinatorRef, scoutConsent } = researchSettings(fact.value);
+    return { enabled, coordinatorRef, scoutBudget: scoutConsent, revision: fact.ref.rev };
   });
 }
 

@@ -52,7 +52,7 @@ export function researchSettings(value: unknown) {
     throw new Error('教研协调器标识无效。');
   // Earlier workers can only read scoutBudget. A consent with retention and price terms
   // uses its own field so those workers cannot dispatch without enforcing the terms.
-  return { enabled: researchEnabled(enabled), coordinatorRef, scoutBudget: researchScoutBudget(scoutConsent ?? null) };
+  return { enabled: researchEnabled(enabled), coordinatorRef, scoutConsent: researchScoutBudget(scoutConsent ?? null) };
 }
 
 function researchSource(value: unknown) {

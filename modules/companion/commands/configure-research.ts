@@ -20,9 +20,9 @@ export default defineCommand({
     const prior = researchSettings(fact.value);
     if (fact.ref.rev !== revision) throw new Error('Fact revision conflict');
     // A plain enable operation authorizes local research. Resuming paid dispatch requires a fresh grant.
-    const continuing = enabled && prior.enabled ? prior.scoutBudget : null;
+    const continuing = enabled && prior.enabled ? prior.scoutConsent : null;
     const budget = enabled ? (scoutBudget === undefined ? continuing : scoutBudget) : null;
-    if (prior.enabled === enabled && JSON.stringify(prior.scoutBudget) === JSON.stringify(budget)) return [];
+    if (prior.enabled === enabled && JSON.stringify(prior.scoutConsent) === JSON.stringify(budget)) return [];
     return [{ kind: 'correct', id, expectedRev: revision, data: { enabled, coordinatorRef: prior.coordinatorRef, scoutConsent: budget } }];
   },
 });
