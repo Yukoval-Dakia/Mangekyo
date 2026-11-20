@@ -17,6 +17,21 @@ export type FrozenExamForecast = {
   methodVersion: string;
   absoluteError: number;
 };
+
+// The reader must verify the actual and prediction refer to the same frozen
+// exam, with independent formal assessment. Reference the scope and releases
+// in the same authorized gather manifest as the forecast.
+export type ExamScoreObservation = {
+  submission: RevisionRef;
+  forecastAssessment: RevisionRef;
+  submittedAt: string;
+  score: { earned: number; maximum: number };
+};
+
+function revisionRef(ref: RevisionRef) {
+  return !!ref?.id && Number.isSafeInteger(ref.rev) && ref.rev >= 1;
+}
+
 export function examForecast(exam: Exam | undefined, frozen: FrozenExamForecast | undefined, now: string) {
   const unknown = (reason: string) => ({ kind: 'unknown' as const, reason });
   if (
@@ -29,7 +44,7 @@ export function examForecast(exam: Exam | undefined, frozen: FrozenExamForecast 
   if (!frozen) return unknown('缺少适用评估或事前冻结的标定区间。');
   const references = [frozen.assessment, frozen.calibration];
   if (
-    references.some((r) => !r?.id || !Number.isSafeInteger(r.rev) || r.rev < 1) ||
+    !references.every(revisionRef) ||
     !frozen.methodVersion ||
     ![frozen.low, frozen.high, frozen.maximum, frozen.absoluteError].every(Number.isFinite) ||
     frozen.maximum <= 0 ||
@@ -51,4 +66,28 @@ export function examForecast(exam: Exam | undefined, frozen: FrozenExamForecast 
   )
     return unknown('考试范围或预测时点不匹配。');
   return { kind: 'value' as const, value: frozen };
+}
+
+export function reviewExamScore(
+  exam: Exam | undefined,
+  forecast: ReturnType<typeof examForecast>,
+  actual: ExamScoreObservation | undefined,
+  now: string,
+) {
+  const unknown = (reason: string) => ({ kind: 'unknown' as const, reason });
+  if (!exam) return unknown('缺少可复盘的考试。');
+  if (forecast.kind === 'unknown') return forecast;
+  if (!actual) return unknown('缺少同一冻结考试的独立正式得分。');
+  const { assessment, low, high, maximum, frozenAt } = forecast.value;
+  const submitted = Date.parse(actual.submittedAt);
+  if (!revisionRef(actual.submission) || actual.forecastAssessment?.id !== assessment.id ||
+      actual.forecastAssessment.rev !== assessment.rev ||
+      !Number.isFinite(submitted) || submitted <= Date.parse(frozenAt) || submitted > Date.parse(now) ||
+      actual.score.maximum !== maximum || !Number.isFinite(actual.score.earned) ||
+      actual.score.earned < 0 || actual.score.earned > maximum) {
+    return unknown('提交、预测时点或得分标尺与冻结考试不匹配。');
+  }
+  const { earned } = actual.score;
+  const status = earned < low ? 'below-expected-range' : earned > high ? 'above-expected-range' : 'within-expected-range';
+  return { kind: 'value' as const, status, score: { earned, maximum }, submission: actual.submission };
 }

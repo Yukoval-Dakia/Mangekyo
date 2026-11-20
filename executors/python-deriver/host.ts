@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { getMethodVersion, isCanonicalEvidenceSlice, isCognitionResult } from './schema.ts';
+import { isExamPacingInput, isExamPacingResult } from './exam-pacing-schema.ts';
+import { isInterventionLiftInput, isInterventionLiftOutcome } from './intervention-lift-schema.ts';
 
 export type DeriveOutcome =
   | { readonly kind: 'value'; readonly value: unknown }
@@ -15,7 +17,18 @@ type Pending = {
   readonly resolve: (result: DeriveResult) => void;
   readonly timer: NodeJS.Timeout;
   readonly methodVersion: string;
+  readonly frozenInput?: unknown;
 };
+
+function acceptsOutcome(request: Pending, outcome: unknown): outcome is DeriveOutcome {
+  if (request.methodVersion === 'intervention-lift@1')
+    return isInterventionLiftInput(request.frozenInput) && isInterventionLiftOutcome(outcome, request.frozenInput);
+  if (!outcome || typeof outcome !== 'object' || !('kind' in outcome) || outcome.kind !== 'value' || !('value' in outcome))
+    return false;
+  if (request.methodVersion === 'plan/exam-pacing@1')
+    return isExamPacingInput(request.frozenInput) && isExamPacingResult(outcome.value, request.frozenInput);
+  return isCognitionResult(outcome.value) && outcome.value.method_version === request.methodVersion;
+}
 
 const MAX_INPUT_BYTES = 256 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -97,12 +110,8 @@ export function createPythonDeriverHost(options: PythonDeriverOptions = {}): Pyt
     clearTimeout(request.timer);
     if ('error' in response && typeof response.error === 'string' && !('value' in response)) {
       request.resolve({ kind: 'failed', reason: 'python deriver error: ' + response.error.slice(0, 400) });
-    } else if ('value' in response && !('error' in response) &&
-        response.value && typeof response.value === 'object' &&
-        'kind' in response.value && response.value.kind === 'value' &&
-        'value' in response.value && isCognitionResult(response.value.value) &&
-        response.value.value.method_version === request.methodVersion) {
-      request.resolve({ kind: 'ok', outcome: { kind: 'value', value: response.value.value } });
+    } else if ('value' in response && !('error' in response) && acceptsOutcome(request, response.value)) {
+      request.resolve({ kind: 'ok', outcome: response.value });
     } else {
       request.resolve({ kind: 'failed', reason: 'python deriver returned a malformed outcome' });
     }
@@ -130,15 +139,20 @@ export function createPythonDeriverHost(options: PythonDeriverOptions = {}): Pyt
     const methodVersion = getMethodVersion(deriver);
     if (!methodVersion) return { kind: 'failed', reason: 'unregistered python deriver' };
     let payload: string;
+    let frozenInput: unknown;
     const id = `req-${++nextId}`;
     try {
-      if (!isCanonicalEvidenceSlice(input)) return { kind: 'failed', reason: 'invalid CanonicalEvidenceSlice@v1' };
+      if (methodVersion === 'intervention-lift@1') {
+        if (!isInterventionLiftInput(input)) return { kind: 'failed', reason: 'invalid intervention Lift input' };
+      } else if (methodVersion === 'plan/exam-pacing@1') {
+        if (!isExamPacingInput(input)) return { kind: 'failed', reason: 'invalid exam pacing input' };
+      } else if (!isCanonicalEvidenceSlice(input)) return { kind: 'failed', reason: 'invalid CanonicalEvidenceSlice@v1' };
       payload = JSON.stringify({ id, deriver, input });
+      if (Buffer.byteLength(payload) > maxInputBytes)
+        return { kind: 'failed', reason: 'deriver input exceeds the protocol limit' };
+      if (methodVersion === 'intervention-lift@1' || methodVersion === 'plan/exam-pacing@1') frozenInput = JSON.parse(payload).input;
     } catch {
       return { kind: 'failed', reason: 'deriver input is not JSON serializable' };
-    }
-    if (Buffer.byteLength(payload) > maxInputBytes) {
-      return { kind: 'failed', reason: 'deriver input exceeds the protocol limit' };
     }
     if (restartTimer) return { kind: 'failed', reason: 'python deriver worker restarting' };
     return new Promise<DeriveResult>(resolve => {
@@ -153,7 +167,7 @@ export function createPythonDeriverHost(options: PythonDeriverOptions = {}): Pyt
         teardown(target, `python deriver timed out after ${timeoutMs} ms`);
       }, timeoutMs);
       timer.unref();
-      pending.set(id, { resolve, timer, methodVersion });
+      pending.set(id, { resolve, timer, methodVersion, frozenInput });
       target.stdin!.write(payload + '\n', error => {
         if (error) teardown(target, 'python deriver worker write failed');
       });
