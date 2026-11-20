@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { averageSpeed, ridingLesson } from '../../../modules/activity/starter.ts';
 import type { PracticeAnswers, PracticeView } from '../../../modules/activity/practice-values.ts';
-import { api, ApiError, remember, remembered, requestId } from './api';
+import { enqueue } from './offline-queue';
+import { deletedSubmission, api, ApiError, remember, remembered, submissionId } from './api';
 import './starter.css';
 
 const practicePath = '/practice/riding';
@@ -129,7 +130,7 @@ function restoreDraft(): PracticeDraft | null {
 }
 
 function newDraft(version: string): PracticeDraft {
-  return { version, answers: {}, requestId: requestId(), pending: null };
+  return { version, answers: {}, requestId: submissionId(), pending: null };
 }
 
 export function StarterPractice() {
@@ -148,9 +149,25 @@ export function StarterPractice() {
     setLoading(true);
     setProblem(null);
     void api<PracticeView>(practicePath, { signal: controller.signal })
-      .then(setView)
+      .then(value => {
+        if (controller.signal.aborted) return;
+        setView(value);
+        remember('starter-built-in-paper',JSON.stringify(value.paper));
+      })
       .catch(() => {
-        if (!controller.signal.aborted) setProblem({ message: '小卷载入失败。', refresh: true });
+        if (controller.signal.aborted) return;
+        if (!navigator.onLine) {
+          try {
+            const paper = JSON.parse(remembered('starter-built-in-paper') ?? 'null');
+            if (paper?.version && Array.isArray(paper.questions) && paper.questions.every((q:Record<string,unknown>) =>
+              q && ['id','unit','prompt'].every(k => typeof q[k] === 'string'))) {
+              setView({paper,submission:null,history:[]});
+              setProblem({message:'离线使用上次打开的内置题面。历史作答需联网查看。',refresh:false});
+              return;
+            }
+          } catch { /* A missing or old copy needs an online visit. */ }
+        }
+        setProblem({ message: '小卷载入失败。', refresh: true });
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -197,6 +214,12 @@ export function StarterPractice() {
     setSaving(true);
     setProblem(null);
     try {
+      if (!navigator.onLine) {
+        await enqueue({kind:'practice',id:draft.requestId,version:draft.version,answers:sent});
+        saveDraft(null);
+        setProblem({message:'已保存，待联机判分。',refresh:false});
+        return;
+      }
       const saved = await api<PracticeView>(practicePath, {
         method: 'POST',
         body: { requestId: draft.requestId, version: draft.version, answers: sent },
@@ -206,7 +229,10 @@ export function StarterPractice() {
       setSelected(saved.submission?.id);
       saveDraft(editedAfterSend ? { ...newDraft(draft.version), answers: draft.answers } : null);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
+      if (deletedSubmission(error)) {
+        saveDraft(null);
+        setProblem({message:'删除状态已变化，旧作答已清除。请重新开始本次练习。',refresh:false});
+      } else if (error instanceof ApiError && error.status === 409) {
         saveDraft({ ...newDraft(draft.version), answers: draft.answers });
         setProblem({ message: '这个提交标识已有作答。当前答案已另存为草稿，可以确认后再交卷。', refresh: false });
       } else if (error instanceof ApiError && error.status === 400 && versionChanged) {

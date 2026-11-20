@@ -1,3 +1,4 @@
+import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
@@ -7,7 +8,7 @@ import type {
   WorkbookSummary,
   WorkbookSourceQuestionRef,
 } from '../../../modules/activity/workbook-values.ts';
-import { api, ApiError, remember, remembered, requestId, type Settings } from './api';
+import { api, ApiError, deletedSubmission, submissionId, remember, remembered, requestId, type Settings } from './api';
 import { PageTitle, ReadState, useResource, type Material, type Resource } from './workspace';
 import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
@@ -827,7 +828,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     if (!view || draft || view.attempts.length > 0) return;
     const next: AttemptDraft = {
       version: paperId,
-      requestId: requestId(),
+      requestId: submissionId(),
       answers: {},
       focusIds: [],
     };
@@ -897,7 +898,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   function startRedo(focus: 'wrong' | 'full') {
     const next: AttemptDraft = {
       version: paperId,
-      requestId: requestId(),
+      requestId: submissionId(),
       answers: {},
       focusIds: focus === 'wrong' ? wrongQuestionIds : [],
     };
@@ -921,6 +922,17 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     }
     setBusy(true);
     setError('');
+    if (!navigator.onLine) {
+      void enqueue({kind:'paper',id:draft.requestId,paperId,answers,effectiveDurationMs:clock.current?.submit()})
+        .then(() => {
+          remember(attemptDraftKey(paperId),null);
+          setDraft(null);
+          setError('已保存，待联机判分。');
+        })
+        .catch(() => {clock.current?.resume(); setError('无法存入待发队列，草稿仍在。');})
+        .finally(() => setBusy(false));
+      return;
+    }
     api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}/attempts`, {
       method: 'POST',
       body: { requestId: draft.requestId, answers, effectiveDurationMs: clock.current?.submit() },
@@ -933,6 +945,12 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         justSubmitted.current = true;
       })
       .catch((error: unknown) => {
+        if (deletedSubmission(error)) {
+          remember(attemptDraftKey(paperId),null);
+          setDraft(null);
+          setError('删除状态已变化，旧作答已清除。请重新作答。');
+          return;
+        }
         clock.current?.resume();
         setError(
           error instanceof ApiError
@@ -1070,7 +1088,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                   if (view.attempts.length === 0) {
                     const next: AttemptDraft = {
                       version: paperId,
-                      requestId: requestId(),
+                      requestId: submissionId(),
                       answers: {},
                       focusIds: [],
                     };

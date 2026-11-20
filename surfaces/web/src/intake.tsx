@@ -1,5 +1,8 @@
+import { EraseOriginal } from './erasure';
+import { latestKey, bindDeletionWatermark, synchronizeDeletion, verifyGenerationReceipt } from './deletion-watermark';
+import { enqueue } from './offline-queue';
 import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'react';
-import { ApiError, api, remember, remembered, requestId } from './api';
+import { ApiError, api, remember, remembered, requestId, submissionId } from './api';
 import { Icon } from './icons';
 import { PageTitle, materialPath } from './workspace';
 import './intake.css';
@@ -100,6 +103,13 @@ export function Intake({}: Record<string, never>) {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    const clear = () => setResult(null);
+    const stored = (e:StorageEvent) => {if (e.key === latestKey) clear();};
+    window.addEventListener(latestKey,clear);
+    window.addEventListener('storage',stored);
+    return () => {window.removeEventListener(latestKey,clear);window.removeEventListener('storage',stored);};
+  },[]);
   function selectFile(selected: File | null) {
     setFile(selected);
     setExtraction('local');
@@ -134,7 +144,7 @@ export function Intake({}: Record<string, never>) {
     }
     const existing = matchingRequest();
     if (startNew !== (existing?.conflict === true)) return;
-    const request = (!startNew && existing?.requestId) || requestId();
+    const request = (!startNew && existing?.requestId) || submissionId();
     const record: PendingRequest = { requestId: request };
     remember(intentKey, JSON.stringify(record));
     if (extraction === 'mineru' && storedRequest(intentKey)?.requestId !== request) {
@@ -150,14 +160,36 @@ export function Intake({}: Record<string, never>) {
     setBusy(true);
     setError('');
     try {
+      if (!navigator.onLine) {
+        if (extraction !== 'local') throw new Error('请在联网后确认云识别。');
+        await enqueue({kind:'file',id:request,title,file});
+        remember(intentKey,null);
+        pending.current.delete(intentKey);
+        selectFile(null);
+        setTitle('');
+        setResult(null);
+        return;
+      }
+      const watermark = bindDeletionWatermark(request);
+      await synchronizeDeletion();
+      form.set('deletionWatermark',watermark);
       const response = await fetch('/api/intake', { method: 'POST', body: form });
+      verifyGenerationReceipt(response,watermark);
       if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        if (response.status === 410 || failure?.code === 'deletion_watermark_stale') {
+          pending.current.delete(intentKey);
+          remember(intentKey,null);
+          if (storedRequest('intake-pending')?.requestId === request) remember('intake-pending', null);
+          selectFile(null);
+          setTitle('');
+          throw new Error('删除状态已变化，旧提交已清除。需要时请重新选择文件。');
+        }
         if (response.status === 409) {
           const conflict = { requestId: request, conflict: true };
           pending.current.set(intentKey, conflict);
           remember(intentKey, JSON.stringify(conflict));
         }
-        const failure = await response.json().catch(() => null);
         throw new Error(failure?.error ?? '交入未确认，请再试一次。');
       }
       const value: IntakeMetadata = await response.json();
@@ -272,13 +304,13 @@ export function Intake({}: Record<string, never>) {
   );
 }
 
-type OriginalProps = { id: string; receipt?: IntakeMetadata; previewText?: string; changed?: () => void };
+type OriginalProps = { id: string; receipt?: IntakeMetadata; previewText?: string; changed?: () => void; erase?:()=>void };
 
 export function MaterialOriginal(props: OriginalProps) {
   return <OriginalDetails key={props.id} {...props} />;
 }
 
-function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
+function OriginalDetails({ id, receipt, previewText, changed, erase }: OriginalProps) {
   const [metadata, setMetadata] = useState<IntakeMetadata | null>(receipt ?? null);
   const latest = useRef(receipt);
   const readGeneration = useRef(0);
@@ -421,6 +453,7 @@ function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
 
   return (
     <section className="intake-original" aria-label="原件与完整抽取">
+      {erase && <EraseOriginal id={id} revision={metadata.revision} onConfirmed={erase}/>}
       <header className="intake-original-head">
         <div>
           <h2>原件与完整抽取</h2>
