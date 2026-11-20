@@ -25,6 +25,21 @@ async function current(key) {
   throw new Error('Retention work did not settle');
 }
 
+async function compare(reconciliationKeys) {
+  const input = { requestId: randomUUID(), method: 'elapsed-independent-evidence@1', reconciliationKeys };
+  const { key } = await api('retention/comparisons', input, 'POST', 202);
+  for (let i = 0; i < 80; i++) {
+    const result = await api('retention/comparisons/' + key);
+    if (result.state === 'complete') {
+      assert.deepEqual(await api('retention/comparisons', input, 'POST'), result);
+      return result;
+    }
+    assert.equal(result.state, 'pending');
+    await delay(250);
+  }
+  throw new Error('Retention comparison did not settle');
+}
+
 const paper = await api('papers', {
   requestId: randomUUID(), title: '冻结小卷',
   materialId: null,
@@ -66,7 +81,10 @@ assert.equal(reconciled.value.observation.result, 'incorrect');
 assert.ok(BigInt(reconciled.value.observation.admittedAt) > BigInt(frozen.effectiveTick));
 assert.deepEqual(await api('retention/' + key), frozen);
 
+const invalidatedComparison = await compare([reconciliationKey]);
 await grant(prior.id, 2, false);
+assert.deepEqual(await api('retention/comparisons/' + invalidatedComparison.key),
+  { key: invalidatedComparison.key, state: 'stale' });
 for (const staleKey of [key, reconciliationKey]) {
   const stale = await api('retention/' + staleKey);
   assert.equal(stale.state, 'stale');
@@ -79,14 +97,14 @@ const sealed = await api('retention/papers', {
 await api('workspace/access/records/' + sealed.id, undefined, 'GET', 404);
 await api('papers/' + sealed.id + '/attempts', { requestId: randomUUID(), answers: { [sealed.itemId]: '21' } }, 'POST', 404);
 
-async function controlled(priorAttemptIds, answer, verdict, during) {
+async function controlled(priorAttemptIds, answer, verdict, during, through = flags.through) {
   const { key } = await api('papers/' + sealed.id + '/retention', {
-    ...flags, requestId: randomUUID(), itemId: sealed.itemId, priorAttemptIds,
+    ...flags, requestId: randomUUID(), itemId: sealed.itemId, priorAttemptIds, through,
   }, 'POST', 202);
   const forecast = await current(key);
   const listed = (await api('retention/posttests')).items;
   assert.deepEqual(listed.find(item => item.forecastKey === key), {
-    forecastKey: key, title: '受控冻结卷', through: flags.through, state: 'ready',
+    forecastKey: key, title: '受控冻结卷', through, state: 'ready',
   });
   const startPath = `retention/${key}/posttest`;
   const issued = await api(startPath, {});
@@ -114,11 +132,23 @@ async function controlled(priorAttemptIds, answer, verdict, during) {
 }
 
 const pretest = await controlled([], '21', 'observed');
-const posttest = await controlled([pretest.attemptId], '20', 'missed');
+const posttest = await controlled([pretest.attemptId], '20', 'missed', undefined,
+  new Date(Date.now() + 21 * 86_400_000).toISOString());
 assert.equal(posttest.forecast.value.estimate.expected, 'correct');
 assert.equal(posttest.result.value.observation.result, 'incorrect');
 await api('workspace/access/records/' + posttest.attemptId, undefined, 'GET', 404);
 const overlap = await controlled([], '21', 'awaiting-independent', () => controlled([], '20', 'observed'));
+const comparison = await compare([posttest.result.key, overlap.result.key]);
+const replay = comparison.value.cases.find(item => item.reconciliationId === posttest.result.derivationId);
+assert.equal(comparison.value.kind, 'prospective-replay');
+assert.equal(replay.forecastWatermark, posttest.forecast.value.input.observedThrough);
+assert.equal(replay.observationWatermark, posttest.result.value.observedThrough);
+assert.equal(replay.recorded.status, 'missed');
+assert.equal(replay.shadow.status, 'observed');
+assert.equal(comparison.value.recorded.coverage, 1);
+assert.equal(comparison.value.shadow.coverage, 0);
+assert.equal(comparison.value.shadow.missingIndependent, 1);
+assert.deepEqual(await api('retention/' + posttest.forecast.key), posttest.forecast);
 const settings = await api('research/settings');
 if (!settings.enabled) await api('research/settings', {
   requestId: randomUUID(), revision: settings.revision, enabled: true,
@@ -139,4 +169,4 @@ assert.deepEqual((await api(reviewPath, permission, 'PUT')).worksheet, worksheet
 assert.deepEqual(await api(reviewPath, { requestId: randomUUID(), revision: 1, allowed: false }, 'PUT'),
   { enabled: true, revision: 2, allowed: false, worksheet: null });
 assert.deepEqual(await api('retention/' + posttest.result.key), posttest.result);
-console.log(JSON.stringify({ frozen, reconciled, revoked: 'forecast and reconciliation stale', pretest, posttest, overlap, worksheet }, null, 2));
+console.log(JSON.stringify({ frozen, reconciled, revoked: 'forecast and reconciliation stale', pretest, posttest, overlap, worksheet, comparison }, null, 2));

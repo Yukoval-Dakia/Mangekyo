@@ -17,7 +17,7 @@ import forecast from '../../modules/learner/derivers/retention-forecast.ts';
 import reconciliation from '../../modules/learner/derivers/retention-reconciliation.ts';
 import forecastSlot from '../../modules/learner/slots/forecast.ts';
 import reconciliationSlot from '../../modules/learner/slots/reconciliation.ts';
-import type { RetentionForecast, RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
+import { defaultRetentionMethod, readRetentionMethod, type RetentionForecast, type RetentionObservation, type RetentionTarget } from '../../modules/learner/retention.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { posttestAttemptFor, posttestIdFor, posttestWriter, readPosttestIssuance } from './retention-posttest.ts';
 import { openRetentionTarget, readWorkbookObservation, retentionPurpose } from './retention-workbook.ts';
@@ -31,6 +31,7 @@ const forecastUnavailable = '预测的冻结依据已变化或不可读取。';
 
 type ForecastScope = {
   target: RetentionTarget;
+  method?: string;
   paperEpoch: Tick;
   priorAttemptIds: FactId[];
   window: RetentionForecast['input']['window'];
@@ -139,7 +140,8 @@ function gatherInSnapshot(
   return db.snapshot(scope, tx => gatherSnapshot({ ...db, snapshot: (_, read) => read(tx) }, scope, ctx => gather(tx, ctx)));
 }
 
-export function openRetention(db: Db, activity: LoadedModule) {
+export function openRetention(db: Db, activity: LoadedModule, method = defaultRetentionMethod) {
+  if (!readRetentionMethod(method)) throw new Error('保持方法配置无效：' + method);
   const posttest = posttestWriter(db, activity);
 
   function write<T>(run: (tx: DbTransaction) => Promise<T>) {
@@ -176,7 +178,7 @@ export function openRetention(db: Db, activity: LoadedModule) {
       const opened = await openRetentionTarget(read, id, itemId);
       for (const attemptId of priorAttemptIds) await readWorkbookObservation(tx, read, opened, attemptId);
       await enqueue(tx, forecastPolicy, key, {
-        target: opened.target, paperEpoch: opened.accessEpoch, priorAttemptIds, window: { requestedAt, through },
+        target: opened.target, method, paperEpoch: opened.accessEpoch, priorAttemptIds, window: { requestedAt, through },
       });
       return { key, state: 'pending' as const };
     });
@@ -310,7 +312,7 @@ export function openRetention(db: Db, activity: LoadedModule) {
           const observations = [];
           for (const id of priorAttemptIds) observations.push(await readWorkbookObservation(tx, read, opened, id));
           observations.sort((a, b) => BigInt(a.admittedAt) < BigInt(b.admittedAt) ? -1 : 1);
-          return { target, window, observations };
+          return { target, window, observations, ...(slot.scope_keys.method ? { method: slot.scope_keys.method } : {}) };
         });
         return reconciliation.gather(ctx, async ({ read }) => {
           const slot = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, work.slotKey);
@@ -332,7 +334,7 @@ export function openRetention(db: Db, activity: LoadedModule) {
       const sealed = await sealCandidate(db, ref, policy, gathered);
       if (sealed.kind !== 'sealed') return;
       if (work.slotType === forecastSlot.type) {
-        const input = sealed.plan.data as RetentionForecast['input'];
+        const input = sealed.plan.data as Parameters<typeof forecast.derive>[0];
         const result = new Date().toISOString() < input.window.through ? forecast.derive(input)
           : { kind: 'failed', reason: '观察窗口在预测冻结前已结束。' };
         await submitCandidate(db, ref, policy, sealed.id, result, propagation);

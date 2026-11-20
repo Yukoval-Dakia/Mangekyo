@@ -24,6 +24,7 @@ import type { openMemory } from './memory.ts';
 import type { openWorkspaceAccess } from './workspace-access.ts';
 import type { openResearch } from './research.ts';
 import type { openRetention } from './retention.ts';
+import type { openRetentionComparison } from './retention-comparison.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
@@ -94,6 +95,7 @@ export function serve(
     research: ReturnType<typeof openResearch>;
     recall: RecallHttp;
     retention: ReturnType<typeof openRetention>;
+    retentionComparison: ReturnType<typeof openRetentionComparison>;
   },
   port: number,
 ) {
@@ -195,6 +197,13 @@ export function serve(
         return json(res, 200, await student.research.retentionReview(retentionReview[1]));
       if (retentionReview?.[1] && method === 'PUT')
         return json(res, 200, await student.research.allowRetentionReview(retentionReview[1], await body(req)));
+      if (path === '/api/retention/comparisons' && method === 'POST') {
+        const result = await student.retentionComparison.start(await body(req));
+        return json(res, result.state === 'pending' ? 202 : 200, result);
+      }
+      const comparison = /^\/api\/retention\/comparisons\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path);
+      if (comparison?.[1] && method === 'GET')
+        return json(res, 200, await student.retentionComparison.get(comparison[1]));
       const retention = /^\/api\/retention\/([0-9A-HJKMNP-TV-Z]{26})(\/reconcile)?$/.exec(path);
       if (retention?.[1] && !retention[2] && method === 'GET')
         return json(res, 200, await student.retention.get(retention[1]));
