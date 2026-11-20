@@ -40,8 +40,8 @@ const descriptions: Record<string, [string, Record<string, string>]> = {
 
 const learningId = {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$'};
 const pythonAttemptSelection = {
-  type: 'object', required: ['paper_id','refs'], additionalProperties: false,
-  description: `选择一份获准普通试卷及该卷最多 ${pythonAttemptsLimit} 份已提交的作答。程序用 import mangekyo as mk 和 mk.attempts() 读取仅本次获准的 id、submitted_at 和 results（question_id、result）。待评和自评不算判对。只 print 所需统计。`,
+  type: 'object', required: ['refs'], additionalProperties: false,
+  description: `选择最多 ${pythonAttemptsLimit} 份已提交的作答，可跨卷。仅统计指定卷时传 paper_id。用 import mangekyo as mk 和 mk.attempts() 读取 id、paper_id、submitted_at、results（question_id、result），有记录时附浏览器估算用时 effective_duration_ms 和正式得分 formal_score。待评和自评不算判对。只 print 所需统计。`,
   properties: {
     paper_id: learningId,
     refs: {type:'array', minItems:1, maxItems:pythonAttemptsLimit, items:{
@@ -203,7 +203,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       if (name === 'python' && args.attempts !== undefined) {
         const summary = 'Python 验算 · 作答选择不可用';
         if (!workspace?.preparePythonAttempts || !args.attempts || typeof args.attempts !== 'object' || Array.isArray(args.attempts)) {
-          return {summary, content:JSON.stringify({ok:false, code:'invalid_args', field:'attempts', message:'工作区已开放时可选择普通卷与作答引用。'})};
+          return {summary, content:JSON.stringify({ok:false, code:'invalid_args', field:'attempts', message:'工作区已开放时可选择已提交的作答引用。'})};
         }
         const codeError = pythonCodeError(args.code);
         if (codeError) {

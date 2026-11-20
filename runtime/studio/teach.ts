@@ -388,7 +388,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               break;
             }
             const witnesses = response.workspaceBasis ?? [];
-            if (new Set([...inherited.keys(), ...witnesses.map(w => w.id)]).size > 48) {
+            if (new Set([...inherited.keys(), ...witnesses.map(w => `${w.id}:${w.rev}`)]).size > 48) {
               historyNotice = '较早的学习记录可按需重新检索，本轮从最近的对话继续。';
               break;
             }
@@ -404,8 +404,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             }
             for (const witness of witnesses) {
               const w = 'image' in witness && witness.image === true ? {...witness,writeBasis:true as const} : witness;
-              const newer = inherited.get(w.id);
-              if (!newer || (w.writeBasis && !newer.writeBasis)) inherited.set(w.id, w);
+              const key = `${w.id}:${w.rev}`;
+              const newer = inherited.get(key);
+              if (!newer || (w.writeBasis && !newer.writeBasis)) inherited.set(key, w);
             }
             if (witnesses.length) protectWorkspaceDispatch = true;
           }
@@ -431,7 +432,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const privateContext = Boolean(material || preference || publicHistory.length || submission.workspaceRevision);
       if (preference && liveMemoryRevision !== undefined) {
         const w = inputs.get(memoryId);
-        if (w?.kind === 'fact') inherited.set(memoryId, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
+        if (w?.kind === 'fact') inherited.set(`${memoryId}:${w.rev}`, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
       }
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()], currentObject,
