@@ -3,27 +3,12 @@ import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
-import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {parseLearningReference, type SourceRefV1} from '../../modules/activity/source-values.ts';
-import {openedQuestionText} from '../../modules/activity/workspace-projection.ts';
-import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
-import {ridingPracticeType} from '../../modules/activity/practice-values.ts';
+import {projectOpenedLearning, type OpenedLearningRecord} from '../../modules/activity/workspace-source-projection.ts';
 import {purpose} from './identity.ts';
-import {sourceQuestions, textbookText, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
-import {textbookPageFrom, textbookPageType} from '../../modules/content/textbook-page.ts';
+import type {SourceTrack, WorkspaceSourceRecipient} from './source-read.ts';
 import {readWorkbookDiagnosis} from './workbook-diagnosis.ts';
 import type {WorkspaceAssessmentBasis} from './workspace-read.ts';
-
-type ReadResult = {
-  ok?: true;
-  id?: string;
-  sourceRef?: SourceRefV1;
-  content?: unknown;
-  question?: {prompt:string};
-  assessments?: unknown[];
-  nextOffset?: number;
-  error?: unknown;
-} & Record<string, unknown>;
 
 export async function unreadable(tx: ReadTransaction, id: string, known: boolean, maySend: WorkspaceSourceRecipient) {
   if (!known) return learningToolError('not_found','refs','未能定位可打开的学习对象。',openLearningSearchNext);
@@ -36,36 +21,6 @@ export async function unreadable(tx: ReadTransaction, id: string, known: boolean
     if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
   }
   return learningToolError('access_revoked','refs','此前读到的记录当前不可读。',openLearningSearchNext);
-}
-
-function projectOpenLearning(value: ReadResult, fact: FactSnapshot, part: OpenLearningArgs["part"]): ReadResult | ReturnType<typeof learningToolError> {
-  const {sourceRef, question, nextOffset, ...body} = value;
-  if (!sourceRef) return value;
-  if (part.kind === 'block') {
-    const block = fact.type === textbookPageType && sourceRef.anchor.kind === 'whole'
-      ? textbookPageFrom(fact).blocks.find(block => block.id === part.blockId) : undefined;
-    if (!block) return learningToolError('not_found','part','未找到所选教材块。',{
-      tool:'open_learning',args:{refs:JSON.stringify(sourceRef)},why:'先核对当前版本的教材块标识。',
-    });
-    return {id:sourceRef.fact.id,rev:sourceRef.fact.rev,kind:'page',title:value.title,content:textbookText(block.body),
-      part,sourceRef:{...sourceRef,anchor:part}};
-  }
-  if (part.kind === 'question') {
-    const item = sourceRef.anchor.kind === 'whole' ? sourceQuestions(fact)[part.index - 1] : undefined;
-    if (!item) return learningToolError('not_found','part','没有找到所选题项。',{
-      tool:'open_learning',args:{refs:JSON.stringify(sourceRef)},why:'先读原记录以确认题项。',
-    });
-    const {assessments: _assessments, ...record} = body;
-    return {...record, content:item.prompt, part, sourceRef:{...sourceRef,anchor:{kind:'question',itemId:item.id}}};
-  }
-  if (part.kind === 'assessment') {
-    return {id:sourceRef.fact.id, rev:sourceRef.fact.rev, title:value.title, sourceRef, part, assessments:value.assessments ?? []};
-  }
-  if (sourceRef.anchor.kind === 'whole' && (question || fact.type === workbookPaperType ||
-      fact.type === workbookAttemptType || fact.type === ridingPracticeType)) {
-    return {...body, sourceRef, content:openedQuestionText(fact)};
-  }
-  return {...body, sourceRef, ...(nextOffset !== undefined ? {nextOffset} : {})};
 }
 
 export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningArgs, access: {
@@ -102,13 +57,17 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
         '没有可用于诊断的已交卷作答及获准题源。'));
       continue;
     }
-    const value = JSON.parse(await read(current ? JSON.stringify(current) : input,track)) as ReadResult;
+    const value = JSON.parse(await read(current ? JSON.stringify(current) : input,track)) as OpenedLearningRecord;
     if (value.error || !value.sourceRef) {
       items.push(await unreadable(tx,id,access.known(id),access.maySend));
       continue;
     }
     const root = witnesses.find(([fact]) => fact.ref.id === id && fact.ref.rev === value.sourceRef?.fact.rev)?.[0];
-    const result = root ? projectOpenLearning(value,root,args.part) : value;
+    const result = root ? projectOpenedLearning(value,root,args.part) ?? learningToolError('not_found','part',
+      args.part.kind === 'block' ? '未找到所选教材块。' : '没有找到所选题项。',{
+        tool:'open_learning',args:{refs:JSON.stringify(value.sourceRef)},
+        why:args.part.kind === 'block' ? '先核对当前版本的教材块标识。' : '先读原记录以确认题项。',
+      }) : value;
     if (result.ok !== false) for (const witness of witnesses) access.track(...witness);
     items.push(result);
   }
