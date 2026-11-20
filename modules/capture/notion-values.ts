@@ -52,13 +52,17 @@ function canonicalJson(value: Json): string {
   return '{' + Object.keys(record).sort().map(key => JSON.stringify(key) + ':' + canonicalJson(record[key]!)).join(',') + '}';
 }
 
+export function notionJsonDigest(value: Json) {
+  return notionHash(canonicalJson(value));
+}
+
 export async function notionHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function notionSourceId(learner: LearnerId, selectionId: string, pageId: string) {
-  const digest = await notionHash(JSON.stringify(['capture.notion.v1', learner, notionSelectionId(selectionId), notionId(pageId)]));
+export async function notionSourceId(learner: LearnerId, selectionId: string, pageId: string, selectionEpoch: string) {
+  const digest = await notionHash(JSON.stringify(['capture.notion.v2', learner, notionSelectionId(selectionId), selectionEpoch, notionId(pageId)]));
   return factId(digest.slice(0, 26).toUpperCase());
 }
 
@@ -98,7 +102,7 @@ export async function notionSourceProjection(input: unknown) {
   });
   const projected = await Promise.all(parsed.map(async ({ id, parentId, text, body }) => ({
     id, parentId, body: { kind: 'capture' as const, layer: 'source' as const, status: 'known' as const, text, notionBody: body,
-      contentHash: await notionHash(canonicalJson({ text, body })) },
+      contentHash: await notionJsonDigest({ text, body }) },
   })));
   return { externalId, occurredAt, unit: { kind: 'capture' as const, title: unitTitle, blocks: projected } };
 }
