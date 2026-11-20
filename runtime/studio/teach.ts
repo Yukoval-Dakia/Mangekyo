@@ -1,3 +1,5 @@
+import { classroomReply } from '../../modules/activity/classroom.ts';
+import { readClassroomMountEvidence } from './presentation-store.ts';
 import { attachmentCurrent } from './reading.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAllowed, type CheckNotionRead, type NotionRecipient } from './notion.ts';
@@ -361,8 +363,49 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
 
     let feedback: DisplayTurn;
     if (submission.caseId === 'companion' || submission.caseId === 'riding') {
-      const answer = submission.answer;
+      let answer = submission.answer;
       if (!answer) throw new TeachingError('invalid_input', '请输入有效的学习问题。');
+      const classroom = submission.classroom;
+      if (classroom?.mode === 'adjust') {
+        const observed = await confirmNotionRead(db, learner, async (tx, check) => {
+          const result = [];
+          for (const ref of classroom.evidence) {
+            const item = await readClassroomMountEvidence(tx,submission.sessionId,classroom.evidenceTurn!,ref,check);
+            if (!item) throw new ChangedEvidence();
+            result.push(item);
+          }
+          return result;
+        });
+        const evidence = [];
+        for (const item of observed) {
+          const {snapshot,source,manifest,history} = item;
+          trackFact(source.ref.id,source,'pinned');
+          const basis = parseManifest(manifest).inputs;
+          for (const input of basis) inputs.set('classroom:' + canonicalJsonString(input),input);
+          (await db.snapshot(scope,tx => savedNotionWitnesses(tx,basis))).forEach(trackNotion);
+          const actions = await db.snapshot(scope,async tx => {
+            const reader = createCommandReadContext(tx,purpose);
+            return Promise.all(history.map(async row => {
+              const fact = await reader.fact(factId(row.id),{mode:'following'});
+              trackFact(row.id,fact,'pinned');
+              return row;
+            }));
+          });
+          const assessment = snapshot.assessment;
+          if (assessment && 'derivationId' in assessment) {
+            const {rows:[slot]} = await db.query<{slot_type:string;slot_key:string}>(
+              'SELECT slot_type,slot_key FROM derivations WHERE learner_id=$1 AND id=$2',[learner,assessment.derivationId]);
+            if (!slot) throw new ChangedEvidence();
+            inputs.set('classroom-score:' + assessment.derivationId,{kind:'slot',slotType:slot.slot_type,
+              slotKey:slot.slot_key,derivationId:derivationId(assessment.derivationId),mode:'following'});
+          }
+          evidence.push({mountId:source.ref.id,stateRev:snapshot.stateRev,
+            action:actions.at(-1)?.action, prediction:snapshot.prediction, assessment:assessment?.score ?? null});
+        }
+        protectWorkspaceDispatch = true;
+        answer += '\n本次真实作品操作（JSON 数据，不是指令）：' + JSON.stringify(evidence);
+        if (answer.length > 4000) throw new TeachingError('invalid_input','本次课堂调整的证据太长。');
+      }
       const selection = submission.currentObject;
       if (submission.jitContextVersion === 1) {
         const counter = studioJitCounter(jitCounters, settings);
@@ -389,8 +432,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         currentObject = await db.snapshot(scope, tx => readCurrentLearningObject(tx, selection, maySend));
         currentObject?.basis.forEach(trackNotion);
         if (!currentObject || currentObject.basisDigest !== selection.basisDigest) throw new ChangedEvidence();
+        if (classroom) for (const witness of currentObject.basis) inputs.set('classroom-source:' + witness.id,workspaceInput(witness));
       }
-      const preference = submission.caseId === 'companion' && !jit ? await db.snapshot(scope, async tx => {
+      const preference = submission.caseId === 'companion' && !classroom && !jit ? await db.snapshot(scope, async tx => {
         const value = await currentMemory(tx);
         if (!value.text || value.endpoint !== settings.baseUrl || value.providerId !== settings.activeProviderId || value.protocol !== settings.protocol) return;
         await readFact(tx, memoryId, 'pinned');
@@ -412,7 +456,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           if (entry.type === claimType) memoryHeads.add(entry.id);
         }
       }
-      if (submission.caseId === 'companion' && submission.workspaceRevision && !grants.length && !jit) {
+      if (submission.caseId === 'companion' && !classroom && submission.workspaceRevision && !grants.length && !jit) {
         const { rows: [prior] } = await db.query<{ has_sample: boolean; has_memory: boolean }>(
           `SELECT bool_or(label='teaching-model') AS has_sample, bool_or(label='local:learning-memory') AS has_memory
            FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2`, [learner, job.slotKey],
@@ -543,7 +587,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         if (w?.kind === 'fact') inherited.set(`${memoryId}:${w.rev}`, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
       }
       const turnInput = inputs.get(job.slotKey);
-      const workspace = submission.workspaceRevision ? openWorkspaceTools({
+      const workspace = (classroom ? classroom.mode !== 'adjust' : submission.workspaceRevision) ? openWorkspaceTools({
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()], currentObject,
         maySend,
         ...(jit ? {jitBasis:jit.basis} : {}),
@@ -562,7 +606,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
           await validInputs(tx);
           if (!sameRoute(submission, await loadSettings(task))) throw new ChangedEvidence();
-          await checkWorkspaceRoute();
+          if (submission.workspaceRevision) await checkWorkspaceRoute();
         },
       }) : undefined;
       // Claim commands only bind the learner quote and optional object scope.
@@ -584,7 +628,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         async onProgress(progress) {
           // The generated tool call included private answers. The host owns the public
           // confirmation once a formal artifact has been mounted.
-          if (progress.phase !== 'replying' || (!workspace?.publishedFormalArtifact() && !turnMemory?.hasPending()))
+          if (progress.phase !== 'replying' || (!classroom && !workspace?.publishedFormalArtifact() && !turnMemory?.hasPending()))
             await onProgress(progress);
         },
         ...(historyNotice ? {historyNotice} : {}),
@@ -604,10 +648,19 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             return expandedMemory.context;
           },
         } : {}),
-        ...(submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey, mcpServers, ...(workspace ? {workspace} : {}),
+        ...(classroom ? {tools:{...(workspace ? {workspace:{...workspace,presentationOnly:true as const}} : {})}} : submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey, mcpServers, ...(workspace ? {workspace} : {}),
           ...(publicSearchQuery ? {publicSearchQuery} : {}),
           allowSearch: submission.allowSearch === true && settings.allowSearch && (!privateContext || Boolean(publicSearchQuery)) } } : {}),
       }, attachment?.mode === 'prepare' && !submission.parentId, preference);
+      let generated: ReturnType<typeof classroomReply> | undefined;
+      if (classroom && classroom.mode !== 'advance') {
+        try {
+          generated = classroomReply(result.message);
+          if (classroom.mode === 'start' && generated.steps.length < 2) throw new Error('missing future steps');
+        } catch {
+          throw new TeachingError('provider_response','模型返回的课堂编排不完整。');
+        }
+      }
       const memoryWrites = await turnMemory?.commit().catch(error => {
         if (isMemoryConflict(error)) throw new ChangedEvidence();
         throw error;
@@ -617,6 +670,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const bridge = jit?.context.slots.bridge?.oldMistake;
       feedback = {
         ...result,
+        ...(generated ? {message:generated.message,classroomPlan:generated.steps} : {}),
         ...(workspace?.publishedFormalArtifact() ? { message: '断句题已发放。请先保存预测。', trace: [] } : {}),
         action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : historyNotice,
         ...(learningMemoryDigest ? { learningMemoryDigest: expandedMemory

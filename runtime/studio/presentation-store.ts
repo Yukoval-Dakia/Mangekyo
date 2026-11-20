@@ -1,3 +1,4 @@
+import { assertClassroomAction } from './classroom.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
@@ -180,7 +181,7 @@ async function projectMount(
     saved: savedArtifactCheckpoints(history),
     commandId: latest?.receipt?.commandId ?? null,
   };
-  return { mount, grant, history, snapshot, release, source };
+  return { mount, grant, history, snapshot, release, source, manifest:data.manifest };
 }
 
 export async function turnArtifacts(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
@@ -202,6 +203,18 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
     }
   }
   return {snapshots, unconfirmed};
+}
+
+export async function classroomMountEvidence(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
+  const {snapshots} = await turnArtifacts(tx,session,turn,check);
+  return snapshots.filter(item => item.stateRev > 0);
+}
+
+export async function readClassroomMountEvidence(tx: ReadTransaction, session: string, turn: string,
+  evidence: {mountId: string; stateRev: number}, check: CheckNotionRead) {
+  const result = await readMount(tx,session,evidence.mountId,check);
+  if (result.mount.turnId !== turn || result.snapshot.stateRev !== evidence.stateRev) return;
+  return result;
 }
 
 export function mountPermissionFields(unconfirmed: readonly string[], known: ReadonlySet<string>) {
@@ -264,6 +277,7 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
       modules: [await (activity ??= load('activity'))],
       hooks: createStudioCommandHooks({
         afterFactsChanged: async (tx, tick) => {
+          await assertClassroomAction(tx,session,mount.turnId);
           const current = await readMount(tx, session, mountId, notion.check(tx));
           if (current.release && action.intent === 'submit') {
             const submitted = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });

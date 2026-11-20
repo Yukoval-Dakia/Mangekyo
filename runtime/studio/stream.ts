@@ -209,7 +209,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
     }
     const session: StreamSession = {
       id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status,
-      ...(status !== 'ready' && submission.answer ? { pendingAnswer: submission.answer } : {}),
+      ...(status !== 'ready' && !submission.classroom && submission.answer ? { pendingAnswer: submission.answer } : {}),
     };
     const mounts = status === 'pending' ? await turnArtifacts(tx,sessionId,row.turnId,check) : {snapshots: [], unconfirmed: []};
     return {session,row,mounts};

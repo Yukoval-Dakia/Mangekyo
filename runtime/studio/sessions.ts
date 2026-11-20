@@ -1,3 +1,4 @@
+import { openClassrooms } from './classroom.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
@@ -78,6 +79,7 @@ export function clientRequest(value: unknown): string {
   return value;
 }
 export type DisplayTurn = {
+  classroomPlan?: string[];
   studyKit?: StudyKit;
   trace?: string[];
   completion?: 'receipts_only';
@@ -140,7 +142,7 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     if (!stored.parentId && stored.attachment)
       materialAvailable = await attachmentCurrent(tx,stored) && await grantCurrent(stored);
     const {attachment: _attachment, ...withoutAttachment} = stored;
-    const submission = materialAvailable ? stored : withoutAttachment;
+    const submission = stored.classroom ? {...withoutAttachment,answer:null} : materialAvailable ? stored : withoutAttachment;
     const authority = !materialAvailable ? 'withdrawn' : row.value && check &&
       await teachingResultAuthority(tx, stored, row.manifest, grantCurrent, check);
     let feedback = !authority || authority === 'authorized' ? row.value : null;
@@ -166,7 +168,7 @@ export function recentConversations(db: Db) {
       `SELECT r.data->>'sessionId' AS id FROM facts f
        JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
        WHERE f.learner_id=$1 AND f.type='activity.studyTurn' AND f.retracted_rev IS NULL
-         AND r.data->>'caseId' IN ('companion','riding')
+         AND r.data->>'caseId' IN ('companion','riding') AND NOT (r.data ? 'classroom')
        GROUP BY r.data->>'sessionId' ORDER BY MAX(f.created_tick) DESC LIMIT 100`, [studioLearner]);
     const result = [];
     const reader = createCommandReadContext(tx, purpose);
@@ -262,7 +264,7 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
     const mounts = await readableTurnMounts(tx, session, timeline, check);
-    const currentObject = last.submission.currentObject;
+    const currentObject = last.submission.classroom ? undefined : last.submission.currentObject;
     const recovered = await recoverRelationReceipts(tx,
       timeline.filter(row => row.feedback?.action === 'reply_unavailable').map(row => row.id));
     return {
@@ -286,7 +288,7 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
   const projected = [];
   for (const { row, artifacts, writes } of turns) {
     if (!row.feedback) continue;
-    const { studyKit, ...feedback } = row.feedback;
+    const { studyKit, classroomPlan: _plan, ...feedback } = row.feedback;
     const recall = row.derivationId && studyKit
       ? await projectRecall?.(session, row.id, row.derivationId, studyKit, notion)
       : undefined;
@@ -345,9 +347,7 @@ async function fenceTeachingCutover(db: Db) {
 export async function openStudio(db: Db, activity: LoadedModule, {projectRecall, jitCounters = [], enableJit = false}: {
   projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[]; enableJit?: boolean;
 } = {}) {
-  const handle = createCommandHandler(db, {
-    modules: [activity],
-    hooks: createStudioCommandHooks({
+  const hooks = createStudioCommandHooks({
       async afterFactsChanged(tx, tick, changes) {
         for (const change of changes) {
           if (change.factType !== 'activity.studyTurn' || change.kind !== 'create') continue;
@@ -375,8 +375,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
           await requestWork(tx,tick,{slotType,slotKey:id,deriver:guarded ? confirmedTeachingMethod : methodName},guarded ? 'routed_pending' : 'pending');
         }
       },
-    }),
   });
+  const handle = createCommandHandler(db, {modules:[activity],hooks});
   await db.query('INSERT INTO learners(id) VALUES($1) ON CONFLICT DO NOTHING', [studioLearner]);
   await fenceTeachingCutover(db);
   for (const studyCase of cases)
@@ -517,6 +517,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     throw new RequestError(400, '当前学习对象须包含类型、ID 和版本。');
   }
   return {
+    classrooms: openClassrooms(db,activity,hooks),
     async start(selected: CaseId, requestId: string, question?: unknown, shared?: unknown, requestedMcp?: unknown,
       requestedRoute?: unknown, requestedObject?: unknown) {
       const grants = requestedGrants(requestedMcp);
@@ -555,6 +556,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       if (prior) return prior;
       const last = (await loadHistory(db, session)).at(-1);
       if (!last) throw new RequestError(404, '学习会话不存在。');
+      if (last.submission.classroom) throw new RequestError(409, '请在课堂步骤内完成学习活动。');
       if (last.id !== parent) throw new RequestError(409, '此题已有回答，请刷新后查看下一步。');
       if (last.status !== 'ready') throw new RequestError(409, '请先等同伴完成这一轮。');
       try {
