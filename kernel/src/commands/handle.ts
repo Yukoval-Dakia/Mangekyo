@@ -221,11 +221,15 @@ export function readRecordedCommand(tx: ReadTransaction, id: CommandId) {
   return findStoredCommand(tx, tx.learner, id);
 }
 
-async function declaredWrites(tx: DbTransaction, request: CommandRequest, command: CommandModule, input: Json) {
+async function declaredWrites(
+  tx: DbTransaction, request: CommandRequest, command: CommandModule, input: Json,
+  bindRead: CommandRuntimeOptions['bindCommandRead'],
+) {
   const parsedInput = command.declaration.schema.parse(input);
+  const base = createCommandReadContext(tx, request.purpose);
   const context: CommandContext = {
     learner: request.learner,
-    read: createCommandReadContext(tx, request.purpose),
+    read: bindRead ? bindRead(tx, request, base) : base,
   };
   const readResult = await command.declaration.read?.(context);
   return await command.declaration.write(context, parsedInput, readResult) as readonly FactWrite[];
@@ -269,7 +273,7 @@ async function executeCommand(
     const existing = await findStoredCommand(tx, request.learner, request.id);
     if (existing) return checkReplay(existing, request);
 
-    const writes = await declaredWrites(tx, request, command, request.input);
+    const writes = await declaredWrites(tx, request, command, request.input, options.bindCommandRead);
     return commitCommand(tx, request, options, writes, writeTarget);
   });
 }
@@ -319,7 +323,7 @@ export function createCommandHandler(
         if (!proposal) throw new Error('Proposal not found');
         if (proposal.state !== 'pending') throw new Error('Proposal already decided');
         const input = await select(tx, proposal.input);
-        const writes = input === null ? [] : await declaredWrites(tx, request, command, input);
+        const writes = input === null ? [] : await declaredWrites(tx, request, command, input, options.bindCommandRead);
         return commitCommand(tx, request, options, writes, writeTarget(command, request.type),
           {proposalId, state:input === null ? 'rejected' : 'confirmed'});
       });

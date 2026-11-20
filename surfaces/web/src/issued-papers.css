@@ -1,0 +1,12 @@
+.issued-papers {max-width:52rem;margin-inline:auto;}
+.issued-papers fieldset {border:1px solid var(--outline-variant,currentColor);border-radius:12px;padding:1rem;margin:1rem 0;min-width:0;}
+.issued-papers select {max-width:100%;}
+.issued-sheets section {background:white;color:black;padding:1.5rem;margin-block:1rem;overflow-wrap:anywhere;}
+.issued-line {white-space:pre-wrap;min-height:1lh;}
+@media print {
+  @page issued {size:A4;margin:14mm;}
+  .issued-papers:not(:has(.issued-sheets[data-printing])),.issued-papers .print-controls {display:none!important;}
+  .issued-sheets section {page:issued;margin:0;padding:0;font-size:10pt;line-height:1.4;}
+  .issued-line {font-family:monospace;font-size:min(10pt,calc(180mm / var(--columns)),calc(215mm / var(--rows) / 1.4));white-space:pre;}
+  .issued-sheets section + section {break-before:page;}
+}

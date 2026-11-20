@@ -9,6 +9,7 @@ import { SettingsDialog } from './settings';
 import { StarterLesson, StarterPractice } from './starter';
 import {WorkspaceLibrary, WorkspaceRecord} from './workspace-records';
 import { Workbook } from './workbook';
+import IssuedPapers from './issued-papers';
 import { Organizer } from './organizer';
 import { Intake } from './intake';
 import { Mistakes, PrintPaper } from './review';
@@ -117,6 +118,7 @@ function App() {
   );
   else if (path === '/intake') content = <Intake />;
   else if (path === '/review') content = <Mistakes />;
+  else if (path === '/papers/issued') content = <IssuedPapers />;
   else if (/^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/print$/.test(path)) content = <PrintPaper id={path.split('/')[2]!} />;
   else if (path === '/papers' || path.startsWith('/papers/')) {
     const id = path.slice('/papers/'.length);

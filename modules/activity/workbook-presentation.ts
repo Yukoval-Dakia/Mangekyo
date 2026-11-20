@@ -23,9 +23,12 @@ function parsePresentation(value: unknown) {
   if (phase === 'permit' && row.permit === undefined) gate = { phase };
   else if (phase === 'displayed' && typeof row.permit === 'string') gate = { phase, permit: factId(row.permit) };
   else if (phase !== undefined || row.permit !== undefined) throw new Error('无效的卷面呈现许可。');
+  if (row.issuanceId !== undefined && (row.attemptRef !== undefined || kind !== 'question' || phase === undefined || typeof row.issuanceId !== 'string'))
+    throw new Error('无效的纸面发放标识。');
+  const print = row.issuanceId === undefined ? {} : { issuanceId: factId(row.issuanceId) };
   return kind === 'solution'
     ? { kind: 'solution' as const, paper, items: [...items].sort(), submission: helpRef(row.submission), ...gate }
-    : { kind: 'question' as const, paper, items: [...items].sort(), ...gate,
+    : { kind: 'question' as const, paper, items: [...items].sort(), ...gate, ...print,
       ...(row.attemptRef === undefined ? {} : {attemptRef:helpRef(row.attemptRef)}) };
 }
 
@@ -42,4 +45,16 @@ export function workbookReadingContext(value: unknown) {
   if (phase === 'displayed' && typeof displayRef === 'string' && /^[\w-]{43}$/.test(displayRef))
     return {...mount,phase:'displayed' as const,displayRef};
   throw new WorkbookPresentationError('缺少帮助呈现许可。');
+}
+
+export function printedWorkbookPresentation(
+  paper: ReturnType<typeof helpRef>,
+  issued: { issuanceId: FactId; pages: readonly { pieces: readonly { itemId: string | null }[] }[] },
+  permit?: FactId,
+) {
+  const items = [...new Set(issued.pages.flatMap(page => page.pieces.flatMap(piece => piece.itemId ? [piece.itemId] : [])))];
+  return workbookPresentation({
+    kind: 'question', paper, items, issuanceId: issued.issuanceId,
+    ...(permit ? { phase: 'displayed', permit } : { phase: 'permit' }),
+  });
 }
