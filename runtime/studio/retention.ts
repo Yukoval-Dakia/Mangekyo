@@ -9,6 +9,9 @@ import {
   insideFrozenPosttestWindow, posttestOpensAt, retentionPaperType, posttestSubmissionType,
   retentionDeadline as deadline, retentionFreezeRequest,
 } from '../../modules/activity/retention-posttest.ts';
+import {
+  recordedWorkbookForecast, validWorkbookMethod, verifiesOriginalSitting, verifyFrozenWorkbookClaims,
+} from '../../modules/activity/retention-history.ts';
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
 import { throughTick, validatesWorkbookHistory, workbookWitnessesBy } from '../../modules/activity/evidence-read.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
@@ -78,12 +81,22 @@ async function findSlot<T, S>(tx: ReadTransaction, type: string, key: string) {
 }
 
 export async function retentionHistoryValid(tx: ReadTransaction, id: DerivationId, observation?: RetentionObservation) {
-  const { rows: [row] } = await tx.query<{ target: RetentionTarget; effective_tick: Tick }>(
-    `SELECT value->'value'->'input'->'target' AS target,effective_tick::text FROM derivations
-       WHERE learner_id=$1 AND id=$2 AND slot_type=$3 AND NOT is_shadow`, [tx.learner, id, forecastSlot.type]);
-  if (!row?.target || !row.effective_tick) return false;
-  return validatesWorkbookHistory(tx, row.target, observation?.admittedAt ?? row.effective_tick, posttestIdFor(id),
-    observation?.exposure.kind === 'independent');
+  const row = await recordedWorkbookForecast(tx, forecastSlot.type, id);
+  if (!row || !validWorkbookMethod(row.forecast, readAnyRetentionMethod)) return false;
+  const { input } = row.forecast;
+  if (!await validatesWorkbookHistory(tx, input.target, observation?.admittedAt ?? row.effective_tick, posttestIdFor(id),
+    observation?.exposure.kind === 'independent')) return false;
+  return verifyFrozenWorkbookClaims(tx, row, createCommandReadContext(tx, retentionPurpose), parseManifest(row.manifest).inputs,
+    async (read, cutoff) => {
+      const target = await openRetentionTarget(tx, read, input.target.paper.id, input.target.itemId);
+      if (target.target.paper.rev !== input.target.paper.rev || target.target.gradingVersion !== input.target.gradingVersion) return;
+      return async attemptId => {
+        const found = await readComparableWorkbookEvidence(tx, read, target, attemptId, cutoff);
+        const valid = await verifiesOriginalSitting(tx, forecastSlot.type, found.evidence,
+          readAnyRetentionMethod, posttestIdFor, posttestAttemptFor);
+        return valid ? found : undefined;
+      };
+    }, error => error instanceof RequestError || error instanceof FactReadDeniedError || error instanceof FactNotFoundError);
 }
 
 async function project<T extends RetentionForecast | ReconciliationValue>(tx: ReadTransaction, key: string, row: SlotRow<T, unknown>) {
@@ -93,7 +106,7 @@ async function project<T extends RetentionForecast | ReconciliationValue>(tx: Re
     const value = row.value.value;
     if (verdict.kind === 'valid' && ('observation' in value
       ? await retentionHistoryValid(tx, value.forecastId, value.observation)
-      : await validatesWorkbookHistory(tx, value.input.target, row.effective_tick))) {
+      : await retentionHistoryValid(tx, derivationId(row.current_id)))) {
       return { key, state: 'current' as const, derivationId: derivationId(row.current_id),
         effectiveTick: row.effective_tick, freshness: verdict.freshness, value: row.value.value, basis: manifest };
     }

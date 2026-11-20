@@ -117,9 +117,12 @@ export async function readWorkbookEvidence(
   if (!birth || !birth.unchanged || birth.submittedAt !== attempt.submittedAt || controlled !== opened.sealed) {
     throw new RequestError(422, '交卷和冻结卷面的题项或判分条件不一致。');
   }
+  const release = controlled
+    ? await openControlledSubmission(tx, read, attempt, birth.tick, opened, expectedForecast)
+    : undefined;
   let process: ReturnType<typeof activityHelpProcess>;
-  if (controlled) {
-    const { issued } = await openControlledSubmission(tx, read, attempt, birth.tick, opened, expectedForecast);
+  if (release) {
+    const { issued } = release;
     process = await readControlledExposure(tx, read, target, issued.tick, submission.ref, birth.tick);
   } else {
     if (attempt.paperId !== target.paper.id) throw new RequestError(422, '交卷不属于此试卷。');
@@ -137,7 +140,7 @@ export async function readWorkbookEvidence(
     result: result === 'correct' || result === 'incorrect' ? result : 'unknown', exposure: process.exposure,
   };
   return {
-    observation, process, recordedAt: birth.recordedAt, duration: attempt.effectiveDurationMs,
+    observation, process, issuance: release?.issued, recordedAt: birth.recordedAt, duration: attempt.effectiveDurationMs,
   };
 }
 

@@ -152,7 +152,9 @@ export async function workbookWitnessesBy(
   return check?.complete === true;
 }
 
-/** Private safety check over immutable event births. No foreign witness or help metadata leaves this reader. */
+/** Private veto over immutable event births. A new revision of the same source cannot erase exposure.
+ * Positive evidence still requires the exact authorized source revision and access epoch.
+ */
 export async function workbookItemHistory(
   tx: ActivityEvidenceReadScope, target: WorkbookHistoryTarget, before: Tick, ownIssuance?: FactId,
 ) {
@@ -164,7 +166,7 @@ export async function workbookItemHistory(
       WHERE r.learner_id=$1 AND r.rev=1 AND r.author='learner' AND f.type=$14 AND c.type=$10
         AND r.data->>'paperId'=$6
     ), item AS (
-      SELECT q->'sourceQuestionRef' AS source FROM fact_revs r
+      SELECT q->'sourceQuestionRef'->>'id' AS source_id FROM fact_revs r
         CROSS JOIN LATERAL jsonb_array_elements(r.data->'questions') q
       WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=$3 AND q->>'id'=$4
     ), releases AS (
@@ -182,7 +184,7 @@ export async function workbookItemHistory(
     ), matches AS (
       SELECT r.paper_id,r.mount_id,r.mount_rev,r.controlled,q->>'id' AS item_id FROM releases r
         CROSS JOIN LATERAL jsonb_array_elements(r.data->'questions') q CROSS JOIN item
-      WHERE (r.paper_id=$2 AND q->>'id'=$4) OR q->'sourceQuestionRef'=item.source
+      WHERE (r.paper_id=$2 AND q->>'id'=$4) OR q->'sourceQuestionRef'->>'id'=item.source_id
     ), assignments AS (
       SELECT r.data, f.type FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
         JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
@@ -194,7 +196,7 @@ export async function workbookItemHistory(
           WHERE b->>'questionId'=m.item_id AND b->>'result'<>'unanswered') AS feedback
       FROM assignments a CROSS JOIN item CROSS JOIN LATERAL jsonb_array_elements(a.data->'paper'->'questions') q
       JOIN matches m ON m.mount_id=a.data->>'paperId' AND m.item_id=q->>'id'
-      WHERE (m.paper_id=$2 AND m.item_id=$4) OR q->'sourceQuestionRef'=item.source
+      WHERE (m.paper_id=$2 AND m.item_id=$4) OR q->'sourceQuestionRef'->>'id'=item.source_id
     ), helped AS (
       SELECT DISTINCT m.paper_id FROM fact_revs r
         JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
