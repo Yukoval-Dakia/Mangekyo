@@ -2,7 +2,7 @@ import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { studyTurn, turnResearchPurpose } from '../../modules/activity/values.ts';
+import { studyTurn, turnResearchAccess, turnResearchPurpose } from '../../modules/activity/values.ts';
 import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
 import {
   applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
@@ -15,7 +15,7 @@ import { openUnderstandingCitations } from './research-understanding.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { areMemoryClaimsCurrent, claimUndoToken, claimWitness, currentMemoryClaims, managedClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
-import { clientRequest, readOwnStudyTurn, RequestError, turnResearchAccess } from './sessions.ts';
+import { clientRequest, readOwnStudyTurn, RequestError } from './sessions.ts';
 import { completeTurnStream } from './stream.ts';
 import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
 

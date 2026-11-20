@@ -2,6 +2,7 @@ import type { ReadTransaction } from '../db/types.ts';
 import { derivationId, type Tick } from '../declarations/ids.ts';
 import type { Outcome, SlotRef } from '../declarations/types.ts';
 import { canonicalJsonString } from '../commands/canonical.ts';
+import { followingRevisionFloor, followingWitnessMatches } from '../commands/purpose-witness.ts';
 import { parseManifest, type Manifest, type ManifestInput, type ManifestVerdict } from './manifest.ts';
 
 type Derivation = {
@@ -70,17 +71,20 @@ async function checkInput(
   visiting: ReadonlySet<string>,
 ): Promise<ManifestVerdict> {
   if (input.kind === 'fact') {
-    const result = await tx.query<{ current_rev: number; access_epoch: string; retracted_rev: number | null; tick: string; allowed: boolean }>(
-      `SELECT f.current_rev, f.access_epoch::text, f.retracted_rev, r.tick::text,
+    const result = await tx.query<{ matches: boolean; retracted_rev: number | null; tick: string; allowed: boolean }>(
+      `SELECT f.retracted_rev, r.tick::text,
               ($4=ANY(f.purpose) OR 'all'=ANY(f.purpose))
-              AND ($4=ANY(r.purpose) OR 'all'=ANY(r.purpose)) AS allowed
+              AND ($4=ANY(r.purpose) OR 'all'=ANY(r.purpose)) AS allowed,
+              ${input.mode === 'following'
+                ? followingWitnessMatches('f', followingRevisionFloor('f', '$4::text'), 'r.rev', '$5')
+                : 'f.access_epoch::text = $5'} AS matches
        FROM facts f JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id
        WHERE f.learner_id=$1 AND f.id=$2 AND r.rev=$3 AND r.kind='value'`,
-      [tx.learner, input.id, input.rev, purpose],
+      [tx.learner, input.id, input.rev, purpose, input.accessEpoch],
     );
     const row = result.rows[0];
-    if (!row || row.retracted_rev !== null || !row.allowed || BigInt(row.tick) > BigInt(at) || row.access_epoch !== input.accessEpoch
-        || (input.mode === 'following' && row.current_rev !== input.rev)) return invalid('Fact input changed or is denied');
+    if (!row || row.retracted_rev !== null || !row.allowed || !row.matches || BigInt(row.tick) > BigInt(at))
+      return invalid('Fact input changed or is denied');
     return valid();
   }
   if (input.kind === 'slot') {

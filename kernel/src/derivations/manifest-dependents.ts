@@ -1,8 +1,9 @@
 import type { ReadTransaction } from '../db/types.ts';
 import type { DerivationId, FactId } from '../declarations/ids.ts';
+import { followingRevisionFloor, followingWitnessMatches } from '../commands/purpose-witness.ts';
 
 export type ManifestChange =
-  | { readonly kind: 'fact-changed'; readonly factId: FactId }
+  | { readonly kind: 'fact-changed'; readonly factId: FactId; readonly scopedPurpose?: string }
   | { readonly kind: 'slot-replaced'; readonly previousDerivationId: DerivationId }
   | { readonly kind: 'derivation-invalidated'; readonly derivationId: DerivationId }
   | { readonly kind: 'derivation-published'; readonly derivationId: DerivationId };
@@ -32,10 +33,14 @@ const dependents = `
     )
 `;
 
-const factDependents = `
+const scopedFollowingChanged = `NOT ${followingWitnessMatches('fact',
+  followingRevisionFloor('fact', "(dependent.manifest->>'purpose')"),
+  "(entry.input->>'rev')::int", "(entry.input->>'accessEpoch')")}`;
+
+const factDependents = (scoped: boolean) => `
   WITH dependents AS (${dependents}),
   changed_fact AS (
-    SELECT current_rev, access_epoch, retracted_rev, jsonb_build_object('kind', 'fact', 'id', id) AS ref
+    SELECT learner_id, id, current_rev, access_epoch, retracted_rev, jsonb_build_object('kind', 'fact', 'id', id) AS ref
     FROM facts
     WHERE learner_id = $1 AND id = $2
   )
@@ -49,10 +54,10 @@ const factDependents = `
     fact.retracted_rev IS NOT NULL OR entry.input->>'accessEpoch' <> fact.access_epoch::text
   )) AS fact_access(changed)
   WHERE entry.input @> fact.ref
-    AND (
-      fact_access.changed
-      OR (entry.input->>'mode' = 'following' AND entry.input->'rev' <> to_jsonb(fact.current_rev))
-    )
+    AND ${scoped
+      ? `(fact.retracted_rev IS NOT NULL OR CASE WHEN entry.input->>'mode' = 'following'
+          THEN ${scopedFollowingChanged} ELSE fact_access.changed END)`
+      : `(fact_access.changed OR (entry.input->>'mode' = 'following' AND entry.input->'rev' <> to_jsonb(fact.current_rev)))`}
   ORDER BY dependent.id, reason
 `;
 
@@ -115,7 +120,7 @@ export async function findManifestDependents(
 ): Promise<readonly ManifestDependent[]> {
   switch (change.kind) {
     case 'fact-changed':
-      return (await tx.query<ManifestDependent>(factDependents, [tx.learner, change.factId])).rows;
+      return (await tx.query<ManifestDependent>(factDependents(change.scopedPurpose !== undefined), [tx.learner, change.factId])).rows;
     case 'slot-replaced':
       return (await tx.query<ManifestDependent>(
         derivationDependents,

@@ -107,7 +107,8 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
         if (scopeBasis.length !== claim.scope.basis.length) continue;
       }
       add(region, {value: claimRecallValue(fact, claim, row.tick, excerpt, !!options.beliefTools),
-      sent: [witness(fact), {...witness(source), fragment: {field: 'answer', start, end: start + excerpt.length}}],
+      sent: [witness(fact), {...witness(source), rev: evidence.rev, epoch: evidence.accessEpoch,
+        fragment: {field: 'answer', start, end: start + excerpt.length}}],
       basis: scopeBasis, ...(!legacy && claim.valid_until ? {expiresAt: claim.valid_until} : {})});
     }
   }

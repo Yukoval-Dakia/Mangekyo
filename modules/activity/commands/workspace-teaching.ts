@@ -5,7 +5,7 @@ import {
   workspaceShareableTypes,
 } from '../workspace-values.ts';
 import intake from '@mangekyo/module-capture/facts/intake';
-import { studyTurn } from '../values.ts';
+import { studyTurn, turnResearchPurpose } from '../values.ts';
 import { materialType, storagePurpose } from '../library-values.ts';
 
 const teachingPurpose = 'teaching';
@@ -53,6 +53,7 @@ export default defineCommand({
         id: fact.ref.id,
         expectedRev: fact.ref.rev,
         purpose: purpose.length ? purpose : [storagePurpose],
+        ...(revokingTurn && use === turnResearchPurpose ? { scopedPurpose: use } : {}),
       }];
     });
   },

@@ -19,8 +19,8 @@ export function activityEvidence(fact: FactSnapshot): { kind: ActivityKind; frag
   switch (fact.type) {
     case turn.type: {
       const { caseId, answer, allowBackgroundUnderstanding } = turn.schema.parse(fact.value);
-      if (caseId === 'companion' && answer?.trim()) return { kind: 'conversation',
-        fragments: [{anchor: 'message', text: answer}], ...(allowBackgroundUnderstanding ? {quoteOnly: true} : {}) };
+      if (caseId === 'companion' && allowBackgroundUnderstanding && answer?.trim()) return { kind: 'conversation',
+        fragments: [{anchor: 'message', text: answer}], quoteOnly: true };
       return;
     }
     case workbook.type:

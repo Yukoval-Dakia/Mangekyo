@@ -11,6 +11,7 @@ import type {
   SlotRef,
 } from '../declarations/types.ts';
 import type { ReadTransaction } from '../db/types.ts';
+import { followingRevisionFloor } from './purpose-witness.ts';
 
 const factIdPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const tickPattern = /^(?:0|[1-9][0-9]*)$/;
@@ -49,6 +50,7 @@ type FactRow = {
   readonly data: unknown;
   readonly revision_purpose: unknown;
   readonly kind: string;
+  readonly equivalent_rev: number;
 };
 
 function requirePurpose(purpose: string): string {
@@ -125,12 +127,14 @@ async function readFact(
 
   const factResult = await tx.query<FactRow>(
     `SELECT f.type, f.current_rev, f.access_epoch, f.purpose, f.retracted_rev,
-            r.rev, r.kind, r.purpose AS revision_purpose, r.data
+            r.rev, r.kind, r.purpose AS revision_purpose, r.data,
+            CASE WHEN $3::integer IS NULL THEN ${followingRevisionFloor('f', '$4::text')}
+              ELSE f.current_rev END AS equivalent_rev
      FROM facts f LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev) =
        (f.learner_id,f.id,COALESCE($3::integer, f.current_rev))
      WHERE f.learner_id=$1 AND f.id=$2 AND NOT EXISTS
        (SELECT 1 FROM tombstones WHERE learner_id=$1 AND kind='fact' AND id=$2)`,
-    [tx.learner, factId, parsed.mode === 'pinned' ? parsed.rev : null],
+    [tx.learner, factId, parsed.mode === 'pinned' ? parsed.rev : null, purpose],
   );
   const fact = factResult.rows[0];
   if (fact === undefined) {
@@ -172,6 +176,8 @@ async function readFact(
     ref: { learner: tx.learner, id: factId, rev: fact.rev as Revision },
     type: fact.type,
     accessEpoch: toTick(fact.access_epoch),
+    ...(parsed.mode === 'following' && fact.equivalent_rev < fact.rev
+      ? {equivalentSince: {purpose, rev: fact.equivalent_rev as Revision}} : {}),
     value: data,
     purpose: revisionPurpose,
   };

@@ -5,6 +5,7 @@ import { currentMemory, memoryId } from './memory.ts';
 import { memoryScopeForObject, readMemoryGateway } from './memory-gateway.ts';
 import { teachingMemoryBasis } from './memory-claims.ts';
 import { isMemoryConflict, openTurnMemory } from './turn-memory.ts';
+import { turnClaimWitness } from '../../modules/companion/claim.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -193,7 +194,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (optedIn) await onTurnCompleted?.(tx, tick, job.slotKey);
   });
   try {
-    const submission = studyTurn(await read(job.slotKey));
+    const turn = await db.snapshot(scope, tx => createCommandReadContext(tx, purpose).fact(factId(job.slotKey), {mode: 'following'}));
+    const submission = studyTurn(trackFact(turn));
     if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
     const original = submission.parentId ? await priorTurn(submission.sessionId) : {data: submission, teaching: true};
     const origin = original.data;
@@ -488,7 +490,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         },
       }) : undefined;
       const turnMemory = memoryTurn && learningMemory && turnInput?.kind === 'fact' ? openTurnMemory({
-        db, turn: memoryTurn, answer, source: turnInput, ...(currentObject ? {currentObject} : {}),
+        db, turn: memoryTurn, answer, source: turnClaimWitness(turn), ...(currentObject ? {currentObject} : {}),
         authorize: memoryRequest.authorize,
         ...(beliefTools ? {belief: {maySend, opened: citation => workspace?.openedBeliefEvidence(citation) ?? false}} : {}),
         async retrieve(query, step) {
