@@ -45,6 +45,9 @@ function studyCurrentObject(input: unknown) {
 export function studyTurn(input: unknown) {
   const value = object(input);
   const answer = value.answer === null ? null : field(value, 'answer');
+  const accountRevision = value.accountRevision;
+  if (accountRevision !== undefined && (typeof accountRevision !== 'string' || !/^[0-9a-f-]{36}$/.test(accountRevision)))
+    throw new Error('模型账户代次无效。');
   if (value.jitContextVersion !== undefined && value.jitContextVersion !== 1)
     throw new Error('首轮教学资料版本无效。');
   return {
@@ -59,6 +62,7 @@ export function studyTurn(input: unknown) {
     ...(value.attachment === undefined ? {} : { attachment: studyAttachment(value.attachment) }),
     ...(value.attachmentBasis === undefined ? {} : {attachmentBasis: field(value, 'attachmentBasis', 64)}),
     ...(value.currentObject === undefined ? {} : { currentObject: studyCurrentObject(value.currentObject) }),
+    ...(accountRevision ? {accountRevision} : {}),
     ...(value.providerId === undefined ? {} : {providerId: field(value, 'providerId', 100)}),
     ...(value.protocol === undefined ? {} : {protocol: field(value, 'protocol', 32)}),
     ...(value.mcpRevision === undefined ? {} : {mcpRevision: field(value, 'mcpRevision', 64)}),

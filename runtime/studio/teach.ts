@@ -48,7 +48,7 @@ import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './works
 import {readCurrentLearningObject, type OpenedCurrentLearningObject} from './current-learning-object.ts';
 import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
-import { loadSettings } from './settings.ts';
+import { checkProviderAccount, loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
 import { jitMethodName, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
@@ -79,6 +79,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const memoryPackets: NonNullable<typeof learningMemory>[] = [];
   const memoryHeads = new Set<string>();
   let memoryTurn: string | undefined;
+  let checkAttachmentAccount: (() => Promise<boolean>) | undefined;
   let attachmentOrigin: ReturnType<typeof studyTurn> | undefined;
   let authorizeWorkspaceRecipient: (() => Promise<void>) | undefined;
   const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
@@ -128,7 +129,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     inputs.set('feedback:' + id, { kind: 'slot', slotType, slotKey: id, derivationId: derivationId(replyId), mode: 'following' });
   }
   async function validInputs(tx: ReadTransaction) {
-    if (attachmentOrigin && !await attachmentCurrent(tx, attachmentOrigin)) throw new ChangedEvidence();
+    if (attachmentOrigin && (!await checkAttachmentAccount?.() || !await attachmentCurrent(tx, attachmentOrigin)))
+      throw new ChangedEvidence();
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
     const now = new Date().toISOString();
     if (memoryPackets.some(item => item.receipt.expiresAt && item.receipt.expiresAt <= now) ||
@@ -198,11 +200,14 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       throw new ChangedEvidence();
     if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
     const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
+    const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
     if (origin.attachment) {
+      if (!origin.accountRevision || submission.accountRevision !== origin.accountRevision)
+        throw new TeachingError('provider_configuration', '请重新选择材料并确认发送账户。');
       attachmentOrigin = origin;
+      checkAttachmentAccount = async () => sameRoute(origin,await loadSettings(task));
       if (!await db.snapshot(scope, tx => attachmentCurrent(tx, origin))) throw new ChangedEvidence();
     }
-    const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
     const settings = await loadSettings(task);
     if (!sameRoute(submission, settings))
       throw new TeachingError('provider_configuration', '本轮绑定的模型配置已变更，请切回原配置或新建对话。');
@@ -245,10 +250,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           model: step.model, workspaceRevision: submission.workspaceRevision! },
         requestDigest: step.requestDigest, fragments: memoryPackets.flatMap(packet => packet.receipt.sent),
       } : undefined;
-      const authorize = async (tx: ReadTransaction) => {
+      const authorize = async (tx: ReadTransaction, current?: typeof settings) => {
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
         await validInputs(tx);
-        const current = await loadSettings(task);
+        current ??= await loadSettings(task);
         if (!sameRoute(submission, current)) throw new ChangedEvidence();
         if (step.jitContext) {
           const counter = studioJitCounter(jitCounters, current);
@@ -285,7 +290,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               const { response } = await db.tx(scope, async tx => {
                 await lockLearner(tx, learner);
                 await checkDispatch(tx);
-                await authorize(tx);
+                const current = submission.accountRevision ? await checkProviderAccount(tx,{
+                  providerId:submission.providerId ?? 'default',accountRevision:submission.accountRevision,
+                },task) : undefined;
+                if (submission.accountRevision && !current) throw new ChangedEvidence();
+                await authorize(tx,current);
                 const response = send();
                 void response.catch(() => {});
                 return { response };
@@ -329,7 +338,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       if (submission.jitContextVersion === 1) {
         const counter = studioJitCounter(jitCounters, settings);
         if (!counter || counter.id !== submission.jitCounterId || submission.caseId !== 'companion' ||
-            submission.parentId || submission.attachment || !submission.workspaceRevision || grants.length)
+            submission.parentId || submission.attachment || !submission.workspaceRevision || !submission.accountRevision || grants.length)
           throw new TeachingError('provider_configuration', '本轮首轮教学资料的计数配置已变更。');
         jit = await prepareFirstTurnJit(db, learner, job.slotKey, submission, settings, counter, {
           maySend,

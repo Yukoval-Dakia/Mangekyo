@@ -102,7 +102,7 @@ export async function prepareFirstTurnJit(db: Db, learner: ReadTransaction['lear
     learner, ownerKind: 'session', ownerId: turn, stepKey: 'jit-v1', label: 'local:first-turn-jit',
     input: {version: 1, purpose, providerId: settings.activeProviderId, endpoint: counter.endpoint,
       protocol: settings.protocol, model: settings.model, reasoningEffort: settings.reasoningEffort ?? 'high',
-      workspaceRevision: submission.workspaceRevision!, counter: counter.id},
+      workspaceRevision: submission.workspaceRevision!, accountRevision:submission.accountRevision!, counter: counter.id},
   }, async tx => {
     opened = await collect(tx);
     return opened?.receipt ?? '';

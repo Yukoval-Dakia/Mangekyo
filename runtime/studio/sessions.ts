@@ -15,7 +15,7 @@ import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn
 import { attachmentCurrent, attachmentSources } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import type { RecallHttp } from './recall-http.ts';
-import { loadSettings } from './settings.ts';
+import { checkProviderAccount, freezeProviderAccount, loadSettings, providerAccount } from './settings.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
 import { areMemoryClaimsCurrent } from './memory-claims.ts';
@@ -282,6 +282,15 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
           if (change.factType !== 'activity.studyTurn' || change.kind !== 'create') continue;
           const { id } = change.ref;
           const submission = studyTurn((await createCommandReadContext(tx,purpose).fact(id,{mode:'following'})).value);
+          if (submission.accountRevision) {
+            const origin = submission.parentId ? studyTurn((await createCommandReadContext(tx,purpose)
+              .fact(submission.sessionId,{mode:'following'})).value) : submission;
+            const settings = await checkProviderAccount(tx,{providerId:submission.providerId ?? 'default',accountRevision:submission.accountRevision},
+              turnTask(submission.caseId,origin.attachment?.mode === 'prepare'));
+            if (!settings || !sameRoute(submission,settings) ||
+                (submission.workspaceRevision && await workspaceRouteRevision(settings) !== submission.workspaceRevision))
+              throw new RequestError(409, '模型账户或工作区授权已变化，请重新确认。');
+          }
           if (submission.attachment && !await attachmentCurrent(tx, submission))
             throw new RequestError(409, '选段的原件或版本已经变化，请重新打开原文。');
           await tx.insert('slot_state', {
@@ -326,7 +335,9 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       studyTurn((await createCommandReadContext(tx, purpose).fact(factId(session), {mode: 'following'})).value)) : undefined;
     const attachmentBasis = attachment && await db.snapshot({learner:studioLearner}, tx => attachmentSources(tx, attachment));
     if (attachment && !attachmentBasis) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
-    const settings = await loadSettings(turnTask(selected, (origin?.attachment ?? attachment)?.mode === 'prepare'));
+    const task = turnTask(selected, (origin?.attachment ?? attachment)?.mode === 'prepare');
+    const settings = attachment ? (await db.tx({learner:studioLearner},tx => freezeProviderAccount(tx,task))).settings
+      : await loadSettings(task);
     if (!routeMatchesInput(requestedRoute, settings)) throw new RequestError(409, '模型配置已更改，请重新确认。');
     if (grants?.length) {
       if (selected !== 'companion' && selected !== 'riding') throw new RequestError(400, '此活动未开放 MCP 工具。');
@@ -337,7 +348,10 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       throw new RequestError(422, '这次对话已绑定原模型配置，请切回该配置或新建对话。');
     const workspaceRevision = selected === 'companion' && !origin?.attachment && !attachment
       ? await workspaceRouteRevision(settings) : undefined;
-    const jitCounter = enableJit && !parent && workspaceRevision && !grants?.length ? studioJitCounter(jitCounters, settings) : undefined;
+    const account = providerAccount(settings);
+    const jitCounter = enableJit && account && !parent && workspaceRevision && !grants?.length ? studioJitCounter(jitCounters, settings) : undefined;
+    const accountRevision = attachment || jitCounter ? account?.accountRevision : origin?.accountRevision;
+    if (origin?.attachment && !accountRevision) throw new RequestError(409, '请重新选择材料并确认发送账户。');
     let boundObject;
     if (currentObject) {
       if (selected !== 'companion' || origin?.attachment || attachment)
@@ -355,6 +369,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       ...(attachmentBasis ? {attachment, attachmentBasis:attachmentBasis.digest} : {}),
       ...(boundObject ? {currentObject: boundObject} : {}),
       ...(jitCounter ? {jitContextVersion: 1, jitCounterId: jitCounter.id} : {}),
+      ...(accountRevision ? {accountRevision} : {}),
       ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),
       ...(workspaceRevision ? {workspaceRevision, ...(!grants?.length && {memoryVersion: 1})} : {}),
       model: settings.model, reasoningEffort: settings.reasoningEffort,

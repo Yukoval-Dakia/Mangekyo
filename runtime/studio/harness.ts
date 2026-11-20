@@ -11,7 +11,8 @@ type Grants = ReturnType<typeof studyMcpGrants>;
 export function sameRoute(turn: StoredTurn, settings: Settings) {
   return turn.baseUrl === settings.baseUrl && turn.model === settings.model &&
     (turn.reasoningEffort ?? 'high') === settings.reasoningEffort && (turn.protocol ?? 'openai') === settings.protocol &&
-    (turn.providerId ?? 'default') === settings.activeProviderId;
+    (turn.providerId ?? 'default') === settings.activeProviderId &&
+    (!turn.accountRevision || settings.providers.find(profile => profile.id === settings.activeProviderId)?.credentialRevision === turn.accountRevision);
 }
 
 export function sameActiveProvider(left: Settings, right: Settings) {
@@ -53,10 +54,11 @@ export async function workspaceRouteRevision(settings: Settings) {
 export function workspaceGrantChecker() {
   let current: Promise<[Settings, WorkspaceRoutes]> | undefined;
   return async (turn: StoredTurn) => {
-    if (!turn.workspaceRevision) return true;
+    if (!turn.workspaceRevision && !turn.accountRevision) return true;
     const [settings, routes] = await (current ??= Promise.all([loadSettings(), loadWorkspaceAccessRoutes()]));
     const provider = settings.providers.find(profile => profile.id === (turn.providerId ?? 'default'));
     if (!provider || provider.baseUrl !== turn.baseUrl || provider.protocol !== (turn.protocol ?? 'openai')) return false;
-    return workspaceGrantRevision(routes, provider) === turn.workspaceRevision;
+    if (turn.accountRevision && provider.credentialRevision !== turn.accountRevision) return false;
+    return !turn.workspaceRevision || workspaceGrantRevision(routes, provider) === turn.workspaceRevision;
   };
 }
