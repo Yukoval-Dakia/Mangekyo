@@ -13,6 +13,7 @@
       "claim_ids": []
     }
   ],
-  "constraints": { "budget_min": 0, "locks": [], "deadlines": [] },
+  "omissions": [{ "ref": { "id": "fixture-unobserved", "rev": 1 }, "reason": "help-unknown" }],
+  "constraints": { "budget_min": null, "locks": [], "deadlines": [] },
   "candidate_pool": []
 }

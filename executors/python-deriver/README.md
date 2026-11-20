@@ -10,7 +10,8 @@ and closes the host during shutdown.
 | `learner/retention-forecast@1` | `dimensioned-retention@1` |
 
 Both routes accept only the v1 slice defined by [schema.json](./schema.json).
-`schema.ts` exports `CanonicalEvidenceSlice`, `CognitionResult` and their guards
+`@mangekyo/kernel` exports the input type `CanonicalEvidenceSliceV1`.
+`schema.ts` exports `CognitionResult` and the input and output guards
 for composition callers. Ticks are unsigned decimal strings. Timestamps use UTC
 `Z` and millisecond precision. Scores and confidence use the unit interval.
 

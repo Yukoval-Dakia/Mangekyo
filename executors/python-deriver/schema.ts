@@ -1,3 +1,4 @@
+import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '@mangekyo/kernel';
 import wireSchema from './schema.json' with { type: 'json' };
 
 type Schema = {
@@ -75,39 +76,8 @@ function matches(schema: Schema, value: unknown): boolean {
 
 export type CognitionMethod = 'cognition@1' | 'dimensioned-retention@1';
 export type CognitionDeriver = 'learner/cognition@1' | 'learner/retention-forecast@1';
-type Novelty = 'same' | 'isomorphic' | 'transfer';
-type Dimensions = { readonly representation?: string; readonly context?: string; readonly method?: string };
-type EvidenceRef = { readonly ref: string; readonly rev: number };
-type Candidate = Dimensions & {
-  readonly ref: string;
-  readonly concept_ids: readonly string[];
-  readonly item_novelty: Novelty;
-  readonly est_min: number;
-};
-type EvidenceEvent = Dimensions & EvidenceRef & {
-  readonly occurred_at: string;
-  readonly concept_ids: readonly string[];
-  readonly item_novelty: Novelty;
-  readonly help_level: 'independent' | 'hinted' | 'solution_seen';
-  readonly outcome: 'correct' | 'incorrect' | 'unknown';
-  readonly claim_ids: readonly string[];
-  readonly score_norm?: number;
-  readonly effective_duration_ms?: number;
-  readonly confidence?: number;
-  readonly error_stage?: 'reading' | 'modeling' | 'strategy' | 'execution' | 'expression';
-};
-
-export type CanonicalEvidenceSlice = {
-  readonly clock_watermark: string;
-  readonly as_of_at: string;
-  readonly events: readonly EvidenceEvent[];
-  readonly constraints: {
-    readonly budget_min: number;
-    readonly locks: readonly string[];
-    readonly deadlines: readonly { readonly ref: string; readonly at: string }[];
-  };
-  readonly candidate_pool: readonly Candidate[];
-};
+type Novelty = EvidenceEventV1['item_novelty'];
+type EvidenceRef = Pick<EvidenceEventV1, 'ref' | 'rev'>;
 
 type UnknownUncertainty = { readonly kind: 'unknown'; readonly reason: string; readonly needed: string };
 type Interval = { readonly kind: 'interval'; readonly low: number; readonly high: number };
@@ -146,7 +116,7 @@ export type CognitionResult = {
   readonly artifacts?: readonly string[];
 };
 
-export function isCanonicalEvidenceSlice(value: unknown): value is CanonicalEvidenceSlice {
+export function isCanonicalEvidenceSlice(value: unknown): value is CanonicalEvidenceSliceV1 {
   return matches(wireSchema.$defs.input, value);
 }
 

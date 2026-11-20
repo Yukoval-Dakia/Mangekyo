@@ -20,6 +20,16 @@
       "type": "object", "additionalProperties": false, "required": ["ref", "rev"],
       "properties": { "ref": { "$ref": "#/$defs/text" }, "rev": { "$ref": "#/$defs/revision" } }
     },
+    "omission": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "reason"],
+      "properties": {
+        "ref": {
+          "type": "object", "additionalProperties": false, "required": ["id", "rev"],
+          "properties": { "id": { "$ref": "#/$defs/text" }, "rev": { "$ref": "#/$defs/revision" } }
+        },
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    },
     "event": {
       "type": "object", "additionalProperties": false,
       "required": ["ref", "rev", "occurred_at", "concept_ids", "item_novelty", "help_level", "outcome", "claim_ids"],
@@ -48,7 +58,7 @@
     "constraints": {
       "type": "object", "additionalProperties": false, "required": ["budget_min", "locks", "deadlines"],
       "properties": {
-        "budget_min": { "$ref": "#/$defs/nonnegative" },
+        "budget_min": { "anyOf": [{ "$ref": "#/$defs/nonnegative" }, { "type": "null" }] },
         "locks": { "$ref": "#/$defs/refs" },
         "deadlines": { "type": "array", "items": { "$ref": "#/$defs/deadline" } }
       }
@@ -73,6 +83,7 @@
         "clock_watermark": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$(?![\\s\\S])" },
         "as_of_at": { "$ref": "#/$defs/time" },
         "events": { "type": "array", "items": { "$ref": "#/$defs/event" } },
+        "omissions": { "type": "array", "items": { "$ref": "#/$defs/omission" } },
         "constraints": { "$ref": "#/$defs/constraints" },
         "candidate_pool": { "type": "array", "items": { "$ref": "#/$defs/candidate" } }
       }
