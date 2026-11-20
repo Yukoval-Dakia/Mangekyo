@@ -24,7 +24,11 @@ export function normalizeKnowledgeName(name: string) {
 
 export function parseKnowledgeEntity(input: unknown) {
   const value = record(input);
-  fields(value, 'kind', 'canonicalName', 'aliases', 'embedding', 'mergedInto');
+  fields(value, 'kind', 'canonicalName', 'aliases', 'embedding', 'merged_into', 'mergedInto');
+  if (value.merged_into !== undefined && value.mergedInto !== undefined && value.merged_into !== value.mergedInto) {
+    throw new Error('规范实体的合并目标不一致。');
+  }
+  const redirect = value.merged_into !== undefined ? value.merged_into : value.mergedInto;
   const canonicalName = knowledgeName(value.canonicalName);
   const aliases = list(value.aliases).map(knowledgeName);
   const names = new Set([canonicalName, ...aliases].map(normalizeKnowledgeName));
@@ -45,7 +49,7 @@ export function parseKnowledgeEntity(input: unknown) {
   return {
     kind: knowledgeEntityKind(value.kind), canonicalName, aliases,
     ...(embedding ? { embedding } : {}),
-    mergedInto: value.mergedInto === null ? null : pageId(value.mergedInto),
+    merged_into: redirect == null ? null : pageId(redirect),
   };
 }
 
@@ -88,15 +92,15 @@ export async function openKnowledgeEntity(read: Pick<ReadContext, 'fact'>, id: F
       throw new Error('规范实体类型不符。');
     }
     await checkTextbookBasis(read, asset.basis ?? []);
-    const { kind: entityKind, title, aliases, embedding, mergedInto } = asset;
-    const entity = { kind: entityKind, canonicalName: title, aliases, ...(embedding ? { embedding } : {}), mergedInto };
+    const { kind: entityKind, title, aliases, embedding, merged_into } = asset;
+    const entity = { kind: entityKind, canonicalName: title, aliases, ...(embedding ? { embedding } : {}), merged_into };
     if (kind !== undefined && entity.kind !== kind) throw new Error('规范实体重定向类型不符。');
-    if (pinned !== undefined || entity.mergedInto === null) return { snapshot, entity, redirects };
+    if (pinned !== undefined || entity.merged_into === null) return { snapshot, entity, redirects };
     if (visited.has(snapshot.ref.id)) throw new Error('规范实体重定向成环。');
     visited.add(snapshot.ref.id);
     kind = entity.kind;
     redirects.push(snapshot.ref);
-    snapshot = await read.fact(entity.mergedInto, { mode: 'following' });
+    snapshot = await read.fact(entity.merged_into, { mode: 'following' });
   }
 }
 

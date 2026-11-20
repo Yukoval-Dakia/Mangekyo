@@ -12,7 +12,8 @@ export default defineCommand({
   schema: { parse(input: unknown) {
     const value = record(input);
     fields(value, 'id', 'entity', 'purpose', 'resolution');
-    const entity = parseKnowledgeEntity({ ...record(value.entity), mergedInto: null });
+    const entity = parseKnowledgeEntity(value.entity);
+    if (entity.merged_into !== null) throw new Error('请通过合并命令建立实体重定向。');
     const purpose: unknown = value.purpose ?? 'storage';
     if (purpose !== 'storage' && purpose !== 'teaching') throw new Error('规范实体用途无效。');
     const resolution = record(value.resolution);

@@ -281,10 +281,10 @@ export function parseAsset(input: unknown): Asset {
       ...(value.discipline_context === undefined ? {} : { discipline_context: parseDisciplineContext(value.discipline_context) }) };
   }
   if (kind === 'concept' || kind === 'method' || kind === 'archetype') {
-    fields(value, ...common, 'tags', 'aliases', 'embedding', 'mergedInto');
+    fields(value, ...common, 'tags', 'aliases', 'embedding', 'merged_into', 'mergedInto');
     const unit = parseUnit(value);
     const { canonicalName: _, ...entity } = parseKnowledgeEntity({
-      kind, canonicalName: unit.title, aliases: value.aliases ?? [], mergedInto: value.mergedInto ?? null,
+      kind, canonicalName: unit.title, aliases: value.aliases ?? [], merged_into: value.merged_into, mergedInto: value.mergedInto,
       ...(value.embedding === undefined ? {} : { embedding: value.embedding }),
     });
     return { ...unit, ...entity, blocks: parseAssetBlocks(value.blocks), ...parseTags(value) };
