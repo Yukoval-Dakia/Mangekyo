@@ -16,7 +16,7 @@ type Edge = {
   sourceRef: Reference; from: Reference; to: Reference; sources: Reference[];
 };
 type Graph = {items: Item[]; edges: (Edge & {hop: number})[]; truncated: boolean};
-type Source = {rev: number; kind?: string; title: string; content: string | number | null};
+type Source = {rev: number; title: string; content: string | number | null};
 
 function version(ref: Reference) {
   return ref.fact.id + ':' + ref.fact.rev;
@@ -78,23 +78,13 @@ export function ConceptReading({conceptId}: {conceptId: string}) {
   </details>;
 }
 
-// Whole question records include a labelled solution in their plain-text display.
-// Show only its prompt; an unrecognised display format has no safe prompt preview.
-function pinnedPrompt(record: Source) {
-  const prefix = record.title + '\n类型：question\n\n';
-  if (typeof record.content !== 'string' || !record.content.startsWith(prefix)) return;
-  const detail = record.content.slice(prefix.length);
-  const end = detail.search(/\n\n(?:参考答案|评分标准)\n/);
-  return end < 0 ? undefined : detail.slice(0, end);
-}
-
 export function FixedRecord({id, refValue}: {id: string; refValue: string}) {
   const resource = useResource<Source | Edge>('/workspace/access/records/' + encodeURIComponent(id) +
-    '?' + new URLSearchParams({ref: refValue}));
+    '?' + new URLSearchParams({ref: refValue, view: 'preview'}));
   const record = resource.error ? undefined : resource.data;
   const source = record && 'content' in record ? record : undefined;
   const edge = record && 'sources' in record ? record : undefined;
-  const body = source?.kind === 'question' ? pinnedPrompt(source) : source?.content;
+  const body = source?.content;
   return <>
     <PageTitle title={source?.title ?? (edge ? '关系依据' : '固定版资料')}
       {...(record ? {meta: '固定引用 · 第 ' + record.rev + ' 版'} : {})}>
