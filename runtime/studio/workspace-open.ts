@@ -1,4 +1,4 @@
-import {imageCropEdgeLimit, openLearningLimit, type ImageCrop} from '../../executors/teaching/workspace-tools.ts';
+import {openLearningSearchNext, type OpenLearningArgs} from '../../executors/teaching/workspace-tools.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
@@ -13,60 +13,6 @@ import {textbookPageFrom, textbookPageType} from '../../modules/content/textbook
 import {readWorkbookDiagnosis} from './workbook-diagnosis.ts';
 import type {WorkspaceAssessmentBasis} from './workspace-read.ts';
 
-const searchNext = {tool:'search_workspace' as const, args:{}, why:'从当前可读结果选择引用。'};
-type Part = {kind:'whole' | 'assessment'} | {kind:'question'; index:number} | {kind:'block'; blockId:string};
-type OpenLearningArgs = {refs: string[]; part: Part; lens: 'raw' | 'diagnose'};
-type OpenImageArgs = {refs: [string]; part: {kind:'image_crop'; crop?: ImageCrop}; lens: 'raw'};
-
-function imageCrop(value: unknown): ImageCrop | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 4) return;
-  const {left, top, width, height} = value as Record<string, unknown>;
-  if (typeof left !== 'number' || typeof top !== 'number' || !Number.isSafeInteger(left) || !Number.isSafeInteger(top) || left < 0 || top < 0 ||
-      typeof width !== 'number' || typeof height !== 'number' || !Number.isInteger(width) || !Number.isInteger(height) ||
-      width < 1 || height < 1 || width > imageCropEdgeLimit || height > imageCropEdgeLimit) return;
-  return {left,top,width,height};
-}
-
-export function parseOpenLearningArgs(args: Record<string, unknown>) {
-  const refs = typeof args.refs === 'string' ? [args.refs] : args.refs;
-  if (!Array.isArray(refs) || !refs.length || refs.length > openLearningLimit ||
-      !refs.every(ref => typeof ref === 'string' && ref.trim() && ref.length <= 4096)) {
-    return learningToolError('invalid_args','refs',`refs 须为 1–${openLearningLimit} 个可打开的引用。`,searchNext);
-  }
-  const lens = args.lens === undefined ? 'raw' : args.lens;
-  if (lens !== 'raw' && lens !== 'diagnose') {
-    return learningToolError('invalid_args','lens','lens 须为 raw 或 diagnose。',{
-      tool:'open_learning',args:{refs},why:'打开原记录。',
-    });
-  }
-  if (lens === 'diagnose' && args.part !== undefined) {
-    return learningToolError('invalid_args','part','diagnose 读取整份已交卷作答。',{
-      tool:'open_learning',args:{refs,lens},why:'一次打开题面与作答依据。',
-    });
-  }
-  if (args.part === 'image_crop') {
-    if (refs.length !== 1) return learningToolError('invalid_args','refs','原图裁剪每次只接受一个交入材料引用。');
-    const crop = imageCrop(args.crop);
-    if (args.crop !== undefined && !crop) return learningToolError('invalid_args','crop',
-      `crop 须包含非负整数 left、top 和 1–${imageCropEdgeLimit} 的整数 width、height。`);
-    return {refs:[refs[0].trim()],part:{kind:'image_crop',...(crop ? {crop} : {})},lens:'raw'} satisfies OpenImageArgs;
-  }
-  if (args.crop !== undefined) return learningToolError('invalid_args','crop','crop 仅可用于 part: image_crop。');
-  let part: Part;
-  if (args.part === undefined) part = {kind:'whole'};
-  else if (args.part === 'assessment') part = {kind:'assessment'};
-  else {
-    const question = typeof args.part === 'string' && /^question:([1-9]\d?)$/.exec(args.part);
-    const block = typeof args.part === 'string' && /^block:([A-Za-z0-9_.-]{1,128})$/.exec(args.part);
-    if (question) part = {kind:'question',index:Number(question[1])};
-    else if (block && block[1]) part = {kind:'block',blockId:block[1]};
-    else return learningToolError('invalid_args','part','part 须为 question:<题号>、block:<块标识>、assessment 或 image_crop。',{
-      tool:'open_learning',args:{refs},why:'先打开可用范围，再选择题号。',
-    });
-  }
-  return {refs:refs.map(ref => ref.trim()),part,lens} satisfies OpenLearningArgs;
-}
-
 type ReadResult = {
   ok?: true;
   id?: string;
@@ -79,7 +25,7 @@ type ReadResult = {
 } & Record<string, unknown>;
 
 export async function unreadable(tx: ReadTransaction, id: string, known: boolean, maySend: WorkspaceSourceRecipient) {
-  if (!known) return learningToolError('not_found','refs','未能定位可打开的学习对象。',searchNext);
+  if (!known) return learningToolError('not_found','refs','未能定位可打开的学习对象。',openLearningSearchNext);
   try {
     const current = await createCommandReadContext(tx,purpose).fact(factId(id),{mode:'following'});
     if (maySend(current)) return learningToolError('basis_stale','refs','所选版本或其依据当前不可用。',{
@@ -88,10 +34,10 @@ export async function unreadable(tx: ReadTransaction, id: string, known: boolean
   } catch (error) {
     if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
   }
-  return learningToolError('access_revoked','refs','此前读到的记录当前不可读。',searchNext);
+  return learningToolError('access_revoked','refs','此前读到的记录当前不可读。',openLearningSearchNext);
 }
 
-function projectOpenLearning(value: ReadResult, fact: FactSnapshot, part: Part): ReadResult | ReturnType<typeof learningToolError> {
+function projectOpenLearning(value: ReadResult, fact: FactSnapshot, part: OpenLearningArgs["part"]): ReadResult | ReturnType<typeof learningToolError> {
   const {sourceRef, question, nextOffset, ...body} = value;
   if (!sourceRef) return value;
   if (part.kind === 'block') {
@@ -147,12 +93,12 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
     const alias = input === 'current_attempt' || input === 'current_page';
     const current = access.currentObject?.alias === input ? access.currentObject.sourceRef : undefined;
     if (alias && !current) {
-      items.push(learningToolError('not_found','refs','本轮没有绑定这个当前学习对象。',searchNext));
+      items.push(learningToolError('not_found','refs','本轮没有绑定这个当前学习对象。',openLearningSearchNext));
       continue;
     }
     const ref = current ?? parseLearningReference(input);
     if (!ref) {
-      items.push(learningToolError('invalid_args','refs','请使用 id 或 sourceRef。',searchNext));
+      items.push(learningToolError('invalid_args','refs','请使用 id 或 sourceRef。',openLearningSearchNext));
       continue;
     }
     const id = typeof ref === 'string' ? ref : ref.fact.id;

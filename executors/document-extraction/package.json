@@ -6,9 +6,11 @@
     "./local": "./local.ts",
     "./original": "./original.ts",
     "./mineru": "./mineru.ts",
-    "./notion": "./notion.ts"
+    "./notion": "./notion.ts",
+    "./image": "./image.ts"
   },
   "dependencies": {
-    "fflate": "0.8.3"
+    "fflate": "0.8.3",
+    "sharp": "0.35.5"
   }
 }
