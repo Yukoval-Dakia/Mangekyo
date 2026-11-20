@@ -51,7 +51,7 @@ async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cu
   return { id, rev: version.rev };
 }
 
-async function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot, access: Access) {
+export async function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot, access: Access) {
   const release = attempt.paper.assessmentRelease;
   if (!release) return unavailable;
   const read = createCommandReadContext(tx, purpose);

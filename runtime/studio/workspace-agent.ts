@@ -78,7 +78,7 @@ export function openWorkspaceTools(options: {
   async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>, receiveImage?: ReceiveStudyImage) {
     const pythonAttempts = name === 'python_attempts';
     if (!isJson(args)) return JSON.stringify(pythonAttempts
-      ? learningToolError('invalid_args','attempts','请选择试卷及作答引用。')
+      ? learningToolError('invalid_args','attempts','请选择作答引用。')
       : {error:'请将查询字段放在一个 JSON 对象里。'});
     const raw = await recordLocalRead(db, {learner:studioLearner, ownerKind:'session', ownerId:turn,
       stepKey:String(step), label:'local:'+name, input:args}, async tx => {
@@ -192,8 +192,9 @@ export function openWorkspaceTools(options: {
       if (value.ok !== true) return text;
       for (const w of witnesses) {
         sources.set(w.id,w);
+        retainForWrites(w);
         if (!opened.has(w.id)) opened.set(w.id,{id:w.id, workspace:true,
-          title:w.type === workbookAttemptType ? '已提交作答' : '普通试卷', text:'本轮 Python 统计所用的记录。'});
+          title:w.type === workbookAttemptType ? '已提交作答' : '学习依据', text:'本轮 Python 统计所用的记录。'});
       }
       return JSON.stringify({...value,witnesses});
     }
@@ -371,8 +372,9 @@ export function openWorkspaceTools(options: {
     reads: () => [...opened.values()],
     writes: () => [...receipts.values()],
     basis() {
-      const basis = new Map([...sources, ...overviewBasis]);
-      for (const witness of writeBasis.values()) basis.set(witness.id,witness);
+      const ordinary = new Map([...sources, ...overviewBasis]);
+      const basis = new Map([...ordinary.values()].map(w => [`${w.id}:${w.rev}`, w]));
+      for (const [key, witness] of writeBasis) basis.set(key, witness);
       return [...basis.values()];
     },
   };

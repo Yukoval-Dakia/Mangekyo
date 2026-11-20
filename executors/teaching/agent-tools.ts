@@ -23,7 +23,10 @@ const filenamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const pythonAttemptsLimit = 8;
 export type PythonAttemptRow = {
   id: string;
+  paper_id?: string;
   submitted_at: string;
+  effective_duration_ms?: number;
+  formal_score?: {earned: number; maximum: number};
   results: {question_id: string; result: 'correct' | 'incorrect' | 'partial' | 'pending' | 'unanswered' | 'self-check'}[];
 };
 type PythonAttemptIssue = {index: number; code: 'not_found' | 'access_revoked' | 'basis_stale' | 'unknown'};
