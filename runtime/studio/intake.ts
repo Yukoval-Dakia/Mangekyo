@@ -1,12 +1,7 @@
 import { extractLocalDocument } from '@mangekyo/executor-document-extraction/local';
-import { constants, createReadStream } from 'node:fs';
-import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
-import { homedir, platform } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { openIntakeObjects, digest } from './intake-objects.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks, CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
@@ -72,57 +67,7 @@ type CaptureInput = {
 
 type CorrectInput = { readonly expectedRev: unknown; readonly materialId: unknown; readonly requestId: unknown; readonly text: unknown };
 
-type StoredOriginal = {
-  readonly path: string;
-  readonly name: string;
-  readonly mediaType: IntakeMediaType;
-  readonly size: number;
-  readonly sha256: string;
-};
-
 type Detected = { readonly kind: 'pdf' | 'image' | 'text'; readonly mediaType: IntakeMediaType };
-
-function dataRoot() {
-  const override = process.env.MANGEKYO_INTAKE_DATA_DIR;
-  if (override && override.trim()) return resolve(override.trim());
-  const home = homedir();
-  if (platform() === 'darwin') return resolve(home, 'Library/Application Support/Mangekyō');
-  if (platform() === 'win32') return resolve(process.env.LOCALAPPDATA || home, 'Mangekyō');
-  return resolve(process.env.XDG_DATA_HOME || resolve(home, '.local/share'), 'mangekyo');
-}
-
-function materialBase() {
-  const root = resolve(dataRoot(), 'intake');
-  return (materialId: string) => {
-    const id = factId(materialId);
-    const base = resolve(root, id);
-    if (!base.startsWith(root + sep)) throw new Error('材料路径无效');
-    return base;
-  };
-}
-
-function digest(bytes: Buffer) {
-  return createHash('sha256').update(bytes).digest('hex');
-}
-
-/** Read the immutable original identified by an authorized intake fact. */
-export async function readIntakeOriginalBytes(materialId: string, expected: Pick<IntakeOriginal, 'size' | 'sha256'>) {
-  if (!Number.isSafeInteger(expected.size) || expected.size < 1 || expected.size > intakeFileLimit)
-    throw new Error('Invalid intake original size');
-  const base = materialBase()(materialId);
-  if (!(await lstat(base)).isDirectory()) throw new Error('Invalid intake directory');
-  const file = await open(join(base, 'original'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile() || stat.size !== expected.size) throw new Error('Intake original changed');
-    const bytes = Buffer.alloc(expected.size);
-    if ((await file.read(bytes, 0, bytes.length, 0)).bytesRead !== bytes.length || digest(bytes) !== expected.sha256)
-      throw new Error('Intake original changed');
-    return bytes;
-  } finally {
-    await file.close();
-  }
-}
 
 function asciiFilename(name: string) {
   const value = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_').replace(/\.+$/g, '_');
@@ -186,38 +131,6 @@ function detect(bytes: Buffer, filename: string, declaredType: unknown): Detecte
   throw new RequestError(415, '只支持 PDF、照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF）和 UTF-8 的 txt/Markdown。');
 }
 
-async function stageOriginal(base: string, bytes: Buffer, original: IntakeOriginal) {
-  const parent = dirname(base);
-  await mkdir(parent, { recursive: true, mode: 0o700 });
-  const directory = await mkdtemp(join(parent, '.incoming-'));
-  const path = join(directory, 'original');
-  try {
-    await writeFile(path, bytes, { mode: 0o600 });
-    await writeFile(join(directory, 'meta.json'), JSON.stringify(original), { mode: 0o600 });
-  } catch (error) {
-    await rm(directory, { recursive: true, force: true });
-    throw error;
-  }
-  return { directory, path };
-}
-
-async function readStoredOriginal(base: string, materialId: FactId): Promise<StoredOriginal> {
-  const originalPath = join(base, 'original');
-  const [originalStat, meta] = await Promise.all([
-    stat(originalPath).catch(() => null),
-    readFile(join(base, 'meta.json'), 'utf8').catch(() => null),
-  ]);
-  if (!originalStat || !meta) throw new RequestError(404, '原件暂不可读取。');
-  const stored: Record<string, unknown> = JSON.parse(meta) as Record<string, unknown>;
-  return {
-    path: originalPath,
-    name: typeof stored.name === 'string' ? stored.name : materialId,
-    mediaType: typeof stored.mediaType === 'string' ? (stored.mediaType as IntakeMediaType) : 'application/octet-stream' as IntakeMediaType,
-    size: typeof stored.size === 'number' ? stored.size : originalStat.size,
-    sha256: typeof stored.sha256 === 'string' ? stored.sha256 : '',
-  };
-}
-
 export const intakeWriteTargets = {
   [captureIntakeCommand]: { create: [materialType] },
   [correctIntakeCommand]: { correct: [materialType] },
@@ -228,8 +141,8 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   hooks: CommandHooks = createStudioCommandHooks()) {
   const runtime = { modules: [captureModule, content], crossModuleWrites: intakeWriteTargets };
   const handle = createCommandHandler(db, { ...runtime, hooks });
-  const base = materialBase();
-  const lifecycle = openIntakeLifecycle(db, base);
+  const objects = openIntakeObjects(db);
+  const lifecycle = openIntakeLifecycle(db, objects.erase);
 
   async function factsFor(materialId: string, watermark?: string) {
     const id = factId(materialId);
@@ -306,12 +219,8 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       return null;
     });
     const metadata = original ? {original} : await metadataFor(id);
-    const stored = await readStoredOriginal(base(id),id);
-    if (stored.mediaType !== metadata.original.mediaType || stored.size !== metadata.original.size ||
-        stored.sha256 !== metadata.original.sha256 || stored.name !== metadata.original.name ||
-        digest(await readFile(stored.path)) !== metadata.original.sha256)
-      throw new RequestError(500, '本地原件与记录不一致。');
-    return { metadata, stored };
+    const bytes = await objects.read(id,metadata.original);
+    return {metadata, stored:metadata.original, bytes};
   }
 
   function prepareCapture(input: CaptureInput) {
@@ -352,7 +261,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     if (cloud && !mineruToken()) throw new RequestError(503, 'MinerU 云识别尚未配置。');
     let installed = false;
     try {
-      await withOriginal(materialId,input.bytes,original,async (staged, install) => {
+      await objects.withOriginal(materialId,input.bytes,original,async (staged, install) => {
         const extraction: IntakeExtraction = cloud ? {
           status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
           pages: null, truncated: false, characterCount: 0,
@@ -389,33 +298,6 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     return { ...(await metadataFor(materialId)), created: installed };
   }
 
-  async function withOriginal<T>(id: FactId, bytes: Buffer, original: IntakeOriginal,
-    save: (staged: string, install: () => Promise<void>) => Promise<T>) {
-    const destination = base(id);
-    const staged = await stageOriginal(destination,bytes,original);
-    let installed = false;
-    try {
-      await writeFile(join(staged.directory,'store-id'), (await lifecycle.storeId()) + ':' + id, {mode:0o600});
-      return await save(staged.path,async () => {
-        // Installation runs under the learner lock after the original's commands succeed.
-        await rm(destination,{recursive:true,force:true});
-        await rename(staged.directory,destination);
-        installed = true;
-      });
-    } catch (error) {
-      if (installed) {
-        await db.tx({ learner: studioLearner }, async tx => {
-          await lockLearner(tx, studioLearner);
-          const committed = await tx.query('SELECT id FROM facts WHERE learner_id=$1 AND id=$2', [studioLearner, id]);
-          if (committed.rows.length === 0) await rm(destination, { recursive: true, force: true });
-        }).catch(() => undefined);
-      }
-      throw error;
-    } finally {
-      await rm(staged.directory,{recursive:true,force:true});
-    }
-  }
-
   async function paperReturn(input: CaptureInput & Parameters<typeof paperReturnSelection>[0],
     papers: ReturnType<typeof openCapturePapers>) {
     const {requestId,materialId,deletionWatermark,detected,title,original} = prepareCapture(input);
@@ -424,16 +306,13 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     let selection;
     try { selection = paperReturnSelection(input,materialId); }
     catch { throw new RequestError(400,'请选择已发行纸卷、页码和原件用途。'); }
-    return withOriginal(materialId,input.bytes,original,(_,install) => papers.upload(selection,{
+    return objects.withOriginal(materialId,input.bytes,original,(_,install) => papers.upload(selection,{
       command:intakeCaptureId(requestId),deletionWatermark,title,original,install,
     }));
   }
 
   async function cloudOriginal(materialId: string, expectedSha256: string) {
-    const stored = await readStoredOriginal(base(materialId), factId(materialId));
-    const bytes = await readFile(stored.path);
-    if (stored.size !== bytes.length || digest(bytes) !== expectedSha256) throw new Error('Intake original changed');
-    return bytes;
+    return objects.read(materialId,{sha256:expectedSha256});
   }
 
   async function completeCloud(ref: WorkRef, input: CloudIntakeInput, extraction: IntakeExtraction) {
@@ -543,17 +422,15 @@ function intakeFormText(form: FormData, field: string) {
   return values[0];
 }
 
-async function sendOriginal(response: ServerResponse, metadata: Pick<IntakeMetadata,'original'>, stored: StoredOriginal) {
-  const stream = createReadStream(stored.path);
-  stream.on('error', () => response.destroy());
+function sendOriginal(response: ServerResponse, metadata: Pick<IntakeMetadata,'original'>, bytes: Buffer) {
   response.writeHead(200, {
     'Content-Type': metadata.original.mediaType,
     'Content-Disposition': `attachment; filename="${asciiFilename(metadata.original.name)}"; filename*=UTF-8''${encodeRfc5987(metadata.original.name)}`,
     'X-Content-Type-Options': 'nosniff',
     'Cache-Control': 'private, no-store',
-    'Content-Length': String(stored.size),
+    'Content-Length': String(bytes.length),
   });
-  stream.pipe(response);
+  response.end(bytes);
 }
 
 export async function handleIntakeRequest(
@@ -681,8 +558,8 @@ export async function handleIntakeRequest(
     if (action === 'original') {
       if (method === 'GET') {
         try {
-          const { metadata, stored } = await intake.original(id);
-          await sendOriginal(response, metadata, stored);
+          const { metadata, bytes } = await intake.original(id);
+          sendOriginal(response, metadata, bytes);
           return true;
         } catch (error) {
           if (!response.headersSent) {
