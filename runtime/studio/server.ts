@@ -94,7 +94,8 @@ async function openWeb() {
   const student = { textbook, relationReview:openRelationReview(db,content),
     workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
-    intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan), research, recall, retention, retentionComparison };
+    intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
+    research, recall, retention, retentionComparison };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }

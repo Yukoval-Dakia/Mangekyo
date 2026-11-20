@@ -191,7 +191,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       if (!requested.includes(region)) continue;
       const review = reviewUnderstanding(fact.ref.id, value, sources);
       add(region, {value: {id, rev: fact.ref.rev, kind, text: value.text, scope: value.scope,
-        ttl: value.ttl, sticky: value.sticky, evidence_refs: value.evidence_refs, review},
+        ttl: value.ttl, sticky: value.sticky, evidence_refs: value.evidence_refs.map(({basis_digest, ...citation}) => citation), review},
       sent: [witness(fact), ...sources.map(source => source.basis[0]!)],
       basis: sources.flatMap(source => source.basis.slice(1)), ...(value.ttl ? {expiresAt: value.ttl} : {})});
     }

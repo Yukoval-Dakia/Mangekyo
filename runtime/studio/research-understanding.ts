@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -24,6 +25,7 @@ import { methodName, slotType, stableId, studioLearner } from './identity.ts';
 import { whenAvailable } from './research-sources.ts';
 import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
+import { undoTextbookCommand } from './workspace-textbook.ts';
 
 // A zero-cost host supplies an authorized route. A paid route requires budget admission first.
 export type UnderstandingTransport = {
@@ -41,10 +43,23 @@ async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpos
   const reader = createAuthorizedFactReader(tx, purpose, allows);
   const fact = await whenAvailable(() => reader.fact(factId(id), {mode: 'following'}));
   if (!fact) return null;
-  const {rows: [provenance]} = await tx.query<{ author: string; born: Tick }>(`
-    SELECT last.author,f.created_tick::text AS born
-    FROM facts f JOIN fact_revs last ON (last.learner_id,last.fact_id,last.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.id=$2`, [tx.learner, id]);
+  // A permission change keeps the body, and an undo restores the body from its recorded revision.
+  const {rows: [provenance]} = await tx.query<{ author: string | null; born: Tick }>(`
+    SELECT CASE WHEN origin.type=$4 THEN NULL ELSE last.author END AS author,f.created_tick::text AS born
+    FROM facts f JOIN LATERAL (
+      WITH RECURSIVE body AS (
+        SELECT rev,data,author,command_id FROM fact_revs
+        WHERE (learner_id,fact_id,rev)=(f.learner_id,f.id,f.current_rev)
+        UNION ALL
+        SELECT previous.rev,previous.data,previous.author,previous.command_id FROM body
+        LEFT JOIN commands c ON (c.learner_id,c.id)=(f.learner_id,body.command_id)
+        JOIN fact_revs previous ON (previous.learner_id,previous.fact_id)=(f.learner_id,f.id)
+          AND previous.rev=CASE WHEN c.type=$4 THEN (c.input#>>'{input,priorRev}')::int ELSE body.rev-1 END
+        WHERE f.type=$3 AND previous.rev<body.rev AND previous.kind='value' AND previous.data=body.data
+      ) SELECT author,command_id FROM body ORDER BY rev LIMIT 1
+    ) last ON true
+    LEFT JOIN commands origin ON (origin.learner_id,origin.id)=(f.learner_id,last.command_id)
+    WHERE f.learner_id=$1 AND f.id=$2`, [tx.learner, id, textbookPageType, undoTextbookCommand]);
   if (provenance?.author !== 'learner') return null;
   const ref = claimWitness(fact);
   const basis: WorkspaceWitness[] = [{id: ref.id, rev: ref.rev, epoch: ref.accessEpoch, type: fact.type, mode:'following'}];
@@ -55,6 +70,18 @@ async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpos
     }}, 'following');
     if (!page) return null;
   }
+  const dependencies = basis.slice(1);
+  if (dependencies.length) {
+    // A pinned snapshot exposes its historical purposes. Research also requires a current grant.
+    const ids = [...new Set(dependencies.map(witness => witness.id))];
+    const {rowCount} = await tx.query(`
+      SELECT id FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])
+        AND retracted_rev IS NULL AND purpose && ARRAY[$3,'all']`, [tx.learner, ids, researchPurpose]);
+    if (rowCount !== ids.length) return null;
+  }
+  const basisDigest = dependencies.length
+    ? createHash('sha256').update(JSON.stringify(dependencies)).digest('hex')
+    : undefined;
   const activity = activityEvidence(fact);
   if (!activity) return null;
   if ((fact.type === workbookAttemptType || fact.type === posttestSubmissionType) &&
@@ -63,13 +90,16 @@ async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpos
     ...fragment, text: fragment.text.slice(0, 1200).toWellFormed(),
     ...(fragment.prompt ? {prompt: fragment.prompt.slice(0, 350).toWellFormed()} : {}),
   }));
-  return fragments.length ? {kind: activity.kind, ref, basis, fragments, ...provenance} : null;
+  return fragments.length ? {kind: activity.kind, ref, basis, basisDigest, fragments, ...provenance} : null;
 }
 
 export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], purpose?: string,
   maySend?: WorkspaceSourceRecipient) {
   const sources = await Promise.all(refs.map(ref => openUnderstandingActivity(tx, ref.id, purpose, maySend)));
-  return sources.flatMap((source, index) => source && opensCitation(source, refs[index]!) ? [source] : []);
+  return sources.flatMap((source, index) => {
+    const ref = refs[index]!;
+    return source && source.basisDigest === ref.basis_digest && opensCitation(source, ref) ? [source] : [];
+  });
 }
 
 function extractionKey(id: string, revision: number) {
@@ -177,14 +207,16 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
     }
     const matches = async (tx: ReadTransaction) => {
       const current = await prepare(tx);
-      if (current?.input !== prepared.input || JSON.stringify(current.prior) !== JSON.stringify(prepared.prior))
+      if (current?.input !== prepared.input || current.source.basisDigest !== prepared.source.basisDigest ||
+          JSON.stringify(current.prior) !== JSON.stringify(prepared.prior))
         throw new ClaimInputError('抽取活动或既有理解已变更。');
     };
     try {
       const {todo, source, prior, input} = prepared;
       const readOutput = (raw: string) => extractUnderstandings(raw, source, todo.spec.expiresAtMs - windowMs, prior);
       const effect = await runEffect(db, {...scope, ownerKind: 'derivation', ownerId: todoId, stepKey: 'extraction-v1',
-        label: 'model:' + transport.route, input: {instructions: extractionInstructions, input}}, async providerEffectId => {
+        label: 'model:' + transport.route, input: {instructions: extractionInstructions, input,
+          ...(source.basisDigest ? {basis: source.basisDigest} : {})}}, async providerEffectId => {
         // Protect admission and starting the send, then release the learner lock while the host awaits the reply.
         const {response} = await db.tx(scope, async tx => {
           await lockLearner(tx, tx.learner);
@@ -205,7 +237,8 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
         const previous = target && prior.find(entry => entry.ref.id === target);
         const id = factId(target ?? stableId('extracted-understanding-v1', source.ref.id, String(source.ref.rev), String(index)));
         return {id, prior: previous ? previous.ref : null, data: {...data, version: 2 as const, sticky: false,
-          evidence_refs: [...(previous ? previous.data.evidence_refs : []), ...data.evidence_refs],
+          evidence_refs: [...(previous ? previous.data.evidence_refs : []), ...data.evidence_refs.map(ref =>
+            source.basisDigest ? {...ref, basis_digest: source.basisDigest} : ref)],
           undo_token: previous ? previous.data.undo_token : factId(claimUndoToken(command, id))}};
       });
 
@@ -223,7 +256,8 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
         purpose: researchPurpose, input: {entries}});
       await finishWork(db, ref);
     } catch (error) {
-      if (!(error instanceof ClaimInputError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+      if (!(error instanceof ClaimInputError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError ||
+          error instanceof Error && error.message === 'Effect identity already used with different input')) throw error;
       await cancel();
     }
   };

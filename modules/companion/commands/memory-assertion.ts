@@ -34,7 +34,7 @@ export default defineCommand({
     if (expectedRev !== undefined) {
       const current = await ctx.read.fact(id, { mode: 'following' });
       if (current.type !== memoryAssertionType || current.ref.rev !== expectedRev)
-        throw new Error('记忆类型或版本已变更。');
+        throw new ClaimInputError('记忆类型或版本已变更。');
       if (input.action === 'correct-extracted' || input.action === 'forget-extracted') {
         const prior = extractedUnderstanding(current.value);
         if (current.accessEpoch !== input.accessEpoch) throw new ClaimInputError('理解用途已变更。');

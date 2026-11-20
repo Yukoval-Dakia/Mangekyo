@@ -34,3 +34,8 @@
 }
 .recall-card { margin-block: 12px; padding: 16px; border: 1px solid var(--outline); border-radius: 16px; background: var(--surface); }
 .recall-card .study-actions { margin-top: 8px; justify-content: space-between; }
+.understanding-entry h3 { font-size: 1.05rem; }
+.understanding-entry figure { margin: 14px 0 4px; }
+.understanding-entry figcaption { font-size: .85rem; color: var(--muted); }
+.understanding-entry blockquote { margin: 6px 0; padding-inline-start: 12px; border-inline-start: 3px solid var(--primary); white-space: pre-wrap; }
+.understanding-entry .study-actions { margin-top: 12px; }

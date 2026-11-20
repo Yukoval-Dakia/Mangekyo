@@ -179,26 +179,33 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
     }
   }
 
-  async function toggleRecord(item: AccessItem) {
+  async function toggleRecord(item: AccessItem, purpose: 'teaching' | 'background-research' = 'teaching') {
     if (disabled || busyRecord) return;
+    const background = purpose === 'background-research';
+    const enabled = background ? !item.purposes.includes(purpose) : !item.teaching;
     setBusyRecord(item.id);
     setError('');
     setNotice('');
     try {
-      const result = await api<{ id: string; rev: number; teaching: boolean; changed: boolean }>(
+      const result = await api<{ id: string; rev: number; teaching: boolean; research?: boolean }>(
         '/workspace/access/records/' + encodeURIComponent(item.id),
         {
           method: 'PUT',
-          body: { expectedRev: item.rev, enabled: !item.teaching },
+          body: { expectedRev: item.rev, enabled, ...(background ? {purpose} : {}) },
         },
       );
+      const allowed = background ? result.research === true : result.teaching;
       setPage((current) => current && {
         ...current,
         items: current.items.map((entry) => entry.id === result.id
-          ? { ...entry, rev: result.rev, teaching: result.teaching }
+          ? { ...entry, rev: result.rev, teaching: result.teaching, purposes: allowed
+            ? [...new Set([...entry.purposes, purpose])]
+            : entry.purposes.filter(value => value !== purpose) }
           : entry),
       });
-      setNotice(result.teaching
+      setNotice(background
+        ? allowed ? '已允许后台从这页教材整理学习观察。' : '已撤回这页教材的后台用途。'
+        : result.teaching
         ? '已开放这条记录。只有获授权的模型配置能读取它。'
         : '已撤销这条记录的开放。原有用途保持不变。');
     } catch (failure) {
@@ -384,7 +391,7 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
                       ? authorized.length
                         ? '已开放，可被获授权模型读取'
                         : '已开放，但还没有获授权的模型'
-                      : '仅本人可见'}
+                      : item.purposes.includes('background-research') ? '允许后台使用 · 未开放同伴访问' : '仅本人可见'}
                   </small>
                 </div>
                 <div className="access-record-actions">
@@ -401,6 +408,15 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
                     />
                     <span>{!item.eligible ? '全部用途' : item.teaching ? '已开放' : '开放给获授权模型'}</span>
                   </label>
+                  {item.category === 'textbook' && item.eligible && <label className="access-toggle">
+                    <input
+                      type="checkbox"
+                      checked={item.purposes.includes('background-research')}
+                      disabled={disabled || busyRecord === item.id}
+                      onChange={() => void toggleRecord(item, 'background-research')}
+                    />
+                    <span>允许后台整理学习观察</span>
+                  </label>}
                 </div>
               </div>
               {expanded && (
