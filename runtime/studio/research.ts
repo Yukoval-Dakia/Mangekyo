@@ -4,8 +4,8 @@ import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts'
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
+import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, readReadyWork, readWork, type WorkRef,
@@ -14,8 +14,9 @@ import {
   cancelResearchTodos, checkTodoTriggers, completeTodo, emitTodo, endDispatchedTodo, enqueueWork,
   readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec,
 } from '../../kernel/src/work/todos.ts';
+import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
+import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import {
   allowRetentionReview, configureResearch, publishWorksheet, readResearchBasis, ResearchBasisChanged, researchOrder,
   researchPurpose, researchSettings, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType, worksheetDraft,
@@ -174,8 +175,14 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
 
   const activityChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
     if (extract && changes.some(change => change.factType !== turnEvidenceType &&
-        activityEvidenceTypes.includes(change.factType) && change.kind !== 'retract') &&
+        (activityEvidenceTypes.includes(change.factType) || change.kind === 'set_purpose' &&
+          [workbookPaperType, workspaceEntryType].includes(change.factType)) && change.kind !== 'retract') &&
         (await settings(tx))?.enabled) await enqueueWork(tx, tick, wake);
+  };
+
+  const turnCompleted = async (tx: DbTransaction, tick: Tick, id: string) => {
+    if (extract && (await settings(tx))?.enabled &&
+        await whenAvailable(() => researchReader(tx).fact(factId(id), {mode: 'following'}))) await enqueueWork(tx, tick, wake);
   };
 
   const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => {
@@ -186,14 +193,14 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       signal.throwIfAborted();
       const now = Date.now();
       const eligible = async (spec: TodoSpec) => (await (extract && spec.workerProfile === extractorProfile
-        ? eligibleExtraction(tx, spec) : eligibleBasis(tx, spec))) !== null;
+        ? eligibleExtraction(tx, spec, understandingTransport?.maySend) : eligibleBasis(tx, spec))) !== null;
       const due = await checkTodoTriggers(tx, now, eligible);
       if (due.advanced) return { status: 'advanced' } as const;
       const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
       const watermark = await newResearchWatermark(tx);
       if (!watermark) return waiting;
       if (extract) {
-        const todos = await discoverUnderstandingTodos(tx, watermark.reviewed, current.revision, now);
+        const todos = await discoverUnderstandingTodos(tx, watermark.reviewed, current.revision, now, understandingTransport?.maySend);
         if (todos.length) {
           await tx.withLearnerWrite(async tick => {
             for (const spec of todos) await emitTodo(tx, tick, spec, now, eligible);
@@ -276,6 +283,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     },
     workbookChanged,
     activityChanged,
+    turnCompleted,
     advance,
     async reconcile() {
       await db.tx(scope, async tx => {

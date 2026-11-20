@@ -147,7 +147,7 @@ async function projectMount(
   if (!work || work.failed) throw new MountUnavailable('此回合已停止。');
   const result = validateArtifact(data.view);
   if (!result.ok) throw new MountUnavailable('无法读取这个作品版本。');
-  const authority = await teachingResultAuthority(tx, submission, data.manifest, grantCurrent, check);
+  const {state: authority} = await teachingResultAuthority(tx, data.turnId, submission, data.manifest, grantCurrent, check);
   if (authority === 'unconfirmed') throw new NotionReadUnconfirmed();
   if (authority === 'withdrawn') throw new MountUnavailable('作品的依据已变更。');
   const events = await tx.query<{ id: string; receipt: CommandReceipt | null }>(

@@ -67,7 +67,7 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     }
   }
 
-  async function readItemEdges(tx: Tx, read: ReadContext, source: WorkbookSourceQuestionRef | undefined,
+  async function readItemEdges(tx: Tx, read: FactReader, source: WorkbookSourceQuestionRef | undefined,
     cutoff: Tick, kinds: readonly ('targets_concept' | 'variant_of')[], open?: (id: FactId) => ReturnType<typeof openEdge>) {
     const edges = [];
     for await (const edge of openedItemEdges(tx,source,cutoff,kinds,open)) {
@@ -78,7 +78,7 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     return edges;
   }
 
-  async function readItemDimensions(tx: Tx, read: ReadContext, source: WorkbookSourceQuestionRef | undefined,
+  async function readItemDimensions(tx: Tx, read: FactReader, source: WorkbookSourceQuestionRef | undefined,
     cutoff: Tick, open?: (id: FactId) => ReturnType<typeof openEdge>) {
     const edges = await readItemEdges(tx,read,source,cutoff,['targets_concept'],open);
     return [...new Set(edges.map(edge=>edge.to.fact.id))].sort();
@@ -106,14 +106,14 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   }
 
   async function readWorkbookObservation(
-    tx: Tx, read: ReadContext, opened: Awaited<ReturnType<typeof openRetentionTarget>>, id: FactId,
+    tx: Tx, read: FactReader, opened: Awaited<ReturnType<typeof openRetentionTarget>>, id: FactId,
     expectedForecast?: DerivationId,
   ) {
     return (await readWorkbookEvidence(tx, read, opened, id, expectedForecast)).observation;
   }
 
   async function readWorkbookEvidence(
-    tx: Tx, read: ReadContext, opened: Awaited<ReturnType<typeof openRetentionTarget>>, id: FactId,
+    tx: Tx, read: FactReader, opened: Awaited<ReturnType<typeof openRetentionTarget>>, id: FactId,
     expectedForecast?: DerivationId,
   ) {
     const { target, paper } = opened;
@@ -153,7 +153,7 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   }
 
   async function readComparableWorkbookEvidence(
-    tx: Tx, read: ReadContext, target: Awaited<ReturnType<typeof openRetentionTarget>>,
+    tx: Tx, read: FactReader, target: Awaited<ReturnType<typeof openRetentionTarget>>,
     id: FactId, cutoff: Tick,
   ) {
     const fact = await read.fact(id, { mode: 'following' });
@@ -175,7 +175,7 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   }
 
   async function readControlledExposure(
-    tx: Tx, read: ReadContext, target: ReturnType<typeof workbookRetentionTarget>, started: Tick, ref: FactRef, cutoff: Tick,
+    tx: Tx, read: FactReader, target: ReturnType<typeof workbookRetentionTarget>, started: Tick, ref: FactRef, cutoff: Tick,
   ) {
     const releases = await readEarlierControlledPosttests(tx, target.paper.id, started, cutoff);
     const visible = [];
@@ -206,7 +206,7 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   }
 
   async function readExposure(
-    tx: Tx, read: ReadContext, target: ReturnType<typeof workbookRetentionTarget>,
+    tx: Tx, read: FactReader, target: ReturnType<typeof workbookRetentionTarget>,
     ref: Parameters<typeof projectHelpExposure>[0]['submission']['ref'], cutoff: Tick,
   ) {
     // Workbook creates the original release at revision 1. Teaching grants create revisions carrying its unchanged content.

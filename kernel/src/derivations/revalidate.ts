@@ -2,6 +2,7 @@ import type { ReadTransaction } from '../db/types.ts';
 import { derivationId, type Tick } from '../declarations/ids.ts';
 import type { Outcome, SlotRef } from '../declarations/types.ts';
 import { canonicalJsonString } from '../commands/canonical.ts';
+import { followingRevisionFloor, followingWitnessMatches } from '../commands/purpose-witness.ts';
 import { parseManifest, type Manifest, type ManifestInput, type ManifestVerdict } from './manifest.ts';
 
 type Derivation = {
@@ -15,7 +16,6 @@ type Derivation = {
   manifest: unknown;
 };
 type FactInput = Extract<ManifestInput,{kind:'fact'}>;
-type ReopenedFact = {current_rev:number; access_epoch:string; retracted_rev:number|null; tick:string; allowed:boolean};
 const invalid = (reason: string): ManifestVerdict => ({ kind: 'invalid', reason });
 const valid = (behind = false): ManifestVerdict => ({ kind: 'valid', freshness: behind ? 'behind' : 'current' });
 
@@ -88,26 +88,20 @@ async function checkDerivation(
   return nested.kind === 'valid' ? row : null;
 }
 
-function validFactInput(row: ReopenedFact | undefined, input: FactInput, at: Tick): boolean {
-  return row !== undefined && row.retracted_rev===null && row.allowed &&
-    BigInt(row.tick)<=BigInt(at) && row.access_epoch===input.accessEpoch &&
-    (input.mode!=='following' || row.current_rev===input.rev);
-}
-
 async function checkFactManifest(tx: ReadTransaction, inputs: readonly FactInput[], at: Tick, purpose: string) {
-  const {rows} = await tx.query<ReopenedFact & {id:string; rev:number}>(
-    `WITH requested AS (
-       SELECT DISTINCT id,rev FROM jsonb_to_recordset($2::jsonb) AS input(id text,rev integer)
-     )
-     SELECT f.id,r.rev,f.current_rev,f.access_epoch::text,f.retracted_rev,r.tick::text,
-            ($3=ANY(f.purpose) OR 'all'=ANY(f.purpose)) AND ($3=ANY(r.purpose) OR 'all'=ANY(r.purpose)) AS allowed
-       FROM requested q JOIN facts f ON f.learner_id=$1 AND f.id=q.id
-       JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,q.rev) AND r.kind='value'`,
-    [tx.learner, JSON.stringify(inputs.map(({id,rev})=>({id,rev}))), purpose],
+  const matches = followingWitnessMatches('f', followingRevisionFloor('f', '$3::text'), 'q.rev', 'q.epoch');
+  const result = await tx.query<{count:number}>(
+    `SELECT COUNT(*)::integer AS count
+       FROM jsonb_to_recordset($2::jsonb) AS q(id text, rev integer, mode text, epoch text)
+       JOIN facts f ON f.learner_id=$1 AND f.id=q.id
+       JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,q.rev)
+      WHERE r.kind='value' AND f.retracted_rev IS NULL AND r.tick <= $4::bigint
+        AND ($3=ANY(f.purpose) OR 'all'=ANY(f.purpose))
+        AND ($3=ANY(r.purpose) OR 'all'=ANY(r.purpose))
+        AND CASE WHEN q.mode='following' THEN ${matches} ELSE f.access_epoch::text=q.epoch END`,
+    [tx.learner, JSON.stringify(inputs.map(({id,rev,mode,accessEpoch}) => ({id,rev,mode,epoch:accessEpoch}))), purpose, at],
   );
-  const reopened = new Map(rows.map(row=>[row.id+':'+row.rev,row]));
-  return inputs.every(input=>validFactInput(reopened.get(input.id+':'+input.rev),input,at))
-    ? valid() : invalid('Fact input changed or is denied');
+  return result.rows[0]?.count === inputs.length ? valid() : invalid('Fact input changed or is denied');
 }
 
 async function checkInput(
@@ -117,18 +111,7 @@ async function checkInput(
   purpose: string,
   visiting: ReadonlySet<string>,
 ): Promise<ManifestVerdict> {
-  if (input.kind === 'fact') {
-    const result = await tx.query<ReopenedFact>(
-      `SELECT f.current_rev, f.access_epoch::text, f.retracted_rev, r.tick::text,
-              ($4=ANY(f.purpose) OR 'all'=ANY(f.purpose))
-              AND ($4=ANY(r.purpose) OR 'all'=ANY(r.purpose)) AS allowed
-       FROM facts f JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id
-       WHERE f.learner_id=$1 AND f.id=$2 AND r.rev=$3 AND r.kind='value'`,
-      [tx.learner, input.id, input.rev, purpose],
-    );
-    const row = result.rows[0];
-    return validFactInput(row,input,at) ? valid() : invalid('Fact input changed or is denied');
-  }
+  if (input.kind === 'fact') return checkFactManifest(tx, [input], at, purpose);
   if (input.kind === 'slot') {
     const row = await checkDerivation(tx, input.derivationId, input.slotType, input.slotKey, at, purpose, visiting);
     if (!row) return invalid('Derivation input is invalid or denied');

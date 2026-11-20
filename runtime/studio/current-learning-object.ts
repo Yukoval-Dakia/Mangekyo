@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
+import { studyObjectBasisDigest, type StudyObjectWitness } from '../../modules/activity/current-object-basis.ts';
 import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -14,25 +13,25 @@ import { purpose } from './identity.ts';
 import { textSlice } from './reading.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { openWorkbookDiagnosisSource } from './workbook-diagnosis.ts';
-import type { WorkspaceWitness } from './workspace-agent.ts';
 
 export function currentObjectAlias(kind: StudyCurrentObjectSelection['kind']) {
   return kind === 'attempt' ? 'current_attempt' : 'current_page';
 }
 
 export async function readCurrentLearningObject(tx: ReadTransaction, selection: StudyCurrentObjectSelection,
-  maySend: WorkspaceSourceRecipient) {
+  maySend: WorkspaceSourceRecipient, ownerNotionRead?: true) {
   try {
     const {kind, id, rev} = selection;
     const fact = await createAuthorizedFactReader(tx, purpose, maySend).fact(factId(id), {mode: 'pinned', rev: rev as Revision});
     const sourceRef = sourceReference(fact, {kind: 'whole'});
-    const witnesses = new Map<string, WorkspaceWitness>();
+    const witnesses = new Map<string, StudyObjectWitness>();
     const track: SourceTrack = (source, mode = 'following') => {
       const {id, rev} = source.ref;
       const key = `${id}:${rev}`;
       if (mode === 'pinned' && witnesses.has(key)) return;
       witnesses.set(key, {id, rev, type: source.type, epoch: source.accessEpoch, mode});
     };
+    const access = {maySend, track, ...(ownerNotionRead && {ownerNotionRead})};
     let title: string;
     let original: string;
     let hasAnswer = false;
@@ -41,7 +40,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
       if (fact.type !== workbookAttemptType) return;
       // The saved attempt embeds a copy of its workbook. The diagnosis reader
       // checks the frozen paper and source prompts before that copy can be used.
-      const opened = await openWorkbookDiagnosisSource(tx, sourceRef, {maySend, track});
+      const opened = await openWorkbookDiagnosisSource(tx, sourceRef, access);
       if (!opened) return;
       const {paper, answers} = opened.attempt;
       title = opened.source.title;
@@ -51,7 +50,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
     } else {
       if (fact.type !== textbookPageType && fact.type !== organizerNoteType &&
           (fact.type !== workspaceEntryType || workspaceEntry(fact.value).kind !== 'page')) return;
-      const page = await resolveSource(tx, sourceRef, {recipient: 'workspace', maySend, track});
+      const page = await resolveSource(tx, sourceRef, {recipient: 'workspace', ...access});
       if (!page || typeof page.content !== 'string') return;
       title = page.title;
       original = page.content;
@@ -59,7 +58,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
     const root = witnesses.get(`${id}:${rev}`);
     if (!root) return;
     const basis = [...witnesses.values()].sort((a, b) => a.id.localeCompare(b.id) || a.rev - b.rev);
-    const basisDigest = createHash('sha256').update(canonicalJsonString(basis)).digest('hex');
+    const basisDigest = await studyObjectBasisDigest(basis);
     const {content, nextOffset} = textSlice(original, 0, 3000);
     return {
       root, basis, basisDigest, answerSlot, openedAnswer: hasAnswer && nextOffset === null,

@@ -1,5 +1,5 @@
 import { defineCommand } from '@mangekyo/kernel';
-import { readClaimPredecessor, claimId, claimRecord, claimType, ClaimInputError, manageClaimCommand, structuredClaim } from '../claim.ts';
+import { readClaimPredecessor, claimId, claimRecord, claimType, claimValue, ClaimInputError, manageClaimCommand, structuredClaim } from '../claim.ts';
 
 export default defineCommand({
   type: manageClaimCommand,
@@ -11,7 +11,11 @@ export default defineCommand({
     return {id: claimId(id), data: {...value, supersedes: value.supersedes}};
   }},
   async write(ctx, {id, data}) {
-    await readClaimPredecessor(ctx, data.supersedes);
-    return [{kind: 'create', id, factType: claimType, data, purpose: ['storage']}];
+    const previous = claimValue((await readClaimPredecessor(ctx, data.supersedes)).value);
+    const replacement = previous.version === 1 && previous.authority === 'directive'
+      ? structuredClaim({...data, authority: previous.authority, category: previous.category,
+          scope: previous.scope, valid_until: previous.valid_until, refusal: previous.refusal})
+      : data;
+    return [{kind: 'create', id, factType: claimType, data: replacement, purpose: ['storage']}];
   },
 });

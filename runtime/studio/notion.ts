@@ -1,4 +1,5 @@
-import { manifestFactInputs, revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
+import { teachingMemoryBasis } from './memory-claims.ts';
 import type { studyTurn } from '../../modules/activity/values.ts';
 import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -167,25 +168,23 @@ export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<B
   return pages;
 }
 
-export async function teachingResultAuthority(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
+export async function teachingResultAuthority(tx: ReadTransaction, turnId: string, turn: ReturnType<typeof studyTurn>,
   rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead,
   origin?: ReturnType<typeof studyTurn>) {
   try {
     const manifest = parseManifest(rawManifest);
-    if (manifest.purpose !== teaching || !await teachingTurnAllowed(tx,turn,grantCurrent,origin) ||
-        (await revalidateManifest(tx, manifest)).kind !== 'valid') return 'withdrawn';
+    if (manifest.purpose !== teaching || !await teachingTurnAllowed(tx,turn,grantCurrent,origin))
+      return {state:'withdrawn'} as const;
     const recipient: NotionRecipient = () => true;
     if (turn.providerId && turn.protocol && turn.workspaceRevision)
       recipient.notionRecipientId = notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision);
-    await notionSendBasis(tx, await savedNotionWitnesses(tx, manifest.inputs), recipient, check);
-    return 'authorized';
+    const memoryBasis = await teachingMemoryBasis(tx, manifest, turnId, recipient);
+    if (!memoryBasis) return {state:'withdrawn'} as const;
+    await notionSendBasis(tx, [...await savedNotionWitnesses(tx, manifest.inputs), ...memoryBasis.objects], recipient, check);
+    return {state:'authorized', memoryBasis} as const;
   } catch (error) {
-    return error instanceof NotionReadUnconfirmed ? 'unconfirmed' : 'withdrawn';
+    return error instanceof NotionReadUnconfirmed ? {state:'unconfirmed'} as const : {state:'withdrawn'} as const;
   }
-}
-
-export async function teachingResultAllowed(...args: Parameters<typeof teachingResultAuthority>) {
-  return (await teachingResultAuthority(...args)) === 'authorized';
 }
 
 export class NotionReadUnconfirmed extends FactReadDeniedError {
