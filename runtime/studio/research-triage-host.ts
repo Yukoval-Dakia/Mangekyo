@@ -164,7 +164,7 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
       const dedupKey = reviewDedupKey(sourceFactRev);
       const known = await tx.query(
         `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
-         UNION ALL SELECT 1 FROM working_todos WHERE learner_id = $1 AND dedup_key = $3
+         UNION ALL SELECT 1 FROM work WHERE family='todo' AND learner_id = $1 AND dedup_key = $3
           AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5 LIMIT 1`,
         [tx.learner, worksheetId(id, fact.ref.rev, fact.accessEpoch), dedupKey,
           JSON.stringify(sourceFactRev), String(settingsRevision)],
@@ -197,7 +197,7 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   if (!Object.keys(events).length) return null;
   const { facts, intent, olderCandidate } = await readReviewAttempts(tx, discovery, settingsRevision, now);
   const { rows } = await tx.query<{ todo_id: string }>(
-    `SELECT todo_id FROM working_todos WHERE learner_id = $1 AND state IN ('pending', 'dispatched')
+    `SELECT slot_key AS todo_id FROM work WHERE family='todo' AND learner_id = $1 AND state IN ('pending','ready','waiting')
      ORDER BY registered_tick DESC, todo_id LIMIT $2`, [tx.learner, recentWindow + 1],
   );
   const todos: Record<string, Json> = {};

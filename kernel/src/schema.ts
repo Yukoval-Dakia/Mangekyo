@@ -1,5 +1,6 @@
 import type { Db, DbQuery } from './db/types.ts';
 import { newUlid } from './work/identity.ts';
+import { migrateTodoWork } from './work/migrate-todos.ts';
 import { migrateWorkingState } from './work/todos.ts';
 
 // Version 1 also describes databases created before migrations were recorded.
@@ -228,6 +229,7 @@ const migrations = [
     await tx.query("ALTER TABLE facts ALTER COLUMN purpose SET DEFAULT '{storage}'");
   },
   migrateWorkingState,
+  migrateTodoWork,
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */

@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import type { DbQuery, DbTransaction, ReadTransaction } from '../db/types.ts';
+import { lockLearner } from '../db/learner.ts';
 import { factId, type Tick } from '../declarations/ids.ts';
-import { requestWork, type WorkRequest } from './demand.ts';
+import { enqueueGeneration, setPending, requestWork, todoSlot, type WorkRef, type WorkRequest } from './demand.ts';
 import { newUlid } from './identity.ts';
 
-export const todoSlot = 'working.todo';
+export { todoSlot };
 export const maxTodoHops = 3;
 const id = z.string().transform(factId);
 const timestamp = z.number().int().positive().max(8_640_000_000_000_000);
@@ -29,6 +30,7 @@ const todoSpec = z.object({
   refs: z.array(source).max(20),
   sourceFactRev: source,
   autonomyTier: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+  priority: z.union([z.literal(0), z.literal(1)]).optional(),
   budgetCap: z.number().int().nonnegative(),
   settingsRevision: z.number().int().positive(),
   expiresAtMs: timestamp,
@@ -38,6 +40,7 @@ export type TodoInput = z.input<typeof todoSpec>;
 export type TodoSpec = z.output<typeof todoSpec>;
 type TodoState = 'pending' | 'dispatched' | 'completed' | 'cancelled' | 'failed';
 export type Todo = {
+  learner: string;
   id: string;
   spec: TodoSpec;
   revision: number;
@@ -79,7 +82,9 @@ export async function migrateWorkingState(tx: DbQuery) {
   )`);
 }
 
-const columns = `todo_id AS id, spec, revision, state, chain_id AS "chainId",
+const columns = `learner_id AS learner, slot_key AS id, spec, revision, CASE state
+  WHEN 'pending' THEN 'pending' WHEN 'ready' THEN 'dispatched' WHEN 'waiting' THEN 'dispatched'
+  WHEN 'satisfied' THEN 'completed' WHEN 'cancelled' THEN 'cancelled' ELSE 'failed' END AS state, chain_id AS "chainId",
   hop_count AS "hopCount", registered_tick::text AS "registeredTick", result_id AS "resultId"`;
 
 function parsed(row: Todo): Todo {
@@ -88,7 +93,7 @@ function parsed(row: Todo): Todo {
 
 export async function readTodo(tx: ReadTransaction, id: string) {
   const { rows: [row] } = await tx.query<Todo>(
-    `SELECT ${columns} FROM working_todos WHERE learner_id = $1 AND todo_id = $2`, [tx.learner, id],
+    `SELECT ${columns} FROM work WHERE family='todo' AND learner_id = $1 AND slot_key = $2`, [tx.learner, id],
   );
   return row ? parsed(row) : null;
 }
@@ -102,20 +107,28 @@ export async function enqueueWork(tx: DbTransaction, tick: Tick, work: WorkReque
   return requestWork(tx, tick, work);
 }
 
-async function transition(tx: DbTransaction, todo: Todo, state: TodoState, resultId?: string) {
+async function transition(tx: DbTransaction, todo: Todo, state: 'cancelled' | 'blocked') {
   const { rowCount } = await tx.query(
-    `UPDATE working_todos SET state = $3, result_id = $4, revision = revision + 1
-     WHERE learner_id = $1 AND todo_id = $2 AND revision = $5`,
-    [tx.learner, todo.id, state, resultId ?? null, todo.revision],
+    `UPDATE work SET state = $3, revision = revision + 1
+     WHERE family='todo' AND learner_id = $1 AND slot_key = $2 AND revision = $4
+       AND state IN ('pending','ready','waiting')`,
+    [tx.learner, todo.id, state, todo.revision],
   );
+  if (rowCount) await setPending(tx, { slotType: todoSlot, slotKey: todo.id }, 'none');
   return rowCount === 1;
 }
 
 async function dispatch(tx: DbTransaction, tick: Tick, todo: Todo, now: number, eligible: Eligibility) {
-  const allowed = todo.spec.expiresAtMs > now && await eligible(todo.spec);
-  if (await transition(tx, todo, allowed ? 'dispatched' : 'cancelled') && allowed) {
-    await enqueueWork(tx, tick, { slotType: todoSlot, slotKey: todo.id, deriver: todo.spec.workerProfile });
+  if (todo.spec.expiresAtMs <= now || !await eligible(todo.spec)) {
+    await transition(tx, todo, 'cancelled');
+    return;
   }
+  const executionRef = newUlid();
+  const { rows: [ref] } = await tx.query<{ workId: string; generation: string }>(
+    `UPDATE work SET state='ready', execution_ref=$4, requested_tick=$5, revision=revision+1
+     WHERE learner_id=$1 AND family='todo' AND slot_key=$2 AND revision=$3 AND state='pending'
+     RETURNING id AS "workId", generation::text`, [tx.learner, todo.id, todo.revision, executionRef, tick]);
+  if (ref) await enqueueGeneration(tx, { slotType: todoSlot, slotKey: todo.id }, { learner: tx.learner, ...ref }, executionRef);
 }
 
 function eventParent(spec: TodoSpec) {
@@ -127,7 +140,7 @@ function eventParent(spec: TodoSpec) {
 export async function emitTodo(tx: DbTransaction, tick: Tick, input: TodoInput, now: number, eligible: Eligibility) {
   const spec = todoSpec.parse(input);
   const active = await tx.query<Todo>(
-    `SELECT ${columns} FROM working_todos WHERE learner_id = $1 AND dedup_key = $2 AND state IN ('pending','dispatched')`,
+    `SELECT ${columns} FROM work WHERE family='todo' AND learner_id = $1 AND dedup_key = $2 AND state IN ('pending','ready','waiting')`,
     [tx.learner, spec.dedupKey],
   );
   if (active.rows[0]) return parsed(active.rows[0]);
@@ -139,10 +152,14 @@ export async function emitTodo(tx: DbTransaction, tick: Tick, input: TodoInput, 
       parent.state === 'failed' || (!completionParent && parent.state !== 'completed')))
     return null;
   const id = newUlid();
-  const todo: Todo = { id, spec, state: 'pending', revision: 1, chainId: parent?.chainId ?? id,
+  const todo: Todo = { learner: tx.learner, id, spec, state: 'pending', revision: 1, chainId: parent?.chainId ?? id,
     hopCount: parent ? parent.hopCount + 1 : 0, registeredTick: tick, resultId: null };
-  await tx.insert('working_todos', {
-    learner_id: tx.learner, todo_id: id, dedup_key: spec.dedupKey, spec: JSON.stringify(spec),
+  await tx.insert('slot_state', {
+    learner_id: tx.learner, slot_type: todoSlot, slot_key: id, scope_keys: '{}', changed_tick: tick,
+  });
+  await tx.insert('work', {
+    learner_id: tx.learner, id, slot_type: todoSlot, slot_key: id, spec: JSON.stringify(spec),
+    priority: spec.priority ?? 0, deriver: spec.workerProfile, family: 'todo', requested_tick: tick,
     state: todo.state, chain_id: todo.chainId, hop_count: todo.hopCount, registered_tick: tick,
   });
   if (spec.trigger.kind === 'immediate' || (completionParent && parent?.state === 'completed'))
@@ -172,15 +189,18 @@ export async function updateOrCancelTodo(
     && trigger.event.type === previous.event.type && trigger.event.subject === previous.event.subject;
   // Extending or editing the task keeps already-observed events for the same subscription.
   const registeredTick = sameEvent ? todo.registeredTick : tick;
-  await tx.query(`UPDATE working_todos SET spec = $3, revision = revision + 1, registered_tick = $4
-    WHERE learner_id = $1 AND todo_id = $2`, [tx.learner, id, JSON.stringify(spec), registeredTick]);
+  await tx.query(`UPDATE work SET spec = $3, revision = revision + 1, registered_tick = $4, deriver=$5, priority=$6
+    WHERE family='todo' AND learner_id = $1 AND slot_key = $2`,
+  [tx.learner, id, JSON.stringify(spec), registeredTick, spec.workerProfile, spec.priority ?? 0]);
   if (spec.trigger.kind === 'immediate') await dispatch(tx, tick, { ...todo, spec, revision: revision + 1 }, now, eligible);
   return true;
 }
 
 export function cancelResearchTodos(tx: DbTransaction) {
-  return tx.query(`UPDATE working_todos SET state = 'cancelled', revision = revision + 1
-    WHERE learner_id = $1 AND state IN ('pending','dispatched')`, [tx.learner]);
+  return tx.query(`WITH cancelled AS (UPDATE work SET state = 'cancelled', revision = revision + 1
+    WHERE family='todo' AND learner_id = $1 AND state IN ('pending','ready','waiting') RETURNING slot_type,slot_key)
+    UPDATE slot_state s SET pending='none' FROM cancelled c
+    WHERE learner_id=$1 AND (s.slot_type,s.slot_key)=(c.slot_type,c.slot_key)`, [tx.learner]);
 }
 
 export async function recordTodoEvent(tx: DbTransaction, tick: Tick, input: TodoEvent) {
@@ -191,24 +211,32 @@ export async function recordTodoEvent(tx: DbTransaction, tick: Tick, input: Todo
   [tx.learner, type, subject, tick]);
 }
 
-export async function completeTodo(tx: DbTransaction, tick: Tick, todo: Todo, resultId: string) {
-  if (todo.state !== 'dispatched' || !await transition(tx, todo, 'completed', resultId)) return false;
+export async function completeTodo(tx: DbTransaction, tick: Tick, ref: WorkRef, todo: Todo, resultId: string) {
+  if (ref.learner !== tx.learner || todo.learner !== tx.learner || todo.state !== 'dispatched') return false;
+  const updated = await tx.query(
+    `UPDATE work SET state='satisfied', result_id=$6, revision=revision+1
+     WHERE learner_id=$1 AND id=$2 AND generation=$3 AND slot_key=$4 AND revision=$5
+       AND family='todo' AND state='ready'`, [ref.learner, ref.workId, ref.generation, todo.id, todo.revision, resultId],
+  );
+  if (!updated.rowCount) return false;
+  await setPending(tx, { slotType: todoSlot, slotKey: todo.id }, 'none');
   await recordTodoEvent(tx, tick, { type: 'on_work_completed', subject: todo.id });
   return true;
 }
 
 export async function endDispatchedTodo(tx: DbTransaction, id: string, state: 'cancelled' | 'failed') {
   const todo = await readTodo(tx, id);
-  if (todo?.state === 'dispatched') await transition(tx, todo, state);
+  if (todo?.state === 'dispatched') await transition(tx, todo, state === 'failed' ? 'blocked' : 'cancelled');
 }
 
 export async function checkTodoTriggers(tx: DbTransaction, now: number, eligible: Eligibility) {
+  await lockLearner(tx, tx.learner);
   const { rows } = await tx.query<Todo & { noticed: boolean }>(
     `SELECT ${columns}, EXISTS (
        SELECT 1 FROM working_todo_events e WHERE e.learner_id = t.learner_id
-        AND e.event_type = t.spec #>> '{trigger,event,type}' AND e.subject = t.spec #>> '{trigger,event,subject}'
+        AND e.event_type = t.event_match->>'type' AND e.subject = t.event_match->>'subject'
         AND e.seen_tick > t.registered_tick
-     ) AS noticed FROM working_todos t WHERE learner_id = $1 AND state = 'pending'`, [tx.learner],
+     ) AS noticed FROM work t WHERE family='todo' AND learner_id = $1 AND state = 'pending' ORDER BY priority,registered_tick,slot_key`, [tx.learner],
   );
   const due: Todo[] = [];
   let nextAt: number | undefined;
