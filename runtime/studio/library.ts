@@ -5,15 +5,10 @@ import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/
 import type { Json } from '../../kernel/src/declarations/types.ts';
 import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import {
-  captureMaterial,
-  goalType,
-  materialType,
-  setStudyGoal,
-  storagePurpose,
-  studyGoal,
-  textMaterial,
-} from '../../modules/activity/library-values.ts';
+import { storagePurpose } from '../../modules/activity/library-values.ts';
+import { captureMaterial } from '../../modules/capture/intake-values.ts';
+import { materialType, textMaterial } from '../../modules/content/text-material.ts';
+import { goalType, setStudyGoal, studyGoal } from '../../modules/plan/goal-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { readMaterialText } from './reading.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -27,8 +22,13 @@ function validate<Value>(parse: (input: unknown) => Value, input: unknown, messa
   }
 }
 
-export function openLibrary(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
-  const handle = createCommandHandler(db, { modules: [activity], hooks });
+export function openLibrary(db: Db, captureModule: LoadedModule, content: LoadedModule, plan: LoadedModule,
+  hooks: CommandHooks = createStudioCommandHooks()) {
+  const handle = createCommandHandler(db, {
+    modules: [captureModule, content, plan],
+    hooks,
+    crossModuleWrites: { [captureMaterial]: { create: [materialType] } },
+  });
   async function write(type: string, requestId: string, input: Json) {
     try {
       return await handle({

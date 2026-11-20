@@ -14,6 +14,7 @@ import type {
   CommandHandler,
   CommandRequest,
   CommandRuntimeOptions,
+  FactWriteTarget,
   WriteOptions,
 } from './contracts.ts';
 import { applyFactWrites } from './writes.ts';
@@ -58,20 +59,20 @@ function declarationFromRecord(value: Record<string, unknown>): CommandDeclarati
   };
 }
 
-function commandModules(modules: readonly LoadedModule[]): Map<string, CommandModule> {
-  const result = new Map<string, CommandModule>();
-  const factOwners = new Set<string>();
+function commandModules(modules: readonly LoadedModule[]) {
+  const commands = new Map<string, CommandModule>();
+  const facts = new Map<string, Record<string, unknown>>();
   for (const module of modules) {
-    for (const type of module.facts.keys()) {
-      if (factOwners.has(type)) throw new Error(`Duplicate fact definition: ${type}`);
-      factOwners.add(type);
+    for (const [type, fact] of module.facts) {
+      if (facts.has(type)) throw new Error(`Duplicate fact definition: ${type}`);
+      facts.set(type, fact);
     }
     for (const [type, declarationRecord] of module.commands) {
-      if (result.has(type)) throw new Error(`Duplicate command definition: ${type}`);
-      result.set(type, { module, declaration: declarationFromRecord(declarationRecord) });
+      if (commands.has(type)) throw new Error(`Duplicate command definition: ${type}`);
+      commands.set(type, { module, declaration: declarationFromRecord(declarationRecord) });
     }
   }
-  return result;
+  return { commands, facts };
 }
 
 function validateRequest(request: CommandRequest): void {
@@ -187,6 +188,7 @@ async function executeCommand(
   request: CommandRequest,
   options: CommandRuntimeOptions,
   command: CommandModule,
+  writeTarget: FactWriteTarget,
 ): Promise<CommandReceipt> {
   return db.tx({ learner: request.learner }, async (tx) => {
     await lockLearner(tx, request.learner);
@@ -207,7 +209,7 @@ async function executeCommand(
         tick,
         writes as readonly never[],
         writeOptions(request),
-        command.module.facts,
+        writeTarget,
       );
       await options.hooks.onFactsChanged(tx, tick, changes);
       const receipt: CommandReceipt = {
@@ -226,7 +228,7 @@ export function createCommandHandler(
   db: Db,
   options: CommandRuntimeOptions,
 ): CommandHandler {
-  const commands = commandModules(options.modules);
+  const { commands, facts } = commandModules(options.modules);
 
   return async (request) => {
     validateRequest(request);
@@ -239,6 +241,8 @@ export function createCommandHandler(
     if (request.actor === 'companion' && command.declaration.destructive) {
       return saveProposal(db, request, command.declaration);
     }
-    return executeCommand(db, request, options, command);
+    const grants = options.crossModuleWrites?.[request.type];
+    return executeCommand(db, request, options, command, (type, kind) =>
+      command.module.facts.get(type) ?? (grants?.[kind]?.includes(type) ? facts.get(type) : undefined));
   };
 }

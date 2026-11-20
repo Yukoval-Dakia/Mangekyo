@@ -1,8 +1,8 @@
 import { defineCommand } from '@mangekyo/kernel';
-import { captureIntakeSchema, intakeFactType, materialType, intakePurpose } from '../intake-values.ts';
+import { captureIntakeCommand, captureIntakeSchema, intakeFactType, materialType, intakePurpose } from '../intake-values.ts';
 
 export default defineCommand({
-  type: 'activity.captureIntake',
+  type: captureIntakeCommand,
   destructive: false,
   schema: captureIntakeSchema,
   write: (_ctx, { materialId, intakeId, data }) => [

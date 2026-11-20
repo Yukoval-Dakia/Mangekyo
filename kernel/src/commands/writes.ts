@@ -10,7 +10,7 @@ import { isJson } from '../declarations/define.ts';
 import { canonicalJsonString } from './canonical.ts';
 import type { FactRef, FactWrite, Json } from '../declarations/types.ts';
 import type { DbTransaction } from '../db/types.ts';
-import type { FactChange, FactRegistry, WriteOptions } from './contracts.ts';
+import type { FactChange, FactWriteTarget, WriteOptions } from './contracts.ts';
 
 type FactSchema = { parse(value: unknown): unknown };
 
@@ -86,13 +86,11 @@ function validateJson(value: unknown, label: string): Json {
 }
 
 function parseFactData(
-  facts: FactRegistry,
+  declaration: Record<string, unknown>,
   factType: string,
   data: unknown,
   label: string,
 ): Json {
-  const declaration = facts.get(factType);
-  if (!declaration) throw new Error(`Unknown fact type: ${factType}`);
   if (!isFactSchema(declaration.schema)) {
     throw new Error(`Fact type has no schema: ${factType}`);
   }
@@ -105,18 +103,19 @@ function assertKnownFields(write: Record<string, unknown>, allowed: readonly str
   }
 }
 
-function validateWrite(write: FactWrite, facts: FactRegistry, options: WriteOptions): PreparedWrite {
+function validateWrite(write: FactWrite, writeTarget: FactWriteTarget, options: WriteOptions): PreparedWrite {
   if (!isRecord(write)) throw new Error('Each fact write must be an object');
   if (write.kind === 'create') {
     assertKnownFields(write, ['kind', 'id', 'factType', 'data', 'purpose']);
-    if (typeof write.factType !== 'string' || !facts.has(write.factType)) {
+    const declaration = typeof write.factType === 'string' && writeTarget(write.factType, write.kind);
+    if (!declaration) {
       throw new Error('Create write must target a registry-owned fact type');
     }
     return {
       kind: 'create',
       id: factId(write.id),
       factType: write.factType,
-      data: parseFactData(facts, write.factType, write.data, 'Create write data'),
+      data: parseFactData(declaration, write.factType, write.data, 'Create write data'),
       purpose: write.purpose === undefined ? ['storage'] : validatePurpose(write.purpose, 'Create write purpose'),
     };
   }
@@ -223,12 +222,12 @@ export async function applyFactWrites(
   tick: Tick,
   writes: readonly FactWrite[],
   options: WriteOptions,
-  facts: FactRegistry,
+  writeTarget: FactWriteTarget,
 ): Promise<readonly FactChange[]> {
   const auditedCommandId = validateOptions(options);
   if (!Array.isArray(writes)) throw new Error('Command writes must be an array');
   const initialWrites = writes;
-  const validated = initialWrites.map((write) => validateWrite(write, facts, options));
+  const validated = initialWrites.map((write) => validateWrite(write, writeTarget, options));
   const seenFactIds = new Set<string>();
   for (const write of validated) {
     if (seenFactIds.has(write.id)) {
@@ -245,7 +244,8 @@ export async function applyFactWrites(
       continue;
     }
     if (row === null) throw new Error(`Fact does not exist: ${write.id}`);
-    if (!facts.has(row.type)) throw new Error(`Fact type is not registry-owned: ${row.type}`);
+    const declaration = writeTarget(row.type, write.kind);
+    if (!declaration) throw new Error(`Fact type is not registry-owned: ${row.type}`);
     if (row.retracted_rev !== null) throw new Error(`Fact is retracted: ${write.id}`);
     if (row.current_rev !== write.expectedRev) throw new Error(`Fact revision conflict: ${write.id}`);
     const learnerManagement = options.actor === 'learner' && (write.kind === 'set_purpose' || write.kind === 'retract');
@@ -263,7 +263,7 @@ export async function applyFactWrites(
       if (row.sticky || birth.rows[0]?.author !== 'companion') throw new Error('Only an unedited companion draft can be revised');
     }
     if (write.kind === 'correct' || write.kind === 'revise') {
-      write.data = parseFactData(facts, row.type, write.data, 'Correct write data');
+      write.data = parseFactData(declaration, row.type, write.data, 'Correct write data');
     }
     rows.set(write.id, row);
   }

@@ -2,9 +2,11 @@ import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId, type Revision} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
-import {intakeFactType} from '../../modules/activity/intake-values.ts';
-import {goalType, materialType, storagePurpose, studyGoal} from '../../modules/activity/library-values.ts';
-import {organizerNote, organizerNoteType, organizerTask, organizerTaskType} from '../../modules/activity/organizer-values.ts';
+import {intakeFactType} from '../../modules/capture/intake-values.ts';
+import {materialType, storagePurpose} from '../../modules/activity/library-values.ts';
+import {goalType, studyGoal} from '../../modules/plan/goal-values.ts';
+import {organizerNote, organizerNoteType} from '../../modules/activity/organizer-values.ts';
+import {organizerTask, organizerTaskType} from '../../modules/plan/organizer-task-values.ts';
 import {practiceSubmission, ridingPracticeType} from '../../modules/activity/practice-values.ts';
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';

@@ -34,8 +34,9 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     db = createPgDb(new pg.Pool({ connectionString }), { schema });
     await applyKernelSchema(db);
     await db.query('INSERT INTO learners(id) VALUES ($1)', [studioLearner]);
-    const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity', import.meta.url)));
-    intake = openIntake(db, activity, {
+    const capture = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/capture', import.meta.url)));
+    const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
+    intake = openIntake(db, capture, content, {
       async onFactsChanged() {
         if (failCapture) throw new Error('simulated save failure');
       },

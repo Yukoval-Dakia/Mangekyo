@@ -1,10 +1,9 @@
 import { defineCommand, factId, type FactWrite } from '@mangekyo/kernel';
-import { storagePurpose } from '../library-values.ts';
 import {
   createOrganizerTask,
   organizerTaskDraft,
   organizerTaskType,
-} from '../organizer-values.ts';
+} from '../organizer-task-values.ts';
 
 export default defineCommand({
   type: createOrganizerTask,
@@ -24,7 +23,7 @@ export default defineCommand({
       id,
       factType: organizerTaskType,
       data,
-      purpose: [storagePurpose],
+      purpose: ['storage'],
     },
   ],
 });

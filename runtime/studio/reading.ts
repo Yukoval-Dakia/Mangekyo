@@ -3,7 +3,7 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { materialType, storagePurpose, textMaterial } from '../../modules/activity/library-values.ts';
-import { intakeDocument, intakeFactType } from '../../modules/activity/intake-values.ts';
+import { intakeDocument, intakeFactType } from '../../modules/capture/intake-values.ts';
 import { isSourceFactId, sourceReference, type SourceAnchorV1 } from '../../modules/activity/source-values.ts';
 import { stableId } from './identity.ts';
 

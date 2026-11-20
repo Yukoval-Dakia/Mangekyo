@@ -4,7 +4,7 @@ import {
   setWorkspaceTeachingInput,
   workspaceShareableTypes,
 } from '../workspace-values.ts';
-import { intakeDocument, intakeFactType } from '../intake-values.ts';
+import intake from '@mangekyo/module-capture/facts/intake';
 import { materialType, storagePurpose } from '../library-values.ts';
 
 const teachingPurpose = 'teaching';
@@ -33,10 +33,10 @@ export default defineCommand({
     const targets = [current];
     if ('intakeId' in input && input.intakeId !== undefined) {
       if (current.type !== materialType) throw new Error('只有材料可以关联交入记录。');
-      const intake = await ctx.read.fact(input.intakeId, { mode: 'following' });
-      if (intake.type !== intakeFactType || intakeDocument(intake.value).materialId !== current.ref.id)
+      const intakeFact = await ctx.read.fact(input.intakeId, { mode: 'following' });
+      if (intakeFact.type !== intake.type || intake.schema.parse(intakeFact.value).materialId !== current.ref.id)
         throw new Error('材料与交入记录不匹配。');
-      targets.push(intake);
+      targets.push(intakeFact);
     }
     return targets.flatMap((fact): FactWrite[] => {
       if (fact.purpose.includes('all')) throw new Error('这条记录允许全部用途，请先明确其他用途。');

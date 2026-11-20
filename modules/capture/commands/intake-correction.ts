@@ -1,8 +1,8 @@
 import { defineCommand } from '@mangekyo/kernel';
-import { correctIntakeSchema, materialPreview, intakeDocument } from '../intake-values.ts';
+import { correctIntakeCommand, correctIntakeSchema, materialPreview, intakeDocument } from '../intake-values.ts';
 
 export default defineCommand({
-  type: 'activity.correctIntakeText',
+  type: correctIntakeCommand,
   destructive: true,
   schema: correctIntakeSchema,
   write: async (ctx, input) => {

@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import type {ImageCrop, StudyImage} from '../../executors/teaching/workspace-tools.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
-import {intakeFactType, type IntakeOriginal} from '../../modules/activity/intake-values.ts';
+import {intakeFactType, type IntakeOriginal} from '../../modules/capture/intake-values.ts';
 import {materialType} from '../../modules/activity/library-values.ts';
 import type {SourceRefV1} from '../../modules/activity/source-values.ts';
 import {readIntakeOriginalBytes} from './intake.ts';
