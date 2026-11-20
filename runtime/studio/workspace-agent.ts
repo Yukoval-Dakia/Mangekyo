@@ -1,3 +1,4 @@
+import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
 import {fileURLToPath} from 'node:url';
 import {createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import {createCommandHandler} from '../../kernel/src/commands/handle.ts';
@@ -50,7 +51,7 @@ let declarations: ReturnType<typeof activity> | undefined;
 export function openWorkspaceTools(options: {
   db: Db; turn: string;
   authorize: (tx: ReadTransaction) => Promise<void>;
-  maySend: (input: FactSnapshot) => boolean;
+  maySend: NotionRecipient;
   track: (input: WorkspaceWitness, checkAtDispatch?: true) => void;
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
   trackRetention?: (basis: RetentionBasis) => void;
@@ -179,6 +180,7 @@ export function openWorkspaceTools(options: {
       try {
         for (const witness of witnesses) {
           const fact = await reader.reopen({...workspaceInput(witness), type: witness.type});
+          await checkStudioNotionFact(tx,fact,purpose,options.maySend);
           if (fact.type === workspaceEntryType && ['observation','annotation'].includes(workspaceEntry(fact.value).kind))
             derivedSource = true;
         }

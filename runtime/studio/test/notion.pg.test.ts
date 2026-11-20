@@ -12,7 +12,7 @@ it.skipIf(!testDatabaseUrl)('binds the Notion settings receipt to the command an
     const first = await host.mutate('grant', grant);
     expect(await host.mutate('grant', grant)).toEqual(first);
     await expect(host.mutate('grant', {...grant, preset:'learning'})).rejects.toMatchObject({status:409});
-    await expect(host.mutate('grant', {...grant, preset:'temporary'})).rejects.toMatchObject({status:422});
+    await expect(host.mutate('grant', {...grant, requestId:'settings-temp', preset:'temporary'})).rejects.toMatchObject({status:422});
     const revoke = {...target, requestId:'settings-revoke', expectedEpoch:'1'};
     expect(await host.mutate('revoke', revoke)).toMatchObject({active:false, epoch:'2'});
     await expect(host.mutate('grant', grant)).rejects.toMatchObject({status:409});

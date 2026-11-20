@@ -262,6 +262,8 @@ async function readDisplay(
   if (!purpose) return null;
   try {
     const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' });
+    if ([workspaceEntryType,textbookPageType].includes(row.type) &&
+        !await resolveSource(tx,snapshot.ref.id,{recipient:'learner'})) return null;
     return { display: displayOf(row.type, snapshot.value), purposes, fact: snapshot };
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return null;

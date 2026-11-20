@@ -1,3 +1,6 @@
+import { confirmNotionDispatch, notionSendBasis, savedNotionWitnesses, type NotionRecipient } from './notion.ts';
+import { notionModelRecipient } from './notion-recipient.ts';
+import { providerEndpoint } from '../../executors/teaching/provider.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { createHash } from 'node:crypto';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
@@ -75,7 +78,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const memoryHeads = new Set<string>();
   let memoryTurn: string | undefined;
   let authorizeWorkspaceRecipient: (() => Promise<void>) | undefined;
-  const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
+  const notionWitnesses = new Map<string,WorkspaceWitness>();
+  const trackNotion = (w: WorkspaceWitness) => {
+    if (w.type === 'capture.source') notionWitnesses.set(w.id + ':' + w.rev,w);
+  };
+  const maySend: NotionRecipient = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
   function trackAssessment(basis: WorkspaceAssessmentBasis) {
     const {slot, facts} = basis;
     assessments.set(slot.derivationId, basis);
@@ -122,6 +129,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     inputs.set('feedback:' + id, { kind: 'slot', slotType, slotKey: id, derivationId: derivationId(replyId), mode: 'following' });
   }
   async function validInputs(tx: ReadTransaction) {
+    try { await notionSendBasis(tx,notionWitnesses.values(),maySend); } catch { throw new ChangedEvidence(); }
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
     const now = new Date().toISOString();
     if (memoryPackets.some(item => item.receipt.expiresAt && item.receipt.expiresAt <= now) ||
@@ -192,7 +200,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       if (await workspaceRouteRevision(current) !== submission.workspaceRevision)
         throw new TeachingError('provider_configuration', '这个模型的学习工作区访问已关闭。请开始新会话。');
     };
-    if (submission.workspaceRevision) await checkWorkspaceRoute();
+    if (submission.workspaceRevision) {
+      await checkWorkspaceRoute();
+      maySend.notionRecipientId = notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,submission.workspaceRevision);
+    }
     const authorizeWorkspace = authorizeWorkspaceRecipient = async () => {
       const current = await loadSettings(task);
       if (!submission.workspaceRevision || !sameRoute(submission, current) || current.apiKey !== settings.apiKey ||
@@ -222,6 +233,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }
     };
     const runModelEffect: TeachingDependencies['runEffect'] = async (step, invoke) => {
+      const selected = notionWitnesses.size ? await db.snapshot(scope, tx => notionSendBasis(tx,notionWitnesses.values(),maySend)) : [];
+      const selectionReceipt = selected.map(({selection,pageId,watermark}) => ({
+        selectionId:selection.id, generation:selection.selectionEpoch, pageId, watermark, purpose, recipient:maySend.notionRecipientId!,
+      }));
       const memorySend = step.learningMemory && learningMemory?.context ? {
         purpose, recipient: { id: settings.activeProviderId, endpoint: step.provider, protocol: settings.protocol,
           model: step.model, workspaceRevision: submission.workspaceRevision! },
@@ -230,6 +245,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const authorize = async (tx: ReadTransaction) => {
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
         await validInputs(tx);
+        if (selected.length && (step.provider !== providerEndpoint(settings) || step.model !== settings.model ||
+            JSON.stringify(selected) !== JSON.stringify(await notionSendBasis(tx,notionWitnesses.values(),maySend)))) throw new ChangedEvidence();
         const current = await loadSettings(task);
         if (!sameRoute(submission, current)) throw new ChangedEvidence();
         if (!step.provider.startsWith('tool:') && current.apiKey !== settings.apiKey) throw new ChangedEvidence();
@@ -241,6 +258,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const dispatch: TeachingDispatch = async send => {
         try {
           // The lock protects validation and starting the send, never the response wait.
+          try { if (selected.length) await confirmNotionDispatch(db,selected); } catch { throw new ChangedEvidence(); }
           const { response } = await db.tx(scope, async tx => {
             await lockLearner(tx, learner);
             await authorize(tx);
@@ -255,7 +273,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         }
       };
       const mcp = step.provider.startsWith('tool:mcp:');
-      const needsFreshEvidence = Boolean(protectWorkspaceDispatch || assessments.size || retention.size || memorySend);
+      const needsFreshEvidence = Boolean(notionWitnesses.size || protectWorkspaceDispatch || assessments.size || retention.size || memorySend);
       const sendsMcpContext = grants.length > 0 && !step.provider.startsWith('tool:');
       const effect = await runEffect(
         db,
@@ -266,6 +284,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           stepKey: String(step.index),
           label: step.provider.startsWith('tool:') ? step.provider : 'teaching-model',
           input: { digest: step.requestDigest, provider: step.provider, model: step.model,
+            ...(selectionReceipt.length ? {notionBasis:selectionReceipt} : {}),
             ...(memorySend ? { memoryBasis: memoryPackets.flatMap(packet => packet.receipt.basis) } : {}),
             ...(assessments.size ? {assessmentBasis: [...assessments.values()]} : {}),
             ...(retention.size ? {retentionBasis: [...retention.values()]} : {}) },
@@ -300,6 +319,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       if (selection) {
         await authorizeWorkspace();
         currentObject = await db.snapshot(scope, tx => readCurrentLearningObject(tx, selection, maySend));
+        currentObject?.basis.forEach(trackNotion);
         if (!currentObject || currentObject.basisDigest !== selection.basisDigest) throw new ChangedEvidence();
       }
       const preference = submission.caseId === 'companion' ? await db.snapshot(scope, async tx => {
@@ -319,6 +339,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       function trackMemory(packet: NonNullable<typeof learningMemory>) {
         memoryPackets.push(packet);
         for (const entry of packet.receipt.basis) {
+          trackNotion(entry);
           inputs.set('learning-memory:' + entry.id + ':' + entry.rev, workspaceInput(entry));
           if (entry.type === claimType) memoryHeads.add(entry.id);
         }
@@ -392,7 +413,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               historyNotice = '工作区授权已变更，本轮省略了使用旧授权的对话。';
               break;
             }
-            const witnesses = response.workspaceBasis ?? [];
+            const witnesses: WorkspaceWitness[] = [...response.workspaceBasis ?? [], ...await savedNotionWitnesses(tx,previousInputs)];
             if (new Set([...inherited.keys(), ...witnesses.map(w => `${w.id}:${w.rev}`)]).size > 48) {
               historyNotice = '较早的学习记录可按需重新检索，本轮从最近的对话继续。';
               break;
@@ -407,6 +428,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               if (!basis) throw new ChangedEvidence();
               trackRetention(basis);
             }
+            try { await notionSendBasis(tx,witnesses,maySend); }
+            catch { historyNotice = '选源或接收人授权已变化，本轮省略了旧回复。'; break; }
+            witnesses.forEach(trackNotion);
             for (const witness of witnesses) {
               const w = 'image' in witness && witness.image === true ? {...witness,writeBasis:true as const} : witness;
               const key = `${w.id}:${w.rev}`;
@@ -448,6 +472,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           ...(learningMemory?.receipt.basis ?? []),
         ],
         track(w, checkAtDispatch) {
+          trackNotion(w);
           inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
           if (checkAtDispatch) protectWorkspaceDispatch = true;
         },
@@ -512,7 +537,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           ? createHash('sha256').update(learningMemoryDigest).update(expandedMemory.receipt.digest).digest('hex') : learningMemoryDigest } : {}),
         ...(writes.length ? {writes} : {}),
         ...(turnMemory?.used() ? {memoryManagement: true} : {}),
-        ...(workspace?.basis().length ? {workspaceBasis: workspace.basis()} : {}),
+        ...(workspace?.basis().length || notionWitnesses.size ? {workspaceBasis:[...new Map([...(workspace?.basis() ?? []), ...notionWitnesses.values()].map(w => [w.id + ':' + w.rev,w])).values()]} : {}),
         evidenceIds: [], reads: [
           ...(workspace?.reads() ?? []),
           ...(attachment ? [{ id: attachment.id, title: attachment.title, text: attachment.text }] : []),

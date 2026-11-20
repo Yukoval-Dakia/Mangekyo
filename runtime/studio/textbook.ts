@@ -1,3 +1,5 @@
+import { sourceReference } from '../../modules/activity/source-values.ts';
+import { resolveSource } from './source-read.ts';
 import { createCommandHandler, readCommandProposals, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import {
   createCommandReadContext,
@@ -225,10 +227,15 @@ function legacyView(fact: FactSnapshot): LegacyNoteView {
 }
 
 async function readFact(tx: ReadTransaction, purpose: string, id: string, rev?: unknown) {
-  const read = createCommandReadContext(tx, purpose);
-  return rev === undefined
-    ? read.fact(pageId(id), { mode: 'following' })
-    : read.fact(pageId(id), { mode: 'pinned', rev: revision(rev) });
+  const read = createCommandReadContext(tx,purpose);
+  const fact = await read.fact(pageId(id),rev === undefined ? {mode:'following'} : {mode:'pinned',rev:revision(rev)});
+  if (fact.type === textbookPageType) {
+    const page = textbookPageFrom(fact);
+    if ((page.basis?.length || page.blocks.some(({body}) => body.kind === 'reference' || body.kind === 'image')) &&
+        !await resolveSource(tx,sourceReference(fact,{kind:'whole'}),{recipient:'learner'}))
+      throw new FactReadDeniedError('recipient','教材的来源已不可用。');
+  }
+  return fact;
 }
 
 export function openTextbook(db: Db, contentModule: LoadedModule, hooks: CommandHooks) {
@@ -413,6 +420,7 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
         const mode = input.mode ?? 'pinned';
         if (mode !== 'pinned' && mode !== 'following') invalid('教材块定位方式无效。');
         const opened = await openTextbookBlock(read, base.ref, key(input.blockId), mode);
+        await readFact(tx,purpose,opened.ref.id,opened.ref.rev);
         const source = await checkBodyReference(read, learner, opened.block.id, opened.block.body);
         return { kind: 'textbookBlock' as const, ...opened, source };
       }).catch(translateRead);

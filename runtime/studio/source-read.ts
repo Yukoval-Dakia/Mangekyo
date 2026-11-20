@@ -1,3 +1,5 @@
+import {assetType, parseAsset, assetBodyReference} from '../../modules/content/asset.ts';
+import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
 import { activityQuestions } from '../../modules/activity/workspace-projection.ts';
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
@@ -12,7 +14,7 @@ import {practiceSubmission, ridingPracticeType} from '../../modules/activity/pra
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType} from '../../modules/activity/workbook-values.ts';
-import {openTextbookReference, textbookBodyReference, textbookPageFrom, textbookPageType, type TextbookBlockBody} from '../../modules/content/textbook-page.ts';
+import {openTextbookReference, textbookPageFrom, textbookPageType, type TextbookBlockBody} from '../../modules/content/textbook-page.ts';
 import {
   WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
   type WorkspaceEntryKind,
@@ -24,7 +26,7 @@ import {openWorkbookQuestionSources} from './workbook-diagnosis.ts';
 
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
-export type WorkspaceSourceRecipient = (fact: FactSnapshot) => boolean;
+export type WorkspaceSourceRecipient = NotionRecipient;
 export type SourceAccess = { track?: SourceTrack } & (
   | {recipient: 'learner'}
   | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string}
@@ -180,11 +182,12 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
     (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
-      (access.recipient === 'workspace' && fact.type === textbookPageType));
+      fact.type === textbookPageType);
 
   async function visit(sourceId: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(sourceId)) return;
     const fact = await reader.fact(factId(sourceId), revision === undefined ? {mode: 'following'} : {mode: 'pinned', rev: revision});
+    await checkStudioNotionFact(tx, fact, sourcePurpose(access), access.recipient === 'learner' ? 'learner' : access.maySend);
     const key = `${sourceId}:${fact.ref.rev}`;
     if (path.has(key)) return;
     const visited = seen.get(key);
@@ -208,14 +211,14 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       }
       const sources = new Set([...seen.values()].map(w => w.fact.ref.id));
       if (!entry.links.every(link => sources.has(factId(link)))) return;
-    } else if (fact.type === textbookPageType && access.recipient === 'workspace') {
-      const page = textbookPageFrom(fact);
+    } else if (fact.type === textbookPageType || fact.type === assetType) {
+      const page = fact.type === textbookPageType ? textbookPageFrom(fact) : parseAsset(fact.value);
       for (const source of page.basis ?? []) {
         const opened = await visit(source.id, source.rev);
         if (!opened || opened.type !== source.type || opened.accessEpoch !== source.epoch) return;
       }
       for (const block of page.blocks) {
-        const reference = textbookBodyReference(block.body);
+        const reference = assetBodyReference(block.body);
         if (!reference) continue;
         if (reference.fact.learner !== tx.learner || !await visit(reference.fact.id, reference.fact.rev)) return;
         await openTextbookReference(reader, reference);

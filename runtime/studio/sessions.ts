@@ -1,3 +1,5 @@
+import { notionModelRecipient } from './notion-recipient.ts';
+import { notionSendBasis, savedNotionWitnesses } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
@@ -128,6 +130,11 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
       });
     const submission = studyTurn(snapshot.value);
     let feedback = row.value;
+    if (feedback && submission.workspaceRevision) {
+      const recipient = notionModelRecipient(submission.providerId ?? 'default',submission.baseUrl,submission.protocol ?? 'openai',submission.model,submission.workspaceRevision);
+      try { await notionSendBasis(tx,await savedNotionWitnesses(tx,parseManifest(row.manifest).inputs),Object.assign(() => true,{notionRecipientId:recipient})); }
+      catch { feedback = null; }
+    }
     if (feedback && (!await grantCurrent(submission) ||
       (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid')) feedback = null;
     if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
@@ -326,7 +333,8 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
       if (selected !== 'companion' || origin?.attachment || attachment)
         throw new RequestError(400, '当前学习对象只用于未附选段的自由对话。');
       if (!workspaceRevision) throw new RequestError(403, '此模型未获准访问学习工作区。');
-      const opened = await db.snapshot({learner: studioLearner}, tx => readCurrentLearningObject(tx, currentObject, () => true));
+      const opened = await db.snapshot({learner: studioLearner}, tx => readCurrentLearningObject(tx, currentObject, Object.assign(() => true,
+        {notionRecipientId:notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,workspaceRevision)})));
       if (!opened) throw new RequestError(403, '无法为本轮打开该版本及所需依据。请核对教学用途和版本。');
       boundObject = {...currentObject, basisDigest: opened.basisDigest};
     }

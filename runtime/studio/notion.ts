@@ -1,7 +1,8 @@
+import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createAuthorizedFactReader, createCommandReadContext } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { assertDeletionWatermark, deletionWatermark, LifecycleError } from '../../kernel/src/lifecycle.ts';
@@ -10,19 +11,20 @@ import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { notionReadPage, notionReadRows, notionConfirmPageAccess, NotionSourceUnavailable } from '../../modules/capture/notion-api.ts';
 import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, notionSelectionWitness, resumeNotionSelectionCursor, selectionChange, selectionGrant,
   readNotionSelection, type NotionSelection, type NotionReadOptions } from '../../modules/capture/notion-selection.ts';
-import { openSelectedNotionSource, notionRevisionDiff, prepareNotionIngest, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
+import { withSelectedNotionSources, notionPageObservationType, prepareNotionRefreshInput, prepareNotionIngest, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
+import { notionTeachingRecipients } from './notion-recipient.ts';
 import { notionConnection } from './notion-transport.ts';
 
 const learnerScope = {learner: studioLearner};
 const learningReader = {id: 'studio:learning-reader', purpose: 'learning', label: '本机学习阅读器'};
-const presets = [
+const availablePresets = async () => [
   {id: 'storage', available: true, allowedRecipients: []},
-  {id: 'learning', available: true, allowedRecipients: [learningReader]},
+  {id: 'learning', available: true, allowedRecipients: [learningReader, ...await notionTeachingRecipients()]},
   {id: 'turn-only', available: false, allowedRecipients: [], reason: '当前会话尚无能复验本轮接收人和留存策略的出口。'},
   {id: 'temporary', available: false, allowedRecipients: [], reason: '临时材料尚无独立密钥、到期销毁和接收人复核出口。'},
 ];
@@ -38,14 +40,30 @@ async function checkDenial(tx: ReadTransaction, id: string, epoch: string, page?
 }
 
 export async function readStudioNotionSource(tx: ReadTransaction, sourceId: FactId, options: NotionReadOptions, access: Access) {
-  const source = await openSelectedNotionSource({
+  const source = await withSelectedNotionSources({
     learner: tx.learner, purpose: access.purpose, recipientId: access.recipientId,
     selectionRead: createCommandReadContext(tx, 'storage'),
     sourceRead: createAuthorizedFactReader(tx, access.purpose, access.maySend),
-  }, sourceId, options);
-  const value = sourceEnvelope(source.value);
+  }).fact(sourceId, options);
+  const value = source.type === captureSourceType ? sourceEnvelope(source.value) : null;
+  if (value?.kind !== 'notion') throw new FactReadDeniedError('recipient','没有该 Notion 来源。');
   await checkDenial(tx, value.sourceSelectionId!, value.sourceSelectionEpoch!, value.externalId!);
+  const current = await selectionAt(tx, value.sourceSelectionId!);
+  if (current && current.selectionEpoch !== value.sourceSelectionEpoch)
+    await checkDenial(tx, value.sourceSelectionId!, current.selectionEpoch, value.externalId!);
   return source;
+}
+
+export type NotionRecipient = ((fact: FactSnapshot) => boolean) & {notionRecipientId?: string};
+
+export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnapshot, purpose: string, recipient: NotionRecipient | 'learner') {
+  if (fact.type !== captureSourceType || sourceEnvelope(fact.value).kind !== 'notion') return;
+  try {
+    return await readStudioNotionSource(tx, fact.ref.id, {mode:'pinned', rev:fact.ref.rev},
+      recipient === 'learner' ? {purpose,recipientId:tx.learner,maySend:() => true} : {purpose,recipientId:recipient.notionRecipientId ?? '',maySend:recipient});
+  } catch {
+    throw new FactReadDeniedError('recipient','Notion 来源或选源对当前接收人已不可用。');
+  }
 }
 
 function transactionDb(db: Db, tx: DbTransaction): Db {
@@ -56,12 +74,17 @@ function transactionDb(db: Db, tx: DbTransaction): Db {
   return {...db, query: tx.query, snapshot: nested, tx: nested};
 }
 
-async function sources(tx: ReadTransaction, selection: NotionSelection) {
-  return (await tx.query<{id: FactId; rev: number; page: string; at: string}>(`SELECT f.id,r.rev,r.data->>'externalId' AS page,r.data->>'occurredAt' AS at
+async function sources(tx: ReadTransaction, selection: NotionSelection, allGenerations = false) {
+  return (await tx.query<{id: FactId; rev: number; pageId:string; lastEditedTime:string}>(`SELECT f.id,r.rev,r.data->>'externalId' AS "pageId",
+    greatest(r.data->>'occurredAt',observation.at) AS "lastEditedTime"
     FROM facts f JOIN fact_revs r ON (f.learner_id,f.id,f.current_rev)=(r.learner_id,r.fact_id,r.rev)
+    LEFT JOIN (SELECT m.learner_id,v.data->>'sourceId' AS source,v.data->>'selectionEpoch' AS epoch,v.data->>'lastEditedTime' AS at
+      FROM facts m JOIN fact_revs v ON (m.learner_id,m.id,m.current_rev)=(v.learner_id,v.fact_id,v.rev)
+      WHERE m.learner_id=$1 AND m.type=$6 AND m.retracted_rev IS NULL) observation
+      ON observation.source=f.id AND observation.epoch=r.data->>'sourceSelectionEpoch'
     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'sourceSelectionId'=$3
-      AND r.data->>'sourceSelectionEpoch'=$4 AND r.data->>'kind'='notion'
-    ORDER BY r.data->>'occurredAt' DESC,r.data->>'externalId' DESC`, [tx.learner, captureSourceType, selection.id, selection.selectionEpoch])).rows;
+      AND ($5 OR r.data->>'sourceSelectionEpoch'=$4) AND r.data->>'kind'='notion'
+    ORDER BY "lastEditedTime" DESC,"pageId" DESC`, [tx.learner, captureSourceType, selection.id, selection.selectionEpoch, allGenerations, notionPageObservationType])).rows;
 }
 
 class FetchRequired extends Error {}
@@ -70,15 +93,13 @@ function parseSettings<T>(read: () => T) {
   try { return read(); } catch { throw new RequestError(400, 'Notion 选源格式无效。'); }
 }
 
-export function openStudioNotion(db: Db, capture: LoadedModule) {
+function notionHost(db: Db) {
   const connection = notionConnection();
-  const hooks = createStudioCommandHooks();
   const snapshot = <T>(read: (tx: ReadTransaction) => Promise<T>) => db.snapshot(learnerScope, read);
   const locked = <T>(action: (tx: DbTransaction) => Promise<T>) => db.tx(learnerScope, async tx => {
     await lockLearner(tx, tx.learner);
     return action(tx);
   });
-  const handle = (tx: DbTransaction) => createCommandHandler(transactionDb(db, tx), {modules:[capture], hooks});
 
   async function live(tx: ReadTransaction, id: string, epoch: string, watermark: string, page?: string) {
     await assertDeletionWatermark(tx, watermark);
@@ -107,6 +128,44 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
     }
   }
 
+  return {connection, snapshot, locked, live, provider};
+}
+
+type Basis = {id:string; rev:number; epoch:string; type:string};
+export async function savedNotionWitnesses(tx: ReadTransaction, inputs: Manifest['inputs']) {
+  const facts = inputs.filter(input => input.kind === 'fact');
+  const {rows} = await tx.query<{id:string}>(`SELECT id FROM facts WHERE learner_id=$1 AND type=$2 AND id=ANY($3)`,
+    [tx.learner,captureSourceType,facts.map(input => input.id)]);
+  const ids = new Set(rows.map(r => r.id));
+  return facts.filter(f => ids.has(f.id)).map(f => ({id:f.id,rev:f.rev,epoch:f.accessEpoch,type:captureSourceType}));
+}
+
+export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<Basis>, recipient: NotionRecipient) {
+  const pages = [];
+  for (const witness of witnesses) {
+    if (witness.type !== captureSourceType) continue;
+    const fact = await createAuthorizedFactReader(tx,'teaching',recipient).reopen({...witness,id:factId(witness.id),
+      accessEpoch:witness.epoch as FactSnapshot['accessEpoch'], mode:'pinned'});
+    if (!await checkStudioNotionFact(tx,fact,'teaching',recipient)) continue;
+    const value = sourceEnvelope(fact.value);
+    const selection = (await selectionAt(tx,value.sourceSelectionId!))!;
+    pages.push({selection,pageId:value.externalId!,watermark:await deletionWatermark(tx)});
+  }
+  return pages;
+}
+
+export async function confirmNotionDispatch(db: Db, pages: Awaited<ReturnType<typeof notionSendBasis>>) {
+  const {provider} = notionHost(db);
+  for (const {selection,pageId,watermark} of pages) {
+    await provider(selection,watermark,notionConfirmPageAccess(selection.root,pageId),pageId);
+  }
+}
+
+export function openStudioNotion(db: Db, capture: LoadedModule) {
+  const {connection, snapshot, locked, live, provider} = notionHost(db);
+  const hooks = createStudioCommandHooks();
+  const handle = (tx: DbTransaction) => createCommandHandler(transactionDb(db, tx), {modules:[capture], hooks});
+
   async function settings() {
     return snapshot(async tx => {
       const {rows} = await tx.query<{id:string}>(`SELECT r.data->>'id' AS id FROM facts f JOIN fact_revs r
@@ -118,14 +177,14 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
         if (!current) continue;
         const {root, preset, recipients, selectionEpoch:epoch, active} = current;
         const visible = [];
-        if (active) for (const source of await sources(tx, current)) {
+        if (active) for (const source of await sources(tx, current, true)) {
           try { await readStudioNotionSource(tx, source.id, {mode:'following'}, ownerAccess); }
           catch { continue; }
           visible.push({id:source.id, rev:source.rev});
         }
         selections.push({selectionId:id, epoch, active, root, preset, recipients, label:root.id, sources:visible});
       }
-      return {configured:connection.configured, presets, selections, watermark:await deletionWatermark(tx)};
+      return {configured:connection.configured, presets:await availablePresets(), selections, watermark:await deletionWatermark(tx)};
     });
   }
   const ownerAccess = {purpose:'storage', recipientId:studioLearner, maySend:(s:FactSnapshot) => s.ref.learner === studioLearner};
@@ -135,23 +194,23 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
     if (raw.deletionWatermark === undefined) throw new RequestError(400, '需要设备原始删除水位。');
     const watermark = submittedWatermark(raw);
     const {requestId: _request, deletionWatermark: _watermark, ...fields} = raw;
-    if (action === 'grant') {
-      const {settings} = parseSettings(() => selectionGrant(fields));
-      const preset = presets.find(p => p.id === settings.preset)!;
-      if (!preset.available) throw new RequestError(422, preset.reason!);
-      if (settings.recipients.some(use => !preset.allowedRecipients.some(r => r.id === use.id && r.purpose === use.purpose)))
-        throw new RequestError(400, '接收人或用途未在此宿主启用。');
-    } else {
-      const change = parseSettings(() => selectionChange(fields));
-      if (action === 'sync' && !change.recipient) return sync(requestId, change.selectionId, change.expectedEpoch, watermark);
-      if (action !== 'revoke') throw new RequestError(400, '无效的选源操作。');
+    const change = parseSettings(() => action === 'grant' ? selectionGrant(fields) : selectionChange(fields));
+    const {selectionId,expectedEpoch} = change;
+    if (action === 'sync') {
+      if ('recipient' in change) throw new RequestError(400,'同步仅接受选源标识与代次。');
+      return sync(requestId,selectionId,expectedEpoch,watermark);
     }
-    const {selectionId, expectedEpoch} = parseSettings(() => selectionChange({
-      selectionId:fields.selectionId, expectedEpoch:fields.expectedEpoch,
-    }));
+    if (action !== 'revoke' && action !== 'grant') throw new RequestError(400,'无效的选源操作。');
     const type = action === 'grant' ? grantNotionSelectionCommand : revokeNotionSelectionCommand;
     return locked(async tx => {
       const epoch = await record(tx, requestId, {action, fields:fields as Json, watermark}, async () => {
+        if ('settings' in change) {
+          const {settings} = change;
+          const preset = (await availablePresets()).find(p => p.id === settings.preset)!;
+          if (!preset.available) throw new RequestError(422,preset.reason!);
+          if (settings.recipients.some(use => !preset.allowedRecipients.some(r => r.id === use.id && r.purpose === use.purpose)))
+            throw new RequestError(400,'接收人或用途未在此宿主启用。');
+        }
         const current = await selectionAt(tx, selectionId);
         if ((current?.selectionEpoch ?? '0') !== expectedEpoch) throw stale();
         if (!current && action === 'revoke') throw new RequestError(404, '没有该选源。');
@@ -195,10 +254,9 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
     });
     const {root} = selection;
     const dispatch = notionSelectionWitness(selection);
-    const last = before[0];
+    const cursor = before[0] && {...dispatch, position:before[0]};
     const rows = root.kind === 'page' ? [{pageId:root.id, lastEditedTime:null}]
-      : await provider(selection,watermark,notionReadRows(root, resumeNotionSelectionCursor(selection,
-          last ? {...dispatch, position:{pageId:last.page, lastEditedTime:last.at}} : null)));
+      : await provider(selection,watermark,notionReadRows(root, resumeNotionSelectionCursor(selection,cursor ?? null)));
     const prepared: Awaited<ReturnType<typeof prepareNotionIngest>>[] = [];
     for (const {pageId, lastEditedTime} of rows) {
       if (deniedPages.has(pageId)) continue;
@@ -214,19 +272,16 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
         if (prior?.rev !== before.find(s => s.id === item.id)?.rev) throw stale();
         await checkDenial(tx, selectionId, epoch, item.envelope.externalId);
         const fact = prior && await readStudioNotionSource(tx, item.id, {mode:'following'}, ownerAccess);
-        if (fact) {
-          const previous = sourceEnvelope(fact.value);
-          if (previous.occurredAt === item.envelope.occurredAt && previous.unit.title === item.envelope.unit.title &&
-              Object.values(notionRevisionDiff(previous,item.envelope)).every(ids => !ids.length)) {
-            refs.push({id:item.id, rev:fact.ref.rev});
-            continue;
-          }
-        }
-        const input = fact ? {id:item.id, expectedRev:fact.ref.rev, accessEpoch:fact.accessEpoch, selectionId, envelope:item.envelope} : {...item, purpose:[...new Set(['storage', ...selection.recipients.map(r => r.purpose)])]};
+        const input = fact ? await prepareNotionRefreshInput(
+          {id:item.id,expectedRev:fact.ref.rev,accessEpoch:fact.accessEpoch,selectionId},sourceEnvelope(fact.value),item.envelope)
+          : {...item, purpose:[...new Set(['storage', ...selection.recipients.map(r => r.purpose)])]};
         const saved = await handle(tx)({learner:tx.learner, actor:'companion', purpose:'storage', deletionWatermark:watermark,
           type:fact ? refreshNotionSourceCommand : captureSourceCommand, id:commandId(stableId('notion-sync-row', requestId, item.id)),
-          input:input as Json});
-        refs.push({id:item.id, rev:saved.wrote[0]?.rev ?? fact!.ref.rev});
+          input:input as Json}).catch(error => {
+            if (error instanceof Error && error.message === 'Notion 页面观测已过时或同一版本不一致。') throw stale();
+            throw error;
+          });
+        refs.push({id:item.id, rev:saved.wrote.find(row => row.id === item.id)?.rev ?? fact!.ref.rev});
       }
       return {selectionId, epoch, sources:refs};
     }));
@@ -245,11 +300,10 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
       const source = sourceEnvelope(fact.value);
       return {fact, source, selection: (await selectionAt(tx,source.sourceSelectionId!))!, watermark:await deletionWatermark(tx)};
     });
-    const confirmed = await provider(initial.selection, initial.watermark,
+    await provider(initial.selection, initial.watermark,
       notionConfirmPageAccess(initial.selection.root,initial.source.externalId!), initial.source.externalId);
-    if (confirmed.lastEditedTime !== initial.source.occurredAt) throw stale();
     return locked(async tx => {
-      await assertDeletionWatermark(tx, initial.watermark);
+      await live(tx,initial.selection.id,initial.selection.selectionEpoch,initial.watermark,initial.source.externalId);
       const fact = await open(tx);
       if (fact.ref.rev !== initial.fact.ref.rev || fact.accessEpoch !== initial.fact.accessEpoch) throw stale();
       const {unit} = sourceEnvelope(fact.value);
