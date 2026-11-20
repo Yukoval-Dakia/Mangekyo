@@ -3,7 +3,7 @@ import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionP
 
 import type { CurrentObject } from "./current-record";
 import {selectedRoute, type Route, type McpGrant} from './model-route';
-import { readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
+import { authorizeMounts, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 
 type Operation = {currentObject?: CurrentObject | undefined} & (
   | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
@@ -57,6 +57,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     const controller = new AbortController();
     const source = sessionEvents(sessionId);
     const baseline = sessionRef.current?.id === sessionId ? sessionRef.current : undefined;
+    let batch: { id: string; turn: string; order?: Map<string, number> } | undefined;
+    const retiredTurns = new Set<string>();
     let terminal = false;
     let didHydrate = Boolean(baseline);
     let readNumber = 0;
@@ -90,6 +92,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       reading = true;
       const number = ++readNumber;
       const atRequest = sessionRef.current;
+      const requestedBatch = batch;
       try {
         const current = await api<Session>(sessionPath(sessionId!), { signal: controller.signal });
         if (controller.signal.aborted || number !== readNumber || (mode === 'stream' && terminal)) return;
@@ -102,6 +105,10 @@ export function useConversation(caseId: string, active: boolean, initialSession?
             (latest?.currentTurnId !== current.currentTurnId && latest?.turns.some(t => t.turnId && t.turnId === current.currentTurnId)) ||
             (latest !== atRequest && latest?.currentTurnId !== current.currentTurnId) ||
             (latest?.currentTurnId === current.currentTurnId && latest?.status === "ready" && current.status === "pending")) return;
+        // A later stream header owns this turn's complete mount set. Its
+        // snapshots follow on the same connection, including after reconnect.
+        if (batch?.order && requestedBatch !== batch && current.status === 'pending' && current.currentTurnId === batch.turn)
+          delete current.artifacts;
         setSession(readSession(current, latest, atRequest));
         clearReadProblem();
         if (mode === 'complete') {
@@ -138,12 +145,22 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const update = receive(event);
       if (!update || update.session.status !== "pending") return;
       const previous = sessionRef.current;
+      const turn = update.session.currentTurnId!;
+      if (retiredTurns.has(turn)) return;
       if ((previous?.currentTurnId === update.session.currentTurnId && previous?.status !== "pending") ||
           previous?.turns.some(t => t.turnId === update.session.currentTurnId)) return;
+      if (previous?.currentTurnId && previous.currentTurnId !== turn) retiredTurns.add(previous.currentTurnId);
+      const ids = update.authorizedMountIds;
+      batch = { id: event.lastEventId, turn };
+      if (ids !== undefined) {
+        batch.order = new Map(Array.isArray(ids) && ids.every(id => typeof id === 'string')
+          ? ids.map((id, i) => [id, i]) : []);
+      }
       const next = { ...previous, ...update.session };
       if (previous?.currentTurnId !== next.currentTurnId) delete next.currentObject;
-      setSession({ ...next, turns: previous?.turns ?? [], withdrawn: previous?.withdrawn ?? new Set(),
-        mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] });
+      const mounted = { ...next, turns: previous?.turns ?? [], withdrawn: previous?.withdrawn ?? new Set(),
+        mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] };
+      setSession(batch.order ? authorizeMounts(mounted, turn, batch.order) : mounted);
       setProgressLabel(update.phase ? progressLabels[update.phase] : undefined);
       setStreamingReply(update.message);
       // Restore prior turns for a remembered session while the current one streams.
@@ -159,15 +176,19 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       if (controller.signal.aborted || terminal) return;
       let input: unknown;
       try { input = JSON.parse(event.data); } catch { return; }
-      setSession(streamSnapshot(sessionRef.current, input));
+      if (!batch || event.lastEventId !== batch.id || batch.turn !== sessionRef.current?.currentTurnId) return;
+      const latest = sessionRef.current;
+      const next = streamSnapshot(latest, input, batch.order);
+      if (!next || next === latest) return;
+      setSession(batch.order ? authorizeMounts(next, batch.turn, batch.order) : next);
     });
 
     source.addEventListener("complete", (event: MessageEvent<string>) => {
       const update = receive(event);
-      if (!update) return;
+      if (!update || retiredTurns.has(update.session.currentTurnId!)) return;
       terminal = true;
       source.close();
-      if (!refresh && baseline?.currentTurnId === update.session.currentTurnId && baseline?.status === update.session.status) {
+      if (!refresh && !sessionRef.current?.mounts.length && baseline?.currentTurnId === update.session.currentTurnId && baseline?.status === update.session.status) {
         setStreamingReply(undefined);
         setProgressLabel(undefined);
         return;
@@ -192,6 +213,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
 
     source.onerror = () => {
       if (controller.signal.aborted || terminal) return;
+      batch = undefined;
       setReconnecting(true);
       void hydrate(source.readyState === EventSource.CLOSED ? 'complete' : 'stream');
     };

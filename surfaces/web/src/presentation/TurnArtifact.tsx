@@ -1,10 +1,41 @@
 import { useRef, useState } from 'react';
+import { drawingStroke } from '../../../shared/presentation/index.ts';
 import { ApiError } from '../api';
 import { assessmentMessage } from './artifact-assessment';
 import { ArtifactView } from './ArtifactView';
 import { sendIntent, type ArtifactIntentV1, type ArtifactSnapshotV1 } from './session-artifacts';
+import { StrokeFigure, type MountedStroke } from './graphics';
 
 export type ApplySnapshot = (sent: ArtifactSnapshotV1, input: unknown) => void;
+
+export function TurnArtifacts({ mounts, apply, live }: { mounts: ArtifactSnapshotV1[]; apply: ApplySnapshot; live: boolean }) {
+  let announcement = '';
+  const drawings = new Map<string, MountedStroke[]>();
+  const works: (ArtifactSnapshotV1 | { key: string; strokes: MountedStroke[] })[] = [];
+  for (const mount of mounts) {
+    const { view } = mount;
+    const stroke = drawingStroke(view);
+    if (!stroke || mount.predicting || mount.prediction || mount.submitted) {
+      works.push(mount);
+      continue;
+    }
+    const key = JSON.stringify([mount.sessionId, mount.turnId, view.drawingId, view.revision, stroke.scene.width, stroke.scene.height]);
+    let strokes = drawings.get(key);
+    if (!strokes) {
+      strokes = [];
+      drawings.set(key, strokes);
+      works.push({ key, strokes });
+    }
+    strokes.push({ ...stroke, mountId: mount.mountId, title: view.title });
+    announcement = `${view.title}，已画 ${strokes.length} 笔。${stroke.scene.description}`;
+  }
+  return <>
+    {live && <span role="status" className="visually-hidden">{announcement}</span>}
+    {works.map(work => 'strokes' in work
+      ? <StrokeFigure key={work.key} strokes={work.strokes} />
+      : <TurnArtifact key={work.mountId} snapshot={work} apply={apply} />)}
+  </>;
+}
 
 export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1; apply: ApplySnapshot }) {
   const [pending, setPending] = useState(false);

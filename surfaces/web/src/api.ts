@@ -120,6 +120,7 @@ export interface Session {
 }
 
 export type SessionEvent = {
+  authorizedMountIds?: string[];
   session: Pick<Session, "id" | "caseId" | "status" | "currentTurnId" | "pendingAnswer">;
   phase?: "queued" | "thinking" | "reading" | "checking" | "replying";
   message?: string;

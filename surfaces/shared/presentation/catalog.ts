@@ -105,10 +105,10 @@ const base = obj({
   fallback: prose,
   sections: list(section, 12),
 });
-export type Artifact = Wire<typeof base> & { interaction?: Wire<typeof interaction> };
+export type Artifact = Wire<typeof base> & { interaction?: Wire<typeof interaction>; drawingId?: string };
 export const artifactSchema: Schema<Artifact> = {
   ...base,
-  properties: { ...base.properties, interaction },
+  properties: { ...base.properties, interaction, drawingId: id },
 };
 export type ViewNode = Wire<typeof node>;
 export type Drawing = Wire<typeof shape>;
@@ -121,7 +121,7 @@ export const presentationCatalog = {
   composition:
     'Sections preserve reading order. Every section, node, drawing object and option has a unique stable ID within the revision. New definitions use a new revision.',
   bindings:
-    'range.initial is an index. Range values strictly increase. source binds by range node ID. Sample arrays match its length. stepTarget advances one sample. listen.lanes names distinct equal-length beats selections; bpm denotes quarter notes, two cells per beat.',
+    'range.initial is an index. Range values strictly increase. source binds by range node ID. Sample arrays match its length. stepTarget advances one sample. listen.lanes names distinct equal-length beats selections; bpm denotes quarter notes, two cells per beat. To draw progressively, call mount_artifact once per stroke. Reuse view.drawingId, revision, title and canvas size within the turn. Each such view contains just one scene with one visible line. Describe this stroke in scene.description.',
   equivalents:
     'stepControl.target names a stepTarget drawing object. Its native button and the figure operate the same range and report the same object ID. A figure supplies its own equivalent when none is placed explicitly.',
   actions:
