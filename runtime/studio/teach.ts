@@ -468,7 +468,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               const w = 'image' in witness && witness.image === true ? {...witness,writeBasis:true as const} : witness;
               const key = `${w.id}:${w.rev}`;
               const newer = inherited.get(key);
-              if (!newer || (w.writeBasis && !newer.writeBasis)) inherited.set(key, w);
+              if (!newer || (w.jitBasis && !newer.jitBasis) || (w.writeBasis && !newer.writeBasis)) inherited.set(key, w);
             }
             if (witnesses.length) protectWorkspaceDispatch = true;
           }
@@ -520,7 +520,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }) : undefined;
       // Claim commands only bind the learner quote and optional object scope.
       // They cannot preserve the independent sources included in a JIT frame.
-      const turnMemory = memoryTurn && (learningMemory || (jit && !jit.basis.length)) && turnInput?.kind === 'fact' ? openTurnMemory({
+      const hasJitBasis = Boolean(jit?.basis.length || [...inherited.values()].some(w => w.jitBasis));
+      const turnMemory = memoryTurn && !hasJitBasis && (learningMemory || jit) && turnInput?.kind === 'fact' ? openTurnMemory({
         db, turn: memoryTurn, answer, source: turnInput, ...(currentObject ? {currentObject} : {}),
         authorize: memoryRequest.authorize,
         async retrieve(query, step) {
@@ -565,6 +566,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         throw error;
       }) ?? [];
       const writes = [...(workspace?.writes() ?? []), ...memoryWrites];
+      const anchor = jit?.context.slots.anchor?.version;
+      const bridge = jit?.context.slots.bridge?.oldMistake;
       feedback = {
         ...result,
         ...(workspace?.publishedFormalArtifact() ? { message: '断句题已发放。请先保存预测。', trace: [] } : {}),
@@ -576,6 +579,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         ...(workspace?.basis().length ? {workspaceBasis: workspace.basis()} : {}),
         evidenceIds: [], reads: [
           ...(workspace?.reads() ?? []),
+          ...(anchor ? [{id:anchor.ref,title:'首轮版本锚点',text:anchor.text}] : []),
+          ...(bridge ? [{id:bridge.ref,title:'首轮同版旧错答',text:bridge.text}] : []),
           ...(attachment ? [{ id: attachment.id, title: attachment.title, text: attachment.text }] : []),
           ...(preference ? [{ id: memoryId, title: '本人保存的同伴备忘', text: preference }] : []),
         ],

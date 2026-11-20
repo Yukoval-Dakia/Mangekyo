@@ -42,7 +42,7 @@ const presentationTool = {type:'function',function:{name:'mount_artifact',
     view:presentationCatalog.schema,predictionPrompt:{type:'string',maxLength:160},
     sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:{type:'string'}}}
   }}}};
-export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode; writeBasis?: true};
+export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode; writeBasis?: true; jitBasis?: true};
 type Seen = {id: string; title: string; text: string; workspace: true};
 const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
 let declarations: ReturnType<typeof activity> | undefined;
@@ -65,6 +65,7 @@ export function openWorkspaceTools(options: {
   const {db, turn, currentObject} = options;
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));
+  const jitBasis = [...(options.jitBasis ?? []), ...options.prior.filter(w => w.jitBasis)];
   const overviewBasis = new Map<string, WorkspaceWitness>();
   const writeBasis = new Map(options.prior.filter(w => w.writeBasis).map(w => [`${w.id}:${w.rev}`,w]));
   const retainForWrites = (w: WorkspaceWitness) => writeBasis.set(`${w.id}:${w.rev}`,{...w,writeBasis:true});
@@ -82,7 +83,7 @@ export function openWorkspaceTools(options: {
     relationOpened.set(key,{ref,witness});
   };
   const saveRelation = openWorkspaceRelation({db,turn,opened:relationOpened,
-    authorize:options.authorize,maySend:options.maySend, modelBasis:options.jitBasis,
+    authorize:options.authorize,maySend:options.maySend, modelBasis:jitBasis,
     saved(key, receipt) { receipts.set(key, receipt); },
   });
   const rememberPageSource = (w: WorkspaceWitness) => pageSources.set(`${w.id}:${w.rev}`,w);
@@ -338,7 +339,7 @@ export function openWorkspaceTools(options: {
     for (const w of witnesses.values()) if (w.id !== id && !basisById.has(w.id))
       basisById.set(w.id,{id:w.id,rev:w.rev,epoch:w.epoch});
     // A write can reuse the images and derived records included in its context.
-    for (const {id: sourceId, rev, epoch} of [...(currentObject?.basis ?? []), ...writeBasis.values(), ...(options.jitBasis ?? [])]) {
+    for (const {id: sourceId, rev, epoch} of [...(currentObject?.basis ?? []), ...writeBasis.values(), ...jitBasis]) {
       if (sourceId === id) continue;
       const previous = basisById.get(sourceId);
       if (previous && (previous.rev !== rev || previous.epoch !== epoch))
@@ -441,6 +442,7 @@ export function openWorkspaceTools(options: {
       const ordinary = new Map([...sources, ...overviewBasis]);
       const basis = new Map([...ordinary.values()].map(w => [`${w.id}:${w.rev}`, w]));
       for (const [key, witness] of writeBasis) basis.set(key, witness);
+      for (const witness of jitBasis) basis.set(`${witness.id}:${witness.rev}`,{...witness,writeBasis:true,jitBasis:true});
       return [...basis.values()];
     },
   };
