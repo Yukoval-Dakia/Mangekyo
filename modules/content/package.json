@@ -7,6 +7,8 @@
     ".": "./module.ts",
     "./facts/textbook-page": "./textbook-page.ts",
     "./knowledge-edge": "./knowledge-edge.ts",
+    "./facts/asset-contract": "./asset.ts",
+    "./facts/asset": "./facts/asset.ts",
     "./facts/assessment": "./assessment-values.ts",
     "./facts/material": "./facts/material.ts"
   },
