@@ -204,7 +204,8 @@ function OpenPosttest({ entry, entries, reload }: { entry: Entry } & FollowupCon
 }
 
 export function RetentionPosttests({ selected }: { selected?: string }) {
-  const list = useResource<{ items: Entry[] }>('/retention/posttests');
+  const path = selected === undefined ? '/retention/posttests' : '/retention/posttests?forecastKey=' + encodeURIComponent(selected);
+  const list = useResource<{ items: Entry[] }>(path);
   useEffect(() => {
     function restore(event: PageTransitionEvent) { if (event.persisted) location.reload(); }
     window.addEventListener('pageshow', restore);

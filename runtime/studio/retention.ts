@@ -348,17 +348,19 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     });
   }
 
-  async function listPosttests() {
+  async function listPosttests(selected: string | null = null) {
     return db.snapshot(scope, async tx => {
-      const { rows } = await tx.query<{ slot_key: string; scope_keys: ForecastScope; current_id: string | null }>(
-        `SELECT s.slot_key, s.scope_keys, s.current_id FROM slot_state s JOIN facts f
-           ON f.learner_id=s.learner_id AND f.id=s.scope_keys->'target'->'paper'->>'id'
-         WHERE s.learner_id=$1 AND s.slot_type=$2
-           AND (s.current_id IS NOT NULL OR (s.pending <> 'none' AND s.scope_keys ? 'sourceReconciliationKey'))
-           AND f.type=$3 AND f.retracted_rev IS NULL
-         ORDER BY s.changed_tick DESC, s.slot_key LIMIT 24`,
-        [tx.learner, forecastSlot.type, retentionPaperType],
-      );
+      const readRows = (forecastKey: string | null, parentReconciliation: string | null) =>
+        tx.query<{ slot_key: string; scope_keys: ForecastScope; current_id: string | null }>(
+          `SELECT s.slot_key, s.scope_keys, s.current_id FROM slot_state s JOIN facts f
+             ON f.learner_id=s.learner_id AND f.id=s.scope_keys->'target'->'paper'->>'id'
+           WHERE s.learner_id=$1 AND s.slot_type=$2 AND f.type=$3 AND f.retracted_rev IS NULL
+             AND (s.current_id IS NOT NULL OR (s.pending <> 'none' AND s.scope_keys ? 'sourceReconciliationKey'))
+             AND (($4::text IS NULL AND $5::text IS NULL) OR s.slot_key=$4 OR s.scope_keys->>'sourceReconciliationKey'=$5)
+           ORDER BY s.changed_tick DESC, s.slot_key LIMIT 24`,
+          [tx.learner, forecastSlot.type, retentionPaperType, forecastKey, parentReconciliation],
+        );
+      const { rows } = await readRows(selected, null);
       const now = new Date().toISOString();
       const items: PosttestListItem[] = [];
       for (const { slot_key: forecastKey, scope_keys: scheduled, current_id: currentId } of rows) {
@@ -380,8 +382,14 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
           const attemptId = posttestAttemptFor(posttestIdFor(frozen.derivationId));
           try {
             const attempt = await read.fact(attemptId, { mode: 'following' });
-            if (attempt.type === posttestSubmissionType)
-              items.push({ ...entry, state: 'submitted', reconciliationKey: reconciliationKeyFor(frozen.derivationId, attemptId) });
+            if (attempt.type === posttestSubmissionType) {
+              const reconciliationKey = reconciliationKeyFor(frozen.derivationId, attemptId);
+              items.push({ ...entry, state: 'submitted', reconciliationKey });
+              if (forecastKey === selected) {
+                const followups = await readRows(null, reconciliationKey);
+                rows.push(...followups.rows.filter(child => child.slot_key !== selected));
+              }
+            }
           } catch (error) {
             if (!(error instanceof FactNotFoundError)) throw error;
             await requireFreshVariant(tx, frozen.value.input.target, await evidenceWatermark(tx), posttestIdFor(frozen.derivationId));

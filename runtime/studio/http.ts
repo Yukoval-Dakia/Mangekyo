@@ -215,7 +215,7 @@ export function serve(
       if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());
       if (path === '/api/papers' && method === 'POST') return json(res, 201, await student.workbook.save(await body(req)));
       if (path === '/api/retention/posttests' && method === 'GET')
-        return json(res, 200, await student.retention.listPosttests());
+        return json(res, 200, await student.retention.listPosttests(url.searchParams.get('forecastKey')));
       if (path === '/api/retention/papers' && method === 'POST') {
         return json(res, 201, await student.retention.savePosttestPaper(await body(req)));
       }
