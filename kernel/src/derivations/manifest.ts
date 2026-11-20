@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { canonicalJsonString } from '../commands/canonical.ts';
+import { slotTypePattern } from '../declarations/define.ts';
 import { derivationId, factId, learnerId, type Tick } from '../declarations/ids.ts';
 
 const tick = z.string().regex(/^(0|[1-9][0-9]*)$/).transform(value => value as Tick);
-const typeName = z.string().regex(/^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)+$/);
+const slotType = z.string().regex(slotTypePattern);
 const member = z.object({
   slotKey: z.string(),
   derivationId: z.string().transform(derivationId),
@@ -17,14 +18,14 @@ const fact = z.object({
 }).strict();
 const slot = z.object({
   kind: z.literal('slot'),
-  slotType: typeName,
+  slotType,
   slotKey: z.string(),
   derivationId: z.string().transform(derivationId),
   mode: z.enum(['pinned', 'following', 'asof']),
 }).strict();
 const range = z.object({
   kind: z.literal('range'),
-  slotType: typeName,
+  slotType,
   scope: z.record(z.string(), z.json()),
   watermark: tick,
   members: z.array(member),

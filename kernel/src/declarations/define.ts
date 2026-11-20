@@ -8,6 +8,7 @@ type Declaration<Kind extends DeclarationKind> = {
 };
 
 const typeName = /^[a-z][a-zA-Z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/;
+export const slotTypePattern = /^[a-z][a-zA-Z0-9]*(?:_[a-z0-9]+)*(?:\.[a-z][a-zA-Z0-9]*(?:_[a-z0-9]+)*)+$/;
 const moduleName = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const deriverName = /^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/;
 const jsonPointer = /^(?:\/(?:[^~/]|~0|~1)*)*$/;
@@ -58,7 +59,7 @@ export function defineSlot<Key extends JsonObject, Candidate, Presented = Candid
     readonly present?: (value: Candidate, at: string) => Presented;
   },
 ) {
-  assertName(definition.type, typeName, 'slot type');
+  assertName(definition.type, slotTypePattern, 'slot type');
   if (typeof definition.key !== 'function' || !['eager', 'lazy'].includes(definition.policy)) {
     throw new Error('A slot requires a key function and a valid policy');
   }
@@ -69,7 +70,7 @@ export function defineSlot<Key extends JsonObject, Candidate, Presented = Candid
   for (const trigger of definition.triggers) {
     if (!trigger || !['fact', 'slot', 'always'].includes(trigger.kind)) throw new Error('Invalid slot trigger');
     if (trigger.kind === 'fact') assertName(trigger.factType, typeName, 'trigger fact type');
-    if (trigger.kind === 'slot') assertName(trigger.slotType, typeName, 'trigger slot type');
+    if (trigger.kind === 'slot') assertName(trigger.slotType, slotTypePattern, 'trigger slot type');
   }
   return { ...definition, [declarationKind]: 'slot' } as const;
 }
@@ -115,7 +116,7 @@ export function defineDeriver<Key, Input extends Json, Value>(
   },
 ) {
   assertName(definition.name, deriverName, 'deriver name');
-  assertName(definition.slot, typeName, 'deriver slot type');
+  assertName(definition.slot, slotTypePattern, 'deriver slot type');
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(definition.version)) {
     throw new Error('A deriver requires a safe version');
   }
