@@ -100,3 +100,15 @@ export function savedArtifactCheckpoints(history: readonly {action: ArtifactActi
   }
   return saved;
 }
+
+/** The projection of an initially empty, single-submit passage question. */
+export function sentenceBreakQuestion(view: Artifact) {
+  const nodes = view.sections.flatMap(section => section.nodes);
+  const submits = nodes.filter(node => node.kind === 'action' && node.intent === 'submit');
+  const submit = submits[0];
+  const input = submit?.kind === 'action' ? nodes.find(node => node.id === submit.inputs[0]) : undefined;
+  if (submits.length !== 1 || submit?.kind !== 'action' || submit.inputs.length !== 1 ||
+      input?.kind !== 'selection' || input.layout !== 'passage' || input.selected.length)
+    throw new Error('正式断句须有一个提交动作和一个初始为空的断点作答位。');
+  return { itemId: submit.id, slotId: input.id, breakpointIds: input.items.map(({ id }) => id) };
+}

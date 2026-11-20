@@ -1,15 +1,15 @@
-import sharp from 'sharp';
+import { readDocumentImage } from '@mangekyo/executor-document-extraction/image';
 import type {ImageCrop, StudyImage} from '../../executors/teaching/workspace-tools.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {intakeFactType, type IntakeOriginal} from '../../modules/capture/intake-values.ts';
 import {materialType} from '../../modules/activity/library-values.ts';
-import type {SourceRefV1} from '../../modules/activity/source-values.ts';
+import {parseLearningReference, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {openIntakeObjects} from './intake-objects.ts';
 import {intakeTextOf} from './reading.ts';
 import {resolveSource, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
-import {parseLearningReference, unreadable} from './workspace-open.ts';
+import {unreadable} from './workspace-open.ts';
 
 export type IntakeImage = {
   sourceRef: SourceRefV1;
@@ -48,11 +48,12 @@ export async function cropIntakeImage(db: Db, {sourceRef, title, original, crop}
   const unavailable = () => learningToolError('image_unavailable','refs','无法读取这份 PNG 或 JPEG 原件，原图上限为 1600 万像素。');
   try {
     const bytes = await openIntakeObjects(db).read(sourceRef.fact.id, original);
-    const decoder = sharp(bytes, {limitInputPixels:maxInputPixels, failOn:'warning'});
-    const {format, width, height} = await decoder.metadata();
-    if (format !== (original.mediaType === 'image/png' ? 'png' : 'jpeg') || !width || !height || width * height > maxInputPixels)
-      return {value:unavailable()};
-    if (crop && (crop.left > width - crop.width || crop.top > height - crop.height))
+    const decoded = await readDocumentImage(bytes, original.mediaType, crop, {maxInputPixels, maxCropBytes});
+    if (decoded.kind === 'unavailable') return {value:unavailable()};
+    if (decoded.kind === 'too_large')
+      return {value:learningToolError('image_unavailable','crop','裁剪图超过大小上限，请缩小区域。')};
+    const {width, height} = decoded;
+    if (decoded.kind === 'out_of_bounds')
       return {value:learningToolError('invalid_args','crop',`裁剪区域须完全位于 ${width} × ${height} 像素的原图内。`,{
         tool:'open_learning', args:{refs:JSON.stringify(sourceRef),part:'image_crop'}, why:'先确认原图尺寸再选择区域。',
       })};
@@ -60,11 +61,8 @@ export async function cropIntakeImage(db: Db, {sourceRef, title, original, crop}
       part:{kind:'image_crop', ...(crop && {crop})}, width, height,
       content:crop ? '所选区域见本次工具结果配套的图像。' : '请用原件编码像素坐标选择要读取的矩形区域。'};
     const value = {ok:true, items:[item]};
-    if (!crop) return {value};
-    const output = await decoder.extract(crop).png().toBuffer();
-    if (output.length > maxCropBytes) return {value:learningToolError('image_unavailable','crop','裁剪图超过大小上限，请缩小区域。')};
-    const image: StudyImage = {mediaType:'image/png', data:output.toString('base64')};
-    return {value, image};
+    const image: StudyImage | undefined = decoded.image;
+    return image ? {value, image} : {value};
   } catch {
     return {value:unavailable()};
   }

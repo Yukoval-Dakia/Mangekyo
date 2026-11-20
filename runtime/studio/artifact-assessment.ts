@@ -7,21 +7,18 @@ import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kern
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { failWork, readWork, type WorkRef } from '../../kernel/src/work/index.ts';
+import type { AssessmentPublicationTarget } from '../../modules/activity/assessment-publication.ts';
 import {
-  checkAssessmentPublication, type AssessmentPublicationRun, type AssessmentPublicationTarget, type AssessmentPublicationWitness,
-  type TrustedAssessmentPublicationSample,
-} from '../../modules/activity/assessment-publication.ts';
-import {
-  assessmentRelease, assessmentSubmission, readAssessmentScore, type AssessmentRelease, type AssessmentResult, type AssessmentRevisionRef,
+  assessmentRelease, assessmentSubmission, formalAssessmentValue, type AssessmentRelease, type AssessmentRevisionRef,
   type AssessmentSubmission,
 } from '../../modules/activity/assessment-values.ts';
 import { artifactActionRecord } from '../../modules/activity/artifact-action.ts';
 import {
-  evaluateSentenceBreaks, mixesSentenceBreakSolutions, sentenceBreakEvaluator, sentenceBreakRelease, submittedBreaks,
+  evaluateSentenceBreaks, qualifySentenceBreakAssessment, sentenceBreakRelease, type SentenceBreakPublicationEvidence,
 } from '../../modules/activity/sentence-break-assessment.ts';
 import slot from '../../modules/activity/slots/artifact-formal-assessment.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
-import type { Artifact } from '../../surfaces/shared/presentation/index.ts';
+import { sentenceBreakQuestion, type Artifact } from '../../surfaces/shared/presentation/index.ts';
 import {
   assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, type AssessmentScope,
 } from './formal-assessment.ts';
@@ -37,10 +34,7 @@ type FrozenInputs = { release: AssessmentRelease; submission: AssessmentSubmissi
  */
 export type ReadArtifactAssessmentWitness = (
   target: AssessmentPublicationTarget, view: Artifact, predictionPrompt: string,
-) => {
-  witness: AssessmentPublicationWitness;
-  samples: readonly TrustedAssessmentPublicationSample[];
-} | null | undefined;
+) => SentenceBreakPublicationEvidence | null | undefined;
 
 export function artifactAssessmentDigest(view: Artifact, predictionPrompt: string) {
   return createHash('sha256').update(canonicalJsonString({ view, predictionPrompt })).digest('hex');
@@ -50,65 +44,14 @@ export function qualifyArtifactAssessment(
   releaseRef: AssessmentRevisionRef, view: Artifact, predictionPrompt: string, alternatives: unknown,
   readWitness?: ReadArtifactAssessmentWitness,
 ) {
-  const nodes = view.sections.flatMap(section => section.nodes);
-  const submits = nodes.filter(node => node.kind === 'action' && node.intent === 'submit');
-  const submit = submits[0];
-  const input = submit?.kind === 'action' ? nodes.find(node => node.id === submit.inputs[0]) : undefined;
-  if (submits.length !== 1 || submit?.kind !== 'action' || submit.inputs.length !== 1 ||
-      input?.kind !== 'selection' || input.layout !== 'passage' || input.selected.length)
-    throw new Error('正式断句须有一个提交动作和一个初始为空的断点作答位。');
-  const release = sentenceBreakRelease(releaseRef, submit.id, input.id, input.items.map(({ id }) => id),
+  const { itemId, slotId, breakpointIds } = sentenceBreakQuestion(view);
+  const release = sentenceBreakRelease(releaseRef, itemId, slotId, breakpointIds,
     artifactAssessmentDigest(view, predictionPrompt), alternatives);
-  const runs: (Extract<AssessmentPublicationRun, { state: 'completed' }> & { actual: AssessmentResult })[] = [];
-  const decision = checkAssessmentPublication(release, [sentenceBreakEvaluator], target => {
-    const trusted = readWitness?.(target, view, predictionPrompt);
-    if (!trusted) return null;
-    const { witness } = trusted;
-    // The general gate allows a trusted registry to declare some coverage inapplicable.
-    // For this evaluator both the mixed and missing cases are required.
-    if (!(['negative', 'partial'] as const).every(kind =>
-      witness.requiredCoverage.some(entry => entry.kind === kind && entry.applies !== false))) return null;
-    return {
-      witness,
-      samples: trusted.samples.map(sample => {
-        try {
-          const submission = assessmentSubmission(sample.submission, release);
-          const ids = submittedBreaks(release, submission);
-          for (const entry of witness.requiredCoverage) {
-            if (entry.sampleRef.id !== sample.sampleRef.id || entry.sampleRef.rev !== sample.sampleRef.rev) continue;
-            if ((entry.kind === 'negative' && ids.length) ||
-                (entry.kind === 'partial' && !mixesSentenceBreakSolutions(release, ids))) {
-              // These two cases must be distinguished from a wrong single solution or missing coverage.
-              return { sample, run: { state: 'failed', reason: '样例须分别演示互斥拼接与缺交。' } };
-            }
-          }
-          const run = {
-            state: 'completed' as const, witnessRef: witness.ref, sampleRef: sample.sampleRef,
-            receiptRef: {
-              id: factId(stableId('sentence-break-verification', releaseRef.id, String(releaseRef.rev), witness.ref.id,
-                String(witness.ref.rev), sample.sampleRef.id, String(sample.sampleRef.rev))),
-              rev: 1 as Revision,
-            },
-            evaluators: [{ criterionId: release.items[0]!.criteria[0]!.criterionId, evaluator: sentenceBreakEvaluator }],
-            actual: evaluateSentenceBreaks(release, submission),
-          };
-          runs.push(run);
-          // Canonical order keeps permutations of one answer from counting as distinct solutions.
-          return {
-            sample: { ...sample, submission: { ...submission, answers: submission.answers.map(answer => ({
-              ...answer, value: { kind: 'structured', value: { kind: 'selection', ids } },
-            })) } },
-            run,
-          };
-        } catch {
-          return { sample, run: { state: 'failed', reason: '冻结样例无法执行。' } };
-        }
-      }),
-    };
-  });
-  const qualification = decision.state === 'eligible' ? decision.items[0] : undefined;
-  if (!qualification) throw new Error('正式断句需要宿主独立核验。');
-  return { release, qualification, runs };
+  return qualifySentenceBreakAssessment(release, target => readWitness?.(target, view, predictionPrompt), (witness, sample) => ({
+    id: factId(stableId('sentence-break-verification', releaseRef.id, String(releaseRef.rev), witness.id,
+      String(witness.rev), sample.id, String(sample.rev))),
+    rev: 1 as Revision,
+  }));
 }
 
 class ArtifactAssessmentInputUnavailable extends Error {}
@@ -155,9 +98,7 @@ export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFa
     }
     const { release, submission } = sealed.plan.data as FrozenInputs;
     const result = evaluateSentenceBreaks(release, submission);
-    const criteria = release.items.flatMap(({ itemId, criteria }) =>
-      criteria.map(({ criterionId, evaluator, source, maximum }) => ({ itemId, criterionId, evaluator, source, maximum })));
-    const value = { result, score: readAssessmentScore(result, release, submission), criteria, receipts: [] };
+    const value = formalAssessmentValue(release, submission, result, []);
     await submitCandidate(db, ref, artifactAssessmentPolicy, sealed.id, { kind: 'value', value }, propagation);
   } catch (error) {
     if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||

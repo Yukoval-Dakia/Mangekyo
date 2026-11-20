@@ -2,6 +2,10 @@ import { unzipSync } from 'fflate';
 
 export type MineruMediaType = 'application/pdf' | 'image/png' | 'image/jpeg';
 
+export function mineruSupports(mediaType: string): mediaType is MineruMediaType {
+  return mediaType === 'application/pdf' || mediaType === 'image/png' || mediaType === 'image/jpeg';
+}
+
 export type MineruReadResult =
   | { readonly state: 'pending'; readonly pages: number | null }
   | { readonly state: 'done'; readonly text: string; readonly pages: number | null }

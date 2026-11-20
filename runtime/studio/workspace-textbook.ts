@@ -11,7 +11,7 @@ import {checkTextbookBasis, parseTextbookBasis, textbookPageFrom, textbookPageTy
 import {createStudioCommandHooks} from './command-hooks.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
-import {parseLearningReference} from './workspace-open.ts';
+import {parseLearningReference} from '../../modules/activity/source-values.ts';
 import type {WorkspaceSourceRecipient} from './source-read.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 

@@ -7,9 +7,11 @@ import { parseManifest, type Manifest, type ManifestInput } from '../../kernel/s
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { failWork, finishWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import {
-  forecastType, readAnyRetentionMethod, reconcileRetention, reconciliationType, type RetentionForecast,
+  forecastType, readAnyRetentionMethod, reconciliationType, type RetentionForecast,
 } from '../../modules/learner/retention.ts';
-import reconciliation from '../../modules/learner/derivers/retention-reconciliation.ts';
+import {
+  retentionComparisonCase, retentionComparisonReport, type RetentionReconciliation,
+} from '../../modules/learner/retention-view.ts';
 import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { retentionPurpose } from './retention-workbook.ts';
@@ -20,7 +22,6 @@ export const retentionComparisonWork = 'studio.retentionComparisonWork';
 const retentionComparisonType = 'predict.retentionComparison';
 const comparisonDeriver = 'learner/retention-comparison@1';
 const scope = { learner: studioLearner };
-type Reconciliation = Extract<Awaited<ReturnType<typeof reconciliation.derive>>, { kind: 'value' }>['value'];
 type Pair = { forecastKey: string; forecastId: DerivationId; reconciliationKey: string; reconciliationId: DerivationId };
 type Plan = { method: string; pairs: Pair[]; manifest: Manifest };
 
@@ -65,25 +66,10 @@ async function value<T>(tx: ReadTransaction, id: DerivationId) {
 async function validPlan(tx: ReadTransaction, plan: Plan, manifest = parseManifest(plan.manifest)) {
   if ((await revalidateManifest(tx, manifest, retentionPurpose)).kind !== 'valid') return false;
   for (const pair of plan.pairs) {
-    const { observation } = await value<Reconciliation>(tx, pair.reconciliationId);
+    const { observation } = await value<RetentionReconciliation>(tx, pair.reconciliationId);
     if (!await retentionHistoryValid(tx, pair.forecastId, observation)) return false;
   }
   return true;
-}
-
-type Verdict = Reconciliation['status'];
-
-function metrics(statuses: readonly Verdict[]) {
-  const matched = statuses.filter(status => status === 'matched').length;
-  const missed = statuses.filter(status => status === 'missed').length;
-  const eligible = matched + missed + statuses.filter(status => status === 'observed').length;
-  return {
-    eligible, matched, missed,
-    contaminated: statuses.filter(status => status === 'contaminated').length,
-    missingIndependent: statuses.filter(status => status === 'awaiting-independent').length,
-    coverage: eligible ? (matched + missed) / eligible : null,
-    classificationError: matched + missed ? missed / (matched + missed) : null,
-  };
 }
 
 export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) {
@@ -146,7 +132,7 @@ export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) 
         if (!method) throw new Error('Retention comparison method missing');
         const pairs = await Promise.all(job.plan.pairs.map(async pair => ({
           pair, recorded: await value<RetentionForecast>(tx, pair.forecastId),
-          outcome: await value<Reconciliation>(tx, pair.reconciliationId),
+          outcome: await value<RetentionReconciliation>(tx, pair.reconciliationId),
         })));
         return { manifest, method, pairs, plan: job.plan };
       });
@@ -155,17 +141,9 @@ export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) 
       const cases = [];
       for (const { pair, recorded, outcome } of pairs) {
         const alternate = await evaluateStudioRetention(method, recorded.input, pythonHost);
-        cases.push({
-          ...pair, forecastWatermark: recorded.input.observedThrough, observationWatermark: outcome.observedThrough,
-          exposure: outcome.observation.exposure.kind, observed: outcome.observation.result,
-          recorded: { method: recorded.method, estimate: recorded.estimate, status: outcome.status },
-          shadow: { estimate: alternate.estimate, status: reconcileRetention(alternate, outcome.observation).status },
-        });
+        cases.push(retentionComparisonCase(pair, recorded, alternate, outcome));
       }
-      const report = {
-        kind: 'prospective-replay', method: { id: method.id, version: method.version }, cases,
-        recorded: metrics(cases.map(row => row.recorded.status)), shadow: metrics(cases.map(row => row.shadow.status)),
-      };
+      const report = retentionComparisonReport(method, cases);
       return finishWork(db, ref, async tx => {
         if (!await validPlan(tx, frozen.plan, manifest)) return;
         await tx.insert('derivations', {
