@@ -21,8 +21,8 @@ export default defineCommand({
       kind, layer, ...(itemId ? { itemId } : {}), ...(slotId ? { slotId } : {}), ...(crop_ref ? { crop_ref } : {}),
       status: 'known', text, author: 'learner', sticky: true,
     } };
-    const blocks = source.unit.blocks.some(entry => entry.id === blockId)
-      ? source.unit.blocks.map(block => block.id === blockId ? correction : block)
+    const blocks = source.unit.blocks.some(entry => entry.id === block.id)
+      ? source.unit.blocks.map(entry => entry.id === block.id ? correction : entry)
       : [...source.unit.blocks, correction];
     return [{ kind: 'correct', id, expectedRev: rev, data: { ...source, unit: { ...source.unit, blocks } } }];
   },

@@ -1,5 +1,5 @@
 import { defineCommand } from '@mangekyo/kernel';
-import { cropKey, extractionAnchor, extractionTarget } from '../extraction.ts';
+import { cropKey, extractionAnchor, extractionTarget, mayExtract } from '../extraction.ts';
 import { captureText } from '../parse.ts';
 import { captureSourceType, sourceEnvelope, type Block } from '../source.ts';
 
@@ -13,12 +13,13 @@ export default defineCommand({
   async write(ctx, { target: { id, rev }, blockId, anchor }) {
     const fact = await ctx.read.fact(id, { mode: 'following' });
     if (fact.type !== captureSourceType || fact.ref.rev !== rev) throw new Error('原件版本已变更。');
+    if (!mayExtract(fact)) throw new Error('原件未获准学习使用。');
     const source = sourceEnvelope(fact.value);
     const block = extractionAnchor(source, blockId, anchor);
     if (!block || block.body.status !== 'unknown' || block.body.clarification === 'asked') return [];
     const key = cropKey(block);
     if (source.unit.blocks.some(entry => cropKey(entry) === key &&
-        entry.body.status === 'unknown' && entry.body.clarification === 'asked')) return [];
+        (entry.body.status === 'unknown' ? entry.body.clarification === 'asked' : entry.body.sticky))) return [];
     const entries = source.unit.blocks.some(entry => entry.id === blockId) ? source.unit.blocks : [...source.unit.blocks, block];
     const blocks: Block[] = entries.map(entry => cropKey(entry) === key && entry.body.status === 'unknown'
       ? { ...entry, body: { ...entry.body, clarification: 'asked' } } : entry);
