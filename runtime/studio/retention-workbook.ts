@@ -51,10 +51,7 @@ async function trackSource(tx: ReadTransaction, read: PosttestFactReader, refere
   return source;
 }
 
-export const {
-  openRetentionTarget, openControlledSubmission, readWorkbookObservation, readWorkbookEvidence,
-  readComparableWorkbookEvidence, readItemDimensions, readItemConceptLinks,
-} = workbookEvidenceReader<ReadTransaction>({
+export const retentionWorkbookEvidence = (readIssuance = readPosttestIssuance) => workbookEvidenceReader<ReadTransaction>({
   trackSource,
   async reopenCapsule(tx, read, basis) {
     const teaching = selectedWorkbookRead(tx,retentionPurpose,createCommandReadContext(tx,retentionPurpose));
@@ -62,7 +59,7 @@ export const {
       throw new FactReadDeniedError('changed','受控帮助见证已变化。');
   },
   openEdge: (tx,id) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:retentionPurpose,maySend:() => true}),
-  readPosttestIssuance,
+  readPosttestIssuance: readIssuance,
   createRead: tx => createCommandReadContext(tx,retentionPurpose),
   unavailable: error => error instanceof FactNotFoundError || error instanceof FactReadDeniedError,
   unavailableRelease: error => error instanceof RequestError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError,
@@ -70,5 +67,10 @@ export const {
   edgeType: knowledgeEdgeType,
   questionType: workspaceEntryType,
 });
+
+export const {
+  openRetentionTarget, openControlledSubmission, readWorkbookObservation, readWorkbookEvidence,
+  readComparableWorkbookEvidence, readItemDimensions, readItemConceptLinks,
+} = retentionWorkbookEvidence();
 
 export { retentionExposure } from '../../modules/activity/evidence-slice.ts';
