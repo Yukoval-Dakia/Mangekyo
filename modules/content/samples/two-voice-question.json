@@ -1,0 +1,215 @@
+{
+  "title": "双声部节奏",
+  "prompt": "在八格里编一个双声部节奏。每个声部各敲三次，只在第一格同时响。",
+  "interaction": {
+    "version": 1,
+    "id": "duet",
+    "revision": "r1",
+    "title": "八格节奏",
+    "fallback": "在八格里编一个双声部节奏。每个声部各敲三次，只在第一格同时响。",
+    "sections": [
+      {
+        "id": "score",
+        "title": "编写并试听",
+        "layout": "stack",
+        "nodes": [
+          {
+            "kind": "selection",
+            "id": "bass",
+            "label": "大鼓",
+            "layout": "beats",
+            "items": [
+              {"id": "bass-1", "label": "1"},
+              {"id": "bass-2", "label": "2"},
+              {"id": "bass-3", "label": "3"},
+              {"id": "bass-4", "label": "4"},
+              {"id": "bass-5", "label": "5"},
+              {"id": "bass-6", "label": "6"},
+              {"id": "bass-7", "label": "7"},
+              {"id": "bass-8", "label": "8"}
+            ],
+            "tail": "",
+            "selected": []
+          },
+          {
+            "kind": "selection",
+            "id": "snare",
+            "label": "小鼓",
+            "layout": "beats",
+            "items": [
+              {"id": "snare-1", "label": "1"},
+              {"id": "snare-2", "label": "2"},
+              {"id": "snare-3", "label": "3"},
+              {"id": "snare-4", "label": "4"},
+              {"id": "snare-5", "label": "5"},
+              {"id": "snare-6", "label": "6"},
+              {"id": "snare-7", "label": "7"},
+              {"id": "snare-8", "label": "8"}
+            ],
+            "tail": "",
+            "selected": []
+          },
+          {
+            "kind": "listen",
+            "id": "listen",
+            "label": "试听",
+            "lanes": [
+              "bass",
+              "snare"
+            ],
+            "bpm": 96
+          },
+          {
+            "kind": "action",
+            "id": "send",
+            "label": "提交节奏",
+            "inputs": [
+              "bass",
+              "snare"
+            ],
+            "intent": "submit"
+          }
+        ]
+      }
+    ]
+  },
+  "response_schema": [
+    {
+      "slotId": "bass",
+      "schemaVersion": "selection-v1",
+      "fields": [
+        {
+          "path": "",
+          "kind": "structured"
+        }
+      ]
+    },
+    {
+      "slotId": "snare",
+      "schemaVersion": "selection-v1",
+      "fields": [
+        {
+          "path": "",
+          "kind": "structured"
+        }
+      ]
+    }
+  ],
+  "assessment_contract": [
+    {
+      "criterionId": "bass-count",
+      "inputs": [
+        {
+          "slotId": "bass",
+          "path": ""
+        }
+      ],
+      "evaluator": {
+        "id": "selection-constraint",
+        "version": "1"
+      },
+      "parameters": {
+        "domains": [
+          [
+            {"id": "bass-1", "value": "1"},
+            {"id": "bass-2", "value": "2"},
+            {"id": "bass-3", "value": "3"},
+            {"id": "bass-4", "value": "4"},
+            {"id": "bass-5", "value": "5"},
+            {"id": "bass-6", "value": "6"},
+            {"id": "bass-7", "value": "7"},
+            {"id": "bass-8", "value": "8"}
+          ]
+        ],
+        "test": {
+          "kind": "count",
+          "equals": 3
+        }
+      },
+      "maximum": 1,
+      "missingEvidence": "insufficient-evidence"
+    },
+    {
+      "criterionId": "snare-count",
+      "inputs": [
+        {
+          "slotId": "snare",
+          "path": ""
+        }
+      ],
+      "evaluator": {
+        "id": "selection-constraint",
+        "version": "1"
+      },
+      "parameters": {
+        "domains": [
+          [
+            {"id": "snare-1", "value": "1"},
+            {"id": "snare-2", "value": "2"},
+            {"id": "snare-3", "value": "3"},
+            {"id": "snare-4", "value": "4"},
+            {"id": "snare-5", "value": "5"},
+            {"id": "snare-6", "value": "6"},
+            {"id": "snare-7", "value": "7"},
+            {"id": "snare-8", "value": "8"}
+          ]
+        ],
+        "test": {
+          "kind": "count",
+          "equals": 3
+        }
+      },
+      "maximum": 1,
+      "missingEvidence": "insufficient-evidence"
+    },
+    {
+      "criterionId": "overlap",
+      "inputs": [
+        {
+          "slotId": "bass",
+          "path": ""
+        },
+        {
+          "slotId": "snare",
+          "path": ""
+        }
+      ],
+      "evaluator": {
+        "id": "selection-constraint",
+        "version": "1"
+      },
+      "parameters": {
+        "domains": [
+          [
+            {"id": "bass-1", "value": "1"},
+            {"id": "bass-2", "value": "2"},
+            {"id": "bass-3", "value": "3"},
+            {"id": "bass-4", "value": "4"},
+            {"id": "bass-5", "value": "5"},
+            {"id": "bass-6", "value": "6"},
+            {"id": "bass-7", "value": "7"},
+            {"id": "bass-8", "value": "8"}
+          ],
+          [
+            {"id": "snare-1", "value": "1"},
+            {"id": "snare-2", "value": "2"},
+            {"id": "snare-3", "value": "3"},
+            {"id": "snare-4", "value": "4"},
+            {"id": "snare-5", "value": "5"},
+            {"id": "snare-6", "value": "6"},
+            {"id": "snare-7", "value": "7"},
+            {"id": "snare-8", "value": "8"}
+          ]
+        ],
+        "test": {
+          "kind": "intersection",
+          "equals": [
+            "1"
+          ]
+        }
+      },
+      "maximum": 1,
+      "missingEvidence": "insufficient-evidence"
+    }
+  ]
+}
