@@ -126,6 +126,8 @@ export async function* notionBoundedSnapshotForSend(
   snapshot: NotionBoundedSnapshot,
   resolveCurrent: () => Promise<{ readonly use: NotionBoundedUse | null; readonly now: string }>,
 ): AsyncGenerator<NotionReadRequest, NotionBoundedSnapshot['projection'], NotionReadResponse> {
+  const dispatch = await resolveCurrent();
+  if (!notionBoundedUseAllowed(snapshot.use, dispatch.use, dispatch.now)) throw new Error('Notion 本轮授权无效。');
   yield* notionConfirmPageAccess(snapshot.use.selection.root, snapshot.use.pageId);
   const { use, now } = await resolveCurrent();
   return openNotionBoundedSnapshot(snapshot, use, now);
