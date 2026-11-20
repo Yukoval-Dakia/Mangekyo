@@ -545,6 +545,15 @@ function normalizeExact(value: string): string {
   return value.normalize('NFKC').trim().replace(/\s+/g, ' ');
 }
 
+export function isStandaloneWorkbookPaper(value: unknown) {
+  try {
+    const { materialId, assessmentRelease, questions } = workbookPaper(value);
+    return materialId === null && !assessmentRelease && questions.every(question => !question.sourceQuestionRef);
+  } catch {
+    return false;
+  }
+}
+
 export function sameWorkbookJson(left: unknown, right: unknown): boolean {
   function canonical(value: unknown): string {
     if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';

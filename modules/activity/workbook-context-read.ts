@@ -54,10 +54,15 @@ export async function workbookCapsuleLinkCandidates(tx: ActivityEvidenceReadScop
     ), direct AS (
       SELECT id,data FROM visible WHERE data#>'{from,sourceUse}' @> $4::jsonb
       AND data->>'kind' IN ('targets_concept','instance_of')
+    ), explanations AS (
+      SELECT d.id AS bridge,n.id AS note FROM visible n JOIN direct d
+        ON n.data#>'{to,sourceUse}'=d.data#>'{to,sourceUse}'
+        WHERE n.data->>'kind'='explains' AND d.data->>'kind'='targets_concept'
+          AND n.data#>>'{from,kind}'='note' AND n.data#>>'{from,blockId}' IS NOT NULL
+          AND n.data#>>'{to,kind}'='concept' AND n.data#>>'{to,blockId}' IS NULL
     )
-    SELECT id FROM direct UNION ALL SELECT n.id FROM visible n JOIN direct d
-      ON n.data#>'{to,sourceUse}'=d.data#>'{to,sourceUse}'
-      WHERE n.data->>'kind'='explains' AND d.data->>'kind'='targets_concept' LIMIT 129`,
+    SELECT id FROM direct WHERE data->>'kind'='instance_of' OR EXISTS (SELECT FROM explanations WHERE bridge=direct.id)
+    UNION ALL SELECT note FROM explanations LIMIT 129`,
     [tx.learner,edgeType,purpose,JSON.stringify(question)]);
   return rows.length > 128 ? [] : [...new Set(rows.map(({id})=>id))];
 }

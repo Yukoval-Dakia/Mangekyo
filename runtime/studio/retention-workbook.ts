@@ -19,11 +19,14 @@ export function workbookNotionAccess(tx: ReadTransaction, purpose: string) {
   return purpose === retentionPurpose ? {purpose:'learning',recipientId:'studio:learning-reader'} : {purpose,recipientId:tx.learner};
 }
 
+export const isWorkbookNotionSource = (fact: {type: string; value: unknown}) =>
+  fact.type === captureSourceType && sourceEnvelope(fact.value).kind === 'notion';
+
 export function selectedWorkbookRead(tx: ReadTransaction, purpose: string, sourceRead: SelectedNotionAccess['sourceRead'], check?: CheckNotionRead) {
   const access = {...workbookNotionAccess(tx,purpose), maySend: (fact: {ref: {learner: string}}) => fact.ref.learner === tx.learner};
   return {async fact(...args: Parameters<typeof sourceRead.fact>) {
     const fact = await sourceRead.fact(...args);
-    if (fact.type !== captureSourceType || sourceEnvelope(fact.value).kind !== 'notion') return fact;
+    if (!isWorkbookNotionSource(fact)) return fact;
     try {
       const authorized = await readStudioNotionSource(tx, ...args, access);
       await check?.(authorized);
@@ -50,7 +53,7 @@ async function trackSource(tx: ReadTransaction, read: PosttestFactReader, refere
 
 export const {
   openRetentionTarget, openControlledSubmission, readWorkbookObservation, readWorkbookEvidence,
-  readComparableWorkbookEvidence, readItemDimensions,
+  readComparableWorkbookEvidence, readItemDimensions, readItemConceptLinks,
 } = workbookEvidenceReader<ReadTransaction>({
   trackSource,
   async reopenCapsule(tx, read, basis) {

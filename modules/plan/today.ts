@@ -1,7 +1,7 @@
 import type { CanonicalEvidenceSliceV1 } from '@mangekyo/kernel';
 import type { GoalStatus } from './goal-values.ts';
 import type { Campaign, PlanRule } from './rules.ts';
-import { examForecast, type FrozenExamForecast } from './exam-forecast.ts';
+import { examForecast, reviewExamScore, type ExamScoreObservation, type FrozenExamForecast } from './exam-forecast.ts';
 import { packCandidates } from './offline-pack.ts';
 import { instant, integer } from './validation.ts';
 
@@ -25,6 +25,10 @@ export type PlanCandidate = {
   state?: 'in-progress' | 'completed';
   date?: string;
   draftRef?: string;
+  // From authorized content/issuance witnesses in the same planning snapshot.
+  examPrep?:
+    | { kind: 'archetype'; coveredQuestionCount: number }
+    | { kind: 'first-aid' | 'timed' };
 };
 export type TodayInput = {
   now: string;
@@ -38,6 +42,7 @@ export type TodayInput = {
   // Agent may rank authorized real content. Apply only after hard admission.
   contentOrder?: readonly string[];
   frozenExamForecast?: FrozenExamForecast;
+  examScore?: ExamScoreObservation;
 };
 const dayMs = 86400000;
 const days = (first: string, last: string) => (Date.parse(last) - Date.parse(first)) / dayMs;
@@ -105,10 +110,28 @@ function availableWindows(rules: readonly PlanRule[], day: string, minute: numbe
 function examPolicy(rules: readonly PlanRule[], day: string) {
   const exams = rules.filter((r) => r.kind === 'exam');
   const next = exams.filter((e) => e.date >= day).sort((a, b) => a.date.localeCompare(b.date))[0];
-  const recent = exams.some((e) => days(e.date, day) > 0 && days(e.date, day) <= 2);
-  const automatic: Campaign = next && days(day, next.date) <= 7 ? 'sprint' : recent ? 'recovery' : 'steady';
-  return { exam: next, campaign: rules.findLast((r) => r.kind === 'campaign')?.campaign ?? automatic };
+  const previous = exams.filter((e) => e.date < day).sort((a, b) => b.date.localeCompare(a.date))[0];
+  const automatic: Campaign =
+    next && days(day, next.date) <= 7 ? 'sprint' : previous && days(previous.date, day) <= 2 ? 'recovery' : 'steady';
+  const campaign = rules.findLast((r) => r.kind === 'campaign')?.campaign ?? automatic;
+  const latestExam = next?.date === day ? next : previous;
+  return { exam: campaign === 'recovery' ? latestExam : next, campaign };
 }
+
+function sprintPriority(candidate: PlanCandidate, inScope: boolean, scopeKnown: boolean) {
+  if (scopeKnown && !inScope) return null;
+  const prep = candidate.examPrep;
+  if (prep?.kind === 'archetype' && prep.coveredQuestionCount > 1) {
+    return { boost: 55 + 5 * Math.min(prep.coveredQuestionCount, 12),
+      reason: '高频母题，已有 ' + prep.coveredQuestionCount + ' 道原卷题关联。' };
+  }
+  if (prep?.kind === 'first-aid' && candidate.minutes <= 3) {
+    return { boost: 70, reason: '可在三分钟内重看已备好的急救卡。' };
+  }
+  if (prep?.kind === 'timed') return { boost: 55, reason: '考前做一次已备好的限时模拟。' };
+  return null;
+}
+
 type Ranked = { candidate: PlanCandidate; score: number; why: string[] };
 
 // At most three slots. Track the highest value bundle for each occupied time and count.
@@ -220,6 +243,7 @@ export function planToday(input: TodayInput) {
     for (const probability of [c.retention, c.information])
       if (probability !== undefined && (!Number.isFinite(probability) || probability < 0 || probability > 1))
         throw new Error('预测或信息量超出范围。');
+    if (c.examPrep?.kind === 'archetype') integer(c.examPrep.coveredQuestionCount, 1, Number.MAX_SAFE_INTEGER);
     catalog.set(c.id, c);
   }
   for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
@@ -264,7 +288,8 @@ export function planToday(input: TodayInput) {
     }
   }
   const unresolvedLock = [...locked].some((id) => !catalog.has(id));
-  const remaining = unresolvedLock ? 0 : Math.max(0, budgetMinutes - reserved - schoolMinutes);
+  const freeMinutes = unresolvedLock ? 0 : Math.max(0, budgetMinutes - reserved - schoolMinutes);
+  const remaining = campaign === 'recovery' ? Math.min(10, freeMinutes) : freeMinutes;
   if (reserved + schoolMinutes > budgetMinutes)
     conflicts.push({
       constraints: [
@@ -291,9 +316,8 @@ export function planToday(input: TodayInput) {
       continue;
     if ((input.mode === 'one-hand' && c.input !== 'tap') || (input.mode === 'voice' && c.input !== 'voice'))
       continue;
-    if (returning && c.kind !== 'probe' && c.kind !== 'counterexample') continue;
-    if (!returning && campaign === 'recovery' && c.kind !== 'recovery') continue;
-    if (c.kind === 'recovery' && campaign !== 'recovery') continue;
+    if ((campaign === 'recovery') !== (c.kind === 'recovery')) continue;
+    if (returning && campaign !== 'recovery' && c.kind !== 'probe' && c.kind !== 'counterexample') continue;
     const info = c.information ?? (c.retention === undefined ? 0 : 4 * c.retention * (1 - c.retention));
     const why = [c.reason];
     let score = 20 + 30 * info + (1 - (c.retention ?? 1)) * 12;
@@ -302,7 +326,7 @@ export function planToday(input: TodayInput) {
       score += 45;
       why.push('高信心错答后先做最小反例。');
     }
-    if (returning) {
+    if (returning && campaign !== 'recovery') {
       score += 70 * info;
       why.push('长假后先摸底，再按结果重排。');
     }
@@ -327,13 +351,20 @@ export function planToday(input: TodayInput) {
       score += 8;
       why.push('衔接当前校内进度或本人预习安排。');
     }
-    if (exam?.scope.includes(c.topic)) {
-      score += 10 + (exam.weights.find((w) => w.topic === c.topic)?.weight ?? 0) / 4;
+    const inScope = exam?.scope.includes(c.topic) ?? false;
+    if (inScope && campaign !== 'recovery') {
+      score += 10 + (exam?.weights.find((w) => w.topic === c.topic)?.weight ?? 0) / 4;
       why.push('属于考试范围。');
     }
-    if (campaign === 'sprint' && c.kind === 'exam') {
-      score += 22;
-      why.push('冲刺阶段优先限时检验或急救卡。');
+    if (campaign === 'sprint') {
+      const priority = sprintPriority(c, inScope, !!exam?.scope.length);
+      if (priority) {
+        score += priority.boost;
+        why.push(priority.reason);
+      }
+    }
+    if (campaign === 'recovery') {
+      why.push('考后只安排已有复盘，最多一项、十分钟，可直接休息。');
     }
     if (
       deadlines.some(
@@ -364,7 +395,7 @@ export function planToday(input: TodayInput) {
   );
   const limit = Math.max(
     0,
-    (returning ? 2 : 3) - protectedItems.filter((c) => c.state !== 'completed').length,
+    (campaign === 'recovery' ? 1 : returning ? 2 : 3) - pendingProtected.length,
   );
   const selected = bundle(prepared.length ? prepared : feasible, remaining, limit, freeWindows);
   for (const id of preferred)
@@ -383,12 +414,14 @@ export function planToday(input: TodayInput) {
     : null;
   const shortlist = feasible.map(({ candidate }) => candidate.id);
   const forecast = examForecast(exam, input.frozenExamForecast, input.now);
+  const scoreReview = campaign === 'recovery' ? reviewExamScore(exam, forecast, input.examScore, input.now) : null;
   return {
     day,
     campaign,
     returning,
     overview,
     forecast,
+    scoreReview,
     activeGoal,
     protectedItems,
     items,

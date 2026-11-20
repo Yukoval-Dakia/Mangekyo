@@ -6,7 +6,6 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
@@ -19,10 +18,10 @@ import { workbookReadingContext, workbookReadingMount } from '../../modules/acti
 import { sameWorkbookJson, WorkbookSourceMismatch, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, workbookQuestionView, type WorkbookQuestion, type WorkbookPaper } from '../../modules/activity/workbook-values.ts';
 import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
 import { WorkspaceInputError, workspaceEntryType } from '../../modules/activity/workspace-values.ts';
-import { workbookWitnessReader } from '../../modules/activity/workbook-backtrace-values.ts';
+import { selectWorkbookTrace, workbookWitnessReader, type WorkbookTraceProof } from '../../modules/activity/workbook-backtrace-values.ts';
 import { notionReadScope, NotionReadUnchecked, type CheckNotionRead } from './notion.ts';
 import type { openRetention } from './retention.ts';
-import { selectedWorkbookRead, retentionPurpose } from './retention-workbook.ts';
+import { isWorkbookNotionSource, selectedWorkbookRead, retentionPurpose } from './retention-workbook.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { listPaperCapsules, openPaperCapsule, type PaperCapsuleBinding } from '../../modules/content/paper-capsules.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -32,8 +31,8 @@ import { resolveSource } from './source-read.ts';
 type Reader = Pick<ReadContext,'fact'>;
 export type WorkbookContextAuthority = {
   activePosttest?: ReturnType<typeof openRetention>['activePosttest'];
-  backtrace?: (tx: ReadTransaction, target: {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef}, local: Reader, check: Reader) =>
-    Promise<null | {text: string; content: HelpRef; witnesses: readonly BusWitness[]}>;
+  backtrace?: (tx: ReadTransaction, target: {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef}, local: Reader) =>
+    Promise<readonly WorkbookTraceProof[] | null>;
 };
 type Kind = 'notion' | 'archetype' | 'backtrace';
 const scope = {learner: studioLearner};
@@ -58,6 +57,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
     const edges = await workbookCapsuleLinkCandidates(tx,question,knowledgeEdgeType,use);
     // Buffer preflight pages so an unrelated remote category never delays a local opening.
     const pages = new Set<FactSnapshot>();
+    const choices: (readonly (readonly FactSnapshot[])[])[] = [];
     const handles: {kind: Kind; ref:string}[] = [];
     for (const kind of check || collectPages ? allKinds : localKinds) {
       let pending = false;
@@ -70,10 +70,22 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       });
       const read = memoWorkbookFacts(selected.fact);
       if (kind === 'backtrace') {
-        const trace = await authority.backtrace?.(tx,{paper:mount.paper,itemId:item.id,question,
-          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},memoWorkbookFacts(selectedWorkbookRead(tx,use,source).fact),read);
+        const local = memoWorkbookFacts(selectedWorkbookRead(tx,use,source).fact);
+        const proofs = await authority.backtrace?.(tx,{paper:mount.paper,itemId:item.id,question,
+          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},local) ?? [];
+        const refFor = (trace: WorkbookTraceProof) => sign('backtrace',mount,item.id,question,trace.content,trace.witnesses);
+        const trace = await selectWorkbookTrace(proofs,local,isWorkbookNotionSource,async options=>{
+          if (check?.choose) return check.choose(options);
+          const index = options.findIndex(proof=>proof.length===0);
+          if (index >= 0) return index;
+          pending = true;
+          choices.push(options);
+          return undefined;
+        },requested ? proof=>refFor(proof)===requested : undefined).catch(error=>{
+          if (!unavailable(error)) throw error;
+        });
         if (!trace || pending) continue;
-        const ref = sign('backtrace',mount,item.id,question,trace.content,trace.witnesses);
+        const ref = refFor(trace);
         handles.push({kind,ref});
         if (ref === requested) return {handles,card:{kind,text:trace.text,content:trace.content,basis:trace.witnesses}};
         continue;
@@ -115,7 +127,10 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       return {handles,card:{kind,text:matched.kind === 'notion-block' ? matched.text : matched.title,
         content:{id,rev},basis:proof.witnesses()}};
     }
-    if (collectPages) for (const fact of pages) await collectPages(fact);
+    if (collectPages) {
+      for (const fact of pages) await collectPages(fact);
+      for (const group of choices) await collectPages.choose?.(group);
+    }
     return {handles};
   }
 

@@ -4,7 +4,7 @@ import { organizerNote, organizerNoteType } from './organizer-values.ts';
 import { practiceSubmission, ridingPracticeType } from './practice-values.ts';
 import { studyRecord, studyRecordType } from './values.ts';
 import { workspaceEntry, workspaceEntryType, type WorkspaceEntryKind } from './workspace-values.ts';
-import { workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, type WorkbookExpected } from './workbook-values.ts';
+import { workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookExpected } from './workbook-values.ts';
 
 export type WorkspaceDisplay = {
   readonly title: string;
@@ -114,6 +114,29 @@ export function activityQuestions(fact: FactSnapshot): readonly {id: string; pro
     if (entry.kind === 'question') return [{id: 'question', prompt: entry.body}];
   }
   return undefined;
+}
+
+type QuestionPrompt = { readonly id: string; readonly prompt: string };
+
+function formatQuestions(questions: readonly QuestionPrompt[], numberSingle: boolean,
+  answer?: (question: QuestionPrompt, index: number) => string | number | null | undefined) {
+  return questions.map((question, index) => {
+    const prompt = numberSingle || questions.length > 1 ? `${index + 1}. ${question.prompt}` : question.prompt;
+    return answer ? prompt + '\n我的作答：' + String(answer(question, index) ?? '未作答') : prompt;
+  }).join('\n\n');
+}
+
+export function workbookAnswerText(attempt: WorkbookAttempt, numberSingle = false) {
+  return formatQuestions(attempt.paper.questions, numberSingle, ({id}) => attempt.answers[id]);
+}
+
+export function openedQuestionText(fact: FactSnapshot) {
+  if (fact.type === workbookAttemptType) return workbookAnswerText(workbookAttempt(fact.value));
+  if (fact.type === ridingPracticeType) {
+    const {paper, feedback} = practiceSubmission(fact.value);
+    return formatQuestions(paper.questions, false, (_question, index) => feedback[index]?.answer);
+  }
+  return formatQuestions(activityQuestions(fact) ?? [], false);
 }
 
 // The caller authorizes the snapshot and selects the full learner-facing projection.

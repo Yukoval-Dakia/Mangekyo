@@ -6,11 +6,12 @@ import taskFact from '@mangekyo/module-plan/facts/organizer-task';
 import { materialType, textMaterial } from './library-values.ts';
 import { organizerNote, organizerNoteType } from './organizer-values.ts';
 import { practiceSubmission, ridingPracticeType } from './practice-values.ts';
-import type { SourceAnchorV1 } from './source-values.ts';
+import { sourceReference, type SourceAnchorV1, type SourceRefV1 } from './source-values.ts';
+import { workspaceRecordKind } from './workspace-search.ts';
 import { studyRecord } from './values.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from './workbook-values.ts';
-import { activityQuestions, activityWorkspaceDisplay, cleanText, summary, type WorkspaceDisplay } from './workspace-projection.ts';
-import { workspaceEntry, workspaceEntryType, type WorkspaceEntryKind } from './workspace-values.ts';
+import { activityQuestions, activityWorkspaceDisplay, openedQuestionText, cleanText, summary, type WorkspaceDisplay } from './workspace-projection.ts';
+import { workspaceEntry, workspaceEntryType, type LearningOverview, type WorkspaceEntryKind } from './workspace-values.ts';
 
 export function materialTextOf(fact: FactSnapshot) {
   const material = textMaterial(fact.value);
@@ -196,4 +197,82 @@ export function projectSource(fact: FactSnapshot, anchor: SourceAnchorV1, recipi
     return;
   }
   return undefined;
+}
+
+export type OpenedLearningRecord = {
+  ok?: true;
+  id?: string;
+  sourceRef?: SourceRefV1;
+  content?: unknown;
+  question?: {prompt:string};
+  assessments?: unknown[];
+  nextOffset?: number;
+  error?: unknown;
+} & Record<string, unknown>;
+
+type OpenedLearningPart = {kind:'whole' | 'assessment'} | {kind:'block'; blockId:string} | {kind:'question'; index:number};
+
+/** Adapt the already authorized record to the requested visible part. */
+export function projectOpenedLearning(value: OpenedLearningRecord, fact: FactSnapshot, part: OpenedLearningPart): OpenedLearningRecord | undefined {
+  const {sourceRef, question, nextOffset, ...body} = value;
+  if (!sourceRef) return value;
+  if (part.kind === 'block') {
+    const block = fact.type === textbookPageType && sourceRef.anchor.kind === 'whole'
+      ? textbookPageFrom(fact).blocks.find(block => block.id === part.blockId) : undefined;
+    if (!block) return;
+    return {id:sourceRef.fact.id,rev:sourceRef.fact.rev,kind:'page',title:value.title,content:textbookText(block.body),
+      part,sourceRef:{...sourceRef,anchor:part}};
+  }
+  if (part.kind === 'question') {
+    const item = sourceRef.anchor.kind === 'whole' ? sourceQuestions(fact)[part.index - 1] : undefined;
+    if (!item) return;
+    const {assessments: _assessments, ...record} = body;
+    return {...record, content:item.prompt, part, sourceRef:{...sourceRef,anchor:{kind:'question',itemId:item.id}}};
+  }
+  if (part.kind === 'assessment') {
+    return {id:sourceRef.fact.id, rev:sourceRef.fact.rev, title:value.title, sourceRef, part, assessments:value.assessments ?? []};
+  }
+  if (sourceRef.anchor.kind === 'whole' && (question || fact.type === workbookPaperType ||
+      fact.type === workbookAttemptType || fact.type === ridingPracticeType)) {
+    return {...body, sourceRef, content:openedQuestionText(fact)};
+  }
+  return {...body, sourceRef, ...(nextOffset !== undefined ? {nextOffset} : {})};
+}
+
+export function workspaceReadRecord(record: SourceProjection & { sourceRef: SourceRefV1 }, offset: number, assessments: unknown[]) {
+  const {sourceRef, title, tags, links, blocks} = record;
+  const original = record.content;
+  const {content, nextOffset} = typeof original === 'string'
+    ? textSlice(original, offset) : {content: original, nextOffset: null};
+  return {id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? workspaceRecordKind(sourceRef.fact.type),
+    title, content, tags, links, sourceRef, ...(blocks ? {blocks} : {}),
+    ...(record.question ? {question:record.question} : {}), ...(assessments.length ? {assessments} : {}),
+    ...(nextOffset === null ? {} : {nextOffset})};
+}
+
+export function retentionEvidenceLink(fact: FactSnapshot, itemId: string, href: string) {
+  const ref = { id: fact.ref.id, rev: fact.ref.rev, type: fact.type };
+  if (fact.type !== workbookPaperType && fact.type !== workbookAttemptType) return { ...ref, href };
+  const anchor = fact.type === workbookPaperType ? { kind: 'question', itemId } as const
+    : { kind: 'answer-slot', itemId, slotId: 'answer' } as const;
+  return { ...ref, open: { tool: 'open_learning', args: { refs: JSON.stringify(sourceReference(fact, anchor)) } } };
+}
+
+export function radarOverview({ goal, tasks }: LearningOverview, limit: number) {
+  const active = 'items' in tasks ? tasks.items.filter(task => !task.done).slice(0, limit) : [];
+  return {
+    witnessIds: [...(goal.state === 'set' ? [goal.witness.id] : []), ...active.map(task => task.id)],
+    view: {
+      goal: goal.state === 'set' ? { ...goal, text: goal.text === null ? null : textSlice(goal.text, 0, 240).content } : goal,
+      tasks: active.length
+        ? { state: tasks.state, items: active.map(task => ({ ...task, title: textSlice(task.title, 0, 100).content })) }
+        : { state: tasks.state === 'partial' || tasks.state === 'unavailable' ? 'unknown' : 'empty' },
+    },
+  };
+}
+
+export function radarInventory(papers: readonly { id: string; rev: number; title: string; sourceRef: SourceRefV1 }[]) {
+  return papers.length ? { state: 'available', items: papers.map(({ id, rev, title, sourceRef }) =>
+    ({ id, rev, title: textSlice(title, 0, 100).content, sourceRef, kind: 'paper', status: 'ready', usage: 'unknown' })) }
+    : { state: 'unknown' };
 }

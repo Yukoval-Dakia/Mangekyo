@@ -45,6 +45,30 @@ test('固定周三晚，明日作业取消时仅重排未开始项；三分钟�
     assert.equal(p.campaign,campaign);
     if (campaign==='recovery') assert.ok(p.items.every(i=>i.candidate.kind==='recovery'));
   }
+  const examScope = {...exam,scope:['graph','formula'],weights:[{topic:'graph',weight:50},{topic:'formula',weight:50}]};
+  const sprintCandidates = [make('ordinary',4,1),make('ordinary-short',3,1),
+    make('archetype',4,0,{topic:'graph',examPrep:{kind:'archetype',coveredQuestionCount:5}}),
+    make('card',3,0,{topic:'formula',examPrep:{kind:'first-aid'}})];
+  const campaignInput = {...next,now:base.now,candidates:sprintCandidates,rules:[examScope],
+    constraints:{budget_min:7,locks:[],deadlines:[]}};
+  const sprint = planToday(campaignInput);
+  assert.deepEqual(ids(sprint),['archetype','card']);
+  assert.match(sprint.items[0].why.join(' '),/5 道原卷题/);
+  assert.deepEqual(ids(planToday({...campaignInput,rules:[examScope,{kind:'campaign',campaign:'steady'}]})),
+    ['ordinary','ordinary-short']);
+  const forecast = {exam:examScope,frozenAt:base.now,low:70,high:85,maximum:100,assessment:{id:'assess',rev:2},
+    calibration:{id:'calibrate',rev:1},methodVersion:'calibrated@1',absoluteError:8};
+  const recovery = {...next,now:'2026-11-26T11:00:00Z',rules:[examScope],frozenExamForecast:forecast,
+    lastOpenedAt:'2026-10-26T11:00:00Z',candidates:[make('probe',4,1,{kind:'probe'}),
+      make('long-review',11,1,{kind:'recovery'}),make('review',6,0,{kind:'recovery'}),make('second',5,0,{kind:'recovery'})]};
+  const examScore = {submission:{id:'submitted',rev:1},forecastAssessment:forecast.assessment,
+    submittedAt:'2026-11-25T11:00:00Z',score:{earned:65,maximum:100}};
+  const afterExam = planToday({...recovery,examScore});
+  assert.equal(afterExam.items.length,1);
+  assert.ok(!afterExam.shortlist.includes('probe') && !afterExam.shortlist.includes('long-review'));
+  assert.equal(afterExam.scoreReview.status,'below-expected-range');
+  assert.equal(planToday({...recovery,examScore:{...examScore,score:{earned:75,maximum:100}}}).scoreReview.status,'within-expected-range');
+  assert.equal(planToday({...recovery,examScore:{...examScore,forecastAssessment:{id:'assess',rev:1}}}).scoreReview.kind,'unknown');
   const returning = planToday({...next,lastOpenedAt:'2026-10-27T11:00:00Z',candidates:[
     make('weak',4,.2,{kind:'probe',retention:.2}),make('uncertain',6,1,{kind:'probe'}),make('stable',6,0,{retention:.9})]});
   assert.deepEqual(ids(returning),['uncertain','weak']);

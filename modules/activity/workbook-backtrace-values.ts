@@ -1,4 +1,4 @@
-import { factId, type BusWitness, type FactRef, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
+import { factId, type BusWitness, type FactId, type FactRef, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { posttestIssuanceType, posttestSubmissionType, type posttestIssuance, type RetentionWindow } from './retention-posttest.ts';
 
 import { reopenControlledHelpBasis } from './help-exposure-values.ts';
@@ -51,11 +51,80 @@ export function workbookWitnessReader(read: Reader, tx: ActivityEvidenceReadScop
   return { read: traced, witnesses: () => [...witnesses.values()] };
 }
 
-export async function confirmWorkbookTraceBasis(read: Reader, tx: ActivityEvidenceReadScope,
-  root: readonly BusWitness[], candidate: readonly BusWitness[]) {
-  const witnesses = workbookWitnessReader(read,tx,[...root,...candidate]).witnesses();
-  return await reopenControlledHelpBasis(read,tx.learner,witnesses.filter(witness=>witness.type==='capture.source'))
-    ? witnesses : null;
+export type WorkbookTraceProof = {
+  text: string; content: {id:FactId; rev:Revision}; witnesses:readonly BusWitness[];
+};
+
+export async function selectWorkbookTrace(proofs: readonly WorkbookTraceProof[], read: Reader,
+  isRemote: (fact: FactSnapshot) => boolean, choose: (proofs: readonly (readonly FactSnapshot[])[]) => Promise<number | undefined>,
+  requested?: (proof: WorkbookTraceProof) => boolean) {
+  const wanted = requested && proofs.find(requested);
+  if (requested && !wanted) return;
+  const groups = new Map<string,WorkbookTraceProof[]>();
+  const identity = ({content}: WorkbookTraceProof) => content.id + ':' + content.rev;
+  for (const proof of proofs) {
+    const key = identity(proof);
+    if (wanted && key===identity(wanted) && proof!==wanted) continue;
+    const options = groups.get(key) ?? [];
+    options.push(proof);
+    groups.set(key,options);
+  }
+  const matches = await Promise.all([...groups.values()].map(async options=>{
+    const ranked = await Promise.all(options.map(async proof=>{
+      const facts = await Promise.all(proof.witnesses.filter(w=>w.type==='capture.source').map(w=>
+        read.fact(w.id,w.mode==='following' ? {mode:w.mode} : {mode:w.mode,rev:w.rev})));
+      return {proof,pages:facts.filter(isRemote),key:JSON.stringify(proof.witnesses)};
+    }));
+    ranked.sort((a,b)=>a.pages.length-b.pages.length||a.key.localeCompare(b.key));
+    const selected = await choose(ranked.map(option=>option.pages));
+    return selected===undefined ? undefined : ranked[selected]!.proof;
+  }));
+  const valid = matches.filter(proof=>proof!==undefined);
+  return valid.length===1 && (!wanted || valid[0]===wanted) ? valid[0] : undefined;
+}
+
+type ConceptLink = {
+  conceptId: string;
+  opened: readonly (readonly [FactSnapshot, ('pinned' | 'following' | undefined)?])[];
+};
+
+
+export function sharedWorkbookTraceConcepts(current: readonly ConceptLink[], prior: readonly ConceptLink[]) {
+  const group = (links: readonly ConceptLink[]) => {
+    const byId = new Map<string,ConceptLink[]>();
+    for (const link of links) {
+      const entries = byId.get(link.conceptId) ?? [];
+      entries.push(link);
+      byId.set(link.conceptId,entries);
+    }
+    return byId;
+  };
+  const left = group(current), right = group(prior);
+  return [...left.keys()].filter(id=>right.has(id)).sort().map(id=>({
+    id,current:left.get(id)!,prior:right.get(id)!,
+  }));
+}
+
+export async function workbookTraceConceptProofs(tx: ActivityEvidenceReadScope, read: Reader,
+  shared: ReturnType<typeof sharedWorkbookTraceConcepts>, unavailable: (error: unknown) => boolean) {
+  async function allowed(links: readonly ConceptLink[]) {
+    const proofs: (readonly BusWitness[])[] = [];
+    for (const {opened} of links) {
+      const witnesses = opened.map(([fact,mode])=>({...fact.ref,type:fact.type,accessEpoch:fact.accessEpoch,mode:mode ?? 'pinned' as const}));
+      try {
+        if (await reopenControlledHelpBasis(read,tx.learner,witnesses)) proofs.push(witnesses);
+      } catch (error) {
+        if (!unavailable(error)) throw error;
+      }
+    }
+    return proofs;
+  }
+  const proofs: BusWitness[][] = [];
+  for (const {current,prior} of shared) {
+    const left = await allowed(current), right = await allowed(prior);
+    for (const a of left) for (const b of right) proofs.push([...a,...b]);
+  }
+  return proofs;
 }
 
 type TraceRoot = { target: {paper: Ref}; paper: WorkbookPaper };

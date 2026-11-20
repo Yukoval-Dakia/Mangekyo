@@ -55,32 +55,41 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     return { target, paper, question, source, accessEpoch: source.accessEpoch, sealed: source.type === retentionPaperType };
   }
 
-  /** SQL only discovers IDs. Opening a knowledge edge checks its endpoints, proof and all source witnesses. */
-  async function readItemEdges(
-    tx: Tx, read: ReadContext, source: WorkbookSourceQuestionRef | undefined, cutoff: Tick,
+  /** SQL discovers IDs. Each available edge carries its authorized, cutoff-checked witnesses. */
+  async function* openedItemEdges(
+    tx: Tx, source: WorkbookSourceQuestionRef | undefined, cutoff: Tick,
     kinds: readonly ('targets_concept' | 'variant_of')[], open = (id: FactId) => openEdge(tx,id),
   ) {
-    if (!source) return [];
-    const rows = await workbookLinkCandidates(tx, edgeType, source, cutoff, kinds);
-    const edges = [];
-    for (const { id } of rows) {
+    if (!source) return;
+    for (const { id } of await workbookLinkCandidates(tx, edgeType, source, cutoff, kinds)) {
       const edge = await open(id);
-      if (!edge) continue;
-      if (!await workbookWitnessesBy(tx, edge.opened.map(([fact]) => fact.ref), cutoff)) continue;
-      for (const [fact, mode] of edge.opened) {
-        await read.fact(fact.ref.id, mode === 'following' ? { mode } : { mode: 'pinned', rev: fact.ref.rev });
-      }
+      if (edge && await workbookWitnessesBy(tx,edge.opened.map(([fact])=>fact.ref),cutoff)) yield edge;
+    }
+  }
+
+  async function readItemEdges(tx: Tx, read: ReadContext, source: WorkbookSourceQuestionRef | undefined,
+    cutoff: Tick, kinds: readonly ('targets_concept' | 'variant_of')[], open?: (id: FactId) => ReturnType<typeof openEdge>) {
+    const edges = [];
+    for await (const edge of openedItemEdges(tx,source,cutoff,kinds,open)) {
+      for (const [fact,mode] of edge.opened)
+        await read.fact(fact.ref.id,mode === 'following' ? {mode} : {mode:'pinned',rev:fact.ref.rev});
       edges.push(edge.value);
     }
     return edges;
   }
 
-  async function readItemDimensions(
-    tx: Tx, read: ReadContext, source: WorkbookSourceQuestionRef | undefined, cutoff: Tick,
-    open?: (id: FactId) => ReturnType<typeof openEdge>,
-  ) {
-    const edges = await readItemEdges(tx, read, source, cutoff, ['targets_concept'],open);
-    return [...new Set(edges.map(edge => edge.to.fact.id))].sort();
+  async function readItemDimensions(tx: Tx, read: ReadContext, source: WorkbookSourceQuestionRef | undefined,
+    cutoff: Tick, open?: (id: FactId) => ReturnType<typeof openEdge>) {
+    const edges = await readItemEdges(tx,read,source,cutoff,['targets_concept'],open);
+    return [...new Set(edges.map(edge=>edge.to.fact.id))].sort();
+  }
+
+  async function readItemConceptLinks(tx: Tx, source: WorkbookSourceQuestionRef | undefined, cutoff: Tick,
+    open: (id: FactId) => ReturnType<typeof openEdge>) {
+    const links = [];
+    for await (const {value,opened} of openedItemEdges(tx,source,cutoff,['targets_concept'],open))
+      links.push({conceptId:value.to.fact.id,opened});
+    return links;
   }
 
   async function openControlledSubmission(
@@ -221,6 +230,6 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
 
   return {
     openRetentionTarget, openControlledSubmission, readWorkbookObservation, readWorkbookEvidence,
-    readComparableWorkbookEvidence, readItemDimensions,
+    readComparableWorkbookEvidence, readItemDimensions, readItemConceptLinks,
   };
 }
