@@ -3,6 +3,8 @@ import { fields, key, list, pageId, record, revision, text } from './parse.ts';
 
 export const knowledgeEdgeType = 'content.knowledgeEdge';
 export const createKnowledgeEdgeCommand = 'content.createKnowledgeEdge';
+export const createVerifiedKnowledgeEdgeCommand = 'content.createVerifiedKnowledgeEdge';
+export const withdrawKnowledgeEdgeCommand = 'content.withdrawKnowledgeEdge';
 export const knowledgeEdgeEvidenceType = 'content.knowledgeEdgeEvidence';
 export const workspaceEntryType = 'activity.workspaceEntry';
 
@@ -21,6 +23,15 @@ export const knowledgeEdgeKinds = [
 export type KnowledgeEdgeKind = (typeof knowledgeEdgeKinds)[number];
 
 export type KnowledgeEndpointKind = 'concept' | 'question';
+
+export class KnowledgeEdgeBasisError extends Error {}
+export class KnowledgeEdgeEvidenceError extends Error {}
+
+export function knowledgeEndpointKind(fact: FactSnapshot): KnowledgeEndpointKind | undefined {
+  if (fact.type !== workspaceEntryType) return undefined;
+  const kind = record(fact.value).kind;
+  return kind === 'concept' || kind === 'question' ? kind : undefined;
+}
 
 export type KnowledgeSourceUse = {
   readonly id: FactId;
@@ -144,8 +155,8 @@ export async function verifyKnowledgeEdge(
   }
   for (const value of [edge.from, edge.to]) {
     const fact = facts.get(knowledgeUseKey(value.sourceUse));
-    if (fact?.type !== workspaceEntryType || record(fact.value).kind !== value.kind) {
-      throw new Error('概念或题目端点类型不符。');
+    if (!fact || knowledgeEndpointKind(fact) !== value.kind) {
+      throw new KnowledgeEdgeBasisError('概念或题目端点类型不符。');
     }
   }
   return [...facts.values()];
@@ -158,7 +169,7 @@ export function knowledgeUseKey(use: KnowledgeSourceUse): string {
 export async function readKnowledgeUse(ctx: CommandContext, use: KnowledgeSourceUse): Promise<FactSnapshot> {
   const fact = await ctx.read.fact(use.id, { mode: 'pinned', rev: use.rev });
   if (fact.ref.learner !== ctx.learner || fact.accessEpoch !== use.accessEpoch) {
-    throw new Error('来源访问代次已经变化。');
+    throw new KnowledgeEdgeBasisError('来源访问代次已经变化。');
   }
   return fact;
 }
@@ -181,6 +192,15 @@ export function parseEdgeEvidence(input: unknown) {
   fields(value, 'method', 'edge');
   if (value.method !== 'trusted_source' && value.method !== 'independent_check') throw new Error('核验方式无效。');
   return { method: value.method, edge: parseEdgeClaim(value.edge) };
+}
+
+export function matchingKnowledgeEdgeEvidence(proof: FactSnapshot, claim: KnowledgeEdge) {
+  if (proof.type !== knowledgeEdgeEvidenceType) return undefined;
+  const evidence = parseEdgeEvidence(proof.value);
+  const normalize = (value: KnowledgeEdge) => ({
+    ...value, sourceUses: value.sourceUses.map(knowledgeUseKey).sort(),
+  });
+  return JSON.stringify(normalize(evidence.edge)) === JSON.stringify(normalize(claim)) ? evidence : undefined;
 }
 
 export function edgePurposes(purpose: 'storage' | 'teaching', sources: readonly FactSnapshot[]): string[] {

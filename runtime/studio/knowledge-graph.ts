@@ -4,8 +4,9 @@ import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
-  knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeUseKey, parseEdgeEvidence, parseKnowledgeEdge,
-  workspaceEntryType, type KnowledgeEdgeKind,
+  KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeUseKey,
+  matchingKnowledgeEdgeEvidence, parseEdgeEvidence, parseKnowledgeEdge, workspaceEntryType,
+  type KnowledgeEdge, type KnowledgeEdgeKind,
 } from '../../modules/content/knowledge-edge.ts';
 import {
   resolveSource, sourceMaySend, sourcePurpose, type SourceAccess, type SourceTrack,
@@ -25,10 +26,55 @@ function versionKey(id: string, rev: number): string {
   return `${id}:${rev}`;
 }
 
+export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeEdge, access: SourceAccess) {
+  const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
+  const sources = new Map<string, WorkspaceSource>();
+  const opened: Parameters<SourceTrack>[] = [];
+  for (const use of edge.sourceUses) {
+    const snapshot = await reader.reopen({ ...use, mode: 'pinned' });
+    const source = await resolveSource(tx, sourceReference(snapshot, whole), {
+      ...access, track: (...witness) => opened.push(witness),
+    });
+    if (!source) throw new KnowledgeEdgeBasisError('来源或其依据当前不可用。');
+    sources.set(knowledgeUseKey(use), source);
+  }
+  const from = sources.get(knowledgeUseKey(edge.from.sourceUse));
+  const to = sources.get(knowledgeUseKey(edge.to.sourceUse));
+  if (!from || !to || from.sourceRef.fact.type !== workspaceEntryType || to.sourceRef.fact.type !== workspaceEntryType ||
+      from.kind !== edge.from.kind || to.kind !== edge.to.kind)
+    throw new KnowledgeEdgeBasisError('概念或题目端点类型不符。');
+  return {from, to, sources: [...sources.values()].map(source => source.sourceRef), opened};
+}
+
+function graphReadUnavailable(error: unknown) {
+  return error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof KnowledgeEdgeBasisError;
+}
+
+export async function openKnowledgeEdgeEvidence(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {
+  if (typeof input !== 'string' &&
+      (input.fact.type !== knowledgeEdgeEvidenceType || input.anchor.kind !== 'whole' || input.textFact)) return;
+  const id = factId(typeof input === 'string' ? input : input.fact.id);
+  const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
+  try {
+    const proof = await reader.fact(id, typeof input === 'string'
+      ? {mode:'following'} : {mode:'pinned', rev:input.fact.rev as Revision});
+    if (proof.type !== knowledgeEdgeEvidenceType) return;
+    const {method, edge} = parseEdgeEvidence(proof.value);
+    const {from,to,sources,opened} = await readKnowledgeSources(tx,edge,access);
+    for (const witness of opened) access.track?.(...witness);
+    access.track?.(proof,'pinned');
+    return {id, rev:proof.ref.rev, sourceRef:sourceReference(proof,whole), title:'有向边核验证明',
+      method, kind:edge.kind, scope:edge.scope, from:from.sourceRef, to:to.sourceRef, sources,
+      ...(edge.variant ? {variant:edge.variant} : {})};
+  } catch (error) {
+    if (graphReadUnavailable(error)) return;
+    throw error;
+  }
+}
+
 export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {
   if (typeof input !== 'string' && (input.fact.type !== knowledgeEdgeType || input.anchor.kind !== 'whole' || input.textFact)) return;
   const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
-  const opened: Parameters<SourceTrack>[] = [];
   const id = factId(typeof input === 'string' ? input : input.fact.id);
   try {
     const fact = await reader.fact(id, typeof input === 'string'
@@ -38,29 +84,17 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
     try { edge = parseKnowledgeEdge(fact.value); }
     catch { return; }
 
-    const sources = new Map<string, WorkspaceSource>();
-    for (const use of edge.sourceUses) {
-      const snapshot = await reader.reopen({ ...use, mode: 'pinned' });
-      const source = await resolveSource(tx, sourceReference(snapshot, whole), {
-        ...access, track: (...witness) => opened.push(witness),
-      });
-      if (!source) return;
-      sources.set(knowledgeUseKey(use), source);
-    }
-    const from = sources.get(knowledgeUseKey(edge.from.sourceUse));
-    const to = sources.get(knowledgeUseKey(edge.to.sourceUse));
-    if (!from || !to || from.sourceRef.fact.type !== workspaceEntryType ||
-        to.sourceRef.fact.type !== workspaceEntryType || from.kind !== edge.from.kind || to.kind !== edge.to.kind) return;
+    const {from,to,sources,opened} = await readKnowledgeSources(tx,edge,access);
 
     let verification;
     if (edge.verification) {
       const use = edge.verification;
       const proof = await reader.reopen({ ...use, mode: 'pinned', type: knowledgeEdgeEvidenceType });
-      let evidence;
-      try { evidence = parseEdgeEvidence(proof.value); }
-      catch { return; }
       const { verification: _, ...claim } = edge;
-      if (JSON.stringify(evidence.edge) !== JSON.stringify(claim)) return;
+      let evidence;
+      try { evidence = matchingKnowledgeEdgeEvidence(proof,claim); }
+      catch { return; }
+      if (!evidence) return;
       verification = { method: evidence.method, sourceRef: sourceReference(proof, whole) };
       opened.push([proof, 'pinned']);
     }
@@ -72,14 +106,14 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
       value: {
         id, rev: fact.ref.rev, sourceRef: sourceReference(fact, whole), kind: edge.kind, scope: edge.scope,
         author: birth?.author ?? 'unknown', from: from.sourceRef, to: to.sourceRef,
-        sources: [...sources.values()].map(source => source.sourceRef),
+        sources,
         ...(edge.variant ? { variant: edge.variant } : {}),
         ...(verification ? { verification } : {}),
       },
       from, to, opened,
     };
   } catch (error) {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return;
+    if (graphReadUnavailable(error)) return;
     throw error;
   }
 }

@@ -36,9 +36,9 @@ import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { carryRubricAssessments } from './learning-attempt-read.ts';
 import { sourceRefV1 } from '../../modules/activity/source-values.ts';
-import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
+import { knowledgeEdgeEvidenceType, knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { parseTextbookPage, textbookPageType } from '../../modules/content/textbook-page.ts';
-import { openKnowledgeEdge } from './knowledge-graph.ts';
+import { openKnowledgeEdge, openKnowledgeEdgeEvidence } from './knowledge-graph.ts';
 import { resolveSource } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
 import { lexicalWorkspaceSql, trigramFunction, workspaceOccurredAt } from './workspace-search.ts';
@@ -719,6 +719,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         if (ref?.fact.id !== itemId) throw new RequestError(400, '工作区版本引用无效。');
         const record = await db.snapshot({ learner: studioLearner }, async tx => {
           if (ref.fact.type === knowledgeEdgeType) return (await openKnowledgeEdge(tx, ref, { recipient: 'learner' }))?.value;
+          if (ref.fact.type === knowledgeEdgeEvidenceType) return openKnowledgeEdgeEvidence(tx,ref,{recipient:'learner'});
           if (params.get('view') !== 'preview') return resolveSource(tx, ref, { recipient: 'learner' });
           let root: FactSnapshot | undefined;
           const source = await resolveSource(tx, ref, { recipient: 'learner', track(fact) {
