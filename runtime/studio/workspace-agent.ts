@@ -1,5 +1,5 @@
 import {fileURLToPath} from 'node:url';
-import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import {createCommandHandler} from '../../kernel/src/commands/handle.ts';
 import {canonicalJsonString} from '../../kernel/src/commands/canonical.ts';
 import {recordLocalRead} from '../../kernel/src/work/effects.ts';
@@ -135,14 +135,11 @@ export function openWorkspaceTools(options: {
     })) throw new TeachingError('evidence_scope', '笔记读取规则已变化，请重新发送。');
     const current = await db.snapshot({learner: studioLearner}, async tx => {
       if (legacyWorkbookRead) return false;
-      const reader = createCommandReadContext(tx, purpose);
+      const reader = createAuthorizedFactReader(tx, purpose, options.maySend);
       let derivedSource = false;
       try {
         for (const witness of witnesses) {
-          const input = workspaceInput(witness);
-          const fact = await reader.fact(input.id, input);
-          if (fact.ref.rev !== witness.rev || fact.type !== witness.type ||
-            fact.accessEpoch !== witness.epoch || !options.maySend(fact)) return false;
+          const fact = await reader.reopen({...workspaceInput(witness), type: witness.type});
           if (fact.type === workspaceEntryType && ['observation','annotation'].includes(workspaceEntry(fact.value).kind))
             derivedSource = true;
         }
