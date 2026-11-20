@@ -2,6 +2,9 @@ import { factId, isJson, type Asset as KernelAsset, type FactSnapshot, type Json
 import { parseAssetBlocks, type Block as AssetBlock, type ContentUnit } from '@mangekyo/module-content/facts/asset-contract';
 import { captureObject as object, captureText as text, sha256 } from './parse.ts';
 
+import { notionEpoch, notionRoot } from './notion-selection.ts';
+import type { NotionRoot } from './notion-api.ts';
+
 export const captureSourceType = 'capture.source';
 export const captureSourceCommand = 'capture.ingest';
 export const confirmSourceCommand = 'capture.confirmSource';
@@ -40,6 +43,8 @@ export type SourceEnvelope = {
   readonly kind: SourceKind;
   readonly externalId?: string;
   readonly sourceSelectionId?: string;
+  readonly sourceSelectionEpoch?: string;
+  readonly sourceRoot?: NotionRoot;
   readonly occurredAt: string | null;
   readonly recordedAt: string | null;
   readonly retentionPolicy: 'retained';
@@ -143,6 +148,10 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
   const unit = { kind: 'capture' as const, title: text(asset.title, '内容标题', 240), blocks: sourceBlocks(asset.blocks, kind, originals) };
   const externalId = row.externalId === undefined ? undefined : text(row.externalId, '外部来源标识', 200);
   const sourceSelectionId = row.sourceSelectionId === undefined ? undefined : text(row.sourceSelectionId, '选源标识', 200);
+  const sourceSelectionEpoch = row.sourceSelectionEpoch === undefined ? undefined : notionEpoch(row.sourceSelectionEpoch);
+  const sourceRoot = row.sourceRoot === undefined ? undefined : notionRoot(row.sourceRoot);
+  if ((sourceSelectionEpoch === undefined) !== (sourceRoot === undefined) ||
+      (sourceRoot && kind !== 'notion')) throw new Error('原件选源见证无效。');
   if (kind === 'notion' && (!externalId || !sourceSelectionId)) throw new Error('外部快照缺少获准来源标识。');
   if (['photo', 'pdf', 'document', 'paper-return'].includes(kind) && originals.length === 0) throw new Error('没有保存原件。');
   if (kind === 'voice') {
@@ -162,6 +171,7 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
     occurredAt: row.occurredAt === null && kind !== 'notion' ? null : timestamp(row.occurredAt),
     recordedAt: row.recordedAt === null && kind !== 'notion' ? null : timestamp(row.recordedAt),
     ...(externalId === undefined ? {} : { externalId }),
+    ...(sourceRoot && sourceSelectionEpoch ? { sourceRoot, sourceSelectionEpoch } : {}),
     ...(sourceSelectionId === undefined ? {} : { sourceSelectionId }),
     ...(url === undefined ? {} : { url }),
     ...(kind === 'voice' ? { transcriptConfirmed: true } : {}),
@@ -198,7 +208,8 @@ export function reviseSourceWrite(current: FactSnapshot, expectedRev: number, en
   const prior = sourceEnvelope(current.value);
   const data = sourceEnvelope(envelope);
   if (prior.kind !== 'notion' || data.kind !== prior.kind || data.externalId !== prior.externalId ||
-      data.sourceSelectionId !== prior.sourceSelectionId || !prior.occurredAt || !data.occurredAt ||
+      data.sourceSelectionEpoch !== prior.sourceSelectionEpoch || data.sourceRoot?.kind !== prior.sourceRoot?.kind ||
+      data.sourceRoot?.id !== prior.sourceRoot?.id || data.sourceSelectionId !== prior.sourceSelectionId || !prior.occurredAt || !data.occurredAt ||
       data.occurredAt < prior.occurredAt || !prior.recordedAt || !data.recordedAt || data.recordedAt < prior.recordedAt) {
     throw new Error('外部原件来源或时间不匹配。');
   }

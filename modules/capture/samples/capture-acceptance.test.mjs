@@ -37,8 +37,8 @@ try {
   ));
   const hooks = createStudioCommandHooks();
   const handle = createCommandHandler(db, { modules, hooks });
-  function send(type, input, { actor = 'learner', purpose = 'storage' } = {}) {
-    return handle({ learner, id: stableId(randomUUID()), type, input, actor, purpose });
+  function send(type, input, { actor = 'learner', purpose = 'storage', commandId = stableId(randomUUID()) } = {}) {
+    return handle({ learner, id: commandId, type, input, actor, purpose });
   }
   const read = (action, purpose = 'storage') => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
   const current = id => read(context => context.fact(id, { mode: 'following' }));

@@ -104,8 +104,11 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
     const use = { preset, selection, pageId: id(2), conversationId: 'chat', turnId: 'turn', authorizationEpoch: '0',
       recipient: { purpose: 'turn-tool', id: 'tool' }, authorizedAt: timestamp, expiresAt: '2026-11-21T12:00:00.000Z' } satisfies NotionBoundedUse;
     const fresh = { ...use, selection: { ...selection, selectionEpoch: '2' } };
-    let saved: NotionBoundedSnapshot | undefined = await prepareNotionBoundedSnapshot(use, use, page, timestamp);
-    const replacement = await prepareNotionBoundedSnapshot(fresh, fresh, page, timestamp);
+    const pull = (scope: typeof selection) => run(notionReadPage(selected, id(2), scope), request);
+    const first = await pull(selection);
+    await expect(prepareNotionBoundedSnapshot(fresh, fresh, first, timestamp)).rejects.toThrow('拉取见证已变更');
+    let saved: NotionBoundedSnapshot | undefined = await prepareNotionBoundedSnapshot(use, use, first, timestamp);
+    const replacement = await prepareNotionBoundedSnapshot(fresh, fresh, await pull(fresh.selection), timestamp);
     const open = (current = use, now = timestamp) => saved && openNotionBoundedSnapshot(saved, current, now);
     expect(open()?.title).toBe('滴定');
     expect(() => open({ ...use, turnId: 'next' })).toThrow('本轮授权无效');
