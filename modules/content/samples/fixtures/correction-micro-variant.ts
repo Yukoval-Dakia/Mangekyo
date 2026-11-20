@@ -1,8 +1,7 @@
-import { fileURLToPath } from 'node:url';
 import { commandId, factId, learnerId, type FactId, type JsonObject, type Revision, type Tick } from '@mangekyo/kernel';
 import { createCommandHandler } from '../../../../kernel/src/commands/handle.ts';
 import type { Db } from '../../../../kernel/src/db/types.ts';
-import { loadModuleDirectory } from '../../../../kernel/src/loader.ts';
+import { loadStudioTestModule } from '../../../../runtime/studio/test/modules.ts';
 import { helpExposureRequest, type HelpTarget } from '../../../activity/help-exposure-values.ts';
 import { createKnowledgeEdgeCommand } from '../../knowledge-edge.ts';
 import { questionVerificationKey, questionVerificationMethodVersion, questionVerificationType } from '../../question-state.ts';
@@ -42,8 +41,7 @@ const question = (hours: number) => ({
 
 export async function seedCorrectionMicroVariant(db: Db) {
   const { display, deriver, target } = correctionMicroVariantFixture;
-  const modules = await Promise.all(['content', 'activity'].map(name =>
-    loadModuleDirectory(fileURLToPath(new URL(`../../../${name}`, import.meta.url)))));
+  const modules = await Promise.all(['content', 'activity'].map(loadStudioTestModule));
   const handle = createCommandHandler(db, { modules, hooks: { async onFactsChanged() {} } });
   const command = (type: string, input: JsonObject & { id: FactId }, requestId: string = input.id) =>
     handle({ learner, type, input, id: commandId(id(requestId)), purpose: 'storage', actor: 'learner' });

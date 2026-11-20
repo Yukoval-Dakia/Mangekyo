@@ -24,6 +24,6 @@ it('binds editable voice transcription to the requested recording', () => {
   });
 });
 
-it('runs layered capture, paper return, Notion and textbook workflows through the command handler', { timeout: 45_000 }, async () => {
+it('runs layered capture, paper return, Notion, textbook and graph workflows through the command handler', { timeout: 45_000 }, async () => {
   await import(new URL('./samples/capture-acceptance.test.mjs', import.meta.url).href);
 });
