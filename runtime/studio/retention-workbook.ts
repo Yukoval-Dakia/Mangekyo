@@ -1,9 +1,9 @@
-import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type DerivationId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactRef, ReadContext } from '../../kernel/src/declarations/types.ts';
-import { projectHelpExposure, type AdmittedHelpEvent, type HelpExposureEvidence } from '../../modules/activity/help-exposure.ts';
-import { helpAppliesTo, helpExposure, helpExposureType, recordHelpExposureCommand, type HelpTarget } from '../../modules/activity/help-exposure-values.ts';
+import { projectHelpExposure, type HelpExposureEvidence } from '../../modules/activity/help-exposure.ts';
+import { helpAppliesTo, type HelpTarget } from '../../modules/activity/help-exposure-values.ts';
 import { closedPosttest, posttestIssuanceType, posttestSubmissionType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookGradingVersion,
@@ -11,7 +11,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import type { RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
-import { readWorkbookHelpDisplays, readWorkbookSubmissionBirth } from './learning-attempt-read.ts';
+import { readActivityHelpEvents, readWorkbookSubmissionBirth } from './learning-attempt-read.ts';
 import { RequestError } from './sessions.ts';
 
 export const retentionPurpose = retentionTeachingPurpose;
@@ -90,34 +90,13 @@ async function readControlledExposure(
   const mounts: HelpTarget[] = [target.paper, ...releases.map(row => ({ id: factId(row.id), rev: 1 as Revision }))].map(({ id, rev }) => ({
     activityId: id, issuance: { id, rev }, item: { itemId: target.itemId },
   }));
-  const { rows } = await tx.query<{ id: string; tick: Tick }>(
-    `SELECT r.fact_id AS id, r.tick::text FROM fact_revs r
-     JOIN facts f ON f.learner_id=r.learner_id AND f.id=r.fact_id
-     JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
-     WHERE r.learner_id=$1 AND f.type=$2 AND c.type=$3 AND r.rev=1 AND r.tick<$4::bigint
-       AND r.data->>'kind' IN ('opened','displayed')
-       AND (r.data->'mount'->>'activityId'=ANY($5::text[]) OR r.data->'mount'->'issuance'->>'id'=ANY($5::text[]))`,
-    [tx.learner, helpExposureType, recordHelpExposureCommand, cutoff, mounts.map(mount => mount.activityId)],
-  );
-  const events: AdmittedHelpEvent[] = [];
+  const { events, omitted } = await readActivityHelpEvents(tx, read, {
+    activities: mounts.map(mount => mount.activityId), cutoff, mode: 'pinned', includeOpens: true,
+  });
   // Another attempt of this item can supply correctness feedback during this sitting.
-  let complete = ref.rev === 1 && !releases.some(release => release.competing_submission);
-  for (const row of rows) {
-    const id = factId(row.id);
-    try {
-      const fact = await read.fact(id, { mode: 'pinned', rev: 1 as Revision });
-      const value = helpExposure(fact.value);
-      if (value.kind === 'displayed' && mounts.some(mount => helpAppliesTo(value, mount))) {
-        events.push({ ref: fact.ref, value, admittedAt: row.tick });
-      } else {
-        // A release without a display witness vetoes independence without claiming the learner saw it.
-        complete = false;
-      }
-    } catch (error) {
-      if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError)) throw error;
-      complete = false;
-    }
-  }
+  // A release without a display witness vetoes independence without claiming the learner saw it.
+  const complete = ref.rev === 1 && !omitted && !releases.some(release => release.competing_submission)
+    && events.every(({ value }) => value.kind === 'displayed' && mounts.some(mount => helpAppliesTo(value, mount)));
   const results = mounts.map(target => projectHelpExposure({ submission: { ref, target, cutoff }, events,
     coverage: complete ? { submission: ref, target, through: cutoff } : null }));
   const evidenceRefs = results.flatMap(result => result.evidenceRefs).sort((a, b) => a.id.localeCompare(b.id));
@@ -133,7 +112,9 @@ async function readExposure(
     activityId: target.paper.id, issuance: { id: target.paper.id, rev: 1 as Revision },
     item: { itemId: target.itemId },
   };
-  const events = await readWorkbookHelpDisplays(tx, retentionPurpose, target.paper.id, cutoff, async (fact, value) => {
+  const { events } = await readActivityHelpEvents(tx, createCommandReadContext(tx, retentionPurpose), {
+    activities: [target.paper.id], cutoff, mode: 'following',
+  }, async (fact, value) => {
     if (!helpAppliesTo(value, mount)) return false;
     await read.fact(fact.ref.id, { mode: 'following' });
     return true;

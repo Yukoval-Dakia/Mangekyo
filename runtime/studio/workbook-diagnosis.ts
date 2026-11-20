@@ -14,7 +14,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { purpose } from './identity.ts';
-import { readWorkbookHelpDisplays, readWorkbookSubmissionBirth } from './learning-attempt-read.ts';
+import { readActivityHelpEvents, readWorkbookSubmissionBirth } from './learning-attempt-read.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorkspaceAttemptAssessments, type WorkspaceAssessmentBasis } from './workspace-read.ts';
@@ -118,7 +118,9 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
       activityId: paper.id, issuance: { id: paper.id, rev: 1 as Revision }, item: { itemId: id },
     }));
     const read = createCommandReadContext(tx, purpose);
-    const events = await readWorkbookHelpDisplays(tx, purpose, paper.id, birth.tick, async (fact, display) => {
+    const { events } = await readActivityHelpEvents(tx, read, {
+      activities: [paper.id], cutoff: birth.tick, mode: 'following',
+    }, async (fact, display) => {
       if (!access.maySend(fact) || !targets.some(target => helpAppliesTo(display, target))) return false;
       const content = await read.fact(display.content.id, { mode: 'pinned', rev: display.content.rev });
       if (!await resolveSource(tx, sourceReference(content, { kind: 'whole' }), sourceAccess)) return false;
