@@ -1,14 +1,21 @@
 import {useState, type ReactNode} from 'react';
 import {Message} from './message';
 import {PageTitle, ReadState, useResource} from './workspace';
+import type { SourceRefV1 } from '../../../modules/activity/source-values';
 import './concept-reading.css';
 
 // Keep the server's complete reference, including any anchor and text revision, in the URL.
-type Reference = {fact: {id: string; rev: number; type: string}};
+export type Reference = SourceRefV1;
 type Item = {sourceRef: Reference; title: string; kind: string; exposure?: string};
 const relationships = {
   prereq_of: '的先修概念',
+  part_of: '的一部分',
+  contrasts_with: '',
   targets_concept: '',
+  derived_from: '',
+  explains: '',
+  addresses_pitfall: '',
+  supersedes: '',
   variant_of: '的变式',
 };
 type Edge = {
@@ -22,18 +29,20 @@ function version(ref: Reference) {
   return ref.fact.id + ':' + ref.fact.rev;
 }
 
-function fixedLink(ref: Reference) {
+export function fixedLink(ref: Reference) {
   return '/materials/records/' + encodeURIComponent(ref.fact.id) + '?' +
     new URLSearchParams({ref: JSON.stringify(ref)});
 }
 
-function Relation({kind, from, to}: {kind: Edge['kind']; from: ReactNode; to: ReactNode}) {
-  return <>{from} {kind === 'targets_concept' ? '考查' : '是'} {to}{relationships[kind]}</>;
+export function Relation({kind, from, to}: {kind: Edge['kind']; from: ReactNode; to: ReactNode}) {
+  const verbs = {prereq_of: '是', part_of: '是', variant_of: '是', targets_concept: '考查',
+    contrasts_with: '可对照', derived_from: '源自', explains: '解释', addresses_pitfall: '针对', supersedes: '替代'};
+  return <>{from} {verbs[kind]} {to}{relationships[kind]}</>;
 }
 
 function Results({conceptId, hops}: {conceptId: string; hops: number}) {
   const params = new URLSearchParams({conceptId, direction: 'both', hops: String(hops)});
-  for (const kind of Object.keys(relationships)) params.append('edgeKinds', kind);
+  for (const kind of ['prereq_of', 'targets_concept', 'variant_of']) params.append('edgeKinds', kind);
   const resource = useResource<Graph>('/workspace/access?' + params);
   const graph = resource.data;
   if (!graph || resource.error) return <ReadState resource={resource} />;

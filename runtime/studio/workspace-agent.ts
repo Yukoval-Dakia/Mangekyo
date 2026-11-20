@@ -80,7 +80,9 @@ export function openWorkspaceTools(options: {
     relationOpened.set(key,{ref,witness});
   };
   const saveRelation = openWorkspaceRelation({db,turn,opened:relationOpened,
-    authorize:options.authorize,maySend:options.maySend});
+    authorize:options.authorize,maySend:options.maySend,
+    saved(key, receipt) { receipts.set(key, receipt); },
+  });
   const rememberPageSource = (w: WorkspaceWitness) => pageSources.set(`${w.id}:${w.rev}`,w);
   const rememberPageOpen = (w:WorkspaceWitness) => pageOpened.set(`${w.id}:${w.rev}`,w);
   for (const w of [...(options.pageBasis ?? []), ...options.prior]) rememberPageSource(w);

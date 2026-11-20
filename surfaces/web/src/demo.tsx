@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { ApiError, api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
 import { useConversation } from "./conversation";
+import { RelationReceipt } from "./relation-receipt";
 import { PageWriteReceipt } from "./textbook/PageWriteReceipt";
 import { Message } from "./message";
 import { StudyCards } from "./study-tools";
@@ -127,7 +128,8 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
         {applySnapshot && mounts?.map(snapshot => <TurnArtifact key={snapshot.mountId} snapshot={snapshot} apply={applySnapshot} />)}
         {turn && <>
         {!!turn.writes?.length && <ul className="read-list" aria-label="学习工作区回执">{turn.writes.map(item =>
-          item.page ? <PageWriteReceipt key={item.page.status === 'proposed' ? item.page.proposalId : item.id + ':' + item.rev}
+          item.relation ? <RelationReceipt key={'relation:' + (item.relation.status === 'proposed' ? item.relation.proposalId : item.id + ':' + item.rev)}
+            id={item.id} rev={item.rev} relation={item.relation} /> : item.page ? <PageWriteReceipt key={item.page.status === 'proposed' ? item.page.proposalId : item.id + ':' + item.rev}
             id={item.id} rev={item.rev} title={item.title} page={item.page} /> :
             <WorkspaceWrite key={item.id + ':' + item.rev} item={item} />
         )}</ul>}

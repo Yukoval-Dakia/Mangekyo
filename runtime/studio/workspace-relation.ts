@@ -4,7 +4,7 @@ import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from
 import {commandId, factId} from '../../kernel/src/declarations/ids.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory, type LoadedModule} from '../../kernel/src/loader.ts';
-import {openLearningLimit} from '../../executors/teaching/workspace-tools.ts';
+import {openLearningLimit, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import {isSourceFactId, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {
   createKnowledgeEdgeCommand, createVerifiedKnowledgeEdgeCommand, withdrawKnowledgeEdgeCommand,
@@ -35,6 +35,7 @@ export function openWorkspaceRelation(options: {
   opened:ReadonlyMap<string, OpenedRelationSource>;
   maySend:WorkspaceSourceRecipient;
   authorize(tx:ReadTransaction):Promise<void>;
+  saved(key:string, receipt:WorkspaceWriteReceipt):void;
 }) {
   const {db,opened} = options;
   const access = {recipient:'workspace',maySend:options.maySend} as const;
@@ -104,8 +105,12 @@ export function openWorkspaceRelation(options: {
       const receipt = await handle({...scope,actor:'companion',purpose,id:key,
         type:proof ? createVerifiedKnowledgeEdgeCommand : createKnowledgeEdgeCommand,
         input:{id,purpose,edge,...(proof ? {verification:proof} : {})}});
-      if (receipt.state === 'proposed') return {ok:true,status:'proposed',proposalId:key};
+      if (receipt.state === 'proposed') {
+        options.saved(key,{id,rev:1,title:'知识关系提议',relation:{status:'proposed',proposalId:key}});
+        return {ok:true,status:'proposed',proposalId:key};
+      }
       const written = receipt.wrote[0]!;
+      options.saved(key,{id:written.id,rev:written.rev,title:'已核验的知识关系',relation:{status:'saved',undo_token:key}});
       return {ok:true,status:'saved',ref:{v:1,fact:{id:written.id,rev:written.rev,type:knowledgeEdgeType},anchor:whole},
         rev:written.rev,undo_token:key};
     } catch (error) {
@@ -124,8 +129,11 @@ export function openWorkspaceRelation(options: {
 
 export function openRelationReview(db:Db, contentModule:LoadedModule) {
   const handle = createCommandHandler(db,{modules:[contentModule],hooks:createStudioCommandHooks()});
+  function unavailableBasis(error:unknown) {
+    return error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof KnowledgeEdgeBasisError;
+  }
   function translate(error:unknown): never {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof KnowledgeEdgeBasisError)
+    if (unavailableBasis(error))
       throw new RequestError(409,'知识边依据已变化或不可读。');
     if (error instanceof Error && error.message === 'Proposal not found')
       throw new RequestError(404,'找不到知识边提议。');
@@ -138,10 +146,29 @@ export function openRelationReview(db:Db, contentModule:LoadedModule) {
       return db.snapshot(scope,async tx => {
         const [proposal] = await readCommandProposals(tx,createKnowledgeEdgeCommand,{},commandId(id));
         if (!proposal) throw new RequestError(404,'找不到知识边提议。');
-        const {edge} = parseEdgeWrite(proposal.input);
-        const {from,to,sources} = await readKnowledgeSources(tx,edge,owner);
-        return {proposalId:proposal.id,status:proposal.state,kind:edge.kind,scope:edge.scope,
-          from:from.sourceRef,to:to.sourceRef,sources,...(edge.variant ? {variant:edge.variant} : {})};
+        if (proposal.state === 'rejected') return {proposalId:proposal.id,status:'rejected' as const};
+        const {edge, id:edgeId} = parseEdgeWrite(proposal.input);
+        let result;
+        if (proposal.state === 'confirmed') {
+          const {rows:[fact]} = await tx.query<{current_rev:number;retracted_rev:number|null}>(
+            'SELECT current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=$2 AND type=$3',
+            [tx.learner,edgeId,knowledgeEdgeType]);
+          if (fact?.retracted_rev) result = {status:'withdrawn' as const};
+          else if (fact?.current_rev === 1) result = {status:'saved' as const, rev:1,
+            ref:{v:1,fact:{id:edgeId,rev:1,type:knowledgeEdgeType},anchor:whole},undo_token:stableId('accept-knowledge-edge',id)};
+          else result = {status:'changed' as const};
+        }
+        const decision = {proposalId:proposal.id,status:proposal.state,...(result ? {result} : {})};
+        const description = await readKnowledgeSources(tx,edge,owner).catch((error:unknown) => {
+          // The learner can manage a confirmed edge after its description becomes unavailable.
+          if (proposal.state === 'confirmed' && unavailableBasis(error)) return undefined;
+          throw error;
+        });
+        if (!description) return decision;
+        const {from,to,sources} = description;
+        return {...decision,kind:edge.kind,scope:edge.scope,
+          from:from.sourceRef,to:to.sourceRef,fromTitle:from.title,toTitle:to.title,sources,
+          ...(edge.variant ? {variant:edge.variant} : {})};
       }).catch(translate);
     },
     async accept(id:string) {
@@ -157,6 +184,13 @@ export function openRelationReview(db:Db, contentModule:LoadedModule) {
       const written = receipt.wrote[0]!;
       return {status:'saved',proposalId,commandId:key,ref:{v:1,fact:{id:written.id,rev:written.rev,type:knowledgeEdgeType},anchor:whole},
         rev:written.rev,undo_token:key};
+    },
+    async reject(id:string) {
+      const proposalId = commandId(id);
+      const key = commandId(stableId('reject-knowledge-edge',id));
+      await handle.decideProposal({...scope,id:key,type:createKnowledgeEdgeCommand,purpose,
+        proposalId,selection:'reject'},async () => null).catch(translate);
+      return {status:'rejected' as const,proposalId};
     },
     async undo(id:string, input:Record<string,unknown>) {
       const token = input.undo_token;

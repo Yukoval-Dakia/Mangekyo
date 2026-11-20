@@ -168,14 +168,16 @@ export function recentConversations(db: Db) {
   });
 }
 type WriteState = {status: 'changed'} | {status: 'withdrawn'};
-export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page'> & {
+export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page' | 'relation'> & {
   observation?: NonNullable<WorkspaceWriteReceipt['observation']> | WriteState;
   memory?: NonNullable<WorkspaceWriteReceipt['memory']> | WriteState;
   page?: NonNullable<WorkspaceWriteReceipt['page']> | WriteState | {status:'reverted'};
+  relation?: NonNullable<WorkspaceWriteReceipt['relation']> | WriteState;
 };
 
 async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[]): Promise<WorkspaceWriteView[]> {
-  const ids = writes.filter(write => write.observation || write.memory || write.page?.status === 'saved').map(write => write.id);
+  const ids = writes.filter(write => write.observation || write.memory ||
+    write.page?.status === 'saved' || write.relation?.status === 'saved').map(write => write.id);
   if (!ids.length) return writes;
   const {rows} = await tx.query<{id: string; current_rev: number; retracted_rev: number | null}>(
     'SELECT id,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
@@ -187,6 +189,10 @@ async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[
       const undone = await readRecordedCommand(tx,textbookUndoId(write.page.undo_token));
       return {...write,page:{status:undone?.state === 'done' ? write.rev === 1 ? 'withdrawn' : 'reverted' : 'changed'}};
     }
+    if (write.relation?.status === 'saved') {
+      if (fact && fact.retracted_rev === null && fact.current_rev === write.rev) return write;
+      return {...write,relation:{status:fact?.retracted_rev ? 'withdrawn' : 'changed'}};
+    }
     if (!write.observation && !write.memory) return write;
     if (fact && fact.retracted_rev === null && fact.current_rev === write.rev &&
         (!write.memory || await areMemoryClaimsCurrent(tx, [write.id]))) return write;
@@ -195,12 +201,35 @@ async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[
   }));
 }
 
+async function recoverRelationReceipts(tx: ReadTransaction, turnIds: string[]) {
+  if (!turnIds.length) return new Map<string, WorkspaceWriteReceipt[]>();
+  const { rows } = await tx.query<{ id: string; writes: WorkspaceWriteReceipt[] }>(
+    `SELECT s.slot_key AS id, d.value->'writes' AS writes FROM slot_state s
+     JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.last_id
+     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=ANY($3::text[])
+       AND jsonb_typeof(d.value->'writes')='array'`,
+    [tx.learner, slotType, turnIds],
+  );
+  return new Map(rows.map(({ id, writes }) => [id, writes.flatMap<WorkspaceWriteReceipt>(write => {
+    const relation = write.relation?.status === 'proposed'
+      ? { status: 'proposed' as const, proposalId: write.relation.proposalId }
+      : write.relation?.status === 'saved'
+        ? { status: 'saved' as const, undo_token: write.relation.undo_token }
+        : undefined;
+    if (!relation) return [];
+    // A revoked reply may still have a learner decision or undo to manage.
+    return [{ id: write.id, rev: write.rev, title: '知识关系回执', relation }];
+  })]));
+}
+
 export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project']) {
   const { turns, ...view } = await db.snapshot({ learner: studioLearner }, async tx => {
     const timeline = await history(tx, session);
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
     const currentObject = last.submission.currentObject;
+    const recovered = await recoverRelationReceipts(tx,
+      timeline.filter(row => row.feedback?.action === 'reply_unavailable').map(row => row.id));
     return {
       id: session,
       caseId: last.submission.caseId,
@@ -211,10 +240,11 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
       ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
       ...(last.error ? { error: last.error } : {}),
       ...(last.status === 'pending' ? { artifacts: await turnArtifacts(tx, session, last.id) } : {}),
-      turns: await Promise.all(timeline.filter(row => row.feedback).map(async row => ({
-        row, writes: row.feedback?.writes && await projectWrites(tx, row.feedback.writes),
-        artifacts: await turnArtifacts(tx, session, row.id),
-      }))),
+      turns: await Promise.all(timeline.filter(row => row.feedback).map(async row => {
+        const writes = row.feedback?.writes ?? recovered.get(row.id);
+        return { row, writes: writes?.length ? await projectWrites(tx, writes) : undefined,
+          artifacts: await turnArtifacts(tx, session, row.id) };
+      })),
     };
   });
   const projected = [];
