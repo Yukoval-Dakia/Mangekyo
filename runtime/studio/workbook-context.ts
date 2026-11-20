@@ -2,14 +2,14 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, snapshotFactReaders, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  historicalWorkbookMount as readHistory, memoWorkbookFacts, withWorkbookWorkspaceBasis, workbookCapsuleLinkCandidates, verifyWorkbookQuestionPermit, type BoundWorkbookMount as BoundMount,
+  historicalWorkbookMount as readHistory, localWorkbookCapsuleKinds as localKinds, workbookCapsuleKinds as allKinds, memoWorkbookFacts, withWorkbookWorkspaceBasis, workbookCapsuleLinkCandidates, verifyWorkbookQuestionPermit, type BoundWorkbookMount as BoundMount,
 } from '../../modules/activity/workbook-context-read.ts';
 import { helpExposureRequest, helpExposureType, helpRef, type HelpRef, type HelpPresentation } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose as purpose } from '../../modules/activity/library-values.ts';
@@ -31,14 +31,12 @@ import { resolveSource } from './source-read.ts';
 type Reader = Pick<ReadContext,'fact'>;
 export type WorkbookContextAuthority = {
   activePosttest?: ReturnType<typeof openRetention>['activePosttest'];
-  backtrace?: (tx: ReadTransaction, target: {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef}, local: Reader) =>
+  backtrace?: (tx: ReadTransaction, target: {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef}, local: Reader, facts: ReturnType<typeof snapshotFactReaders>) =>
     Promise<readonly WorkbookTraceProof[] | null>;
 };
 const scope = {learner: studioLearner};
 const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 const denied = () => new RequestError(403, '本题帮助的发放、授权或呈现许可已失效。');
-const localKinds = ['archetype','backtrace'] as const;
-const allKinds = [...localKinds,'notion'] as const;
 
 export const historicalWorkbookMount = (tx: ReadTransaction, id: FactId, fact: FactSnapshot, read: ReadContext) =>
   readHistory(tx,id,fact,read,unavailable);
@@ -53,7 +51,8 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
     if (!item.sourceQuestionRef || (requested && !category)) return { handles: [] };
     const question = helpRef(item.sourceQuestionRef);
     const use = mount.issuance ? retentionPurpose : purpose;
-    const source = memoWorkbookFacts(createCommandReadContext(tx,use).fact);
+    const facts = snapshotFactReaders(tx);
+    const source = memoWorkbookFacts(facts(use,()=>true).fact);
     const edges = await workbookCapsuleLinkCandidates(tx,question,knowledgeEdgeType,use);
     // Buffer preflight pages so an unrelated remote category never delays a local opening.
     const pages = new Set<FactSnapshot>();
@@ -72,7 +71,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       if (kind === 'backtrace') {
         const local = memoWorkbookFacts(selectedWorkbookRead(tx,use,source).fact);
         const proofs = await authority.backtrace?.(tx,{paper:mount.paper,itemId:item.id,question,
-          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},local) ?? [];
+          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},local,facts) ?? [];
         const refFor = (trace: WorkbookTraceProof) => capsuleHandles.seal(kind,mount,item.id,[question,trace.content,trace.witnesses]);
         const trace = await selectWorkbookTrace(proofs,local,isWorkbookNotionSource,async options=>{
           if (check?.choose) return check.choose(options);

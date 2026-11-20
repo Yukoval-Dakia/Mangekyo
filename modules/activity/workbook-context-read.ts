@@ -5,17 +5,27 @@ import { recordWorkbookPresentationCommand, workbookPresentation, workbookPresen
 import { verifyWorkspaceEntryBasis, workspaceEntry, workspaceEntryType } from './workspace-values.ts';
 import { sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from './workbook-values.ts';
 
+export const localWorkbookCapsuleKinds = ['archetype','backtrace'] as const;
+export const workbookCapsuleKinds = [...localWorkbookCapsuleKinds,'notion'] as const;
+
 type ReadFact = (...args: Parameters<ReadContext['fact']>) => Promise<FactSnapshot>;
 
-/** Reuse exact fact reads within a single discovery transaction and authorization scope. */
+/** The caller owns the lifetime and fixes the authorization for these reads. */
+export function memoWorkbookRead<Args extends unknown[], Value>(read: (...args: Args) => Promise<Value>) {
+  const reads = new Map<string,Promise<Value>>();
+  return (...args: Args) => {
+    const key = JSON.stringify(args);
+    const existing = reads.get(key);
+    if (existing) return existing;
+    const result = read(...args);
+    reads.set(key,result);
+    return result;
+  };
+}
+
 export function memoWorkbookFacts(read: ReadFact): Pick<ReadContext,'fact'> {
-  const facts = new Map<string,Promise<FactSnapshot>>();
-  return {fact<Value>(id: FactId, options: Parameters<ReadFact>[1]) {
-    const key = JSON.stringify([id,options.mode,options.mode === 'pinned' ? options.rev : null]);
-    const result = facts.get(key) ?? read(id,options);
-    facts.set(key,result);
-    return result as Promise<FactSnapshot<Value>>;
-  }};
+  const fact = memoWorkbookRead(read);
+  return {fact: <Value>(...args: Parameters<ReadFact>) => fact(...args) as Promise<FactSnapshot<Value>>};
 }
 
 export function withWorkbookWorkspaceBasis(read: Pick<ReadContext,'fact'>) {

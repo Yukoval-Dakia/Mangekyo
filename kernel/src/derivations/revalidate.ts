@@ -14,6 +14,8 @@ type Derivation = {
   is_shadow: boolean;
   manifest: unknown;
 };
+type FactInput = Extract<ManifestInput,{kind:'fact'}>;
+type ReopenedFact = {current_rev:number; access_epoch:string; retracted_rev:number|null; tick:string; allowed:boolean};
 const invalid = (reason: string): ManifestVerdict => ({ kind: 'invalid', reason });
 const valid = (behind = false): ManifestVerdict => ({ kind: 'valid', freshness: behind ? 'behind' : 'current' });
 
@@ -27,6 +29,8 @@ export async function revalidateManifest(
   if (manifest.learner !== tx.learner) return invalid('Manifest learner does not match transaction');
   const clock = await tx.query<{clock:string}>('SELECT clock::text FROM learners WHERE id=$1', [tx.learner]);
   if (!clock.rows[0] || BigInt(manifest.gatherTick) > BigInt(clock.rows[0].clock)) return invalid('Gather tick is ahead of the learner clock');
+  if (manifest.inputs.length > 1 && manifest.inputs.every(input=>input.kind==='fact'))
+    return checkFactManifest(tx,manifest.inputs,manifest.gatherTick,purpose);
   let behind = false;
   for (const input of manifest.inputs) {
     const verdict = await checkInput(tx, input, manifest.gatherTick, purpose, visiting);
@@ -84,6 +88,28 @@ async function checkDerivation(
   return nested.kind === 'valid' ? row : null;
 }
 
+function validFactInput(row: ReopenedFact | undefined, input: FactInput, at: Tick): boolean {
+  return row !== undefined && row.retracted_rev===null && row.allowed &&
+    BigInt(row.tick)<=BigInt(at) && row.access_epoch===input.accessEpoch &&
+    (input.mode!=='following' || row.current_rev===input.rev);
+}
+
+async function checkFactManifest(tx: ReadTransaction, inputs: readonly FactInput[], at: Tick, purpose: string) {
+  const {rows} = await tx.query<ReopenedFact & {id:string; rev:number}>(
+    `WITH requested AS (
+       SELECT DISTINCT id,rev FROM jsonb_to_recordset($2::jsonb) AS input(id text,rev integer)
+     )
+     SELECT f.id,r.rev,f.current_rev,f.access_epoch::text,f.retracted_rev,r.tick::text,
+            ($3=ANY(f.purpose) OR 'all'=ANY(f.purpose)) AND ($3=ANY(r.purpose) OR 'all'=ANY(r.purpose)) AS allowed
+       FROM requested q JOIN facts f ON f.learner_id=$1 AND f.id=q.id
+       JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,q.rev) AND r.kind='value'`,
+    [tx.learner, JSON.stringify(inputs.map(({id,rev})=>({id,rev}))), purpose],
+  );
+  const reopened = new Map(rows.map(row=>[row.id+':'+row.rev,row]));
+  return inputs.every(input=>validFactInput(reopened.get(input.id+':'+input.rev),input,at))
+    ? valid() : invalid('Fact input changed or is denied');
+}
+
 async function checkInput(
   tx: ReadTransaction,
   input: ManifestInput,
@@ -92,7 +118,7 @@ async function checkInput(
   visiting: ReadonlySet<string>,
 ): Promise<ManifestVerdict> {
   if (input.kind === 'fact') {
-    const result = await tx.query<{ current_rev: number; access_epoch: string; retracted_rev: number | null; tick: string; allowed: boolean }>(
+    const result = await tx.query<ReopenedFact>(
       `SELECT f.current_rev, f.access_epoch::text, f.retracted_rev, r.tick::text,
               ($4=ANY(f.purpose) OR 'all'=ANY(f.purpose))
               AND ($4=ANY(r.purpose) OR 'all'=ANY(r.purpose)) AS allowed
@@ -101,9 +127,7 @@ async function checkInput(
       [tx.learner, input.id, input.rev, purpose],
     );
     const row = result.rows[0];
-    if (!row || row.retracted_rev !== null || !row.allowed || BigInt(row.tick) > BigInt(at) || row.access_epoch !== input.accessEpoch
-        || (input.mode === 'following' && row.current_rev !== input.rev)) return invalid('Fact input changed or is denied');
-    return valid();
+    return validFactInput(row,input,at) ? valid() : invalid('Fact input changed or is denied');
   }
   if (input.kind === 'slot') {
     const row = await checkDerivation(tx, input.derivationId, input.slotType, input.slotKey, at, purpose, visiting);

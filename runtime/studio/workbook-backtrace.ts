@@ -7,19 +7,19 @@ import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { workbookLinkCandidates, workbookWitnessesBy } from '../../modules/activity/evidence-read.ts';
 import {
   workbookTraceConceptProofs, sharedWorkbookTraceConcepts, earlierWorkbookTraceAttempts, isFrozenWorkbookFollowup, readWorkbookFollowupForecast, workbookTraceCutoff as cutoff,
-  workbookWitnessReader as collect, WorkbookTraceReadError, type WorkbookTraceProof,
+  workbookWitnessReader as collect, workbookTraceOtherQuestion, WorkbookTraceReadError, type WorkbookTraceProof, type WorkbookTraceQuestionRef as Ref,
 } from '../../modules/activity/workbook-backtrace-values.ts';
+import { memoWorkbookRead } from '../../modules/activity/workbook-context-read.ts';
 import { workbookAttempt } from '../../modules/activity/workbook-values.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { backtrace, type TraceAttempt } from '../../modules/learner/retention-backtrace.ts';
 import { forecastType, readAnyRetentionMethod, type RetentionForecast } from '../../modules/learner/retention.ts';
-import { openKnowledgeEdge } from './knowledge-graph.ts';
+import { scopedKnowledgeEdges } from './knowledge-graph.ts';
 import { openRetentionTarget, readItemConceptLinks, readWorkbookEvidence, retentionPurpose } from './retention-workbook.ts';
 import { posttestAttemptFor, posttestIdFor, readPosttestIssuance } from './retention-posttest.ts';
 import { retentionHistoryValid } from './retention.ts';
 import { RequestError } from './sessions.ts';
 
-type Ref = { id: string; rev: number };
 type Input = { paper: Ref; itemId: string; question: Ref; attemptRef?: Ref };
 type Reader = Pick<ReadContext, 'fact'>;
 function unavailable(error: unknown) {
@@ -46,24 +46,21 @@ async function delayedSitting(tx: ReadTransaction, read: Reader, earlier: TraceA
   return true;
 }
 
-async function stableQuestion(tx: ReadTransaction, item: Opened, edgeId: string, through: NonNullable<Awaited<ReturnType<typeof cutoff>>>,
-  read: Reader, open: (id: string) => ReturnType<typeof openKnowledgeEdge>) {
+async function stableQuestion(item: Opened, edgeId: string, read: Reader, open: ReturnType<typeof scopedKnowledgeEdges>,
+  attempts: (ref: Ref) => ReturnType<typeof earlierWorkbookTraceAttempts>) {
   const edge = await open(edgeId);
   if (!edge || edge.value.kind !== 'variant_of' || edge.value.variant?.spoilsNext !== 'none') return;
   for (const [fact, mode] of edge.opened) {
     const opened = await read.fact(fact.ref.id, mode === 'following' ? { mode } : { mode: 'pinned', rev: fact.ref.rev });
     if (opened.ref.rev !== fact.ref.rev || opened.accessEpoch !== fact.accessEpoch) return;
   }
-  const from = edge.value.from.fact, to = edge.value.to.fact, question = item.question.sourceQuestionRef!;
-  const same = (ref: Ref) => ref.id === question.id && ref.rev === question.rev;
-  const oldQuestion = same(from) ? to : same(to) ? from : undefined;
-  if (!oldQuestion || oldQuestion.id === question.id) return;
-  return { oldQuestion, rows: await earlierWorkbookTraceAttempts(tx,oldQuestion,through.observedThrough) };
+  const oldQuestion = workbookTraceOtherQuestion(edge.value.from.fact,edge.value.to.fact,item.question.sourceQuestionRef!);
+  return oldQuestion && {oldQuestion,rows:await attempts(oldQuestion)};
 }
 
-export async function workbookBacktrace(tx: ReadTransaction, input: Input, reader: Reader) {
-  const open = (id: string) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:retentionPurpose,maySend:() => true,
-    readNotionWitness: fact => reader.fact(fact.ref.id,{mode:'pinned',rev:fact.ref.rev})});
+export async function workbookBacktrace(tx: ReadTransaction, input: Input, reader: Reader, facts: Parameters<typeof scopedKnowledgeEdges>[2]) {
+  const open = scopedKnowledgeEdges(tx,{recipient:'workspace',purpose:retentionPurpose,maySend:() => true,
+    readNotionWitness: fact => reader.fact(fact.ref.id,{mode:'pinned',rev:fact.ref.rev})},facts);
   const root = collect(reader, tx);
   try {
     const item = await openRetentionTarget(tx, root.read, factId(input.paper.id), input.itemId);
@@ -72,13 +69,15 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
     const through = await cutoff(tx, item, input.attemptRef, root.read);
     if (!through) return null;
     const source = item.question.sourceQuestionRef;
-    const concepts = await readItemConceptLinks(tx,source,through.observedThrough,open);
+    const links = memoWorkbookRead((ref: typeof source)=>readItemConceptLinks(tx,ref,through.observedThrough,open));
+    const attempts = memoWorkbookRead((ref: Ref)=>earlierWorkbookTraceAttempts(tx,ref,through.observedThrough));
+    const concepts = await links(source);
     if (!concepts.length) return null;
     const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, source, through.observedThrough, ['variant_of'],'unspoiled-variant');
     const proofs: WorkbookTraceProof[] = [];
     for (const { id } of edges) {
       const graph = collect(reader, tx);
-      const related = await stableQuestion(tx, item, id, through, graph.read, open).catch(error => {
+      const related = await stableQuestion(item,id,graph.read,open,attempts).catch(error => {
         if (!unavailable(error)) throw error;
       });
       if (!related) continue;
@@ -88,7 +87,7 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
           const old = await openRetentionTarget(tx, candidate.read, factId(row.paper), row.item);
           const ref = old.question.sourceQuestionRef;
           if (ref?.id !== related.oldQuestion.id || ref.rev !== related.oldQuestion.rev || old.question.prompt === item.question.prompt) continue;
-          const shared = sharedWorkbookTraceConcepts(concepts,await readItemConceptLinks(tx,ref,through.observedThrough,open));
+          const shared = sharedWorkbookTraceConcepts(concepts,await links(ref));
           if (!shared.length) continue;
           const conceptIds = shared.map(({id})=>id);
           const history: TraceAttempt[] = [];

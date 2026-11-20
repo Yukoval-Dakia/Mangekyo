@@ -35,7 +35,8 @@ export function sourceMaySend(access: SourceAccess, fact: FactSnapshot): boolean
   return access.recipient === 'learner' || access.maySend(fact);
 }
 
-export async function resolveSource(tx: ReadTransaction, input: unknown, access: SourceAccess, mode: SourceReadMode = 'pinned') {
+export async function resolveSource(tx: ReadTransaction, input: unknown, access: SourceAccess, mode: SourceReadMode = 'pinned',
+  bound?: ReturnType<typeof createAuthorizedFactReader>) {
   const reference = sourceRefV1(input);
   const textReference = reference?.textFact;
   if (textReference && (reference.fact.type !== materialType || textReference.type !== intakeFactType ||
@@ -44,7 +45,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   if (!isSourceFactId(id) || (mode !== 'pinned' && mode !== 'following')) return;
   const anchor: SourceAnchorV1 = reference?.anchor ?? {kind: 'whole'};
   const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
-  const reader = createAuthorizedFactReader(tx, sourcePurpose(access), accepts);
+  const reader = bound ?? createAuthorizedFactReader(tx, sourcePurpose(access), accepts);
   const seen = new Map<string, {fact:FactSnapshot; pinned:boolean}>();
   const path = new Set<string>();
   const questionSources: Parameters<SourceTrack>[] = [];
