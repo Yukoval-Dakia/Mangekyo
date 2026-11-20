@@ -14,7 +14,7 @@ export type Classroom = {
   lastTurnId: FactId;
   pending?: {turnId: FactId; kind: 'start' | 'adjust'};
 };
-export type ClassroomEvidence = {mountId: FactId; stateRev: number};
+export type ClassroomEvidence = {mountId: FactId; stateRev: number; assessmentId?: DerivationId | null};
 export class ClassroomConflict extends Error {}
 
 function boundedText(value: unknown, limit: number) {
@@ -110,6 +110,12 @@ export function classroomPlan(state: Classroom, titles: readonly string[], deriv
   return {...base, steps:[...frozen,...steps], plans:[...base.plans,{turnId:pending.turnId,derivationId}]};
 }
 
+export function recoverClassroomAdjustment(state: Classroom, previous: FactId): Classroom {
+  const {pending, ...base} = state;
+  if (pending?.kind !== 'adjust') throw new Error('缺少待恢复的课堂调整。');
+  return {...base,lastTurnId:previous};
+}
+
 export function activeClassroomStep(state: Classroom) {
   return state.steps.find(step => step.status === 'active');
 }
@@ -141,19 +147,24 @@ export function classroomPrompt(mode: 'start' | 'adjust' | 'advance', state: Cla
   if (mode === 'advance') return `继续课堂 ${topic}，只呈现当前步骤 ${JSON.stringify(active?.title)}。按教学需要挂载作品。不要提前呈现后续步骤。`;
   const format = '最终仅返回 JSON {"message":"给学生看的正文","steps":["步骤标题"]}，标题最多八个，不含题目答案和隐藏评分依据。';
   if (mode === 'start') return `正式开课：主题 ${topic}，约 ${state.minutes} 分钟。根据本次主题及获准资料编排至少两个步骤，只讲第一步。调用 mount_artifact 挂载适合主题的可调作品及先作预测再揭示的随堂检查，勿在正文泄露隐藏答案。steps 包含第一步及其后计划。${format}`;
-  return `调整课堂 ${topic}。当前步骤 ${JSON.stringify(active?.title)} 保持原样。现有未来步骤：${JSON.stringify(state.steps.filter(step => step.status === 'pending').map(step => step.title))}。根据宿主提供的本次实际交互或评估，调整尚未呈现步骤，勿把有提示的作答当独立掌握。勿渲染新步骤或调用作品工具；steps 仅包含调整后的未来步骤。${note ? ' 学习者说明：' + JSON.stringify(note) : ''}${format}`;
+  return `调整课堂 ${topic}。当前步骤 ${JSON.stringify(active?.title)} 保持原样。现有未来步骤：${JSON.stringify(state.steps.filter(step => step.status === 'pending').map(step => step.title))}。参考学习者说明及宿主提供的实际交互或评估，调整尚未呈现步骤。作品证据为空时只按学习者说明安排，勿推断掌握情况。勿把有提示的作答当独立掌握。勿渲染新步骤或调用作品工具；steps 仅包含调整后的未来步骤。${note ? ' 学习者说明：' + JSON.stringify(note) : ''}${format}`;
 }
 
 export function classroomTurn(value: unknown) {
-  const {mode, evidence, evidenceTurn} = object(value);
+  const {mode, evidence, evidenceTurn, noteOnly} = object(value);
   if (mode !== 'start' && mode !== 'adjust' && mode !== 'advance') throw new Error('课堂回合无效。');
-  if (!Array.isArray(evidence) || evidence.length > 16 || (mode === 'adjust') !== Boolean(evidence.length))
+  if (!Array.isArray(evidence) || evidence.length > 16 ||
+      (noteOnly !== undefined && (noteOnly !== true || mode !== 'adjust' || evidence.length !== 0)) ||
+      (mode === 'adjust' ? !evidence.length && noteOnly !== true : evidence.length !== 0))
     throw new Error('课堂证据无效。');
   if (mode === 'adjust' && typeof evidenceTurn !== 'string') throw new Error('缺少课堂证据回合。');
-  return {mode, ...(typeof evidenceTurn === 'string' ? {evidenceTurn:factId(evidenceTurn)} : {}), evidence: evidence.map((item): ClassroomEvidence => {
-    const {mountId, stateRev} = object(item);
+  return {mode, ...(noteOnly === true ? {noteOnly} : {}), ...(typeof evidenceTurn === 'string' ? {evidenceTurn:factId(evidenceTurn)} : {}), evidence: evidence.map((item): ClassroomEvidence => {
+    const {mountId, stateRev, assessmentId} = object(item);
     if (typeof mountId !== 'string' || typeof stateRev !== 'number' || !Number.isSafeInteger(stateRev) || stateRev < 1)
       throw new Error('课堂证据版本无效。');
-    return {mountId:factId(mountId),stateRev};
+    if (assessmentId !== undefined && assessmentId !== null && typeof assessmentId !== 'string')
+      throw new Error('课堂评估见证无效。');
+    return {mountId:factId(mountId),stateRev,...(assessmentId === undefined ? {} :
+      {assessmentId:assessmentId === null ? null : derivationId(assessmentId)})};
   })};
 }

@@ -1,5 +1,5 @@
 import { classroomCommand, classroomMutation, classroomPlan, classroomPrompt, classroomStart, classroomRoute, classroomFact,
-  activeClassroomStep, classroomType, seedClassroom, transitionClassroom, ClassroomConflict,
+  activeClassroomStep, classroomType, recoverClassroomAdjustment, seedClassroom, transitionClassroom, ClassroomConflict,
   type Classroom, type ClassroomOperation } from '../../modules/activity/classroom.ts';
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
@@ -13,7 +13,7 @@ import { notionReadScope, notionSendBasis, NotionReadUnconfirmed, teachingResult
 import { routeMatchesInput, sameRoute, workspaceGrantChecker, workspaceRouteRevision } from './harness.ts';
 import { freezeProviderAccount, loadSettings, providerAccount } from './settings.ts';
 import { readCurrentLearningObject } from './current-learning-object.ts';
-import { RequestError, clientRequest, type DisplayTurn } from './sessions.ts';
+import { RequestError, clientRequest, readClassroomSession, type DisplayTurn } from './sessions.ts';
 import { classroomMountEvidence } from './presentation-store.ts';
 import { notionModelRecipient, stableId, studioLearner, purpose, slotType } from './identity.ts';
 
@@ -26,7 +26,7 @@ const classroomId = (session: string) => factId(stableId('classroom',session));
 
 async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNotionRead, pinned?: DerivationId) {
   const {rows:[row]} = await tx.query<{id: string | null; value:DisplayTurn | null; manifest:unknown; failed:boolean}>(`
-    SELECT d.id,d.value,d.manifest,s.last_error IS NOT NULL AS failed FROM slot_state s LEFT JOIN derivations d
+    SELECT d.id,d.value,d.manifest,(s.last_error IS NOT NULL OR s.last_id IS NOT NULL) AS failed FROM slot_state s LEFT JOIN derivations d
       ON (d.learner_id,d.slot_type,d.slot_key)=(s.learner_id,s.slot_type,s.slot_key)
       AND d.id=coalesce($4,s.current_id) AND NOT d.is_shadow AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,[tx.learner,slotType,id,pinned ?? null]);
@@ -69,14 +69,22 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
       throw error;
     }
   }
-  const pending = state.pending && await authorizedReply(tx,state.pending.turnId,check);
+  const request = state.pending;
+  const pending = request && await authorizedReply(tx,request.turnId,check);
+  const adjustmentFailed = request?.kind === 'adjust' && pending?.status === 'failed';
+  if (adjustmentFailed) {
+    const rejected = await readTurn(tx,request.turnId);
+    if (rejected.sessionId !== state.sessionId || rejected.classroom?.mode !== 'adjust' || !rejected.parentId) throw unavailable();
+    state = recoverClassroomAdjustment(state,rejected.parentId);
+  }
   if (pending?.status === 'ready') {
     if (!pending.steps) throw unavailable();
     state = classroomPlan(state,pending.steps,pending.derivationId);
   }
   const active = activeClassroomStep(state);
   const step = active && await authorizedReply(tx,active.turnId!,check);
-  return {fact,state,origin,generation:pending?.status === 'ready' ? step?.status : pending?.status ?? step?.status};
+  const generation = adjustmentFailed || pending?.status === 'ready' ? step?.status : pending?.status ?? step?.status;
+  return {fact,state,origin,generation,adjustmentFailed};
 }
 
 async function handleErrors<T>(run: () => Promise<T>) {
@@ -94,11 +102,17 @@ function input<T>(parse: () => T) {
 }
 
 export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHooks) {
-  const get = (id: FactId) => handleErrors(() => notionReadScope(db,studioLearner).read(async (tx, check) => {
-    const {fact,state,generation} = await readClassroom(tx,id,check);
+  const view = async (tx: ReadTransaction, id: FactId, check: CheckNotionRead) => {
+    const {fact,state,generation,adjustmentFailed} = await readClassroom(tx,id,check);
     const {topic,minutes,sessionId,status,steps} = state;
     return {id,rev:fact.ref.rev,topic,minutes,sessionId,status,steps,activeStepId:activeClassroomStep(state)?.id ?? null,
-      ...(generation ? {generation} : {})};
+      ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {})};
+  };
+  const get = (id: FactId) => handleErrors(() => notionReadScope(db,studioLearner).read((tx,check) => view(tx,id,check)));
+  const print = (id: FactId) => handleErrors(() => notionReadScope(db,studioLearner,{readOnly:true}).read(async (tx,check) => {
+    const classroom = await view(tx,id,check);
+    const session = await readClassroomSession(tx,classroom.sessionId,check);
+    return {classroom,session};
   }));
 
   async function start(raw: Record<string, unknown>) {
@@ -150,12 +164,13 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
       const mode = op === 'adjust' ? 'adjust' : activeClassroomStep(next)?.turnId === turnId ? 'advance' : undefined;
       if (!mode) return {state:next,expectedRev:mutation.expectedRev};
       const evidence = mode === 'adjust' && active?.turnId
-        ? (await classroomMountEvidence(tx,state.sessionId,active.turnId,check)).map(({mountId,stateRev}) => ({mountId,stateRev})) : [];
-      if (mode === 'adjust' && !evidence.length) throw conflict('先操作当前作品或完成随堂检查。');
+        ? await classroomMountEvidence(tx,state.sessionId,active.turnId,check) : [];
+      const noteOnly = mode === 'adjust' && evidence.length === 0;
+      if (noteOnly && !mutation.note) throw conflict('请说明希望调整的内容，或先完成课堂作品。');
       if (!sameRoute(origin,await loadSettings('companion'))) throw conflict('课堂绑定的模型已变更。');
       const parentId = state.lastTurnId;
       return {state:next,expectedRev:mutation.expectedRev,turn:{id:turnId,data:studyTurn({...origin,parentId,
-        answer:classroomPrompt(mode,mode === 'adjust' ? state : next,mutation.note),classroom:{mode,evidence,...(mode === 'adjust' ? {evidenceTurn:active?.turnId} : {})}})}};
+        answer:classroomPrompt(mode,mode === 'adjust' ? state : next,mutation.note),classroom:{mode,evidence,...(noteOnly ? {noteOnly} : {}),...(mode === 'adjust' ? {evidenceTurn:active?.turnId} : {})}})}};
     };
     // Probe remotely outside the learner lock. The command repeats all local checks under the lock.
     try { await notion.read(prepare); }
@@ -170,8 +185,8 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
       type:classroomCommand,input:{id,op,...mutation}}));
     return get(id);
   }
-  return {start,get,mutate};
+  return {start,get,mutate,print};
 }
 
-export const classroomPath = /^\/api\/classrooms(?:\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(adjust|advance|skip|finish|archive))?)?$/;
+export const classroomPath = /^\/api\/classrooms(?:\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(adjust|advance|skip|finish|archive|print))?)?$/;
 export { factId };

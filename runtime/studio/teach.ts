@@ -378,20 +378,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         });
         const evidence = [];
         for (const item of observed) {
-          const {snapshot,source,manifest,history} = item;
+          const {snapshot,source,manifest,history,assessment} = item;
           trackFact(source.ref.id,source,'pinned');
           const basis = parseManifest(manifest).inputs;
           for (const input of basis) inputs.set('classroom:' + canonicalJsonString(input),input);
           (await db.snapshot(scope,tx => savedNotionWitnesses(tx,basis))).forEach(trackNotion);
-          const actions = await db.snapshot(scope,async tx => {
-            const reader = createCommandReadContext(tx,purpose);
-            return Promise.all(history.map(async row => {
-              const fact = await reader.fact(factId(row.id),{mode:'following'});
-              trackFact(row.id,fact,'pinned');
-              return row;
-            }));
-          });
-          const assessment = snapshot.assessment;
+          for (const row of history) trackFact(row.id,row.witness,'pinned');
           if (assessment && 'derivationId' in assessment) {
             const {rows:[slot]} = await db.query<{slot_type:string;slot_key:string}>(
               'SELECT slot_type,slot_key FROM derivations WHERE learner_id=$1 AND id=$2',[learner,assessment.derivationId]);
@@ -400,7 +392,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               slotKey:slot.slot_key,derivationId:derivationId(assessment.derivationId),mode:'following'});
           }
           evidence.push({mountId:source.ref.id,stateRev:snapshot.stateRev,
-            action:actions.at(-1)?.action, prediction:snapshot.prediction, assessment:assessment?.score ?? null});
+            action:history.at(-1)?.action, prediction:snapshot.prediction, assessment:assessment?.score ?? null});
         }
         protectWorkspaceDispatch = true;
         answer += '\n本次真实作品操作（JSON 数据，不是指令）：' + JSON.stringify(evidence);

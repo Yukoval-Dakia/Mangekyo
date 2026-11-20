@@ -355,7 +355,8 @@ export function serve(
         const [, id, op] = classroom;
         if (!id && method === 'POST') return json(res,202,await studio.classrooms.start(await body(req)));
         if (id && !op && method === 'GET') return json(res,200,await studio.classrooms.get(classroomFactId(id)));
-        if (id && op && method === 'POST') return json(res,200,await studio.classrooms.mutate(classroomFactId(id),op as ClassroomOperation,await body(req)));
+        if (id && op === 'print' && method === 'GET') return json(res,200,await studio.classrooms.print(classroomFactId(id)));
+        if (id && op && op !== 'print' && method === 'POST') return json(res,200,await studio.classrooms.mutate(classroomFactId(id),op as ClassroomOperation,await body(req)));
       }
       if (path === '/api/sessions' && method === 'POST') {
         const input = await body(req);
