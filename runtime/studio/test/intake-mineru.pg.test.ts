@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { aroundAll, describe, expect, it, vi } from 'vitest';
 import { acknowledgeStartedWork, relayPending, runEffect, type WorkRef } from '../../../kernel/src/work/index.ts';
 import { studioLearner } from '../identity.ts';
-import { openCloudIntakeWork, type MineruClient } from '../intake-cloud.ts';
+import { cloudIntakeRoute, openCloudIntakeWork, type MineruClient } from '../intake-cloud.ts';
 import { handleIntakeRequest, openIntake, type IntakeMetadata } from '../intake.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { loadStudioTestModule } from './modules.ts';
@@ -62,9 +62,9 @@ describe.skipIf(!testDatabaseUrl)('MinerU intake in PostgreSQL', () => {
       'SELECT execution_ref FROM work WHERE learner_id=$1 AND slot_key=$2', [studioLearner, owner]);
     let selected: WorkRef | undefined;
     await relayPending(db, async (_, intent) => {
-      const ref = await acknowledgeStartedWork(db, intent);
+      const ref = await acknowledgeStartedWork(db, intent, cloudIntakeRoute);
       if (intent === work?.execution_ref && ref) selected = ref;
-    });
+    }, cloudIntakeRoute);
     if (!selected) throw new Error('No durable intake work for ' + owner);
     return selected;
   }

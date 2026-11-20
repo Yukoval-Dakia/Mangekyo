@@ -58,6 +58,8 @@ node runtime/studio/test/mcp-acceptance.mjs http://127.0.0.1:4317 服务ID 工�
 
 在运行 Studio 的环境设置从 [MinerU API 管理页](https://mineru.net/apiManage/) 取得的 `MANGEKYO_MINERU_TOKEN`。Web 与 Worker 分开运行时，两者都需这个变量，并使用同一数据库和交入原件目录。重启后可在「交入材料」为 PDF、PNG 或 JPEG 选择 MinerU。原件会先保存在本地，再由 Worker 发送给 MinerU。材料详情显示结果，也可在等待或失败时查看原件和手动更正。本地抽取仍是默认选项。
 
+升级接收上传的 Web 时，内核会先应用 outbox v10。新选的云识别在交入事务内登记为 `routed_pending`，由配置了 MinerU 的新版 Worker 投递至 `<原队列及 store_id>-ocr-v1`，在该部署激活前保留待办。发行环境需为这个独立部署指定当前版本，本机开发可用 `MANGEKYO_ACTIVATE_LOCAL_BUILD=1`。原队列继续承接升级前已登记的识别；保留它的 PINNED Worker 及原件目录，直到这些运行结束。存在共用对象根时，先替换所有仍使用旧目录安装文件的 Web 写入进程。
+
 ## 当前实现
 
 - 单元 40 的本地验收涵盖版本化数据库迁移、事务内登记工作、幂等交接、真实 Worker 被杀后的恢复、版本隔离、迟到结果和未知外部效果。[运行证据](docs/evidence/unit40/README.md)
