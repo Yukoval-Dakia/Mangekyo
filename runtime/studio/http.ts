@@ -23,6 +23,7 @@ import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
 import type { openWorkspaceAccess } from './workspace-access.ts';
 import type { openResearch } from './research.ts';
+import type { openRetention } from './retention.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
@@ -92,6 +93,7 @@ export function serve(
     workspace: ReturnType<typeof openWorkspaceAccess>;
     research: ReturnType<typeof openResearch>;
     recall: RecallHttp;
+    retention: ReturnType<typeof openRetention>;
   },
   port: number,
 ) {
@@ -169,6 +171,18 @@ export function serve(
       if (await handleIntakeRequest(student.intake, req, res, path, method)) return;
       if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());
       if (path === '/api/papers' && method === 'POST') return json(res, 201, await student.workbook.save(await body(req)));
+      const freeze = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/retention$/.exec(path);
+      if (freeze?.[1] && method === 'POST') {
+        const result = await student.retention.freeze(freeze[1], await body(req));
+        return json(res, result.state === 'pending' ? 202 : 200, result);
+      }
+      const retention = /^\/api\/retention\/([0-9A-HJKMNP-TV-Z]{26})(\/reconcile)?$/.exec(path);
+      if (retention?.[1] && !retention[2] && method === 'GET')
+        return json(res, 200, await student.retention.get(retention[1]));
+      if (retention?.[1] && retention[2] && method === 'POST') {
+        const result = await student.retention.reconcile(retention[1], await body(req));
+        return json(res, result.state === 'pending' ? 202 : 200, result);
+      }
       const assessment = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/assessments$/.exec(path);
       if (assessment?.[1] && assessment[2] && method === 'POST') {
         return json(res, 200, await student.workbook.assess(assessment[1], assessment[2], await body(req)));
