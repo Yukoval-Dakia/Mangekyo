@@ -171,6 +171,7 @@ function attemptView(
     id,
     requestId: attempt.requestId,
     submittedAt: attempt.submittedAt,
+    ...(attempt.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: attempt.effectiveDurationMs }),
     gradingVersion: attempt.gradingVersion,
     answers: attempt.answers,
     feedback: attempt.feedback.map(item => item.result === 'unanswered' ? {...item, expected: null, explanation: null} : item),
@@ -432,13 +433,16 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const now = new Date().toISOString();
       let data: WorkbookAttemptRequest;
       try {
-        const row = input as { requestId?: unknown; answers?: unknown; assessmentConsent?: unknown } | null;
+        const row = input as {
+          requestId?: unknown; answers?: unknown; assessmentConsent?: unknown; effectiveDurationMs?: unknown;
+        } | null;
         data = workbookAttemptRequest({
           paperId,
           requestId: row?.requestId,
           submittedAt: now,
           answers: row?.answers,
           assessmentConsent: row?.assessmentConsent,
+          effectiveDurationMs: row?.effectiveDurationMs,
         });
       } catch (error) {
         invalid(error, '作答格式无效。');
@@ -453,6 +457,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       } catch (error) {
         invalid(error, '作答格式无效。');
       }
+      // The first accepted submission fixes timing alongside its original submission timestamp.
       const isReplay = (attempt: WorkbookAttempt) => attempt.paperId === paperId &&
         sameWorkbookJson(attempt.answers, graded.answers) && attempt.assessmentConsent === data.assessmentConsent;
       if (existing) {

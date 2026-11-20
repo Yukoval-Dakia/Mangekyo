@@ -12,6 +12,7 @@ import { PageTitle, ReadState, useResource, type Material, type Resource } from 
 import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
+import { observePaperTime } from './workbook-duration';
 import './workbook.css';
 
 export type WorkbookProps = {
@@ -779,6 +780,13 @@ function FeedbackItem({
   );
 }
 
+function durationLabel(ms: number) {
+  const seconds = Math.round(ms / 1000);
+  if (!seconds) return '不足 1 秒';
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
 function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
@@ -857,6 +865,27 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     : [];
   const showForm = Boolean(draft) || attempts.length === 0;
 
+  const form = useRef<HTMLFormElement>(null);
+  const clock = useRef<ReturnType<typeof observePaperTime> | null>(null);
+  const timingId = view && draft && !attempts.some((attempt) => attempt.requestId === draft.requestId)
+    ? draft.requestId : null;
+  useEffect(() => {
+    if (!timingId || !form.current) return;
+    const observation = observePaperTime(form.current, paperId, timingId);
+    clock.current = observation;
+    return () => {
+      observation.stop();
+      clock.current = null;
+    };
+  }, [paperId, timingId]);
+
+  function changeAnswer(questionId: string, value: string) {
+    if (!draft) return;
+    const next = { ...draft, answers: { ...draft.answers, [questionId]: value } };
+    remember(attemptDraftKey(paperId), JSON.stringify(next));
+    setDraft(next);
+  }
+
   function setSelectedAttemptId(id: string | null) {
     const url = new URL(location.href);
     if (id) url.searchParams.set('attempt', id);
@@ -894,7 +923,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     setError('');
     api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}/attempts`, {
       method: 'POST',
-      body: { requestId: draft.requestId, answers },
+      body: { requestId: draft.requestId, answers, effectiveDurationMs: clock.current?.submit() },
     })
       .then((next) => {
         remember(attemptDraftKey(paperId), null);
@@ -904,6 +933,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         justSubmitted.current = true;
       })
       .catch((error: unknown) => {
+        clock.current?.resume();
         setError(
           error instanceof ApiError
             ? '交卷没有完成。内容仍保存在本地，可直接再试。'
@@ -982,7 +1012,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
               <span className="workbook-count">已答 {visibleQuestions.filter((question) => draft?.answers[question.id]?.trim()).length} / {visibleQuestions.length}</span>
             </div>
             {draft?.focusIds.length && <p className="workbook-focus-note">其余题目这次会记为未作答，不影响试卷冻结内容。</p>}
-            <form onSubmit={(event) => void submit(event)}>
+            <form ref={form} onSubmit={(event) => void submit(event)}>
               {visibleQuestions.map((question, index) => (
                 <article key={question.id} className="workbook-answer-item">
                   <header className="workbook-answer-head">
@@ -1004,7 +1034,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                         disabled={busy}
                         inputMode="decimal"
                         value={draft?.answers[question.id] ?? ''}
-                        onChange={(event) => setDraft((current) => current ? { ...current, answers: { ...current.answers, [question.id]: event.target.value } } : current)}
+                        onChange={(event) => changeAnswer(question.id, event.currentTarget.value)}
                       />
                     </label>
                   ) : question.kind === 'rubric' ? (
@@ -1015,7 +1045,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                         maxLength={4000}
                         rows={4}
                         value={draft?.answers[question.id] ?? ''}
-                        onChange={(event) => setDraft((current) => current ? { ...current, answers: { ...current.answers, [question.id]: event.target.value } } : current)}
+                        onChange={(event) => changeAnswer(question.id, event.currentTarget.value)}
                       />
                     </label>
                   ) : (
@@ -1026,7 +1056,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                         maxLength={4000}
                         rows={3}
                         value={draft?.answers[question.id] ?? ''}
-                        onChange={(event) => setDraft((current) => current ? { ...current, answers: { ...current.answers, [question.id]: event.target.value } } : current)}
+                        onChange={(event) => changeAnswer(question.id, event.currentTarget.value)}
                       />
                     </label>
                   )}
@@ -1067,6 +1097,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 <h2>本次反馈</h2>
                 <p className="muted">
                   {dateLabel(activeAttempt.submittedAt)} · {activeAttempt.total ? '自动核对答对 ' + activeAttempt.correctCount + ' / ' + activeAttempt.total : '查看各题反馈'}
+                  {'effectiveDurationMs' in activeAttempt && typeof activeAttempt.effectiveDurationMs === 'number' && (
+                    <> · 作答用时（浏览器估计）{durationLabel(activeAttempt.effectiveDurationMs)}</>
+                  )}
                 </p>
               </div>
               <div className="workbook-attempt-actions">
