@@ -232,6 +232,14 @@ export function openWorkspaceTools(options: {
     const basisById = new Map<string,{id:string;rev:number;epoch:string}>(previousBasis.map(w => [w.id,w]));
     for (const w of witnesses.values()) if (w.id !== id && !basisById.has(w.id))
       basisById.set(w.id,{id:w.id,rev:w.rev,epoch:w.epoch});
+    // Preloaded context can inform a write even when the tool only names the original answer.
+    for (const {id: sourceId, rev, epoch} of currentObject?.basis ?? []) {
+      if (sourceId === id) continue;
+      const previous = basisById.get(sourceId);
+      if (previous && (previous.rev !== rev || previous.epoch !== epoch))
+        return JSON.stringify(learningToolError('basis_stale','evidence_refs','本轮关联的依据已有其他版本，请重新打开后再保存。'));
+      basisById.set(sourceId,{id:sourceId,rev,epoch});
+    }
     const basis = [...basisById.values()];
     const handle = createCommandHandler(db, {modules: [await (declarations ??= activity())],
       hooks: createStudioCommandHooks({afterFactsChanged: tx => options.authorize(tx)})});

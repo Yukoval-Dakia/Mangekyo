@@ -335,6 +335,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       let historyNotice = '';
       const publicHistory = await db.snapshot(scope, async (tx) => {
         const messages: CompanionMessage[] = [];
+        const coveredReplies = new Set<string>();
         let previousId = submission.parentId;
         let historyBytes = 0;
         const historyLimit = submission.workspaceRevision ? 32 : 3;
@@ -399,8 +400,13 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             for (const w of witnesses) if (!inherited.has(w.id)) inherited.set(w.id, w);
             if (witnesses.length) protectWorkspaceDispatch = true;
           }
-          // Record the predecessor only when its reply enters the model context.
-          if (!messages.length) trackFeedback(previousId, reply.id);
+          // A reply can reenter history after an intervening turn omitted it.
+          // Its witness is needed unless an admitted reply already tracks it.
+          if (!coveredReplies.has(reply.id)) trackFeedback(previousId, reply.id);
+          for (const input of previousInputs) {
+            if (input.kind === 'slot' && input.slotType === slotType && input.mode === 'following')
+              coveredReplies.add(input.derivationId);
+          }
           messages.unshift({ role: 'user', content: previous.answer }, { role: 'assistant', content: response.message });
           previousId = previous.parentId;
         }

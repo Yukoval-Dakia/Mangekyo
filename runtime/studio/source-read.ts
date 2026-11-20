@@ -132,6 +132,9 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAc
       if (content.isWellFormed()) return {title: source.title, content};
     } else if (fact.type === intakeFactType) {
       return {title:intakeTextOf(fact).title, content:intakeTextOf(fact).extraction.text};
+    } else if (recipient === 'workspace' && fact.type === organizerNoteType) {
+      const note = organizerNote(fact.value);
+      return {title: note.title, content: note.markdown};
     } else if (recipient === 'workspace' && fact.type === textbookPageType) {
       const page = textbookPageFrom(fact);
       return {kind: 'page', title: page.title, content: page.blocks.map(block => textbookText(block.body)).filter(Boolean).join('\n\n')};

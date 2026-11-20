@@ -16,6 +16,7 @@ import {learningOverviewPurpose, readLearningOverview} from '../learning-overvie
 import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
 import {workspaceQuery} from '../workspace-read.ts';
 import {openTextbook} from '../textbook.ts';
+import {readCurrentLearningObject} from '../current-learning-object.ts';
 
 const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 it.skipIf(!connectionString)('reopens authorized workspace versions and searches directed knowledge links in PostgreSQL', async () => {
@@ -84,6 +85,12 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const overview = (callerPurpose = learningOverviewPurpose, maySend: (fact: LearningOverviewFact) => boolean = () => true) =>
       db.snapshot({learner: studioLearner}, tx => readLearningOverview(tx, {callerPurpose, maySend}));
     const library = openLibrary(db, activity), organizer = openOrganizer(db, activity);
+    const noteSource = await library.capture({requestId:'private-note-source', title:'仅本人可见的来源', text:'来源正文'});
+    const note = await organizer.note({requestId:'linked-note', materialId:noteSource.id, title:'关联笔记', markdown:'本人记录'});
+    const noteGrant = await access.setTeaching(note.id,{enabled:true,expectedRev:1});
+    const bind = (kind: 'page' | 'attempt', id: string, rev: number) => db.snapshot({learner:studioLearner},
+      tx => readCurrentLearningObject(tx,{kind,id,rev},() => true));
+    expect((await bind('page',note.id,noteGrant.rev))?.view).toMatchObject({title:'关联笔记',content:'本人记录'});
     expect((await overview()).goal).toMatchObject({state: 'empty'});
     await library.setGoal({requestId: 'overview-old', text: '旧目标'}); await library.setGoal({requestId: 'overview-current', text: '保持每日法语输入'});
     const task = await organizer.task({requestId: 'overview-task', title: '复习动词', date: '2026-11-19'});
@@ -174,8 +181,15 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(JSON.stringify(await diagnose('read_workspace',{id:JSON.stringify(reopenedPaper.sourceRef)},5)))
       .not.toContain('参考答案独有字样');
     expect(JSON.stringify(opened)).not.toContain('参考答案独有字样');
+    const currentAttempt = await bind('attempt',attempt.id,opened.rev);
+    expect(currentAttempt?.openedAnswer).toBe(true);
+    const bound = openWorkspaceTools({db,turn:stableId('bound observation'),prior:[],authorize:async () => {},
+      track() {},maySend:() => true,currentObject:currentAttempt});
+    const observation = JSON.parse(await bound.execute('record_observation',evidence,1));
+    expect(observation).toMatchObject({ok:true});
     await access.setTeaching(paper.id,{enabled:false,expectedRev:paperGrant.rev});
     expect(await diagnose('open_learning',diagnosis,3)).toMatchObject({ok:false,code:'basis_stale'});
+    expect(await diagnose('read_workspace',{id:observation.ref.id},6)).toEqual({error:expect.any(String)});
 
     const privatePaper = await workbook.save({requestId:'search-preview',title:'检索速度卷',questions:[
       {kind:'exact',prompt:'写出速度单位。',answers:['内部答案标记']},
