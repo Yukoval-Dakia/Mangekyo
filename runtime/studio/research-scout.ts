@@ -16,6 +16,7 @@ const identifier = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$/;
 export type ResearchScoutHost = Readonly<{
   route: string;
   reserveUsdMicros: number;
+  retentionDays: number;
   /** Start one bounded dispatch synchronously. Enforce the quoted hard cap and do not retry. */
   sample(input: {
     providerEffectId: string;
@@ -27,8 +28,13 @@ export type ResearchScoutHost = Readonly<{
 
 export function validateResearchScoutHost(host: ResearchScoutHost) {
   if (!host || typeof host.route !== 'string' || !identifier.test(host.route) ||
-      !Number.isSafeInteger(host.reserveUsdMicros) || host.reserveUsdMicros <= 0 || typeof host.sample !== 'function')
-    throw new Error('前哨宿主须声明版本化服务标识、正数 USD 微元硬上限与采样函数。');
+      !Number.isSafeInteger(host.reserveUsdMicros) || host.reserveUsdMicros <= 0 ||
+      typeof host.sample !== 'function')
+    throw new Error('前哨宿主须声明版本化服务标识、正数 USD 微元硬上限、留存天数与采样函数。');
+  // A previously installed host without a retention policy can keep serving local research.
+  if (host.retentionDays === undefined) return undefined;
+  if (!Number.isSafeInteger(host.retentionDays) || host.retentionDays < 0)
+    throw new Error('前哨宿主的留存天数无效。');
   return host;
 }
 
@@ -38,7 +44,8 @@ export async function sampleResearchScout(db: Db, settingsId: FactId, revision: 
   budget: NonNullable<ReturnType<typeof researchScoutBudget>>, host: ResearchScoutHost,
   prepared: NonNullable<Awaited<ReturnType<typeof prepareResearchTriage>>>,
   authorize: (tx: ReadTransaction) => Promise<void>, signal: AbortSignal) {
-  if (!prepared.paidInput || !prepared.intent || host.route !== budget.route) return false;
+  if (!prepared.paidInput || !prepared.intent || host.route !== budget.route || host.retentionDays > budget.maxRetentionDays ||
+      host.reserveUsdMicros > budget.maxPerCallMicros) return false;
   const prompt = JSON.stringify(prepared.paidInput);
   const { route, reserveUsdMicros } = host;
   const maxOutputTokens = 256;
@@ -53,6 +60,8 @@ export async function sampleResearchScout(db: Db, settingsId: FactId, revision: 
           await lockLearner(tx, tx.learner);
           await checkDispatch(tx);
           await authorize(tx);
+          if (host.retentionDays > budget.maxRetentionDays || host.route !== budget.route || reserveUsdMicros > budget.maxPerCallMicros)
+            throw new ScoutAuthorizationChanged();
           signal.throwIfAborted();
           dispatched = true;
           const response = host.sample({ providerEffectId, prompt, maxOutputTokens, reserveUsdMicros },

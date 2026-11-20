@@ -70,7 +70,7 @@ const understandingTransport = understandingModule
   : undefined;
 if (understandingModule && !understandingTransport) throw new Error('宿主模块须导出 understandingTransport');
 const scoutModule = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE;
-const scoutHost = scoutModule && mode !== 'web'
+const scoutHost = scoutModule
   ? validateResearchScoutHost((await import(pathToFileURL(scoutModule).href)).researchScoutHost)
   : undefined;
 const research = openResearch(db, activity, companion, undefined, scoutHost, understandingTransport);

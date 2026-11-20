@@ -14,12 +14,14 @@ export default defineCommand({
   async write(ctx, { id, revision, enabled, scoutBudget }): Promise<readonly FactWrite[]> {
     if (revision === 0) {
       return [{ kind: 'create', id, factType: researchSettingsType, purpose: [researchPurpose],
-        data: { enabled, coordinatorRef: crypto.randomUUID(), ...(scoutBudget && { scoutBudget }) } }];
+        data: { enabled, coordinatorRef: crypto.randomUUID(), ...(enabled && scoutBudget && { scoutBudget }) } }];
     }
     const fact = await ctx.read.fact(id, { mode: 'following' });
     const prior = researchSettings(fact.value);
     if (fact.ref.rev !== revision) throw new Error('Fact revision conflict');
-    const budget = scoutBudget === undefined ? prior.scoutBudget : scoutBudget;
+    // A plain enable operation authorizes local research. Resuming paid dispatch requires a fresh grant.
+    const continuing = enabled && prior.enabled ? prior.scoutBudget : null;
+    const budget = enabled ? (scoutBudget === undefined ? continuing : scoutBudget) : null;
     if (prior.enabled === enabled && JSON.stringify(prior.scoutBudget) === JSON.stringify(budget)) return [];
     return [{ kind: 'correct', id, expectedRev: revision, data: { ...prior, enabled, scoutBudget: budget } }];
   },

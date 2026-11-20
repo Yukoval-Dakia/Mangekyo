@@ -144,6 +144,8 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     const budget = current?.scoutBudget;
     const { held, settled } = await effectBudgetUsage(tx);
     return { enabled: current?.enabled ?? false, revision: current?.revision ?? 0, paidBudget: budget?.limitMicros ?? 0,
+      ...(scoutHost && {scoutOffer: {route: scoutHost.route, maxRetentionDays: scoutHost.retentionDays,
+        maxPerCallMicros: scoutHost.reserveUsdMicros}}),
       ...(budget || held > 0n || settled > 0n ? { scoutBudget: budget ?? null, unit: 'USD_MICROS',
         heldUsdMicros: held.toString(), settledUsdMicros: settled.toString() } : {}) };
   });
@@ -264,7 +266,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       try {
         if (input.scoutBudget !== undefined) scoutBudget = researchScoutBudget(input.scoutBudget);
       } catch {
-        throw new RequestError(400, '前哨额度、到期时间或服务标识无效。');
+        throw new RequestError(400, '前哨额度、到期时间、服务标识或留存天数无效。');
       }
       await updateSettings(() => handle({
         ...scope, actor: 'learner', purpose: researchPurpose, type: configureResearch,
