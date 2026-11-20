@@ -1,4 +1,5 @@
 import { extractLocalDocument, identifyLocalDocument } from '@mangekyo/executor-document-extraction/local';
+import { mineruSupports } from '@mangekyo/executor-document-extraction/mineru';
 import { openIntakeObjects, digest } from './intake-objects.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
@@ -16,6 +17,9 @@ import {
   correctIntakeInput,
   intakeDocument,
   intakeFileLimit,
+  intakeFilename,
+  intakeTitle,
+  pendingMineruExtraction,
   intakeOriginal,
   intakePurpose,
   IntakeResearchConflict,
@@ -29,10 +33,11 @@ import { projectIntakeMetadata, type IntakeMetadata } from '../../modules/captur
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-import { cloudIntakeSlot, enqueueCloudIntake, mineruSupports, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
+import { cloudIntakeSlot, enqueueCloudIntake, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
 
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
-import { paperReturnSelection, type openCapturePapers } from './capture-papers.ts';
+import { paperReturnSelection } from '../../modules/capture/paper.ts';
+import type { openCapturePapers } from './capture-papers.ts';
 import { intakeCaptureId, intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
@@ -62,27 +67,12 @@ function encodeRfc5987(value: string) {
   return encodeURIComponent(value).replace(/['()*]/g, (character) => '%' + character.charCodeAt(0).toString(16).toUpperCase());
 }
 
-function cleanName(value: unknown) {
-  let name = typeof value === 'string' ? value : '';
-  name = name.replace(/\\/g, '/').split('/').at(-1) ?? '';
-  name = name.replace(/[\u0000-\u001f\u007f]/g, '').trim();
-  return name.slice(0, 180).toWellFormed();
-}
-
 function extensionOf(name: string) {
   return /\.([A-Za-z0-9]{1,10})$/.exec(name)?.[1]?.toLowerCase() ?? '';
 }
 
-function cleanTitle(value: unknown, fallback: string) {
-  let title = typeof value === 'string' ? value.trim() : '';
-  title = title.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 240);
-  if (!title || !title.isWellFormed() || title.includes('\u0000')) title = fallback;
-  title = title.slice(0, 240).toWellFormed();
-  return title || '未命名材料';
-}
-
 function detect(bytes: Buffer, filename: string, declaredType: unknown) {
-  const detected = identifyLocalDocument(bytes, extensionOf(cleanName(filename)), declaredType);
+  const detected = identifyLocalDocument(bytes, extensionOf(intakeFilename(filename)), declaredType);
   if (detected) return detected;
   throw new RequestError(415, '只支持 PDF、照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF）和 UTF-8 的 txt/Markdown。');
 }
@@ -167,9 +157,10 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     if (input.bytes.length > intakeFileLimit) throw new RequestError(413, '文件超过 25 MB。');
     const materialId = factId(stableId('intake-material', requestId));
     const deletionWatermark = submittedWatermark(input);
-    const detected = detect(input.bytes, cleanName(input.filename), input.declaredType);
-    const name = cleanName(input.filename) || '材料原件';
-    const title = cleanTitle(input.title, name.replace(/\.[^.]+$/, '') || '材料原件');
+    const filename = intakeFilename(input.filename);
+    const detected = detect(input.bytes, filename, input.declaredType);
+    const name = filename || '材料原件';
+    const title = intakeTitle(input.title, name.replace(/\.[^.]+$/, '') || '材料原件');
     const sha256 = digest(input.bytes);
     let original: IntakeOriginal;
     try {
@@ -200,10 +191,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     let installed = false;
     try {
       await objects.withOriginal(materialId,input.bytes,original,async (staged, install) => {
-        const extraction: IntakeExtraction = cloud ? {
-          status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
-          pages: null, truncated: false, characterCount: 0,
-        } : await extractLocalDocument(detected.kind,staged,input.bytes,intakeTextLimit);
+        const extraction: IntakeExtraction = cloud ? pendingMineruExtraction() : await extractLocalDocument(detected.kind,staged,input.bytes,intakeTextLimit);
         const commandInput = {
           materialId, intakeId, title, original, extraction,
           ...(cloud ? { requestedExtraction: 'mineru' } : {}),

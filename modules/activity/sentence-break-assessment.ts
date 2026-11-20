@@ -1,8 +1,13 @@
 import type { Json } from '@mangekyo/kernel';
 import {
-  assessmentRelease, assessmentResult,
-  type AssessmentRelease, type AssessmentRevisionRef, type AssessmentSubmission,
+  assessmentRelease, assessmentResult, assessmentSubmission,
+  type AssessmentRelease, type AssessmentResult, type AssessmentRevisionRef, type AssessmentSubmission,
 } from './assessment-values.ts';
+
+import {
+  checkAssessmentPublication, type AssessmentPublicationRun, type AssessmentPublicationTarget, type AssessmentPublicationWitness,
+  type TrustedAssessmentPublicationSample,
+} from './assessment-publication.ts';
 
 export const sentenceBreakEvaluator = { id: 'sentence-breaks', version: '1' } as const;
 const sentenceBreakSchema = 'sentence-breaks-v1';
@@ -73,4 +78,62 @@ export function evaluateSentenceBreaks(release: AssessmentRelease, submission: A
     : { ...key, state: 'unsubmitted', reason: '未交断点。' };
   return assessmentResult({ releaseRef: release.releaseRef, submissionRef: submission.submissionRef, outcomes: [outcome] },
     release, submission);
+}
+
+export type SentenceBreakPublicationEvidence = {
+  witness: AssessmentPublicationWitness;
+  samples: readonly TrustedAssessmentPublicationSample[];
+};
+
+export function qualifySentenceBreakAssessment(
+  release: AssessmentRelease,
+  readWitness: (target: AssessmentPublicationTarget) => SentenceBreakPublicationEvidence | null | undefined,
+  receiptRef: (witness: AssessmentRevisionRef, sample: AssessmentRevisionRef) => AssessmentRevisionRef,
+) {
+  const runs: (Extract<AssessmentPublicationRun, { state: 'completed' }> & { actual: AssessmentResult })[] = [];
+  const decision = checkAssessmentPublication(release, [sentenceBreakEvaluator], target => {
+    const trusted = readWitness(target);
+    if (!trusted) return null;
+    const { witness } = trusted;
+    // The general gate allows a trusted registry to declare some coverage inapplicable.
+    // For this evaluator both the mixed and missing cases are required.
+    if (!(['negative', 'partial'] as const).every(kind =>
+      witness.requiredCoverage.some(entry => entry.kind === kind && entry.applies !== false))) return null;
+    return {
+      witness,
+      samples: trusted.samples.map(sample => {
+        try {
+          const submission = assessmentSubmission(sample.submission, release);
+          const ids = submittedBreaks(release, submission);
+          for (const entry of witness.requiredCoverage) {
+            if (entry.sampleRef.id !== sample.sampleRef.id || entry.sampleRef.rev !== sample.sampleRef.rev) continue;
+            if ((entry.kind === 'negative' && ids.length) ||
+                (entry.kind === 'partial' && !mixesSentenceBreakSolutions(release, ids))) {
+              // These two cases must be distinguished from a wrong single solution or missing coverage.
+              return { sample, run: { state: 'failed', reason: '样例须分别演示互斥拼接与缺交。' } };
+            }
+          }
+          const run = {
+            state: 'completed' as const, witnessRef: witness.ref, sampleRef: sample.sampleRef,
+            receiptRef: receiptRef(witness.ref, sample.sampleRef),
+            evaluators: [{ criterionId: release.items[0]!.criteria[0]!.criterionId, evaluator: sentenceBreakEvaluator }],
+            actual: evaluateSentenceBreaks(release, submission),
+          };
+          runs.push(run);
+          // Canonical order keeps permutations of one answer from counting as distinct solutions.
+          return {
+            sample: { ...sample, submission: { ...submission, answers: submission.answers.map(answer => ({
+              ...answer, value: { kind: 'structured', value: { kind: 'selection', ids } },
+            })) } },
+            run,
+          };
+        } catch {
+          return { sample, run: { state: 'failed', reason: '冻结样例无法执行。' } };
+        }
+      }),
+    };
+  });
+  const qualification = decision.state === 'eligible' ? decision.items[0] : undefined;
+  if (!qualification) throw new Error('正式断句需要宿主独立核验。');
+  return { release, qualification, runs };
 }

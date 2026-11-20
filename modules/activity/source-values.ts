@@ -70,3 +70,9 @@ export function sourceRefV1(input: unknown): SourceRefV1 | undefined {
   }
   return undefined;
 }
+
+export function parseLearningReference(input: string): string | SourceRefV1 | undefined {
+  if (isSourceFactId(input)) return input;
+  try { return sourceRefV1(JSON.parse(input)); }
+  catch { return undefined; }
+}

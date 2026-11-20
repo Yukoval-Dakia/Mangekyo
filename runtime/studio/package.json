@@ -6,7 +6,6 @@
     "@mangekyo/executor-document-extraction": "workspace:*",
     "@temporalio/client": "1.26.0",
     "pg": "^8.23.1",
-    "sharp": "0.35.5",
     "tsx": "^4.20.0"
   },
   "devDependencies": {
