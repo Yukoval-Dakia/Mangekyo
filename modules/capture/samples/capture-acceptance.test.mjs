@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import exerciseNotion from './notion-acceptance.test.mjs';
+import exerciseTextbook from '../../content/samples/textbook-acceptance.test.mjs';
 
 const root = new URL('../../../', import.meta.url);
 const load = file => import(new URL(file, root));
@@ -36,7 +38,10 @@ try {
   function send(type, input, { actor = 'learner', purpose = 'storage' } = {}) {
     return handle({ learner, id: stableId(randomUUID()), type, input, actor, purpose });
   }
-  await run({ db, learner, stableId, load, send, assert });
+  const fixture = { db, learner, stableId, load, send, assert };
+  await run(fixture);
+  await exerciseNotion(fixture);
+  await exerciseTextbook(fixture);
 } finally {
   await db.close();
   await admin?.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE');

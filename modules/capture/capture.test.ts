@@ -27,7 +27,7 @@ it('binds editable voice transcription to the requested recording', () => {
   });
 });
 
-it('preserves layered learner corrections, clean printouts and idempotent returns', { timeout: 45_000 }, async () => {
+it('runs layered capture, paper return, Notion and textbook workflows through the command handler', { timeout: 45_000 }, async () => {
   const script = fileURLToPath(new URL('samples/capture-acceptance.test.mjs', import.meta.url));
   const tsx = fileURLToPath(new URL('../../runtime/studio/node_modules/.bin/tsx', import.meta.url));
   await promisify(execFile)(tsx, [script]);
