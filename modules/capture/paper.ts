@@ -274,24 +274,26 @@ async function workbookPrintParts(read: ReadContext, fact: FactSnapshot, release
     const sourceRef = question.sourceQuestionRef == null ? undefined : captureRef(question.sourceQuestionRef);
     const assessmentPrompt = assessments.get(itemId)?.promptRef;
     const promptRef = assessmentPrompt === undefined ? undefined : captureRef(assessmentPrompt);
-    if (sourceRef) {
-      const source = await openWorkbookQuestionSource(read, fact, sourceRef);
-      if (question.sourceAccessEpoch !== undefined && source.accessEpoch !== question.sourceAccessEpoch)
+    // Inline assessment prompts may refer to the frozen workbook itself. Other
+    // addresses are independent sources, even when only the contract names them.
+    const refs = sourceRef ? [sourceRef] : [];
+    if (promptRef && promptRef.id !== fact.ref.id && (promptRef.id !== sourceRef?.id || promptRef.rev !== sourceRef?.rev)) refs.push(promptRef);
+    for (const ref of refs) {
+      const source = await openWorkbookQuestionSource(read, fact, ref);
+      if (ref === sourceRef && question.sourceAccessEpoch !== undefined && source.accessEpoch !== question.sourceAccessEpoch)
         throw new Error('来源题目权限已变更。');
+      if (source.type === assetType && object(source.value).kind === 'question') {
+        pieces.push(...await workbookQuestionMaterials(read, source, itemId, storedPrompt, releaseUse));
+        continue;
+      }
       if (source.type === 'activity.workspaceEntry') {
         await checkFrozenWorkspaceBasis(read, source, releaseUse);
         const entry = object(source.value);
-        if (entry.kind !== 'question' || entry.body !== storedPrompt) throw new Error('来源题目与冻结题面不符。');
+        if (entry.kind === 'question' && entry.body === storedPrompt) continue;
+        if (entry.kind === 'question' || ref === sourceRef) throw new Error('来源题目与冻结题面不符。');
       } else {
-        pieces.push(...await workbookQuestionMaterials(read, source, itemId, storedPrompt, releaseUse));
-      }
-    }
-    // Inline assessment items can point back to the frozen workbook itself.
-    // A separate question address is an additional pinned source of this item.
-    if (promptRef && promptRef.id !== fact.ref.id && (promptRef.id !== sourceRef?.id || promptRef.rev !== sourceRef?.rev)) {
-      const source = await openWorkbookQuestionSource(read, fact, promptRef);
-      if (source.type === assetType && object(source.value).kind === 'question') {
-        pieces.push(...await workbookQuestionMaterials(read, source, itemId, storedPrompt, releaseUse));
+        if (ref === sourceRef) throw new Error('来源题目类型不符。');
+        await verifyTeachingSource(read, source);
       }
     }
     pieces.push({ blockId: itemId, itemId, text: storedPrompt });
