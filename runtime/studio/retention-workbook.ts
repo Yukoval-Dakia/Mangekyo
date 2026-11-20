@@ -8,15 +8,16 @@ import { posttestIssuanceType, posttestSubmissionType, retentionPaperType, reten
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookGradingVersion,
   workbookPaper, workbookPaperType, workbookRubricGradingVersion,
+  type WorkbookAttempt,
 } from '../../modules/activity/workbook-values.ts';
 import type { RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
-import { readPosttestIssuance } from './retention-posttest.ts';
+import { readPosttestIssuance, type PosttestFactReader } from './retention-posttest.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { RequestError } from './sessions.ts';
 
 export const retentionPurpose = retentionTeachingPurpose;
 
-export async function openRetentionTarget(read: ReadContext, paperId: FactId, itemId: string) {
+export async function openRetentionTarget(read: PosttestFactReader, paperId: FactId, itemId: string) {
   const source = await read.fact(paperId, { mode: 'following' });
   if (source.type !== workbookPaperType && source.type !== retentionPaperType) throw new RequestError(404, '找不到冻结试卷。');
   const paper = workbookPaper(source.value);
@@ -33,7 +34,26 @@ export async function openRetentionTarget(read: ReadContext, paperId: FactId, it
     gradingVersion: paper.questions.some(item => item.kind === 'rubric')
       ? workbookRubricGradingVersion : workbookGradingVersion,
   };
-  return { target, paper, accessEpoch: source.accessEpoch, sealed: source.type === retentionPaperType };
+  return { target, paper, source, accessEpoch: source.accessEpoch, sealed: source.type === retentionPaperType };
+}
+
+export async function openControlledSubmission(
+  tx: ReadTransaction, read: PosttestFactReader, attempt: WorkbookAttempt, admittedAt: Tick,
+  opened?: Awaited<ReturnType<typeof openRetentionTarget>>, expectedForecast?: DerivationId,
+) {
+  const issued = await readPosttestIssuance(tx, read, factId(attempt.paperId));
+  const release = issued.issuance;
+  const root = opened ?? await openRetentionTarget(read, release.paper.id, release.itemId);
+  const { target } = root;
+  if (!root.sealed || release.paper.id !== target.paper.id || release.paper.rev !== target.paper.rev ||
+      release.paperEpoch !== root.accessEpoch || release.itemId !== target.itemId ||
+      release.gradingVersion !== target.gradingVersion || attempt.gradingVersion !== target.gradingVersion ||
+      !sameWorkbookJson(attempt.paper, root.paper) || BigInt(issued.tick) >= BigInt(admittedAt) ||
+      attempt.submittedAt < release.startedAt || attempt.submittedAt > release.through ||
+      (expectedForecast !== undefined && release.forecastId !== expectedForecast)) {
+    throw new RequestError(422, '后测交卷与原预测或发放不匹配。');
+  }
+  return { issued, source: root.source };
 }
 
 export async function readWorkbookObservation(
@@ -46,26 +66,21 @@ export async function readWorkbookObservation(
   if (!controlled && submission.type !== workbookAttemptType) throw new RequestError(422, '需要正式交卷记录。');
   const attempt = workbookAttempt(submission.value);
   const birth = await readActivitySubmissionBirth(tx, submission.ref, submission.type);
-  if (!birth || birth.submittedAt !== attempt.submittedAt || controlled !== opened.sealed ||
-      attempt.gradingVersion !== target.gradingVersion || !sameWorkbookJson(attempt.paper, paper)) {
+  if (!birth || birth.submittedAt !== attempt.submittedAt || controlled !== opened.sealed) {
     throw new RequestError(422, '交卷和冻结卷面的题项或判分条件不一致。');
   }
-  const { result } = attempt.feedback.find(item => item.questionId === target.itemId)!;
   let exposure: RetentionObservation['exposure'];
   if (controlled) {
-    const issued = await readPosttestIssuance(tx, read, factId(attempt.paperId));
-    const release = issued.issuance;
-    if (release.paper.id !== target.paper.id || release.paper.rev !== target.paper.rev ||
-        release.paperEpoch !== opened.accessEpoch || release.itemId !== target.itemId || release.gradingVersion !== target.gradingVersion ||
-        BigInt(issued.tick) >= BigInt(birth.tick) || attempt.submittedAt < release.startedAt || attempt.submittedAt > release.through ||
-        (expectedForecast !== undefined && release.forecastId !== expectedForecast)) {
-      throw new RequestError(422, '后测交卷与原预测或发放不匹配。');
-    }
+    const { issued } = await openControlledSubmission(tx, read, attempt, birth.tick, opened, expectedForecast);
     exposure = await readControlledExposure(tx, read, target, issued.tick, submission.ref, birth.tick);
   } else {
     if (attempt.paperId !== target.paper.id) throw new RequestError(422, '交卷不属于此试卷。');
+    if (attempt.gradingVersion !== target.gradingVersion || !sameWorkbookJson(attempt.paper, paper)) {
+      throw new RequestError(422, '交卷和冻结卷面的题项或判分条件不一致。');
+    }
     exposure = await readExposure(tx, read, target, submission.ref, birth.tick);
   }
+  const { result } = attempt.feedback.find(item => item.questionId === target.itemId)!;
   return {
     submission: { id, rev: submission.ref.rev }, admittedAt: birth.tick, submittedAt: attempt.submittedAt,
     result: result === 'correct' || result === 'incorrect' ? result : 'unknown', exposure,
