@@ -159,7 +159,7 @@ export async function listenForSessionEvents(db: Db, pool: Pool): Promise<() => 
 
 async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
   return notion.read(async (tx, check) => {
-    const grantCurrent = workspaceGrantChecker();
+    const grantCurrent = workspaceGrantChecker(tx);
     const { rows: [row] } = await tx.query<{
       turnId: string;
       derivationId: string | null;

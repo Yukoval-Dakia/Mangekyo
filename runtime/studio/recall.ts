@@ -95,7 +95,7 @@ async function readSource(tx: ReadTransaction, mount: Mount, requireCurrent: boo
   if (turn.type !== 'activity.studyTurn' || manifest.purpose !== purpose ||
       !manifest.inputs.some(entry => entry.kind === 'fact' && entry.id === turn.ref.id &&
         entry.rev === turn.ref.rev && entry.accessEpoch === turn.accessEpoch) ||
-      !await teachingResultAllowed(tx, submission, manifest, workspaceGrantChecker(), check, origin)) {
+      !await teachingResultAllowed(tx, submission, manifest, workspaceGrantChecker(tx), check, origin)) {
     throw new RecallRequestError(409, '回忆题的教学依据已变化。');
   }
   return { turn, feedback: row.value, attachment: origin.attachment };

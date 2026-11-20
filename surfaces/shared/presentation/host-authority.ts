@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { canonicalJsonString } from '../../../kernel/src/commands/canonical.ts';
-import type { CommandId, LearnerId } from '../../../kernel/src/declarations/ids.ts';
+import { factId, type CommandId, type LearnerId, type Revision } from '../../../kernel/src/declarations/ids.ts';
 import type { CommandReceipt, JsonObject } from '../../../kernel/src/declarations/types.ts';
 import {
   validateArtifact,
@@ -9,6 +9,7 @@ import {
   type ArtifactAction,
   type ViewNode,
 } from './index.ts';
+import { assessmentSubmission, type AssessmentRelease } from '../../../modules/activity/assessment-values.ts';
 import { isRecord } from './schema.ts';
 import { exerciseView, operationLocks, type HostStateV1 } from './mount.ts';
 
@@ -374,4 +375,44 @@ export async function handleArtifactIntent(
   const receipt = await execute(request);
   if (receipt.commandId !== key.commandId || receipt.state !== 'done') return reject('command-incomplete');
   return { ok: true as const, kind: 'command-done' as const, commandId: key.commandId };
+}
+
+// Exploration also records a structured handoff, using its original slot contract.
+export function projectArtifactSubmission(mountId: string, view: Artifact, id: string, action: ArtifactAction, release?: AssessmentRelease) {
+  if (release) {
+    const item = release.items[0]!;
+    const slot = item.slots[0]!;
+    const answer = action.answers[slot.slotId];
+    return assessmentSubmission({
+      releaseRef: release.releaseRef, submissionRef: { id, rev: 1 },
+      answers: answer?.kind === 'selection' && answer.ids.length ? [{
+        itemId: item.itemId, slotId: slot.slotId, schemaVersion: slot.schemaVersion, path: '',
+        value: { kind: 'structured', value: answer },
+      }] : [],
+    }, release);
+  }
+  const releaseRef = { id: factId(mountId), rev: 1 as Revision };
+  const schemaVersion = 'artifact-v1';
+  const itemId = action.nodeId;
+  const declared = view.sections.flatMap((section) => section.nodes).find((n) => n.id === itemId);
+  if (declared?.kind !== 'action' || declared.intent !== 'submit') return;
+  const slots = declared.inputs.map((slotId) => ({
+    slotId,
+    schemaVersion,
+    fields: [{ path: '', kind: 'structured' as const }],
+  }));
+  return assessmentSubmission(
+    {
+      releaseRef,
+      submissionRef: { id, rev: 1 },
+      answers: slots.map(({ slotId }) => ({
+        itemId,
+        slotId,
+        path: '',
+        schemaVersion,
+        value: { kind: 'structured', value: action.answers[slotId] },
+      })),
+    },
+    { releaseRef, items: [{ itemId, slots }] },
+  );
 }

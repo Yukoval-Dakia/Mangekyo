@@ -14,13 +14,12 @@ import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
-import { assessmentRelease, assessmentSubmission, type AssessmentRelease } from '../../modules/activity/assessment-values.ts';
+import { assessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import {
   validateArtifact,
   savedArtifactCheckpoints,
-  type Artifact,
   type ArtifactAction,
   type ArtifactIntentV1,
 } from '../../surfaces/shared/presentation/index.ts';
@@ -28,7 +27,7 @@ import {
   artifactIntentCommandId,
   handleArtifactIntent,
   projectArtifactMountState,
-  type ArtifactMountV1,
+  projectArtifactSubmission,
 } from './artifact-presentation.ts';
 import {
   artifactAssessmentPolicy, qualifyArtifactAssessment, readArtifactAssessment, type ReadArtifactAssessmentWitness,
@@ -117,7 +116,7 @@ function unavailableMount(error: unknown) {
 
 async function readMount(tx: ReadTransaction, sessionId: string, mountId: string, check: CheckNotionRead) {
   try {
-    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(), check);
+    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(tx), check);
   } catch (error) {
     if (error instanceof NotionReadUnconfirmed) throw new RequestError(503, '暂时无法核对作品来源，请重试。');
     if (unavailableMount(error)) throw conflict(error instanceof MountUnavailable ? error.message : '作品或依据已不可读。');
@@ -191,7 +190,7 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
     AND r.data->>'sessionId'=$2 AND r.data->>'turnId'=$3 ORDER BY f.created_tick`,
     [tx.learner, session, turn],
   );
-  const grantCurrent = workspaceGrantChecker();
+  const grantCurrent = workspaceGrantChecker(tx);
   const snapshots = [];
   const unconfirmed: string[] = [];
   for (const { id } of rows.rows) {
@@ -210,46 +209,6 @@ export function mountPermissionFields(unconfirmed: readonly string[], known: Rea
     mountPermissionsPartial: true as const,
     unconfirmedMountIds: unconfirmed.filter(id => known.has(id)),
   } : {};
-}
-
-// Exploration also records a structured handoff, using its original slot contract.
-function submissionFor(mount: ArtifactMountV1, view: Artifact, id: string, action: ArtifactAction, release?: AssessmentRelease) {
-  if (release) {
-    const item = release.items[0]!;
-    const slot = item.slots[0]!;
-    const answer = action.answers[slot.slotId];
-    return assessmentSubmission({
-      releaseRef: release.releaseRef, submissionRef: { id, rev: 1 },
-      answers: answer?.kind === 'selection' && answer.ids.length ? [{
-        itemId: item.itemId, slotId: slot.slotId, schemaVersion: slot.schemaVersion, path: '',
-        value: { kind: 'structured', value: answer },
-      }] : [],
-    }, release);
-  }
-  const releaseRef = { id: factId(mount.mountId), rev: 1 as Revision };
-  const schemaVersion = 'artifact-v1';
-  const itemId = action.nodeId;
-  const declared = view.sections.flatMap((section) => section.nodes).find((n) => n.id === itemId);
-  if (declared?.kind !== 'action' || declared.intent !== 'submit') throw conflict('提交动作未声明。');
-  const slots = declared.inputs.map((slotId) => ({
-    slotId,
-    schemaVersion,
-    fields: [{ path: '', kind: 'structured' as const }],
-  }));
-  return assessmentSubmission(
-    {
-      releaseRef,
-      submissionRef: { id, rev: 1 },
-      answers: slots.map(({ slotId }) => ({
-        itemId,
-        slotId,
-        path: '',
-        schemaVersion,
-        value: { kind: 'structured', value: action.answers[slotId] },
-      })),
-    },
-    { releaseRef, items: [{ itemId, slots }] },
-  );
 }
 
 export async function actOnArtifact(db: Db, session: string, raw: Record<string, unknown>) {
@@ -288,6 +247,8 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
     if (action.intent === 'submit' && action.trace.omitted) throw conflict('操作轨迹不完整。');
     const stateRev = mount.stateRev + 1;
     const id = stableId('artifact-action', mountId, String(stateRev));
+    const submission = action.intent === 'submit' ? projectArtifactSubmission(mountId, snapshot.view, id, action, release) : undefined;
+    if (action.intent === 'submit' && !submission) throw conflict('提交动作未声明。');
     const data = {
       stateRev,
       mountId,
@@ -297,9 +258,7 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
       action: { ...action },
       prediction: snapshot.predicting,
       predictionRef: snapshot.prediction?.id ?? null,
-      ...(action.intent === 'submit'
-        ? { submission: submissionFor(mount, snapshot.view, id, action, release), traceSource: 'learner-reported' }
-        : {}),
+      ...(submission ? { submission, traceSource: 'learner-reported' } : {}),
     };
     const handle = createCommandHandler(db, {
       modules: [await (activity ??= load('activity'))],

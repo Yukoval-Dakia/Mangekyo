@@ -126,7 +126,7 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     [tx.learner, session, slotType],
   );
   const result: TurnView[] = [];
-  const grantCurrent = workspaceGrantChecker();
+  const grantCurrent = workspaceGrantChecker(tx);
   let materialAvailable = true;
   for (const row of rows) {
     const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' })
