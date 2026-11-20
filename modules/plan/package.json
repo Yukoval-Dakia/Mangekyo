@@ -5,7 +5,11 @@
   "type": "module",
   "exports": {
     ".": "./module.ts",
-    "./facts/*": "./facts/*.ts"
+    "./facts/*": "./facts/*.ts",
+    "./slots/*": "./slots/*.ts",
+    "./today": "./today.ts",
+    "./offline-pack": "./offline-pack.ts",
+    "./rules": "./rules.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"

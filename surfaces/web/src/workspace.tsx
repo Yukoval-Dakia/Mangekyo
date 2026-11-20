@@ -1,6 +1,9 @@
+import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { api, remember, remembered, requestId, type Settings } from './api';
-import { RetentionPosttests } from './retention-posttests';
+import { ErasureProgress, readErasure, pendingErasures } from './erasure';
+import { latestKey } from './deletion-watermark';
+import { enqueue } from './offline-queue';
+import { api, deletedSubmission, remember, remembered, requestId, submissionId, type Settings } from './api';
 import { Icon } from './icons';
 import { LearningUnderstandings } from './learning-understandings';
 import { LearningMemory } from './study-tools';
@@ -27,6 +30,14 @@ export function useResource<T>(path: string): Resource<T> & {replace: (value: T)
       });
     return () => controller.abort();
   }, [path, version]);
+  useEffect(() => {
+    if (path !== '/workspace') return;
+    const refresh = () => {setData(undefined);setVersion(n => n + 1);};
+    const stored = (e:StorageEvent) => {if (e.key === latestKey) refresh();};
+    window.addEventListener(latestKey,refresh);
+    window.addEventListener('storage',stored);
+    return () => {window.removeEventListener(latestKey,refresh);window.removeEventListener('storage',stored);};
+  },[path]);
   return { data, error, reload: () => setVersion((n) => n + 1),
     replace(value) { setData(value); setError(false); setVersion(n => n + 1); } };
 }
@@ -104,91 +115,6 @@ function Recent({ chats }: { chats: Resource<ChatLink[]> }) {
 type PaperSummary = { id: string; title: string };
 type OrganizerIndex = { tasks: { id: string; title: string; date: string; done: boolean }[]; notes: { id: string; title: string }[] };
 
-export function Today({ library, chats }: { library: Resource<Workspace>; chats: Resource<ChatLink[]> }) {
-  const organizer = useResource<OrganizerIndex>('/organizer/index');
-  const papers = useResource<PaperSummary[]>('/papers');
-  const next = organizer.data?.tasks.filter(t => !t.done).sort((a,b) => a.date.localeCompare(b.date))[0];
-  const latest = library.data?.materials[0];
-  const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(
-    new Date(),
-  );
-  const selected = new URLSearchParams(location.search).get('posttest');
-  if (selected !== null) return <>
-    <PageTitle title="今天" meta={date} />
-    <RetentionPosttests selected={selected} />
-  </>;
-  return (
-    <>
-      <PageTitle title="今天" meta={date} />
-      <section className="study-today-hero">
-        <div>
-          <span className="cover-kind"><Icon name={next ? 'today' : 'book'} />{next ? '下一项安排 · ' + next.date : latest ? '最近交入的材料' : '个人学习台'}</span>
-          <h2>{next?.title || latest?.title || '今天想学些什么？'}</h2>
-          <p>{next ? '打开计划，查看接下来的安排或记录已完成。' : latest ? '打开原文，写笔记，或选一段交给同伴备课。' : '带上你的讲义、卷子或课堂笔记，从手头正在学的内容开始。'}</p>
-          <div className="study-actions"><a className="primary-button" href={next ? '/plan?id='+next.id : latest ? materialPath(latest.id) : '/intake'}>{next ? '打开学习计划' : latest ? '继续读材料' : '导入学习材料'} <Icon name="arrow" /></a>
-          <a className="tonal-button" href={next ? '/intake' : '/plan'}>{next ? '导入材料' : '学习计划'}</a></div>
-        </div>
-        <time className="study-calendar" aria-label={date}>
-          <span>{new Intl.DateTimeFormat('zh-CN',{month:'long'}).format(new Date())}</span>
-          <strong>{new Date().getDate()}</strong>
-          <small>{new Intl.DateTimeFormat('zh-CN',{weekday:'long'}).format(new Date())}</small>
-        </time>
-      </section>
-      <div className="today-lower">
-        <section className="surface-section">
-          <div className="subhead"><h2>我的练习</h2><a href="/papers">全部练习</a></div>
-          <RetentionPosttests />
-          <ReadState resource={papers} />
-          {papers.data?.slice(0, 2).map(p => <ListLink key={p.id} href={'/papers/'+p.id} title={p.title} detail="继续作答或查看反馈" icon="practice" />)}
-          <ListLink href="/review" title="错题回看" detail="从上次答错的题回到原卷" icon="history" />
-          <ListLink href="/papers/new" title="编一份练习" detail="用自己的题目和答案组卷" icon="practice" />
-        </section>
-        <section className="surface-section">
-          <div className="subhead"><h2>学习笔记</h2><a href="/notes">全部笔记</a></div>
-          <ReadState resource={organizer} />
-          {organizer.data?.notes.slice(0,2).map(n => <ListLink key={n.id} href={'/notes?id='+n.id} title={n.title} detail="打开笔记及修订记录" icon="document" />)}
-          <ListLink href="/notes" title="整理学习笔记" detail="记录思路、原文和自己的解法" icon="book" />
-        </section>
-        <section className="surface-section">
-          <div className="subhead"><h2>学习同伴</h2><a href="/companion">全部对话</a></div>
-          <Recent chats={chats} />
-        </section>
-        <section className="surface-section">
-          <div className="subhead"><h2>起步材料</h2><a href="/materials">材料库</a></div>
-          <ListLink href="/materials/riding" title="同一趟骑行，两块码表" detail="内置讲义 · 调节停车时间" icon="book" />
-        </section>
-      </div>
-      {library.data?.goal && (
-        <section className="goal-strip">
-          <Icon name="person" />
-          <div>
-            <small>当前目标</small>
-            <p>{library.data.goal}</p>
-          </div>
-          <a href="/me">查看</a>
-        </section>
-      )}
-      {(library.data?.materials.length ?? 0) > 0 && (
-        <section className="recent-material">
-          <div className="subhead">
-            <h2>最近交入</h2>
-            <a href="/materials">全部材料</a>
-          </div>
-          {library.data?.materials.slice(0, 3).map((x) => (
-            <ListLink
-              key={x.id}
-              href={materialPath(x.id)}
-              title={x.title}
-              detail="个人材料"
-              icon="document"
-            />
-          ))}
-        </section>
-      )}
-    </>
-  );
-}
-
 export function Materials({ library, capture }: { library: Resource<Workspace>; capture: () => void }) {
   const papers = useResource<PaperSummary[]>('/papers');
   const organizer = useResource<OrganizerIndex>('/organizer/index');
@@ -236,6 +162,7 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
     <>
       <PageTitle title="材料"><a className="tonal-button" href="/intake"><Icon name="plus" /> 导入文件</a></PageTitle>
       <div className="study-actions library-actions"><a href="/textbooks">个人教材</a><a href="/papers">我的题库</a><a href="/notes">学习笔记</a><a href="/materials/workspace">同伴工作区</a><button className="text-button" onClick={capture}>交入文字</button></div>
+      {pendingErasures().map(id => <a key={id} href={materialPath(id)}>查看待核对的原件删除请求 · {id.slice(-6)}</a>)}
       <div className="library-controls">
         <label className="search-box">
           <Icon name="search" />
@@ -276,6 +203,14 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
 }
 
 export function SavedMaterial({ library, id }: { library: Resource<Workspace>; id: string }) {
+  const [erasure,setErasure] = useState(() => readErasure(id));
+  const [start,setStart] = useState(false);
+  useEffect(() => {
+    const restore = () => setErasure(readErasure(id));
+    window.addEventListener('storage',restore);
+    return () => window.removeEventListener('storage',restore);
+  },[id]);
+  if (erasure) return <ErasureProgress id={id} initial={erasure} start={start} onReset={() => {setStart(false);setErasure(null);library.reload();}}/>;
   const m = library.data?.materials.find((x) => x.id === id);
   return (
     <>
@@ -292,7 +227,7 @@ export function SavedMaterial({ library, id }: { library: Resource<Workspace>; i
             <a href={'/notes?material='+m.id}>写笔记</a>
             <a href={'/papers/new?material='+m.id}>自己编卷</a>
           </div>
-          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} previewText={m.text} changed={library.reload} />
+          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} previewText={m.text} changed={library.reload} erase={() => {setStart(true);setErasure(readErasure(id));}} />
         </article>
       ) : (
         library.data && <h1>未找到这份材料</h1>
@@ -368,6 +303,7 @@ export function EditDialog({
   saved: (id?: string) => void;
 }) {
   const isMaterial = kind === 'material';
+  const watermark = useDraftWatermark(isMaterial);
   const ref = useRef<HTMLDialogElement>(null);
   const [title, setTitle] = useState(() => (isMaterial ? (remembered('capture-title') ?? '') : ''));
   const [text, setText] = useState(() => (isMaterial ? (remembered('capture-text') ?? '') : currentGoal));
@@ -380,22 +316,31 @@ export function EditDialog({
   }, []);
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || (isMaterial && !watermark.ready)) return;
     const payload = isMaterial ? { title, text } : { text };
     const data = JSON.stringify(payload);
-    let id = requestId();
+    let id: string | undefined;
     try {
       const saved = JSON.parse(pendingIntent.current ?? remembered(intentKey) ?? 'null');
       if (saved?.data === data && typeof saved.id === 'string') id = saved.id;
     } catch {
       /* Recover a partially written browser draft. */
     }
+    id ??= isMaterial ? submissionId() : requestId();
     const intent = JSON.stringify({ data, id });
     pendingIntent.current = intent;
     remember(intentKey, intent);
     setBusy(true);
     setError('');
     try {
+      if (isMaterial && !navigator.onLine) {
+        await enqueue({kind:'material',id,title,text});
+        remember(intentKey,null);
+        remember('capture-title',null);
+        remember('capture-text',null);
+        close();
+        return;
+      }
       const result = await api<{ id?: string }>(isMaterial ? '/materials' : '/goal', {
         method: 'POST',
         body: { ...payload, requestId: id },
@@ -406,8 +351,15 @@ export function EditDialog({
         remember('capture-text', null);
       }
       saved(isMaterial ? result.id : undefined);
-    } catch {
-      setError('保存失败，文字还在。请再试一次。');
+    } catch (failure) {
+      if (isMaterial && deletedSubmission(failure)) {
+        pendingIntent.current = null;
+        remember(intentKey,null);
+        remember('capture-title',null);
+        remember('capture-text',null);
+        setTitle('');setText('');
+        setError('删除状态已变化，旧提交已清除。需要时请重新交入。');
+      } else setError('保存失败，文字还在。请再试一次。');
     } finally {
       setBusy(false);
     }
@@ -460,6 +412,7 @@ export function EditDialog({
             }}
           />
         </label>
+        {isMaterial && watermark.notice}
         {isMaterial && <p className="field-help">仅保存到我的材料。也可以<a href="/intake">导入文件或照片</a>。</p>}
         {error && (
           <p className="error-text" role="alert">
@@ -472,7 +425,7 @@ export function EditDialog({
           </button>
           <button
             className="primary-button"
-            disabled={busy || (isMaterial && (!title.trim() || !text.trim()))}
+            disabled={busy || (isMaterial && (!watermark.ready || !title.trim() || !text.trim()))}
           >
             {busy ? '保存中…' : '保存'}
           </button>

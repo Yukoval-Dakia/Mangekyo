@@ -14,6 +14,7 @@ import {
   type TextbookBlock,
   type TextbookBlockBody,
   type TextbookBasis,
+  type TextbookPage,
   type TextbookReadContext,
 } from './textbook-page.ts';
 
@@ -113,6 +114,13 @@ export function parseSavePage(input: Record<string, unknown>) {
       case 'delete_block':
         fields(value, 'op', 'target');
         return parseEdit({kind:'delete_block', blockId:target});
+      case 'move_block':
+        fields(value, 'op', 'target', 'parent_id', 'before_id');
+        return parseEdit({kind:'move', blockId:target, parentId:value.parent_id, beforeId:value.before_id});
+      case 'insert_block':
+        fields(value, 'op', 'target', 'parent_id', 'before_id', 'content');
+        return parseEdit({kind:'insert', blockId:target, parentId:value.parent_id, beforeId:value.before_id,
+          body:body(value.content)});
       default: throw new Error('教材 patch 操作无效。');
     }
   });
@@ -162,6 +170,36 @@ function applyEdit(blocks: readonly TextbookBlock[], edit: TextbookEdit): readon
   return next;
 }
 
+export function applyTextbookEdit(page: TextbookPage, edit: TextbookEdit): TextbookPage {
+  if (page.archived) throw new Error('教材已归档。');
+  if ((edit.kind === 'insert' || edit.kind === 'insert_after') &&
+    (page.retiredBlockIds?.includes(edit.blockId) || page.movedBlocks?.some(move => move.blockId === edit.blockId))) {
+    throw new Error('教材块标识已经使用。');
+  }
+  const blocks = applyEdit(page.blocks, edit);
+  return { ...page, blocks, ...(edit.kind === 'delete_block'
+    ? { retiredBlockIds: [...(page.retiredBlockIds ?? []), edit.blockId] } : {}) };
+}
+
+export async function applyTextbookRevision(
+  ctx: TextbookReadContext,
+  page: TextbookPage,
+  input: TextbookRevision,
+  checkBasis: boolean,
+): Promise<TextbookPage> {
+  const basis = input.basis && mergeTextbookBasis(page.basis, input.basis);
+  if (basis && checkBasis) await checkTextbookBasis(ctx.read, basis);
+  let next = page;
+  for (const edit of input.edits) {
+    next = applyTextbookEdit(next, edit);
+    if ('body' in edit) {
+      if (basis) requireTextbookBodyBasis(edit.body, basis);
+      await verifyTextbookBodyReference(ctx, edit.body);
+    }
+  }
+  return { ...next, ...(basis ? { basis } : {}) };
+}
+
 export async function writeTextbookRevision(
   ctx: CommandContext,
   input: TextbookRevision,
@@ -169,18 +207,8 @@ export async function writeTextbookRevision(
 ): Promise<readonly FactWrite[]> {
   const current = await ctx.read.fact(input.id, { mode: 'following' });
   if (current.ref.rev !== input.expectedRev) throw new Error(`Fact revision conflict: ${input.id}`);
-  const page = textbookPageFrom(current);
-  const basis = input.basis && mergeTextbookBasis(page.basis, input.basis);
-  if (basis && kind === 'revise') await checkTextbookBasis(ctx.read, basis);
-  let blocks = page.blocks;
-  for (const edit of input.edits) {
-    blocks = applyEdit(blocks, edit);
-    if ('body' in edit) {
-      if (basis) requireTextbookBodyBasis(edit.body, basis);
-      await verifyTextbookBodyReference(ctx, edit.body);
-    }
-  }
-  return [{ kind, id: input.id, expectedRev: input.expectedRev, data: { ...page, blocks, ...(basis ? {basis} : {}) } }];
+  const data = await applyTextbookRevision(ctx, textbookPageFrom(current), input, kind === 'revise');
+  return [{ kind, id: input.id, expectedRev: input.expectedRev, data }];
 }
 
 type EditReview = {
@@ -204,10 +232,10 @@ export async function previewTextbookRevision(ctx: TextbookReadContext, input: u
   for (const edit of revision.edits) {
     const before = locateTextbookBlock(page.blocks, edit.blockId);
     try {
-      const next = applyEdit(page.blocks, edit);
+      const next = applyTextbookEdit(page, edit);
       if (basis && 'body' in edit) requireTextbookBodyBasis(edit.body, basis);
       const source = 'body' in edit ? await verifyTextbookBodyReference(ctx, edit.body) : null;
-      items.push({ edit, before, state: 'ready', after: locateTextbookBlock(next, edit.blockId), source });
+      items.push({ edit, before, state: 'ready', after: locateTextbookBlock(next.blocks, edit.blockId), source });
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       items.push({ edit, before, state: 'invalid', reason: error.message });

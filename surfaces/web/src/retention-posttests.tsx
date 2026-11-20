@@ -4,6 +4,7 @@ import type { reconcileRetention } from '../../../modules/learner/retention';
 import { api, ApiError, requestId } from './api';
 import { ListLink, ReadState, useResource } from './workspace';
 import { ReconciliationResearch } from './research';
+import {useVisibleDocument} from './workbook-presentation';
 import './workbook.css';
 
 type Entry = { forecastKey: string; title: string; through: string; sourceReconciliationKey?: string } & (
@@ -112,7 +113,7 @@ function Reconciliation({ recordKey, entries, reload: reloadList }: { recordKey:
   </>;
 }
 
-function AnswerForm({ issue, path, submitted }: { issue: Issue; path: string; submitted: (key: string) => void }) {
+function AnswerForm({ issue, path, submitted, withdrawn }: { issue: Issue; path: string; submitted: (key: string) => void; withdrawn: (message: string) => void }) {
   const draftKey = 'mangekyo:posttest:' + issue.id + ':' + issue.rev;
   const [answer, setAnswer] = useState(() => {
     try { return sessionStorage.getItem(draftKey) ?? ''; } catch { return ''; }
@@ -134,6 +135,10 @@ function AnswerForm({ issue, path, submitted }: { issue: Issue; path: string; su
       try { sessionStorage.removeItem(draftKey); } catch { /* Storage is optional. */ }
       submitted(receipt.reconciliation.key);
     } catch (error) {
+      if (error instanceof ApiError && [403, 404, 409].includes(error.status)) {
+        withdrawn(error.message);
+        return;
+      }
       setFailure(error instanceof ApiError ? error.message : '暂时无法确认交卷结果。');
       setNeedsCheck(!(error instanceof ApiError && error.status === 400));
       sending.current = false;
@@ -160,24 +165,25 @@ function AnswerForm({ issue, path, submitted }: { issue: Issue; path: string; su
 function OpenPosttest({ entry, entries, reload }: { entry: Entry } & FollowupContext) {
   const path = '/retention/' + encodeURIComponent(entry.forecastKey) + '/posttest';
   const [issue, setIssue] = useState<Issue>();
+  const visible = useVisibleDocument();
   const [receipt, setReceipt] = useState('');
   const [failure, setFailure] = useState('');
   useEffect(() => {
-    if (entry.state !== 'ready') return;
+    if (entry.state !== 'ready' || !visible || issue || receipt || failure) return;
     const controller = new AbortController();
     api<Issue>(path, { method: 'POST', body: {}, signal: controller.signal })
-      .then(setIssue).catch(error => {
+      .then(next => { if (!controller.signal.aborted) setIssue(next); }).catch(error => {
         if (!controller.signal.aborted) setFailure(error instanceof ApiError ? error.message : '暂时无法打开后测。');
       });
     return () => controller.abort();
-  }, [entry.state, path]);
+  }, [entry.state, path, visible, issue, receipt, failure]);
   const key = entry.state === 'submitted' ? entry.reconciliationKey : receipt;
   return <section className="workbook-attempt-panel">
     <div className="subhead"><h2>{entry.title}</h2><a href="/today">返回今天</a></div>
     {entry.state === 'scheduled' || entry.state === 'preparing' ? <p role="status">后测已安排 · {plannedTime(entry)}</p> : key ? <><h3>后测对账</h3><Reconciliation key={key} recordKey={key} entries={entries} reload={reload} /></> : <>
       <p className="muted">独立完成 · 截止 {deadline(entry.through)}</p>
       {failure ? <p role="alert">{failure} <a href={location.href}>重新读取</a></p> :
-        issue ? <AnswerForm issue={issue} path={path} submitted={setReceipt} /> : <p role="status">正在打开题目…</p>}
+        visible && issue ? <AnswerForm issue={issue} path={path} submitted={setReceipt} withdrawn={message => {setIssue(undefined); setFailure(message);}} /> : <p role="status">正在打开题目…</p>}
     </>}
   </section>;
 }

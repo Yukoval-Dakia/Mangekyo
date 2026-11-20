@@ -114,7 +114,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       rows: [row],
     } = await tx.query<{ id: string; value: DisplayTurn; manifest: unknown }>(
       `SELECT d.id, d.value, d.manifest FROM slot_state s JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
-       WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
+       WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3
+       AND NOT EXISTS (
+         SELECT 1 FROM effects e WHERE e.learner_id=$1 AND e.owner_kind='session' AND e.owner_id=$3
+           AND e.label='local:python_attempts'
+           AND ((e.result #>> '{}')::jsonb->>'pythonAttemptsProjection') IS DISTINCT FROM '1')`,
       [learner, slotType, id],
     );
     if (!row) return;

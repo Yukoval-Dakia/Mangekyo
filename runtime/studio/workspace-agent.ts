@@ -173,13 +173,15 @@ export function openWorkspaceTools(options: {
         text = JSON.stringify(await readPythonAttempts(tx,args,{known:id => sources.has(id), maySend:options.maySend, track}));
       } else text = await workspaceSearch(tx,args,track,options.maySend);
       return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,intakeImage,sourceProjection:1,
+        ...(pythonAttempts ? {pythonAttemptsProjection: 1} : {}),
         ...(name === 'read_workspace' ? {workbookProjection: 1} : {}),
         ...(name === 'read_learner_radar' ? {retentionBasis} : {})});
     },options.authorize);
     if (priorRead) await priorRead;
-    const {text:storedText, witnesses, assessmentBasis, workbookProjection, sourceProjection, retentionBasis = [], intakeImage} = JSON.parse(raw) as {
+    const {text:storedText, witnesses, assessmentBasis, workbookProjection, sourceProjection, pythonAttemptsProjection,
+      retentionBasis = [], intakeImage} = JSON.parse(raw) as {
       text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[]; workbookProjection?: number;
-      sourceProjection?: number; retentionBasis?: RetentionBasis[]; intakeImage?: IntakeImage;
+      sourceProjection?: number; pythonAttemptsProjection?: number; retentionBasis?: RetentionBasis[]; intakeImage?: IntakeImage;
     };
     let text = storedText;
     let value = JSON.parse(text);
@@ -192,7 +194,7 @@ export function openWorkspaceTools(options: {
       return ref?.fact.type === organizerNoteType && ref.anchor.kind === 'whole';
     })) throw new TeachingError('evidence_scope', '笔记读取规则已变化，请重新发送。');
     const current = await db.snapshot({learner: studioLearner}, async tx => {
-      if (legacyWorkbookRead) return false;
+      if (legacyWorkbookRead || (pythonAttempts && pythonAttemptsProjection !== 1)) return false;
       const reader = createAuthorizedFactReader(tx, purpose, options.maySend);
       let derivedSource = false;
       try {

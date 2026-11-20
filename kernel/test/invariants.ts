@@ -1,11 +1,7 @@
-import { PGlite } from '@electric-sql/pglite';
-import pg from 'pg';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createPgDb } from '../src/db/pg.ts';
-import { createPgliteDb } from '../src/db/pglite.ts';
+import { testDatabaseUrl, withLearnerDatabase } from './learner-database.ts';
+import { aroundEach, describe, expect, it } from 'vitest';
 import type { Db } from '../src/db/types.ts';
 import { commandId, factId, learnerId } from '../src/declarations/ids.ts';
-import { applyKernelSchema } from '../src/schema.ts';
 import { createCommandHandler } from '../src/commands/handle.ts';
 import {createBusScope} from '../src/bus.ts';
 import type {FactSnapshot} from '../src/declarations/types.ts';
@@ -14,33 +10,18 @@ import { canonicalJsonString } from '../src/commands/canonical.ts';
 import { noteModule } from './commands/fixture.ts';
 
 export function invariants(postgres = false) {
-  const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
-  const suite = postgres && !connectionString ? describe.skip : describe;
+  const suite = postgres && !testDatabaseUrl ? describe.skip : describe;
   suite(postgres ? 'PostgreSQL invariants' : 'PGlite invariants', () => {
     let db: Db;
-    let admin: Db | undefined;
-    const schema = `invariants_${process.pid}`;
     const learner = learnerId('01KFS4AAA00000000000000000');
     const id = factId('01KFS4AAA00000000000000001');
     const request = { learner, id: commandId('01KFS4AAA00000000000000002'), type: 'note.record', input: { id, text: 'original' }, actor: 'learner' as const, purpose: 'storage' };
     const hooks = { onFactsChanged: async () => {} };
     const handle = () => createCommandHandler(db, { modules: [noteModule()], hooks });
-    beforeEach(async () => {
-      if (postgres) {
-        admin = createPgDb(new pg.Pool({ connectionString }));
-        await admin.query(`CREATE SCHEMA ${schema}`);
-        db = createPgDb(new pg.Pool({ connectionString, max: 8 }), { schema });
-      } else db = createPgliteDb(new PGlite());
-      await applyKernelSchema(db);
-      await db.query('INSERT INTO learners(id) VALUES($1)', [learner]);
-    });
-    afterEach(async () => {
-      await db.close();
-      if (admin) {
-        await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-        await admin.close();
-      }
-    });
+    aroundEach(run => withLearnerDatabase(learner, async database => {
+      db = database;
+      await run();
+    }, { postgres, max: 8 }));
     it('replays one identity and rejects changed content without extra revisions', async () => {
       const receipts = postgres
         ? await Promise.all(Array.from({ length: 8 }, () => handle()(request)))

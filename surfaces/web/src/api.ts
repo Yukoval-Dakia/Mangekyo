@@ -1,3 +1,4 @@
+import { bindDeletionWatermark, guardedPath, recordNewSubmission, synchronizeDeletion, verifyGenerationReceipt } from './deletion-watermark';
 export interface TeachingCase {
   id: string;
   title: string;
@@ -120,6 +121,7 @@ export interface Session {
 }
 
 export type SessionEvent = {
+  authorizedMountIds?: string[];
   session: Pick<Session, "id" | "caseId" | "status" | "currentTurnId" | "pendingAnswer">;
   phase?: "queued" | "thinking" | "reading" | "checking" | "replying";
   message?: string;
@@ -130,7 +132,7 @@ export function sessionEvents(id: string) {
 }
 
 export class ApiError extends Error {
-  constructor(readonly status: number, message = `HTTP ${status}`) {
+  constructor(readonly status: number, message = `HTTP ${status}`, readonly code?: string) {
     super(message);
   }
 }
@@ -139,20 +141,26 @@ export async function api<T>(
   path: string,
   options: { method?: "POST" | "PUT"; body?: object; signal?: AbortSignal } = {},
 ): Promise<T> {
+  const body = options.body;
+  let watermark:string|undefined;
+  if (options.method === 'POST' && guardedPath(path)) {
+    if (!body || !('requestId' in body) || typeof body.requestId !== 'string') throw new Error('缺少提交标识。');
+    watermark = bindDeletionWatermark(body.requestId);
+    await synchronizeDeletion();
+  }
   const response = await fetch(`/api${path}`, {
     ...(options.method && { method: options.method }),
     ...(options.signal && { signal: options.signal }),
     ...(options.body && {
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(options.body),
+      body: JSON.stringify(watermark === undefined ? body : {...body,deletionWatermark:watermark}),
     }),
   });
+  if (watermark !== undefined) verifyGenerationReceipt(response,watermark);
   if (!response.ok) {
-    const message = await response.json().then(
-      (value) => typeof value?.error === "string" ? value.error : undefined,
-      () => undefined,
-    );
-    throw new ApiError(response.status, message ?? `HTTP ${response.status}`);
+    const failure = await response.json().catch(() => null);
+    throw new ApiError(response.status, typeof failure?.error === 'string' ? failure.error : undefined,
+      typeof failure?.code === 'string' ? failure.code : undefined);
   }
   return response.json() as Promise<T>;
 }
@@ -185,4 +193,10 @@ export function remember(key: string, value: string | null) {
   } catch {
     // The current conversation still works when storage is disabled.
   }
+}
+
+export function submissionId() { return recordNewSubmission(requestId()); }
+
+export function deletedSubmission(error:unknown) {
+  return error instanceof ApiError && (error.status === 410 || error.code === 'deletion_watermark_stale');
 }

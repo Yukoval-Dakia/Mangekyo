@@ -1,3 +1,5 @@
+import { LifecycleError } from '../../kernel/src/lifecycle.ts';
+import { submittedWatermark } from './deletion-watermark.ts';
 import type { openMemoryManagement } from './memory-management.ts';
 import { browseMcpTools } from '../../executors/teaching/mcp-client.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -123,6 +125,13 @@ export function serve(
       const url = new URL(req.url ?? '/', 'http://' + host);
       const path = url.pathname;
       const method = req.method;
+      const offlineSubmission = async (status: number, submit: (input: Record<string, unknown>, watermark: string) => Promise<unknown>) => {
+        const input = await body(req);
+        const watermark = submittedWatermark(input);
+        const result = await submit(input,watermark);
+        res.setHeader('X-Deletion-Watermark',watermark);
+        return json(res,status,result);
+      };
       if (path === '/api/workspace/access' && method === 'GET') {
         return json(res, 200, await student.workspace.list(url.searchParams));
       }
@@ -247,14 +256,21 @@ export function serve(
       if (assessment?.[1] && assessment[2] && method === 'POST') {
         return json(res, 200, await student.workbook.assess(assessment[1], assessment[2], await body(req)));
       }
-      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print))?$/.exec(path);
+      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print|presentation))?$/.exec(path);
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));
-      if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return json(res, 200, await student.workbook.submit(paper[1], await body(req)));
+      if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return await offlineSubmission(200,input => student.workbook.submit(paper[1]!,input));
+      if (paper?.[1] && method === 'POST' && paper[2] === 'presentation')
+        return json(res, 200, await student.workbook.recordPresentation(paper[1], await body(req)));
       if (path === '/api/review' && method === 'GET') {
         const [mine, riding] = await Promise.all([student.workbook.review(), practice.read()]);
         return json(res, 200, [...mine, ...ridingReview(riding)]);
       }
+      if (method === 'GET' && path === '/api/today') return json(res, 200, await student.organizer.today(url.searchParams));
+      if (method === 'GET' && path === '/api/today/open') return json(res, 200, await student.organizer.open(url.searchParams));
+      if (method === 'POST' && path === '/api/today/rules') return json(res, 200, await student.organizer.rule(await body(req)));
+      if (method === 'POST' && path === '/api/today/goal') return json(res, 200, await student.organizer.goal(await body(req)));
+      if (method === 'POST' && path === '/api/today/submit') return await offlineSubmission(200, student.organizer.submit);
       if (path === '/api/organizer/index' && method === 'GET') {
         const { tasks, notes } = await student.organizer.snapshot(false);
         return json(res, 200, { tasks, notes: notes.map(({id, title}) => ({id, title})) });
@@ -277,8 +293,7 @@ export function serve(
       if (path === '/api/conversations' && method === 'GET')
         return json(res, 200, await recentConversations(db));
       if (path === '/api/materials' && method === 'POST') {
-        const { requestId, title, text } = await body(req);
-        return json(res, 201, await library.capture({ requestId, title, text }));
+        return await offlineSubmission(201,({requestId,title,text},watermark) => library.capture({requestId,title,text},watermark));
       }
       if (path === '/api/goal' && method === 'POST') {
         const { requestId, text } = await body(req);
@@ -286,7 +301,7 @@ export function serve(
       }
       if (path === '/api/practice/riding' && method === 'GET') return json(res, 200, await practice.read());
       if (path === '/api/practice/riding' && method === 'POST')
-        return json(res, 200, await practice.submit(await body(req)));
+        return await offlineSubmission(200,input => practice.submit(input));
       if (path === '/api/settings' && method === 'GET')
         return json(res, 200, publicSettings(await loadSettings()));
       if (path === '/api/settings/mcp-tools' && method === 'POST') {
@@ -321,7 +336,7 @@ export function serve(
       const actionPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/artifact-actions$/.exec(path);
       if (actionPath?.[1] && method === 'POST') return json(res,200,await actOnArtifact(db,actionPath[1],await body(req)));
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
-      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], req, res, student.recall.project);
+      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], url.searchParams.get('watchMounts') === '1', res, student.recall.project);
       const recall = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/recall\/(state|reveal|display|submit)$/.exec(path);
       if (recall?.[1] && recall[2] === 'state' && method === 'GET') {
         return json(res, 200, await student.recall.readState(recall[1], url.searchParams));
@@ -358,6 +373,7 @@ export function serve(
       res.writeHead(200, { 'Content-Type': types[extname(file)]! }).end(bytes);
     } catch (error) {
       if (error instanceof TextbookConflictError) return json(res, 409, error.toJSON());
+      if (error instanceof LifecycleError) return json(res,error.status,{error:error.message,code:error.code});
       const expected = error instanceof RequestError || error instanceof RecallRequestError;
       if (!expected)
         console.error('studio request failed', error instanceof Error ? error.name : 'error');

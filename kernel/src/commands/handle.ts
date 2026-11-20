@@ -1,3 +1,4 @@
+import { assertDeletionWatermark, assertUnburned } from '../lifecycle.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../db/types.ts';
 import { lockLearner } from '../db/learner.ts';
 import { commandId, learnerId, type CommandId, type LearnerId, type Tick } from '../declarations/ids.ts';
@@ -19,6 +20,12 @@ import type {
   WriteOptions,
 } from './contracts.ts';
 import { applyFactWrites } from './writes.ts';
+
+
+async function checkLifetime(tx: ReadTransaction, request: CommandRequest) {
+  await assertUnburned(tx, 'command', [request.id]);
+  if (request.deletionWatermark !== undefined) await assertDeletionWatermark(tx, request.deletionWatermark);
+}
 
 type StoredCommand = {
   readonly type: string;
@@ -158,9 +165,16 @@ async function saveProposal(
 ): Promise<CommandReceipt> {
   return db.tx({ learner: request.learner }, async (tx) => {
     await lockLearner(tx, request.learner);
+    await checkLifetime(tx, request);
     const existing = await findStoredCommand(tx, request.learner, request.id);
     if (existing) return checkReplay(existing, request);
 
+    const input = request.input;
+    if (input && typeof input === 'object' && !Array.isArray(input)) {
+      const fields = input as JsonObject;
+      const subjects = [fields.id,fields.intakeId,fields.materialId].filter((value): value is string => typeof value === 'string');
+      await assertUnburned(tx,'fact',subjects);
+    }
     declaration.schema.parse(request.input);
     await hooks.beforeProposal?.(tx, request);
     const receipt: CommandReceipt = {
@@ -251,6 +265,7 @@ async function executeCommand(
 ): Promise<CommandReceipt> {
   return db.tx({ learner: request.learner }, async (tx) => {
     await lockLearner(tx, request.learner);
+    await checkLifetime(tx, request);
     const existing = await findStoredCommand(tx, request.learner, request.id);
     if (existing) return checkReplay(existing, request);
 
@@ -271,11 +286,13 @@ export function createCommandHandler(
   }
   const handle = async (request: CommandRequest) => {
     validateRequest(request);
-    const existing = await findStoredCommand(db, request.learner, request.id);
-    if (existing) return checkReplay(existing, request);
-
     const command = commands.get(request.type);
-    if (!command) throw new Error(`Unknown command: ${request.type}`);
+    if (!command) return db.snapshot({learner:request.learner}, async tx => {
+      await checkLifetime(tx,request);
+      const recorded = await findStoredCommand(tx,tx.learner,request.id);
+      if (recorded) return checkReplay(recorded,request);
+      throw new Error(`Unknown command: ${request.type}`);
+    });
 
     if (request.actor === 'companion' && command.declaration.destructive) {
       return saveProposal(db, request, command.declaration, options.hooks);
@@ -295,6 +312,7 @@ export function createCommandHandler(
       if (!command?.declaration.destructive) throw new Error('Command does not support proposals');
       return db.tx({learner:request.learner}, async tx => {
         await lockLearner(tx, tx.learner);
+        await checkLifetime(tx, request);
         const existing = await findStoredCommand(tx, tx.learner, request.id);
         if (existing) return checkReplay(existing, request);
         const [proposal] = await readCommandProposals(tx, request.type, {}, proposalId);

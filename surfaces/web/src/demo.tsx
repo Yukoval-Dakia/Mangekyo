@@ -7,7 +7,7 @@ import { Message } from "./message";
 import { StudyCards } from "./study-tools";
 import { Icon, Mark } from "./icons";
 
-import { TurnArtifact, type ApplySnapshot } from "./presentation/TurnArtifact";
+import { TurnArtifacts, type ApplySnapshot } from "./presentation/TurnArtifact";
 import type { ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 
 const actionNames: Record<Turn["action"], string> = {
@@ -158,7 +158,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
         {turn ? <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
           : <span className="live-status" role="status"><i />{progress}</span>}
         {message && <Message text={message} />}
-        {applySnapshot && mounts?.map(snapshot => <TurnArtifact key={snapshot.mountId} snapshot={snapshot} apply={applySnapshot} />)}
+        {applySnapshot && mounts && <TurnArtifacts mounts={mounts} apply={applySnapshot} live={!turn} />}
         {turn && <>
         {!!turn.writes?.length && <ul className="read-list" aria-label="学习工作区回执">{turn.writes.map(item =>
           item.relation ? <RelationReceipt key={'relation:' + (item.relation.status === 'proposed' ? item.relation.proposalId : item.id + ':' + item.rev)}

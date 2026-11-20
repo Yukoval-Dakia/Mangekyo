@@ -1,4 +1,4 @@
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { ServerResponse } from 'node:http';
 import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
@@ -10,7 +10,7 @@ import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingProgress } from '../../executors/teaching/index.ts';
 import { slotType, studioLearner } from './identity.ts';
-import { readOwnStudyTurn, RequestError, unavailableReplyMessage } from './sessions.ts';
+import { readOwnStudyTurn, sessionMountPermissions, RequestError, unavailableReplyMessage } from './sessions.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
@@ -213,7 +213,7 @@ async function readSessionEvent(db: Db, sessionId: string) {
 }
 
 export async function serveSessionEvents(
-  db: Db, sessionId: string, _req: IncomingMessage, res: ServerResponse, projectRecall: RecallHttp['project'],
+  db: Db, sessionId: string, watchMounts: boolean, res: ServerResponse, projectRecall: RecallHttp['project'],
 ) {
   const subscribers = subscriptions.get(db);
   if (res.destroyed) return;
@@ -250,11 +250,34 @@ export async function serveSessionEvents(
     subscribers!.delete(subscriber);
   }
 
+  async function writeFrame(frame: string) {
+    if (res.write(frame)) return;
+    await new Promise<void>(resolve => {
+      const ready = () => {
+        res.off('drain', ready);
+        res.off('close', ready);
+        resolve();
+      };
+      res.once('drain', ready);
+      res.once('close', ready);
+    });
+  }
+
   async function deliver() {
     writing = true;
     try {
       while (dirty && !closed) {
         dirty = false;
+        if (watchMounts) {
+          const authorizedMountIds = await sessionMountPermissions(db, sessionId);
+          if (closed || dirty) continue;
+          const key = JSON.stringify(authorizedMountIds);
+          if (key !== lastEventId) {
+            lastEventId = key;
+            await writeFrame(event('mount-permissions', undefined, { sessionId, authorizedMountIds }));
+          }
+          continue;
+        }
         const { session, row, artifacts } = await readSessionEvent(db, sessionId);
         if (closed) return;
         if (dirty) continue;
@@ -274,23 +297,21 @@ export async function serveSessionEvents(
         if (eventId === lastEventId) continue;
         lastEventId = eventId;
         // Each event carries cumulative state, including on Last-Event-ID reattachment.
-        const data = { session, phase: row.phase ?? 'queued', ...(row.draft ? { message: row.draft } : {}) };
-        if (!res.write(event('progress', eventId, data) + artifacts.map(a => event('artifact-snapshot',eventId,a)).join(''))) {
-          await new Promise<void>((resolve) => {
-            const ready = () => {
-              res.off('drain', ready);
-              res.off('close', ready);
-              resolve();
-            };
-            res.once('drain', ready);
-            res.once('close', ready);
-          });
-        }
+        const data = {
+          session,
+          phase: row.phase ?? 'queued',
+          authorizedMountIds: artifacts.map(artifact => artifact.mountId),
+          ...(row.draft ? { message: row.draft } : {}),
+        };
+        await writeFrame(event('progress', eventId, data) +
+          artifacts.map(artifact => event('artifact-snapshot', eventId, artifact)).join(''));
       }
     } catch (error) {
       if (closed) return;
       if ((error instanceof RequestError || error instanceof RecallRequestError) && [403, 404, 409].includes(error.status)) {
-        res.end(event('session-error', undefined, { status: error.status }));
+        res.end(watchMounts
+          ? event('mount-permissions', undefined, { sessionId, authorizedMountIds: [] })
+          : event('session-error', undefined, { status: error.status }));
       } else {
         // Dropping the stream makes EventSource reconnect and reload a fresh snapshot.
         subscriber.disconnect();
@@ -307,7 +328,7 @@ export async function serveSessionEvents(
   const heartbeat = setInterval(() => {
     if (!res.writableNeedDrain) res.write(': keep-alive\n\n');
     // An older worker can commit a result without sending NOTIFY.
-    if (!notifiedSinceHeartbeat) scheduleRead();
+    if (!writing && (watchMounts || !notifiedSinceHeartbeat)) scheduleRead();
     notifiedSinceHeartbeat = false;
   }, 15_000);
   heartbeat.unref();

@@ -238,11 +238,27 @@ async function recoverRevokedReceipts(tx: ReadTransaction, turnIds: string[]) {
   })]));
 }
 
+async function readableTurnMounts(tx: ReadTransaction, session: string, timeline: readonly TurnView[]) {
+  const last = timeline.at(-1);
+  const visible = timeline.filter(row => row.feedback || (row === last && row.status === 'pending'));
+  const byTurn = new Map<string, Awaited<ReturnType<typeof turnArtifacts>>>();
+  for (const row of visible) byTurn.set(row.id, await turnArtifacts(tx, session, row.id));
+  return byTurn;
+}
+
+export function sessionMountPermissions(db: Db, session: string) {
+  return db.snapshot({ learner: studioLearner }, async tx => {
+    const mounts = await readableTurnMounts(tx, session, await history(tx, session));
+    return Array.from(mounts.values()).flatMap(turn => turn.map(artifact => artifact.mountId));
+  });
+}
+
 export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project']) {
   const { turns, ...view } = await db.snapshot({ learner: studioLearner }, async tx => {
     const timeline = await history(tx, session);
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
+    const mounts = await readableTurnMounts(tx, session, timeline);
     const currentObject = last.submission.currentObject;
     const recoveryIds = timeline.filter(row => !row.feedback || row.feedback.action === 'reply_unavailable').map(row => row.id);
     const recovered = await recoverRevokedReceipts(tx, recoveryIds);
@@ -257,11 +273,11 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
       status: last.status,
       ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
       ...(last.error ? { error: last.error } : {}),
-      ...(last.status === 'pending' ? { artifacts: await turnArtifacts(tx, session, last.id) } : {}),
+      ...(last.status === 'pending' ? { artifacts: mounts.get(last.id) ?? [] } : {}),
       turns: await Promise.all(timeline.filter(row => row.feedback || memory.has(row.id)).map(async row => {
         const writes = row.feedback?.writes ?? [...(recovered.get(row.id) ?? []), ...(memory.get(row.id) ?? [])];
         return {row, feedback: row.feedback ?? unavailableReply(row.submission.model),
-          writes: writes.length ? await projectWrites(tx, writes) : undefined, artifacts: await turnArtifacts(tx, session, row.id)};
+          writes: writes.length ? await projectWrites(tx, writes) : undefined, artifacts: mounts.get(row.id) ?? []};
       })),
     };
   });

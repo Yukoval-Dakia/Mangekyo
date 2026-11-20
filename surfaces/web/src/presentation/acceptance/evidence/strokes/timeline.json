@@ -1,0 +1,665 @@
+{
+  "chrome": "Chrome/157.0.8103.52",
+  "samples": [
+    {
+      "label": "首笔，第二次工具响应仍被扣住",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": "受力示意图，已画 1 笔。先画水平接触面。",
+          "text": "先画水平接触面。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198180791.5999,
+      "reduced": false
+    },
+    {
+      "label": "原生 EventSource 重连并重投首笔",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": "受力示意图，已画 1 笔。先画水平接触面。",
+          "text": "先画水平接触面。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198182559.2998,
+      "reduced": false
+    },
+    {
+      "label": "两笔同画布",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": "受力示意图，已画 2 笔。从物体向上画支持力。",
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198182635,
+      "reduced": false
+    },
+    {
+      "label": "第一轮结算",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": null,
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198182768.5,
+      "reduced": false
+    },
+    {
+      "label": "第二轮复用同名画布，仅新增一笔",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": null,
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        },
+        {
+          "title": "受力示意图",
+          "announcement": "受力示意图，已画 1 笔。先画水平接触面。",
+          "text": "先画水平接触面。",
+          "lines": [
+            {
+              "mount": "A03CA24FF8E841D3DB12C2F0D0",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198183212.4,
+      "reduced": true
+    },
+    {
+      "label": "第二轮两笔",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": null,
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        },
+        {
+          "title": "受力示意图",
+          "announcement": "受力示意图，已画 2 笔。从物体向上画支持力。",
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "A03CA24FF8E841D3DB12C2F0D0",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "206D3DE141EF93B287D6CB7897",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198183286,
+      "reduced": true
+    },
+    {
+      "label": "第二轮首笔失权",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": null,
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        },
+        {
+          "title": "受力示意图",
+          "announcement": "受力示意图，已画 1 笔。从物体向上画支持力。",
+          "text": "从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "206D3DE141EF93B287D6CB7897",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198183440.7998,
+      "reduced": true
+    },
+    {
+      "label": "第二轮有效空集合",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": null,
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198183593.0999,
+      "reduced": true
+    },
+    {
+      "label": "额外合成旧批次重投",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": null,
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198183748.5999,
+      "reduced": true
+    },
+    {
+      "label": "第二轮结算",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": null,
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198183824.9,
+      "reduced": true
+    },
+    {
+      "label": "终态重新打开",
+      "figures": [
+        {
+          "title": "受力示意图",
+          "announcement": null,
+          "text": "先画水平接触面。\n从物体向上画支持力。",
+          "lines": [
+            {
+              "mount": "EC28BBC56580EC90C9EBA80DC8",
+              "coords": "20,96 150,96",
+              "animation": "none"
+            },
+            {
+              "mount": "90FB9546B52ECA186D9C4FE2B6",
+              "coords": "80,96 80,16",
+              "animation": "none"
+            }
+          ]
+        }
+      ],
+      "time": 1795198183922.7,
+      "reduced": true
+    }
+  ],
+  "firstAccessibility": [
+    {
+      "role": "link",
+      "name": "请用两笔画受力示意图。"
+    },
+    {
+      "role": "StaticText",
+      "name": "请用两笔画受力示意图。"
+    },
+    {
+      "role": "StaticText",
+      "name": "请用两笔画受力示意图。"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "请用两笔画受力示意图。"
+    },
+    {
+      "role": "StaticText",
+      "name": "受力示意图，已画 1 笔。先画水平接触面。"
+    },
+    {
+      "role": "image",
+      "name": "受力示意图"
+    },
+    {
+      "role": "list",
+      "name": "笔画说明"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "受力示意图，已画 1 笔。先画水平接触面。"
+    },
+    {
+      "role": "StaticText",
+      "name": "受力示意图"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "受力示意图"
+    },
+    {
+      "role": "StaticText",
+      "name": "先画水平接触面。"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "先画水平接触面。"
+    }
+  ],
+  "disconnect": "t\n",
+  "sameFirstLine": true,
+  "secondAccessibility": [
+    {
+      "role": "link",
+      "name": "请用两笔画受力示意图。"
+    },
+    {
+      "role": "StaticText",
+      "name": "请用两笔画受力示意图。"
+    },
+    {
+      "role": "StaticText",
+      "name": "请用两笔画受力示意图。"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "请用两笔画受力示意图。"
+    },
+    {
+      "role": "StaticText",
+      "name": "受力示意图，已画 2 笔。从物体向上画支持力。"
+    },
+    {
+      "role": "image",
+      "name": "受力示意图"
+    },
+    {
+      "role": "list",
+      "name": "笔画说明"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "受力示意图，已画 2 笔。从物体向上画支持力。"
+    },
+    {
+      "role": "StaticText",
+      "name": "受力示意图"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "受力示意图"
+    },
+    {
+      "role": "StaticText",
+      "name": "先画水平接触面。"
+    },
+    {
+      "role": "StaticText",
+      "name": "从物体向上画支持力。"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "先画水平接触面。"
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "从物体向上画支持力。"
+    }
+  ],
+  "withdraw1": "SET\nBEGIN\nUPDATE 1\n\nCOMMIT\n",
+  "withdraw2": "SET\nBEGIN\nUPDATE 1\n\nCOMMIT\n",
+  "errors": [],
+  "requests": [
+    {
+      "url": "http://127.0.0.1:45872/api/settings",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/workspace",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/lifecycle",
+      "status": 404
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/conversations",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/lifecycle",
+      "status": 404
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions",
+      "status": 202
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A/events",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/conversations",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A/events",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A/answers",
+      "status": 202
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A/events",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/settings",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/lifecycle",
+      "status": 404
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/workspace",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/conversations",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A/events",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:45872/api/sessions/0E8D6EBED202209B0025AF7A3A",
+      "status": 200
+    }
+  ],
+  "frames": [
+    {
+      "requestId": "83951.82",
+      "timestamp": 2695541.231892,
+      "eventName": "progress",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:0",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"0E8D6EBED202209B0025AF7A3A\",\"status\":\"pending\",\"pendingAnswer\":\"请用两笔画受力示意图。\"},\"phase\":\"queued\",\"authorizedMountIds\":[]}"
+    },
+    {
+      "requestId": "83951.82",
+      "timestamp": 2695541.648476,
+      "eventName": "progress",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:1",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"0E8D6EBED202209B0025AF7A3A\",\"status\":\"pending\",\"pendingAnswer\":\"请用两笔画受力示意图。\"},\"phase\":\"thinking\",\"authorizedMountIds\":[]}"
+    },
+    {
+      "requestId": "83951.82",
+      "timestamp": 2695541.685632,
+      "eventName": "progress",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:2",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"0E8D6EBED202209B0025AF7A3A\",\"status\":\"pending\",\"pendingAnswer\":\"请用两笔画受力示意图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[]}"
+    },
+    {
+      "requestId": "83951.82",
+      "timestamp": 2695541.710046,
+      "eventName": "progress",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:2:EC28BBC56580EC90C9EBA80DC8-0",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"0E8D6EBED202209B0025AF7A3A\",\"status\":\"pending\",\"pendingAnswer\":\"请用两笔画受力示意图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[\"EC28BBC56580EC90C9EBA80DC8\"]}"
+    },
+    {
+      "requestId": "83951.82",
+      "timestamp": 2695541.710173,
+      "eventName": "artifact-snapshot",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:2:EC28BBC56580EC90C9EBA80DC8-0",
+      "data": "{\"version\":1,\"sessionId\":\"0E8D6EBED202209B0025AF7A3A\",\"turnId\":\"0E8D6EBED202209B0025AF7A3A\",\"mountId\":\"EC28BBC56580EC90C9EBA80DC8\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"drawingId\":\"force\",\"fallback\":\"受力图笔画\",\"id\":\"work-ec28bbc56580ec90c9eba80dc8\",\"revision\":\"r1\",\"sections\":[{\"id\":\"page\",\"layout\":\"stack\",\"nodes\":[{\"description\":\"先画水平接触面。\",\"height\":120,\"id\":\"scene\",\"kind\":\"scene\",\"label\":\"受力图\",\"objects\":[{\"id\":\"stroke\",\"kind\":\"line\",\"points\":[{\"x\":20,\"y\":96},{\"x\":150,\"y\":96}],\"stroke\":\"ink\"}],\"width\":170}],\"title\":\"受力图\"}],\"title\":\"受力示意图\",\"version\":1},\"submitted\":false,\"predicting\":false,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+    },
+    {
+      "requestId": "83951.85",
+      "timestamp": 2695543.483916,
+      "eventName": "progress",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:2:EC28BBC56580EC90C9EBA80DC8-0",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"0E8D6EBED202209B0025AF7A3A\",\"status\":\"pending\",\"pendingAnswer\":\"请用两笔画受力示意图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[\"EC28BBC56580EC90C9EBA80DC8\"]}"
+    },
+    {
+      "requestId": "83951.85",
+      "timestamp": 2695543.484207,
+      "eventName": "artifact-snapshot",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:2:EC28BBC56580EC90C9EBA80DC8-0",
+      "data": "{\"version\":1,\"sessionId\":\"0E8D6EBED202209B0025AF7A3A\",\"turnId\":\"0E8D6EBED202209B0025AF7A3A\",\"mountId\":\"EC28BBC56580EC90C9EBA80DC8\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"drawingId\":\"force\",\"fallback\":\"受力图笔画\",\"id\":\"work-ec28bbc56580ec90c9eba80dc8\",\"revision\":\"r1\",\"sections\":[{\"id\":\"page\",\"layout\":\"stack\",\"nodes\":[{\"description\":\"先画水平接触面。\",\"height\":120,\"id\":\"scene\",\"kind\":\"scene\",\"label\":\"受力图\",\"objects\":[{\"id\":\"stroke\",\"kind\":\"line\",\"points\":[{\"x\":20,\"y\":96},{\"x\":150,\"y\":96}],\"stroke\":\"ink\"}],\"width\":170}],\"title\":\"受力图\"}],\"title\":\"受力示意图\",\"version\":1},\"submitted\":false,\"predicting\":false,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+    },
+    {
+      "requestId": "83951.85",
+      "timestamp": 2695543.602958,
+      "eventName": "progress",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:2:EC28BBC56580EC90C9EBA80DC8-0:90FB9546B52ECA186D9C4FE2B6-0",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"0E8D6EBED202209B0025AF7A3A\",\"status\":\"pending\",\"pendingAnswer\":\"请用两笔画受力示意图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[\"EC28BBC56580EC90C9EBA80DC8\",\"90FB9546B52ECA186D9C4FE2B6\"]}"
+    },
+    {
+      "requestId": "83951.85",
+      "timestamp": 2695543.603067,
+      "eventName": "artifact-snapshot",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:2:EC28BBC56580EC90C9EBA80DC8-0:90FB9546B52ECA186D9C4FE2B6-0",
+      "data": "{\"version\":1,\"sessionId\":\"0E8D6EBED202209B0025AF7A3A\",\"turnId\":\"0E8D6EBED202209B0025AF7A3A\",\"mountId\":\"EC28BBC56580EC90C9EBA80DC8\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"drawingId\":\"force\",\"fallback\":\"受力图笔画\",\"id\":\"work-ec28bbc56580ec90c9eba80dc8\",\"revision\":\"r1\",\"sections\":[{\"id\":\"page\",\"layout\":\"stack\",\"nodes\":[{\"description\":\"先画水平接触面。\",\"height\":120,\"id\":\"scene\",\"kind\":\"scene\",\"label\":\"受力图\",\"objects\":[{\"id\":\"stroke\",\"kind\":\"line\",\"points\":[{\"x\":20,\"y\":96},{\"x\":150,\"y\":96}],\"stroke\":\"ink\"}],\"width\":170}],\"title\":\"受力图\"}],\"title\":\"受力示意图\",\"version\":1},\"submitted\":false,\"predicting\":false,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+    },
+    {
+      "requestId": "83951.85",
+      "timestamp": 2695543.603129,
+      "eventName": "artifact-snapshot",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:2:EC28BBC56580EC90C9EBA80DC8-0:90FB9546B52ECA186D9C4FE2B6-0",
+      "data": "{\"version\":1,\"sessionId\":\"0E8D6EBED202209B0025AF7A3A\",\"turnId\":\"0E8D6EBED202209B0025AF7A3A\",\"mountId\":\"90FB9546B52ECA186D9C4FE2B6\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"drawingId\":\"force\",\"fallback\":\"受力图笔画\",\"id\":\"work-90fb9546b52eca186d9c4fe2b6\",\"revision\":\"r1\",\"sections\":[{\"id\":\"page\",\"layout\":\"stack\",\"nodes\":[{\"description\":\"从物体向上画支持力。\",\"height\":120,\"id\":\"scene\",\"kind\":\"scene\",\"label\":\"受力图\",\"objects\":[{\"id\":\"stroke\",\"kind\":\"line\",\"points\":[{\"x\":80,\"y\":96},{\"x\":80,\"y\":16}],\"stroke\":\"liquid\"}],\"width\":170}],\"title\":\"受力图\"}],\"title\":\"受力示意图\",\"version\":1},\"submitted\":false,\"predicting\":false,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+    },
+    {
+      "requestId": "83951.85",
+      "timestamp": 2695543.682934,
+      "eventName": "complete",
+      "eventId": "0E8D6EBED202209B0025AF7A3A:ready",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"0E8D6EBED202209B0025AF7A3A\",\"status\":\"ready\"},\"message\":\"两笔已经画好。\"}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695543.796837,
+      "eventName": "progress",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:0",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"pending\",\"pendingAnswer\":\"再次画这张图。\"},\"phase\":\"queued\",\"authorizedMountIds\":[]}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.152889,
+      "eventName": "progress",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:1",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"pending\",\"pendingAnswer\":\"再次画这张图。\"},\"phase\":\"thinking\",\"authorizedMountIds\":[]}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.167243,
+      "eventName": "progress",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"pending\",\"pendingAnswer\":\"再次画这张图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[]}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.182046,
+      "eventName": "progress",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2:A03CA24FF8E841D3DB12C2F0D0-0",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"pending\",\"pendingAnswer\":\"再次画这张图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[\"A03CA24FF8E841D3DB12C2F0D0\"]}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.182174,
+      "eventName": "artifact-snapshot",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2:A03CA24FF8E841D3DB12C2F0D0-0",
+      "data": "{\"version\":1,\"sessionId\":\"0E8D6EBED202209B0025AF7A3A\",\"turnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"mountId\":\"A03CA24FF8E841D3DB12C2F0D0\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"drawingId\":\"force\",\"fallback\":\"受力图笔画\",\"id\":\"work-a03ca24ff8e841d3db12c2f0d0\",\"revision\":\"r1\",\"sections\":[{\"id\":\"page\",\"layout\":\"stack\",\"nodes\":[{\"description\":\"先画水平接触面。\",\"height\":120,\"id\":\"scene\",\"kind\":\"scene\",\"label\":\"受力图\",\"objects\":[{\"id\":\"stroke\",\"kind\":\"line\",\"points\":[{\"x\":20,\"y\":96},{\"x\":150,\"y\":96}],\"stroke\":\"ink\"}],\"width\":170}],\"title\":\"受力图\"}],\"title\":\"受力示意图\",\"version\":1},\"submitted\":false,\"predicting\":false,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.226187,
+      "eventName": "progress",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2:A03CA24FF8E841D3DB12C2F0D0-0:206D3DE141EF93B287D6CB7897-0",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"pending\",\"pendingAnswer\":\"再次画这张图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[\"A03CA24FF8E841D3DB12C2F0D0\",\"206D3DE141EF93B287D6CB7897\"]}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.226282,
+      "eventName": "artifact-snapshot",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2:A03CA24FF8E841D3DB12C2F0D0-0:206D3DE141EF93B287D6CB7897-0",
+      "data": "{\"version\":1,\"sessionId\":\"0E8D6EBED202209B0025AF7A3A\",\"turnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"mountId\":\"A03CA24FF8E841D3DB12C2F0D0\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"drawingId\":\"force\",\"fallback\":\"受力图笔画\",\"id\":\"work-a03ca24ff8e841d3db12c2f0d0\",\"revision\":\"r1\",\"sections\":[{\"id\":\"page\",\"layout\":\"stack\",\"nodes\":[{\"description\":\"先画水平接触面。\",\"height\":120,\"id\":\"scene\",\"kind\":\"scene\",\"label\":\"受力图\",\"objects\":[{\"id\":\"stroke\",\"kind\":\"line\",\"points\":[{\"x\":20,\"y\":96},{\"x\":150,\"y\":96}],\"stroke\":\"ink\"}],\"width\":170}],\"title\":\"受力图\"}],\"title\":\"受力示意图\",\"version\":1},\"submitted\":false,\"predicting\":false,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.226343,
+      "eventName": "artifact-snapshot",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2:A03CA24FF8E841D3DB12C2F0D0-0:206D3DE141EF93B287D6CB7897-0",
+      "data": "{\"version\":1,\"sessionId\":\"0E8D6EBED202209B0025AF7A3A\",\"turnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"mountId\":\"206D3DE141EF93B287D6CB7897\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"drawingId\":\"force\",\"fallback\":\"受力图笔画\",\"id\":\"work-206d3de141ef93b287d6cb7897\",\"revision\":\"r1\",\"sections\":[{\"id\":\"page\",\"layout\":\"stack\",\"nodes\":[{\"description\":\"从物体向上画支持力。\",\"height\":120,\"id\":\"scene\",\"kind\":\"scene\",\"label\":\"受力图\",\"objects\":[{\"id\":\"stroke\",\"kind\":\"line\",\"points\":[{\"x\":80,\"y\":96},{\"x\":80,\"y\":16}],\"stroke\":\"liquid\"}],\"width\":170}],\"title\":\"受力图\"}],\"title\":\"受力示意图\",\"version\":1},\"submitted\":false,\"predicting\":false,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.359909,
+      "eventName": "progress",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2:206D3DE141EF93B287D6CB7897-0",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"pending\",\"pendingAnswer\":\"再次画这张图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[\"206D3DE141EF93B287D6CB7897\"]}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.359999,
+      "eventName": "artifact-snapshot",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2:206D3DE141EF93B287D6CB7897-0",
+      "data": "{\"version\":1,\"sessionId\":\"0E8D6EBED202209B0025AF7A3A\",\"turnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"mountId\":\"206D3DE141EF93B287D6CB7897\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"drawingId\":\"force\",\"fallback\":\"受力图笔画\",\"id\":\"work-206d3de141ef93b287d6cb7897\",\"revision\":\"r1\",\"sections\":[{\"id\":\"page\",\"layout\":\"stack\",\"nodes\":[{\"description\":\"从物体向上画支持力。\",\"height\":120,\"id\":\"scene\",\"kind\":\"scene\",\"label\":\"受力图\",\"objects\":[{\"id\":\"stroke\",\"kind\":\"line\",\"points\":[{\"x\":80,\"y\":96},{\"x\":80,\"y\":16}],\"stroke\":\"liquid\"}],\"width\":170}],\"title\":\"受力图\"}],\"title\":\"受力示意图\",\"version\":1},\"submitted\":false,\"predicting\":false,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.509982,
+      "eventName": "progress",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:2",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"pending\",\"pendingAnswer\":\"再次画这张图。\"},\"phase\":\"reading\",\"authorizedMountIds\":[]}"
+    },
+    {
+      "requestId": "83951.89",
+      "timestamp": 2695544.798243,
+      "eventName": "complete",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:ready",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"ready\"},\"message\":\"两笔已经画好。\"}"
+    },
+    {
+      "requestId": "83951.163",
+      "timestamp": 2695544.878502,
+      "eventName": "complete",
+      "eventId": "AB5BABA32A0E5F50C3EE5D7AD1:ready",
+      "data": "{\"session\":{\"id\":\"0E8D6EBED202209B0025AF7A3A\",\"caseId\":\"companion\",\"currentTurnId\":\"AB5BABA32A0E5F50C3EE5D7AD1\",\"status\":\"ready\"},\"message\":\"两笔已经画好。\"}"
+    }
+  ]
+}

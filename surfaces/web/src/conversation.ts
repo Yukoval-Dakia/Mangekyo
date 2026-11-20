@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type Settings, type SessionEvent, type StudyAttachment } from "./api";
 
 import type { CurrentObject } from "./current-record";
 import {selectedRoute, type Route, type McpGrant} from './model-route';
-import { readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
+import { editorDrafts } from "./presentation/editor-draft";
+import { useMountPermissions } from "./presentation/mount-permissions";
+import { authorizeMounts, refreshDraftBases, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 
 type Operation = {allowBackgroundUnderstanding?: boolean | undefined; currentObject?: CurrentObject | undefined} & (
   | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
@@ -24,9 +26,29 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [session, renderSession] = useState(() => initialSession && readSession(initialSession));
   const sessionRef = useRef(session);
   function setSession(value: MountedSession | undefined) {
+    const prior = sessionRef.current?.mounts;
+    if (prior && prior !== value?.mounts) {
+      const retained = new Set(value?.mounts);
+      for (const mount of prior) if (!retained.has(mount)) editorDrafts.delete(mount);
+    }
     sessionRef.current = value;
     renderSession(value);
   }
+  const permissions = useMountPermissions(sessionId, active, (watchedSession, removed) => {
+    const latest = sessionRef.current;
+    if (!latest || latest.id !== watchedSession) return;
+    const withdrawn = new Set([...latest.withdrawn, ...removed]);
+    setSession({ ...latest, withdrawn, mounts: latest.mounts.filter(m => !withdrawn.has(m.mountId)) });
+  });
+  // Reads, receipts and turn events supply content. Only the current session
+  // permission stream can make that content visible, including after completion.
+  const connection = permissions?.connection;
+  const [checkedConnection, setCheckedConnection] = useState<symbol>();
+  const visibleSession = session && {
+    ...session,
+    mounts: session.mounts.filter(m => session.id === sessionId && permissions?.ids.has(m.mountId) &&
+      (!editorDrafts.has(m) || checkedConnection === connection)),
+  };
   function applySnapshot(sent: ArtifactSnapshotV1, input: unknown) {
     const latest = sessionRef.current;
     if (!latest?.mounts.some(m => m.sessionId === sent.sessionId && m.turnId === sent.turnId && m.mountId === sent.mountId)) return;
@@ -44,12 +66,35 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [problem, setProblem] = useState<{ source: "read" | "write"; message: string }>();
   const [refresh, setRefresh] = useState(0);
 
+  const checkDraftBases = useEffectEvent(async (signal: AbortSignal) => {
+    const prior = sessionRef.current;
+    const bases = prior?.mounts.filter(m => editorDrafts.has(m));
+    if (!prior || !bases?.length || prior.id !== sessionId) return;
+    const read = await api<Session>(sessionPath(prior.id), { signal });
+    if (signal.aborted) return;
+    if (read.id !== prior.id || read.caseId !== caseId || !Array.isArray(read.turns))
+      throw new Error("Session identity mismatch");
+    const latest = sessionRef.current;
+    if (latest?.id === read.id) setSession(refreshDraftBases(latest, bases, readSession(read)));
+  });
+  useEffect(() => {
+    if (!connection) return;
+    const controller = new AbortController();
+    void checkDraftBases(controller.signal).then(() => {
+      if (!controller.signal.aborted) setCheckedConnection(connection);
+    }).catch(() => {
+      if (!controller.signal.aborted)
+        setProblem({ source: "read", message: "暂时无法核对作品版本，草稿保留在当前页面。请重试。" });
+    });
+    return () => controller.abort();
+  }, [connection, refresh]);
+
   const [streamingReply, setStreamingReply] = useState<string>();
   const [progressLabel, setProgressLabel] = useState<string>();
   const [reconnecting, setReconnecting] = useState(false);
 
   const readAssessment = useRef<(() => Promise<void>) | undefined>(undefined);
-  const queuedSubmissions = JSON.stringify(session?.mounts.flatMap(m => m.assessment?.state === 'queued'
+  const queuedSubmissions = JSON.stringify(visibleSession?.mounts.flatMap(m => m.assessment?.state === 'queued'
     ? [[m.turnId, m.mountId, m.assessment.submissionRef.id, m.assessment.submissionRef.rev]] : []) ?? []);
 
   useEffect(() => {
@@ -57,6 +102,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     const controller = new AbortController();
     const source = sessionEvents(sessionId);
     const baseline = sessionRef.current?.id === sessionId ? sessionRef.current : undefined;
+    let batch: { id: string; turn: string; order?: Map<string, number> } | undefined;
+    const retiredTurns = new Set<string>();
     let terminal = false;
     let didHydrate = Boolean(baseline);
     let readNumber = 0;
@@ -90,6 +137,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       reading = true;
       const number = ++readNumber;
       const atRequest = sessionRef.current;
+      const requestedBatch = batch;
       try {
         const current = await api<Session>(sessionPath(sessionId!), { signal: controller.signal });
         if (controller.signal.aborted || number !== readNumber || (mode === 'stream' && terminal)) return;
@@ -102,6 +150,10 @@ export function useConversation(caseId: string, active: boolean, initialSession?
             (latest?.currentTurnId !== current.currentTurnId && latest?.turns.some(t => t.turnId && t.turnId === current.currentTurnId)) ||
             (latest !== atRequest && latest?.currentTurnId !== current.currentTurnId) ||
             (latest?.currentTurnId === current.currentTurnId && latest?.status === "ready" && current.status === "pending")) return;
+        // A later stream header owns this turn's complete mount set. Its
+        // snapshots follow on the same connection, including after reconnect.
+        if (batch?.order && requestedBatch !== batch && current.status === 'pending' && current.currentTurnId === batch.turn)
+          delete current.artifacts;
         setSession(readSession(current, latest, atRequest));
         clearReadProblem();
         if (mode === 'complete') {
@@ -138,12 +190,22 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const update = receive(event);
       if (!update || update.session.status !== "pending") return;
       const previous = sessionRef.current;
+      const turn = update.session.currentTurnId!;
+      if (retiredTurns.has(turn)) return;
       if ((previous?.currentTurnId === update.session.currentTurnId && previous?.status !== "pending") ||
           previous?.turns.some(t => t.turnId === update.session.currentTurnId)) return;
+      if (previous?.currentTurnId && previous.currentTurnId !== turn) retiredTurns.add(previous.currentTurnId);
+      const ids = update.authorizedMountIds;
+      batch = { id: event.lastEventId, turn };
+      if (ids !== undefined) {
+        batch.order = new Map(Array.isArray(ids) && ids.every(id => typeof id === 'string')
+          ? ids.map((id, i) => [id, i]) : []);
+      }
       const next = { ...previous, ...update.session };
       if (previous?.currentTurnId !== next.currentTurnId) delete next.currentObject;
-      setSession({ ...next, turns: previous?.turns ?? [], withdrawn: previous?.withdrawn ?? new Set(),
-        mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] });
+      const mounted = { ...next, turns: previous?.turns ?? [], withdrawn: previous?.withdrawn ?? new Set(),
+        mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] };
+      setSession(batch.order ? authorizeMounts(mounted, turn, batch.order) : mounted);
       setProgressLabel(update.phase ? progressLabels[update.phase] : undefined);
       setStreamingReply(update.message);
       // Restore prior turns for a remembered session while the current one streams.
@@ -159,15 +221,19 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       if (controller.signal.aborted || terminal) return;
       let input: unknown;
       try { input = JSON.parse(event.data); } catch { return; }
-      setSession(streamSnapshot(sessionRef.current, input));
+      if (!batch || event.lastEventId !== batch.id || batch.turn !== sessionRef.current?.currentTurnId) return;
+      const latest = sessionRef.current;
+      const next = streamSnapshot(latest, input, batch.order);
+      if (!next || next === latest) return;
+      setSession(batch.order ? authorizeMounts(next, batch.turn, batch.order) : next);
     });
 
     source.addEventListener("complete", (event: MessageEvent<string>) => {
       const update = receive(event);
-      if (!update) return;
+      if (!update || retiredTurns.has(update.session.currentTurnId!)) return;
       terminal = true;
       source.close();
-      if (!refresh && baseline?.currentTurnId === update.session.currentTurnId && baseline?.status === update.session.status) {
+      if (!refresh && !sessionRef.current?.mounts.length && baseline?.currentTurnId === update.session.currentTurnId && baseline?.status === update.session.status) {
         setStreamingReply(undefined);
         setProgressLabel(undefined);
         return;
@@ -192,6 +258,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
 
     source.onerror = () => {
       if (controller.signal.aborted || terminal) return;
+      batch = undefined;
       setReconnecting(true);
       void hydrate(source.readyState === EventSource.CLOSED ? 'complete' : 'stream');
     };
@@ -308,7 +375,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
 
   return {
     sessionId,
-    session,
+    session: visibleSession,
     applySnapshot,
     draft: draft?.text ?? "",
     outdatedDraft: Boolean(draft?.text.trim() && draft.parentId !== session?.currentTurnId),

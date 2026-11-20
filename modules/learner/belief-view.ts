@@ -1,0 +1,128 @@
+import type { BeliefTime, Directive, Hypothesis, RefusalBoundary } from '@mangekyo/kernel';
+export type { RefusalBoundary } from '@mangekyo/kernel';
+import { instant, type Witness } from './memory-evidence.ts';
+
+// Compatible with companion.claim's parsed refusal. The scheduler supplies the
+// canonical action identity. Natural-language labels never participate in matching.
+export function blocksRefusal(boundary: RefusalBoundary, request: {
+  goal: string; intent_key: string; learnerRequested: boolean; at: string;
+}) {
+  if (boundary.goal !== request.goal || boundary.intent_key !== request.intent_key) return false;
+  return boundary.reopen_condition.kind === 'at'
+    ? instant(request.at) < instant(boundary.reopen_condition.at)
+    : !request.learnerRequested;
+}
+
+export const evidencePriority = {
+  'learner-quote': 5, 'business-event': 5, 'first-hand-tool': 4, 'independent-verification': 3,
+  'agent-inference': 2, 'agent-note': 1,
+} as const;
+
+export type AsOf = { validAt: string; knownAt: string };
+function contains(from: string, until: string | null, at: string) {
+  const start = instant(from);
+  const end = until === null ? null : instant(until);
+  if (end !== null && end < start) throw new Error('时间区间逆序。');
+  return start <= at && (end === null || at < end);
+}
+
+// Call with revisions already admitted under *current* access policy, even for a historical read.
+export function beliefsAsOf<T extends BeliefTime>(rows: readonly T[], when: AsOf) {
+  const at = instant(when.validAt);
+  const known = instant(when.knownAt);
+  return rows.filter(row => contains(row.validFrom, row.validTo, at)
+    && contains(row.recordedAt, row.supersededAt, known));
+}
+
+export type HypothesisEvidence = {
+  ref: Witness; occurredAt: string; recordedAt: string;
+  source: keyof typeof evidencePriority;
+  direction: 'supports' | 'contradicts' | 'unresolved';
+  // A same-condition counterexample disputes a hypothesis. A later verified
+  // independent outcome measures change after intervention under new conditions.
+  assessment: 'observation' | 'independent-variant' | 'independent-transfer';
+};
+export type HypothesisStage = Hypothesis<unknown, unknown>['status'];
+
+export function hypothesisView(history: readonly HypothesisEvidence[], when: AsOf) {
+  const valid = instant(when.validAt);
+  const known = instant(when.knownAt);
+  const events = history.filter(e => instant(e.occurredAt) <= valid && instant(e.recordedAt) <= known)
+    .toSorted((a,b) => a.occurredAt.localeCompare(b.occurredAt) || a.ref.id.localeCompare(b.ref.id));
+  let stage: HypothesisStage = 'tentative';
+  const supports = new Set<string>();
+  const counters = new Set<string>();
+  let outcomeEvidence = false;
+  const trajectory: {at: string; stage: HypothesisStage}[] = [];
+  for (const event of events) {
+    if (event.direction === 'unresolved' || !(evidencePriority[event.source] >= 3)) continue;
+    if ((event.direction === 'supports' ? supports : counters).has(event.ref.id)) continue;
+    const previous: HypothesisStage = stage;
+    const independent = event.assessment !== 'observation';
+    outcomeEvidence ||= independent;
+    if (event.direction === 'supports') {
+      supports.add(event.ref.id);
+      if (independent && (stage === 'retired' || stage === 'improving')) stage = 'relapsed';
+      else if (counters.size && stage !== 'relapsed') stage = 'disputed';
+      else if (supports.size > 1 && stage !== 'relapsed') stage = 'supported';
+    } else {
+      counters.add(event.ref.id);
+      if (!supports.size) continue;
+      if (!independent) stage = 'disputed';
+      else if (stage === 'improving' && event.assessment === 'independent-transfer' && counters.size > 1) stage = 'retired';
+      else if (stage !== 'retired') stage = 'improving';
+    }
+    if (previous !== stage) trajectory.push({at: event.occurredAt, stage});
+  }
+  return {stage, trajectory, evidence: events, confidence: {
+    statement: events.some(event => event.source === 'learner-quote') ? 'directly-attested' : 'unconfirmed',
+    fact: stage, outcome: outcomeEvidence ? 'independently-observed' : 'unknown',
+  }};
+}
+
+// The authority comes from the opened owner fact, never from a model-selected
+// presentation label (old memoryAssertion v2 also carried kind="preference").
+export function memoryFamily(factType: string) {
+  switch (factType) {
+    case 'learner.preference': case 'companion.claim': return 'directive';
+    case 'companion.memoryAssertion': return 'hypothesis';
+    case 'learner.playbook': return 'playbook';
+    default: return undefined;
+  }
+}
+
+// Effective at both time coordinates; caller has already resolved current
+// authorization and learner-initiated supersession through the owning module.
+export function effectiveDirective<T extends Directive<unknown, unknown>>(directive: T, when: AsOf): T | null {
+  if (!beliefsAsOf([directive], when).length) return null;
+  if (directive.kind === 'refusal' && directive.refusal.reopen_condition.kind === 'at'
+      && instant(directive.refusal.reopen_condition.at) <= instant(when.validAt)) return null;
+  return directive;
+}
+
+export type OpenHypothesis<Scope, Evidence> = {
+  ref: Witness;
+  value: Hypothesis<Scope, Evidence>;
+};
+
+// Read the owner revisions and logical edges admitted by the same bus snapshot.
+// Opposite claims can remain valid simultaneously. Both sides stay addressable.
+export function hypothesesAsOf<Scope, Evidence>(rows: readonly OpenHypothesis<Scope, Evidence>[],
+  edges: readonly (BeliefTime & import('./extraction.ts').BeliefEdge)[], when: AsOf) {
+  const visible = rows.filter(row => beliefsAsOf([row.value], when).length > 0);
+  const identity = (ref: Witness) => JSON.stringify([ref.id, ref.rev, ref.accessEpoch]);
+  const endpoints = new Set(visible.map(row => identity(row.ref)));
+  const disputes = new Set<string>();
+  const relations = beliefsAsOf(edges, when).filter(edge => {
+    const from = identity(edge.from_ref);
+    const to = identity(edge.to_ref);
+    if (!endpoints.has(from) || !endpoints.has(to)) return false;
+    if (edge.kind === 'contradicts') {
+      disputes.add(from);
+      disputes.add(to);
+    }
+    return true;
+  });
+  return {hypotheses: visible.map(row => disputes.has(identity(row.ref))
+    ? {...row, value: {...row.value, status: 'disputed' as const}} : row), relations};
+}

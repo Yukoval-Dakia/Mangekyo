@@ -1,14 +1,14 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { guardAccess, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { derivationId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { derivationId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Outcome } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
-import { helpExposureType } from '../../modules/activity/help-exposure-values.ts';
 import { isSourceFactId, sourceReference } from '../../modules/activity/source-values.ts';
 import { workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { forecastType, reconciliationType, type RetentionForecast, type RetentionObservation, reconcileRetention } from '../../modules/learner/retention.ts';
 import { purpose } from './identity.ts';
+import { retentionHistoryValid } from './retention.ts';
 import { readLearningOverview } from './learning-overview.ts';
 import { textSlice } from './reading.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
@@ -28,8 +28,6 @@ type Selection = {
 // Its private fact types can support the result without opening their raw payloads to the companion.
 const retentionPaper = 'activity.retentionPaper';
 const posttestSubmission = 'activity.retentionPosttestSubmission';
-const evidenceTypes = new Set([workbookPaperType, workbookAttemptType, helpExposureType,
-  retentionPaper, posttestSubmission, 'activity.retentionPosttest']);
 const candidateLimit = 16;
 const detailLimit = 3;
 const unknown = { state: 'unknown' } as const;
@@ -58,9 +56,15 @@ async function validRetentionManifest(tx: ReadTransaction, row: Selection, calle
   let manifest;
   try { manifest = parseManifest(row.manifest); }
   catch { return; }
-  if (manifest.purpose !== purpose || manifest.inputs.length > 64 ||
+  // Old gathers may repeat an issuance for multiple observations. Keep all distinct modes and revisions.
+  manifest = { ...manifest, inputs: [...new Map(manifest.inputs.map(input => [JSON.stringify(input), input])).values()] };
+  if (manifest.purpose !== purpose ||
       (await revalidateManifest(tx, manifest)).kind !== 'valid' ||
       (callerPurpose !== purpose && (await revalidateManifest(tx, manifest, callerPurpose)).kind !== 'valid')) return;
+  if (row.value.kind !== 'value') return;
+  const value = row.value.value;
+  const parent = 'forecastId' in value ? value.forecastId : row.id;
+  if (!await retentionHistoryValid(tx, derivationId(parent), 'observation' in value ? value.observation : undefined)) return;
   return manifest;
 }
 
@@ -68,7 +72,7 @@ async function readSelection(tx: ReadTransaction, row: Selection, access: Access
   if (row.value.kind !== 'value') return;
   const manifest = await validRetentionManifest(tx, row, access.callerPurpose);
   if (!manifest) return;
-  const reader = createCommandReadContext(tx, access.callerPurpose);
+  const actor = { purpose: access.callerPurpose, maySend: access.maySend };
   const facts: { input: FactInput; fact: FactSnapshot }[] = [];
   let forecast: { row: Selection; value: RetentionForecast } | undefined;
   for (const input of manifest.inputs) {
@@ -84,10 +88,7 @@ async function readSelection(tx: ReadTransaction, row: Selection, access: Access
     }
     if (input.kind !== 'fact') return;
     try {
-      const fact = await reader.fact(input.id, input.mode === 'following' ? { mode: 'following' } :
-        { mode: 'pinned', rev: input.rev as Revision });
-      if (fact.ref.rev !== input.rev || fact.accessEpoch !== input.accessEpoch ||
-          !evidenceTypes.has(fact.type) || !access.maySend(fact)) return;
+      const fact = await guardAccess(tx, input, actor);
       facts.push({ input, fact });
     } catch (error) {
       if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
@@ -134,9 +135,11 @@ export async function readMissedPosttest(tx: ReadTransaction, key: string, resul
   if (parent?.kind !== 'slot' || !manifest.inputs.some(input => input.kind === 'fact' &&
       input.id === observation.submission.id && input.rev === observation.submission.rev)) return;
   const [forecast] = await currentSelections(tx, forecastType, parent.derivationId, parent.slotKey);
-  if (forecast?.value.kind !== 'value' || !('estimate' in forecast.value.value) ||
-      forecast.value.value.estimate.kind !== 'categorical' || forecast.value.value.estimate.expected !== 'correct' ||
-      !await validRetentionManifest(tx, forecast)) return;
+  const estimate = forecast?.value.kind === 'value' && 'estimate' in forecast.value.value
+    ? forecast.value.value.estimate : undefined;
+  const predictedCorrect = estimate?.kind === 'categorical' ? estimate.expected === 'correct'
+    : estimate?.kind === 'probabilistic' ? estimate.probability >= 0.5 : false;
+  if (!forecast || !predictedCorrect || !await validRetentionManifest(tx, forecast)) return;
   const { rowCount } = await tx.query(
     'SELECT 1 FROM facts WHERE learner_id=$1 AND id=$2 AND type=$3 AND retracted_rev IS NULL',
     [tx.learner, observation.submission.id, posttestSubmission],
@@ -182,9 +185,16 @@ function projectRetention(selected: SelectionRead) {
   if ('status' in value && observation) return { ...common, kind: 'reconciliation' as const,
     forecastId: forecast.row.id, status: value.status,
     observation: { result: observation.result, exposure: observation.exposure.kind } };
-  if ('estimate' in value) return { ...common, kind: 'forecast' as const,
-    estimate: estimate.kind === 'unknown' ? { kind: 'unknown' as const, reason: estimate.reason }
-      : { kind: 'categorical' as const, expected: estimate.expected } };
+  if ('estimate' in value) {
+    if (estimate.kind === 'probabilistic') {
+      return { ...common, kind: 'forecast' as const,
+        estimate: { kind: 'probabilistic' as const, probability: estimate.probability,
+          interval: estimate.interval, uncertainty: estimate.uncertainty } };
+    }
+    return { ...common, kind: 'forecast' as const,
+      estimate: estimate.kind === 'unknown' ? { kind: 'unknown' as const, reason: estimate.reason }
+        : { kind: 'categorical' as const, expected: estimate.expected } };
+  }
   return undefined;
 }
 

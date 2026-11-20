@@ -1,3 +1,4 @@
+import { migrateLifecycle, requireLifecycleCutover } from './lifecycle.ts';
 import type { Db, DbQuery } from './db/types.ts';
 import { newUlid } from './work/identity.ts';
 import { migrateTodoWork } from './work/migrate-todos.ts';
@@ -230,6 +231,7 @@ const migrations = [
   },
   migrateWorkingState,
   migrateTodoWork,
+  migrateLifecycle,
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */
@@ -254,6 +256,7 @@ export async function applyKernelSchema(db: Db): Promise<void> {
     if (applied.length > migrations.length || applied.some((row, index) => row.version !== index + 1)) {
       throw new Error('Unsupported kernel schema version');
     }
+    if (applied.length >= 6 && applied.length < 8) await requireLifecycleCutover(tx);
     for (const [index, migrate] of migrations.entries()) {
       if (index < applied.length) continue;
       await migrate(tx);

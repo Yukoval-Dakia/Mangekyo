@@ -1,7 +1,9 @@
+import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { averageSpeed, ridingLesson } from '../../../modules/activity/starter.ts';
 import type { PracticeAnswers, PracticeView } from '../../../modules/activity/practice-values.ts';
-import { api, ApiError, remember, remembered, requestId } from './api';
+import { enqueue } from './offline-queue';
+import { deletedSubmission, api, ApiError, remember, remembered, submissionId } from './api';
 import './starter.css';
 
 const practicePath = '/practice/riding';
@@ -129,10 +131,11 @@ function restoreDraft(): PracticeDraft | null {
 }
 
 function newDraft(version: string): PracticeDraft {
-  return { version, answers: {}, requestId: requestId(), pending: null };
+  return { version, answers: {}, requestId: submissionId(), pending: null };
 }
 
 export function StarterPractice() {
+  const watermark = useDraftWatermark();
   const [view, setView] = useState<PracticeView | null>(null);
   const [draft, setDraft] = useState(restoreDraft);
   const [selected, setSelected] = useState<string | null>();
@@ -148,9 +151,25 @@ export function StarterPractice() {
     setLoading(true);
     setProblem(null);
     void api<PracticeView>(practicePath, { signal: controller.signal })
-      .then(setView)
+      .then(value => {
+        if (controller.signal.aborted) return;
+        setView(value);
+        remember('starter-built-in-paper',JSON.stringify(value.paper));
+      })
       .catch(() => {
-        if (!controller.signal.aborted) setProblem({ message: '小卷载入失败。', refresh: true });
+        if (controller.signal.aborted) return;
+        if (!navigator.onLine) {
+          try {
+            const paper = JSON.parse(remembered('starter-built-in-paper') ?? 'null');
+            if (paper?.version && Array.isArray(paper.questions) && paper.questions.every((q:Record<string,unknown>) =>
+              q && ['id','unit','prompt'].every(k => typeof q[k] === 'string'))) {
+              setView({paper,submission:null,history:[]});
+              setProblem({message:'离线使用上次打开的内置题面。历史作答需联网查看。',refresh:false});
+              return;
+            }
+          } catch { /* A missing or old copy needs an online visit. */ }
+        }
+        setProblem({ message: '小卷载入失败。', refresh: true });
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -197,6 +216,12 @@ export function StarterPractice() {
     setSaving(true);
     setProblem(null);
     try {
+      if (!navigator.onLine) {
+        await enqueue({kind:'practice',id:draft.requestId,version:draft.version,answers:sent});
+        saveDraft(null);
+        setProblem({message:'已保存，待联机判分。',refresh:false});
+        return;
+      }
       const saved = await api<PracticeView>(practicePath, {
         method: 'POST',
         body: { requestId: draft.requestId, version: draft.version, answers: sent },
@@ -206,7 +231,10 @@ export function StarterPractice() {
       setSelected(saved.submission?.id);
       saveDraft(editedAfterSend ? { ...newDraft(draft.version), answers: draft.answers } : null);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
+      if (deletedSubmission(error)) {
+        saveDraft(null);
+        setProblem({message:'删除状态已变化，旧作答已清除。请重新开始本次练习。',refresh:false});
+      } else if (error instanceof ApiError && error.status === 409) {
         saveDraft({ ...newDraft(draft.version), answers: draft.answers });
         setProblem({ message: '这个提交标识已有作答。当前答案已另存为草稿，可以确认后再交卷。', refresh: false });
       } else if (error instanceof ApiError && error.status === 400 && versionChanged) {
@@ -228,6 +256,7 @@ export function StarterPractice() {
 
       <div className="starter-practice-grid">
         <div className="starter-paper">
+          {watermark.notice}
           {loading && <p role="status" className="starter-status">正在打开小卷…</p>}
           {problem && <div role="alert" className="starter-status">
             <p>{problem.message}</p>
@@ -246,7 +275,7 @@ export function StarterPractice() {
           {view && paper && !loading && (submission ? <>
             <div className="starter-review-header">
               <h2 ref={reviewHeading} tabIndex={-1} className="starter-review-title">已交卷</h2>
-              <button type="button" className="text-button" onClick={openDraft}>{draft ? '继续本轮' : '再做一轮'}</button>
+              <button type="button" className="text-button" disabled={!draft && !watermark.ready} onClick={openDraft}>{draft ? '继续本轮' : '再做一轮'}</button>
             </div>
             <ol className="starter-exercises">
               {paper.questions.map((question, index) => {
@@ -266,7 +295,7 @@ export function StarterPractice() {
             {versionChanged && <div className="starter-status">
               <p>草稿对应旧版小卷。</p>
               {!draft?.pending && <button type="button" className="text-button"
-                onClick={() => saveDraft(newDraft(view.paper.version))}>清除旧草稿并打开新版</button>}
+                disabled={!watermark.ready} onClick={() => saveDraft(newDraft(view.paper.version))}>清除旧草稿并打开新版</button>}
             </div>}
             {!versionChanged && <ol className="starter-exercises">
               {view.paper.questions.map(({ id, prompt, unit }) => (
@@ -274,7 +303,7 @@ export function StarterPractice() {
                   <label className="starter-prompt" htmlFor={`riding-${id}`}>{prompt}</label>
                   <div className="starter-answer">
                     <input id={`riding-${id}`} name={id} type="number" min="0" step="any"
-                      aria-describedby={`riding-${id}-unit`} autoComplete="off" disabled={saving}
+                      aria-describedby={`riding-${id}-unit`} autoComplete="off" disabled={saving || (!draft && !watermark.ready)}
                       value={draft?.answers[id] ?? ''} onChange={(event) => {
                         const current = draft ?? newDraft(view.paper.version);
                         saveDraft({ ...current, answers: { ...current.answers, [id]: event.currentTarget.value } });

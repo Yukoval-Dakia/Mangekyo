@@ -1,10 +1,9 @@
-import { execFile } from 'node:child_process';
+import { extractLocalDocument } from '@mangekyo/executor-document-extraction/local';
 import { constants, createReadStream } from 'node:fs';
 import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -38,7 +37,11 @@ import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { cloudIntakeSlot, enqueueCloudIntake, mineruSupports, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
 
-export const intakeSwiftTimeoutMs = 120_000;
+import { intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
+import { submittedWatermark } from './deletion-watermark.ts';
+import { LifecycleError } from '../../kernel/src/lifecycle.ts';
+
+export { intakeSwiftTimeoutMs } from '@mangekyo/executor-document-extraction/local';
 
 export type IntakeMetadata = {
   readonly id: string;
@@ -61,6 +64,7 @@ type CaptureInput = {
   readonly filename?: unknown;
   readonly declaredType?: unknown;
   readonly extraction?: unknown;
+  readonly deletionWatermark?: unknown;
   readonly bytes: Buffer;
 };
 
@@ -212,112 +216,6 @@ async function readStoredOriginal(base: string, materialId: FactId): Promise<Sto
   };
 }
 
-function failure(method: 'pdfkit' | 'vision' | 'utf8', text: string) {
-  return {
-    status: 'failed' as const,
-    method,
-    text: '',
-    error: text,
-    warnings: [],
-    pages: null,
-    truncated: false,
-    characterCount: 0,
-  };
-}
-
-function failedFromSwift(kind: 'pdf' | 'image', message: string) {
-  return failure(kind === 'pdf' ? 'pdfkit' : 'vision', message);
-}
-
-async function runSwift(args: string[]): Promise<{ readonly stdout: string; readonly stderr: string }> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    execFile(
-      process.env.MANGEKYO_SWIFT?.trim() || 'swift',
-      args,
-      {
-        timeout: intakeSwiftTimeoutMs,
-        maxBuffer: 8 * 1024 * 1024,
-        killSignal: 'SIGKILL',
-      },
-      (error, stdout, stderr) => {
-        if (error) rejectPromise(error);
-        else resolvePromise({ stdout, stderr });
-      },
-    );
-  });
-}
-
-async function extract(detected: Detected, storedPath: string, bytes: Buffer) {
-  if (detected.kind === 'text') {
-    try {
-      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      let text = decoded.startsWith('\uFEFF') ? decoded.slice(1) : decoded;
-      text = text.replace(/\r\n?/g, '\n');
-      if (text.includes('\u0000')) throw new Error('文本包含无效控制字符。');
-      if (!text.trim()) throw new Error('这个文本文件没有可读内容。');
-      let truncated = false;
-      if (text.length > intakeTextLimit) {
-        text = text.slice(0, intakeTextLimit);
-        truncated = true;
-      }
-      return {
-        status: 'ok' as const,
-        method: 'utf8' as const,
-        text,
-        error: null,
-        warnings: truncated ? ['文本超过本地抽取上限，已保存前 200 万字。'] : [],
-        pages: null,
-        truncated,
-        characterCount: text.length,
-      };
-    } catch (error) {
-      return failure('utf8', error instanceof Error ? error.message : '文本抽取失败。');
-    }
-  }
-  if (platform() !== 'darwin') {
-    return failedFromSwift(detected.kind, '当前系统只支持 UTF-8 文本原样读取；原件已保存。');
-  }
-  const script = fileURLToPath(new URL('./extract-document.swift', import.meta.url));
-  try {
-    const { stdout, stderr } = await runSwift([script, detected.kind, storedPath]);
-    const result = JSON.parse(stdout) as Record<string, unknown>;
-    if (result.ok !== true) {
-      return failedFromSwift(detected.kind, typeof result.error === 'string' && result.error ? result.error : '本地文字抽取失败。');
-    }
-    try {
-      return intakeExtractionFromSwift(result, detected);
-    } catch (error) {
-      return failedFromSwift(detected.kind, error instanceof Error ? error.message : '本地文字抽取结果无效。');
-    }
-  } catch (error) {
-    if (error instanceof Error && (('killed' in error && error.killed === true) || ('code' in error && error.code === 'ETIMEDOUT'))) {
-      return failedFromSwift(detected.kind, '本地文字抽取超时（120 秒）；原件已保存。');
-    }
-    const message = '本地文字抽取失败。';
-    return failedFromSwift(detected.kind, message || '本地文字抽取失败；原件已保存。');
-  }
-}
-
-function intakeExtractionFromSwift(result: Record<string, unknown>, detected: Detected) {
-  const text = typeof result.text === 'string' ? result.text : '';
-  if (!text.trim()) throw new Error('本地抽取没有得到可读文字。');
-  const warnings = Array.isArray(result.warnings) ? result.warnings.filter((item) => typeof item === 'string').slice(0, 8) : [];
-  return {
-    status: (warnings.length > 0 || result.truncated === true ? 'partial' : 'ok') as 'ok' | 'partial',
-    method: typeof result.method === 'string' ? (result.method as 'pdfkit' | 'vision' | 'pdfkit+vision') : detected.kind === 'pdf' ? 'pdfkit' : 'vision',
-    text,
-    error: null,
-    warnings,
-    pages: typeof result.pages === 'number' && Number.isSafeInteger(result.pages) ? result.pages : null,
-    truncated: result.truncated === true,
-    characterCount: text.length,
-  };
-}
-
-function intakeIdFor(materialId: FactId): FactId {
-  return factId(stableId('intake-document', materialId));
-}
-
 export const intakeWriteTargets = {
   [captureIntakeCommand]: { create: [materialType] },
   [correctIntakeCommand]: { correct: [materialType] },
@@ -329,11 +227,13 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   const runtime = { modules: [captureModule, content], crossModuleWrites: intakeWriteTargets };
   const handle = createCommandHandler(db, { ...runtime, hooks });
   const base = materialBase();
+  const lifecycle = openIntakeLifecycle(db, base);
 
-  async function factsFor(materialId: string) {
+  async function factsFor(materialId: string, watermark?: string) {
     const id = factId(materialId);
     const intakeId = intakeIdFor(id);
     return db.snapshot({ learner: studioLearner }, async (tx) => {
+      if (watermark !== undefined) await lifecycle.checkCapture(tx,id,watermark);
       const read = createCommandReadContext(tx, intakePurpose);
       const material = await read.fact(id, { mode: 'following' });
       const document = await read.fact(intakeId, { mode: 'following' });
@@ -341,11 +241,12 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     });
   }
 
-  async function metadataFor(materialId: string): Promise<IntakeMetadata> {
+  async function metadataFor(materialId: string, watermark?: string): Promise<IntakeMetadata> {
     let facts;
     try {
-      facts = await factsFor(materialId);
+      facts = await factsFor(materialId,watermark);
     } catch (error) {
+      if (error instanceof LifecycleError) throw error;
       if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) {
         throw new RequestError(404, '这份材料或它的交入记录不存在。');
       }
@@ -375,9 +276,9 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     };
   }
 
-  async function metadataOrNull(materialId: string) {
+  async function metadataOrNull(materialId: string, watermark: string) {
     try {
-      return await metadataFor(materialId);
+      return await metadataFor(materialId,watermark);
     } catch (error) {
       if (error instanceof RequestError && error.status === 404) return null;
       throw error;
@@ -400,6 +301,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     if (input.bytes.length > intakeFileLimit) throw new RequestError(413, '文件超过 25 MB。');
     const materialId = factId(stableId('intake-material', requestId));
     const intakeId = intakeIdFor(materialId);
+    const deletionWatermark = submittedWatermark(input);
     const detected = detect(input.bytes, cleanName(input.filename), input.declaredType);
     const name = cleanName(input.filename) || '材料原件';
     const title = cleanTitle(input.title, name.replace(/\.[^.]+$/, '') || '材料原件');
@@ -418,7 +320,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     const matches = (prior: IntakeMetadata) => prior.original.sha256 === sha256 && prior.original.name === original.name &&
       prior.title === title && prior.original.mediaType === detected.mediaType &&
       (prior.requestedExtraction ?? 'local') === requested;
-    const prior = await metadataOrNull(materialId.toString());
+    const prior = await metadataOrNull(materialId.toString(), deletionWatermark);
     if (prior) {
       if (!matches(prior)) throw new RequestError(409, '同一个请求标识已经用于不同文件或标题。');
       return { ...prior, created: false };
@@ -428,10 +330,11 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     const staged = await stageOriginal(destination, input.bytes, original);
     let installed = false;
     try {
+      await writeFile(join(staged.directory, 'store-id'), (await lifecycle.storeId()) + ':' + materialId, {mode:0o600});
       const extraction: IntakeExtraction = cloud ? {
         status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
         pages: null, truncated: false, characterCount: 0,
-      } : await extract(detected, staged.path, input.bytes);
+      } : await extractLocalDocument(detected.kind, staged.path, input.bytes, intakeTextLimit);
       const commandInput = {
         materialId, intakeId, title, original, extraction,
         ...(cloud ? { requestedExtraction: 'mineru' } : {}),
@@ -452,7 +355,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       });
       await save({
         learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: captureIntakeCommand,
-        id: commandId(stableId('intake-capture', requestId)),
+        id: commandId(stableId('intake-capture', requestId)), deletionWatermark,
         input: commandInput,
       });
     } catch (error) {
@@ -463,7 +366,8 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
           if (committed.rows.length === 0) await rm(destination, { recursive: true, force: true });
         }).catch(() => undefined);
       }
-      const raced = await metadataOrNull(materialId.toString());
+      if (error instanceof LifecycleError) throw error;
+      const raced = await metadataOrNull(materialId.toString(), deletionWatermark);
       if (raced && matches(raced)) return { ...raced, created: false };
       if (raced || (error instanceof Error && error.message === 'Command ID already used with a different command identity')) {
         throw new RequestError(409, '同一个请求标识已经用于不同内容。');
@@ -490,7 +394,9 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
         ...hooks,
         async onFactsChanged(tx, tick, changes) {
           const work = await readReadyWork(tx, ref);
-          if (work?.slotType !== cloudIntakeSlot || work.slotKey !== document.ref.id)
+          if (work?.slotType !== cloudIntakeSlot || work.slotKey !== document.ref.id ||
+              ![document,material].every(({ref}) => changes.some(change => change.kind === 'correct' &&
+                change.ref.id === ref.id && change.ref.rev === ref.rev + 1)))
             throw new RequestError(409, '交入工作已更改。');
           await hooks.onFactsChanged(tx, tick, changes);
         },
@@ -530,7 +436,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   }
 
   return {
-    capture,
+    lifecycle, capture,
     correct,
     async setResearch(materialId: string, input: unknown) {
       const id = factId(materialId);
@@ -577,7 +483,7 @@ function decodeUtf8(value: string) {
   return Buffer.from(value, 'latin1').toString('utf8');
 }
 
-function intakeFormText(form: FormData, field: 'requestId' | 'title' | 'extraction') {
+function intakeFormText(form: FormData, field: 'requestId' | 'title' | 'extraction' | 'deletionWatermark') {
   const values = form.getAll(field);
   if (values.length === 0) return undefined;
   if (values.length !== 1 || typeof values[0] !== 'string') {
@@ -606,7 +512,12 @@ export async function handleIntakeRequest(
   pathname: string,
   method: string | undefined,
 ): Promise<boolean> {
-  const match = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction|research-permission))?$/.exec(pathname);
+  if (pathname === '/api/lifecycle' && method === 'GET') {
+    const state = await intake.lifecycle.state();
+    response.setHeader('X-Deletion-Watermark',state.watermark);
+    return json(response,200,state), true;
+  }
+  const match = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction|research-permission|erasure))?$/.exec(pathname);
   if (pathname === '/api/intake/options' && method === 'GET')
     return json(response, 200, { mineru: Boolean(mineruToken()) }), true;
   if (pathname === '/api/intake') {
@@ -617,6 +528,7 @@ export async function handleIntakeRequest(
     try {
       const contentType = request.headers['content-type']?.split(';')[0]?.toLowerCase() ?? '';
       let result;
+      let watermark: string;
       if (contentType === 'multipart/form-data') {
         const bytes = await readBody(request, intakeFileLimit + 512 * 1024);
         let form: FormData;
@@ -625,7 +537,9 @@ export async function handleIntakeRequest(
         const file = form.get('file');
         if (!file || typeof file === 'string' || form.getAll('file').length !== 1)
           throw new RequestError(400, '请选择一个文件。');
+        watermark = submittedWatermark({deletionWatermark:intakeFormText(form,'deletionWatermark')});
         result = await intake.capture({
+          deletionWatermark:watermark,
           requestId: intakeFormText(form, 'requestId'),
           title: intakeFormText(form, 'title'),
           extraction: intakeFormText(form, 'extraction'),
@@ -635,8 +549,9 @@ export async function handleIntakeRequest(
         const requestId = request.headers['x-request-id'];
         if (typeof requestId !== 'string' || requestId.trim() === '') throw new RequestError(400, '请求标识无效。');
         const bytes = await readBody(request, intakeFileLimit);
+        watermark = submittedWatermark({deletionWatermark:request.headers['x-deletion-watermark']});
         result = await intake.capture({
-          requestId,
+          requestId, deletionWatermark:watermark,
           title:
             typeof request.headers['x-title'] === 'string'
               ? decodeUtf8(request.headers['x-title'])
@@ -650,10 +565,12 @@ export async function handleIntakeRequest(
           bytes,
         });
       }
+      response.setHeader('X-Deletion-Watermark',watermark);
       return json(response, 201, result), true;
     } catch (error) {
-      json(response, error instanceof RequestError ? error.status : 500, {
-        error: error instanceof RequestError ? error.message : '交入未能完成。',
+      json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
+        error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '交入未能完成。',
+        ...(error instanceof LifecycleError && error.code ? {code:error.code} : {}),
       });
       return true;
     }
@@ -666,8 +583,8 @@ export async function handleIntakeRequest(
         try {
           return json(response, 200, await intake.metadata(id)), true;
         } catch (error) {
-          json(response, error instanceof RequestError ? error.status : 500, {
-            error: error instanceof RequestError ? error.message : '这份材料的交入记录无法读取。',
+          json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
+            error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '这份材料的交入记录无法读取。',
           });
           return true;
         }
@@ -680,14 +597,27 @@ export async function handleIntakeRequest(
         try {
           return json(response, 200, await intake.metadata(id)), true;
         } catch (error) {
-          json(response, error instanceof RequestError ? error.status : 500, {
-            error: error instanceof RequestError ? error.message : '这份材料的交入记录无法读取。',
+          json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
+            error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '这份材料的交入记录无法读取。',
           });
           return true;
         }
       }
       json(response, 405, { error: '这份材料的元数据只接受读取。' });
       return true;
+    }
+    if (action === 'erasure' && method === 'POST') {
+      if (request.headers['content-type']?.split(';')[0] !== 'application/json')
+        return json(response,415,{error:'需要 JSON 请求。'}), true;
+      try {
+        const input = JSON.parse((await readBody(request,4096)).toString('utf8'));
+        if (!input || typeof input !== 'object' || Array.isArray(input)) throw new RequestError(400,'删除请求格式无效。');
+        return json(response,200,await intake.lifecycle.erase(id,input)), true;
+      } catch (error) {
+        const status = error instanceof LifecycleError || error instanceof RequestError ? error.status :
+          error instanceof SyntaxError ? 400 : error instanceof FactNotFoundError ? 404 : 500;
+        return json(response,status,{error:status === 500 ? '删除未能完成。' : error instanceof Error ? error.message : '无效请求。'}), true;
+      }
     }
     if (action === 'original') {
       if (method === 'GET') {
@@ -697,8 +627,8 @@ export async function handleIntakeRequest(
           return true;
         } catch (error) {
           if (!response.headersSent) {
-            json(response, error instanceof RequestError ? error.status : 500, {
-              error: error instanceof RequestError ? error.message : '原件未能读取。',
+            json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
+              error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '原件未能读取。',
             });
           } else response.destroy();
           return true;
@@ -718,8 +648,8 @@ export async function handleIntakeRequest(
           json(response, 400, { error: '更正请求格式无效。' });
           return true;
         }
-        json(response, error instanceof RequestError ? error.status : 500, {
-          error: error instanceof RequestError ? error.message : '更正未能保存。',
+        json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
+          error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '更正未能保存。',
         });
         return true;
       }
@@ -735,8 +665,8 @@ export async function handleIntakeRequest(
         return json(response, 200, await intake.setResearch(id, value)), true;
       } catch (error) {
         if (error instanceof SyntaxError) return json(response, 400, { error: '用途请求格式无效。' }), true;
-        json(response, error instanceof RequestError ? error.status : 500, {
-          error: error instanceof RequestError ? error.message : '原件用途未能更新。',
+        json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
+          error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '原件用途未能更新。',
         });
         return true;
       }

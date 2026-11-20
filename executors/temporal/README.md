@@ -74,3 +74,39 @@ git diff --check
 命令：`TEMPORAL_ADDRESS=127.0.0.1:17415 node /tmp/mangekyo-unit14.DsgQCV/p1-probe.mjs "$PWD"`，断言结果位于 `/tmp/mangekyo-unit14.DsgQCV/p1-run-Jm7BvS/proof.json`。
 
 上游接入后需复验实际 PG 配置和 outbox 交接、代次与撤权准入、效果回执及预算、已授权旧作读取和无人值守交付。生产部署、协调器换版及服务器故障恢复另验。
+
+## Studio v6/v7 原地切换到生命周期 v8
+
+v8 将最低 Worker schema 提到 8。此切换需要停机。支持同一 PG 集群上的 **Studio 专库、直连数据库名、原对象目录、同一 Temporal namespace 与队列**。旧 Web 的读取、离线提交以及已启动 Worker 均使用原数据库名。变更该名字保留库 OID、store ID、工作与收费身份，并使旧 DSN 失效。共享库、维护库、会把旧 DSN 自动改指新库的代理、可继续提供旧副本的其他宿主需要先隔离，本流程仅覆盖上述专库拓扑。
+
+1. 关闭入口、外发和旧进程的自动拉起。记下原 DSN、schema、对象根目录、namespace、完整队列与 build ID。对照原 schema 的 `kernel_runtime_identity.store_id` 与原队列后缀。保留 `work.execution_ref`、未交付 outbox、已启用配置的 `coordinatorRef` 和 `effects` 中未决调用身份。停止所有旧 Web 和 Worker 及其读取服务。保留未决发送的原身份，结果未知时等对账。升级期间保持外部流量关闭。
+2. 在原 namespace 记录运行中的 Workflow ID 和 Run ID，包括等待 Signal 或定时器的协调器。下列命令中的 `TEMPORAL_ADDRESS`、`TEMPORAL_NAMESPACE` 为此次切换的地址和 namespace，`queue` 为 **含 store ID 的完整旧队列**。PG 中已确认交接且尚未完成的工作和已启用协调器须逐个 describe 核对。Visibility 有延迟，遗漏或与 PG 不符时保持隔离并复查。未交接的 outbox 留给同一 store 的中继处理。
+
+   ```sh
+   temporal workflow list --query "TaskQueue='$queue' AND ExecutionStatus='Running'" -o json > runs.json
+   jq -r '.[] | [.execution.workflowId,.execution.runId] | @tsv' runs.json > runs.tsv
+   ```
+
+3. 在仓库根目录执行下列命令。原库与维护库之间需要直连相同集群并有改名权限。脚本校验 store ID，写入无正文的切换记录，然后由 PG 原地改名。若仍有会话或 prepared transaction，PG 拒绝改名。完成正在提交的事务或人工核清未决事务后，在原 DSN 上重试。成功时脚本输出新库名。保持原库名退役。若脚本中途退出，先在维护库核对两个名字与 OID。
+
+   ```sh
+   psql -X "$OLD_DSN" -v schema="$studio_schema" -v store_id="$store_id" -f scripts/cutover-v8.sql
+   ```
+
+4. 只向 v8 分发新 DSN；原 schema 与对象路径保持一致。在入口仍关闭时，用 `MANGEKYO_PROCESS=web` 启动 v8 完成迁移。核对 PG 最新迁移与最低 Worker 版本均为 8，store ID 保持原值。启动同队列的 v8 Worker，设置唯一的 `MANGEKYO_BUILD_ID` 为下文的 `build`。待 v8 开始轮询，执行 `temporal worker deployment set-current-version --deployment-name "$queue" --build-id "$build"`。单机开发环境也可由 `MANGEKYO_ACTIVATE_LOCAL_BUILD=1` 完成选版。
+5. v6、v7 到本版的两个 Workflow 定义兼容同一历史。对原清单逐个修改**同一 Run** 的 PINNED 版本，保留原 Workflow ID、历史、Activity 重试及 PG 意图。
+
+   ```sh
+   while read -r workflow run; do
+     temporal workflow update-options --workflow-id "$workflow" --run-id "$run" \
+       --versioning-override-behavior pinned --versioning-override-deployment-name "$queue" \
+       --versioning-override-build-id "$build" </dev/null || exit 1
+     temporal workflow describe --workflow-id "$workflow" --run-id "$run" -o json </dev/null || exit 1
+   done < runs.tsv
+   ```
+
+6. 逐条核对 describe 中的 `versioningInfo.versioningOverride.pinned.version` 及后续 Workflow Task 使用的构建。若清单中的 Run 已关闭，查其终态和后继 Run，再处理仍在运行的后继。重复查询全队列，核对新增或续接的 Run 已在目标构建，核实原工作结果或仍有持久等待、协调器和未决 outbox 均可追踪。依配置恢复外发与用户入口。失败时保留当前 PG、对象和 Temporal 状态，入口继续关闭。此处设置的显式 pin 在下次不兼容升级时也需要迁移。
+
+旧版交入的本机原件可能没有 store-id 所有权标记。学习者确认后，服务器先写墓碑并封锁读取，无法核实归属的原件保留为 pending。本次原地切换不会为这些文件补签归属。
+
+**备份恢复另有前置条件。** 上述命令只迁移当前权威库。库内墓碑随快照一起回退，OID 和 store ID 无法证明备份时间点之后的删除、撤权、临时密钥销毁或收费发送。恢复副本须在断开客户端、对象读取、Temporal 中继及外发的隔离环境中校对，先取得独立账本从备份点到最近权威水位的完整证明，再应用阻断、清理对象与派生数据、核对在途发送及 Run。当前实现仅有同库墓碑与本机对象，缺少独立完整性证明时，恢复副本必须保持隔离。备份、其他设备、外部副本的物理清除状态仍为未核实。

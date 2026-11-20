@@ -1,13 +1,7 @@
-import {randomBytes} from 'node:crypto';
-import {fileURLToPath} from 'node:url';
-import pg from 'pg';
 import {expect,it} from 'vitest';
-import {createPgDb} from '../../../kernel/src/db/pg.ts';
 import {commandId, learnerId} from '../../../kernel/src/declarations/ids.ts';
 import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
-import {kernelSchemaStatements} from '../../../kernel/src/schema.ts';
 import {recordLocalRead} from '../../../kernel/src/work/effects.ts';
-import {loadModuleDirectory} from '../../../kernel/src/loader.ts';
 import {studioLearner,stableId} from '../identity.ts';
 import {resolveSource} from '../source-read.ts';
 import {openWorkbook} from '../workbook.ts';
@@ -21,27 +15,22 @@ import {workspaceQuery} from '../workspace-read.ts';
 import {openTextbook} from '../textbook.ts';
 import {readCurrentLearningObject} from '../current-learning-object.ts';
 import {openRelationReview} from '../workspace-relation.ts';
+import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
+import { loadStudioTestModule } from './modules.ts';
 
-const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
-it.skipIf(!connectionString)('reopens authorized workspace versions and searches directed knowledge links in PostgreSQL', async () => {
-  const schema = 'workspace_test_'+randomBytes(6).toString('hex');
-  const admin = createPgDb(new pg.Pool({connectionString}));
-  await admin.query('CREATE SCHEMA '+schema);
-  const db = createPgDb(new pg.Pool({connectionString}),{schema});
-  const body = '画出已知两段🧭：计时，再计时';
-  function turn(name:string) {
-    const host = openWorkspaceTools({db, turn:stableId(name), prior:[], authorize:async () => {}, track() {}, maySend:() => true});
-    return async (tool:string, args:Record<string,unknown>, step:number) => JSON.parse(await host.execute(tool,args,step));
-  }
-  async function author() {
-    const run = turn('author');
-    const source = await run('save_workspace',{kind:'concept',title:'时间线',body:'标出两段边界'},2);
-    const page = await run('save_workspace',{kind:'page',title:'分段计时',body,tags:['方法'],links:[source.id]},3);
-    return {source,page};
-  }
-  try {
-    for (const sql of kernelSchemaStatements) await db.query(sql);
-    await db.query('INSERT INTO learners (id) VALUES ($1)',[studioLearner]);
+it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches directed knowledge links in PostgreSQL', () =>
+  withLearnerDatabase(studioLearner, async db => {
+    const body = '画出已知两段🧭：计时，再计时';
+    function turn(name:string) {
+      const host = openWorkspaceTools({db, turn:stableId(name), prior:[], authorize:async () => {}, track() {}, maySend:() => true});
+      return async (tool:string, args:Record<string,unknown>, step:number) => JSON.parse(await host.execute(tool,args,step));
+    }
+    async function author() {
+      const run = turn('author');
+      const source = await run('save_workspace',{kind:'concept',title:'时间线',body:'标出两段边界'},2);
+      const page = await run('save_workspace',{kind:'page',title:'分段计时',body,tags:['方法'],links:[source.id]},3);
+      return {source,page};
+    }
     const first = await author();
     expect(await author()).toEqual(first);
     const edit = turn('editor');
@@ -69,10 +58,10 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(hidden).toMatchObject({ok:false, code:'not_found'});
     expect(hidden.content).toBeUndefined();
 
-    const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity',import.meta.url)));
-    const capture = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/capture', import.meta.url)));
-    const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
-    const plan = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/plan', import.meta.url)));
+    const activity = await loadStudioTestModule('activity');
+    const capture = await loadStudioTestModule('capture');
+    const content = await loadStudioTestModule('content');
+    const plan = await loadStudioTestModule('plan');
     const access = openWorkspaceAccess(db, activity, content, capture, plan); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
     const textbook = openTextbook(db, content, {async onFactsChanged() {}});
     const teachingPage = await textbook.create({learner:studioLearner, requestId:'textbook-teaching', clientEditSeq:0,
@@ -263,7 +252,7 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     paperRef.set('view','preview');
     expect(await access.record(privatePaper.id,paperRef)).toMatchObject({content:'写出速度单位。\n\n解释全程速度。'});
 
-    await admin.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA ${schema}`);
+    await db.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
     const graph = turn('graph');
     const concept = await graph('save_workspace', {kind:'concept', title:'平均速度 Kinematics', body:'用总路程和总时间。'}, 1);
     const originalQuestion = await graph('save_workspace', {kind:'question', title:'骑行题', tags:['运动'], body:'骑行全程的平均速度是多少？', answer:'答案检索隔离词'}, 2);
@@ -404,7 +393,4 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(blocked.result).toMatchObject({id:gradedAttemptId});
     expect(blocked.result.assessments).toBeUndefined();
     expect(blocked.bases).toEqual([]);
-  } finally {
-    await db.close(); await admin.query('DROP SCHEMA '+schema+' CASCADE'); await admin.close();
-  }
-});
+  }));
