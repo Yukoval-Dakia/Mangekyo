@@ -1,8 +1,27 @@
+import { installLegacyTodoView, installWorkIdAllocator } from './legacy-todo-view.ts';
 import type { DbQuery } from '../db/types.ts';
 
 /** V7 keeps both public identities: slot_key is the todo ID, id is the durable workflow's work ID. */
 export async function migrateTodoWork(tx: DbQuery) {
+  // V6 takes the learner row lock before touching either work table. Wait at that same
+  // boundary so an old transaction cannot straddle the table-to-view replacement.
+  await tx.query('LOCK TABLE learners IN EXCLUSIVE MODE');
   await tx.query('LOCK TABLE working_todos, work IN ACCESS EXCLUSIVE MODE');
+  const { rows: [invalid] } = await tx.query<{ learner_id: string; todo_id: string; reason: string }>(
+    `SELECT learner_id,todo_id,reason FROM (
+       SELECT t.learner_id,t.todo_id,CASE
+         WHEN t.dedup_key IS DISTINCT FROM t.spec->>'dedupKey' THEN 'dedup_key differs from spec'
+         WHEN t.state='pending' AND w.execution_ref IS NOT NULL THEN 'pending todo already has an execution'
+         WHEN t.state='dispatched' AND w.id IS NULL THEN 'dispatched todo has no execution'
+         WHEN t.state='dispatched' AND w.state='satisfied' THEN 'satisfied execution has no result'
+         WHEN t.state='dispatched' AND w.state='ready' AND o.intent_id IS NULL THEN 'ready execution has no matching intent'
+       END AS reason FROM working_todos t
+       LEFT JOIN work w ON w.learner_id=t.learner_id AND w.slot_type='working.todo' AND w.slot_key=t.todo_id
+       LEFT JOIN work_outbox o ON (o.learner_id,o.work_id,o.generation,o.intent_id)=
+         (w.learner_id,w.id,w.generation,w.execution_ref)
+     ) checked WHERE reason IS NOT NULL ORDER BY learner_id,todo_id LIMIT 1`);
+  if (invalid) throw new Error(`Cannot migrate v6 working_todos (${invalid.learner_id}, ${invalid.todo_id}): ${invalid.reason}`);
+  await installWorkIdAllocator(tx);
   await tx.query(`ALTER TABLE work
     DROP CONSTRAINT work_state_check,
     ADD COLUMN family text NOT NULL DEFAULT 'derivation' CHECK (family IN ('derivation','todo')),
@@ -29,7 +48,8 @@ export async function migrateTodoWork(tx: DbQuery) {
     SELECT learner_id,'working.todo',todo_id,'{}',registered_tick FROM working_todos ON CONFLICT DO NOTHING`);
   await tx.query(`INSERT INTO work (learner_id,id,slot_type,slot_key,deriver,state,family,spec,revision,
     chain_id,hop_count,registered_tick,requested_tick,result_id)
-    SELECT learner_id,todo_id,'working.todo',todo_id,spec->>'workerProfile',
+    SELECT learner_id,CASE WHEN EXISTS (SELECT 1 FROM work w WHERE w.learner_id=t.learner_id AND w.id=t.todo_id)
+      THEN kernel_work_ulid() ELSE todo_id END,'working.todo',todo_id,spec->>'workerProfile',
       CASE state WHEN 'pending' THEN 'pending' WHEN 'completed' THEN 'satisfied'
         WHEN 'cancelled' THEN 'cancelled' WHEN 'failed' THEN 'blocked' END,
       'todo',spec,revision,chain_id,hop_count,registered_tick,registered_tick,result_id
@@ -43,5 +63,6 @@ export async function migrateTodoWork(tx: DbQuery) {
   await tx.query(`CREATE UNIQUE INDEX work_active_todo ON work (learner_id,dedup_key)
     WHERE family='todo' AND state IN ('pending','ready','waiting')`);
   await tx.query('DROP TABLE working_todos');
-  await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=7');
+  await installLegacyTodoView(tx);
+  await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=GREATEST(minimum_worker_schema,6)');
 }

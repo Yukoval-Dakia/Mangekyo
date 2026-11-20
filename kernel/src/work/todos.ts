@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { DbQuery, DbTransaction, ReadTransaction } from '../db/types.ts';
 import { lockLearner } from '../db/learner.ts';
 import { factId, type Tick } from '../declarations/ids.ts';
-import { enqueueGeneration, setPending, requestWork, todoSlot, type WorkRequest } from './demand.ts';
+import { enqueueGeneration, setPending, requestWork, todoSlot, type WorkRef, type WorkRequest } from './demand.ts';
 import { newUlid } from './identity.ts';
 
 export { todoSlot };
@@ -40,6 +40,7 @@ export type TodoInput = z.input<typeof todoSpec>;
 export type TodoSpec = z.output<typeof todoSpec>;
 type TodoState = 'pending' | 'dispatched' | 'completed' | 'cancelled' | 'failed';
 export type Todo = {
+  learner: string;
   id: string;
   spec: TodoSpec;
   revision: number;
@@ -81,7 +82,7 @@ export async function migrateWorkingState(tx: DbQuery) {
   )`);
 }
 
-const columns = `slot_key AS id, spec, revision, CASE state
+const columns = `learner_id AS learner, slot_key AS id, spec, revision, CASE state
   WHEN 'pending' THEN 'pending' WHEN 'ready' THEN 'dispatched' WHEN 'waiting' THEN 'dispatched'
   WHEN 'satisfied' THEN 'completed' WHEN 'cancelled' THEN 'cancelled' ELSE 'failed' END AS state, chain_id AS "chainId",
   hop_count AS "hopCount", registered_tick::text AS "registeredTick", result_id AS "resultId"`;
@@ -106,12 +107,12 @@ export async function enqueueWork(tx: DbTransaction, tick: Tick, work: WorkReque
   return requestWork(tx, tick, work);
 }
 
-async function transition(tx: DbTransaction, todo: Todo, state: 'cancelled' | 'blocked' | 'satisfied', resultId?: string) {
+async function transition(tx: DbTransaction, todo: Todo, state: 'cancelled' | 'blocked') {
   const { rowCount } = await tx.query(
-    `UPDATE work SET state = $3, result_id = $4, revision = revision + 1
-     WHERE family='todo' AND learner_id = $1 AND slot_key = $2 AND revision = $5
+    `UPDATE work SET state = $3, revision = revision + 1
+     WHERE family='todo' AND learner_id = $1 AND slot_key = $2 AND revision = $4
        AND state IN ('pending','ready','waiting')`,
-    [tx.learner, todo.id, state, resultId ?? null, todo.revision],
+    [tx.learner, todo.id, state, todo.revision],
   );
   if (rowCount) await setPending(tx, { slotType: todoSlot, slotKey: todo.id }, 'none');
   return rowCount === 1;
@@ -151,7 +152,7 @@ export async function emitTodo(tx: DbTransaction, tick: Tick, input: TodoInput, 
       parent.state === 'failed' || (!completionParent && parent.state !== 'completed')))
     return null;
   const id = newUlid();
-  const todo: Todo = { id, spec, state: 'pending', revision: 1, chainId: parent?.chainId ?? id,
+  const todo: Todo = { learner: tx.learner, id, spec, state: 'pending', revision: 1, chainId: parent?.chainId ?? id,
     hopCount: parent ? parent.hopCount + 1 : 0, registeredTick: tick, resultId: null };
   await tx.insert('slot_state', {
     learner_id: tx.learner, slot_type: todoSlot, slot_key: id, scope_keys: '{}', changed_tick: tick,
@@ -210,8 +211,15 @@ export async function recordTodoEvent(tx: DbTransaction, tick: Tick, input: Todo
   [tx.learner, type, subject, tick]);
 }
 
-export async function completeTodo(tx: DbTransaction, tick: Tick, todo: Todo, resultId: string) {
-  if (todo.state !== 'dispatched' || !await transition(tx, todo, 'satisfied', resultId)) return false;
+export async function completeTodo(tx: DbTransaction, tick: Tick, ref: WorkRef, todo: Todo, resultId: string) {
+  if (ref.learner !== tx.learner || todo.learner !== tx.learner || todo.state !== 'dispatched') return false;
+  const updated = await tx.query(
+    `UPDATE work SET state='satisfied', result_id=$6, revision=revision+1
+     WHERE learner_id=$1 AND id=$2 AND generation=$3 AND slot_key=$4 AND revision=$5
+       AND family='todo' AND state='ready'`, [ref.learner, ref.workId, ref.generation, todo.id, todo.revision, resultId],
+  );
+  if (!updated.rowCount) return false;
+  await setPending(tx, { slotType: todoSlot, slotKey: todo.id }, 'none');
   await recordTodoEvent(tx, tick, { type: 'on_work_completed', subject: todo.id });
   return true;
 }

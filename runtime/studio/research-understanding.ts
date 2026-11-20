@@ -250,7 +250,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
             !await settingsCurrent(tx, todo.spec.settingsRevision) || !await eligibleExtraction(tx, todo.spec) ||
             (await openUnderstandingCitations(tx, citations)).length !== citations.length ||
             await learnerGovernedSince(tx, source.born, source.ref.id) ||
-            !await completeTodo(tx, tick, current, entries[0]!.id)) throw new ClaimInputError('抽取工作已失效。');
+            !await completeTodo(tx, tick, ref, current, entries[0]!.id)) throw new ClaimInputError('抽取工作已失效。');
       }}});
       await handle({...scope, id: command, type: publishUnderstandingCommand, actor: 'companion',
         purpose: researchPurpose, input: {entries}});

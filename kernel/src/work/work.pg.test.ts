@@ -229,7 +229,13 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(await sweep(8)).toMatchObject({ advanced: true });
     expect((await inspect(next.id))?.state).toBe('pending');
     const dispatched = (await inspect(root.id))!;
-    await db.tx({ learner }, tx => tx.withLearnerWrite(tick => completeTodo(tx, tick, dispatched, source.id)));
+    const ref = { learner, workId: root.id, generation: '1' };
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+      expect(await completeTodo(tx, tick, { ...ref, generation: '2' }, dispatched, source.id)).toBe(false);
+      expect(await completeTodo(tx, tick, { ...ref, learner: newUlid() }, dispatched, source.id)).toBe(false);
+      expect(await completeTodo(tx, tick, ref, { ...dispatched, learner: newUlid() }, source.id)).toBe(false);
+      expect(await completeTodo(tx, tick, ref, dispatched, source.id)).toBe(true);
+    }));
     expect(await edit(next, { kind: 'update', patch: { expiresAtMs: 60 } })).toBe(true);
     expect(await sweep(8)).toMatchObject({ advanced: true });
     expect(await inspect(next.id)).toMatchObject({ state: 'dispatched', chainId: root.id, hopCount: 1 });
@@ -243,6 +249,35 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(await db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
       updateOrCancelTodo(tx, tick, tail.id, tail.revision, { kind: 'cancel' }, 8, eligible)))).toBe(true);
     expect((await inspect(tail.id))?.state).toBe('cancelled');
+  });
+
+  it('keeps v6 SQL on the same work row while old pinned workers drain', async () => {
+    await applyKernelSchema(db);
+    const id = newUlid();
+    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const spec: TodoInput = { dedupKey: 'legacy', goal: 'Review', trigger: { kind: 'immediate' },
+      workerProfile: 'deterministic_compute', budgetCap: 0, refs: [], sourceFactRev: source,
+      autonomyTier: 1, settingsRevision: 1, expiresAtMs: 50 };
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+      await tx.insert('working_todos', { learner_id: learner, todo_id: id, dedup_key: spec.dedupKey,
+        spec: JSON.stringify(spec), state: 'pending', chain_id: id, hop_count: 0, registered_tick: tick });
+      await tx.query("UPDATE working_todos SET state='dispatched',revision=revision+1 WHERE todo_id=$1 AND revision=1", [id]);
+      // V6 requestWork reuses a ready generation with matching tick and worker.
+      const current = (await tx.query("SELECT FROM work WHERE learner_id=$1 AND slot_key=$2 AND state='ready' AND requested_tick=$3 AND deriver=$4",
+        [learner, id, tick, spec.workerProfile])).rowCount;
+      expect(current).toBe(1);
+    }));
+    const [row] = (await db.query<{ intent_id: string }>('SELECT intent_id FROM work_outbox')).rows;
+    const ref = await acknowledgeStartedWork(db, row!.intent_id);
+    expect(ref).toBeTruthy();
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async () => {
+      await tx.query("UPDATE work SET state='blocked' WHERE learner_id=$1 AND id=$2 AND generation=$3",
+        [learner, ref!.workId, ref!.generation]);
+    }));
+    expect((await db.query("SELECT state,revision FROM working_todos WHERE todo_id=$1", [id])).rows)
+      .toEqual([{ state: 'failed', revision: 3 }]);
+    expect((await db.query("SELECT relkind FROM pg_class WHERE oid='working_todos'::regclass")).rows)
+      .toEqual([{ relkind: 'v' }]);
   });
 
   it('prioritizes admitted todos and fences cancellation after a durable start', async () => {
@@ -266,7 +301,7 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     const cancel = await db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
       updateOrCancelTodo(tx, tick, foreground.id, foreground.revision, { kind: 'cancel' }, 2, async () => true)));
     expect(cancel).toBe(true);
-    expect(await db.tx({ learner }, tx => tx.withLearnerWrite(tick => completeTodo(tx, tick, foreground, source.id)))).toBe(false);
+    expect(await db.tx({ learner }, tx => tx.withLearnerWrite(tick => completeTodo(tx, tick, { learner, workId: foreground.id, generation: '1' }, foreground, source.id)))).toBe(false);
     expect(await relayPending(db, async () => {})).toBe(0);
     expect((await db.query("SELECT count(*)::int AS count FROM work_outbox")).rows).toEqual([{ count: 2 }]);
   });
