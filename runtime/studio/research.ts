@@ -341,7 +341,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
           hooks: { async onFactsChanged(tx, tick) {
             const current = await readTodo(tx, todoId);
             if (current?.revision !== prepared.todo.revision || !(await readReadyWork(tx, ref)) ||
-                !(await eligibleBasis(tx, current.spec)) || !await completeTodo(tx, tick, current, prepared.id))
+                !(await eligibleBasis(tx, current.spec)) || !await completeTodo(tx, tick, ref, current, prepared.id))
               throw new ResearchBasisChanged('工作单已失效。');
             await enqueueWork(tx, tick, wake);
           } },

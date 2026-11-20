@@ -2,6 +2,8 @@ import type { DbTransaction, ReadTransaction } from '../db/types.ts';
 import type { Tick } from '../declarations/ids.ts';
 import { newUlid } from './identity.ts';
 
+export const todoSlot = 'working.todo';
+
 export type WorkRef = {
   readonly learner: string;
   readonly workId: string;
@@ -24,6 +26,7 @@ type CurrentWork = {
 /** Register demand with the caller's existing learner write lock and tick. */
 export async function requestWork(tx: DbTransaction, tick: Tick, request: WorkRequest): Promise<WorkRef> {
   const { slotType, slotKey, deriver } = request;
+  if (slotType === todoSlot) throw new Error('Register working.todo through emitTodo');
   const { rows: [current] } = await tx.query<CurrentWork>(
     `SELECT id, generation::text, deriver, state, requested_tick::text FROM work
      WHERE learner_id = $1 AND slot_type = $2 AND slot_key = $3`,
@@ -68,6 +71,12 @@ export async function writeReadyGeneration(
       execution_ref: executionRef,
     });
   }
+  return enqueueGeneration(tx, request, { learner: tx.learner, workId, generation }, executionRef);
+}
+
+export async function enqueueGeneration(tx: DbTransaction, slot: Pick<WorkRequest, 'slotType' | 'slotKey'>, ref: WorkRef, executionRef: string) {
+  const { slotType, slotKey } = slot;
+  const { workId, generation } = ref;
   await tx.query(
     `UPDATE slot_state SET pending = 'queued',
         last_error = CASE WHEN last_error->>'status' = 'blocked' THEN NULL ELSE last_error END
@@ -81,7 +90,7 @@ export async function writeReadyGeneration(
     generation,
     state: 'pending',
   });
-  return { learner: tx.learner, workId, generation };
+  return ref;
 }
 
 export function clearWaits(tx: DbTransaction, workId: string) {
