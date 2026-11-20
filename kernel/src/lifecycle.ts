@@ -26,15 +26,46 @@ export async function migrateLifecycle(tx: DbQuery) {
     learner_id text NOT NULL REFERENCES learners(id), request_id text NOT NULL, root_id text NOT NULL,
     expected_rev integer NOT NULL, generation bigint NOT NULL, object_removed boolean NOT NULL DEFAULT false,
     PRIMARY KEY (learner_id,request_id), UNIQUE (learner_id,root_id))`);
+  await tx.query(`CREATE TABLE erased_effect_receipts (
+    learner_id text NOT NULL REFERENCES learners(id), provider_effect_id text NOT NULL,
+    owner_id text NOT NULL, started_tick bigint NOT NULL, erased_tick bigint NOT NULL,
+    settlement text NOT NULL CHECK (settlement IN ('done','unknown')),
+    PRIMARY KEY (learner_id,provider_effect_id))`);
+  await tx.query('ALTER TABLE effects ADD COLUMN input_basis jsonb');
+  // A trusted gather with only direct fact inputs can outlive an unrelated erasure.
+  // The immutable reservation owns this evidence. A legacy callback cannot supply it at settlement.
+  await tx.query(`CREATE FUNCTION effect_may_settle(who text, owner text, started bigint, basis jsonb)
+    RETURNS boolean LANGUAGE sql STABLE AS $$
+      WITH fence AS (SELECT EXISTS (SELECT FROM erasure_requests WHERE learner_id=who AND generation>started) AS crossed)
+      SELECT CASE WHEN basis IS NULL THEN NOT crossed ELSE
+        basis->'manifest'->>'learner'=who AND jsonb_array_length(basis->'manifest'->'inputs')>0
+        AND NOT EXISTS (SELECT FROM jsonb_array_elements(basis->'manifest'->'inputs') i
+          WHERE NOT EXISTS (SELECT FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id)=(f.learner_id,f.id)
+            WHERE f.learner_id=who AND f.id=i->>'id' AND i->>'kind'='fact' AND r.rev=(i->>'rev')::integer
+              AND r.kind='value' AND f.retracted_rev IS NULL
+              AND (NOT crossed OR (r.author='learner' AND r.source_derivation_id IS NULL))
+              AND r.tick<=(basis->'manifest'->>'gatherTick')::bigint AND f.access_epoch=(i->>'accessEpoch')::bigint
+              AND (i->>'mode'='pinned' OR (i->>'mode'='following' AND f.current_rev=r.rev))
+              AND f.purpose && ARRAY[basis->'manifest'->>'purpose','all'] AND r.purpose && ARRAY[basis->'manifest'->>'purpose','all']))
+        AND (NOT (basis ? 'work') OR EXISTS (SELECT FROM work w WHERE w.learner_id=who AND w.state='ready'
+          AND w.id=basis->'work'->>'workId' AND w.generation=(basis->'work'->>'generation')::bigint
+          AND w.gather->>'id'=owner AND w.gather_manifest=basis->'manifest')) END FROM fence
+    $$`);
   // Legacy effect completions carry a reservation tick even when their owner differs from the erased fact.
   await tx.query(`CREATE FUNCTION reject_erased_identity() RETURNS trigger LANGUAGE plpgsql AS $$
     DECLARE target text;
     BEGIN
       IF TG_TABLE_NAME='effects' THEN
         target := NEW.owner_id;
-        IF TG_OP='UPDATE' AND EXISTS (SELECT FROM erasure_requests
-            WHERE learner_id=OLD.learner_id AND generation>OLD.started_tick) THEN
-          RAISE EXCEPTION 'Effect reservation predates erasure' USING ERRCODE='55000';
+        IF TG_OP='UPDATE' AND (NEW.input_basis,NEW.started_tick,NEW.provider_effect_id,NEW.learner_id,NEW.owner_id)
+            IS DISTINCT FROM (OLD.input_basis,OLD.started_tick,OLD.provider_effect_id,OLD.learner_id,OLD.owner_id) THEN
+          RAISE EXCEPTION 'Effect input basis is immutable' USING ERRCODE='55000';
+        END IF;
+        IF effect_may_settle(NEW.learner_id,target,NEW.started_tick,NEW.input_basis) IS NOT TRUE THEN
+          IF NEW.input_basis IS NULL THEN
+            RAISE EXCEPTION 'Effect reservation predates erasure' USING ERRCODE='55000';
+          END IF;
+          RAISE EXCEPTION 'Effect inputs no longer authorized' USING ERRCODE='55000';
         END IF;
       ELSE target := NEW.id;
       END IF;
@@ -115,6 +146,9 @@ export async function eraseOriginal(db: Db, scope: LearnerScope, request: Erasur
       await tx.query(`DELETE FROM commands WHERE learner_id=$1 AND id IN (${commands})`, [tx.learner,tick]);
       await tx.query('DELETE FROM fact_revs WHERE learner_id=$1 AND fact_id=ANY($2)', [tx.learner,ids]);
       await tx.query('DELETE FROM facts WHERE learner_id=$1 AND id=ANY($2)', [tx.learner,ids]);
+      await tx.query(`INSERT INTO erased_effect_receipts(learner_id,provider_effect_id,owner_id,started_tick,erased_tick,settlement)
+        SELECT learner_id,provider_effect_id,owner_id,started_tick,$3,CASE WHEN state='done' THEN 'done' ELSE 'unknown' END
+        FROM effects WHERE learner_id=$1 AND owner_id=ANY($2) AND provider_effect_id IS NOT NULL`, [tx.learner,ids,tick]);
       await tx.query('DELETE FROM effects WHERE learner_id=$1 AND owner_id=ANY($2)', [tx.learner,ids]);
       await tx.query(`UPDATE work SET state='cancelled',generation=generation+1,execution_ref=NULL,gather=NULL,gather_manifest=NULL
         WHERE learner_id=$1 AND slot_key=ANY($2) AND family='derivation'`, [tx.learner,ids]);

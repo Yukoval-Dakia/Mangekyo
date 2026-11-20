@@ -162,6 +162,10 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
       read:async () => { throw new Error('late result reached polling'); },
     }).execute(ref!);
     await entered.promise;
+    const documentId = intakeIdFor(factId(prior.id));
+    const { rows: [sent] } = await db.query<{provider_effect_id:string; started_tick:string}>(
+      'SELECT provider_effect_id,started_tick FROM effects WHERE learner_id=$1 AND owner_id=$2', [studioLearner,documentId]);
+    expect(sent?.provider_effect_id).toBeTruthy();
     await db.query(`INSERT INTO effects (learner_id,owner_kind,owner_id,step_key,label,input_digest,state,started_tick)
       SELECT id,'session','legacy-session','call','external','digest','started',clock FROM learners WHERE id=$1`, [studioLearner]);
     const confirmed = 'permanently-delete-original';
@@ -184,6 +188,8 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
       expect(stale.status).toBe(409);
       expect(await stale.json()).toMatchObject({code:'deletion_watermark_stale'});
     } finally { release.resolve('private-late-result'); await running; }
+    expect((await db.query('SELECT * FROM erased_effect_receipts WHERE learner_id=$1 AND owner_id=$2', [studioLearner,documentId])).rows)
+      .toEqual([{learner_id:studioLearner,owner_id:documentId,...sent,erased_tick:(await state()).watermark,settlement:'unknown'}]);
     // A worker that loaded v7 before migration cannot reinstall the identity.
     await expect(db.query(`INSERT INTO facts(learner_id,id,type,current_rev,created_tick,changed_tick)
       VALUES ($1,$2,'legacy',1,1,1)`,[studioLearner,prior.id])).rejects.toThrow('Erased identity');

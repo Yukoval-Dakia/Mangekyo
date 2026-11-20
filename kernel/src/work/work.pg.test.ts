@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {recordLocalRead} from './effects.ts';
 import { createPgDb } from '../db/pg.ts';
 import type { Db, DbTransaction } from '../db/types.ts';
-import { learnerId } from '../declarations/ids.ts';
+import { factId, learnerId } from '../declarations/ids.ts';
 import type { Json, Outcome } from '../declarations/types.ts';
 import { gatherSnapshot } from '../derivations/gather.ts';
 import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../schema.ts';
@@ -345,6 +345,32 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(read).toHaveBeenCalledTimes(1);
     await expect(recordLocalRead(db,step,read,async () => {throw new Error('revoked');})).rejects.toThrow('revoked');
     await expect(recordLocalRead(db,{...step,input:{query:'new'}},read,allow)).rejects.toThrow('does not match');
+  });
+  it('settles a fact-scoped reservation across another erasure and blocks revoked replay', async () => {
+    await applyKernelSchema(db);
+    const id = factId(newUlid());
+    await db.tx({learner}, tx => tx.withLearnerWrite(async tick => {
+      await tx.insert('facts', {learner_id:learner,id,type:'test.answer',current_rev:1,created_tick:tick,changed_tick:tick});
+      await tx.insert('fact_revs', {learner_id:learner,fact_id:id,rev:1,data:'{}',kind:'value',purpose:['storage'],
+        sticky:false,author:'learner',command_id:'fixture',tick});
+    }));
+    const {manifest} = await gatherSnapshot(db, {learner,purpose:'storage'}, async ({read}) => {
+      await read.fact(id, {mode:'following'});
+      return {kind:'input',data:null,effects:[]};
+    });
+    const request = {learner,ownerKind:'session' as const,ownerId:id,stepKey:'grade',label:'model',input:{}};
+    const send = vi.fn(async () => {
+      await db.tx({learner}, tx => tx.withLearnerWrite(tick => tx.insert('erasure_requests', {
+        learner_id:learner,request_id:'fixture',root_id:'unrelated',expected_rev:1,generation:tick,
+      })));
+      return 'scored';
+    });
+    expect(await runEffect(db,request,send,undefined,{manifest})).toEqual({kind:'done',result:'scored'});
+    await db.query('UPDATE facts SET access_epoch=access_epoch+1 WHERE learner_id=$1 AND id=$2',[learner,id]);
+    await expect(runEffect(db,request,send)).rejects.toThrow('Effect inputs no longer authorized');
+    await expect(db.query("UPDATE effects SET result='42' WHERE learner_id=$1 AND owner_id=$2",[learner,id]))
+      .rejects.toMatchObject({code:'55000'});
+    expect(send).toHaveBeenCalledTimes(1);
   });
   it('authorizes effect reservations and replays while reusing the durable outcome', async () => {
     await applyKernelSchema(db);

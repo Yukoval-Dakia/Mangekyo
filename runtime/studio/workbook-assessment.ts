@@ -20,7 +20,7 @@ import {
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import formalAssessmentSlot from '../../modules/activity/slots/workbook-formal-assessment.ts';
 import {
-  sameWorkbookJson, workbookAssessmentConsent, workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
+  independentlyAuthoredPaper, sameWorkbookJson, workbookAssessmentConsent, workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
   workbookFormalAssessmentType, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookDraft,
 } from '../../modules/activity/workbook-values.ts';
 import {
@@ -75,6 +75,7 @@ type FrozenInputs = {
   submission: AssessmentSubmission;
   questions: Record<string, { prompt: string; rubric: string }>;
   consent: boolean;
+  independent?: boolean;
 };
 type Evaluation = {
   outcome: AssessmentCriterionOutcome;
@@ -214,6 +215,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
           questions: Object.fromEntries(paper.questions.flatMap(question => question.kind === 'rubric' &&
             release.items.some(({ itemId }) => itemId === question.id)
             ? [[question.id, { prompt: question.prompt, rubric: question.rubric }]] : [])),
+          independent: independentlyAuthoredPaper(paper) && independentlyAuthoredPaper(attempt.paper),
           consent: attempt.assessmentConsent === workbookAssessmentConsent,
         };
         return { kind: 'input', data: input, effects: [] };
@@ -225,7 +227,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
         return;
       }
       // Only this adapter writes the versioned gather plan. Use the sealed copy on activity retry.
-      const { release, submission, questions, consent } = sealed.plan.data as FrozenInputs;
+      const { release, submission, questions, consent, independent } = sealed.plan.data as FrozenInputs;
       const authorize = async (tx: ReadTransaction) => {
         if (!(await readReadyWork(tx, ref)) || (await revalidateManifest(tx, sealed.manifest)).kind !== 'valid')
           throw new AssessmentInputUnavailable();
@@ -265,7 +267,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
             const { itemId: _, ...scoringInput } = input;
             const result = boundedReply(await route.score({ providerEffectId, ...scoringInput }));
             return { providerEffectId, result, denied: false };
-          }, authorize);
+          }, authorize, independent ? {manifest: sealed.manifest, work: ref} : undefined);
           evaluated.push(evaluation(key, criterion, answer.value, routeId, effect));
         }
       }

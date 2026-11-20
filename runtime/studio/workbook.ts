@@ -26,7 +26,7 @@ import {
   textMaterial,
 } from '../../modules/activity/library-values.ts';
 import {
-  gradeWorkbook,
+  gradeWorkbook, independentlyAuthoredPaper,
   saveWorkbookPaperCommand,
   submitWorkbookAttemptCommand,
   workbookAttempt,
@@ -514,7 +514,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         invalid(error, '评分标准批改请求无效。');
       }
       const selected = await db.snapshot({ learner: studioLearner }, async (tx) => {
-        await readPaper(tx, paperId);
+        const paper = await readPaper(tx, paperId);
         const attempt = await readAttemptOrNull(tx, attemptId);
         if (!attempt || attempt.paperId !== paperId) {
           throw new RequestError(404, '找不到这次作答。');
@@ -543,6 +543,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           question,
           answer,
           assessmentId: id,
+          independent: independentlyAuthoredPaper(paper) && independentlyAuthoredPaper(attempt.paper),
           manifest, existing: (await allAssessments(tx, paperId, id)).get(attemptId)?.[0],
         };
       });
@@ -583,6 +584,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
             if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new RequestError(409, '公开检索授权已撤回。');
             if ((await revalidateManifest(tx, selected.manifest)).kind !== 'valid') throw new RequestError(409, '批改依据已经变化。');
           },
+          selected.independent && !request.publicSearchQuery ? { manifest: selected.manifest } : undefined,
         );
         if (effect.kind === 'unknown') {
           throw new UncertainRubricEffect(
