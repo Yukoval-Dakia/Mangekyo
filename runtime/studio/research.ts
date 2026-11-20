@@ -144,7 +144,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     const enabled = (await settings(tx))?.enabled ?? false;
     const fact = await readRetentionPermission(tx, key);
     const active = fact && await activeRetentionReview(tx, fact);
-    const opened = active && await readWorksheetById(tx, worksheetId(fact.ref.id, fact.ref.rev, fact.accessEpoch));
+    const opened = enabled && active && await readWorksheetById(tx, worksheetId(fact.ref.id, fact.ref.rev, fact.accessEpoch));
     return { enabled, revision: fact?.ref.rev ?? 0, allowed: Boolean(active),
       worksheet: opened ? opened.worksheet : null };
   });

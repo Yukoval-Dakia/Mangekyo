@@ -33,7 +33,7 @@ function Reconciliation({ recordKey }: { recordKey: string }) {
   if (data.state !== 'current') return <p role="status">已交卷，当前没有可读的对账结果。 <a href={location.href}>重新读取</a></p>;
   const { status, observation } = data.value;
   return <>
-    <dl>
+    <dl id="posttest-result" tabIndex={-1}>
       <dt>作答结果</dt><dd>{{ correct: '答对', incorrect: '答错', unknown: '未知' }[observation.result] ?? '未知'}</dd>
       <dt>帮助情况</dt><dd>{{ independent: '独立作答', exposed: '接触过帮助', unknown: '未知' }[observation.exposure.kind] ?? '未知'}</dd>
       <dt>预测对账</dt><dd>{verdictLabels[status] ?? '未知'}</dd>

@@ -219,7 +219,7 @@ export function ReconciliationResearch({ recordKey }: { recordKey: string }) {
         {view.worksheet ? <>
           <WorksheetContents sheet={view.worksheet} />
           {view.worksheet.digest && <p>{view.worksheet.digest}</p>}
-          <a href={view.worksheet.source.href}>查看对账来源</a>
+          <a href="#posttest-result">查看对账来源</a>
         </> : <p>此次摘要已开放，暂未生成复习单。 <button type="button" className="text-button" onClick={refresh}>重新查看</button></p>}
       </div>}
     </>}
