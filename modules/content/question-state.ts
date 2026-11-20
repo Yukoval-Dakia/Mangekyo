@@ -1,5 +1,5 @@
 import { type FactId, type FactSnapshot, type Json, type ReadContext, type Revision } from '@mangekyo/kernel';
-import { assetType, checkQuestionTeachingSources, freezeQuestionAssessment, parseTextbookBasis, questionAsset } from './asset.ts';
+import { assetType, checkQuestionTeachingSources, checkTextbookBasis, freezeQuestionAssessment, parseTextbookBasis, questionAsset } from './asset.ts';
 import { contentStableId, normalizeKnowledgeName } from './knowledge-entity.ts';
 import { fields, list, pageId, record, revision, text } from './parse.ts';
 import { parseQuestionMetadata } from './question-authoring.ts';
@@ -143,6 +143,20 @@ export async function openQuestionForRelease(
 
 export function questionMetaDraftId(question: FactSnapshot['ref']) {
   return contentStableId(questionMetaDraftType, question.id, String(question.rev));
+}
+
+export async function openQuestionMetaDraft(read: Pick<ReadContext, 'fact'>, question: FactSnapshot['ref']) {
+  const target = await read.fact(question.id, { mode: 'pinned', rev: question.rev });
+  if (target.ref.learner !== question.learner || target.type !== assetType) throw new Error('请选择授权的题版。');
+  await checkTextbookBasis(read, questionAsset(target.value).basis ?? []);
+  const snapshot = await read.fact(await questionMetaDraftId(question), { mode: 'following' });
+  if (snapshot.ref.learner !== question.learner || snapshot.type !== questionMetaDraftType) {
+    throw new Error('活元信息记录类型或归属不匹配。');
+  }
+  const draft = parseQuestionMetaDraft(snapshot.value);
+  if (draft.id !== question.id || draft.expectedRev !== question.rev) throw new Error('活元信息与题版不匹配。');
+  await checkTextbookBasis(read, draft.basis);
+  return { snapshot, draft };
 }
 
 export function validateQuestionMetaReferences(draft: QuestionMetaDraft) {

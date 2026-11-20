@@ -1,0 +1,204 @@
+{
+  "question": {
+    "id": "01KFS4AAA00000000000000001",
+    "purpose": "teaching",
+    "asset": {
+      "kind": "question",
+      "title": "平均速度",
+      "promptBlockId": "prompt",
+      "blocks": [
+        {
+          "id": "prompt",
+          "parentId": null,
+          "body": {
+            "kind": "text",
+            "text": "两段路分别走 1 小时和 2 小时，如何求全程平均速度？"
+          }
+        }
+      ]
+    }
+  },
+  "concepts": [
+    {
+      "id": "01KFS4AAA00000000000000002",
+      "entity": {
+        "kind": "concept",
+        "canonicalName": "平均速度",
+        "aliases": [
+          "均速"
+        ]
+      },
+      "resolution": {
+        "decision": "no-match",
+        "reason": "核对候选后确认这是独立概念。",
+        "candidates": [],
+        "sourceUses": [
+          {
+            "id": "01KFS4AAA00000000000000001",
+            "rev": 1,
+            "accessEpoch": "0"
+          }
+        ]
+      },
+      "purpose": "teaching"
+    },
+    {
+      "id": "01KFS4AAA00000000000000003",
+      "entity": {
+        "kind": "concept",
+        "canonicalName": "全程平均速度",
+        "aliases": [
+          "总路程除以总用时"
+        ]
+      },
+      "resolution": {
+        "decision": "no-match",
+        "reason": "核对候选后确认这是独立概念。",
+        "candidates": [],
+        "sourceUses": [
+          {
+            "id": "01KFS4AAA00000000000000001",
+            "rev": 1,
+            "accessEpoch": "0"
+          }
+        ]
+      },
+      "purpose": "teaching"
+    }
+  ],
+  "edge": {
+    "id": "01KFS4AAA00000000000000004",
+    "purpose": "teaching",
+    "edge": {
+      "kind": "targets_concept",
+      "from": {
+        "kind": "question",
+        "sourceUse": {
+          "id": "01KFS4AAA00000000000000001",
+          "rev": 1,
+          "accessEpoch": "0"
+        }
+      },
+      "to": {
+        "kind": "concept",
+        "sourceUse": {
+          "id": "01KFS4AAA00000000000000002",
+          "rev": 1,
+          "accessEpoch": "0"
+        }
+      },
+      "sourceUses": [
+        {
+          "id": "01KFS4AAA00000000000000001",
+          "rev": 1,
+          "accessEpoch": "0"
+        },
+        {
+          "id": "01KFS4AAA00000000000000002",
+          "rev": 1,
+          "accessEpoch": "0"
+        }
+      ],
+      "scope": "平均速度计算"
+    }
+  },
+  "split": {
+    "action": "split",
+    "id": "01KFS4AAA00000000000000002",
+    "expectedRev": 1,
+    "purpose": "teaching",
+    "reason": "等时与不等时的平均速度需要分别识别。",
+    "children": [
+      {
+        "id": "01KFS4AAA00000000000000005",
+        "entity": {
+          "kind": "concept",
+          "canonicalName": "等时平均速度",
+          "aliases": [
+            "等时均速"
+          ]
+        },
+        "resolution": {
+          "decision": "no-match",
+          "reason": "核对候选后确认这是独立概念。",
+          "candidates": [],
+          "sourceUses": [
+            {
+              "id": "01KFS4AAA00000000000000001",
+              "rev": 1,
+              "accessEpoch": "0"
+            }
+          ]
+        }
+      },
+      {
+        "id": "01KFS4AAA00000000000000006",
+        "entity": {
+          "kind": "concept",
+          "canonicalName": "不等时平均速度",
+          "aliases": [
+            "时间加权均速"
+          ]
+        },
+        "resolution": {
+          "decision": "no-match",
+          "reason": "核对候选后确认这是独立概念。",
+          "candidates": [],
+          "sourceUses": [
+            {
+              "id": "01KFS4AAA00000000000000001",
+              "rev": 1,
+              "accessEpoch": "0"
+            }
+          ]
+        }
+      }
+    ],
+    "reattachments": [
+      {
+        "edge": {
+          "id": "01KFS4AAA00000000000000004",
+          "rev": 1,
+          "accessEpoch": "0"
+        },
+        "childId": "01KFS4AAA00000000000000006",
+        "evidence": [
+          {
+            "id": "01KFS4AAA00000000000000001",
+            "rev": 1,
+            "accessEpoch": "0"
+          }
+        ]
+      }
+    ]
+  },
+  "merge": {
+    "action": "merge",
+    "id": "01KFS4AAA00000000000000002",
+    "expectedRev": 1,
+    "into": "01KFS4AAA00000000000000003",
+    "targetRev": 1
+  },
+  "questionMeta": {
+    "id": "01KFS4AAA00000000000000001",
+    "expectedRev": 1,
+    "expectedMetaRev": 1,
+    "append_metadata": {
+      "solutions": [
+        {
+          "method": "时间加权",
+          "explanation": "用总路程除以总用时。",
+          "source_ref": "01KFS4AAA00000000000000001"
+        }
+      ]
+    },
+    "basis": [
+      {
+        "id": "01KFS4AAA00000000000000001",
+        "rev": 1,
+        "epoch": "0",
+        "type": "content.asset"
+      }
+    ]
+  }
+}

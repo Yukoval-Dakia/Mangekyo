@@ -394,6 +394,22 @@ export async function openBusKnowledgeEdge(
   return { ...revision, from_ref: edge.from, to_ref: edge.to, kind: edge.kind, basis, confidence: edge.confidence ?? null };
 }
 
+/** Reopen the relation itself at a fixed or current revision, together with its authorized evidence. */
+export async function openKnowledgeEdgeRevision(
+  ctx: AssetReadContext, id: FactId, options: Parameters<AssetReadContext['read']['fact']>[1],
+) {
+  const snapshot = await ctx.read.fact(id, options);
+  if (snapshot.type !== knowledgeEdgeType) throw new KnowledgeEdgeBasisError('图谱边类型不符。');
+  const edge = parseKnowledgeEdge(snapshot.value);
+  await verifyKnowledgeEdge(ctx, edge);
+  if (edge.verification) {
+    const { verification, ...claim } = edge;
+    const proof = await readKnowledgeUse(ctx, verification);
+    if (!matchingKnowledgeEdgeEvidence(proof, claim)) throw new KnowledgeEdgeBasisError('图谱核验证据失效。');
+  }
+  return { snapshot, edge };
+}
+
 /** Direction names refer to the original from/to endpoints. Unknown exposure is ineligible. */
 export function canUseDistinguishingVariant(edge: KnowledgeEdge, previous: FactId, exposure: 'unseen' | 'solution_seen' | 'unknown',
   requiredRelation: 'single_condition' | 'numbers_only' = 'single_condition') {
