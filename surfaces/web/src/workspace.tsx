@@ -1,3 +1,4 @@
+import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ErasureProgress, readErasure, pendingErasures } from './erasure';
 import { latestKey } from './deletion-watermark';
@@ -388,6 +389,7 @@ export function EditDialog({
   saved: (id?: string) => void;
 }) {
   const isMaterial = kind === 'material';
+  const watermark = useDraftWatermark(isMaterial);
   const ref = useRef<HTMLDialogElement>(null);
   const [title, setTitle] = useState(() => (isMaterial ? (remembered('capture-title') ?? '') : ''));
   const [text, setText] = useState(() => (isMaterial ? (remembered('capture-text') ?? '') : currentGoal));
@@ -400,7 +402,7 @@ export function EditDialog({
   }, []);
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || (isMaterial && !watermark.ready)) return;
     const payload = isMaterial ? { title, text } : { text };
     const data = JSON.stringify(payload);
     let id: string | undefined;
@@ -496,6 +498,7 @@ export function EditDialog({
             }}
           />
         </label>
+        {isMaterial && watermark.notice}
         {isMaterial && <p className="field-help">仅保存到我的材料。也可以<a href="/intake">导入文件或照片</a>。</p>}
         {error && (
           <p className="error-text" role="alert">
@@ -508,7 +511,7 @@ export function EditDialog({
           </button>
           <button
             className="primary-button"
-            disabled={busy || (isMaterial && (!title.trim() || !text.trim()))}
+            disabled={busy || (isMaterial && (!watermark.ready || !title.trim() || !text.trim()))}
           >
             {busy ? '保存中…' : '保存'}
           </button>

@@ -1,3 +1,4 @@
+import { useDraftWatermark } from './draft-watermark';
 import { EraseOriginal } from './erasure';
 import { latestKey, bindDeletionWatermark, synchronizeDeletion, verifyGenerationReceipt } from './deletion-watermark';
 import { enqueue } from './offline-queue';
@@ -84,6 +85,7 @@ function typeLabel(mediaType: string) {
 }
 
 export function Intake({}: Record<string, never>) {
+  const watermark = useDraftWatermark();
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [mineruAvailable, setMineruAvailable] = useState(false);
@@ -129,7 +131,7 @@ export function Intake({}: Record<string, never>) {
   const previous = file && matchingRequest();
 
   async function submit(startNew = false) {
-    if (busy || !file) return;
+    if (busy || !file || !watermark.ready) return;
     if (file.size === 0) {
       setError('这个文件是空的，请换一个。');
       return;
@@ -260,6 +262,7 @@ export function Intake({}: Record<string, never>) {
             </fieldset>
           )}
           {!cloudAllowed && <p className="field-help">文件仅在本机处理。macOS 支持 PDF 和照片识别，UTF-8 文本可直接读取。</p>}
+          {watermark.notice}
           {file && <p className="field-help">
             {previous?.conflict ? <>原提交标识有冲突，请先到<a href="/materials">材料列表</a>核对。另开一次会创建新材料{extraction === 'mineru' ? '，并可能再次产生识别费用' : ''}。</>
               : previous ? '有尚未确认的提交。继续会沿用原请求标识。'
@@ -274,10 +277,10 @@ export function Intake({}: Record<string, never>) {
             <button type="button" className="text-button" disabled={busy || !file} onClick={() => selectFile(null)}>
               重选
             </button>
-            {previous?.conflict && <button type="button" className="primary-button" disabled={busy} onClick={() => void submit(true)}>
+            {previous?.conflict && <button type="button" className="primary-button" disabled={busy || !watermark.ready} onClick={() => void submit(true)}>
               {extraction === 'mineru' ? '另开一次并发送给 MinerU' : '另开一次本机交入'}
             </button>}
-            {!previous?.conflict && <button type="submit" className="primary-button" disabled={busy || !file}>
+            {!previous?.conflict && <button type="submit" className="primary-button" disabled={busy || !file || !watermark.ready}>
               {busy ? '正在保存…' : extraction === 'mineru' ? (previous ? '继续原提交给 MinerU' : '保存并发送给 MinerU') : (previous ? '继续原提交' : '保存并抽取')}
             </button>}
           </div>
