@@ -302,6 +302,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
         await validInputs(tx);
         const localCalculation = learningV1 && step.provider === 'tool:run_calculation';
+        if (retention.size && (step.model !== settings.model ||
+            (!step.provider.startsWith('tool:') && step.provider !== providerEndpoint(settings)))) throw new ChangedEvidence();
         if (selected.length && ((!localCalculation && step.provider !== providerEndpoint(settings)) ||
             step.model !== settings.model ||
             JSON.stringify(selected) !== JSON.stringify(await notionSendBasis(tx,notionWitnesses.values(),maySend)))) throw new ChangedEvidence();
@@ -666,7 +668,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }) : undefined;
       if (learningV1 && (!workspace || !turnMemory)) throw new ChangedEvidence();
       const toolsV1 = learningV1 && workspace && turnMemory ? openLearningTools({db,turn:slotKey,workspace,maySend,manageBeliefs,
-        authorize:authorizeLearning,track(w) {
+        authorize:authorizeLearning,trackRetention,track(w) {
           keepLearningBasis(w);
           trackWorkspace(w,true);
         },

@@ -92,7 +92,7 @@
 ### 3.3 完整版 Python 沙箱只读 `mangekyo` SDK + 不可变产物句柄 `@res_* / @calc_*`
 - **彻底废除 `python-attempts.ts` 中的 `ordinaryPaper()` 人工阉割限制**！通过统一内核授权读层，在隔离无外网 Python 沙箱中暴露极薄只读代理模块 `mangekyo`（复用同一 `maySend / accessEpoch` 鉴权、零写权）：
   - `mk.attempts(since=..., subject=..., paper_ids=...)`（支持跨卷、含材料卷、题库卷、正式评估卷、独立后测，含作答结果、有效用时与帮助曝光态）；
-  - `mk.forgetting_risks(horizon_hours=48)`（读取自研遗忘预警队列）；
+  - `mk.forgetting_risks(horizon_hours=48)`（读取仍在观察窗口内的冻结题项预测）。入参为 1–168 的整数小时，同一次计算的声明读取共用 `as_of_at` 与 `clock_watermark`。仅列出方法已经给出、在该预测截止前，并落入 `(as_of_at, through]` 的阈值跨越。返回每条预测的冻结题项、方法、跨越时刻、预测评估时点与生效水位。覆盖状态 `complete` 只针对查询范围内的现有冻结预测，允许返回真正的空列表。无可分类预测为 `unknown`，已分类一部分但另有缺项为 `partial`。无跨越时刻、无法核验或超过读取上限均保留为缺项。
   - `mk.kg_prereqs(kc_id, depth=2)`（读取知识图谱多跳先修/后继）；
   - `mk.questions(kc_ids=..., answer_exposed=False, limit=30)`（题库多条件筛选）；
   - 内置 `sympy / numpy / matplotlib` 支持独立符号验算与精确绘图，输出保存为不可变产物句柄 `@calc_*`。

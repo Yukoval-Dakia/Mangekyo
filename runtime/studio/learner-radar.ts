@@ -5,10 +5,11 @@ import type { FactSnapshot, Outcome } from '../../kernel/src/declarations/types.
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
-import { isStandaloneWorkbookPaper, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
+import { isStandaloneWorkbookPaper, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { forecastType, reconciliationType, type RetentionForecast } from '../../modules/learner/retention.ts';
 import { projectRetentionRead, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
 import { purpose } from './identity.ts';
+import { checkStudioNotionFact } from './notion.ts';
 import { retentionHistoryValid } from './retention.ts';
 import { readLearningOverview } from './learning-overview.ts';
 import { radarArguments } from '../../executors/teaching/workspace-tools.ts';
@@ -181,6 +182,64 @@ export async function readRetentionRadar(tx: ReadTransaction, access: Access, op
   const reconciliations = await collect(reconciliationType);
   // An empty visible set cannot establish that there are no results outside this purpose.
   return forecasts.length || reconciliations.length ? { state: 'available' as const, forecasts, reconciliations } : unknown;
+}
+
+// This read covers active frozen workbook-item forecasts, not the learner's
+// entire question inventory. The method owns the threshold and crossing time.
+export async function readForgettingRisks(tx: ReadTransaction, maySend: WorkspaceSourceRecipient, options: {
+  asOf: string; watermark: Tick; horizonHours: number;
+  track: SourceTrack; trackRetention: (basis: RetentionBasis) => void;
+}) {
+  const { asOf, watermark, horizonHours } = options;
+  const now = Date.parse(asOf);
+  const end = now + horizonHours * 3_600_000;
+  const { rows: candidates } = await tx.query<{ slot_key: string }>(
+    `SELECT slot_key FROM slot_state WHERE learner_id=$1 AND slot_type=$2
+       AND (scope_keys #>> '{window,through}' IS NULL OR scope_keys #>> '{window,through}' > $3)
+     ORDER BY changed_tick DESC, slot_key LIMIT $4`, [tx.learner, forecastType, asOf, candidateLimit + 1],
+  );
+  const risks = [];
+  let classified = 0;
+  for (const { slot_key: key } of candidates.slice(0, candidateLimit)) {
+    const [row] = await currentSelections(tx, forecastType, undefined, key);
+    if (!row || BigInt(row.effective_tick) > BigInt(watermark)) continue;
+    const selected = await readSelection(tx, row, { callerPurpose: purpose, maySend });
+    if (!selected) continue;
+    const { estimate, input } = selected.forecast.value;
+    const requested = Date.parse(input.window.requestedAt);
+    const expires = Date.parse(input.window.through);
+    if (!(requested <= now && expires > now) || BigInt(input.observedThrough) > BigInt(row.effective_tick) ||
+        estimate.kind !== 'probabilistic' || !estimate.crossingAt ||
+        estimate.asOfAt !== (input.window.scheduledAt ?? input.window.requestedAt)) continue;
+    const crossing = Date.parse(estimate.crossingAt);
+    if (!(crossing >= Date.parse(estimate.asOfAt) && crossing <= expires)) continue;
+    const projected = projectRetention(selected);
+    const { paper, condition } = input.target;
+    const source = selected.facts.find(({ fact }) => fact.ref.id === paper.id && fact.ref.rev === paper.rev);
+    if (projected?.kind !== 'forecast' || !source) continue;
+    try {
+      for (const { fact } of selected.facts) await checkStudioNotionFact(tx, fact, purpose, maySend);
+    } catch (error) {
+      if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) continue;
+      throw error;
+    }
+    // Out-of-window crossings also support a covered result or true empty set.
+    options.trackRetention(basisOf(selected));
+    for (const { fact, input } of selected.facts) options.track(fact, input.mode);
+    classified++;
+    if (now < crossing && crossing <= end) {
+      risks.push({ forecast_id: row.id, forecast_key: key, item_id: projected.itemId, condition,
+        paper: { ...paper, title: workbookPaper(source.fact.value).title.slice(0, 100).toWellFormed() },
+        crossing_at: new Date(crossing).toISOString(), forecast_as_of_at: estimate.asOfAt,
+        forecast_effective_tick: row.effective_tick, method: projected.method });
+    }
+  }
+  risks.sort((a, b) => a.crossing_at.localeCompare(b.crossing_at) || a.forecast_id.localeCompare(b.forecast_id));
+  return {
+    scope: 'active_frozen_workbook_forecasts',
+    state: !classified ? 'unknown' : classified === candidates.length ? 'complete' : 'partial',
+    as_of_at: asOf, through: new Date(end).toISOString(), clock_watermark: watermark, risks,
+  };
 }
 
 export async function readLearnerRadar(tx: ReadTransaction, args: Record<string, unknown>,
