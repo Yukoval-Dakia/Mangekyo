@@ -1,0 +1,13 @@
+.concept-reading {
+  margin-block: 1rem;
+  padding: 1rem;
+  background: var(--rail);
+  border-radius: 18px;
+  overflow-wrap: anywhere;
+}
+.concept-reading summary { cursor: pointer; font-weight: 650; }
+.concept-reading h3 { font-size: 1rem; margin-top: 1.25rem; }
+.product-shell .concept-reading a { color: var(--forest); text-decoration: underline; text-underline-offset: .18em; }
+.concept-reading li { line-height: 1.8; }
+.concept-reading small { color: var(--muted); }
+.concept-reading .relation-source { margin-inline-start: .75rem; font-size: .85rem; display: inline-block; }
