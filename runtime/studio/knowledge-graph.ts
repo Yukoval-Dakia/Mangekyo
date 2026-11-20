@@ -1,0 +1,167 @@
+import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import type { ReadTransaction } from '../../kernel/src/db/types.ts';
+import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
+import {
+  knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeUseKey, parseEdgeEvidence, parseKnowledgeEdge,
+  workspaceEntryType, type KnowledgeEdgeKind,
+} from '../../modules/content/knowledge-edge.ts';
+import {
+  resolveSource, sourceMaySend, sourcePurpose, type SourceAccess, type SourceTrack,
+} from './source-read.ts';
+
+const whole = { kind: 'whole' } as const;
+const graphLimit = 64;
+export type WorkspaceSource = NonNullable<Awaited<ReturnType<typeof resolveSource>>>;
+export type GraphQuery = {
+  conceptId: string;
+  hops: number;
+  direction: 'inbound' | 'outbound' | 'both';
+  edgeKinds: readonly KnowledgeEdgeKind[];
+};
+
+function versionKey(id: string, rev: number): string {
+  return `${id}:${rev}`;
+}
+
+export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {
+  if (typeof input !== 'string' && (input.fact.type !== knowledgeEdgeType || input.anchor.kind !== 'whole' || input.textFact)) return;
+  const reader = createCommandReadContext(tx, sourcePurpose(access));
+  const opened: Parameters<SourceTrack>[] = [];
+  const id = factId(typeof input === 'string' ? input : input.fact.id);
+  try {
+    const fact = await reader.fact(id, typeof input === 'string'
+      ? { mode: 'following' } : { mode: 'pinned', rev: input.fact.rev as Revision });
+    if (fact.type !== knowledgeEdgeType || !sourceMaySend(access, fact)) return;
+    let edge;
+    try { edge = parseKnowledgeEdge(fact.value); }
+    catch { return; }
+
+    const sources = new Map<string, WorkspaceSource>();
+    for (const use of edge.sourceUses) {
+      const snapshot = await reader.fact(use.id, { mode: 'pinned', rev: use.rev });
+      if (snapshot.accessEpoch !== use.accessEpoch || !sourceMaySend(access, snapshot)) return;
+      const source = await resolveSource(tx, sourceReference(snapshot, whole), {
+        ...access, track: (...witness) => opened.push(witness),
+      });
+      if (!source) return;
+      sources.set(knowledgeUseKey(use), source);
+    }
+    const from = sources.get(knowledgeUseKey(edge.from.sourceUse));
+    const to = sources.get(knowledgeUseKey(edge.to.sourceUse));
+    if (!from || !to || from.sourceRef.fact.type !== workspaceEntryType ||
+        to.sourceRef.fact.type !== workspaceEntryType || from.kind !== edge.from.kind || to.kind !== edge.to.kind) return;
+
+    let verification;
+    if (edge.verification) {
+      const use = edge.verification;
+      const proof = await reader.fact(use.id, { mode: 'pinned', rev: use.rev });
+      if (proof.type !== knowledgeEdgeEvidenceType || proof.accessEpoch !== use.accessEpoch || !sourceMaySend(access, proof)) return;
+      let evidence;
+      try { evidence = parseEdgeEvidence(proof.value); }
+      catch { return; }
+      const { verification: _, ...claim } = edge;
+      if (JSON.stringify(evidence.edge) !== JSON.stringify(claim)) return;
+      verification = { method: evidence.method, sourceRef: sourceReference(proof, whole) };
+      opened.push([proof, 'pinned']);
+    }
+    const { rows: [birth] } = await tx.query<{ author: string }>(
+      'SELECT author FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1', [tx.learner, id],
+    );
+    opened.push([fact, typeof input === 'string' ? 'following' : 'pinned']);
+    return {
+      value: {
+        id, rev: fact.ref.rev, sourceRef: sourceReference(fact, whole), kind: edge.kind, scope: edge.scope,
+        author: birth?.author ?? 'unknown', from: from.sourceRef, to: to.sourceRef,
+        sources: [...sources.values()].map(source => source.sourceRef),
+        ...(edge.variant ? { variant: edge.variant } : {}),
+        ...(verification ? { verification } : {}),
+      },
+      from, to, opened,
+    };
+  } catch (error) {
+    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return;
+    throw error;
+  }
+}
+
+type EdgeHit = NonNullable<Awaited<ReturnType<typeof openKnowledgeEdge>>>['value'] & {
+  hop: number;
+  traversal: 'forward' | 'reverse';
+};
+type TraversedEdge = { hit: EdgeHit; opened: Parameters<SourceTrack>[] };
+type FrontierRecord = { source: WorkspaceSource; path: readonly TraversedEdge[] };
+
+export async function readKnowledgeGraph<Result>(
+  tx: ReadTransaction, query: GraphQuery, access: SourceAccess,
+  select: (source: WorkspaceSource, fact: FactSnapshot, hop: number) => Result | undefined,
+) {
+  const rootWitnesses: Parameters<SourceTrack>[] = [];
+  const concept = await resolveSource(tx, query.conceptId, { ...access, track: (...witness) => rootWitnesses.push(witness) });
+  const root = rootWitnesses.find(([fact]) => fact.ref.id === query.conceptId)?.[0];
+  if (concept?.kind !== 'concept' || root?.type !== workspaceEntryType) return;
+  for (const witness of rootWitnesses) access.track?.(...witness);
+  const edges = new Map<string, EdgeHit>();
+  const results: Result[] = [];
+  const selected = select(concept, root, 0);
+  if (selected !== undefined) results.push(selected);
+  const conceptKey = versionKey(root.ref.id, root.ref.rev);
+  const visited = new Set([conceptKey]);
+  const seenEdges = new Set<string>();
+  let frontier = new Map<string, FrontierRecord>([[conceptKey, { source: concept, path: [] }]]);
+  const output = (truncated: boolean) => ({
+    conceptRef: concept.sourceRef, results, edges: [...edges.values()].sort((left, right) => left.hop - right.hop), truncated,
+  });
+  for (let hop = 1; hop <= query.hops && frontier.size; hop++) {
+    const endpoints = [...frontier.values()].map(record => record.source.sourceRef.fact);
+    const { rows } = await tx.query<{ id: string }>(
+      `SELECT f.id FROM facts f JOIN fact_revs r
+         ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+       WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.kind='value'
+         AND f.purpose && ARRAY[$3,'all']::text[] AND r.purpose && ARRAY[$3,'all']::text[]
+         AND (cardinality($4::text[])=0 OR r.data->>'kind'=ANY($4))
+         AND EXISTS (SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS n(id text, rev integer)
+           WHERE ($6<>'inbound' AND r.data#>>'{from,sourceUse,id}'=n.id AND r.data#>>'{from,sourceUse,rev}'=n.rev::text)
+              OR ($6<>'outbound' AND r.data#>>'{to,sourceUse,id}'=n.id AND r.data#>>'{to,sourceUse,rev}'=n.rev::text))
+       ORDER BY f.id`,
+      [tx.learner, knowledgeEdgeType, sourcePurpose(access), query.edgeKinds, JSON.stringify(endpoints), query.direction],
+    );
+    const next = new Map<string, FrontierRecord>();
+    for (const { id } of rows) {
+      if (seenEdges.has(id)) continue;
+      const edge = await openKnowledgeEdge(tx, id, access);
+      if (!edge) continue;
+      const from = edge.value.from.fact;
+      const to = edge.value.to.fact;
+      const forward = query.direction === 'inbound' ? undefined : frontier.get(versionKey(from.id, from.rev));
+      const origin = forward ?? (query.direction === 'outbound' ? undefined : frontier.get(versionKey(to.id, to.rev)));
+      if (!origin) continue;
+      const target = forward ? edge.to : edge.from;
+      const { id: targetId, rev } = target.sourceRef.fact;
+      const fact = edge.opened.find(([item]) => item.ref.id === targetId && item.ref.rev === rev)?.[0];
+      if (!fact) continue;
+      if (seenEdges.size === graphLimit) return output(true);
+      seenEdges.add(id);
+      const path: TraversedEdge[] = [...origin.path, {
+        hit: { ...edge.value, hop, traversal: forward ? 'forward' : 'reverse' }, opened: edge.opened,
+      }];
+      const key = versionKey(targetId, rev);
+      const match = select(target, fact, hop);
+      if (match !== undefined) {
+        for (const step of path) {
+          if (edges.has(step.hit.id)) continue;
+          edges.set(step.hit.id, step.hit);
+          for (const witness of step.opened) access.track?.(...witness);
+        }
+        if (!visited.has(key)) results.push(match);
+      }
+      if (!visited.has(key)) {
+        visited.add(key);
+        next.set(key, { source: target, path });
+      }
+    }
+    frontier = next;
+  }
+  return output(false);
+}

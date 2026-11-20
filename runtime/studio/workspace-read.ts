@@ -4,21 +4,21 @@ import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '
 import type {Revision} from '../../kernel/src/declarations/ids.ts';
 import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
 import {isSourceFactId, sourceRefV1} from '../../modules/activity/source-values.ts';
-import {workspaceEntryKinds, workspaceEntryType, workspaceAttemptTypes, workspaceShareableTypes} from '../../modules/activity/workspace-values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
-import {materialType} from '../../modules/activity/library-values.ts';
-import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
-import {resolveSource, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
+import {knowledgeEdgeKinds, knowledgeEdgeType} from '../../modules/content/knowledge-edge.ts';
+import {resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {readTeachingAttemptAssessments} from './learning-attempt-read.ts';
 import {textSlice} from './reading.ts';
 import {readLearningOverview} from './learning-overview.ts';
+import {openKnowledgeEdge, readKnowledgeGraph} from './knowledge-graph.ts';
+import {
+  parseWorkspaceSearch, queryStrings, searchWorkspaceRecords, unappliedWorkspaceFilters, WorkspaceSearchError,
+  workspaceRecordKind, workspaceResult, type WorkspaceCandidateChannel,
+} from './workspace-search.ts';
 
 type Arguments = Record<string, unknown>;
-const legacyKinds: Record<string, string[]> = {
-  attempt: workspaceAttemptTypes, paper: [workbookPaperType], material: [materialType], note: [organizerNoteType],
-};
 export const workspaceSourceUnavailable = JSON.stringify({error: '未找到可用于教学的记录。可用 search_workspace 查找当前可读的 id。'});
 export type AssessmentSlot = Extract<ManifestInput, {kind: 'slot'}>;
 export type WorkspaceAssessmentBasis = {slot: AssessmentSlot; facts: Extract<ManifestInput, {kind: 'fact'}>[]};
@@ -59,71 +59,56 @@ export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: Assess
   return {slot, facts};
 }
 
-function legacyKind(type: string) {
-  return Object.keys(legacyKinds).find(kind => legacyKinds[kind]?.includes(type));
-}
-
 function referenceFromId(input: unknown) {
   if (isSourceFactId(input)) return input;
-  if (typeof input !== 'string' || !input.trimStart().startsWith('{')) return;
-  try { return sourceRefV1(JSON.parse(input)); }
-  catch { return; }
+  let value = input;
+  if (typeof input === 'string') {
+    if (!input.trimStart().startsWith('{')) return;
+    try { value = JSON.parse(input); }
+    catch { return; }
+  }
+  return sourceRefV1(value);
 }
 
-function cursorValue(value: unknown) {
-  if (value === undefined) return {tick: null, id: null};
-  if (typeof value !== 'string' || !/^\d{1,19}:[0-9A-HJKMNP-TV-Z]{26}$/.test(value)) return;
-  const [tick,id] = value.split(':');
-  if (!tick || !id || BigInt(tick) > 9223372036854775807n) return;
-  return {tick,id};
+export async function workspaceQuery(tx: ReadTransaction, args: Arguments, access: SourceAccess, semantic?: WorkspaceCandidateChannel) {
+  try {
+    const fields = ['query', 'kind', 'kinds', 'tags', 'since', 'exposureFilter', 'related', 'cursor',
+      'conceptId', 'hops', 'direction', 'edgeKinds'];
+    const unsupported = Object.keys(args).filter(key => !fields.includes(key));
+    if (unsupported.length) return {results:[], truncated:false, unappliedFilters:
+      unsupported.map(field => ({field, reason:'unsupported', message:'此查询入口暂不支持该筛选。'}))};
+    const criteria = parseWorkspaceSearch(args);
+    const {conceptId, hops = 2, direction = 'both'} = args;
+    if (conceptId === undefined) {
+      if (args.hops !== undefined || args.direction !== undefined || args.edgeKinds !== undefined) {
+        throw new WorkspaceSearchError('多跳查询需要 conceptId。');
+      }
+      return await searchWorkspaceRecords(tx, criteria, access, semantic);
+    }
+    if (!isSourceFactId(conceptId) || (hops !== 0 && hops !== 1 && hops !== 2) ||
+        (direction !== 'both' && direction !== 'inbound' && direction !== 'outbound')) {
+      throw new WorkspaceSearchError('conceptId 须为概念 id，hops 可选 0、1、2，direction 可选 inbound、outbound、both。');
+    }
+    if (criteria.query || criteria.related || criteria.cursor) {
+      throw new WorkspaceSearchError('概念图查询使用 conceptId、hops、edgeKinds 及记录过滤。');
+    }
+    const requested = queryStrings(args.edgeKinds, 'edgeKinds', knowledgeEdgeKinds);
+    const edgeKinds = knowledgeEdgeKinds.filter(kind => requested.includes(kind));
+    const graph = await readKnowledgeGraph(tx, {conceptId, hops, direction, edgeKinds}, access, (source, fact, hop) => {
+      const match = workspaceResult(source, fact, criteria);
+      return match ? {...match, hop} : undefined;
+    });
+    if (graph) return {...graph, unappliedFilters: unappliedWorkspaceFilters(criteria)};
+  } catch (error) {
+    if (error instanceof WorkspaceSearchError) return {error: error.message};
+    throw error;
+  }
+  return undefined;
 }
 
 export async function workspaceSearch(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient): Promise<string> {
-  const filter = args.kind;
-  const type = typeof filter === 'string' && Object.hasOwn(legacyKinds,filter) ? legacyKinds[filter] : undefined;
-  const native = workspaceEntryKinds.find(kind => kind === filter);
-  if (filter !== undefined && !type && !native) return JSON.stringify({error:'kind 可选 '+[...Object.keys(legacyKinds),...workspaceEntryKinds].join('、')+'；也可省略它按关键词搜索。'});
-  const query = args.query ?? '';
-  if (typeof query !== 'string' || query.length > 300 || query.includes('\0')) return JSON.stringify({error:'query 请传不超过 300 字的纯文本关键词。'});
-  let cursor = cursorValue(args.cursor);
-  if (!cursor) return JSON.stringify({error:'请使用上次结果中的 cursor。'});
-  const related = args.related;
-  let outgoing: readonly string[] = [];
-  if (related !== undefined) {
-    if (typeof related !== 'string') return workspaceSourceUnavailable;
-    const record = await resolveSource(tx, related, {recipient: 'workspace', track, maySend});
-    if (!record) return workspaceSourceUnavailable;
-    outgoing = record.links ?? [];
-  }
-  const results: {id:string; rev:number; kind?:string; title:string}[] = [];
-  let last: string | undefined;
-  for (;;) {
-    const {rows}: {rows:readonly {id:string; tick:string}[]} = await tx.query(
-      `SELECT f.id,f.created_tick::text AS tick FROM facts f JOIN fact_revs r
-       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-       WHERE f.learner_id=$1 AND f.retracted_rev IS NULL AND f.type=ANY($2::text[])
-       AND f.purpose && ARRAY['teaching','all']::text[] AND r.purpose && ARRAY['teaching','all']::text[]
-       AND NOT(f.id=ANY($3::text[])) AND ($4::text IS NULL OR r.data->>'kind'=$4)
-       AND position(lower($5) IN lower(r.data::text))>0
-       AND ($6::text IS NULL OR r.data->'links' ? $6 OR f.id=ANY($7::text[]))
-       AND ($8::bigint IS NULL OR (f.created_tick,f.id)<($8::bigint,$9::text))
-       ORDER BY f.created_tick DESC,f.id DESC LIMIT 24`,
-      [tx.learner, type ?? (native ? [workspaceEntryType] : workspaceShareableTypes), [...syntheticStudyRecords],
-       native ?? null, query.trim(), typeof related === 'string' ? related : null, outgoing, cursor.tick, cursor.id],
-    );
-    for (const row of rows) {
-      cursor = {tick:row.tick, id:row.id};
-      const visibleInputs: FactSnapshot[] = [];
-      const hit = await resolveSource(tx, row.id, {recipient: 'workspace', track: fact => visibleInputs.push(fact), maySend});
-      if (!hit) continue;
-      if (results.length === 8) return JSON.stringify({results, cursor:last});
-      visibleInputs.forEach(fact => track(fact));
-      const kind = hit.kind ?? legacyKind(hit.sourceRef.fact.type);
-      results.push({id:row.id, rev:hit.sourceRef.fact.rev, ...(kind ? {kind} : {}), title:hit.title});
-      last = row.tick + ':' + row.id;
-    }
-    if (rows.length < 24) return JSON.stringify({results});
-  }
+  const result = await workspaceQuery(tx, args, {recipient:'workspace', track, maySend});
+  return result ? JSON.stringify(result) : workspaceSourceUnavailable;
 }
 
 export async function workspaceRead(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient,
@@ -135,12 +120,19 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
     const goal = overview.goal.state === 'set' ? overview.goal.text : null;
     const tasks = 'items' in overview.tasks ? overview.tasks.items : [];
     return JSON.stringify({id:'learner', title:'学习者模型', observations:observations.results, recentAttempts:attempts.results,
-      goal, tasks, note:'观察关联具体作答。按 id 打开依据，未观察到的能力保留未知。'});
+      goal, tasks, prerequisites:{tool:'search_workspace', args:{hops:2, direction:'inbound', edgeKinds:['prereq_of']},
+        required:['conceptId']}, note:'观察关联具体作答。按 id 打开依据，未观察到的能力保留未知。'});
   }
   const reference = referenceFromId(args.id);
   if (!reference) return JSON.stringify({error:'id 可传 search_workspace 的记录 id 或读回的 sourceRef JSON 字符串。查看学情概览时传 learner。'});
   const offset = args.offset ?? 0;
   if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) return JSON.stringify({error:'offset 须为非负整数。'});
+  if (typeof reference !== 'string' && reference.fact.type === knowledgeEdgeType) {
+    const edge = await openKnowledgeEdge(tx, reference, {recipient:'workspace', maySend});
+    if (!edge) return workspaceSourceUnavailable;
+    for (const witness of edge.opened) track(...witness);
+    return JSON.stringify(edge.value);
+  }
   let attempt: FactSnapshot | undefined;
   const record = await resolveSource(tx, reference, {recipient: 'workspace', maySend, track(fact, mode) {
     track(fact, mode);
@@ -175,7 +167,7 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
   }
   const {content, nextOffset} = typeof original === 'string'
     ? textSlice(original, offset) : {content: original, nextOffset: null};
-  return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? legacyKind(sourceRef.fact.type),
+  return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? workspaceRecordKind(sourceRef.fact.type),
     title, content, tags, links, sourceRef, ...(assessments.length ? {assessments} : {}),
     ...(nextOffset === null ? {} : {nextOffset})});
 }

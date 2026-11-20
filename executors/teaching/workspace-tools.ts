@@ -10,9 +10,12 @@ function tool(name: string, description: string, properties: Record<string, unkn
 }
 export const workspaceKinds = ['question', 'page', 'concept', 'relation', 'observation', 'annotation'] as const;
 export const workspaceDefinitions = [
-  tool('search_workspace', '找学习记录、题或笔记；留空列最近记录，related 查关联。', {
-    query: text, kind: {enum: ['attempt','paper','material','note', ...workspaceKinds], type: 'string'},
-    related: text, cursor: text,
+  tool('search_workspace', '找学习记录、题或笔记。用 conceptId 查有向知识边，用 sourceRef 重开版本。', {
+    query: text, kind: {enum: ['attempt','paper','material','note','goal','task', ...workspaceKinds], type: 'string'},
+    kinds: strings, tags: strings, since: text, related: text, cursor: text,
+    conceptId: text, hops: {type: 'integer', minimum: 0, maximum: 2}, edgeKinds: strings,
+    direction: {type:'string', enum:['inbound','outbound','both']},
+    exposureFilter: {type:'string', enum:['exposed','unexposed','unknown']},
   }),
   tool('read_workspace', '按 id 读原文，learner 读学情概览。长文用 nextOffset 续读。', {
     id: text, offset: {type: 'integer', minimum: 0},

@@ -9,7 +9,7 @@ import {
   FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
-import type { Json } from '../../kernel/src/declarations/types.ts';
+import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction, SqlValue } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { goalType, materialType, studyGoal, textMaterial } from '../../modules/activity/library-values.ts';
@@ -31,6 +31,12 @@ import { materialIntakeLink } from './reading.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { carryRubricAssessments } from './learning-attempt-read.ts';
+import { sourceRefV1 } from '../../modules/activity/source-values.ts';
+import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
+import { openKnowledgeEdge } from './knowledge-graph.ts';
+import { resolveSource } from './source-read.ts';
+import { workspaceQuery } from './workspace-read.ts';
+import { lexicalWorkspaceSql, trigramFunction, workspaceOccurredAt } from './workspace-search.ts';
 import {
   loadSettings,
   type ProviderProtocol,
@@ -86,6 +92,7 @@ type Display = {
   readonly text: string;
   readonly kind?: EntryKind;
   readonly links?: readonly string[];
+  readonly tags?: readonly string[];
   readonly question?: {prompt:string; answer?:string; rubric?:string};
 };
 
@@ -97,6 +104,8 @@ type AccessItem = {
   readonly kind?: EntryKind;
   readonly title: string;
   readonly excerpt: string;
+  readonly occurredAt: string | null;
+  readonly tags: readonly string[];
   readonly author: string;
   readonly teaching: boolean;
   readonly eligible: boolean;
@@ -323,6 +332,7 @@ function entryDisplay(value: unknown): Display {
     text: cleanText(title + '\n类型：' + kind + '\n\n' + details),
     kind,
     links,
+    tags,
     ...(kind === 'question' ? {question:{prompt:body, ...(answer ? {answer} : {}), ...(rubric ? {rubric} : {})}} : {}),
   };
 }
@@ -352,23 +362,25 @@ function firstPurpose(value: unknown): string | undefined {
   return purposesOf(value)[0];
 }
 
+type AccessDisplay = { display: Display; purposes: readonly string[]; fact: FactSnapshot };
+
 async function readDisplay(
   tx: ReadTransaction,
   row: AccessRow,
-): Promise<{ display: Display; purposes: string[] } | null> {
+): Promise<AccessDisplay | null> {
   const purposes = purposesOf(row.purpose);
   const purpose = firstPurpose(row.purpose);
   if (!purpose) return null;
   try {
     const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' });
-    return { display: displayOf(row.type, snapshot.value), purposes };
+    return { display: displayOf(row.type, snapshot.value), purposes, fact: snapshot };
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return null;
     throw error;
   }
 }
 
-function itemOf(row: AccessRow, display: Display, purposes: readonly string[]): AccessItem {
+function itemOf(row: AccessRow, {display, purposes, fact}: AccessDisplay): AccessItem {
   const category = categoryOfType(row.type);
   return {
     id: row.id,
@@ -378,6 +390,8 @@ function itemOf(row: AccessRow, display: Display, purposes: readonly string[]): 
     ...(display.kind ? { kind: display.kind } : {}),
     title: display.title,
     excerpt: display.excerpt,
+    occurredAt: workspaceOccurredAt(fact),
+    tags: display.tags ?? [],
     author: authorOf(row.author),
     teaching: purposes.includes('teaching') || purposes.includes('all'),
     eligible: !purposes.includes('all'),
@@ -558,6 +572,17 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
     categories: categories.map(({ id, label }) => ({ id, label })),
 
     async list(params: URLSearchParams) {
+      if (params.has('conceptId') || params.has('since') || params.has('exposureFilter') || params.has('tags') || params.has('kinds')) {
+        const args: Record<string, unknown> = Object.fromEntries(params);
+        for (const name of ['tags', 'kinds', 'edgeKinds']) {
+          if (params.has(name)) args[name] = params.getAll(name);
+        }
+        if (params.has('hops')) args.hops = Number(params.get('hops'));
+        const result = await db.snapshot({ learner: studioLearner }, tx => workspaceQuery(tx, args, { recipient: 'learner' }));
+        if (!result) throw new RequestError(404, '找不到可读取的记录。');
+        if ('error' in result) throw new RequestError(400, result.error);
+        return { ...result, items: result.results };
+      }
       const limit = readLimit(params.get('limit'), defaultPage, maximumPage);
       const cursor = decodeCursor(params.get('cursor'));
       const category = categoryOf(params.get('category'));
@@ -578,9 +603,11 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
             values.push(workspaceEntryType,kind);
             where.push('f.type=$5 AND r.data->>\'kind\'=$6');
           }
+          const trigram = query ? await trigramFunction(tx) : undefined;
           if (query) {
             values.push(query);
-            where.push('position(lower($' + String(values.length) + ') in lower(r.data::text)) > 0');
+            const { fts, score } = lexicalWorkspaceSql(values.length, trigram);
+            where.push(`(${fts} OR ${score}>=0.45)`);
           }
           if (cursor) {
             values.push(cursor.tick, cursor.id);
@@ -600,19 +627,22 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
              LIMIT $${String(values.length)}`,
             values,
           );
-          const visible: { row: AccessRow; read: { display: Display; purposes: string[] } }[] = [];
+          const visible: { row: AccessRow; read: AccessDisplay }[] = [];
           for (const row of rows.slice(0, limit)) {
             const read = await readDisplay(tx, row);
             if (read) visible.push({ row, read });
           }
-          return { rows: visible, last:rows.slice(0,limit).at(-1), hasMore: rows.length > limit };
+          return { rows: visible, last:rows.slice(0,limit).at(-1), hasMore: rows.length > limit,
+            trigramUnavailable: Boolean(query && !trigram) };
         }),
         providerList(),
       ]);
-      const items = result.rows.map(({ row, read }) => itemOf(row, read.display, read.purposes));
+      const items = result.rows.map(({ row, read }) => itemOf(row, read));
       const last = result.last;
       return {
         items,
+        unappliedFilters: [],
+        ...(result.trigramUnavailable ? {retrievalWarnings:['pg_trgm_unavailable']} : {}),
         nextCursor: result.hasMore && last ? encodeCursor(last) : null,
         categories: categories.map(({ id, label }) => ({ id, label })),
         ...providers,
@@ -621,6 +651,20 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
 
     async record(id: string, params: URLSearchParams) {
       const itemId = requireFactId(id);
+      const rawRef = params.get('ref');
+      if (rawRef !== null) {
+        let input: unknown;
+        try { input = JSON.parse(rawRef); }
+        catch { throw new RequestError(400, '工作区版本引用无效。'); }
+        const ref = sourceRefV1(input);
+        if (ref?.fact.id !== itemId) throw new RequestError(400, '工作区版本引用无效。');
+        const record = await db.snapshot({ learner: studioLearner }, async tx =>
+          ref.fact.type === knowledgeEdgeType
+            ? (await openKnowledgeEdge(tx, ref, { recipient: 'learner' }))?.value
+            : await resolveSource(tx, input, { recipient: 'learner' }));
+        if (!record) throw new RequestError(404, '找不到可读取的版本。');
+        return record;
+      }
       const offset = readOffset(params.get('offset'));
       const limit = readLimit(params.get('limit'), defaultTextChunk, maximumTextChunk);
       return db.snapshot({ learner: studioLearner }, async (tx) => {
@@ -631,7 +675,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
         }
         const read = await readDisplay(tx, row);
         if (!read) throw new RequestError(403, '这条学习记录当前不可读取。');
-        const item = itemOf(row, read.display, read.purposes);
+        const item = itemOf(row, read);
         const start = Math.min(offset, read.display.text.length);
         const end = Math.min(start + limit, read.display.text.length);
         const related: {id:string;title:string}[] = [];
