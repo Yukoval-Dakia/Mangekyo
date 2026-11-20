@@ -65,7 +65,7 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const privateHost = openWorkspaceTools({db,turn:stableId('another provider'),prior:[],authorize:async () => {},track() {},
       maySend:fact => fact.ref.id !== first.source.id});
     const hidden = JSON.parse(await privateHost.execute('read_workspace',{id:first.page.id},1));
-    expect(hidden.error).toBeTruthy();
+    expect(hidden).toMatchObject({ok:false, code:'not_found'});
     expect(hidden.content).toBeUndefined();
 
     const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity',import.meta.url)));
@@ -129,7 +129,7 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect((await overview()).witnesses).toEqual([]);
     const revoked = await access.setTeaching(first.page.id,{enabled:false,expectedRev:updated.rev});
     await access.setTeaching(first.page.id,{enabled:true,expectedRev:revoked.rev});
-    expect(await edit('read_workspace',chosen,2)).toEqual({error:expect.any(String)});
+    expect(await edit('read_workspace',chosen,2)).toMatchObject({ok:false, message:expect.any(String)});
     expect(await edit('read_workspace',chosen,5)).toMatchObject({rev:1,content:'计时'});
 
     const materialId = stableId('paired material'), intakeId = stableId('intake-document', materialId);
@@ -242,9 +242,9 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     await access.setTeaching(timed.id,{enabled:false,expectedRev:timedGrant.rev});
     await access.setTeaching(paper.id,{enabled:false,expectedRev:paperGrant.rev});
     expect(await diagnose('open_learning',diagnosis,3)).toMatchObject({ok:false,code:'basis_stale'});
-    expect(await diagnose('read_workspace',{id:observation.ref.id},6)).toEqual({error:expect.any(String)});
-    expect(await diagnose('read_workspace',{id:legacyObservation.ref.id},7)).toEqual({error:expect.any(String)});
-    expect(await diagnose('read_workspace',{id:legacyObservation.ref.id},8)).toEqual({error:expect.any(String)});
+    expect(await diagnose('read_workspace',{id:observation.ref.id},6)).toMatchObject({ok:false, message:expect.any(String)});
+    expect(await diagnose('read_workspace',{id:legacyObservation.ref.id},7)).toMatchObject({ok:false, message:expect.any(String)});
+    expect(await diagnose('read_workspace',{id:legacyObservation.ref.id},8)).toMatchObject({ok:false, message:expect.any(String)});
     const legacyOwnerRead = await db.snapshot({learner:studioLearner},tx =>
       resolveSource(tx,legacyObservation.ref.id,{recipient:'learner'}));
     expect(legacyOwnerRead?.content).toContain(question.prompt);
@@ -336,7 +336,7 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
         .toMatchObject({results:[],edges:[]});
     });
     await access.setTeaching(originalQuestion.id,{enabled:false,expectedRev:1});
-    expect(await graph('search_workspace',{...filters,hops:2},6)).toMatchObject({error:expect.any(String)});
+    expect(await graph('search_workspace',{...filters,hops:2},6)).toMatchObject({ok:false, code:'basis_stale'});
     expect(await graph('search_workspace',{...filters,hops:2},13)).toMatchObject({results:[],edges:[]});
     await db.snapshot({learner:learnerId(stableId('other learner'))}, async tx =>
       expect(await workspaceQuery(tx,filters,{recipient:'learner'})).toBeUndefined());

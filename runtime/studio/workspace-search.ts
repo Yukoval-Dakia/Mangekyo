@@ -43,7 +43,15 @@ type SearchFilters = {
 };
 type SearchQuery = SearchFilters & { query: string; related?: string; cursor?: string };
 
-export class WorkspaceSearchError extends Error {}
+export class WorkspaceSearchError extends Error {
+  readonly code: 'invalid_args' | 'basis_stale';
+  readonly field: string | undefined;
+  constructor(message: string, field?: string, code: 'invalid_args' | 'basis_stale' = 'invalid_args') {
+    super(message);
+    this.code = code;
+    this.field = field;
+  }
+}
 
 export function queryStrings(value: unknown, field: string, allowed?: readonly string[]) {
   if (value === undefined) return [];
@@ -76,7 +84,7 @@ export function parseWorkspaceSearch(args: Record<string, unknown>): SearchQuery
   }
   if (related !== undefined && !isSourceFactId(related)) throw new WorkspaceSearchError('related 需要记录 id。');
   if (cursor !== undefined && (typeof cursor !== 'string' || !/^[a-f0-9]{24}:[a-f0-9]{24}$/.test(cursor))) {
-    throw new WorkspaceSearchError('请使用上次结果中的 cursor。');
+    throw new WorkspaceSearchError('请使用上次结果中的 cursor。','cursor');
   }
   if (args.kind !== undefined && args.kinds !== undefined) throw new WorkspaceSearchError('请选择 kind 或 kinds。');
   const kinds = queryStrings(args.kind === undefined ? args.kinds : [args.kind], 'kinds', workspaceRecordKinds);
@@ -257,7 +265,7 @@ export async function searchWorkspaceRecords(
     returned.add(candidate.id);
     lastCursor = position;
   }
-  if (!afterCursor) throw new WorkspaceSearchError('查询或记录已变化，请去掉 cursor 重查。');
+  if (!afterCursor) throw new WorkspaceSearchError('查询或记录已变化，请去掉 cursor 重查。','cursor','basis_stale');
   return {
     results, ...(nextCursor ? { cursor: nextCursor } : {}),
     candidateWindow: candidateLimit,

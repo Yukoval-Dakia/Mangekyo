@@ -8,7 +8,8 @@ import type {SourceRefV1} from '../../modules/activity/source-values.ts';
 import {readIntakeOriginalBytes} from './intake.ts';
 import {intakeTextOf} from './reading.ts';
 import {resolveSource, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
-import {learningToolError, parseLearningReference, unreadable} from './workspace-open.ts';
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
+import {parseLearningReference, unreadable} from './workspace-open.ts';
 
 export type IntakeImage = {
   sourceRef: SourceRefV1;

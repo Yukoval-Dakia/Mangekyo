@@ -12,8 +12,9 @@ import {TeachingError} from '../../executors/teaching/provider.ts';
 import type {PreparedPythonAttempts} from '../../executors/teaching/study-agent.ts';
 import {openLearningLimit, workspaceDefinitions, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
-import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
-import {learningToolError, openLearningBatch, parseLearningReference, parseOpenLearningArgs} from './workspace-open.ts';
+import {workspaceSearch, workspaceRead, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
+import {openLearningBatch, parseLearningReference, parseOpenLearningArgs} from './workspace-open.ts';
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
 import {sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
@@ -114,9 +115,7 @@ export function openWorkspaceTools(options: {
   }
   async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>, receiveImage?: ReceiveStudyImage) {
     const pythonAttempts = name === 'python_attempts';
-    if (!isJson(args)) return JSON.stringify(pythonAttempts
-      ? learningToolError('invalid_args','attempts','请选择作答引用。')
-      : {error:'请将查询字段放在一个 JSON 对象里。'});
+    if (!isJson(args)) return JSON.stringify(learningToolError('invalid_args','args','请将查询字段放在一个 JSON 对象里。'));
     const raw = await recordLocalRead(db, {learner:studioLearner, ownerKind:'session', ownerId:turn,
       stepKey:String(step), label:'local:'+name, input:args}, async tx => {
       const witnesses = new Map<string, WorkspaceWitness>();
@@ -211,7 +210,9 @@ export function openWorkspaceTools(options: {
       if (name === 'open_learning') return JSON.stringify(learningToolError('basis_stale','refs','读取依据在打开后已变化。',{
         tool:'open_learning',args,why:'重新读取当前获准的版本。',
       }));
-      return workspaceSourceUnavailable;
+      return JSON.stringify(learningToolError('basis_stale',undefined,'读取依据已变化，请重新查询。',{
+        tool:name,args,why:'按当前用途重新读取。',
+      }));
     }
     if (intakeImage) {
       if (intakeImage.crop && !receiveImage)
@@ -284,24 +285,29 @@ export function openWorkspaceTools(options: {
     return text;
   }
   async function save(args: Record<string, unknown>, step: number, observation?: WorkspaceWitness[]) {
-    if (!isJson(args)) return JSON.stringify({error:'请将保存字段放在一个 JSON 对象里。'});
+    if (!isJson(args)) return JSON.stringify(learningToolError('invalid_args','args','请将保存字段放在一个 JSON 对象里。'));
     const {id: target, rev: expected, ...fields} = args;
-    if (target !== undefined && (typeof target !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(target))) return JSON.stringify({error:'新建时省略 id；修改时复制 search_workspace 结果或保存回执中的 id。'});
+    if (target !== undefined && (typeof target !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(target)))
+      return JSON.stringify(learningToolError('invalid_args','id','新建省略 id。修改时使用已打开记录的 id。'));
     const id = typeof target === 'string' ? target : stableId('workspace-entry', turn, String(step));
     const rev = target ? Math.max(produced.get(id) ?? 0, sources.get(id)?.rev ?? 0) : undefined;
-    if (target && !rev) return JSON.stringify({error:'请用 read_workspace 打开要修改的 id。要新建条目时省略 id。'});
+    const reopen = {tool:'open_learning',args:{refs:id},why:'读取当前获准版本。'};
+    if (target && !rev) return JSON.stringify(learningToolError('evidence_not_opened','id','先打开要修改的记录。',reopen));
     if (expected !== undefined && expected !== rev)
-      return JSON.stringify({error:'rev 与已读版本不符。请用 read_workspace 打开条目，再传 id 和要修改的字段；可省略 rev。'});
+      return JSON.stringify(learningToolError('version_conflict','rev','rev 与本轮读到的版本不符。',reopen));
     let entry = fields;
     let previousBasis: readonly WorkspaceEntryBasis[] = [];
     if (rev) {
       const original = await db.snapshot({learner:studioLearner}, tx =>
-        createCommandReadContext(tx,purpose).fact(factId(id),{mode:'pinned',rev:rev as Revision}));
+        createCommandReadContext(tx,purpose).fact(factId(id),{mode:'pinned',rev:rev as Revision})).catch(error => {
+          if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError)) throw error;
+        });
+      if (!original) return JSON.stringify(learningToolError('access_revoked','id','要修改的记录当前不可读。'));
       if (original.type !== workspaceEntryType) {
         const hint = workspaceAttemptTypes.includes(original.type)
           ? '要补充作答，请先用 read_workspace 打开原答，再新建 kind="annotation" 的批注。'
           : '要整理这份材料，请新建 kind="page" 的教材页。';
-        return JSON.stringify({error:hint+' 省略 id，把原记录的 id 放入 links。'});
+        return JSON.stringify(learningToolError('invalid_args','id',hint+' 省略 id，把原记录的 id 放入 links。'));
       }
       const {basis, ...savedFields} = workspaceEntry(original.value);
       previousBasis = basis;
@@ -322,7 +328,7 @@ export function openWorkspaceTools(options: {
     if (changesEvidence && (entry.kind === 'observation' || entry.kind === 'annotation') &&
         (!Array.isArray(entry.links) || !entry.links.some(link => typeof link === 'string' &&
           opened.has(link) && workspaceAttemptTypes.includes(sources.get(link)?.type ?? ''))))
-      return JSON.stringify({error:'请先用 read_workspace 打开原始作答，再把其 id 放入 links。'});
+      return JSON.stringify(learningToolError('evidence_not_opened','links','先打开原始作答，再把其 id 放入 links。'));
     // Fields retained by a patch still depend on the sources of the previous revision.
     const basisById = new Map<string,{id:string;rev:number;epoch:string}>(previousBasis.map(w => [w.id,w]));
     for (const w of witnesses.values()) if (w.id !== id && !basisById.has(w.id))
@@ -356,16 +362,16 @@ export function openWorkspaceTools(options: {
     } catch (error) {
       if (error instanceof TeachingError) throw error;
       // Return domain validation feedback to the model; never return SQL/transport details.
-      if (observation && (error instanceof FactReadDeniedError || error instanceof FactNotFoundError))
-        return JSON.stringify(learningToolError('access_revoked','evidence_refs','原答当前不可读取。'));
-      if (error instanceof WorkspaceInputError) return JSON.stringify(observation
-        ? learningToolError(error.message.includes('来源版本') ? 'basis_stale' : 'invalid_args','evidence_refs',error.message,{
+      if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError)
+        return JSON.stringify(learningToolError('access_revoked',observation ? 'evidence_refs' : 'links','写入所需的依据当前不可读。'));
+      if (error instanceof WorkspaceInputError) return JSON.stringify(
+        learningToolError(error.message.includes('来源版本') ? 'basis_stale' : 'invalid_args',observation ? 'evidence_refs' : undefined,error.message,observation ? {
           tool:'open_learning',args:{refs:observation.map(w => w.id)},why:'重新核对作答和版本。',
-        }) : {error:error.message});
+        } : undefined));
       if (error instanceof Error && error.message.startsWith('Fact revision conflict:'))
-        return JSON.stringify({error:'条目已更新。请用 read_workspace 打开当前版本，再传 id 和变动字段。'});
+        return JSON.stringify(learningToolError('version_conflict','rev','条目已更新。读取当前版本后重试。',reopen));
       if (error instanceof Error && error.message === 'Only an unedited companion draft can be revised')
-        return JSON.stringify({error:'这条记录由学习者保留。请省略 id 新建一份，使用 links 关联原记录。'});
+        return JSON.stringify(learningToolError('invalid_args','id','该记录由学习者保留。可省略 id 新建条目，再用 links 关联。'));
       throw error;
     }
   }
@@ -392,23 +398,22 @@ export function openWorkspaceTools(options: {
   }
   async function execute(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>, receiveImage?: ReceiveStudyImage) {
     if (name === 'mount_artifact' && options.presentationManifest) {
-      if (Object.keys(args).some(key => !['view','predictionPrompt','sentenceBreaks'].includes(key))) return JSON.stringify({error:'仅支持 view、predictionPrompt 和 sentenceBreaks。'});
+      if (Object.keys(args).some(key => !['view','predictionPrompt','sentenceBreaks'].includes(key)))
+        return JSON.stringify(learningToolError('invalid_args','args','仅支持 view、predictionPrompt 和 sentenceBreaks。'));
       const result = await mountArtifact(db,turn,step,args,async tx => {
         await options.authorize(tx);
         return options.presentationManifest!(tx);
       },options.readArtifactAssessmentWitness);
-      if (args.sentenceBreaks !== undefined && result.state === 'done') publishedFormalArtifact = true;
+      if (args.sentenceBreaks !== undefined && 'state' in result && result.state === 'done') publishedFormalArtifact = true;
       return JSON.stringify(result);
     }
     const tool = workspaceDefinitions.find(tool => tool.function.name === name);
-    if (!tool) return JSON.stringify({error:'请从本轮提供的工作区工具中选择。'});
+    if (!tool) return JSON.stringify(learningToolError('tool_unavailable',undefined,'请从本轮提供的工作区工具中选择。'));
     const fields = tool.function.parameters.properties;
     const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
-    if (unknown) return JSON.stringify(name === 'open_learning' || name === 'record_observation' || name === 'save_page' || name === 'save_relation'
-      ? learningToolError('invalid_args',unknown.slice(0,60),`可用字段为 ${Object.keys(fields).join('、')}。`,{
+    if (unknown) return JSON.stringify({...learningToolError('invalid_args',unknown.slice(0,60),'发现工具定义之外的字段。',{
           tool:name,args:Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(fields,key))),why:'仅传工具支持的字段。',
-        })
-      : {error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
+        }),valid_fields:Object.keys(fields)});
     if (name === 'record_observation') return recordObservation(args,step);
     if (name === 'save_page') return JSON.stringify(await savePage(args,step));
     if (name === 'save_relation') return JSON.stringify(await saveRelation(args,step));

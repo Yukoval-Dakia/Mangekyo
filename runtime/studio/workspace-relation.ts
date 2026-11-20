@@ -17,7 +17,8 @@ import {readKnowledgeSources} from './knowledge-graph.ts';
 import {RequestError} from './sessions.ts';
 import type {WorkspaceSourceRecipient} from './source-read.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
-import {learningToolError, parseLearningReference} from './workspace-open.ts';
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
+import {parseLearningReference} from './workspace-open.ts';
 
 const scope = {learner:studioLearner};
 const whole = {kind:'whole'} as const;

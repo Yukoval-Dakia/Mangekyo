@@ -25,36 +25,36 @@ it('round-trips flat scratch files and replaces content within quota', async () 
     .toBe('wrote notes.txt (0 bytes, replaced)');
   expect(await tools.execute('read_file', { name: 'notes.txt' })).toBe('');
   expect(await tools.execute('read_file', { name: 'missing.txt' }))
-    .toBe('error: file not found: missing.txt');
+    .toMatchObject({ok:false, code:'not_found', field:'name'});
 });
 
 it('rejects paths, non-text content, oversized files and quota overflow', async () => {
   const tools = createStudyTools();
   for (const name of ['../x', 'a/b', '.', '..', '.hidden', 'a b', 'x'.repeat(65)]) {
-    expect(await tools.execute('read_file', { name })).toMatch(/^error:/);
-    expect(await tools.execute('write_file', { name, content: 'x' })).toMatch(/^error:/);
+    expect(await tools.execute('read_file', { name })).toMatchObject({ok:false, code:'invalid_args'});
+    expect(await tools.execute('write_file', { name, content: 'x' })).toMatchObject({ok:false, code:'invalid_args'});
   }
-  expect(await tools.execute('write_file', { name: 'a.txt', content: 1 })).toMatch(/^error:/);
-  expect(await tools.execute('write_file', { name: 'a.txt', content: 'x\u0000' })).toMatch(/^error:/);
+  expect(await tools.execute('write_file', { name: 'a.txt', content: 1 })).toMatchObject({ok:false, code:'invalid_args'});
+  expect(await tools.execute('write_file', { name: 'a.txt', content: 'x\u0000' })).toMatchObject({ok:false, code:'invalid_args'});
   expect(await tools.execute('write_file', { name: 'big.txt', content: 'x'.repeat(16_385) }))
-    .toBe('error: file exceeds 16384 bytes');
+    .toMatchObject({ok:false, code:'budget_or_limit', field:'content'});
 
   for (const name of ['a', 'b', 'c', 'd']) {
     expect(await tools.execute('write_file', { name, content: 'x'.repeat(16_384) }))
       .toContain('wrote');
   }
   expect(await tools.execute('write_file', { name: 'e', content: 'x' }))
-    .toBe('error: workspace exceeds 65536 bytes');
+    .toMatchObject({ok:false, code:'budget_or_limit', field:'content'});
 });
 
 it('returns bounded errors for unknown tools, bad arguments and unavailable Exa', async () => {
   const tools = createStudyTools();
   const send = vi.spyOn(globalThis, 'fetch');
-  expect(await tools.execute('nope', {})).toBe('error: unknown tool: nope');
-  expect((await tools.execute('x'.repeat(100_000), {})).length).toBeLessThan(700);
-  expect(await tools.execute('python', { code: '' })).toMatch(/^error:/);
-  expect(await tools.execute('python', { code: 'x'.repeat(20_001) })).toMatch(/^error:/);
-  expect(await tools.execute('exa_search', { query: 'wind' })).toBe('error: exa_search unavailable');
+  expect(await tools.execute('nope', {})).toMatchObject({ok:false, code:'tool_unavailable'});
+  expect(JSON.stringify(await tools.execute('x'.repeat(100_000), {})).length).toBeLessThan(700);
+  expect(await tools.execute('python', { code: '' })).toMatchObject({ok:false, code:'invalid_args'});
+  expect(await tools.execute('python', { code: 'x'.repeat(20_001) })).toMatchObject({ok:false, code:'budget_or_limit'});
+  expect(await tools.execute('exa_search', { query: 'wind' })).toMatchObject({ok:false, code:'tool_unavailable'});
   expect(send).not.toHaveBeenCalled();
 });
 
@@ -89,8 +89,8 @@ it('reports Exa HTTP failures without echoing credentials', async () => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ error: 'unauthorized' }, { status: 401 }));
   const tools = createStudyTools({ exaApiKey: 'secret-key', allowSearch: true });
   const output = await tools.execute('exa_search', { query: 'wind' });
-  expect(output).toBe('error: exa search failed (HTTP 401)');
-  expect(output).not.toContain('secret-key');
+  expect(output).toMatchObject({ok:false, code:'execution_failed', message:expect.stringContaining('401')});
+  expect(JSON.stringify(output)).not.toContain('secret-key');
 });
 
 function dockerReady(): boolean {

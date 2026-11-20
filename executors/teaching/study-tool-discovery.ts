@@ -1,3 +1,4 @@
+import {learningToolError} from './tool-error.ts';
 import { createHash } from 'node:crypto';
 import { remoteToolDefinition, type RemoteTool } from './mcp-tools.ts';
 
@@ -40,8 +41,7 @@ export function studyToolDiscovery(remotes: ReadonlyMap<string, RemoteTool>) {
   return {
     find(query: unknown) {
       if (typeof query !== 'string' || query.length > maximumQuery || !query.trim()) {
-        return {content: JSON.stringify({ok: false, code: 'invalid_args', field: 'query',
-          message: '请在 query 填写任务关键词或准确工具名，最多 500 个字符。'}), summary: '查找工具 · 参数错误'};
+        return {content: JSON.stringify(learningToolError('invalid_args','query','查询需填写任务关键词或准确工具名，最多 500 个字符。')), summary: '查找工具 · 参数错误'};
       }
       const exactQuery = normalize(query.trim());
       const phrases = exactQuery.match(/\p{Script=Han}{2,}/gu) ?? [];

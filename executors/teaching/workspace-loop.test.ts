@@ -15,7 +15,7 @@ it.each(['continue', 'stop', 'empty'])('passes the tool error back and honors th
     const {messages} = JSON.parse(init.body);
     expect(messages.filter((m:{role:string}) => m.role === 'system')).toHaveLength(0);
     if (requests > 0 && requests <= errors.length) {
-      expect(JSON.parse(messages.at(-1).content)).toEqual({error:errors[requests-1]});
+      expect(JSON.parse(messages.at(-1).content)).toEqual({ok:false, code:'invalid_args', message:errors[requests-1]});
     }
     const index = requests++;
     if (index > calls) throw Error('额外的模型调用');
@@ -30,7 +30,7 @@ it.each(['continue', 'stop', 'empty'])('passes the tool error back and honors th
     tools:{workspace:{writes:() => [],execute:async (_name,input) => {
       expect(input).toEqual(args[attempts]);
       const error = errors[attempts++];
-      return JSON.stringify(error ? {error} : {state:'done',id:'page',rev:1});
+      return JSON.stringify(error ? {ok:false, code:'invalid_args', message:error} : {state:'done',id:'page',rev:1});
     }}},
   });
   if (decision === 'empty') await expect(result).rejects.toThrow('模型没有返回可用的答复');

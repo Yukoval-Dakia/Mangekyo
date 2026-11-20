@@ -1,3 +1,4 @@
+import {learningToolError, type ToolErrorCode} from './tool-error.ts';
 import {createHash} from 'node:crypto';
 
 export const openToolResult = { type: 'function', function: {
@@ -6,7 +7,7 @@ export const openToolResult = { type: 'function', function: {
     required: ['handle'], additionalProperties: false },
 } };
 
-const error = (code: string, field: string, message: string) => JSON.stringify({ok:false, code, field, message});
+const error = (code: ToolErrorCode, field: string, message: string) => JSON.stringify(learningToolError(code,field,message));
 const missingHandle = () => error('not_found', 'handle', '请使用本轮工具结果中提供的句柄。');
 
 function splitsCharacter(text: string, offset: number) {
