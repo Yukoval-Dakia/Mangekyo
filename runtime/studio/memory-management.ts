@@ -59,7 +59,7 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
           const ref = claimWitness(fact);
           const evidenceState = await managedClaimEvidence(tx, claim);
           items.push({ref, recordedTick: tick, state: claim?.version === 1 && claim.action === 'forget' ? 'forgotten' : 'current',
-            claim: evidenceState === 'unavailable' ? null : claim ?? null, evidenceState});
+            claim: evidenceState === 'current' || (evidenceState === 'unknown' && claim?.version === 1 && claim.origin === 'learner') ? claim : null, evidenceState});
         }
         const {rows: extracted} = await tx.query<{id: string}>(`SELECT f.id FROM facts f JOIN fact_revs r
           ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
