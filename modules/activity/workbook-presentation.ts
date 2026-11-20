@@ -25,5 +25,21 @@ function parsePresentation(value: unknown) {
   else if (phase !== undefined || row.permit !== undefined) throw new Error('无效的卷面呈现许可。');
   return kind === 'solution'
     ? { kind: 'solution' as const, paper, items: [...items].sort(), submission: helpRef(row.submission), ...gate }
-    : { kind: 'question' as const, paper, items: [...items].sort(), ...gate };
+    : { kind: 'question' as const, paper, items: [...items].sort(), ...gate,
+      ...(row.attemptRef === undefined ? {} : {attemptRef:helpRef(row.attemptRef)}) };
+}
+
+export function workbookReadingContext(value: unknown) {
+  const {paperRev, itemId, ref, phase, permit, displayRef, attemptRef} = object(value);
+  if (typeof paperRev !== 'number' || !Number.isInteger(paperRev) || paperRev < 1 || paperRev > 2147483647 ||
+      typeof itemId !== 'string' || !/^[\w.-]{1,128}$/.test(itemId) ||
+      typeof ref !== 'string' || !/^[\w-]{43}$/.test(ref))
+    throw new WorkbookPresentationError('帮助引用格式无效。');
+  const attempt = attemptRef === undefined ? undefined : helpRef(attemptRef);
+  if (attempt && attempt.rev > 2147483647) throw new WorkbookPresentationError('作答版本无效。');
+  const mount = {paperRev, itemId, ref, attemptRef:attempt};
+  if (phase === 'opened' && typeof permit === 'string') return {...mount, phase: 'opened' as const, permit:factId(permit)};
+  if (phase === 'displayed' && typeof displayRef === 'string' && /^[\w-]{43}$/.test(displayRef))
+    return {...mount,phase:'displayed' as const,displayRef};
+  throw new WorkbookPresentationError('缺少帮助呈现许可。');
 }
