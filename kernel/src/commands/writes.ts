@@ -49,6 +49,7 @@ type PreparedWrite =
     readonly id: FactId;
     readonly expectedRev: Revision;
     readonly purpose: readonly string[];
+    readonly scopedPurpose?: string;
     data: Json;
   };
 
@@ -142,12 +143,18 @@ function validateWrite(write: FactWrite, writeTarget: FactWriteTarget, options: 
     };
   }
   if (write.kind !== 'set_purpose') throw new Error('Unknown fact write kind');
-  assertKnownFields(write, ['kind', 'id', 'expectedRev', 'purpose']);
+  assertKnownFields(write, ['kind', 'id', 'expectedRev', 'purpose', 'scopedPurpose']);
+  const { scopedPurpose } = write;
+  if (scopedPurpose !== undefined &&
+      (options.actor !== 'learner' || typeof scopedPurpose !== 'string' || !scopedPurpose || scopedPurpose === 'all')) {
+    throw new Error('A scoped purpose change requires one explicit learner purpose');
+  }
   return {
     kind: 'set_purpose',
     id: factId(write.id),
     expectedRev: validatedRevision(write.expectedRev),
     purpose: validatePurpose(write.purpose, 'Set-purpose write purpose'),
+    ...(scopedPurpose === undefined ? {} : { scopedPurpose }),
     data: null,
   };
 }
@@ -264,6 +271,14 @@ export async function applyFactWrites(
       throw new Error(`Fact purpose does not allow this write: ${write.id}`);
     }
     if (write.kind === 'set_purpose') {
+      const { scopedPurpose } = write;
+      if (scopedPurpose !== undefined &&
+          (row.purpose.includes('all') || write.purpose.includes('all') ||
+           row.purpose.includes(scopedPurpose) === write.purpose.includes(scopedPurpose) ||
+           row.purpose.some(use => use !== scopedPurpose && !write.purpose.includes(use)) ||
+           write.purpose.some(use => use !== scopedPurpose && !row.purpose.includes(use)))) {
+        throw new Error('A scoped purpose change must preserve all other purposes');
+      }
       const currentData = await readCurrentData(tx, write.id, validatedRevision(row.current_rev));
       write.data = currentData;
     }
@@ -356,6 +371,7 @@ export async function applyFactWrites(
       ref: { learner: tx.learner, id: write.id, rev: validatedRevision(rev) },
       factType: row.type,
       kind: write.kind,
+      ...(write.kind === 'set_purpose' && write.scopedPurpose ? { scopedPurpose: write.scopedPurpose } : {}),
     });
   }
   return changes;

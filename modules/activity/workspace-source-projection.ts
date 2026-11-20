@@ -8,6 +8,7 @@ import { organizerNote, organizerNoteType } from './organizer-values.ts';
 import { practiceSubmission, ridingPracticeType } from './practice-values.ts';
 import { sourceReference, type SourceAnchorV1, type SourceRefV1 } from './source-values.ts';
 import { workspaceRecordKind } from './workspace-search.ts';
+import { posttestSubmissionType } from './retention-posttest.ts';
 import { studyRecord } from './values.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from './workbook-values.ts';
 import { activityQuestions, activityWorkspaceDisplay, openedQuestionText, cleanText, summary, type WorkspaceDisplay } from './workspace-projection.ts';
@@ -252,7 +253,7 @@ export function workspaceReadRecord(record: SourceProjection & { sourceRef: Sour
 
 export function retentionEvidenceLink(fact: FactSnapshot, itemId: string, href: string) {
   const ref = { id: fact.ref.id, rev: fact.ref.rev, type: fact.type };
-  if (fact.type !== workbookPaperType && fact.type !== workbookAttemptType) return { ...ref, href };
+  if (fact.type !== workbookPaperType && fact.type !== workbookAttemptType && fact.type !== posttestSubmissionType) return { ...ref, href };
   const anchor = fact.type === workbookPaperType ? { kind: 'question', itemId } as const
     : { kind: 'answer-slot', itemId, slotId: 'answer' } as const;
   return { ...ref, open: { tool: 'open_learning', args: { refs: JSON.stringify(sourceReference(fact, anchor)) } } };

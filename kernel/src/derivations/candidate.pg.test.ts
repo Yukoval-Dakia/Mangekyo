@@ -1,19 +1,16 @@
-import pg from 'pg';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { testDatabaseUrl, withLearnerDatabase } from '../../test/learner-database.ts';
+import { aroundEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { noteModule } from '../../test/commands/fixture.ts';
 import { createCommandHandler, type CommandRequest } from '../commands/index.ts';
-import { createPgDb } from '../db/pg.ts';
 import type { Db } from '../db/types.ts';
 import { defineCommand } from '../declarations/define.ts';
 import { commandId, factId, learnerId, type Revision } from '../declarations/ids.ts';
-import { applyKernelSchema } from '../schema.ts';
 import { cancelWork, requestWork } from '../work/index.ts';
 import { newUlid } from '../work/identity.ts';
 import { sealCandidate, submitCandidate } from './candidate.ts';
 import { gatherSnapshot } from './gather.ts';
 
-const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 const learner = learnerId('01KFS4AAA00000000000000000');
 const fact = factId('01KFS4AAA00000000000000001');
 const purpose = 'learn';
@@ -27,23 +24,13 @@ const changePurpose = defineCommand({
 });
 
 // These scenarios drive the command, gather, seal and acceptance entrypoints against one PostgreSQL ledger.
-describe.skipIf(!connectionString)('Candidate transactions in PostgreSQL', () => {
-  const schema = `candidate_${process.pid}`;
-  let admin: Db;
+describe.skipIf(!testDatabaseUrl)('Candidate transactions in PostgreSQL', () => {
   let db: Db;
-  beforeEach(async () => {
-    admin = createPgDb(new pg.Pool({ connectionString }));
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    db = createPgDb(new pg.Pool({ connectionString }), { schema });
-    await applyKernelSchema(db);
-    await db.query('INSERT INTO learners(id) VALUES($1)', [learner]);
+  aroundEach(run => withLearnerDatabase(learner, async database => {
+    db = database;
     await db.query("INSERT INTO slot_state(learner_id, slot_type, slot_key, scope_keys) VALUES ($1, $2, $3, '{}')", [learner, slotType, request.slotKey]);
-  });
-  afterEach(async () => {
-    await db.close();
-    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-    await admin.close();
-  });
+    await run();
+  }));
 
   const register = () => db.tx({ learner }, tx => tx.withLearnerWrite(tick => requestWork(tx, tick, request)));
   const gather = (mode?: 'following' | 'pinned') => gatherSnapshot(db, { learner, purpose }, async ctx => ({

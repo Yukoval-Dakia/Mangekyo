@@ -366,6 +366,8 @@ export function serve(
       const classroom = classroomPath.exec(path);
       if (classroom) {
         const [, id, op] = classroom;
+        if (!id && method === 'GET' && url.searchParams.get('status') === 'active')
+          return json(res,200,await studio.classrooms.listActive());
         if (!id && method === 'POST') return json(res,202,await studio.classrooms.start(await body(req)));
         if (id && !op && method === 'GET') return json(res,200,await studio.classrooms.get(classroomFactId(id)));
         if (id && op === 'print' && method === 'GET') return json(res,200,await studio.classrooms.print(classroomFactId(id)));
@@ -377,7 +379,7 @@ export function serve(
           res,
           202,
           await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment, input.mcpGrants, input.route,
-            input.currentObject),
+            input.currentObject, input.allowBackgroundUnderstanding),
         );
       }
       const actionPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/artifact-actions$/.exec(path);
@@ -405,7 +407,8 @@ export function serve(
         return json(
           res,
           202,
-          await studio.answer(match[1], input.parentId, input.answer, clientRequest(input.requestId), input.mcpGrants, input.route, input.currentObject),
+          await studio.answer(match[1], input.parentId, input.answer, clientRequest(input.requestId), input.mcpGrants, input.route, input.currentObject,
+            input.allowBackgroundUnderstanding),
         );
       }
       if (method !== 'GET' || path.startsWith('/api/')) throw new RequestError(404, '这个入口不存在。');

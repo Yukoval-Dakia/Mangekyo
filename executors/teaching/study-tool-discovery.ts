@@ -1,6 +1,7 @@
 import {learningToolError} from './tool-error.ts';
 import { createHash } from 'node:crypto';
 import { remoteToolDefinition, type RemoteTool } from './mcp-tools.ts';
+import type {ToolDefinition} from './learning-tools.ts';
 
 const maximumQuery = 500;
 const maximumMatches = 3;
@@ -24,20 +25,29 @@ function words(text: string) {
     .map(({segment}) => segment));
 }
 
-export function studyToolDiscovery(remotes: ReadonlyMap<string, RemoteTool>) {
+export function studyToolDiscovery(remotes: ReadonlyMap<string, RemoteTool>, local: readonly ToolDefinition[] = []) {
   // Rebuild the view from the journaled authorized MCP catalog on each replay.
   const catalog = Array.from(remotes, ([name, remote]) => {
     const {server, tool} = remote;
     const declarationVersion = createHash('sha256').update(JSON.stringify([server.url, tool])).digest('hex');
     return {
       descriptor: {name, declarationVersion, schemaRef: 'mcp:' + name + '@' + declarationVersion},
-      remote, originalName: normalize(tool.name),
+      definition: remoteToolDefinition(name, remote), originalName: normalize(tool.name),
       nameWords: words(tool.name + ' ' + server.id),
       descriptionWords: words(tool.description),
       descriptionText: normalize(tool.description),
     };
   });
-  const pending = new Map<string, ReturnType<typeof remoteToolDefinition>>();
+  for (const definition of local) {
+    const {name, description} = definition.function;
+    const declarationVersion = createHash('sha256').update(JSON.stringify(definition)).digest('hex');
+    catalog.push({
+      descriptor: {name, declarationVersion, schemaRef: 'local:' + name + '@' + declarationVersion},
+      definition, originalName: normalize(name), nameWords: words(name),
+      descriptionWords: words(description), descriptionText: normalize(description),
+    });
+  }
+  const pending = new Map<string, ToolDefinition>();
   return {
     find(query: unknown) {
       if (typeof query !== 'string' || query.length > maximumQuery || !query.trim()) {
@@ -60,8 +70,8 @@ export function studyToolDiscovery(remotes: ReadonlyMap<string, RemoteTool>) {
         .sort((a, b) => b.score - a.score || (a.entry.descriptor.name < b.entry.descriptor.name ? -1 : 1))
         .slice(0, maximumMatches);
       const items = matches.map(({entry, exact, name, description}) => {
-        const {descriptor, remote} = entry;
-        pending.set(descriptor.schemaRef, remoteToolDefinition(descriptor.name, remote));
+        const {descriptor, definition} = entry;
+        pending.set(descriptor.schemaRef, definition);
         return {...descriptor, match: exact ? {by: 'name'} : {by: 'keywords', name: name.slice(0, 4), description: description.slice(0, 4)}};
       });
       return {content: JSON.stringify({items, message: items.length
@@ -70,7 +80,9 @@ export function studyToolDiscovery(remotes: ReadonlyMap<string, RemoteTool>) {
         summary: '查找工具 · ' + (items.length ? items.length + ' 项匹配' : '无匹配')};
     },
     takeDefinitions() {
-      const definitions = [...pending.values()];
+      const definitions = local.length
+        ? [...pending].sort(([a], [b]) => a < b ? -1 : 1).map(([, definition]) => definition)
+        : [...pending.values()];
       pending.clear();
       return definitions;
     },

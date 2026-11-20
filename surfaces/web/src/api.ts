@@ -90,6 +90,7 @@ export type RelationWrite =
   | {status: 'withdrawn' | 'changed'};
 
 export interface Turn {
+  backgroundUnderstanding?: {allowed: boolean; rev: number; accessEpoch: string};
   turnId?: string;
   artifacts?: unknown;
   trace?: string[];
@@ -141,7 +142,7 @@ export class ApiError extends Error {
 
 export async function api<T>(
   path: string,
-  options: { method?: "POST" | "PUT"; body?: object; signal?: AbortSignal } = {},
+  options: { method?: "POST" | "PUT"; body?: object; signal?: AbortSignal; cache?: RequestCache } = {},
 ): Promise<T> {
   const body = options.body;
   let watermark:string|undefined;
@@ -152,6 +153,7 @@ export async function api<T>(
   }
   const response = await fetch(`/api${path}`, {
     ...(options.method && { method: options.method }),
+    ...(options.cache && { cache: options.cache }),
     ...(options.signal && { signal: options.signal }),
     ...(options.body && {
       headers: { "Content-Type": "application/json" },

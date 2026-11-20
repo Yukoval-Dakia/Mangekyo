@@ -33,6 +33,7 @@ export type FactSnapshot<Value = Json> = {
   readonly type: string;
   readonly ref: FactRef;
   readonly accessEpoch: Tick;
+  readonly equivalentSince?: { readonly purpose: string; readonly rev: Revision };
   readonly value: Value;
   readonly purpose: readonly string[];
 };
@@ -123,6 +124,7 @@ export type FactWrite =
     readonly id: FactId;
     readonly expectedRev: Revision;
     readonly purpose: readonly string[];
+    readonly scopedPurpose?: string;
   };
 
 export type CommandContext = {
@@ -135,5 +137,6 @@ export type CommandReceipt = {
   readonly state: 'done' | 'undone' | 'proposed' | 'rejected';
   readonly wrote: readonly FactRef[];
   readonly proposals: readonly CommandId[];
+  readonly scopedPurposeChanges?: readonly { readonly id: FactId; readonly rev: Revision; readonly purpose: string }[];
   readonly output?: Json;
 };

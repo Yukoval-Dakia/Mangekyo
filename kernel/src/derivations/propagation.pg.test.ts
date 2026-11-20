@@ -1,20 +1,17 @@
-import pg from 'pg';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { testDatabaseUrl, withLearnerDatabase } from '../../test/learner-database.ts';
+import { aroundEach, describe, expect, it } from 'vitest';
 import { noteModule } from '../../test/commands/fixture.ts';
 import { createCommandHandler, type CommandRequest } from '../commands/index.ts';
-import { createPgDb } from '../db/pg.ts';
 import type { Db } from '../db/types.ts';
 import { defineSlot } from '../declarations/define.ts';
 import { commandId, factId, learnerId, type FactId, type Revision } from '../declarations/ids.ts';
 import type { GatherContext, Json, SlotRef } from '../declarations/types.ts';
-import { applyKernelSchema } from '../schema.ts';
 import { newUlid } from '../work/identity.ts';
 import { registerWorkWait, requestWork, type WorkRef } from '../work/index.ts';
 import { sealCandidate, submitCandidate } from './candidate.ts';
 import { gatherSnapshot } from './gather.ts';
 import { createPropagationHooks } from './propagation.ts';
 
-const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 const learner = learnerId('01KFS4AAA00000000000000000');
 const purpose = 'learn';
 const scope = { knowledgePoint: 'K' };
@@ -40,24 +37,14 @@ const hooks = createPropagationHooks([
       ? [{ key: 'K', scopeKeys: {}, evidenceEligible: false }] : [] },
 ]);
 
-describe.skipIf(!connectionString)('Production propagation in PostgreSQL', () => {
-  const schema = `propagation_${process.pid}`;
-  let admin: Db;
+describe.skipIf(!testDatabaseUrl)('Production propagation in PostgreSQL', () => {
   let db: Db;
   let handle: ReturnType<typeof createCommandHandler>;
-  beforeEach(async () => {
-    admin = createPgDb(new pg.Pool({ connectionString }));
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    db = createPgDb(new pg.Pool({ connectionString }), { schema });
-    await applyKernelSchema(db);
-    await db.query('INSERT INTO learners(id) VALUES($1)', [learner]);
+  aroundEach(run => withLearnerDatabase(learner, async database => {
+    db = database;
     handle = createCommandHandler(db, { modules: [noteModule([purpose])], hooks });
-  });
-  afterEach(async () => {
-    await db.close();
-    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-    await admin.close();
-  });
+    await run();
+  }));
 
   const command = (type: string, input: CommandRequest['input']) =>
     handle({ learner, id: commandId(newUlid()), actor: 'learner', purpose, type, input });

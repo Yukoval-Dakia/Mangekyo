@@ -1,4 +1,5 @@
-import { manifestFactInputs, revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
+import { teachingMemoryBasis } from './memory-claims.ts';
 import type { studyTurn } from '../../modules/activity/values.ts';
 import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -110,7 +111,7 @@ function notionHost(db: Db, scope = learnerScope) {
     } catch (error) {
       signal?.throwIfAborted();
       if (error instanceof NotionSourceUnavailable && error.invalidated) {
-        if (!rememberDenial) throw new RequestError(403, 'Notion 已撤回该来源的访问。');
+        if (!rememberDenial) throw error;
         const key = error.invalidated.kind === 'selection' ? 'root' : error.invalidated.pageId;
         await locked(async tx => {
           await live(tx, id, epoch, watermark);
@@ -167,25 +168,23 @@ export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<B
   return pages;
 }
 
-export async function teachingResultAuthority(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
+export async function teachingResultAuthority(tx: ReadTransaction, turnId: string, turn: ReturnType<typeof studyTurn>,
   rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead,
   origin?: ReturnType<typeof studyTurn>) {
   try {
     const manifest = parseManifest(rawManifest);
-    if (manifest.purpose !== teaching || !await teachingTurnAllowed(tx,turn,grantCurrent,origin) ||
-        (await revalidateManifest(tx, manifest)).kind !== 'valid') return 'withdrawn';
+    if (manifest.purpose !== teaching || !await teachingTurnAllowed(tx,turn,grantCurrent,origin))
+      return {state:'withdrawn'} as const;
     const recipient: NotionRecipient = () => true;
     if (turn.providerId && turn.protocol && turn.workspaceRevision)
       recipient.notionRecipientId = notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision);
-    await notionSendBasis(tx, await savedNotionWitnesses(tx, manifest.inputs), recipient, check);
-    return 'authorized';
+    const memoryBasis = await teachingMemoryBasis(tx, manifest, turnId, recipient);
+    if (!memoryBasis) return {state:'withdrawn'} as const;
+    await notionSendBasis(tx, [...await savedNotionWitnesses(tx, manifest.inputs), ...memoryBasis.objects], recipient, check);
+    return {state:'authorized', memoryBasis} as const;
   } catch (error) {
-    return error instanceof NotionReadUnconfirmed ? 'unconfirmed' : 'withdrawn';
+    return error instanceof NotionReadUnconfirmed ? {state:'unconfirmed'} as const : {state:'withdrawn'} as const;
   }
-}
-
-export async function teachingResultAllowed(...args: Parameters<typeof teachingResultAuthority>) {
-  return (await teachingResultAuthority(...args)) === 'authorized';
 }
 
 export class NotionReadUnconfirmed extends FactReadDeniedError {
@@ -207,7 +206,8 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false, s
     if (source.kind !== 'notion') return;
     const page = await notionPageAuthority(tx, source);
     const key = notionPageKey(page);
-    return {...page, key, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
+    const selectionKey = JSON.stringify([page.selection.id, page.selection.selectionEpoch]);
+    return {...page, key, selectionKey, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
   }
   const planner = notionReadPlan<NonNullable<Awaited<ReturnType<typeof pageFor>>>>(async ({selection,pageId,watermark},abort) => {
     try {
@@ -215,6 +215,8 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false, s
       return 'authorized';
     } catch (error) {
       abort.throwIfAborted();
+      if (error instanceof NotionSourceUnavailable && error.invalidated)
+        return error.invalidated.kind === 'selection' ? 'selection-withdrawn' : 'withdrawn';
       if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
       return error instanceof RequestError && error.status===403 ? 'withdrawn' : 'unconfirmed';
     }

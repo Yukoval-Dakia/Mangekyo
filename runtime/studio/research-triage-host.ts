@@ -158,6 +158,7 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
     const retention = fact.type === retentionReviewPermissionType;
     if (retention && !await activeRetentionReview(tx, fact)) continue;
     const attempt = retention ? undefined : workbookAttempt(fact.value);
+    if (attempt?.paper.questions.some(question => question.sourceQuestionRef)) continue;
     const anchor = retention ? retentionReviewAnchor : attempt?.feedback.find(item => item.result === 'incorrect')?.questionId;
     if (discovery && !intent && anchor) {
       const sourceFactRev = { id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch, anchor };

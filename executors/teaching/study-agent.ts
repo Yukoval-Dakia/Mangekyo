@@ -6,12 +6,15 @@ import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
 import { loadMcpTools, invokeMcpTool, remoteToolDefinition } from './mcp-tools.ts';
 import { findTools, studyToolDiscovery } from './study-tool-discovery.ts';
+import type {DeliveredToolRange} from './learning-tools.ts';
 import {projectChatImages, projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
 import {openToolResult, studyToolResults} from './study-tool-results.ts';
 import { memoryToolDefinitions, workspaceDefinitions, type ReceiveStudyImage, type StudyImage, type WorkspaceTools } from './workspace-tools.ts';
 import { createStudyTools, pythonAttemptsLimit, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
+import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch} from './learning-turn.ts';
+import {saveBeliefDefinition, toolFailure, type LearningTools} from './learning-tools.ts';
 
 type StudyWorkspaceTools = WorkspaceTools & {
   presentationOnly?: true;
@@ -23,6 +26,10 @@ export type PreparedPythonAttempts = Extract<PythonAttemptsRead, {ok:false}> | (
 });
 
 export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
+  /** Set only for a persisted turn using the unified learning tool contract. */
+  learningTools?: LearningTools;
+  /** The Studio turn's persisted choice while only memory has migrated. */
+  beliefTools?: boolean;
   /** Persisted opt-in replacing first-turn memory, preference and current-object projections. */
   jitContext?: FirstTurnJitContext;
   historyNotice?: string;
@@ -30,6 +37,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   currentLearningObject?: string;
   learningMemory?: string;
   memoryTools?: (name: string, args: Record<string, unknown>, step: number) => Promise<string>;
+  onMemoryDelivered?: (range: DeliveredToolRange) => void;
   openMemoryRegion?: (input: Record<string, unknown>, step: number) => Promise<string>;
   maxCompletionTokens?: 4096 | 8192;
   tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
@@ -114,25 +122,32 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const tools = options.tools && createStudyTools(options.tools);
   const results = studyToolResults();
   const previews = new WeakMap<ToolResultMessage, string>();
+  const confirmDelivery = options.learningTools?.onDelivered ?? options.onMemoryDelivered;
+  const deliveries = new WeakMap<ToolResultMessage, DeliveredToolRange>();
   const workspace = options.tools?.workspace;
-  const maxToolCalls = workspace ? 12 : defaultToolBudget;
-  const stride = workspace ? 16 : 8;
-  const anthropic = providerProtocol(options.provider) === 'anthropic';
-  const allowParallelCalls = workspace?.executeRead && !anthropic;
-  const pinnedQuery = options.tools?.publicSearchQuery?.trim();
   const { model, reasoningEffort } = profileFor(options.provider);
+  const learning = options.learningTools && createLearningTurn(options.learningTools, results, options.runEffect, model);
+  const recovery = learning && learningRecovery();
+  const maxToolCalls = workspace || learning ? 12 : defaultToolBudget;
+  const stride = workspace || learning ? 16 : 8;
+  const anthropic = providerProtocol(options.provider) === 'anthropic';
+  const allowParallelCalls = learning || (workspace?.executeRead && !anthropic);
+  const pinnedQuery = options.tools?.publicSearchQuery?.trim();
   const remotes = await loadMcpTools(options.tools?.mcpServers ?? [], model, options.runEffect, connections);
-  const discovery = tools && options.discoverTools ? studyToolDiscovery(remotes) : undefined;
   const builtins = tools?.names.map(name => {
     const tool = definition(name, Boolean(workspace?.preparePythonAttempts && !workspace.presentationOnly));
     if (name === 'exa_search' && pinnedQuery) tool.function.description += ' 本轮只会检索学生指定的公开主题：' + pinnedQuery;
     return tool;
   }) ?? [];
+  const discovery = learning
+    ? studyToolDiscovery(remotes, [...learning.discoverable, ...builtins.filter(tool => tool.function.name === 'exa_search')])
+    : tools && options.discoverTools ? studyToolDiscovery(remotes) : undefined;
   const nativeTools = workspace
     ? [...(workspace.presentationOnly ? [] : workspaceDefinitions), ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
     : [];
-  const coreDefinitions = [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []),
-    ...(options.memoryTools ? memoryToolDefinitions : []),
+  const memoryDefinitions = options.beliefTools ? [memoryToolDefinitions[0]!, saveBeliefDefinition] : memoryToolDefinitions;
+  const coreDefinitions = learning?.resident ?? [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []),
+    ...(options.memoryTools ? memoryDefinitions : []),
     ...(discovery ? [findTools] : Array.from(remotes, ([name, remote]) => remoteToolDefinition(name, remote)))];
   const messages: (Message | ToolMessage)[] = [...initial];
   const trace: string[] = [];
@@ -173,26 +188,83 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
     const reply: ModelReply = JSON.parse(raw);
     checkProviderOutcome(reply);
     if (reply.reportedModel) verifyTeachingModel(reply.reportedModel, options.provider.apiKey, model);
+    // Projected previews are new messages. Only acknowledge the original text after the
+    // provider accepted this request, before executing any of its returned tool calls.
+    if (confirmDelivery) for (const message of context) {
+      if (message.role !== 'tool') continue;
+      const range = deliveries.get(message);
+      if (range) {
+        confirmDelivery(range);
+        deliveries.delete(message);
+      }
+    }
     if (!reply.calls) {
-      if (!reply.message?.trim() && workspace?.writes().length)
+      if (!reply.message?.trim() && (options.learningTools?.writes() ?? workspace?.writes())?.length)
         return {message:'已完成的写入见下方回执。模型没有返回本轮的文字说明。',
           completion:'receipts_only' as const, trace, ...(reply.reportedModel ? {reportedModel:reply.reportedModel} : {})};
       if (!reply.message?.trim() || reply.message.length > maxReply) throw new TeachingError('provider_response', '模型没有返回可用的答复。');
       return { message: reply.message, ...(reply.reportedModel ? { reportedModel: reply.reportedModel } : {}), ...(trace.length ? {trace} : {}) };
     }
-    if (!available || !tools || !reply.reportedModel || !reply.calls.length || reply.calls.length + trace.length > maxToolCalls)
+    if (!available || (!tools && !learning && !options.beliefTools) ||
+        !reply.reportedModel || !reply.calls.length || reply.calls.length + trace.length > maxToolCalls)
       throw new TeachingError('evidence_limit', '本轮工具请求缺少模型标识或超过工具预算。');
     const calls = reply.calls;
+    const availableNames = new Set(definitions.map(tool => tool.function.name));
     messages.push({ role: 'assistant', tool_calls: calls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {}), content: null });
+    async function externalEffect(name: string, args: Record<string, unknown>, step: number,
+      execute: (dispatch?: TeachingDispatch) => Promise<unknown>, capture: () => object = () => ({})) {
+      const remote = remotes.get(name);
+      const raw = await options.runEffect({index:step, model, provider:remote ? 'tool:mcp:' + remote.server.id : 'tool:' + name,
+        requestDigest:hash(JSON.stringify({name, args, messages}))}, async (_, dispatch) => {
+        if (remote?.stateful && !connections.hasStatefulSession(remote.server))
+          return JSON.stringify({lostSession:true});
+        const output = await execute(dispatch);
+        return JSON.stringify({output, ...capture()});
+      });
+      const saved = JSON.parse(raw);
+      if (saved.lostSession) throw new TeachingError('provider_unavailable', '本轮有状态 MCP 会话已中断，请重新发送，已完成的工具操作不会重复。');
+      return saved;
+    }
     const executeCall = async (call: FunctionCall, position: number, priorRead?: Promise<unknown>) => {
       const name = call.function.name;
-      if (!definitions.some(tool => tool.function.name === name)) {
+      if (!availableNames.has(name)) {
+        if (learning) return {...learning.badArgs(name, '当前请求未开放此工具。'), summary:'工具不可用'};
         if (discovery) return {content: JSON.stringify(learningToolError('tool_unavailable','name','当前请求未开放此工具。',{
           tool:findTools.function.name, args:{query:name}, why:'确认本轮已授权且下一次请求可用的工具。',
         })), summary: '工具不可用'};
         throw new TeachingError('evidence_scope', '模型请求了本轮未开放的工具。');
       }
-      await options.onProgress?.({phase: name === 'python' ? 'checking' : 'reading'});
+      await options.onProgress?.({phase: name === 'python' || name === 'run_calculation' ? 'checking' : 'reading'});
+      if (learning) {
+        const args = learningArguments(call.function.arguments);
+        const summary = name === 'run_calculation' ? '完成 Python 计算' : '学习工具 · ' + name;
+        if (!args) return {...learning.badArgs(name, '请将工具参数作为 JSON 对象提交。'), summary:'工具参数错误'};
+        if (name === findTools.function.name) {
+          if (Object.keys(args).length !== 1 || typeof args.query !== 'string' || !args.query.trim() || args.query.length > 500)
+            return {...learning.badArgs(name, '查询需填写工具名或任务关键词，最多 500 字。'), summary:'查找工具 · 参数错误'};
+          const resident = learning.resident.find(tool => tool.function.name === args.query);
+          if (resident) return {content:JSON.stringify({ok:true, data:{tool:resident.function.name, available:true}}), summary:'查找工具'};
+          return discovery!.find(args.query);
+        }
+        const result = await learning.execute(name, args, index + position + 1, priorRead ?? Promise.resolve());
+        if (result) return {...result, summary};
+        // Authorized MCP and public search still share the journal and dispatch guard.
+        if (name === 'exa_search' && pinnedQuery) args.query = pinnedQuery;
+        const remote = remotes.get(name);
+        const step = index + position + 1;
+        const saved = await externalEffect(name, args, step, dispatch =>
+          remote ? invokeMcpTool(remote, args, connections, dispatch) : tools!.execute(name, args));
+        let value = saved.output;
+        if (typeof value === 'string' && value.startsWith('{')) {
+          try { value = JSON.parse(value); } catch { /* Remote content may be plain text. */ }
+        }
+        if (value?.ok === false) {
+          const code = value.code === 'budget_or_limit' ? 'limit_exceeded' : value.code === 'invalid_args' ? 'invalid_args' : 'not_found';
+          return {content:JSON.stringify(toolFailure(code, String(value.message ?? '工具未完成。'),
+            {tool:'find_tools', args:{query:name}})), summary};
+        }
+        return {...results.publishLearning(name, step, JSON.stringify({ok:true, data:value}), []), summary};
+      }
       let parsed: unknown;
       try { parsed = JSON.parse(call.function.arguments); } catch { /* Send an actionable tool response. */ }
       const args = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
@@ -223,14 +295,14 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         attempts = prepared;
       }
       const execute = (dispatch?: TeachingDispatch) => remote ? invokeMcpTool(remote, args, connections, dispatch)
-        : tools.execute(name, args, python?.inputs, attempts?.rows);
+        : tools!.execute(name, args, python?.inputs, attempts?.rows);
       // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
       let output: string;
       let image: StudyImage | undefined;
-      const before = name === 'python' ? tools.snapshotFiles() : {};
+      const before = name === 'python' ? tools!.snapshotFiles() : {};
       if (name === memoryRegionTool.function.name && options.openMemoryRegion) {
         output = await options.openMemoryRegion(args, step);
-      } else if (options.memoryTools && memoryToolDefinitions.some(tool => tool.function.name === name)) {
+      } else if (options.memoryTools && memoryDefinitions.some(tool => tool.function.name === name)) {
         output = await options.memoryTools(name, args, step);
       } else if (workspaceTool) {
         const receiveImage: ReceiveStudyImage | undefined = name === 'open_learning'
@@ -242,33 +314,33 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         const value = await execute();
         output = typeof value === 'string' ? value : JSON.stringify(value);
       } else {
-        const raw = await options.runEffect({ index: step, model, provider: remote ? 'tool:mcp:' + remote.server.id : 'tool:' + name,
-          requestDigest: hash(JSON.stringify({name, args, messages})) }, async (_, dispatch) => {
-          if (remote?.stateful && !connections.hasStatefulSession(remote.server))
-            return JSON.stringify({lostSession: true});
-          const output = await execute(dispatch);
-          return JSON.stringify({output, ...(name === 'python' ? {files: tools.snapshotFiles()} : {}),
-            ...(attempts ? {attemptBasis: attempts.witnesses} : {})});
-        });
-        const saved = JSON.parse(raw);
-        if (saved.lostSession) throw new TeachingError('provider_unavailable', '本轮有状态 MCP 会话已中断，请重新发送，已完成的工具操作不会重复。');
-        if (name === 'python') tools.restoreFiles(saved.files);
+        const saved = await externalEffect(name, args, step, execute, () => ({
+          ...(name === 'python' ? {files: tools!.snapshotFiles()} : {}),
+          ...(attempts ? {attemptBasis: attempts.witnesses} : {}),
+        }));
+        if (name === 'python') tools!.restoreFiles(saved.files);
         output = typeof saved.output !== 'string' ? JSON.stringify(saved.output) : attempts ? JSON.stringify({text: saved.output,
           sources: attempts.witnesses.map(({id, rev}) => ({id, rev})),
           ...(attempts.issues.length ? {...learningToolError('partial_success','refs','部分作答未打开，详见逐项结果。'), issues:attempts.issues} : {}),
         }) : saved.output;
       }
-      const files = name === 'python' ? Object.entries(tools.snapshotFiles()).filter(([name, value]) => before[name] !== value) : [];
+      const files = name === 'python' ? Object.entries(tools!.snapshotFiles()).filter(([name, value]) => before[name] !== value) : [];
       const result = results.publish(name, step, output, files);
-      const summary = name === memoryRegionTool.function.name ? '展开记忆区域' : remote
+      const summary = name === memoryRegionTool.function.name ? '展开记忆区域' : name === 'save_belief' ? '登记本轮记忆操作' : remote
         ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + output.slice(0, 600) : summarise(call, args, output);
       return {...result, summary, ...(image && {image})};
     };
-    function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string; image?: StudyImage}) {
+    function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string; image?: StudyImage; delivery?: DeliveredToolRange}) {
       trace.push(result.summary);
       const message: ToolResultMessage = {role: 'tool', tool_call_id: call.id, content: result.content, ...(result.image && {image:result.image})};
+      if (result.delivery) deliveries.set(message, result.delivery);
       if (result.preview) previews.set(message, result.preview);
       messages.push(message);
+    }
+    if (options.learningTools && recovery) {
+      await runLearningBatch(options.learningTools, calls, availableNames,
+        (call, position, priorRead) => recovery.run(call, () => executeCall(call, position, priorRead)), appendResult);
+      continue;
     }
     for (let position = 0; position < calls.length;) {
       const start = position++;
