@@ -176,9 +176,7 @@ async function verifyTeachingSource(read: ReadContext, pinned: FactSnapshot) {
     throw new Error('题目或来源未授权教学用途。');
 }
 
-async function cleanQuestion(
-  read: ReadContext, fact: FactSnapshot, itemId: string, releaseUse: QuestionUse | null,
-): Promise<readonly PrintPiece[]> {
+async function authorizedPrintQuestion(read: ReadContext, fact: FactSnapshot, releaseUse: QuestionUse | null) {
   if (fact.type !== assetType) throw new Error('题目引用类型无效。');
   const question = questionAsset(fact.value);
   if (releaseUse) {
@@ -189,6 +187,13 @@ async function cleanQuestion(
     await verifyTeachingSource(read, fact);
     await checkQuestionTeachingSources(read, question);
   }
+  return question;
+}
+
+async function cleanQuestion(
+  read: ReadContext, fact: FactSnapshot, itemId: string, releaseUse: QuestionUse | null,
+): Promise<readonly PrintPiece[]> {
+  const question = await authorizedPrintQuestion(read, fact, releaseUse);
   const pieces: PrintPiece[] = [];
   for (const { body, id } of question.blocks) {
     if (body.kind !== 'sharedMaterial') continue;
@@ -274,8 +279,7 @@ async function workbookPrintParts(read: ReadContext, fact: FactSnapshot, release
       if (question.sourceAccessEpoch !== undefined && source.accessEpoch !== question.sourceAccessEpoch)
         throw new Error('来源题目权限已变更。');
       if (source.type === 'activity.workspaceEntry') {
-        if (releaseUse) throw new Error('来源题目没有可用的题库验收，请重新发放。');
-        await verifyTeachingSource(read, source);
+        await checkFrozenWorkspaceBasis(read, source, releaseUse);
         const entry = object(source.value);
         if (entry.kind !== 'question' || entry.body !== storedPrompt) throw new Error('来源题目与冻结题面不符。');
       } else {
@@ -294,6 +298,34 @@ async function workbookPrintParts(read: ReadContext, fact: FactSnapshot, release
   }
   if (!pieces.length) throw new Error('后测发放题位与冻结卷不符。');
   return { title: text(paper.title, '冻结卷标题', 240), pieces };
+}
+
+// Activity checked the frozen item against this legacy question on save. Its
+// provenance can include other workspace entries and pinned IQDB questions.
+async function checkFrozenWorkspaceBasis(read: ReadContext, root: FactSnapshot, releaseUse: QuestionUse | null) {
+  const checked = new Set<string>();
+  const visiting = new Set<string>();
+  async function visit(source: FactSnapshot) {
+    const key = `${source.ref.id}:${source.ref.rev}`;
+    if (checked.has(key)) return;
+    await verifyTeachingSource(read, source);
+    if (source.type === 'activity.workspaceEntry') {
+      if (visiting.has(source.ref.id)) throw new Error('工作区来源依据形成循环。');
+      const { basis } = object(source.value);
+      if (!Array.isArray(basis)) throw new Error('冻结工作区题目缺少来源依据。');
+      visiting.add(source.ref.id);
+      for (const use of basis) {
+        const opened = await openWorkbookQuestionSource(read, root, captureRef(use));
+        if (opened.accessEpoch !== object(use).epoch) throw new Error('冻结工作区题目的来源权限已变更。');
+        await visit(opened);
+      }
+      visiting.delete(source.ref.id);
+    } else if (source.type === assetType && object(source.value).kind === 'question') {
+      await authorizedPrintQuestion(read, source, releaseUse);
+    }
+    checked.add(key);
+  }
+  await visit(root);
 }
 
 async function openWorkbookQuestionSource(read: ReadContext, workbook: FactSnapshot, ref: SourceRef) {
