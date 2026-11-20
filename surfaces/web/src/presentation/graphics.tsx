@@ -12,6 +12,24 @@ const paints = {
   none: 'none',
 };
 const points = (items: { x: number; y: number }[]) => items.map((p) => p.x + ',' + p.y).join(' ');
+export type MountedStroke = {
+  scene: Scene; line: Extract<Drawing, { kind: 'line' }>; mountId: string; title: string;
+};
+
+export function StrokeFigure({ strokes }: { strokes: MountedStroke[] }) {
+  const { scene, title } = strokes[0]!;
+  return <figure className="av-sheet av-figure turn-artifact">
+    <figcaption>{title}</figcaption>
+    <svg viewBox={`0 0 ${scene.width} ${scene.height}`} role="img" aria-label={title}>
+      {strokes.map(({ mountId, line }) =>
+        <polyline key={mountId} data-stroke={mountId} points={points(line.points)} fill="none" stroke={paints[line.stroke]} />)}
+    </svg>
+    <ol aria-label="笔画说明">
+      {strokes.map(({ mountId, scene }) => <li key={mountId}>{scene.description}</li>)}
+    </ol>
+  </figure>;
+}
+
 export function SceneFigure({
   node,
   read,
