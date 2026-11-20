@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { WorkflowExecutionAlreadyStartedError, type Client } from '@temporalio/client';
 import { WorkflowIdConflictPolicy, WorkflowIdReusePolicy } from '@temporalio/common';
 import { coordinatorWakeSignal, coordinatorWorkflowId, coordinatorWorkflowType, isCoordinatorRef } from './coordinator.ts';
@@ -12,6 +13,15 @@ export interface WorkConfig {
 
 function validateTaskQueue(taskQueue: string): void {
   if (!/^[A-Za-z0-9_.-]{1,128}$/.test(taskQueue)) throw new TypeError('Invalid Temporal task queue');
+}
+
+export function capabilityTaskQueue(taskQueue: string, capability: string): string {
+  validateTaskQueue(taskQueue);
+  validateTaskQueue(capability);
+  const name = taskQueue + '-' + capability;
+  if (name.length <= 128) return name;
+  const digest = createHash('sha256').update(JSON.stringify([taskQueue, capability])).digest('hex');
+  return 'capability-' + digest;
 }
 
 export async function startOrWakeCoordinator(
