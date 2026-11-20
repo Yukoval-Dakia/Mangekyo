@@ -1,4 +1,4 @@
-import { factId } from '@mangekyo/kernel';
+import { factId, type FactSnapshot } from '@mangekyo/kernel';
 import { isSourceFactId } from './source-values.ts';
 
 export const turnResearchPurpose = 'background-research';
@@ -71,6 +71,13 @@ export function studyTurn(input: unknown) {
     baseUrl: field(value, 'baseUrl', 2000),
   };
 }
+export function turnAllowsBackgroundUnderstanding(fact: FactSnapshot) {
+  return fact.type === 'activity.studyTurn' && fact.purpose.includes(turnResearchPurpose) &&
+    studyTurn(fact.value).allowBackgroundUnderstanding === true;
+}
+export const turnResearchAccess = (fact: FactSnapshot) => ({
+  allowed: turnAllowsBackgroundUnderstanding(fact), rev: fact.ref.rev, accessEpoch: fact.accessEpoch,
+});
 export function studyAttachment(input: unknown) {
   const value = object(input);
   if (value.mode !== 'ask' && value.mode !== 'prepare') throw new Error('材料使用方式无效');

@@ -12,7 +12,7 @@ import { first45Answer, first45Histories, first45Question } from '../../executor
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, routeMatchesInput, mcpRevision } from './harness.ts';
-import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchPurpose, type StudyCurrentObjectSelection } from '../../modules/activity/values.ts';
+import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchAccess, type StudyCurrentObjectSelection } from '../../modules/activity/values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { readMaterialText } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
@@ -92,9 +92,6 @@ export type DisplayTurn = {
   answer?: string;
 };
 type Status = 'pending' | 'ready' | 'failed' | 'unknown';
-export const turnResearchAccess = (fact: FactSnapshot) => ({
-  allowed: fact.purpose.includes(turnResearchPurpose), rev: fact.ref.rev, accessEpoch: fact.accessEpoch,
-});
 export const unavailableReplyMessage = '本轮已完成，依据已变更，旧回复已隐藏。';
 type TurnView = {
   id: string;

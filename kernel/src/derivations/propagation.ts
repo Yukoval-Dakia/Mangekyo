@@ -147,7 +147,8 @@ export function createPropagationHooks(
       throw new Error('Propagation input learner does not match transaction');
     }
     const frontier: ManifestChange[] = facts.filter(fact => fact.kind !== 'create')
-      .map(fact => ({ kind: 'fact-changed', factId: fact.ref.id }));
+      .map(fact => ({ kind: 'fact-changed', factId: fact.ref.id,
+        ...(fact.scopedPurpose === undefined ? {} : {scopedPurpose: fact.scopedPurpose}) }));
     const events: TriggerEvent[] = facts.map(fact => ({ kind: 'fact', change: fact }));
     if (always) events.push({ kind: 'always' });
     if (change?.kind === 'effective' && change.previousCurrent) {

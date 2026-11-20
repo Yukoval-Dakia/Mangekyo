@@ -17,6 +17,7 @@ import {
 } from '../../modules/companion/understanding.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import { claimUndoToken, claimWitness } from './memory-claims.ts';
+import { turnAllowsBackgroundUnderstanding } from '../../modules/activity/values.ts';
 import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
@@ -37,7 +38,7 @@ export type UnderstandingTransport = {
 };
 const windowMs = 86_400_000;
 const mayResearch: WorkspaceSourceRecipient = fact =>
-  fact.purpose.includes(researchPurpose) || (fact.type !== turnEvidenceType && fact.purpose.includes('all'));
+  fact.type === turnEvidenceType ? turnAllowsBackgroundUnderstanding(fact) : fact.purpose.includes(researchPurpose) || fact.purpose.includes('all');
 const sourceReader = (tx: ReadTransaction, purpose: string) => createAuthorizedFactReader(tx, purpose, mayResearch);
 
 async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpose = researchPurpose,

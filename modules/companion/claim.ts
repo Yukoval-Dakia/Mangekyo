@@ -157,9 +157,18 @@ export async function readClaimPredecessor(ctx: CommandContext, expected: ClaimR
   return target;
 }
 
+export function turnClaimWitness(fact: FactSnapshot) {
+  const floor = fact.equivalentSince;
+  const rev = floor?.purpose === 'teaching' ? floor.rev : fact.ref.rev;
+  return { rev, accessEpoch: String(BigInt(fact.accessEpoch) - BigInt(fact.ref.rev - rev)) };
+}
+
 export function matchesClaimEvidence(fact: FactSnapshot, ref: ClaimRef, excerpt: string, start: number, legacy = false) {
-  if (fact.type !== 'activity.studyTurn' || fact.ref.id !== ref.id ||
-      fact.ref.rev !== ref.rev || fact.accessEpoch !== ref.accessEpoch) return false;
+  if (fact.type !== 'activity.studyTurn' || fact.ref.id !== ref.id) return false;
+  const revisions = fact.ref.rev - ref.rev;
+  const floor = fact.equivalentSince;
+  if (revisions < 0 || (revisions > 0 && (floor?.purpose !== 'teaching' || ref.rev < floor.rev)) ||
+      BigInt(fact.accessEpoch) - BigInt(ref.accessEpoch) !== BigInt(revisions)) return false;
   if (!fact.value || typeof fact.value !== 'object' || Array.isArray(fact.value)) return false;
   const {answer, caseId, memoryVersion, workspaceRevision} = claimRecord(fact.value);
   if (caseId !== 'companion' || typeof answer !== 'string') return false;
