@@ -33,8 +33,12 @@ export const workspaceDefinitions = [
     answer: text, rubric: text, id: {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$', description:'仅更新时用已有 id；创建时省略。'}, rev: integer,
   }),
 ];
+type WriteReference = { id: string; rev: number; title: string };
+type SavedObservation = { status: 'saved'; text: string; undo_token: string };
+
+export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObservation };
 export type WorkspaceTools = {
   presentationTool?: (typeof workspaceDefinitions)[number];
-  writes: () => readonly {id:string; rev:number; title:string}[];
+  writes: () => readonly WorkspaceWriteReceipt[];
   execute: (name: string, args: Record<string, unknown>, step: number) => Promise<string>;
 };

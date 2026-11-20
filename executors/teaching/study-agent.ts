@@ -57,7 +57,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'search_workspace': return '检索学习记录 · ' + String(args.query ?? args.kind ?? '最近记录') + '\n' + output.slice(0, 700);
     case 'read_workspace': return '读取学习原文 · ' + String(args.id) + '\n' + output.slice(0, 900);
     case 'open_learning': return '打开学习对象 · ' + String(Array.isArray(args.refs) ? args.refs.length : 1) + ' 项\n' + output.slice(0, 900);
-    case 'record_observation': return '记录学情观察 · ' + output.slice(0, 500);
+    case 'record_observation': return '记录学情观察 · ' + String(args.title ?? '').slice(0, 160);
     case 'mount_artifact': return '挂载交互作品 · ' + output.slice(0, 360);
     case 'save_workspace': return '保存学习记录 · ' + String(args.title) + '\n' + output.slice(0, 500);
     default: return '工具不可用';

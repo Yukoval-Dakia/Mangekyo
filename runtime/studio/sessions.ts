@@ -1,3 +1,4 @@
+import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -69,7 +70,7 @@ export type DisplayTurn = {
   studyKit?: StudyKit;
   trace?: string[];
   completion?: 'receipts_only';
-  writes?: {id:string; rev:number; title:string}[];
+  writes?: WorkspaceWriteReceipt[];
   workspaceBasis?: WorkspaceWitness[];
   learningMemoryDigest?: string;
   memoryCommand?: string;
@@ -162,6 +163,24 @@ export function recentConversations(db: Db) {
     return result;
   });
 }
+export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation'> & {
+  observation?: NonNullable<WorkspaceWriteReceipt['observation']> | {status: 'changed'} | {status: 'withdrawn'};
+};
+
+async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[]): Promise<WorkspaceWriteView[]> {
+  const ids = writes.filter(write => write.observation).map(write => write.id);
+  if (!ids.length) return writes;
+  const {rows} = await tx.query<{id: string; current_rev: number; retracted_rev: number | null}>(
+    'SELECT id,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
+  const facts = new Map(rows.map(row => [row.id, row]));
+  return writes.map(write => {
+    if (!write.observation) return write;
+    const fact = facts.get(write.id);
+    if (fact && fact.retracted_rev === null && fact.current_rev === write.rev) return write;
+    return {...write, observation: {status: fact?.retracted_rev ? 'withdrawn' : 'changed'}};
+  });
+}
+
 export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project']) {
   const { turns, ...view } = await db.snapshot({ learner: studioLearner }, async tx => {
     const timeline = await history(tx, session);
@@ -177,19 +196,20 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
       ...(last.error ? { error: last.error } : {}),
       ...(last.status === 'pending' ? { artifacts: await turnArtifacts(tx, session, last.id) } : {}),
       turns: await Promise.all(timeline.filter(row => row.feedback).map(async row => ({
-        row, artifacts: await turnArtifacts(tx, session, row.id),
+        row, writes: row.feedback?.writes && await projectWrites(tx, row.feedback.writes),
+        artifacts: await turnArtifacts(tx, session, row.id),
       }))),
     };
   });
   const projected = [];
-  for (const { row, artifacts } of turns) {
+  for (const { row, artifacts, writes } of turns) {
     if (!row.feedback) continue;
     const { studyKit, ...feedback } = row.feedback;
     const recall = row.derivationId && studyKit
       ? await projectRecall?.(session, row.id, row.derivationId, studyKit)
       : undefined;
     projected.push({
-      ...feedback, turnId: row.id, artifacts,
+      ...feedback, ...(writes && {writes}), turnId: row.id, artifacts,
       ...(studyKit === undefined ? {} : { message: recall?.lesson ?? '' }),
       ...(recall ? { recall } : {}),
       ...(row.submission.answer ? { answer: row.submission.answer } : {}),

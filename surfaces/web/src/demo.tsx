@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
+import { ApiError, api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
 import { useConversation } from "./conversation";
 import { Message } from "./message";
 import { StudyCards } from "./study-tools";
@@ -54,6 +54,45 @@ function Question({ teachingCase }: { teachingCase: TeachingCase }) {
   );
 }
 
+function WorkspaceWrite({item}: {item: NonNullable<Turn['writes']>[number]}) {
+  const [action, setAction] = useState<'idle' | 'pending' | 'withdrawn' | 'changed' | 'missing'>('idle');
+  const [problem, setProblem] = useState('');
+  const observation = item.observation;
+  if (!observation) return <li><a href={'/materials/records/' + item.id}>{item.title}</a> · 第 {item.rev} 版</li>;
+  if (observation.status === 'withdrawn' || action === 'withdrawn')
+    return <li role="status">学情观察已撤回</li>;
+  if (observation.status === 'changed' || action === 'changed' || action === 'missing')
+    return <li role="status">{action === 'missing' ? '撤回凭据已失效。' : '观察已变更，无法撤回原版本。'}</li>;
+  const token = observation.undo_token;
+  async function withdraw() {
+    setAction('pending');
+    setProblem('');
+    try {
+      const receipt = await api<{status: string; ref: {id: string; rev: number}}>(
+        '/workspace/observations/' + item.id + '/undo', {method: 'POST', body: {undo_token: token}});
+      if (receipt.status !== 'withdrawn' || receipt.ref.id !== item.id || receipt.ref.rev !== item.rev + 1)
+        throw new Error('unexpected receipt');
+      setAction('withdrawn');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) setAction('changed');
+      else if (error instanceof ApiError && error.status === 404) setAction('missing');
+      else {
+        setAction('idle');
+        setProblem('暂时无法确认撤回结果，可以再试一次。');
+      }
+    }
+  }
+  return <li className="saved-observation">
+    <small>学情观察 · 同伴推断</small>
+    <strong><a href={'/materials/records/' + item.id}>{item.title}</a></strong>
+    <p>{observation.text}</p>
+    <button className="tonal-button" disabled={action === 'pending'} onClick={withdraw}>
+      {action === 'pending' ? '正在撤回…' : '撤回观察'}
+    </button>
+    {problem && <span role="alert">{problem}</span>}
+  </li>;
+}
+
 export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, sessionId, materialId, discuss }: {
   turn?: Turn | undefined;
   answer?: string | undefined;
@@ -84,7 +123,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
         {applySnapshot && mounts?.map(snapshot => <TurnArtifact key={snapshot.mountId} snapshot={snapshot} apply={applySnapshot} />)}
         {turn && <>
         {!!turn.writes?.length && <ul className="read-list" aria-label="已保存到学习工作区">{turn.writes.map(item =>
-          <li key={item.id}><a href={'/materials/records/' + item.id}>{item.title}</a> · 第 {item.rev} 版</li>
+          <WorkspaceWrite key={item.id + ':' + item.rev} item={item} />
         )}</ul>}
 
           {turn.recall && sessionId && <StudyCards kit={turn.recall} sessionId={sessionId} materialId={materialId} discuss={discuss} />}
