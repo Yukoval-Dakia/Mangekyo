@@ -66,3 +66,21 @@ export function readClaimValue(value: unknown) {
     return undefined;
   }
 }
+
+export async function managedClaimEvidence(tx: ReadTransaction, claim: ReturnType<typeof readClaimValue>) {
+  if (!claim) return 'unknown';
+  if (claim.version === 0) {
+    if (!claim.source) return 'unknown';
+    return await openClaimEvidence(tx, claim.source, claim.quote, 0, true) ? 'current' : 'unavailable';
+  }
+  if (claim.scope.kind === 'object') {
+    for (const ref of claim.scope.basis) {
+      const object = await openClaimFact(tx, ref.id);
+      if (object?.ref.rev !== ref.rev || object.accessEpoch !== ref.accessEpoch) return 'unavailable';
+    }
+  }
+  for (const ref of claim.evidence_refs) {
+    if (!await openClaimEvidence(tx, ref, ref.excerpt, ref.start)) return 'unavailable';
+  }
+  return claim.evidence_refs.length ? 'current' : 'unknown';
+}

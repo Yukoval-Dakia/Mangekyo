@@ -11,7 +11,7 @@ import { extractedUnderstanding, reviewUnderstanding, understandingPresentation 
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
-import { areMemoryClaimsCurrent, claimUndoToken, claimWitness, currentMemoryClaims, openClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
+import { areMemoryClaimsCurrent, claimUndoToken, claimWitness, currentMemoryClaims, managedClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
 
@@ -40,12 +40,9 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
           if (!fact) continue;
           const claim = readClaimValue(fact.value);
           const ref = claimWitness(fact);
-          const evidence = claim?.version === 0 ? claim.source : claim?.evidence_refs[0];
-          const quote = claim?.version === 0 ? claim.quote : claim?.evidence_refs[0]?.excerpt;
-          const source = evidence && quote && await openClaimEvidence(tx, evidence, quote,
-            claim?.version === 1 ? claim.evidence_refs[0]?.start : 0, claim?.version === 0);
+          const evidenceState = await managedClaimEvidence(tx, claim);
           items.push({ref, recordedTick: tick, state: claim?.version === 1 && claim.action === 'forget' ? 'forgotten' : 'current',
-            claim: claim ?? null, evidenceState: source ? 'current' : evidence ? 'unavailable' : 'unknown'});
+            claim: evidenceState === 'unavailable' ? null : claim ?? null, evidenceState});
         }
         const {rows: extracted} = await tx.query<{id: string}>(`SELECT f.id FROM facts f JOIN fact_revs r
           ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
