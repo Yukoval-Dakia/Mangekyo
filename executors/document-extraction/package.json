@@ -1,0 +1,12 @@
+{
+  "name": "@mangekyo/executor-document-extraction",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./local": "./local.ts",
+    "./mineru": "./mineru.ts"
+  },
+  "dependencies": {
+    "fflate": "0.8.3"
+  }
+}

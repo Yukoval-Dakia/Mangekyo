@@ -1,10 +1,9 @@
-import { execFile } from 'node:child_process';
+import { extractLocalDocument } from '@mangekyo/executor-document-extraction/local';
 import { constants, createReadStream } from 'node:fs';
 import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -42,7 +41,7 @@ import { intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 
-export const intakeSwiftTimeoutMs = 120_000;
+export { intakeSwiftTimeoutMs } from '@mangekyo/executor-document-extraction/local';
 
 export type IntakeMetadata = {
   readonly id: string;
@@ -217,108 +216,6 @@ async function readStoredOriginal(base: string, materialId: FactId): Promise<Sto
   };
 }
 
-function failure(method: 'pdfkit' | 'vision' | 'utf8', text: string) {
-  return {
-    status: 'failed' as const,
-    method,
-    text: '',
-    error: text,
-    warnings: [],
-    pages: null,
-    truncated: false,
-    characterCount: 0,
-  };
-}
-
-function failedFromSwift(kind: 'pdf' | 'image', message: string) {
-  return failure(kind === 'pdf' ? 'pdfkit' : 'vision', message);
-}
-
-async function runSwift(args: string[]): Promise<{ readonly stdout: string; readonly stderr: string }> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    execFile(
-      process.env.MANGEKYO_SWIFT?.trim() || 'swift',
-      args,
-      {
-        timeout: intakeSwiftTimeoutMs,
-        maxBuffer: 8 * 1024 * 1024,
-        killSignal: 'SIGKILL',
-      },
-      (error, stdout, stderr) => {
-        if (error) rejectPromise(error);
-        else resolvePromise({ stdout, stderr });
-      },
-    );
-  });
-}
-
-async function extract(detected: Detected, storedPath: string, bytes: Buffer) {
-  if (detected.kind === 'text') {
-    try {
-      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      let text = decoded.startsWith('\uFEFF') ? decoded.slice(1) : decoded;
-      text = text.replace(/\r\n?/g, '\n');
-      if (text.includes('\u0000')) throw new Error('文本包含无效控制字符。');
-      if (!text.trim()) throw new Error('这个文本文件没有可读内容。');
-      let truncated = false;
-      if (text.length > intakeTextLimit) {
-        text = text.slice(0, intakeTextLimit);
-        truncated = true;
-      }
-      return {
-        status: 'ok' as const,
-        method: 'utf8' as const,
-        text,
-        error: null,
-        warnings: truncated ? ['文本超过本地抽取上限，已保存前 200 万字。'] : [],
-        pages: null,
-        truncated,
-        characterCount: text.length,
-      };
-    } catch (error) {
-      return failure('utf8', error instanceof Error ? error.message : '文本抽取失败。');
-    }
-  }
-  if (platform() !== 'darwin') {
-    return failedFromSwift(detected.kind, '当前系统只支持 UTF-8 文本原样读取；原件已保存。');
-  }
-  const script = fileURLToPath(new URL('./extract-document.swift', import.meta.url));
-  try {
-    const { stdout, stderr } = await runSwift([script, detected.kind, storedPath]);
-    const result = JSON.parse(stdout) as Record<string, unknown>;
-    if (result.ok !== true) {
-      return failedFromSwift(detected.kind, typeof result.error === 'string' && result.error ? result.error : '本地文字抽取失败。');
-    }
-    try {
-      return intakeExtractionFromSwift(result, detected);
-    } catch (error) {
-      return failedFromSwift(detected.kind, error instanceof Error ? error.message : '本地文字抽取结果无效。');
-    }
-  } catch (error) {
-    if (error instanceof Error && (('killed' in error && error.killed === true) || ('code' in error && error.code === 'ETIMEDOUT'))) {
-      return failedFromSwift(detected.kind, '本地文字抽取超时（120 秒）；原件已保存。');
-    }
-    const message = '本地文字抽取失败。';
-    return failedFromSwift(detected.kind, message || '本地文字抽取失败；原件已保存。');
-  }
-}
-
-function intakeExtractionFromSwift(result: Record<string, unknown>, detected: Detected) {
-  const text = typeof result.text === 'string' ? result.text : '';
-  if (!text.trim()) throw new Error('本地抽取没有得到可读文字。');
-  const warnings = Array.isArray(result.warnings) ? result.warnings.filter((item) => typeof item === 'string').slice(0, 8) : [];
-  return {
-    status: (warnings.length > 0 || result.truncated === true ? 'partial' : 'ok') as 'ok' | 'partial',
-    method: typeof result.method === 'string' ? (result.method as 'pdfkit' | 'vision' | 'pdfkit+vision') : detected.kind === 'pdf' ? 'pdfkit' : 'vision',
-    text,
-    error: null,
-    warnings,
-    pages: typeof result.pages === 'number' && Number.isSafeInteger(result.pages) ? result.pages : null,
-    truncated: result.truncated === true,
-    characterCount: text.length,
-  };
-}
-
 export const intakeWriteTargets = {
   [captureIntakeCommand]: { create: [materialType] },
   [correctIntakeCommand]: { correct: [materialType] },
@@ -437,7 +334,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       const extraction: IntakeExtraction = cloud ? {
         status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
         pages: null, truncated: false, characterCount: 0,
-      } : await extract(detected, staged.path, input.bytes);
+      } : await extractLocalDocument(detected.kind, staged.path, input.bytes, intakeTextLimit);
       const commandInput = {
         materialId, intakeId, title, original, extraction,
         ...(cloud ? { requestedExtraction: 'mineru' } : {}),
