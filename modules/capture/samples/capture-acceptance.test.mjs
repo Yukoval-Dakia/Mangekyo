@@ -50,7 +50,7 @@ try {
 
 async function run({db,learner,stableId,load,send,assert}) {
   const {createCommandReadContext} = await load('kernel/src/commands/reads.ts');
-  const {defaultPaperRunId, projectIssuedPaper, paperIssuance, paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
+  const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, paperIssuance, paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
   const reads = (purpose, action) => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
   const read = id => reads('storage', context => context.fact(id, {mode:'following'}));
   const at = '2026-11-21T01:00:00.000Z';
@@ -110,6 +110,15 @@ async function run({db,learner,stableId,load,send,assert}) {
   assert.equal(submitted.kind,'effective');
   assert.equal((await read(learnerId)).ref.rev,1);
   assert.equal(mergeLayeredSource(await read(learnerId),outcome).source.unit.blocks.length,blocks.length);
+  const layeredIssue = paperIssuance({source:targetKey.target,epoch:targetKey.accessEpoch,layout:{lines:10,columns:16},
+    extraction:{derivationId:sealed.id,sourceRev:1,modelMethod:targetKey.modelMethod}});
+  const preview = await reads('storage', context => projectIssuedPaper(bindPaperCommandRead(context, {readExtraction: async (_request, mode) => {
+    assert.equal(mode, 'current');
+    return {deriver:layeredExtractionDeriver,manifest:sealed.manifest,
+      snapshot:{id:sealed.id,slot:{learner,type:layeredExtractionSlot,key:learnerId},outcome}};
+  }}), layeredIssue));
+  assert.match(preview.pages.flatMap(page=>page.pieces).map(piece=>piece.text).join(''), /请答第 1 题/);
+  assert.doesNotMatch(JSON.stringify(preview), /hidden|blobRef|sha256/);
   const [region] = clarificationRegions(savedSource, outcome);
   assert.equal(region.originalSha256, savedSource.value.originals[0].sha256);
   assert.equal(region.id, 'unknown');
@@ -161,8 +170,9 @@ async function run({db,learner,stableId,load,send,assert}) {
     {id:'question',parentId:null,body:{kind:'reference',role:'question',presentation:'embed',
       target:{fact:written.wrote[0],type:'content.asset',anchor:{kind:'whole'}}}},
   ]} });
-  const textbook = await reads('storage',ctx=>projectIssuedPaper(ctx,{source:{id:pageId,rev:1},epoch:'0',layout:issue.layout}));
-  assert.deepEqual(textbook.pages.flatMap(page=>page.pieces), [{blockId:'question.statement',itemId:'question',text:'2 + 3 = ?'}]);
+  const textbook = {source:{id:pageId,rev:1},epoch:'0',layout:issue.layout};
+  await assert.rejects(reads('storage',ctx=>projectIssuedPaper(ctx,textbook)), /未授权教学用途/);
+  await assert.rejects(send('capture.issuePaper',textbook), /未授权教学用途/);
 
   const questionPages = projected.pages.filter(page=>page.pieces.some(piece=>piece.itemId==='q2')).map(page=>page.number);
   assert.ok(questionPages.length>1);

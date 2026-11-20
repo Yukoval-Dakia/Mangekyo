@@ -2,8 +2,9 @@ import {
   derivationId, factId, FactNotFoundError, type DerivationId, type DerivationSnapshot, type FactSnapshot, type FactWrite,
   type LearnerId, type ReadContext,
 } from '@mangekyo/kernel';
-import { assetType, checkTextbookBasis, parseTextbookPage, questionAsset, questionPrompt, textbookPageType,
+import { assetType, checkQuestionTeachingSources, checkTextbookBasis, parseTextbookPage, questionAsset, questionPrompt, textbookPageType,
   type AssetReference } from '@mangekyo/module-content/facts/asset-contract';
+import { openQuestionForRelease } from '@mangekyo/module-content/facts/question-release';
 import { captureObject as object, captureRef, captureText as text, sha256 } from './parse.ts';
 import { captureSourceType, sourceEnvelope, type Block } from './source.ts';
 import { layeredExtractionDeriver, layeredExtractionSlot, mergeLayeredSource, type LayeredExtractionValue } from './extraction.ts';
@@ -70,6 +71,24 @@ export type PaperExtractionReader = (request: ExtractionRequest, mode: 'current'
   readonly snapshot: DerivationSnapshot<LayeredExtractionValue>;
   readonly manifest: { readonly learner: LearnerId; readonly inputs: readonly unknown[] };
 }>;
+
+const paperExtraction = Symbol('paper extraction reader');
+type BoundPaperRead = ReadContext & { readonly [paperExtraction]?: PaperExtractionReader };
+
+export function bindPaperCommandRead(
+  base: ReadContext, {
+    readExtraction,
+    readQuestionSlot = base.slot.bind(base),
+  }: { readonly readExtraction?: PaperExtractionReader; readonly readQuestionSlot?: ReadContext['slot'] },
+): ReadContext {
+  const read: BoundPaperRead = {
+    fact: base.fact.bind(base),
+    range: base.range.bind(base),
+    slot: readQuestionSlot,
+    ...(readExtraction ? { [paperExtraction]: readExtraction } : {}),
+  };
+  return read;
+}
 
 async function idFromDefinition(data: unknown) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(data)));
@@ -141,20 +160,40 @@ function paginate(pieces: readonly PrintPiece[], { lines, columns }: PaperIssuan
 async function openPrintReference(read: ReadContext, reference: AssetReference, learner: FactSnapshot['ref']['learner']) {
   const { id, rev } = reference.fact;
   const fact = await read.fact(id, { mode: 'pinned', rev });
-  if (reference.fact.learner !== learner || fact.ref.learner !== learner || fact.type !== reference.type)
+  if (reference.fact.learner !== learner || fact.ref.learner !== learner || fact.type !== reference.type ||
+      fact.ref.id !== id || fact.ref.rev !== rev)
     throw new Error('引用的卷面内容类型或归属不符。');
   return fact;
 }
 
-async function cleanQuestion(read: ReadContext, fact: FactSnapshot, itemId: string): Promise<readonly PrintPiece[]> {
+type QuestionUse = 'practice' | 'diagnose';
+
+async function verifyTeachingSource(read: ReadContext, pinned: FactSnapshot) {
+  const current = await read.fact(pinned.ref.id, { mode: 'following' });
+  if (current.type !== pinned.type || current.ref.id !== pinned.ref.id || current.ref.learner !== pinned.ref.learner ||
+      ![pinned, current].every(fact => fact.purpose.includes('teaching') || fact.purpose.includes('all')))
+    throw new Error('题目或来源未授权教学用途。');
+}
+
+async function cleanQuestion(
+  read: ReadContext, fact: FactSnapshot, itemId: string, releaseUse: QuestionUse | null,
+): Promise<readonly PrintPiece[]> {
   if (fact.type !== assetType) throw new Error('题目引用类型无效。');
   const question = questionAsset(fact.value);
-  await checkTextbookBasis(read, question.basis ?? []);
+  if (releaseUse) {
+    const released = await openQuestionForRelease(read, fact.ref.id, ['print', releaseUse]);
+    if (released.ref.id !== fact.ref.id || released.ref.learner !== fact.ref.learner || released.ref.rev !== fact.ref.rev)
+      throw new Error('题库当前版本与卷面引用不符。');
+  } else {
+    await verifyTeachingSource(read, fact);
+    await checkQuestionTeachingSources(read, question);
+  }
   const pieces: PrintPiece[] = [];
   for (const { body, id } of question.blocks) {
     if (body.kind !== 'sharedMaterial') continue;
     const source = await openPrintReference(read, body.source, fact.ref.learner);
     if (source.type !== captureSourceType) throw new Error('共享打印材料须指向已分层原件。');
+    await verifyTeachingSource(read, source);
     const anchor = body.source.anchor;
     if (anchor.kind === 'path') throw new Error('共享打印材料须指向材料块或完整原件。');
     const permitted = new Set<string>();
@@ -174,7 +213,7 @@ async function cleanQuestion(read: ReadContext, fact: FactSnapshot, itemId: stri
   return pieces;
 }
 
-async function frozenPrintParts(read: ReadContext, fact: FactSnapshot): Promise<{ title: string; pieces: readonly PrintPiece[] }> {
+async function frozenPrintParts(read: ReadContext, fact: FactSnapshot, preview: boolean): Promise<{ title: string; pieces: readonly PrintPiece[] }> {
   if (fact.type === captureSourceType) {
     const source = sourceEnvelope(fact.value);
     if (source.kind !== 'photo' && source.kind !== 'pdf') throw new Error('原件没有可打印卷面。');
@@ -182,7 +221,7 @@ async function frozenPrintParts(read: ReadContext, fact: FactSnapshot): Promise<
   }
   if (fact.type === assetType) {
     const question = questionAsset(fact.value);
-    return { title: question.title, pieces: await cleanQuestion(read, fact, 'q1') };
+    return { title: question.title, pieces: await cleanQuestion(read, fact, 'q1', preview ? 'practice' : null) };
   }
   if (fact.type === textbookPageType) {
     const page = parseTextbookPage(fact.value);
@@ -190,7 +229,7 @@ async function frozenPrintParts(read: ReadContext, fact: FactSnapshot): Promise<
     const pieces: PrintPiece[] = [];
     for (const { id, body } of page.blocks) {
       if (body.kind !== 'reference' || body.role !== 'question' || body.presentation !== 'embed') continue;
-      pieces.push(...await cleanQuestion(read, await openPrintReference(read, body.target, fact.ref.learner), id));
+      pieces.push(...await cleanQuestion(read, await openPrintReference(read, body.target, fact.ref.learner), id, preview ? 'practice' : null));
     }
     if (!pieces.length) throw new Error('教材页没有可打印的嵌入题目。');
     return { title: page.title, pieces };
@@ -200,17 +239,23 @@ async function frozenPrintParts(read: ReadContext, fact: FactSnapshot): Promise<
     const ref = captureRef(issued.paper);
     const paper = await read.fact(ref.id, { mode: 'pinned', rev: ref.rev });
     if (paper.type !== 'activity.retentionPaper' || paper.accessEpoch !== issued.paperEpoch) throw new Error('后测冻结卷授权已变更。');
-    return workbookPrintParts(read, paper, text(issued.itemId, '后测发放题位', 200));
+    return workbookPrintParts(read, paper, preview ? 'diagnose' : null, text(issued.itemId, '后测发放题位', 200));
   }
   if (fact.type !== 'activity.workbookPaper' && fact.type !== 'activity.retentionPaper') throw new Error('没有可打印的冻结卷。');
-  return workbookPrintParts(read, fact);
+  return workbookPrintParts(read, fact, preview ? (fact.type === 'activity.retentionPaper' ? 'diagnose' : 'practice') : null);
 }
 
-async function workbookPrintParts(read: ReadContext, fact: FactSnapshot, issuedItemId?: string) {
+async function workbookPrintParts(read: ReadContext, fact: FactSnapshot, releaseUse: QuestionUse | null, issuedItemId?: string) {
   // Activity owns this persisted frozen paper. Pick only its learner-visible
   // fields and reopen any pinned question dependencies under the same purpose.
   const paper = object(fact.value);
   if (!Array.isArray(paper.questions) || !paper.questions.length) throw new Error('冻结卷没有题目。');
+  const releaseItems = paper.assessmentRelease === undefined ? [] : object(paper.assessmentRelease).items;
+  if (!Array.isArray(releaseItems)) throw new Error('冻结卷的评估题项无效。');
+  const assessments = new Map(releaseItems.map(input => {
+    const item = object(input);
+    return [item.itemId, item];
+  }));
   const pieces: PrintPiece[] = [];
   const seen = new Set<string>();
   for (const input of paper.questions) {
@@ -219,21 +264,51 @@ async function workbookPrintParts(read: ReadContext, fact: FactSnapshot, issuedI
     if (seen.has(itemId)) throw new Error('冻结卷题位重复。');
     seen.add(itemId);
     if (issuedItemId !== undefined && itemId !== issuedItemId) continue;
-    if (question.sourceQuestionRef !== undefined && question.sourceQuestionRef !== null) {
-      const ref = captureRef(question.sourceQuestionRef);
-      const source = await read.fact(ref.id, { mode: 'pinned', rev: ref.rev });
+    const storedPrompt = text(question.prompt, '冻结题面', 2_000_000);
+    const sourceRef = question.sourceQuestionRef == null ? undefined : captureRef(question.sourceQuestionRef);
+    const assessmentPrompt = assessments.get(itemId)?.promptRef;
+    const promptRef = assessmentPrompt === undefined ? undefined : captureRef(assessmentPrompt);
+    if (sourceRef) {
+      const source = await openWorkbookQuestionSource(read, fact, sourceRef);
+      if (question.sourceAccessEpoch !== undefined && source.accessEpoch !== question.sourceAccessEpoch)
+        throw new Error('来源题目权限已变更。');
       if (source.type === 'activity.workspaceEntry') {
+        if (releaseUse) throw new Error('来源题目没有可用的题库验收，请重新发放。');
+        await verifyTeachingSource(read, source);
         const entry = object(source.value);
-        if (entry.kind !== 'question' || entry.body !== question.prompt) throw new Error('来源题目与冻结题面不符。');
+        if (entry.kind !== 'question' || entry.body !== storedPrompt) throw new Error('来源题目与冻结题面不符。');
       } else {
-        const sourcePieces = await cleanQuestion(read, source, itemId);
-        pieces.push(...sourcePieces.filter(piece => piece.itemId === null));
+        pieces.push(...await workbookQuestionMaterials(read, source, itemId, storedPrompt, releaseUse));
       }
     }
-    pieces.push({ blockId: itemId, itemId, text: text(question.prompt, '冻结题面', 2_000_000) });
+    // Inline assessment items can point back to the frozen workbook itself.
+    // A separate question address is an additional pinned source of this item.
+    if (promptRef && promptRef.id !== fact.ref.id && (promptRef.id !== sourceRef?.id || promptRef.rev !== sourceRef?.rev)) {
+      const source = await openWorkbookQuestionSource(read, fact, promptRef);
+      if (source.type === assetType && object(source.value).kind === 'question') {
+        pieces.push(...await workbookQuestionMaterials(read, source, itemId, storedPrompt, releaseUse));
+      }
+    }
+    pieces.push({ blockId: itemId, itemId, text: storedPrompt });
   }
   if (!pieces.length) throw new Error('后测发放题位与冻结卷不符。');
   return { title: text(paper.title, '冻结卷标题', 240), pieces };
+}
+
+async function openWorkbookQuestionSource(read: ReadContext, workbook: FactSnapshot, ref: SourceRef) {
+  const source = await read.fact(ref.id, { mode: 'pinned', rev: ref.rev });
+  if (source.ref.learner !== workbook.ref.learner || source.ref.id !== ref.id || source.ref.rev !== ref.rev)
+    throw new Error('来源题目版本或权限已变更。');
+  return source;
+}
+
+async function workbookQuestionMaterials(
+  read: ReadContext, fact: FactSnapshot, itemId: string, prompt: string, releaseUse: QuestionUse | null,
+) {
+  const pieces = await cleanQuestion(read, fact, itemId, releaseUse);
+  const question = pieces.find(piece => piece.itemId === itemId);
+  if (question?.text !== prompt) throw new Error('来源题目与冻结题面不符。');
+  return pieces.filter(piece => piece.itemId === null);
 }
 
 async function frozenExtractionParts(fact: FactSnapshot, issuance: PaperIssuance, mode: 'current' | 'pinned', readExtraction?: PaperExtractionReader) {
@@ -267,39 +342,48 @@ async function frozenExtractionParts(fact: FactSnapshot, issuance: PaperIssuance
 }
 
 async function projectPaper(
-  read: ReadContext, issuance: PaperIssuance, mode: 'current' | 'pinned', readExtraction?: PaperExtractionReader,
+  read: ReadContext, issuance: PaperIssuance, mode: 'current' | 'pinned',
 ) {
   const fact = await read.fact(issuance.source.id, { mode: 'pinned', rev: issuance.source.rev });
-  if (fact.accessEpoch !== issuance.epoch) throw new Error('原件发放版本或用途已变更。');
+  if (fact.accessEpoch !== issuance.epoch || fact.ref.id !== issuance.source.id || fact.ref.rev !== issuance.source.rev)
+    throw new Error('原件发放版本或用途已变更。');
   const { title, pieces } = issuance.extraction
-    ? await frozenExtractionParts(fact, issuance, mode, readExtraction)
-    : await frozenPrintParts(read, fact);
+    ? await frozenExtractionParts(fact, issuance, mode, (read as BoundPaperRead)[paperExtraction])
+    : await frozenPrintParts(read, fact, mode === 'current');
   return { issuanceId: await paperIssuanceId(issuance), title, pages: paginate(pieces, issuance.layout) };
 }
 
-export function projectIssuedPaper(read: ReadContext, issuance: PaperIssuance, readExtraction?: PaperExtractionReader) {
-  return projectPaper(read, issuance, 'pinned', readExtraction);
+async function checkedPaperIssuance(fact: FactSnapshot, id: ReturnType<typeof factId>) {
+  if (fact.type !== paperIssuanceType || fact.ref.id !== id) throw new Error('发卷标识已被使用。');
+  const data = paperIssuance(fact.value);
+  if (await paperIssuanceId(data) !== id) throw new Error('发卷标识与冻结卷不符。');
+  return data;
 }
 
-// The host commits these writes under the same learner lock and authorized
-// snapshot used by readExtraction. Only persisted references cross the wire.
-export async function issuePaperWrites(
-  read: ReadContext, data: PaperIssuance, readExtraction?: PaperExtractionReader,
-): Promise<readonly FactWrite[]> {
-  const id = await paperIssuanceId(data);
-  let existing: FactSnapshot | undefined;
+async function storedPaperIssuance(read: ReadContext, id: ReturnType<typeof factId>) {
+  let fact: FactSnapshot;
   try {
-    existing = await read.fact(id, { mode: 'following' });
+    fact = await read.fact(id, { mode: 'following' });
   } catch (error) {
-    if (!(error instanceof FactNotFoundError)) throw error;
+    if (error instanceof FactNotFoundError) return null;
+    throw error;
   }
-  if (existing) {
-    if (existing.type !== paperIssuanceType || await paperIssuanceId(paperIssuance(existing.value)) !== id)
-      throw new Error('发卷标识已被使用。');
-    await projectIssuedPaper(read, data, readExtraction);
+  return checkedPaperIssuance(fact, id);
+}
+
+export async function projectIssuedPaper(read: ReadContext, issuance: PaperIssuance) {
+  const stored = await storedPaperIssuance(read, await paperIssuanceId(issuance));
+  return stored ? projectPaper(read, stored, 'pinned') : projectPaper(read, issuance, 'current');
+}
+
+export async function issuePaperWrites(read: ReadContext, data: PaperIssuance): Promise<readonly FactWrite[]> {
+  const id = await paperIssuanceId(data);
+  const stored = await storedPaperIssuance(read, id);
+  if (stored) {
+    await projectPaper(read, stored, 'pinned');
     return [];
   }
-  await projectPaper(read, data, 'current', readExtraction);
+  await projectPaper(read, data, 'current');
   return [{ kind: 'create', id, factType: paperIssuanceType, data, purpose: ['storage'] }];
 }
 
@@ -336,12 +420,9 @@ export function collectPaperInput(input: unknown) {
 
 export async function collectPaperWrites(
   read: ReadContext, { issuanceId, source, page, original, retryId }: ReturnType<typeof collectPaperInput>,
-  readExtraction?: PaperExtractionReader,
 ): Promise<readonly FactWrite[]> {
   const issuance = await read.fact(issuanceId, { mode: 'following' });
-  if (issuance.type !== paperIssuanceType) throw new Error('没有匹配的发卷。');
-  const printed = await projectIssuedPaper(read, paperIssuance(issuance.value), readExtraction);
-  if (printed.issuanceId !== issuanceId) throw new Error('发卷标识不匹配。');
+  const printed = await projectPaper(read, await checkedPaperIssuance(issuance, issuanceId), 'pinned');
   const fact = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
   if (fact.type !== captureSourceType) throw new Error('回收图片必须来自原件。');
   const captured = sourceEnvelope(fact.value);
