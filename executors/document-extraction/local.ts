@@ -5,6 +5,38 @@ import { fileURLToPath } from 'node:url';
 export const intakeSwiftTimeoutMs = 120_000;
 type DocumentKind = 'pdf' | 'image' | 'text';
 
+export function identifyLocalDocument(bytes: Buffer, extension: string, declaredType: unknown) {
+  const first = (bytes.length > 0 ? bytes[0] : -1);
+  if (bytes.length > 5 && bytes.subarray(0, 5).toString('latin1') === '%PDF-') {
+    return { kind: 'pdf', mediaType: 'application/pdf' } as const;
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a'
+  )
+    return { kind: 'image', mediaType: 'image/png' } as const;
+  if (first === 0xff && bytes.length >= 3 && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { kind: 'image', mediaType: 'image/jpeg' } as const;
+  }
+  if (
+    bytes.length >= 12 &&
+    (bytes.subarray(0, 4).toString('latin1') === 'II*\0' || bytes.subarray(0, 4).toString('latin1') === 'MM\0*')
+  )
+    return { kind: 'image', mediaType: 'image/tiff' } as const;
+  if (bytes.length >= 12 && bytes.subarray(4, 8).toString('latin1') === 'ftyp') {
+    const brand = bytes.subarray(8, 12).toString('latin1');
+    if (brand === 'heic' || brand === 'heix' || brand === 'hevc' || brand === 'hevx') return { kind: 'image', mediaType: 'image/heic' } as const;
+    if (brand === 'mif1' || brand === 'msf1') return { kind: 'image', mediaType: 'image/heif' } as const;
+    if (brand === 'avif') return { kind: 'image', mediaType: 'image/avif' } as const;
+  }
+  if (extension === 'txt') return { kind: 'text', mediaType: 'text/plain' } as const;
+  if (extension === 'md' || extension === 'markdown') return { kind: 'text', mediaType: 'text/markdown' } as const;
+  if (declaredType === 'text/plain' || declaredType === 'text/markdown') {
+    return { kind: 'text', mediaType: declaredType === 'text/markdown' ? 'text/markdown' : 'text/plain' } as const;
+  }
+  return null;
+}
+
 function failure(method: 'pdfkit' | 'vision' | 'utf8', text: string) {
   return {
     status: 'failed' as const,

@@ -1,4 +1,4 @@
-import {useEffect, useState, useSyncExternalStore} from 'react';
+import {createContext, useContext, useEffect, useState, useSyncExternalStore} from 'react';
 import {api, ApiError} from './api';
 
 function onVisibilityChange(notify: () => void) {
@@ -9,22 +9,36 @@ export function useVisibleDocument() {
   return useSyncExternalStore(onVisibilityChange, () => document.visibilityState === 'visible');
 }
 
+type Pinned = {id: string; rev: number};
+type QuestionPermit = {paper: Pinned; permit: string; items: readonly string[]; attempt?: Pinned};
+export const QuestionPresentation = createContext<QuestionPermit | null>(null);
+
+export function useQuestionPresentation(itemId: string) {
+  const granted = useContext(QuestionPresentation);
+  if (!granted?.items.includes(itemId)) return null;
+  const {paper, permit, attempt} = granted;
+  return {paper, permit, ...(attempt ? {attempt} : {})};
+}
+
 type Receipt = {key: string; permit?: string; error?: string};
-const validRev = (rev?: number) => rev !== undefined && Number.isSafeInteger(rev) && rev > 0;
+const validRev = (rev?: number): rev is number => rev !== undefined && Number.isSafeInteger(rev) && rev > 0;
 
 /** The permit commits the possibility of exposure. Only the mounted foreground view confirms display. */
 export function useWorkbookPresentation(
   paperId: string, revision: number | undefined, items: readonly string[],
-  solution?: {id: string; rev?: number},
+  binding?: {kind: 'question' | 'solution'; attempt: {id: string; rev?: number}},
 ) {
   const visible = useVisibleDocument();
   const [retry, setRetry] = useState(0);
   const [receipt, setReceipt] = useState<Receipt>();
   const [confirmationError, setConfirmationError] = useState<Receipt>();
   const [confirmRetry, setConfirmRetry] = useState(0);
-  const invalid = !validRev(revision) || (solution !== undefined && !validRev(solution.rev));
+  const attempt = binding?.attempt;
+  const invalid = !validRev(revision) || (attempt !== undefined && (!attempt.id || !validRev(attempt.rev)));
+  const ref = attempt && validRev(attempt.rev) ? {id: attempt.id, rev: attempt.rev} : undefined;
   const payload = JSON.stringify({paper: {id: paperId, rev: revision}, items: [...new Set(items)].sort(),
-    ...(solution ? {kind: 'solution', submission: {id: solution.id, rev: solution.rev}} : {kind: 'question'})});
+    kind: binding?.kind ?? 'question',
+    ...(ref && (binding?.kind === 'solution' ? {submission: ref} : {attemptRef: ref}))});
   const key = JSON.stringify([payload, retry]);
   const path = '/papers/' + encodeURIComponent(paperId) + '/presentation';
   const needed = items.length > 0;
@@ -69,6 +83,8 @@ export function useWorkbookPresentation(
 
   const unconfirmed = confirmationError?.key === key ? confirmationError.error : undefined;
   return {
+    questionPermit: permit && binding?.kind !== 'solution' && revision
+      ? {paper: {id: paperId, rev: revision}, permit, items, ...(ref && {attempt: ref})} : null,
     allowed: !needed || Boolean(permit),
     error: needed && invalid ? '缺少固定版本，无法展示。' : current?.error ?? unconfirmed,
     retry: () => unconfirmed && permit ? setConfirmRetry(n => n + 1) : setRetry(n => n + 1),

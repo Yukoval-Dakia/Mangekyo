@@ -1,3 +1,4 @@
+export { intakeTextOf, materialTextOf, textSlice } from '../../modules/activity/workspace-source-projection.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
@@ -34,16 +35,6 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
   }
 }
 
-export function materialTextOf(fact: FactSnapshot) {
-  const material = textMaterial(fact.value);
-  return {field: 'text', ...material};
-}
-
-export function intakeTextOf(fact: FactSnapshot) {
-  const document = intakeDocument(fact.value);
-  return {field: 'text', ...document, text: document.extraction.text};
-}
-
 export function relatedIntakeId(materialId: FactId) {
   return factId(stableId('intake-document', materialId));
 }
@@ -69,7 +60,7 @@ export async function materialIntakeLink(tx: ReadTransaction, materialId: FactId
 }
 
 export function relatedMaterialId(document: FactSnapshot) {
-  return intakeTextOf(document).materialId;
+  return intakeDocument(document.value).materialId;
 }
 
 export function isMaterialIntakePair(materialId: FactId, document: FactSnapshot) {
@@ -79,14 +70,4 @@ export function isMaterialIntakePair(materialId: FactId, document: FactSnapshot)
 
 export function materialIntakeReference(material: FactSnapshot, document: FactSnapshot, anchor: SourceAnchorV1) {
   return {...sourceReference(material, anchor), textFact: sourceReference(document, {kind:'whole'}).fact};
-}
-
-export function textSlice(text: string, offset: number, limit = 4000) {
-  let start = Math.min(offset, text.length);
-  const low = (index: number) => index >= 0 && index < text.length && text.charCodeAt(index) >= 0xdc00 && text.charCodeAt(index) <= 0xdfff;
-  if (low(start)) start--;
-  let end = Math.min(start + limit, text.length);
-  if (low(end)) end--;
-  const content = text.slice(start, end);
-  return {content, offset: start, nextOffset: end < text.length ? end : null};
 }

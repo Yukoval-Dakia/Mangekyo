@@ -11,14 +11,16 @@ import { factId, commandId, type Revision } from '../../kernel/src/declarations/
 import type { CommandReceipt } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 
-import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { type Manifest } from '../../kernel/src/derivations/manifest.ts';
+import { NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { assessmentRelease, assessmentSubmission, type AssessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import {
   validateArtifact,
+  exerciseView,
+  savedArtifactCheckpoints,
   operationLocks,
   type Artifact,
   type ArtifactAction,
@@ -40,19 +42,13 @@ import { workspaceGrantChecker } from './harness.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner, purpose, slotType } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { notifySession } from './stream.ts';
 
 const load = (name: string) =>
   loadModuleDirectory(fileURLToPath(new URL('../../modules/' + name, import.meta.url)));
 let content: ReturnType<typeof load>, activity: ReturnType<typeof load>;
 const scope = { learner: studioLearner };
 const conflict = (message: string) => new RequestError(409, message);
-
-async function notify(tx: ReadTransaction, session: string) {
-  await tx.query(
-    "SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton",
-    [session],
-  );
-}
 
 export async function mountArtifact(
   db: Db,
@@ -101,7 +97,7 @@ export async function mountArtifact(
     hooks: createStudioCommandHooks({
       afterFactsChanged: async (tx) => {
         await authorize(tx);
-        await notify(tx, data.sessionId);
+        await notifySession(tx, data.sessionId);
       },
     }),
   });
@@ -123,17 +119,18 @@ function unavailableMount(error: unknown) {
   return error instanceof MountUnavailable || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
 }
 
-async function readMount(tx: ReadTransaction, sessionId: string, mountId: string) {
+async function readMount(tx: ReadTransaction, sessionId: string, mountId: string, check: CheckNotionRead) {
   try {
-    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker());
+    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(), check);
   } catch (error) {
+    if (error instanceof NotionReadUnconfirmed) throw new RequestError(503, '暂时无法核对作品来源，请重试。');
     if (unavailableMount(error)) throw conflict(error instanceof MountUnavailable ? error.message : '作品或依据已不可读。');
     throw error;
   }
 }
 
 async function projectMount(
-  tx: ReadTransaction, sessionId: string, mountId: string, grantCurrent: ReturnType<typeof workspaceGrantChecker>,
+  tx: ReadTransaction, sessionId: string, mountId: string, grantCurrent: ReturnType<typeof workspaceGrantChecker>, check: CheckNotionRead,
 ) {
   const reader = createCommandReadContext(tx, purpose);
   const source = await reader.fact(factId(mountId), { mode: 'following' });
@@ -142,11 +139,7 @@ async function projectMount(
   if (data.sessionId !== sessionId) throw new MountUnavailable('作品不属于本次对话。');
   const turn = await reader.fact(data.turnId, { mode: 'following' });
   const submission = studyTurn(turn.value);
-  if (
-    submission.sessionId !== sessionId || !(await grantCurrent(submission)) ||
-    (await revalidateManifest(tx, parseManifest(data.manifest))).kind !== 'valid'
-  )
-    throw new MountUnavailable('作品的依据已变更。');
+  if (submission.sessionId !== sessionId) throw new MountUnavailable('作品不属于本次对话。');
   const {
     rows: [work],
   } = await tx.query<{ failed: boolean }>(
@@ -157,6 +150,9 @@ async function projectMount(
   if (!work || work.failed) throw new MountUnavailable('此回合已停止。');
   const result = validateArtifact(data.view);
   if (!result.ok) throw new MountUnavailable('无法读取这个作品版本。');
+  const authority = await teachingResultAuthority(tx, submission, data.manifest, grantCurrent, check);
+  if (authority === 'unconfirmed') throw new NotionReadUnconfirmed();
+  if (authority === 'withdrawn') throw new MountUnavailable('作品的依据已变更。');
   const events = await tx.query<{ id: string; receipt: CommandReceipt | null }>(
     `SELECT f.id,c.receipt FROM facts f JOIN fact_revs r ON
     r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev LEFT JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
@@ -171,41 +167,7 @@ async function projectMount(
   }
   const prediction = history.find((e) => e.prediction);
   const predicting = Boolean(data.predictionPrompt && !prediction);
-  const full = result.view;
-  const view: Artifact = predicting
-    ? {
-        version: 1,
-        id: full.id,
-        revision: full.revision,
-        title: '先写下你的预测',
-        fallback: data.predictionPrompt!,
-        sections: [
-          {
-            id: 'prediction',
-            title: '观察之前',
-            layout: 'stack',
-            nodes: [
-              { kind: 'note', id: 'estimate', label: data.predictionPrompt! },
-              {
-                kind: 'action',
-                id: 'record-prediction',
-                label: '保存预测',
-                intent: 'saveDraft',
-                inputs: ['estimate'],
-              },
-            ],
-          },
-        ],
-      }
-    : {
-        ...full,
-        sections: full.sections.map((section) => ({
-          ...section,
-          nodes: section.nodes.map((n) =>
-            n.kind === 'asset' ? { kind: 'text' as const, id: n.id, text: n.label + '（媒体尚未授权）' } : n,
-          ),
-        })),
-      };
+  const view = exerciseView(result.view, predicting ? data.predictionPrompt : null);
   const stateRev = history.length;
   const base = {
     learnerId: tx.learner,
@@ -261,22 +223,6 @@ async function projectMount(
   };
   const projected = projectArtifactSnapshot(mount, grant);
   if (!projected.ok) throw new MountUnavailable(projected.code);
-  // For each input return its most recent checkpoint. Full action records stay in activity.
-  const covered = new Set<string>();
-  const saved = [];
-  for (const event of history.toReversed()) {
-    if (event.prediction) continue;
-    const answers = Object.fromEntries(
-      Object.entries(event.action.answers).filter(([id]) => !covered.has(id)),
-    );
-    if (Object.keys(answers).length === 0) continue;
-    for (const id of Object.keys(answers)) covered.add(id);
-    const { omitted, steps } = event.action.trace;
-    saved.unshift({
-      answers,
-      trace: { omitted, steps: steps.filter((step) => Object.hasOwn(answers, step.nodeId)) },
-    });
-  }
   const latest = history.at(-1);
   const snapshot = {
     ...projected.snapshot,
@@ -289,13 +235,13 @@ async function projectMount(
     ...(release && submissionEvent ? {
       assessment: await readArtifactAssessment(tx, release.releaseRef, { id: factId(submissionEvent.id), rev: 1 as Revision }),
     } : {}),
-    saved,
+    saved: savedArtifactCheckpoints(history),
     commandId: latest?.receipt?.commandId ?? null,
   };
   return { mount, grant, history, snapshot, release, source };
 }
 
-export async function turnArtifacts(tx: ReadTransaction, session: string, turn: string) {
+export async function turnArtifacts(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
   const rows = await tx.query<{ id: string }>(
     `SELECT f.id FROM facts f JOIN fact_revs r ON r.learner_id=f.learner_id
     AND r.fact_id=f.id AND r.rev=f.current_rev WHERE f.learner_id=$1 AND f.type='content.mountedArtifact'
@@ -304,14 +250,23 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
   );
   const grantCurrent = workspaceGrantChecker();
   const snapshots = [];
+  const unconfirmed: string[] = [];
   for (const { id } of rows.rows) {
     try {
-      snapshots.push((await projectMount(tx, session, id, grantCurrent)).snapshot);
+      snapshots.push((await projectMount(tx, session, id, grantCurrent, check)).snapshot);
     } catch (error) {
-      if (!unavailableMount(error)) throw error;
+      if (error instanceof NotionReadUnconfirmed) unconfirmed.push(id);
+      else if (!unavailableMount(error)) throw error;
     }
   }
-  return snapshots;
+  return {snapshots, unconfirmed};
+}
+
+export function mountPermissionFields(unconfirmed: readonly string[], known: ReadonlySet<string>) {
+  return unconfirmed.length ? {
+    mountPermissionsPartial: true as const,
+    unconfirmedMountIds: unconfirmed.filter(id => known.has(id)),
+  } : {};
 }
 
 // Exploration also records a structured handoff, using its original slot contract.
@@ -359,7 +314,8 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
   if (typeof raw.mountId !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(raw.mountId))
     throw new RequestError(400, '作品标识无效。');
   const mountId = raw.mountId;
-  const read = () => db.snapshot(scope, (tx) => readMount(tx, session, mountId));
+  const notion = notionReadScope(db, studioLearner);
+  const read = () => notion.read((tx, check) => readMount(tx, session, mountId, check));
   const { mount, grant, history, snapshot, release } = await read();
   const key = artifactIntentCommandId(requestId);
   function confirmed(state: typeof snapshot, receipt: CommandReceipt | null | undefined) {
@@ -406,12 +362,12 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
       modules: [await (activity ??= load('activity'))],
       hooks: createStudioCommandHooks({
         afterFactsChanged: async (tx, tick) => {
-          const current = await readMount(tx, session, mountId);
+          const current = await readMount(tx, session, mountId, notion.check(tx));
           if (current.release && action.intent === 'submit') {
             const submitted = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });
             await registerFormalAssessment(tx, tick, artifactAssessmentPolicy, current.source, submitted);
           }
-          await notify(tx, session);
+          await notifySession(tx, session);
         },
       }),
     });

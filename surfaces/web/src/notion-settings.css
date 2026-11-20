@@ -1,0 +1,22 @@
+.notion-sources, .notion-presets {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.notion-sources legend { font-weight: 650; }
+.notion-sources section { overflow-wrap: anywhere; }
+.notion-presets { margin-block: 1rem; }
+.notion-choice {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  column-gap: 8px;
+  padding-block: 6px;
+}
+.notion-choice input { margin: 0; accent-color: var(--primary); }
+.notion-choice small { grid-column: 2; color: var(--muted); }
+.notion-panel summary { cursor: pointer; font-weight: 650; }
+.notion-panel[open] summary { margin-bottom: 1rem; }
+.notion-panel .notion-choice { overflow-wrap: anywhere; }
+.notion-recipient { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }

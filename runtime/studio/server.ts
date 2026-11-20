@@ -9,6 +9,7 @@ import { acknowledgeStartedWork, readWork, relayPending, type WorkRef } from '..
 import { capabilityTaskQueue, startWork } from '../../executors/temporal/src/index.ts';
 import { activateLocalDeployment, createWorkWorker } from '../../executors/temporal/src/worker.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
+import { openStudioNotion } from './notion.ts';
 import { openStudio } from './sessions.ts';
 import { recordTerminalFailure, teach } from './teach.ts';
 import { sourceBuildId } from './build.ts';
@@ -19,6 +20,7 @@ import { openCapturePapers } from './capture-papers.ts';
 import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
+import { workbookBacktrace } from './workbook-backtrace.ts';
 import {
   artifactAssessmentSlot, executeArtifactAssessment, type ReadArtifactAssessmentWitness,
 } from './artifact-assessment.ts';
@@ -102,10 +104,11 @@ async function openWeb() {
   const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
     assessment: workbookAssessment,
+    context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
     onResearchFactsChanged: research.workbookChanged,
   });
   const iqdb = openIqdb(db, Boolean(iqdbModule), workbook.issueBank);
-  const student = { textbook, relationReview:openRelationReview(db,content),
+  const student = { notion:openStudioNotion(db,capture), textbook, relationReview:openRelationReview(db,content),
     workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),

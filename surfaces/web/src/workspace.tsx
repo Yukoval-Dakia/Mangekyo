@@ -7,6 +7,7 @@ import { api, deletedSubmission, remember, remembered, requestId, submissionId, 
 import { Icon } from './icons';
 import { LearningUnderstandings } from './learning-understandings';
 import { LearningMemory } from './study-tools';
+import { NotionSettings } from './notion-settings';
 import { MaterialOriginal } from './intake';
 
 export type Material = { id: string; title: string; text: string };
@@ -14,12 +15,12 @@ export type Workspace = { materials: Material[]; goal: string | null };
 export type ChatLink = { id: string; title: string; caseId: string };
 export type Resource<T> = { data: T | undefined; error: boolean; reload: () => void };
 
-export function useResource<T>(path: string, enabled = true): Resource<T> & {replace: (value: T) => void} {
+export function useResource<T>(path: string | null): Resource<T> & {replace: (value: T) => void} {
   const [data, setData] = useState<T>();
   const [error, setError] = useState(false);
   const [version, setVersion] = useState(0);
   useEffect(() => {
-    if (!enabled) {
+    if (path === null) {
       setData(undefined);
       setError(false);
       return;
@@ -34,22 +35,17 @@ export function useResource<T>(path: string, enabled = true): Resource<T> & {rep
         if (!controller.signal.aborted) setError(true);
       });
     return () => controller.abort();
-  }, [path, version, enabled]);
+  }, [path, version]);
   useEffect(() => {
-    if (!enabled || path !== '/workspace') return;
+    if (path !== '/workspace') return;
     const refresh = () => {setData(undefined);setVersion(n => n + 1);};
     const stored = (e:StorageEvent) => {if (e.key === latestKey) refresh();};
     window.addEventListener(latestKey,refresh);
     window.addEventListener('storage',stored);
     return () => {window.removeEventListener(latestKey,refresh);window.removeEventListener('storage',stored);};
-  },[path, enabled]);
-  return { data: enabled ? data : undefined, error: enabled && error, reload: () => setVersion((n) => n + 1),
-    replace(value) {
-      if (!enabled) return;
-      setData(value);
-      setError(false);
-      setVersion(n => n + 1);
-    } };
+  },[path]);
+  return { data: path === null ? undefined : data, error: path !== null && error, reload: () => setVersion((n) => n + 1),
+    replace(value) { if (path === null) return; setData(value); setError(false); setVersion(n => n + 1); } };
 }
 
 export function ReadState({ resource }: { resource: Resource<unknown> }) {
@@ -257,6 +253,7 @@ export function Me({
   editGoal: () => void;
   settings: Settings | undefined;
 }) {
+  const [notionOpen, setNotionOpen] = useState(false);
   return (
     <>
       <PageTitle title="我" />
@@ -272,6 +269,10 @@ export function Me({
           <p>{library.data.goal || '你最近希望弄懂什么？'}</p>
         </section>
       )}
+      <details className="surface-section notion-panel" onToggle={e => setNotionOpen(e.currentTarget.open)}>
+        <summary>Notion 只读来源</summary>
+        {notionOpen && <NotionSettings/>}
+      </details>
       <LearningUnderstandings />
       <LearningMemory settings={settings} />
       <section className="surface-section profile-records">

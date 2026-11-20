@@ -25,12 +25,28 @@ function parsePresentation(value: unknown) {
   if (phase === 'permit' && row.permit === undefined) gate = { phase };
   else if (phase === 'displayed' && typeof row.permit === 'string') gate = { phase, permit: factId(row.permit) };
   else if (phase !== undefined || row.permit !== undefined) throw new Error('无效的卷面呈现许可。');
-  if (row.issuanceId !== undefined && (kind !== 'question' || phase === undefined || typeof row.issuanceId !== 'string'))
+  if (row.issuanceId !== undefined && (row.attemptRef !== undefined || kind !== 'question' || phase === undefined || typeof row.issuanceId !== 'string'))
     throw new Error('无效的纸面发放标识。');
   const print = row.issuanceId === undefined ? {} : { issuanceId: factId(row.issuanceId) };
   return kind === 'solution'
     ? { kind: 'solution' as const, paper, items: [...items].sort(), submission: helpRef(row.submission), ...gate }
-    : { kind: 'question' as const, paper, items: [...items].sort(), ...gate, ...print };
+    : { kind: 'question' as const, paper, items: [...items].sort(), ...gate, ...print,
+      ...(row.attemptRef === undefined ? {} : {attemptRef:helpRef(row.attemptRef)}) };
+}
+
+export function workbookReadingContext(value: unknown) {
+  const {paperRev, itemId, ref, phase, permit, displayRef, attemptRef} = object(value);
+  if (typeof paperRev !== 'number' || !Number.isInteger(paperRev) || paperRev < 1 || paperRev > 2147483647 ||
+      typeof itemId !== 'string' || !/^[\w.-]{1,128}$/.test(itemId) ||
+      typeof ref !== 'string' || !/^[\w-]{43}$/.test(ref))
+    throw new WorkbookPresentationError('帮助引用格式无效。');
+  const attempt = attemptRef === undefined ? undefined : helpRef(attemptRef);
+  if (attempt && attempt.rev > 2147483647) throw new WorkbookPresentationError('作答版本无效。');
+  const mount = {paperRev, itemId, ref, attemptRef:attempt};
+  if (phase === 'opened' && typeof permit === 'string') return {...mount, phase: 'opened' as const, permit:factId(permit)};
+  if (phase === 'displayed' && typeof displayRef === 'string' && /^[\w-]{43}$/.test(displayRef))
+    return {...mount,phase:'displayed' as const,displayRef};
+  throw new WorkbookPresentationError('缺少帮助呈现许可。');
 }
 
 export function printedWorkbookPresentation(
@@ -68,13 +84,14 @@ export async function authorizeWorkbookPresentation(read: Pick<ReadContext, 'fac
         !sameWorkbookJson(helpRef(object(issue.value).source), data.paper))
       throw new WorkbookPresentationError('纸面发放与固定卷面不匹配。');
   }
-  if (data.kind === 'solution') {
-    const submission = await read.fact(data.submission.id, { mode: 'pinned', rev: data.submission.rev });
+  const submitted = data.kind === 'solution' ? data.submission : data.attemptRef;
+  if (submitted) {
+    const submission = await read.fact(submitted.id, { mode: 'pinned', rev: submitted.rev });
     if (submission.type !== workbookAttemptType) throw new WorkbookPresentationError('需要已送达的作答反馈。');
     const attempt = workbookAttempt(submission.value);
     if (attempt.paperId !== shown.ref.id || !sameWorkbookJson(attempt.paper, paper) ||
-        !data.items.every(id => attempt.feedback.some(item => item.questionId === id &&
-          item.result !== 'unanswered' && item.expected !== null && item.expected.kind !== 'rubric'))) {
+        (data.kind === 'solution' && !data.items.every(id => attempt.feedback.some(item => item.questionId === id &&
+          item.result !== 'unanswered' && item.expected !== null && item.expected.kind !== 'rubric')))) {
       throw new WorkbookPresentationError('参考答案与实际反馈不匹配。');
     }
   }

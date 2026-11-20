@@ -1,4 +1,4 @@
-import {loadWorkspaceAccessRoutes} from './workspace-access.ts';
+import {loadWorkspaceAccessRoutes, workspaceGrantRevision} from './workspace-access.ts';
 import { createHash } from 'node:crypto';
 import { TeachingError } from '../../executors/teaching/provider.ts';
 import type { studyTurn, studyMcpGrants } from '../../modules/activity/values.ts';
@@ -45,14 +45,9 @@ export function routeMatchesInput(input: unknown, settings: Pick<Settings, 'acti
 
 type WorkspaceRoutes = Awaited<ReturnType<typeof loadWorkspaceAccessRoutes>>;
 
-function revisionForRoute(routes: WorkspaceRoutes, settings: Pick<Settings, 'activeProviderId' | 'baseUrl' | 'protocol'>) {
-  const grant = routes[settings.activeProviderId];
-  return grant?.enabled && grant.baseUrl === settings.baseUrl && grant.protocol === settings.protocol
-    ? grant.revision : undefined;
-}
-
 export async function workspaceRouteRevision(settings: Settings) {
-  return revisionForRoute(await loadWorkspaceAccessRoutes(), settings);
+  const provider = settings.providers.find(profile => profile.id === settings.activeProviderId);
+  return provider && workspaceGrantRevision(await loadWorkspaceAccessRoutes(), provider);
 }
 
 export function workspaceGrantChecker() {
@@ -62,7 +57,6 @@ export function workspaceGrantChecker() {
     const [settings, routes] = await (current ??= Promise.all([loadSettings(), loadWorkspaceAccessRoutes()]));
     const provider = settings.providers.find(profile => profile.id === (turn.providerId ?? 'default'));
     if (!provider || provider.baseUrl !== turn.baseUrl || provider.protocol !== (turn.protocol ?? 'openai')) return false;
-    return revisionForRoute(routes, { activeProviderId: provider.id, baseUrl: provider.baseUrl, protocol: provider.protocol })
-      === turn.workspaceRevision;
+    return workspaceGrantRevision(routes, provider) === turn.workspaceRevision;
   };
 }

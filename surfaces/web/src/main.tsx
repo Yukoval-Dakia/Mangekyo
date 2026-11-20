@@ -55,9 +55,12 @@ function App() {
   const [notice, setNotice] = useState('');
   const opener = useRef<HTMLElement | null>(null);
   const catalogOnly = path === '/materials' && new URLSearchParams(location.search).get('view') === 'iqdb';
-  const library = useResource<Workspace>('/workspace', !catalogOnly);
-  const chats = useResource<ChatLink[]>('/conversations', !catalogOnly);
-  const settings = useResource<Settings>('/settings', !catalogOnly);
+  const posttest = path === '/today' ? new URLSearchParams(location.search).get('posttest') : null;
+  const paperDetail = /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
+  const needsOverview = !catalogOnly && posttest === null && !paperDetail;
+  const library = useResource<Workspace>(needsOverview ? '/workspace' : null);
+  const chats = useResource<ChatLink[]>(needsOverview ? '/conversations' : null);
+  const settings = useResource<Settings>(!catalogOnly && posttest === null ? '/settings' : null);
   useEffect(() => {
     document.title = section + ' · Mangekyō';
   }, [section]);

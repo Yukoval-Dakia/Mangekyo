@@ -1,14 +1,7 @@
 import type { PracticeView } from '../../modules/activity/practice-values.ts';
 
-export type ReviewEntry = {
-  paperId: string;
-  title: string;
-  questionId: string;
-  prompt: string;
-  answer: string;
-  expected: string;
-  explanation: string | null;
-};
+import type { ReviewEntry } from '../../modules/activity/workbook-views.ts';
+export type { ReviewEntry } from '../../modules/activity/workbook-views.ts';
 
 export function ridingReview(practice: PracticeView): ReviewEntry[] {
   const entries = new Map<string, ReviewEntry>();

@@ -1,3 +1,6 @@
+import { displayOf } from '../../modules/activity/workspace-source-projection.ts';
+export { displayOf } from '../../modules/activity/workspace-source-projection.ts';
+import { confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -16,11 +19,11 @@ import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { materialType } from '../../modules/activity/library-values.ts';
 import {
-  activityQuestions, activityWorkspaceDisplay, cleanText, summary, type WorkspaceDisplay as Display,
+  activityQuestions, type WorkspaceDisplay as Display,
 } from '../../modules/activity/workspace-projection.ts';
-import { goalType, studyGoal } from '../../modules/plan/goal-values.ts';
+import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerNoteType } from '../../modules/activity/organizer-values.ts';
-import { organizerTask, organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
+import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { ridingPracticeType } from '../../modules/activity/practice-values.ts';
 import { studyRecordType } from '../../modules/activity/values.ts';
@@ -33,20 +36,22 @@ import {
   workbookPaperType,
   WorkbookSourceMismatch,
 } from '../../modules/activity/workbook-values.ts';
-import { sourceId, stableId, studioLearner } from './identity.ts';
+import { notionModelRecipient, sourceId, stableId, studioLearner } from './identity.ts';
 import { materialIntakeLink } from './reading.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { carryRubricAssessments } from './learning-attempt-read.ts';
 import { sourceRefV1 } from '../../modules/activity/source-values.ts';
 import { knowledgeEdgeEvidenceType, knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
-import { parseTextbookPage, textbookPageType } from '../../modules/content/textbook-page.ts';
+import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { openKnowledgeEdge, openKnowledgeEdgeEvidence } from './knowledge-graph.ts';
 import { resolveSource } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
 import { lexicalWorkspaceSql, trigramFunction, workspaceOccurredAt } from './workspace-search.ts';
 import {
   loadSettings,
+  saveSettings,
+  type ProviderProfile,
   type ProviderProtocol,
   type ProviderSettings,
 } from './settings.ts';
@@ -117,6 +122,7 @@ type StoredRoute = {
   readonly baseUrl: string;
   readonly protocol: ProviderProtocol;
   readonly revision: string;
+  readonly credentialRevision?: string;
 };
 type StoredAccess = {
   readonly version: 1;
@@ -204,51 +210,6 @@ function authorOf(value: string): string {
   return 'unknown';
 }
 
-function goalDisplay(value: unknown): Display {
-  const goal = studyGoal(value);
-  if (goal.text === null) {
-    return { title: '未设置目标', excerpt: '当前没有学习目标。', text: '当前没有学习目标。' };
-  }
-  return { title: '学习目标', excerpt: summary(goal.text), text: cleanText(goal.text) };
-}
-
-function taskDisplay(value: unknown): Display {
-  const task = organizerTask(value);
-  const status = task.done ? '已完成' : '未完成';
-  const text = task.title + '\n日期：' + task.date + '\n状态：' + status;
-  return { title: task.title, excerpt: status + ' · ' + task.date, text: cleanText(text) };
-}
-
-function textbookDisplay(value: unknown): Display {
-  const { title, blocks } = parseTextbookPage(value);
-  const text = blocks.flatMap(({ body }) => {
-    switch (body.kind) {
-      case 'text': return [body.text];
-      case 'formula': return [body.latex];
-      case 'table': return body.rows.map(row => row.join(' ｜ '));
-      default: return [];
-    }
-  }).join('\n\n');
-  return { title, text: cleanText(text), excerpt: summary(text), kind: 'page' };
-}
-
-export function displayOf(type: string, value: unknown): Display {
-  try {
-    if (type === textbookPageType) return textbookDisplay(value);
-    if (type === goalType) return goalDisplay(value);
-    if (type === organizerTaskType) return taskDisplay(value);
-    const display = activityWorkspaceDisplay(type, value);
-    if (display) return display;
-  } catch {
-    // A malformed legacy fact must not make the learner's whole access page disappear.
-  }
-  return {
-    title: '无法显示的记录',
-    excerpt: '这条记录的格式暂时无法显示，但不会被提供给模型。',
-    text: '这条记录的格式暂时无法显示。',
-  };
-}
-
 function firstPurpose(value: unknown): string | undefined {
   return purposesOf(value)[0];
 }
@@ -258,6 +219,7 @@ type AccessDisplay = { display: Display; purposes: readonly string[]; fact: Fact
 async function readDisplay(
   tx: ReadTransaction,
   row: AccessRow,
+  check: CheckNotionRead,
 ): Promise<AccessDisplay | null> {
   const purposes = purposesOf(row.purpose);
   const purpose = firstPurpose(row.purpose);
@@ -265,7 +227,14 @@ async function readDisplay(
   try {
     const read = createCommandReadContext(tx, purpose);
     const snapshot = await read.fact(factId(row.id), { mode: 'following' });
-    await readFrozenWorkbookRecord(read, snapshot);
+    const inputs: FactSnapshot[] = [];
+    await readFrozenWorkbookRecord(read, snapshot, fact => inputs.push(fact));
+    for (const input of inputs) await check(input);
+    if ([workspaceEntryType,textbookPageType].includes(row.type)) {
+      const sources: FactSnapshot[] = [];
+      if (!await resolveSource(tx,snapshot.ref.id,{recipient:'learner',track: fact => sources.push(fact)})) return null;
+      for (const fact of sources) await check(fact);
+    }
     return { display: displayOf(row.type, snapshot.value), purposes, fact: snapshot };
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch) return null;
@@ -360,6 +329,8 @@ function normalizeStored(value: unknown): StoredAccess {
         baseUrl: route.baseUrl,
         protocol: route.protocol,
         revision: route.revision,
+        ...(typeof route.credentialRevision === 'string' && providerIdentifier.test(route.credentialRevision)
+          ? {credentialRevision: route.credentialRevision} : {}),
       };
     }
   }
@@ -391,25 +362,32 @@ export async function loadWorkspaceAccessRoutes(): Promise<Readonly<Record<strin
   return (await readStored()).routes;
 }
 
+export function workspaceGrantRevision(routes: Readonly<Record<string, StoredRoute>>, provider: ProviderProfile) {
+  const route = routes[provider.id];
+  return route?.enabled && route.baseUrl === provider.baseUrl && route.protocol === provider.protocol &&
+    provider.credentialRevision && route.credentialRevision === provider.credentialRevision ? route.revision : undefined;
+}
+
 function providerViews(settings: ProviderSettings, stored: StoredAccess): WorkspaceProviderView[] {
-  return settings.providers.map((provider) => {
-    const route = stored.routes[provider.id];
-    const matches = Boolean(
-      route?.enabled &&
-      route.baseUrl === provider.baseUrl &&
-      route.protocol === provider.protocol,
-    );
+  return settings.providers.map(provider => {
+    const {id, label, model, baseUrl, protocol} = provider;
+    const route = stored.routes[id];
+    const matches = Boolean(workspaceGrantRevision(stored.routes, provider));
     return {
-      id: provider.id,
-      label: provider.label,
-      model: provider.model,
-      baseUrl: provider.baseUrl,
-      protocol: provider.protocol,
-      active: provider.id === settings.activeProviderId,
+      id, label, model, baseUrl, protocol,
+      active: id === settings.activeProviderId,
       authorized: matches,
       ...(route?.enabled && !matches ? { authorizationStale: true } : {}),
     };
   });
+}
+
+export async function notionTeachingRecipients() {
+  const [settings, stored] = await Promise.all([loadSettings(), readStored()]);
+  return providerViews(settings,stored).filter(view => view.authorized).map(p => ({
+    id:notionModelRecipient(p.id,p.baseUrl,p.protocol,p.model,stored.routes[p.id]!.revision),
+    purpose:'teaching', label:p.label + ' · ' + p.model + ' · ' + p.baseUrl,
+  }));
 }
 
 function saveWorkspaceAccessRoute(db: Db, input: unknown) {
@@ -423,22 +401,30 @@ function saveWorkspaceAccessRoute(db: Db, input: unknown) {
     if (typeof value.baseUrl !== 'string' || typeof value.protocol !== 'string') {
       throw new RequestError(400, '模型端点或协议无效。');
     }
-    const settings = await loadSettings();
-    const provider = settings.providers.find((entry) => entry.id === value.id);
+    let settings = await loadSettings();
+    let provider = settings.providers.find((entry) => entry.id === value.id);
     if (!provider) throw new RequestError(404, '找不到这个模型配置。');
     if (value.enabled && (value.baseUrl !== provider.baseUrl || value.protocol !== provider.protocol)) {
       throw new RequestError(409, '模型端点或协议已变化，请重新确认授权。');
+    }
+    if (value.enabled && !provider.credentialRevision) {
+      // Stamp a legacy profile only at an explicit grant, under the same learner lock.
+      await saveSettings({});
+      settings = await loadSettings();
+      provider = settings.providers.find(entry => entry.id === value.id)!;
     }
     const stored = await readStored();
     const previous = stored.routes[provider.id];
     const unchanged = previous?.enabled === value.enabled &&
       previous.baseUrl === provider.baseUrl &&
-      previous.protocol === provider.protocol;
+      previous.protocol === provider.protocol &&
+      previous.credentialRevision === provider.credentialRevision;
     stored.routes[provider.id] = {
       enabled: value.enabled,
       baseUrl: provider.baseUrl,
       protocol: provider.protocol,
       revision: unchanged ? previous.revision : randomUUID(),
+      ...(provider.credentialRevision ? {credentialRevision: provider.credentialRevision} : {}),
     };
     await writeStored(stored);
     return { providers: providerViews(settings, stored) };
@@ -512,7 +498,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
       const query = readSearch(params.get('query'));
       const types = category ? [...category.types] : [...allowedTypes];
       const [result, providers] = await Promise.all([
-        db.snapshot({ learner: studioLearner }, async (tx) => {
+        confirmNotionRead(db, studioLearner, async (tx, check) => {
           const where = [
             'f.learner_id=$1',
             'f.retracted_rev IS NULL',
@@ -550,7 +536,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
           );
           const visible: { row: AccessRow; read: AccessDisplay }[] = [];
           for (const row of rows.slice(0, limit)) {
-            const read = await readDisplay(tx, row);
+            const read = await readDisplay(tx, row, check);
             if (read) visible.push({ row, read });
           }
           return { rows: visible, last:rows.slice(0,limit).at(-1), hasMore: rows.length > limit,
@@ -579,33 +565,38 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         catch { throw new RequestError(400, '工作区版本引用无效。'); }
         const ref = sourceRefV1(input);
         if (ref?.fact.id !== itemId) throw new RequestError(400, '工作区版本引用无效。');
-        const record = await db.snapshot({ learner: studioLearner }, async tx => {
+        const record = await confirmNotionRead(db, studioLearner, async (tx, check) => {
           if (ref.fact.type === knowledgeEdgeType) return (await openKnowledgeEdge(tx, ref, { recipient: 'learner' }))?.value;
           if (ref.fact.type === knowledgeEdgeEvidenceType) return openKnowledgeEdgeEvidence(tx,ref,{recipient:'learner'});
-          if (params.get('view') !== 'preview') return resolveSource(tx, ref, { recipient: 'learner' });
           let root: FactSnapshot | undefined;
+          const sources: FactSnapshot[] = [];
           const source = await resolveSource(tx, ref, { recipient: 'learner', track(fact) {
+            sources.push(fact);
             if (fact.ref.id === ref.fact.id && fact.ref.rev === ref.fact.rev) root = fact;
           } });
           if (!source) return;
+          for (const fact of sources) await check(fact);
+          if (params.get('view') !== 'preview') return source;
           const {id, rev, sourceRef, title} = source;
           if (ref.anchor.kind === 'answer-slot') return {id, rev, sourceRef, title, content: null};
           if (ref.anchor.kind === 'question') return {id, rev, sourceRef, title, content: source.content};
           const prompt = root && ref.anchor.kind === 'whole' ? activityQuestions(root)?.map(({prompt}) => prompt).join('\n\n') : undefined;
           return prompt === undefined ? source : {id, rev, sourceRef, title, content: prompt};
+        }).catch(error => {
+          if (!(error instanceof FactReadDeniedError)) throw error;
         });
         if (!record) throw new RequestError(404, '找不到可读取的版本。');
         return record;
       }
       const offset = readOffset(params.get('offset'));
       const limit = readLimit(params.get('limit'), defaultTextChunk, maximumTextChunk);
-      return db.snapshot({ learner: studioLearner }, async (tx) => {
+      return confirmNotionRead(db, studioLearner, async (tx, check) => {
         const row = await currentRow(tx, itemId);
         if (!row || !allowedTypes.has(row.type) ||
           (row.type === studyRecordType && syntheticStudyRecords.has(row.id))) {
           throw new RequestError(404, '找不到这条学习记录。');
         }
-        const read = await readDisplay(tx, row);
+        const read = await readDisplay(tx, row, check);
         if (!read) throw new RequestError(403, '这条学习记录当前不可读取。');
         const item = itemOf(row, read);
         const start = Math.min(offset, read.display.text.length);
@@ -614,7 +605,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         for (const linkedId of read.display.links ?? []) {
           const linked = await currentRow(tx,factId(linkedId));
           if (!linked || !allowedTypes.has(linked.type) || syntheticStudyRecords.has(linkedId)) continue;
-          const target = await readDisplay(tx,linked);
+          const target = await readDisplay(tx,linked,check);
           if (target) related.push({id:linkedId,title:target.display.title});
         }
         return {

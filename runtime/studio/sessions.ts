@@ -1,3 +1,4 @@
+import { notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
@@ -5,8 +6,6 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { factId, commandId } from '../../kernel/src/declarations/ids.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { first45Answer, first45Histories, first45Question } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
@@ -31,9 +30,10 @@ import {
   methodName,
   slotType,
   textbookUndoId,
+  notionModelRecipient,
 } from './identity.ts';
 
-import {turnArtifacts} from './presentation-store.ts';
+import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
 
 export class RequestError extends Error {
   readonly status: number;
@@ -90,6 +90,7 @@ export type DisplayTurn = {
   answer?: string;
 };
 type Status = 'pending' | 'ready' | 'failed' | 'unknown';
+export const unconfirmedReplyMessage = '暂时无法核对本轮依据，旧回复已隐藏。';
 export const unavailableReplyMessage = '本轮已完成，依据已变更，旧回复已隐藏。';
 type TurnView = {
   id: string;
@@ -99,7 +100,7 @@ type TurnView = {
   status: Status;
   error?: string;
 };
-async function history(tx: ReadTransaction, session: string): Promise<TurnView[]> {
+async function history(tx: ReadTransaction, session: string, check?: CheckNotionRead): Promise<TurnView[]> {
   const { rows } = await tx.query<{
     id: string;
     value: DisplayTurn | null;
@@ -127,11 +128,10 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
         throw error;
       });
     const submission = studyTurn(snapshot.value);
-    let feedback = row.value;
-    if (feedback && (!await grantCurrent(submission) ||
-      (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid')) feedback = null;
+    const authority = row.value && check && await teachingResultAuthority(tx, submission, row.manifest, grantCurrent, check);
+    let feedback = !authority || authority === 'authorized' ? row.value : null;
     if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
-      rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: [] };
+      rationale: '', message: authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage, reads: [], evidenceIds: [] };
     result.push({
       id: row.id,
       submission,
@@ -222,27 +222,32 @@ async function recoverRelationReceipts(tx: ReadTransaction, turnIds: string[]) {
   })]));
 }
 
-async function readableTurnMounts(tx: ReadTransaction, session: string, timeline: readonly TurnView[]) {
+async function readableTurnMounts(tx: ReadTransaction, session: string, timeline: readonly TurnView[], check: CheckNotionRead) {
   const last = timeline.at(-1);
   const visible = timeline.filter(row => row.feedback || (row === last && row.status === 'pending'));
   const byTurn = new Map<string, Awaited<ReturnType<typeof turnArtifacts>>>();
-  for (const row of visible) byTurn.set(row.id, await turnArtifacts(tx, session, row.id));
+  for (const row of visible) byTurn.set(row.id, await turnArtifacts(tx, session, row.id, check));
   return byTurn;
 }
 
 export function sessionMountPermissions(db: Db, session: string) {
-  return db.snapshot({ learner: studioLearner }, async tx => {
-    const mounts = await readableTurnMounts(tx, session, await history(tx, session));
-    return Array.from(mounts.values()).flatMap(turn => turn.map(artifact => artifact.mountId));
+  return notionReadScope(db, studioLearner).read(async (tx, check) => {
+    const mounts = await readableTurnMounts(tx, session, await history(tx, session, check), check);
+    const turns = [...mounts.values()];
+    return {
+      authorizedMountIds: turns.flatMap(turn => turn.snapshots.map(artifact => artifact.mountId)),
+      unconfirmed: turns.flatMap(turn => turn.unconfirmed),
+    };
   });
 }
 
-export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project']) {
-  const { turns, ...view } = await db.snapshot({ learner: studioLearner }, async tx => {
-    const timeline = await history(tx, session);
+export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project'], knownMounts: ReadonlySet<string> = new Set()) {
+  const notion = notionReadScope(db, studioLearner);
+  const { turns, ...view } = await notion.read(async (tx, check) => {
+    const timeline = await history(tx, session, check);
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
-    const mounts = await readableTurnMounts(tx, session, timeline);
+    const mounts = await readableTurnMounts(tx, session, timeline, check);
     const currentObject = last.submission.currentObject;
     const recovered = await recoverRelationReceipts(tx,
       timeline.filter(row => row.feedback?.action === 'reply_unavailable').map(row => row.id));
@@ -255,11 +260,12 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
       status: last.status,
       ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
       ...(last.error ? { error: last.error } : {}),
-      ...(last.status === 'pending' ? { artifacts: mounts.get(last.id) ?? [] } : {}),
+      ...(last.status === 'pending' ? { artifacts: mounts.get(last.id)?.snapshots ?? [] } : {}),
+      ...mountPermissionFields([...mounts.values()].flatMap(turn => turn.unconfirmed), knownMounts),
       turns: await Promise.all(timeline.filter(row => row.feedback).map(async row => {
         const writes = row.feedback?.writes ?? recovered.get(row.id);
         return { row, writes: writes?.length ? await projectWrites(tx, writes) : undefined,
-          artifacts: mounts.get(row.id) ?? [] };
+          artifacts: mounts.get(row.id)?.snapshots ?? [] };
       })),
     };
   });
@@ -268,7 +274,7 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
     if (!row.feedback) continue;
     const { studyKit, ...feedback } = row.feedback;
     const recall = row.derivationId && studyKit
-      ? await projectRecall?.(session, row.id, row.derivationId, studyKit)
+      ? await projectRecall?.(session, row.id, row.derivationId, studyKit, notion)
       : undefined;
     projected.push({
       ...feedback, ...(writes && {writes}), turnId: row.id, artifacts,
@@ -342,7 +348,8 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
       if (selected !== 'companion' || origin?.attachment || attachment)
         throw new RequestError(400, '当前学习对象只用于未附选段的自由对话。');
       if (!workspaceRevision) throw new RequestError(403, '此模型未获准访问学习工作区。');
-      const opened = await db.snapshot({learner: studioLearner}, tx => readCurrentLearningObject(tx, currentObject, () => true));
+      const opened = await db.snapshot({learner: studioLearner}, tx => readCurrentLearningObject(tx, currentObject, Object.assign(() => true,
+        {notionRecipientId:notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,workspaceRevision)})));
       if (!opened) throw new RequestError(403, '无法为本轮打开该版本及所需依据。请核对教学用途和版本。');
       boundObject = {...currentObject, basisDigest: opened.basisDigest};
     }

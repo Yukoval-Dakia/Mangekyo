@@ -62,6 +62,7 @@ export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1
       retry.current = undefined;
       apply(snapshot, result.snapshot);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 503) apply(snapshot, null);
       if (error instanceof ApiError && [401, 403, 404, 409].includes(error.status))
         apply(snapshot, undefined);
       if (error instanceof ApiError && error.status < 500) retry.current = undefined;

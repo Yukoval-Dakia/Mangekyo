@@ -237,3 +237,13 @@ export async function validatesWorkbookHistory(
   const { seen, cross_help } = await workbookItemHistory(tx, target, before, ownIssuance);
   return !(target.condition === 'variant' && seen) && !(independent && cross_help);
 }
+
+export function workbookReadAtWatermark(tx: ActivityEvidenceReadScope, base: ReadContext, tracked: ReadContext,
+  cutoff: Tick, unavailable: () => Error,
+): ReadContext {
+  return { ...tracked, async fact(id, options) {
+    const snapshot = await base.fact(id, options);
+    if (!await workbookWitnessesBy(tx, [snapshot.ref], cutoff)) throw unavailable();
+    return tracked.fact(id, options);
+  } };
+}
