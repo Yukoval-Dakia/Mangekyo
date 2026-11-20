@@ -1,5 +1,5 @@
-import {useEffect, useEffectEvent, useState, type CSSProperties} from 'react';
-import {flushSync} from 'react-dom';
+import {useEffect, useEffectEvent, useRef, useState} from 'react';
+import {IssuedPaperView, hasPresentation, type IssuedPaper} from './issued-paper-view';
 import {api, ApiError, remember, remembered} from './api';
 import {PageTitle, ReadState, useResource} from './workspace';
 import {latestKey} from './deletion-watermark';
@@ -14,7 +14,6 @@ type Catalog = {
   returns: {title: string; source: Source; originals: {index: number; name: string}[]}[];
   issued: {issuanceId: string; title: string; pageCount: number}[];
 };
-type Paper = {issuanceId: string; title: string; pages: {number: number; pieces: {text: string}[]}[]};
 type Collection = {issuanceId: string; runId: string; rev: number; page: number; independence: 'unknown'};
 const path = '/capture/papers';
 const candidateKey = ({source, epoch, extraction}: Candidate) => JSON.stringify([source, epoch, extraction]);
@@ -26,13 +25,13 @@ export default function IssuedPapers() {
   const [originalKey, setOriginalKey] = useState('');
   const [page, setPage] = useState('');
   const [runId, setRunId] = useState('');
-  const [paper, setPaper] = useState<Paper>();
+  const [view, setView] = useState<{paper: IssuedPaper; print: boolean}>();
+  const generation = useRef(0);
   const [receipt, setReceipt] = useState<Collection>();
   const [busy, setBusy] = useState(false);
-  const [printing, setPrinting] = useState(false);
   const [error, setError] = useState('');
   const refreshAfterDeletion = useEffectEvent(() => {
-    setPaper(undefined); setOriginalKey(''); setReceipt(undefined); catalog.reload();
+    generation.current++; setView(undefined); setOriginalKey(''); setReceipt(undefined); catalog.reload();
   });
   useEffect(() => {
     const refresh = () => refreshAfterDeletion();
@@ -55,14 +54,14 @@ export default function IssuedPapers() {
   const selected = originals.find(item => item.key === originalKey);
   function selectPaper(next: string) {
     setId(next); setPage(''); setOriginalKey(''); setRunId(remembered('paper-run:'+next) ?? ''); setReceipt(undefined);
-    setPaper(undefined); setError('');
+    setView(undefined); setError('');
   }
   async function execute(operation: () => Promise<void>) {
     if (busy) return;
     setBusy(true); setError('');
     try { await operation(); }
     catch (e) {
-      setPaper(undefined); setReceipt(undefined);
+      setView(undefined); setReceipt(undefined);
       setError(e instanceof ApiError ? e.message : '未收到回执，请重新确认。');
       catalog.reload();
     } finally { setBusy(false); }
@@ -70,19 +69,23 @@ export default function IssuedPapers() {
   async function issue() {
     if (!candidate) return;
     const {source, epoch, extraction} = candidate;
-    const result = await api<Paper>(path + '/issue', {method:'POST', body:{
+    const opening = ++generation.current;
+    setView(undefined);
+    const result = await api<IssuedPaper>(path + '/issue', {method:'POST', body:{
       source, epoch, layout:{lines:32, columns:56}, ...(extraction ? {extraction} : {}),
     }});
-    selectPaper(result.issuanceId); setPaper(result); catalog.reload();
+    if (opening !== generation.current) return;
+    if (!hasPresentation(result)) {setError('缺少有效的卷面展示许可。'); catalog.reload(); return;}
+    selectPaper(result.issuanceId); setView({paper:result, print:false}); catalog.reload();
   }
   async function reprint(print: boolean) {
     if (!issued) return;
-    setPaper(undefined);
-    const result = await api<Paper>(path + '/reprint', {method:'POST', body:{issuanceId:id}});
-    flushSync(() => {setPaper(result); setPrinting(print);});
-    if (print) {
-      try { await document.fonts.ready; window.print(); } finally { setPrinting(false); }
-    }
+    const opening = ++generation.current;
+    setView(undefined);
+    const result = await api<IssuedPaper>(path + '/reprint', {method:'POST', body:{issuanceId:id}});
+    if (opening !== generation.current) return;
+    if (result?.issuanceId !== id || !hasPresentation(result)) {setError('缺少有效的卷面展示许可。'); return;}
+    setView({paper:result, print});
   }
   async function collect() {
     if (!issued || !selected || !page) return;
@@ -90,7 +93,7 @@ export default function IssuedPapers() {
       issuanceId:id, source:selected.source, original:selected.original, page:Number(page), ...(runId ? {retryId:runId} : {}),
     }}));
   }
-  return <div className={'issued-papers' + (printing ? ' printing' : '')}>
+  return <div className="issued-papers">
     <div className="print-controls">
       <a className="back-link" href="/papers">‹ 返回试卷</a>
       <PageTitle title="纸面试卷"/>
@@ -147,14 +150,6 @@ export default function IssuedPapers() {
         </> : <p>当前没有获准回收的答卷原图。</p>}
       </fieldset>}
     </div>
-    {issued && paper && paper.issuanceId === id && <div className="issued-sheets">
-      {paper.pages.map(sheet => <section key={sheet.number} style={{
-        '--rows': Math.max(1, sheet.pieces.length),
-        '--columns': Math.max(1, ...sheet.pieces.map(piece => Array.from(piece.text).length)),
-      } as CSSProperties}>
-        <header><h2>{paper.title}</h2><p>卷号 {paper.issuanceId} · 第 {sheet.number} / {paper.pages.length} 页</p></header>
-        {sheet.pieces.map((piece,i) => <div className="issued-line" key={i}>{piece.text}</div>)}
-      </section>)}
-    </div>}
+    {issued && view?.paper.issuanceId === id && <IssuedPaperView paper={view.paper} print={view.print}/>}
   </div>;
 }
