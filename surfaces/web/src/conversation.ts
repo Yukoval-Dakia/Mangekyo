@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type Settings, type SessionEvent, type StudyAttachment } from "./api";
 
 import type { CurrentObject } from "./current-record";
 import {selectedRoute, type Route, type McpGrant} from './model-route';
+import { editorDrafts } from "./presentation/editor-draft";
 import { useMountPermissions } from "./presentation/mount-permissions";
-import { authorizeMounts, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
+import { authorizeMounts, refreshDraftBases, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 
 type Operation = {currentObject?: CurrentObject | undefined} & (
   | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
@@ -25,6 +26,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [session, renderSession] = useState(() => initialSession && readSession(initialSession));
   const sessionRef = useRef(session);
   function setSession(value: MountedSession | undefined) {
+    const prior = sessionRef.current?.mounts;
+    if (prior && prior !== value?.mounts) {
+      const retained = new Set(value?.mounts);
+      for (const mount of prior) if (!retained.has(mount)) editorDrafts.delete(mount);
+    }
     sessionRef.current = value;
     renderSession(value);
   }
@@ -36,9 +42,12 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   });
   // Reads, receipts and turn events supply content. Only the current session
   // permission stream can make that content visible, including after completion.
+  const connection = permissions?.connection;
+  const [checkedConnection, setCheckedConnection] = useState<symbol>();
   const visibleSession = session && {
     ...session,
-    mounts: session.mounts.filter(m => session.id === sessionId && permissions?.has(m.mountId)),
+    mounts: session.mounts.filter(m => session.id === sessionId && permissions?.ids.has(m.mountId) &&
+      (!editorDrafts.has(m) || checkedConnection === connection)),
   };
   function applySnapshot(sent: ArtifactSnapshotV1, input: unknown) {
     const latest = sessionRef.current;
@@ -56,6 +65,29 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [sendingAnswer, setSendingAnswer] = useState<string>();
   const [problem, setProblem] = useState<{ source: "read" | "write"; message: string }>();
   const [refresh, setRefresh] = useState(0);
+
+  const checkDraftBases = useEffectEvent(async (signal: AbortSignal) => {
+    const prior = sessionRef.current;
+    const bases = prior?.mounts.filter(m => editorDrafts.has(m));
+    if (!prior || !bases?.length || prior.id !== sessionId) return;
+    const read = await api<Session>(sessionPath(prior.id), { signal });
+    if (signal.aborted) return;
+    if (read.id !== prior.id || read.caseId !== caseId || !Array.isArray(read.turns))
+      throw new Error("Session identity mismatch");
+    const latest = sessionRef.current;
+    if (latest?.id === read.id) setSession(refreshDraftBases(latest, bases, readSession(read)));
+  });
+  useEffect(() => {
+    if (!connection) return;
+    const controller = new AbortController();
+    void checkDraftBases(controller.signal).then(() => {
+      if (!controller.signal.aborted) setCheckedConnection(connection);
+    }).catch(() => {
+      if (!controller.signal.aborted)
+        setProblem({ source: "read", message: "暂时无法核对作品版本，草稿保留在当前页面。请重试。" });
+    });
+    return () => controller.abort();
+  }, [connection, refresh]);
 
   const [streamingReply, setStreamingReply] = useState<string>();
   const [progressLabel, setProgressLabel] = useState<string>();

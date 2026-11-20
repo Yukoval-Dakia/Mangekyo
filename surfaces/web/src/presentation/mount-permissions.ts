@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { sessionPath } from '../api';
 
-type Permissions = { sessionId: string; ids: ReadonlySet<string> };
+type Permissions = { sessionId: string; ids: ReadonlySet<string>; connection: symbol };
 
 function readIds(data: string, sessionId: string): Set<string> | undefined {
   try {
@@ -38,13 +38,16 @@ export function useMountPermissions(sessionId: string | null, active: boolean, o
       if (document.visibilityState !== 'visible') return;
       const stream = new EventSource(endpoint);
       source = stream;
+      let connection = Symbol();
+      function unconfirmed() {
+        if (source !== stream) return;
+        connection = Symbol();
+        setConfirmed(undefined);
+      }
       stream.addEventListener('mount-permissions', (event: MessageEvent<string>) => {
         if (source !== stream || stream.readyState !== EventSource.OPEN) return;
         const ids = readIds(event.data, watchedSession);
-        if (!ids) {
-          setConfirmed(undefined);
-          return;
-        }
+        if (!ids) return unconfirmed();
         // The two streams run independently. A permission can be withdrawn
         // before the body arrives, or while the conversation is off screen.
         for (const id of grants.withdrawn) ids.delete(id);
@@ -52,11 +55,8 @@ export function useMountPermissions(sessionId: string | null, active: boolean, o
         for (const id of removed) grants.withdrawn.add(id);
         if (removed.length) withdraw(watchedSession, removed);
         grants.previous = ids;
-        setConfirmed({sessionId: watchedSession, ids});
+        setConfirmed({sessionId: watchedSession, ids, connection});
       });
-      const unconfirmed = () => {
-        if (source === stream) setConfirmed(undefined);
-      };
       stream.addEventListener('session-error', unconfirmed);
       stream.onerror = unconfirmed;
     }
@@ -73,5 +73,5 @@ export function useMountPermissions(sessionId: string | null, active: boolean, o
     };
   }, [sessionId, active]);
 
-  return active && confirmed?.sessionId === sessionId ? confirmed?.ids : undefined;
+  return active && confirmed?.sessionId === sessionId ? confirmed : undefined;
 }

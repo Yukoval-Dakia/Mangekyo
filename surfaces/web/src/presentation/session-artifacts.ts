@@ -224,6 +224,29 @@ export function readSession(
   return { ...current, mounts, withdrawn };
 }
 
+// A reconnect read may race with a turn change, a receipt or a withdrawal.
+// Refresh only the draft bases that are still current when this read returns.
+export function refreshDraftBases(latest: MountedSession, bases: ArtifactSnapshotV1[], read: MountedSession) {
+  let mounts = latest.mounts;
+  const withdrawn = new Set(latest.withdrawn);
+  for (const base of bases) {
+    if (base.sessionId !== read.id || !mounts.includes(base)) continue;
+    const current = read.mounts.find(m => m.turnId === base.turnId && m.mountId === base.mountId);
+    if (!current) {
+      withdrawn.add(base.mountId);
+      mounts = mounts.filter(m => m !== base);
+      continue;
+    }
+    if (current.stateRev < base.stateRev || current.viewSeq < base.viewSeq)
+      throw new Error('Stale artifact checkpoint');
+    if (current.stateRev !== base.stateRev || current.viewSeq !== base.viewSeq ||
+        current.view.id !== base.view.id || current.view.revision !== base.view.revision ||
+        current.predicting !== base.predicting || current.submitted !== base.submitted)
+      mounts = mounts.map(m => m === base ? current : m);
+  }
+  return { ...latest, mounts, withdrawn };
+}
+
 export async function sendIntent(snapshot: ArtifactSnapshotV1, intent: ArtifactIntentV1) {
   const result = await api<unknown>(sessionPath(snapshot.sessionId) + '/artifact-actions', {
     method: 'POST',

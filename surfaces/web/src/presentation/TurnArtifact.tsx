@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { drawingStroke } from '../../../shared/presentation/index.ts';
 import { ApiError } from '../api';
 import { assessmentMessage } from './artifact-assessment';
+import { editorDrafts } from './editor-draft.ts';
 import { ArtifactView } from './ArtifactView';
 import { sendIntent, type ArtifactIntentV1, type ArtifactSnapshotV1 } from './session-artifacts';
 import { StrokeFigure, type MountedStroke } from './graphics';
@@ -33,7 +34,7 @@ export function TurnArtifacts({ mounts, apply, live }: { mounts: ArtifactSnapsho
     {live && <span role="status" className="visually-hidden">{announcement}</span>}
     {works.map(work => 'strokes' in work
       ? <StrokeFigure key={work.key} strokes={work.strokes} />
-      : <TurnArtifact key={work.mountId} snapshot={work} apply={apply} />)}
+      : <TurnArtifact key={JSON.stringify([work.sessionId, work.turnId, work.mountId])} snapshot={work} apply={apply} />)}
   </>;
 }
 
@@ -74,7 +75,8 @@ export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1
     <div className="turn-artifact">
       <fieldset disabled={snapshot.submitted || pending} className="artifact-controls">
         <ArtifactView
-          key={String(snapshot.predicting)}
+          key={JSON.stringify([snapshot.viewSeq, snapshot.predicting])}
+          drafts={editorDrafts}
           view={snapshot.view}
           mount={snapshot}
           hostState={snapshot.hostState}
