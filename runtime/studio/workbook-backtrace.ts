@@ -7,7 +7,7 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { workbookLinkCandidates, workbookWitnessesBy } from '../../modules/activity/evidence-read.ts';
 import {
-  earlierWorkbookTraceAttempts, isFrozenWorkbookFollowup, readWorkbookFollowupForecast, workbookTraceCutoff as cutoff,
+  confirmWorkbookTraceBasis, earlierWorkbookTraceAttempts, isFrozenWorkbookFollowup, readWorkbookFollowupForecast, workbookTraceCutoff as cutoff,
   workbookWitnessReader as collect, WorkbookTraceReadError,
 } from '../../modules/activity/workbook-backtrace-values.ts';
 import { workbookAttempt } from '../../modules/activity/workbook-values.ts';
@@ -62,7 +62,7 @@ async function stableQuestion(tx: ReadTransaction, item: Opened, edgeId: string,
   return { oldQuestion, rows: await earlierWorkbookTraceAttempts(tx,oldQuestion,through.observedThrough) };
 }
 
-export async function workbookBacktrace(tx: ReadTransaction, input: Input, reader: Reader) {
+export async function workbookBacktrace(tx: ReadTransaction, input: Input, reader: Reader, check: Reader) {
   const open = (id: string) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:retentionPurpose,maySend:() => true,
     readNotionWitness: fact => reader.fact(fact.ref.id,{mode:'pinned',rev:fact.ref.rev})});
   const root = collect(reader, tx);
@@ -75,7 +75,7 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
     const source = item.question.sourceQuestionRef;
     const conceptIds = await readItemDimensions(tx, root.read, source, through.observedThrough,open);
     if (!conceptIds.length) return null;
-    const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, source, through.observedThrough, ['variant_of']);
+    const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, source, through.observedThrough, ['variant_of'],'unspoiled-variant');
     const matches = new Map<string, {text:string; content:{id:FactId; rev:Revision}; witnesses:readonly BusWitness[]}>();
     for (const { id } of edges) {
       const graph = collect(reader, tx);
@@ -100,10 +100,10 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
           }
           const { independentSuccesses: [later, earlier] } = backtrace({ learner: tx.learner, conceptIds, mechanismIds: [], methodIds: [], ...through }, history, candidate.witnesses());
           const key = ref.id + ':' + ref.rev;
-          if (!matches.has(key) && later && earlier && await delayedSitting(tx, candidate.read, earlier, later) &&
-              await workbookWitnessesBy(tx, candidate.witnesses(), through.observedThrough))
-            matches.set(key,{ text: old.question.prompt, content: { id: factId(ref.id), rev: ref.rev },
-              witnesses: collect(reader, tx, [...root.witnesses(), ...candidate.witnesses()]).witnesses() as readonly BusWitness[] });
+          if (matches.has(key) || !later || !earlier || !await delayedSitting(tx,candidate.read,earlier,later) ||
+              !await workbookWitnessesBy(tx,candidate.witnesses(),through.observedThrough)) continue;
+          const witnesses = await confirmWorkbookTraceBasis(check,tx,root.witnesses(),candidate.witnesses());
+          if (witnesses) matches.set(key,{text:old.question.prompt,content:{id:factId(ref.id),rev:ref.rev},witnesses});
         } catch (error) {
           if (!unavailable(error)) throw error;
         }

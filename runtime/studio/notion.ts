@@ -58,8 +58,9 @@ export async function readStudioNotionSource(tx: ReadTransaction, sourceId: Fact
 
 export type NotionRecipient = ((fact: FactSnapshot) => boolean) & {notionRecipientId?: string};
 
-export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnapshot, purpose: string, recipient: NotionRecipient | 'learner') {
+export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnapshot, purpose: string, recipient: NotionRecipient | 'learner', reopen?: (fact: FactSnapshot) => Promise<FactSnapshot>) {
   if (fact.type !== captureSourceType || sourceEnvelope(fact.value).kind !== 'notion') return;
+  if (reopen) return reopen(fact);
   try {
     return await readStudioNotionSource(tx, fact.ref.id, {mode:'pinned', rev:fact.ref.rev},
       recipient === 'learner' ? {purpose,recipientId:tx.learner,maySend:() => true} : {purpose,recipientId:recipient.notionRecipientId ?? '',maySend:recipient});

@@ -329,8 +329,8 @@ export const learningOverviewConsumerContract = {
   futureConsumers: ['today-learning-state', 'review', 'proposal'],
 } as const;
 
-export async function verifyWorkspaceEntry(
-  ctx: CommandContext, id: FactId, entry: WorkspaceEntryFields, basis: readonly WorkspaceEntryBasis[],
+export async function verifyWorkspaceEntryBasis(
+  read: Pick<CommandContext['read'],'fact'>, id: FactId, basis: readonly WorkspaceEntryBasis[],
 ): Promise<void> {
   const visited = new Set<string>();
   const visiting = new Set<string>([id]);
@@ -339,7 +339,7 @@ export async function verifyWorkspaceEntry(
     const key = w.id + ':' + w.rev + ':' + w.epoch;
     if (visited.has(key)) return;
     if (visited.size + visiting.size > 1024 || visiting.size > 32) throw new WorkspaceInputError('依据清单太长。');
-    const fact = await ctx.read.fact(w.id, {mode:'following'});
+    const fact = await read.fact(w.id, {mode:'following'});
     if (fact.accessEpoch !== w.epoch || fact.ref.rev !== w.rev) throw new WorkspaceInputError('来源版本或用途已经变化，请重新读取。');
     if (fact.type === workspaceEntryType) {
       visiting.add(w.id);
@@ -350,6 +350,12 @@ export async function verifyWorkspaceEntry(
     visited.add(key);
   }
   for (const witness of basis) await visit(witness);
+}
+
+export async function verifyWorkspaceEntry(
+  ctx: CommandContext, id: FactId, entry: WorkspaceEntryFields, basis: readonly WorkspaceEntryBasis[],
+): Promise<void> {
+  await verifyWorkspaceEntryBasis(ctx.read,id,basis);
   const sources = new Set(basis.map(w => w.id));
   let hasAttempt = false;
   for (const link of entry.links) {

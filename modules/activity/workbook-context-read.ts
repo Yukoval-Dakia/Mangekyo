@@ -2,6 +2,7 @@ import type { FactId, FactSnapshot, ReadContext, Revision } from '@mangekyo/kern
 import { readActivitySubmissionBirth, type ActivityEvidenceReadScope } from './evidence-read.ts';
 import { sameHelpRef, type HelpRef } from './help-exposure-values.ts';
 import { recordWorkbookPresentationCommand, workbookPresentation, workbookPresentationType } from './workbook-presentation.ts';
+import { verifyWorkspaceEntryBasis, workspaceEntry, workspaceEntryType } from './workspace-values.ts';
 import { sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from './workbook-values.ts';
 
 type ReadFact = (...args: Parameters<ReadContext['fact']>) => Promise<FactSnapshot>;
@@ -15,6 +16,14 @@ export function memoWorkbookFacts(read: ReadFact): Pick<ReadContext,'fact'> {
     facts.set(key,result);
     return result as Promise<FactSnapshot<Value>>;
   }};
+}
+
+export function withWorkbookWorkspaceBasis(read: Pick<ReadContext,'fact'>) {
+  return memoWorkbookFacts(async (id,options) => {
+    const fact = await read.fact(id,options);
+    if (fact.type === workspaceEntryType) await verifyWorkspaceEntryBasis(read,id,workspaceEntry(fact.value).basis);
+    return fact;
+  });
 }
 
 export type BoundWorkbookMount = {paper: HelpRef; attemptRef?: HelpRef; epoch: string; attemptEpoch?: string; issuance?: HelpRef};

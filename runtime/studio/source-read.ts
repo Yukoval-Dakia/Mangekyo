@@ -23,7 +23,11 @@ import {openWorkbookQuestionSources} from './workbook-diagnosis.ts';
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = NotionRecipient;
-export type SourceAccess = { track?: SourceTrack; rootType?: string } & (
+export type SourceAccess = {
+  track?: SourceTrack;
+  rootType?: string;
+  readNotionWitness?: (fact: FactSnapshot) => Promise<FactSnapshot>;
+} & (
   | {recipient: 'learner'}
   | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string}
 );
@@ -60,7 +64,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   async function visit(sourceId: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(sourceId)) return;
     const fact = await reader.fact(factId(sourceId), revision === undefined ? {mode: 'following'} : {mode: 'pinned', rev: revision});
-    await checkStudioNotionFact(tx, fact, sourcePurpose(access), access.recipient === 'learner' ? 'learner' : access.maySend);
+    await checkStudioNotionFact(tx, fact, sourcePurpose(access), access.recipient === 'learner' ? 'learner' : access.maySend,
+      access.readNotionWitness);
     const key = `${sourceId}:${fact.ref.rev}`;
     if (path.has(key)) return;
     const visited = seen.get(key);
