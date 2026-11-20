@@ -1,4 +1,4 @@
-import { extractLocalDocument } from '@mangekyo/executor-document-extraction/local';
+import { extractLocalDocument, identifyLocalDocument } from '@mangekyo/executor-document-extraction/local';
 import { openIntakeObjects, digest } from './intake-objects.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
@@ -20,13 +20,12 @@ import {
   intakePurpose,
   IntakeResearchConflict,
   intakeResearchPermission,
-  intakeResearchPurpose,
   intakeTextLimit,
   setIntakeResearchCommand,
   type IntakeExtraction,
-  type IntakeMediaType,
   type IntakeOriginal,
 } from '../../modules/capture/intake-values.ts';
+import { projectIntakeMetadata, type IntakeMetadata } from '../../modules/capture/intake-view.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
@@ -40,20 +39,7 @@ import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 
 export { intakeSwiftTimeoutMs } from '@mangekyo/executor-document-extraction/local';
 
-export type IntakeMetadata = {
-  readonly id: string;
-  readonly title: string;
-  readonly text: string;
-  readonly characterCount: number;
-  readonly truncated: boolean;
-  readonly fullText: string | null;
-  readonly extraction: IntakeExtraction;
-  readonly requestedExtraction?: 'mineru';
-  readonly original: { readonly name: string; readonly mediaType: string; readonly size: number; readonly sha256: string };
-  readonly corrected: boolean;
-  readonly backgroundResearch?: 'allowed' | 'private' | 'all';
-  readonly revision: number;
-};
+export type { IntakeMetadata } from '../../modules/capture/intake-view.ts';
 
 type CaptureInput = {
   readonly requestId: unknown;
@@ -66,8 +52,6 @@ type CaptureInput = {
 };
 
 type CorrectInput = { readonly expectedRev: unknown; readonly materialId: unknown; readonly requestId: unknown; readonly text: unknown };
-
-type Detected = { readonly kind: 'pdf' | 'image' | 'text'; readonly mediaType: IntakeMediaType };
 
 function asciiFilename(name: string) {
   const value = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_').replace(/\.+$/g, '_');
@@ -97,37 +81,9 @@ function cleanTitle(value: unknown, fallback: string) {
   return title || '未命名材料';
 }
 
-function detect(bytes: Buffer, filename: string, declaredType: unknown): Detected {
-  const name = cleanName(filename);
-  const extension = extensionOf(name);
-  const first = (bytes.length > 0 ? bytes[0] : -1) as number;
-  if (bytes.length > 5 && bytes.subarray(0, 5).toString('latin1') === '%PDF-') {
-    return { kind: 'pdf', mediaType: 'application/pdf' };
-  }
-  if (
-    bytes.length >= 8 &&
-    bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a'
-  )
-    return { kind: 'image', mediaType: 'image/png' };
-  if (first === 0xff && bytes.length >= 3 && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return { kind: 'image', mediaType: 'image/jpeg' };
-  }
-  if (
-    bytes.length >= 12 &&
-    (bytes.subarray(0, 4).toString('latin1') === 'II*\0' || bytes.subarray(0, 4).toString('latin1') === 'MM\0*')
-  )
-    return { kind: 'image', mediaType: 'image/tiff' };
-  if (bytes.length >= 12 && bytes.subarray(4, 8).toString('latin1') === 'ftyp') {
-    const brand = bytes.subarray(8, 12).toString('latin1');
-    if (brand === 'heic' || brand === 'heix' || brand === 'hevc' || brand === 'hevx') return { kind: 'image', mediaType: 'image/heic' };
-    if (brand === 'mif1' || brand === 'msf1') return { kind: 'image', mediaType: 'image/heif' };
-    if (brand === 'avif') return { kind: 'image', mediaType: 'image/avif' };
-  }
-  if (extension === 'txt') return { kind: 'text', mediaType: 'text/plain' };
-  if (extension === 'md' || extension === 'markdown') return { kind: 'text', mediaType: 'text/markdown' };
-  if (declaredType === 'text/plain' || declaredType === 'text/markdown') {
-    return { kind: 'text', mediaType: declaredType === 'text/markdown' ? 'text/markdown' : 'text/plain' };
-  }
+function detect(bytes: Buffer, filename: string, declaredType: unknown) {
+  const detected = identifyLocalDocument(bytes, extensionOf(cleanName(filename)), declaredType);
+  if (detected) return detected;
   throw new RequestError(415, '只支持 PDF、照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF）和 UTF-8 的 txt/Markdown。');
 }
 
@@ -172,25 +128,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     const material = textMaterial(facts.material.value);
     const document = intakeDocument(facts.document.value);
     if (document.materialId.toString() !== facts.id) throw new RequestError(404, '这份材料的交入记录不匹配。');
-    const fullText = document.extraction.status === 'failed' || document.extraction.status === 'pending'
-      ? null : document.extraction.text;
-    const truncated = document.extraction.truncated || (fullText !== null && fullText.length > 4000);
-    return {
-      id: facts.id,
-      title: material.title,
-      text: material.text,
-      characterCount: document.extraction.characterCount,
-      truncated,
-      fullText,
-      revision: facts.document.ref.rev,
-      extraction: document.extraction,
-      ...(document.requestedExtraction ? { requestedExtraction: document.requestedExtraction } : {}),
-      original: document.original,
-      corrected: document.extraction.status === 'corrected',
-      ...(document.extraction.status === 'corrected' && document.extraction.method === 'learner' ? {
-        backgroundResearch: facts.document.purpose.includes('all') ? 'all' : facts.document.purpose.includes(intakeResearchPurpose) ? 'allowed' : 'private',
-      } : {}),
-    };
+    return projectIntakeMetadata(document, material, facts.document.ref.rev, facts.document.purpose);
   }
 
   async function metadataOrNull(materialId: string, watermark: string) {

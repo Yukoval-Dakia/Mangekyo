@@ -1,3 +1,4 @@
+import { confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -31,7 +32,7 @@ import {
   workbookAttemptType,
   workbookPaperType,
 } from '../../modules/activity/workbook-values.ts';
-import { sourceId, stableId, studioLearner } from './identity.ts';
+import { notionModelRecipient, sourceId, stableId, studioLearner } from './identity.ts';
 import { materialIntakeLink } from './reading.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
@@ -45,6 +46,8 @@ import { workspaceQuery } from './workspace-read.ts';
 import { lexicalWorkspaceSql, trigramFunction, workspaceOccurredAt } from './workspace-search.ts';
 import {
   loadSettings,
+  saveSettings,
+  type ProviderProfile,
   type ProviderProtocol,
   type ProviderSettings,
 } from './settings.ts';
@@ -115,6 +118,7 @@ type StoredRoute = {
   readonly baseUrl: string;
   readonly protocol: ProviderProtocol;
   readonly revision: string;
+  readonly credentialRevision?: string;
 };
 type StoredAccess = {
   readonly version: 1;
@@ -256,12 +260,18 @@ type AccessDisplay = { display: Display; purposes: readonly string[]; fact: Fact
 async function readDisplay(
   tx: ReadTransaction,
   row: AccessRow,
+  check: CheckNotionRead,
 ): Promise<AccessDisplay | null> {
   const purposes = purposesOf(row.purpose);
   const purpose = firstPurpose(row.purpose);
   if (!purpose) return null;
   try {
     const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' });
+    if ([workspaceEntryType,textbookPageType].includes(row.type)) {
+      const sources: FactSnapshot[] = [];
+      if (!await resolveSource(tx,snapshot.ref.id,{recipient:'learner',track: fact => sources.push(fact)})) return null;
+      for (const fact of sources) await check(fact);
+    }
     return { display: displayOf(row.type, snapshot.value), purposes, fact: snapshot };
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return null;
@@ -356,6 +366,8 @@ function normalizeStored(value: unknown): StoredAccess {
         baseUrl: route.baseUrl,
         protocol: route.protocol,
         revision: route.revision,
+        ...(typeof route.credentialRevision === 'string' && providerIdentifier.test(route.credentialRevision)
+          ? {credentialRevision: route.credentialRevision} : {}),
       };
     }
   }
@@ -387,25 +399,32 @@ export async function loadWorkspaceAccessRoutes(): Promise<Readonly<Record<strin
   return (await readStored()).routes;
 }
 
+export function workspaceGrantRevision(routes: Readonly<Record<string, StoredRoute>>, provider: ProviderProfile) {
+  const route = routes[provider.id];
+  return route?.enabled && route.baseUrl === provider.baseUrl && route.protocol === provider.protocol &&
+    provider.credentialRevision && route.credentialRevision === provider.credentialRevision ? route.revision : undefined;
+}
+
 function providerViews(settings: ProviderSettings, stored: StoredAccess): WorkspaceProviderView[] {
-  return settings.providers.map((provider) => {
-    const route = stored.routes[provider.id];
-    const matches = Boolean(
-      route?.enabled &&
-      route.baseUrl === provider.baseUrl &&
-      route.protocol === provider.protocol,
-    );
+  return settings.providers.map(provider => {
+    const {id, label, model, baseUrl, protocol} = provider;
+    const route = stored.routes[id];
+    const matches = Boolean(workspaceGrantRevision(stored.routes, provider));
     return {
-      id: provider.id,
-      label: provider.label,
-      model: provider.model,
-      baseUrl: provider.baseUrl,
-      protocol: provider.protocol,
-      active: provider.id === settings.activeProviderId,
+      id, label, model, baseUrl, protocol,
+      active: id === settings.activeProviderId,
       authorized: matches,
       ...(route?.enabled && !matches ? { authorizationStale: true } : {}),
     };
   });
+}
+
+export async function notionTeachingRecipients() {
+  const [settings, stored] = await Promise.all([loadSettings(), readStored()]);
+  return providerViews(settings,stored).filter(view => view.authorized).map(p => ({
+    id:notionModelRecipient(p.id,p.baseUrl,p.protocol,p.model,stored.routes[p.id]!.revision),
+    purpose:'teaching', label:p.label + ' · ' + p.model + ' · ' + p.baseUrl,
+  }));
 }
 
 function saveWorkspaceAccessRoute(db: Db, input: unknown) {
@@ -419,22 +438,30 @@ function saveWorkspaceAccessRoute(db: Db, input: unknown) {
     if (typeof value.baseUrl !== 'string' || typeof value.protocol !== 'string') {
       throw new RequestError(400, '模型端点或协议无效。');
     }
-    const settings = await loadSettings();
-    const provider = settings.providers.find((entry) => entry.id === value.id);
+    let settings = await loadSettings();
+    let provider = settings.providers.find((entry) => entry.id === value.id);
     if (!provider) throw new RequestError(404, '找不到这个模型配置。');
     if (value.enabled && (value.baseUrl !== provider.baseUrl || value.protocol !== provider.protocol)) {
       throw new RequestError(409, '模型端点或协议已变化，请重新确认授权。');
+    }
+    if (value.enabled && !provider.credentialRevision) {
+      // Stamp a legacy profile only at an explicit grant, under the same learner lock.
+      await saveSettings({});
+      settings = await loadSettings();
+      provider = settings.providers.find(entry => entry.id === value.id)!;
     }
     const stored = await readStored();
     const previous = stored.routes[provider.id];
     const unchanged = previous?.enabled === value.enabled &&
       previous.baseUrl === provider.baseUrl &&
-      previous.protocol === provider.protocol;
+      previous.protocol === provider.protocol &&
+      previous.credentialRevision === provider.credentialRevision;
     stored.routes[provider.id] = {
       enabled: value.enabled,
       baseUrl: provider.baseUrl,
       protocol: provider.protocol,
       revision: unchanged ? previous.revision : randomUUID(),
+      ...(provider.credentialRevision ? {credentialRevision: provider.credentialRevision} : {}),
     };
     await writeStored(stored);
     return { providers: providerViews(settings, stored) };
@@ -508,7 +535,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
       const query = readSearch(params.get('query'));
       const types = category ? [...category.types] : [...allowedTypes];
       const [result, providers] = await Promise.all([
-        db.snapshot({ learner: studioLearner }, async (tx) => {
+        confirmNotionRead(db, studioLearner, async (tx, check) => {
           const where = [
             'f.learner_id=$1',
             'f.retracted_rev IS NULL',
@@ -546,7 +573,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
           );
           const visible: { row: AccessRow; read: AccessDisplay }[] = [];
           for (const row of rows.slice(0, limit)) {
-            const read = await readDisplay(tx, row);
+            const read = await readDisplay(tx, row, check);
             if (read) visible.push({ row, read });
           }
           return { rows: visible, last:rows.slice(0,limit).at(-1), hasMore: rows.length > limit,
@@ -575,33 +602,38 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         catch { throw new RequestError(400, '工作区版本引用无效。'); }
         const ref = sourceRefV1(input);
         if (ref?.fact.id !== itemId) throw new RequestError(400, '工作区版本引用无效。');
-        const record = await db.snapshot({ learner: studioLearner }, async tx => {
+        const record = await confirmNotionRead(db, studioLearner, async (tx, check) => {
           if (ref.fact.type === knowledgeEdgeType) return (await openKnowledgeEdge(tx, ref, { recipient: 'learner' }))?.value;
           if (ref.fact.type === knowledgeEdgeEvidenceType) return openKnowledgeEdgeEvidence(tx,ref,{recipient:'learner'});
-          if (params.get('view') !== 'preview') return resolveSource(tx, ref, { recipient: 'learner' });
           let root: FactSnapshot | undefined;
+          const sources: FactSnapshot[] = [];
           const source = await resolveSource(tx, ref, { recipient: 'learner', track(fact) {
+            sources.push(fact);
             if (fact.ref.id === ref.fact.id && fact.ref.rev === ref.fact.rev) root = fact;
           } });
           if (!source) return;
+          for (const fact of sources) await check(fact);
+          if (params.get('view') !== 'preview') return source;
           const {id, rev, sourceRef, title} = source;
           if (ref.anchor.kind === 'answer-slot') return {id, rev, sourceRef, title, content: null};
           if (ref.anchor.kind === 'question') return {id, rev, sourceRef, title, content: source.content};
           const prompt = root && ref.anchor.kind === 'whole' ? activityQuestions(root)?.map(({prompt}) => prompt).join('\n\n') : undefined;
           return prompt === undefined ? source : {id, rev, sourceRef, title, content: prompt};
+        }).catch(error => {
+          if (!(error instanceof FactReadDeniedError)) throw error;
         });
         if (!record) throw new RequestError(404, '找不到可读取的版本。');
         return record;
       }
       const offset = readOffset(params.get('offset'));
       const limit = readLimit(params.get('limit'), defaultTextChunk, maximumTextChunk);
-      return db.snapshot({ learner: studioLearner }, async (tx) => {
+      return confirmNotionRead(db, studioLearner, async (tx, check) => {
         const row = await currentRow(tx, itemId);
         if (!row || !allowedTypes.has(row.type) ||
           (row.type === studyRecordType && syntheticStudyRecords.has(row.id))) {
           throw new RequestError(404, '找不到这条学习记录。');
         }
-        const read = await readDisplay(tx, row);
+        const read = await readDisplay(tx, row, check);
         if (!read) throw new RequestError(403, '这条学习记录当前不可读取。');
         const item = itemOf(row, read);
         const start = Math.min(offset, read.display.text.length);
@@ -610,7 +642,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         for (const linkedId of read.display.links ?? []) {
           const linked = await currentRow(tx,factId(linkedId));
           if (!linked || !allowedTypes.has(linked.type) || syntheticStudyRecords.has(linkedId)) continue;
-          const target = await readDisplay(tx,linked);
+          const target = await readDisplay(tx,linked,check);
           if (target) related.push({id:linkedId,title:target.display.title});
         }
         return {

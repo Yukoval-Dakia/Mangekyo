@@ -1,8 +1,8 @@
 import type { ServerResponse } from 'node:http';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
-import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
+import { notionReadScope, teachingResultAllowed, type NotionReadScope } from './notion.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import type { Pool, PoolClient } from 'pg';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -44,7 +44,7 @@ export async function prepareSessionEvents(db: Db): Promise<void> {
   });
 }
 
-async function notify(tx: DbQuery, sessionId: string) {
+export async function notifySession(tx: DbQuery, sessionId: string) {
   await tx.query(
     `SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton`,
     [sessionId],
@@ -71,7 +71,7 @@ export async function publishTurnProgress(
        WHERE (studio_turn_stream.phase, studio_turn_stream.message) IS DISTINCT FROM (EXCLUDED.phase, EXCLUDED.message)`,
       [tx.learner, turnId, progress.phase, progress.phase === 'replying' ? progress.message : '', JSON.stringify(manifest)],
     );
-    if (written.rowCount) await notify(tx, sessionId);
+    if (written.rowCount) await notifySession(tx, sessionId);
   });
 }
 
@@ -84,7 +84,7 @@ export async function completeTurnStream(tx: ReadTransaction, turnId: string) {
     [tx.learner, turnId],
   );
   // Delivered only after the acceptance (or failure) transaction commits.
-  if (row?.sessionId) await notify(tx, row.sessionId);
+  if (row?.sessionId) await notifySession(tx, row.sessionId);
 }
 
 type Subscriber = { sessionId: string; refresh: () => void; disconnect: () => void };
@@ -156,9 +156,9 @@ export async function listenForSessionEvents(db: Db, pool: Pool): Promise<() => 
   };
 }
 
-async function readSessionEvent(db: Db, sessionId: string) {
-  const grantCurrent = workspaceGrantChecker();
-  return db.snapshot({ learner: studioLearner }, async (tx) => {
+async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
+  return notion.read(async (tx, check) => {
+    const grantCurrent = workspaceGrantChecker();
     const { rows: [row] } = await tx.query<{
       turnId: string;
       derivationId: string | null;
@@ -196,8 +196,8 @@ async function readSessionEvent(db: Db, sessionId: string) {
       });
     const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
-    const invalid = !await grantCurrent(submission) ||
-      (manifest && (await revalidateManifest(tx, parseManifest(manifest))).kind !== 'valid');
+    const invalid = manifest ? !await teachingResultAllowed(tx, submission, manifest, grantCurrent, check)
+      : !await grantCurrent(submission);
     if (invalid && status === 'pending') {
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     }
@@ -209,7 +209,7 @@ async function readSessionEvent(db: Db, sessionId: string) {
       id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status,
       ...(status !== 'ready' && submission.answer ? { pendingAnswer: submission.answer } : {}),
     };
-    return {session,row,artifacts:status === 'pending' ? await turnArtifacts(tx,sessionId,row.turnId) : []};
+    return {session,row,artifacts:status === 'pending' ? await turnArtifacts(tx,sessionId,row.turnId,check) : []};
   });
 }
 
@@ -279,13 +279,14 @@ export async function serveSessionEvents(
           }
           continue;
         }
-        const { session, row, artifacts } = await readSessionEvent(db, sessionId);
+        const notion = notionReadScope(db, studioLearner);
+        const { session, row, artifacts } = await readSessionEvent(notion, sessionId);
         if (closed) return;
         if (dirty) continue;
         const { currentTurnId, status } = session;
         if (status !== 'pending') {
           const recall = status === 'ready' && row.derivationId && row.hasStudyKit
-            ? await projectRecall(sessionId, currentTurnId, row.derivationId, row.studyKit) : undefined;
+            ? await projectRecall(sessionId, currentTurnId, row.derivationId, row.studyKit, notion) : undefined;
           if (closed) return;
           if (dirty) continue;
           const message = status === 'ready' ? recall?.lesson ?? row.message : undefined;

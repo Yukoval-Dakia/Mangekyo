@@ -1,3 +1,4 @@
+import type { openStudioNotion } from './notion.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import type { openMemoryManagement } from './memory-management.ts';
@@ -34,7 +35,7 @@ import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
-import { saveSettings, publicSettings, loadSettings } from './settings.ts';
+import { saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
 
 import {actOnArtifact} from './presentation-store.ts';
 
@@ -91,6 +92,7 @@ export function serve(
   library: ReturnType<typeof openLibrary>,
   practice: ReturnType<typeof openPractice>,
   student: {
+    notion: ReturnType<typeof openStudioNotion>;
     textbook: ReturnType<typeof openTextbook>;
     relationReview: ReturnType<typeof openRelationReview>;
     workbook: ReturnType<typeof openWorkbook>;
@@ -134,6 +136,13 @@ export function serve(
         res.setHeader('X-Deletion-Watermark',watermark);
         return json(res,status,result);
       };
+      if (path === '/api/notion/settings' && method === 'GET') return json(res,200,await student.notion.settings());
+      const notionAction = /^\/api\/notion\/selections\/(grant|revoke|sync)$/.exec(path)?.[1];
+      const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})(\/purpose)?$/.exec(path);
+      if (method === 'POST' && (notionAction || notionSource?.[2]))
+        return await offlineSubmission(200,input => student.notion.mutate(notionAction ?? 'purpose',input,notionSource?.[1]));
+      if (method === 'GET' && notionSource?.[1] && !notionSource[2])
+        return await student.notion.read(notionSource[1],url.searchParams.get('view'), data => json(res,200,data));
       if (path === '/api/workspace/access' && method === 'GET') {
         return json(res, 200, await student.workspace.list(url.searchParams));
       }
@@ -329,7 +338,7 @@ export function serve(
       if (path === '/api/settings' && method === 'PUT') {
         const input = await body(req);
         try {
-          return json(res, 200, await saveSettings(input));
+          return json(res, 200, await saveLearnerSettings(db, input));
         } catch (error) {
           throw new RequestError(400, error instanceof Error ? error.message : '设置无效。');
         }

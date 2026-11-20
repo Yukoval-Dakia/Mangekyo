@@ -7,6 +7,7 @@ import { api, deletedSubmission, remember, remembered, requestId, submissionId, 
 import { Icon } from './icons';
 import { LearningUnderstandings } from './learning-understandings';
 import { LearningMemory } from './study-tools';
+import { NotionSettings } from './notion-settings';
 import { MaterialOriginal } from './intake';
 
 export type Material = { id: string; title: string; text: string };
@@ -248,6 +249,7 @@ export function Me({
   editGoal: () => void;
   settings: Settings | undefined;
 }) {
+  const [notionOpen, setNotionOpen] = useState(false);
   return (
     <>
       <PageTitle title="我" />
@@ -263,6 +265,10 @@ export function Me({
           <p>{library.data.goal || '你最近希望弄懂什么？'}</p>
         </section>
       )}
+      <details className="surface-section notion-panel" onToggle={e => setNotionOpen(e.currentTarget.open)}>
+        <summary>Notion 只读来源</summary>
+        {notionOpen && <NotionSettings/>}
+      </details>
       <LearningUnderstandings />
       <LearningMemory settings={settings} />
       <section className="surface-section profile-records">
