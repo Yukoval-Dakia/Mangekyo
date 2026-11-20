@@ -1,4 +1,5 @@
 import { factId, isJson, type Json, type JsonObject, type LearnerId } from '@mangekyo/kernel';
+import type { SourceEnvelope } from './source.ts';
 
 export type NotionCursor = { readonly pageId: string; readonly lastEditedTime: string };
 
@@ -59,6 +60,16 @@ export function notionJsonDigest(value: Json) {
 export async function notionHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export async function verifyNotionBlockHashes(source: SourceEnvelope) {
+  if (source.kind !== 'notion') throw new Error('原件不是 Notion 快照。');
+  await Promise.all(source.unit.blocks.map(async ({ id, body }) => {
+    if (notionId(id) !== id || body.status !== 'known' || !body.notionBody ||
+        body.contentHash !== await notionJsonDigest({ text: body.text, body: body.notionBody })) {
+      throw new Error('Notion 原件块内容与哈希不一致。');
+    }
+  }));
 }
 
 export async function notionSourceId(learner: LearnerId, selectionId: string, pageId: string, selectionEpoch: string) {

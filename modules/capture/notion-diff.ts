@@ -1,3 +1,5 @@
+import type { SourceEnvelope } from './source.ts';
+
 export type NotionBlockPosition = { readonly id: string; readonly parentId?: string | null };
 export type NotionHashedBlock = NotionBlockPosition & { readonly contentHash: string };
 
@@ -67,4 +69,23 @@ export function diffNotionBlocks(
     edited,
     moved: next.filter(block => moved.has(block.id)).map(block => block.id),
   };
+}
+
+export function notionRevisionDiff(previous: SourceEnvelope, next: SourceEnvelope) {
+  const blocks = (source: SourceEnvelope) => source.unit.blocks.map(({ id, parentId, body }) => {
+    if (source.kind !== 'notion' || !body.contentHash) throw new Error('Notion 原件块缺少内容哈希。');
+    return { id, parentId, contentHash: body.contentHash };
+  });
+  return diffNotionBlocks(blocks(previous), blocks(next));
+}
+
+export function changedNotionBlocks(diff: NotionBlockDiff) {
+  return new Set([...diff.added, ...diff.edited, ...diff.moved]);
+}
+
+export function stampNotionBlockRevisions(previous: SourceEnvelope, next: SourceEnvelope, previousRev: number) {
+  const changed = changedNotionBlocks(notionRevisionDiff(previous, next));
+  return Object.fromEntries(next.unit.blocks.map(({ id }) => [
+    id, changed.has(id) ? previousRev + 1 : previous.notionBlockRevisions?.[id] ?? previousRev,
+  ]));
 }
