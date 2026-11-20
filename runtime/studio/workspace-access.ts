@@ -337,6 +337,20 @@ function entryDisplay(value: unknown): Display {
   };
 }
 
+function fixedQuestionPreview(fact: FactSnapshot): string | undefined {
+  const prompts = (questions: readonly {prompt: string}[]) => questions.map(({prompt}) => prompt).join('\n\n');
+  switch (fact.type) {
+    case workspaceEntryType: {
+      const entry = workspaceEntry(fact.value);
+      return entry.kind === 'question' ? entry.body : undefined;
+    }
+    case workbookPaperType: return prompts(workbookPaper(fact.value).questions);
+    case workbookAttemptType: return prompts(workbookAttempt(fact.value).paper.questions);
+    case ridingPracticeType: return prompts(practiceSubmission(fact.value).paper.questions);
+    default: return undefined;
+  }
+}
+
 export function displayOf(type: string, value: unknown): Display {
   try {
     if (type === ridingPracticeType) return practiceDisplay(value);
@@ -658,10 +672,18 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
         catch { throw new RequestError(400, '工作区版本引用无效。'); }
         const ref = sourceRefV1(input);
         if (ref?.fact.id !== itemId) throw new RequestError(400, '工作区版本引用无效。');
-        const record = await db.snapshot({ learner: studioLearner }, async tx =>
-          ref.fact.type === knowledgeEdgeType
-            ? (await openKnowledgeEdge(tx, ref, { recipient: 'learner' }))?.value
-            : await resolveSource(tx, input, { recipient: 'learner' }));
+        const record = await db.snapshot({ learner: studioLearner }, async tx => {
+          if (ref.fact.type === knowledgeEdgeType) return (await openKnowledgeEdge(tx, ref, { recipient: 'learner' }))?.value;
+          if (params.get('view') !== 'preview') return resolveSource(tx, ref, { recipient: 'learner' });
+          let root: FactSnapshot | undefined;
+          const source = await resolveSource(tx, ref, { recipient: 'learner', track(fact) {
+            if (fact.ref.id === ref.fact.id && fact.ref.rev === ref.fact.rev) root = fact;
+          } });
+          if (!source) return;
+          if (ref.anchor.kind === 'answer-slot') return { ...source, content: null };
+          const prompt = root && ref.anchor.kind === 'whole' ? fixedQuestionPreview(root) : undefined;
+          return prompt === undefined ? source : { ...source, content: prompt };
+        });
         if (!record) throw new RequestError(404, '找不到可读取的版本。');
         return record;
       }
