@@ -11,13 +11,14 @@ import { first45Answer, first45Histories, first45Question } from '../../executor
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, routeMatchesInput, mcpRevision } from './harness.ts';
-import { studyAttachment, studyMcpGrants, studyTurn } from '../../modules/activity/values.ts';
+import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, type StudyCurrentObjectSelection } from '../../modules/activity/values.ts';
 import { readMaterialText } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { loadSettings } from './settings.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
+import { currentObjectAlias, readCurrentLearningObject } from './current-learning-object.ts';
 import {
   stableId,
   sourceId,
@@ -186,11 +187,13 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
     const timeline = await history(tx, session);
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
+    const currentObject = last.submission.currentObject;
     return {
       id: session,
       caseId: last.submission.caseId,
       currentTurnId: last.id,
       ...(timeline[0]?.submission.attachment ? { attachment: timeline[0].submission.attachment } : {}),
+      ...(currentObject ? {currentObject: {alias: currentObjectAlias(currentObject.kind), id: currentObject.id, rev: currentObject.rev}} : {}),
       status: last.status,
       ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
       ...(last.error ? { error: last.error } : {}),
@@ -259,6 +262,7 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
     attachment?: ReturnType<typeof studyAttachment>,
     grants?: ReturnType<typeof studyMcpGrants>,
     requestedRoute?: unknown,
+    currentObject?: StudyCurrentObjectSelection,
   ) {
     const id = parent ? nextTurn(session, parent) : firstTurn(req);
     const origin = parent ? await db.snapshot({learner: studioLearner}, async tx =>
@@ -274,12 +278,22 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
       throw new RequestError(422, '这次对话已绑定原模型配置，请切回该配置或新建对话。');
     const workspaceRevision = selected === 'companion' && !origin?.attachment && !attachment
       ? await workspaceRouteRevision(settings) : undefined;
+    let boundObject;
+    if (currentObject) {
+      if (selected !== 'companion' || origin?.attachment || attachment)
+        throw new RequestError(400, '当前学习对象只用于未附选段的自由对话。');
+      if (!workspaceRevision) throw new RequestError(403, '此模型未获准访问学习工作区。');
+      const opened = await db.snapshot({learner: studioLearner}, tx => readCurrentLearningObject(tx, currentObject, () => true));
+      if (!opened) throw new RequestError(403, '无法为本轮打开该版本及所需依据。请核对教学用途和版本。');
+      boundObject = {...currentObject, basisDigest: opened.basisDigest};
+    }
     const data = {
       caseId: selected,
       sessionId: session,
       parentId: parent,
       answer,
       ...(attachment ? { attachment } : {}),
+      ...(boundObject ? {currentObject: boundObject} : {}),
       ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),
       ...(workspaceRevision ? {workspaceRevision} : {}),
       model: settings.model, reasoningEffort: settings.reasoningEffort,
@@ -306,6 +320,7 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
     attachment?: ReturnType<typeof studyAttachment>,
     grants?: ReturnType<typeof studyMcpGrants>,
     requestedRoute?: unknown,
+    currentObject?: StudyCurrentObjectSelection,
   ) {
     const {
       rows: [row],
@@ -324,6 +339,8 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
       JSON.stringify(existing.mcpGrants ?? []) !== JSON.stringify(grants ?? []) ||
       existing.parentId !== parent ||
       (selected && existing.caseId !== selected) ||
+      existing.currentObject?.kind !== currentObject?.kind || existing.currentObject?.id !== currentObject?.id ||
+      existing.currentObject?.rev !== currentObject?.rev ||
       JSON.stringify(existing.attachment) !== JSON.stringify(attachment)
     ) {
       throw new RequestError(409, '同一个提交标识已经用于不同内容。');
@@ -334,9 +351,21 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
     try { return studyMcpGrants(value); }
     catch { throw new RequestError(400, '本轮 MCP 工具选择无效。'); }
   }
+  function requestedCurrentObject(value: unknown) {
+    if (value === undefined) return;
+    try {
+      const selection = studyCurrentObjectSelection(value);
+      if (Object.keys(value as object).length === 3) return selection;
+    } catch {
+      // Only the stable selection fields are accepted from the browser.
+    }
+    throw new RequestError(400, '当前学习对象须包含类型、ID 和版本。');
+  }
   return {
-    async start(selected: CaseId, requestId: string, question?: unknown, shared?: unknown, requestedMcp?: unknown, requestedRoute?: unknown) {
+    async start(selected: CaseId, requestId: string, question?: unknown, shared?: unknown, requestedMcp?: unknown,
+      requestedRoute?: unknown, requestedObject?: unknown) {
       const grants = requestedGrants(requestedMcp);
+      const currentObject = requestedCurrentObject(requestedObject);
       const personal = selected === 'companion' || selected === 'riding';
       if (personal && (typeof question !== 'string' || !question.trim() || question.length > 4000))
         throw new RequestError(400, '请输入 1 至 4000 字的问题。');
@@ -348,7 +377,7 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
         catch { throw new RequestError(400, '请选择一段 1 至 3000 字的材料。'); }
       }
       const session = firstTurn(requestId);
-      const prior = await replay(requestId, session, selected, null, firstAnswer, attachment, grants, requestedRoute);
+      const prior = await replay(requestId, session, selected, null, firstAnswer, attachment, grants, requestedRoute, currentObject);
       if (prior) return prior;
       if (attachment) {
         const chosen = attachment;
@@ -359,30 +388,32 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
         if (!found) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
       }
       try {
-        return await submit(selected, session, null, firstAnswer, requestId, attachment, grants, requestedRoute);
+        return await submit(selected, session, null, firstAnswer, requestId, attachment, grants, requestedRoute, currentObject);
       } catch (error) {
-        const again = await replay(requestId, session, selected, null, firstAnswer, attachment, grants, requestedRoute);
+        const again = await replay(requestId, session, selected, null, firstAnswer, attachment, grants, requestedRoute, currentObject);
         if (again) return again;
         throw error;
       }
     },
-    async answer(session: string, parent: unknown, input: unknown, requestId: string, requestedMcp?: unknown, requestedRoute?: unknown) {
+    async answer(session: string, parent: unknown, input: unknown, requestId: string, requestedMcp?: unknown,
+      requestedRoute?: unknown, requestedObject?: unknown) {
       const grants = requestedGrants(requestedMcp);
+      const currentObject = requestedCurrentObject(requestedObject);
       if (typeof input !== 'string' || !input.trim() || input.length > 4000)
         throw new RequestError(400, '请输入 1 至 4000 字的回答。');
       if (typeof parent !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(parent))
         throw new RequestError(400, '提交时须指明当前问题。');
       const answer = input.trim();
-      const prior = await replay(requestId, session, undefined, parent, answer, undefined, grants, requestedRoute);
+      const prior = await replay(requestId, session, undefined, parent, answer, undefined, grants, requestedRoute, currentObject);
       if (prior) return prior;
       const last = (await loadHistory(db, session)).at(-1);
       if (!last) throw new RequestError(404, '学习会话不存在。');
       if (last.id !== parent) throw new RequestError(409, '此题已有回答，请刷新后查看下一步。');
       if (last.status !== 'ready') throw new RequestError(409, '请先等同伴完成这一轮。');
       try {
-        return await submit(caseId(last.submission.caseId), session, last.id, answer, requestId, undefined, grants, requestedRoute);
+        return await submit(caseId(last.submission.caseId), session, last.id, answer, requestId, undefined, grants, requestedRoute, currentObject);
       } catch (error) {
-        const again = await replay(requestId, session, undefined, parent, answer, undefined, grants, requestedRoute);
+        const again = await replay(requestId, session, undefined, parent, answer, undefined, grants, requestedRoute, currentObject);
         if (again) return again;
         if ((await loadHistory(db, session)).at(-1)?.id !== last.id)
           throw new RequestError(409, '另一份回答已提交，请刷新会话。');

@@ -116,11 +116,18 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
   known: (id: string) => boolean;
   maySend: WorkspaceSourceRecipient;
   track: SourceTrack;
+  currentObject?: {alias: string; sourceRef: SourceRefV1} | undefined;
   trackAssessment?: ((basis: WorkspaceAssessmentBasis) => void) | undefined;
 }, read: (id: string, track: SourceTrack) => Promise<string>) {
   const items = [];
   for (const input of args.refs) {
-    const ref = parseLearningReference(input);
+    const alias = input === 'current_attempt' || input === 'current_page';
+    const current = access.currentObject?.alias === input ? access.currentObject.sourceRef : undefined;
+    if (alias && !current) {
+      items.push(learningToolError('not_found','refs','本轮没有绑定这个当前学习对象。',searchNext));
+      continue;
+    }
+    const ref = current ?? parseLearningReference(input);
     if (!ref) {
       items.push(learningToolError('invalid_args','refs','请使用 id 或 sourceRef。',searchNext));
       continue;
@@ -139,7 +146,7 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
         '没有可用于诊断的已交卷作答及获准题源。'));
       continue;
     }
-    const value = JSON.parse(await read(input,track)) as ReadResult;
+    const value = JSON.parse(await read(current ? JSON.stringify(current) : input,track)) as ReadResult;
     if (value.error || !value.sourceRef) {
       items.push(await unreadable(tx,id,access.known(id),access.maySend));
       continue;

@@ -39,6 +39,7 @@ import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
+import {readCurrentLearningObject, type OpenedCurrentLearningObject} from './current-learning-object.ts';
 import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { loadSettings } from './settings.ts';
@@ -63,6 +64,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const assessments = new Map<string, WorkspaceAssessmentBasis>();
   const retention = new Map<string, RetentionBasis>();
   let protectWorkspaceDispatch = false;
+  let currentObject: OpenedCurrentLearningObject | undefined;
   let liveMemoryRevision: number | undefined;
   let learningMemory: Awaited<ReturnType<typeof readMemoryGateway>>;
   let expandedMemory: typeof learningMemory;
@@ -113,7 +115,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
     const now = new Date().toISOString();
     if ([learningMemory, expandedMemory].some(item => item?.receipt.expiresAt && item.receipt.expiresAt <= now)) throw new ChangedEvidence();
-    if (assessments.size || retention.size) {
+    if (currentObject || assessments.size || retention.size) {
       if (!authorizeWorkspaceRecipient) throw new ChangedEvidence();
       await authorizeWorkspaceRecipient();
       for (const {slot} of assessments.values()) {
@@ -293,6 +295,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (submission.caseId === 'companion' || submission.caseId === 'riding') {
       const answer = submission.answer;
       if (!answer) throw new TeachingError('invalid_input', '请输入有效的学习问题。');
+      const selection = submission.currentObject;
+      if (selection) {
+        await authorizeWorkspace();
+        currentObject = await db.snapshot(scope, tx => readCurrentLearningObject(tx, selection, maySend));
+        if (!currentObject || currentObject.basisDigest !== selection.basisDigest) throw new ChangedEvidence();
+      }
       const preference = submission.caseId === 'companion' ? await db.snapshot(scope, async tx => {
         const value = await currentMemory(tx);
         if (!value.text || value.endpoint !== settings.baseUrl || value.providerId !== settings.activeProviderId || value.protocol !== settings.protocol) return;
@@ -411,7 +419,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         if (w?.kind === 'fact') inherited.set(memoryId, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
       }
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
-        db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()],
+        db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()], currentObject,
         maySend,
         track(w, checkAtDispatch) {
           inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
@@ -433,6 +441,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           if (progress.phase !== 'replying' || !workspace?.publishedFormalArtifact()) await onProgress(progress);
         },
         ...(historyNotice ? {historyNotice} : {}),
+        ...(currentObject ? {currentLearningObject: JSON.stringify(currentObject.view)} : {}),
         ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
         ...(learningMemory?.bundle.omitted.some(item => item.reason === 'budget') ? {
           async openMemoryRegion(input: Record<string, unknown>, step: number) {

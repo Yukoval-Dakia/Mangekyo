@@ -9,6 +9,7 @@ import {practiceSubmission, ridingPracticeType} from '../../modules/activity/pra
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType} from '../../modules/activity/workbook-values.ts';
+import {textbookPageFrom, textbookPageType, type TextbookBlockBody} from '../../modules/content/textbook-page.ts';
 import {
   WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
   type WorkspaceEntryKind,
@@ -61,6 +62,15 @@ function sourceText(fact: FactSnapshot) {
     }
   }
   return undefined;
+}
+
+function textbookText(body: TextbookBlockBody) {
+  switch (body.kind) {
+    case 'text': return body.text;
+    case 'formula': return body.latex;
+    case 'table': return body.rows.map(row => row.join(' | ')).join('\n');
+    default: return '';
+  }
 }
 
 function searchText(fact: FactSnapshot, content: SourceProjection['content']): string {
@@ -122,6 +132,9 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAc
       if (content.isWellFormed()) return {title: source.title, content};
     } else if (fact.type === intakeFactType) {
       return {title:intakeTextOf(fact).title, content:intakeTextOf(fact).extraction.text};
+    } else if (recipient === 'workspace' && fact.type === textbookPageType) {
+      const page = textbookPageFrom(fact);
+      return {kind: 'page', title: page.title, content: page.blocks.map(block => textbookText(block.body)).filter(Boolean).join('\n\n')};
     } else if (recipient === 'workspace' && fact.type === workbookPaperType) {
       const paper = workbookPaper(fact.value);
       return {title: paper.title, content: paper.questions.map(({prompt}, index) => `${index + 1}. ${prompt}`).join('\n\n')};
@@ -157,7 +170,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
-    (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType);
+    (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
+      (access.recipient === 'workspace' && reference?.fact.type === textbookPageType));
 
   async function visit(key: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.has(key) || path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(key)) return;

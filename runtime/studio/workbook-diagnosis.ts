@@ -64,7 +64,7 @@ async function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAtte
   return { state: result.state, score: result.score };
 }
 
-export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
+export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
   if (typeof reference !== 'string' && (reference.fact.type !== workbookAttemptType || reference.anchor.kind !== 'whole')) return;
   let submission: FactSnapshot | undefined;
   const recipient = { recipient: 'workspace' as const, maySend: access.maySend };
@@ -92,6 +92,19 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
       }, sourceAccess);
       if (question?.content !== prompt) return;
     }
+    return {source, submission, attempt, birth, paper, sourceAccess};
+  } catch (error) {
+    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
+    throw error;
+  }
+}
+
+export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
+  const opened = await openWorkbookDiagnosisSource(tx, reference, access);
+  if (!opened) return;
+  const {source, submission, attempt, birth, paper, sourceAccess} = opened;
+  const {ref} = submission;
+  try {
 
     // Workbook creates the original issuance at revision 1. Grants can add
     // revisions of the same paper. Ordinary workbooks have no coverage proof.

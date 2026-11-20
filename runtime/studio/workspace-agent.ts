@@ -28,6 +28,7 @@ import {presentationCatalog} from '../../surfaces/shared/presentation/index.ts';
 import type {Manifest} from '../../kernel/src/derivations/manifest.ts';
 import {mountArtifact} from './presentation-store.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
+import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 
 const presentationTool = {type:'function',function:{name:'mount_artifact',
   description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+presentationCatalog.bindings,
@@ -51,8 +52,9 @@ export function openWorkspaceTools(options: {
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
+  currentObject?: OpenedCurrentLearningObject | undefined;
 }) {
-  const {db, turn} = options;
+  const {db, turn, currentObject} = options;
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));
   const overviewBasis = new Map<string, WorkspaceWitness>();
@@ -60,6 +62,14 @@ export function openWorkspaceTools(options: {
   const openedAnswers = new Map<string, WorkspaceWitness>();
   const produced = new Map<string, number>();
   const receipts = new Map<string,WorkspaceWriteReceipt>();
+  if (currentObject) {
+    const {view, root, basis, openedAnswer} = currentObject;
+    const {id} = root;
+    for (const witness of basis) options.track(witness, true);
+    sources.set(id, root);
+    opened.set(id, {id, workspace: true, title: view.title, text: view.content});
+    if (openedAnswer) openedAnswers.set(id, root);
+  }
   async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>) {
     const pythonAttempts = name === 'python_attempts';
     if (!isJson(args)) return JSON.stringify(pythonAttempts
@@ -80,7 +90,7 @@ export function openWorkspaceTools(options: {
       if (name === 'open_learning') {
         const parsed = parseOpenLearningArgs(args);
         text = JSON.stringify('ok' in parsed ? parsed : await openLearningBatch(tx,parsed,{
-          known:id => sources.has(id), maySend:options.maySend, track, trackAssessment,
+          known:id => sources.has(id), maySend:options.maySend, track, trackAssessment, currentObject: currentObject?.view,
         }, (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
           parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
       } else if (name === 'read_workspace') {
