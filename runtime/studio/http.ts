@@ -1,3 +1,4 @@
+import type { openStudioNotion } from './notion.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import type { openMemoryManagement } from './memory-management.ts';
@@ -90,6 +91,7 @@ export function serve(
   library: ReturnType<typeof openLibrary>,
   practice: ReturnType<typeof openPractice>,
   student: {
+    notion: ReturnType<typeof openStudioNotion>;
     textbook: ReturnType<typeof openTextbook>;
     relationReview: ReturnType<typeof openRelationReview>;
     workbook: ReturnType<typeof openWorkbook>;
@@ -132,6 +134,16 @@ export function serve(
         res.setHeader('X-Deletion-Watermark',watermark);
         return json(res,status,result);
       };
+      if (path === '/api/notion/settings' && method === 'GET') return json(res,200,await student.notion.settings());
+      const notionAction = /^\/api\/notion\/selections\/(grant|revoke|sync)$/.exec(path)?.[1];
+      if (notionAction && method === 'POST') {
+        const input = await body(req);
+        const receipt = await student.notion.mutate(notionAction,input);
+        res.setHeader('X-Deletion-Watermark',submittedWatermark(input));
+        return json(res,200,receipt);
+      }
+      const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path)?.[1];
+      if (notionSource && method === 'GET') return await student.notion.read(notionSource,url.searchParams.get('view'), data => json(res,200,data));
       if (path === '/api/workspace/access' && method === 'GET') {
         return json(res, 200, await student.workspace.list(url.searchParams));
       }

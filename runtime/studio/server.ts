@@ -9,6 +9,7 @@ import { acknowledgeStartedWork, readWork, relayPending } from '../../kernel/src
 import { startWork } from '../../executors/temporal/src/index.ts';
 import { createWorkWorker } from '../../executors/temporal/src/worker.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
+import { openStudioNotion } from './notion.ts';
 import { openStudio } from './sessions.ts';
 import { recordTerminalFailure, teach } from './teach.ts';
 import { sourceBuildId } from './build.ts';
@@ -93,7 +94,7 @@ async function openWeb() {
     assessment: workbookAssessment,
     onResearchFactsChanged: research.workbookChanged,
   });
-  const student = { textbook, relationReview:openRelationReview(db,content),
+  const student = { notion:openStudioNotion(db,capture), textbook, relationReview:openRelationReview(db,content),
     workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
