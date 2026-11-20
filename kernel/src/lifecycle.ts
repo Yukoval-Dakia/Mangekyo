@@ -55,12 +55,30 @@ export async function migrateLifecycle(tx: DbQuery) {
             AND (basis->'manifest'->'inputs') @> jsonb_build_array(jsonb_build_object('kind','fact','id',owner,'mode','following'))
           ELSE w.gather->>'id'=owner AND w.gather_manifest=basis->'manifest' END)) END FROM fence
     $$`);
+  await installErasureFence(tx, false);
+  for (const [table,kind] of [['facts','fact'], ['commands','command'], ['effects','fact']]) {
+    await tx.query(`CREATE TRIGGER fence_erased_identity BEFORE INSERT OR UPDATE ON ${table}
+      FOR EACH ROW EXECUTE FUNCTION reject_erased_identity('${kind}')`);
+  }
+  await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=8');
+}
+
+export async function installErasureFence(tx: DbQuery, priced: boolean) {
   // Legacy effect completions carry a reservation tick even when their owner differs from the erased fact.
-  await tx.query(`CREATE FUNCTION reject_erased_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+  await tx.query(`CREATE OR REPLACE FUNCTION reject_erased_identity() RETURNS trigger LANGUAGE plpgsql AS $$
     DECLARE target text;
     BEGIN
       IF TG_TABLE_NAME='effects' THEN
         target := NEW.owner_id;
+        ${priced ? `IF TG_OP='UPDATE' AND OLD.reserved_usd_micros IS NOT NULL
+            AND OLD.actual_usd_micros IS NULL AND NEW.actual_usd_micros IS NOT NULL
+            AND (to_jsonb(NEW)-'actual_usd_micros') = (to_jsonb(OLD)-'actual_usd_micros') THEN
+          RETURN NEW;
+        END IF;
+        IF TG_OP='UPDATE' AND (NEW.actual_usd_micros,NEW.reserved_usd_micros,NEW.budget_route)
+            IS DISTINCT FROM (OLD.actual_usd_micros,OLD.reserved_usd_micros,OLD.budget_route) THEN
+          RAISE EXCEPTION 'Effect pricing is immutable' USING ERRCODE='55000';
+        END IF;` : ''}
         IF TG_OP='UPDATE' AND (NEW.input_basis,NEW.started_tick,NEW.provider_effect_id,NEW.learner_id,NEW.owner_id)
             IS DISTINCT FROM (OLD.input_basis,OLD.started_tick,OLD.provider_effect_id,OLD.learner_id,OLD.owner_id) THEN
           RAISE EXCEPTION 'Effect input basis is immutable' USING ERRCODE='55000';
@@ -79,11 +97,6 @@ export async function migrateLifecycle(tx: DbQuery) {
       END IF;
       RETURN NEW;
     END $$`);
-  for (const [table,kind] of [['facts','fact'], ['commands','command'], ['effects','fact']]) {
-    await tx.query(`CREATE TRIGGER fence_erased_identity BEFORE INSERT OR UPDATE ON ${table}
-      FOR EACH ROW EXECUTE FUNCTION reject_erased_identity('${kind}')`);
-  }
-  await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=8');
 }
 
 export class LifecycleError extends Error {

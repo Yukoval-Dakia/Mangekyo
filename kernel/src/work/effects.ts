@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalizeJson, canonicalJsonString } from '../commands/canonical.ts';
 import { lockLearner } from '../db/learner.ts';
-import type { Db, ReadTransaction } from '../db/types.ts';
-import { learnerId } from '../declarations/ids.ts';
+import type { Db, DbTransaction, ReadTransaction } from '../db/types.ts';
+import { learnerId, type Tick } from '../declarations/ids.ts';
 import type { Manifest } from '../derivations/manifest.ts';
 import type { WorkRef, WorkRequest } from './demand.ts';
 import type { Json } from '../declarations/types.ts';
@@ -20,7 +20,7 @@ export type EffectRequest = {
 };
 export type EffectResult =
   | { readonly kind: 'done'; readonly result: Json }
-  | { readonly kind: 'unknown'; readonly providerEffectId: string | null };
+  | { readonly kind: 'unknown'; readonly providerEffectId: string | null; readonly inFlight?: true };
 
 type EffectRow = {
   input_digest: string;
@@ -99,7 +99,8 @@ export async function runEffect(
         if (!prior.basis_current) throw new Error('Effect inputs no longer authorized');
         return { kind: 'done', result: json.parse(prior.result) } as const;
       }
-      return { kind: 'unknown', providerEffectId: prior.provider_effect_id } as const;
+      return { kind: 'unknown', providerEffectId: prior.provider_effect_id,
+        ...(budget && prior.state === 'started' ? { inFlight: true as const } : {}) } as const;
     }
 
     if (budget) {
@@ -157,21 +158,59 @@ export async function runEffect(
     outcome = { kind: 'unknown', providerEffectId: reservation.providerEffectId };
   }
 
-  await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+  // Commit the receipt before touching any business result or validating its payload basis.
+  if (budget && actual !== null) await db.tx({ learner }, tx => tx.withLearnerWrite(async () => {
+    const keys = [learner, reservation.providerEffectId, reservation.tick, actual] as const;
+    const live = await tx.query(`UPDATE effects SET actual_usd_micros=$4
+      WHERE learner_id=$1 AND provider_effect_id=$2 AND started_tick=$3
+        AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, keys);
+    if (!live.rowCount) await tx.query(`UPDATE erased_effect_receipts SET actual_usd_micros=$4
+      WHERE learner_id=$1 AND provider_effect_id=$2 AND started_tick=$3
+        AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, keys);
+  }));
+
+  return db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
     if (!budget) {
       await assertUnburned(tx, 'fact', [request.ownerId]);
       if (!basis) await assertDeletionWatermark(tx,reservation.deletionWatermark);
       await authorize?.(tx);
+    } else {
+      const current = await tx.query(`SELECT 1 FROM effects
+        WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5
+          AND state='started' AND started_tick=$6
+          AND effect_may_settle(learner_id, owner_id, started_tick, input_basis)`,
+      [...identity, reservation.tick]);
+      if (!current.rowCount) return { kind: 'unknown', providerEffectId: reservation.providerEffectId };
     }
     const updated = await tx.query(
-      `UPDATE effects SET state = $6, result = $7, ended_tick = $8, actual_usd_micros = $10
+      `UPDATE effects SET state = $6, result = $7, ended_tick = $8
        WHERE learner_id = $1 AND owner_kind = $2 AND owner_id = $3 AND step_key = $4 AND label = $5
          AND state = 'started' AND started_tick = $9`,
-      [...identity, outcome.kind, encoded, tick, reservation.tick, actual],
+      [...identity, outcome.kind, encoded, tick, reservation.tick],
     );
     if (updated.rowCount !== 1) throw new Error('Effect reservation no longer active');
+    return outcome;
   }));
-  return outcome;
+}
+
+/** Consume a terminal paid receipt and register its business outcome in the same learner transaction. */
+export async function consumePricedEffect(tx: DbTransaction,
+  { ownerKind, ownerId, stepKey, label }: Omit<EffectRequest, 'learner' | 'input'>,
+  consume: (tick: Tick) => Promise<string | null>) {
+  await lockLearner(tx, tx.learner);
+  const identity = [tx.learner, ownerKind, ownerId, stepKey, label] as const;
+  const { rowCount } = await tx.query(`SELECT 1 FROM effects
+    WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5
+      AND reserved_usd_micros IS NOT NULL AND state<>'started' AND consumed_tick IS NULL
+      AND effect_may_settle(learner_id, owner_id, started_tick, input_basis)`, identity);
+  if (!rowCount) return false;
+  await tx.withLearnerWrite(async tick => {
+    const todoId = await consume(tick);
+    await tx.query(`UPDATE effects SET consumed_tick=$6, consumer_todo_id=$7
+      WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5`,
+    [...identity, tick, todoId]);
+  });
+  return true;
 }
 
 /** A local read and its replay receipt commit together. A database failure leaves no claim. */

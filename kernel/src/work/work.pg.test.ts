@@ -2,10 +2,11 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../test/learner-databas
 import { aroundEach, describe, expect, it, vi } from 'vitest';
 import { effectBudgetUsage, EffectBudgetExceeded, EffectIdentityMismatch, recordLocalRead } from './effects.ts';
 import type { Db, DbTransaction } from '../db/types.ts';
-import { factId, learnerId } from '../declarations/ids.ts';
+import { commandId, factId, learnerId } from '../declarations/ids.ts';
 import type { Json, Outcome } from '../declarations/types.ts';
 import { gatherSnapshot } from '../derivations/gather.ts';
 import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../schema.ts';
+import { eraseOriginal } from '../lifecycle.ts';
 import { newUlid } from './identity.ts';
 import {
   checkTodoTriggers, completeTodo, emitTodo, maxTodoHops, newFactWatermark, readTodo, updateOrCancelTodo, type TodoInput,
@@ -109,7 +110,7 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
       await sending.promise;
       expect(await usage()).toEqual({ held: 60n, settled: 0n });
       await expect(runEffect(db, second, invoke, undefined, undefined, pricing)).rejects.toBeInstanceOf(EffectBudgetExceeded);
-      expect((await runEffect(db, first, invoke, undefined, undefined, pricing)).kind).toBe('unknown');
+      expect(await runEffect(db, first, invoke, undefined, undefined, pricing)).toMatchObject({ kind: 'unknown', inFlight: true });
       expect(invoke).toHaveBeenCalledTimes(1);
     } finally {
       reply.resolve(30);
@@ -143,6 +144,35 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect(attempts).toContainEqual({ status: 'rejected', reason: expect.any(EffectBudgetExceeded) });
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(await usage()).toEqual({ held: 180n, settled: 30n });
+  });
+
+  it.each([false, true])('settles only the amount after erasure (receipt compacted: %s)', async compacted => {
+    const root = factId(newUlid());
+    const request = { learner, ownerKind: 'session', ownerId: compacted ? root : newUlid(),
+      label: 'priced-test', stepKey: 'send', input: { request: 'private' } } as const;
+    const pricing = { route: 'one', limitUsdMicros: 85, reserveUsdMicros: 60,
+      actualUsdMicros: (result: Json) => typeof result === 'number' ? result : null };
+    await db.tx({ learner }, tx => tx.withLearnerWrite(tick => tx.insert('facts', {
+      learner_id: learner, id: root, type: 'test.original', current_rev: 1, created_tick: tick, changed_tick: tick,
+    })));
+    const effect = await runEffect(db, request, async () => {
+      await eraseOriginal(db, { learner }, { actor: 'learner', confirmed: true, requestId: commandId(newUlid()),
+        root, expectedRev: 1 }, async () => ({ ids: [root], commandTypes: [] }), async () => {});
+      return 25;
+    }, undefined, undefined, pricing);
+    expect(effect.kind).toBe('unknown');
+    expect(await db.snapshot({ learner }, effectBudgetUsage)).toEqual({ held: 0n, settled: 25n });
+    const ledger = compacted ? 'erased_effect_receipts' : 'effects';
+    expect((await db.query(`SELECT actual_usd_micros FROM ${ledger} WHERE learner_id=$1 AND owner_id=$2`,
+      [learner, request.ownerId])).rows).toEqual([{ actual_usd_micros: '25' }]);
+    expect((await db.query('SELECT result FROM effects WHERE learner_id=$1 AND owner_id=$2',
+      [learner, request.ownerId])).rows).toEqual(compacted ? [] : [{ result: null }]);
+    if (compacted) await expect(runEffect(db, request, async () => 25, undefined, undefined, pricing)).rejects.toMatchObject({ status: 410 });
+    else expect((await runEffect(db, request, async () => 25, undefined, undefined, pricing)).kind).toBe('unknown');
+    const next = vi.fn(async () => null);
+    await runEffect(db, { ...request, ownerId: newUlid() }, next, undefined, undefined, pricing);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(await db.snapshot({ learner }, effectBudgetUsage)).toEqual({ held: 60n, settled: 25n });
   });
 
   it.each(['wait first', 'target first'])('resumes strict range demand with concurrent writes (%s)', async order => {
@@ -413,7 +443,7 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     await db.query('DROP TABLE work_outbox');
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
-    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]);
+    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }]);
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -425,8 +455,8 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (12)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (13)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 12');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 13');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
   }, { initialize: legacyWorkSchema }));

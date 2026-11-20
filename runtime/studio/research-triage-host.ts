@@ -1,11 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { factId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
 import { readTodo, type TodoSpec } from '../../kernel/src/work/todos.ts';
 import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
-import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
+import { independentlyAuthoredPaper, workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import {
   researchPurpose, researchSettingsType, researchWorksheetType, retentionReviewPermissionType,
 } from '../../modules/companion/research.ts';
@@ -13,7 +14,7 @@ import { readLearningOverview } from './learning-overview.ts';
 import { readRetentionRadar } from './learner-radar.ts';
 import { textSlice } from './reading.ts';
 import { readResearchForeground } from './research-foreground.ts';
-import { activeRetentionReview, readWorksheetById, researchReader, retentionReviewAnchor, whenAvailable, worksheetId } from './research-sources.ts';
+import { activeRetentionReview, independentScoutSource, reviewMaterialAvailable, readWorksheetById, researchReader, retentionReviewAnchor, whenAvailable, worksheetId } from './research-sources.ts';
 import {
   parseTriageResponse, triagePromptBlock, TriageResponseError, type TriageSnapshot,
 } from './research-triage/index.ts';
@@ -130,7 +131,8 @@ async function readResearchOverview(tx: ReadTransaction) {
   };
 }
 
-async function readReviewAttempts(tx: ReadTransaction, reviewed: Tick, discovery: boolean, settingsRevision: number, now: number, paid: boolean) {
+async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, settingsRevision: number,
+  now: number, mode: 'all-local' | 'free' | 'paid', settingsId?: FactId) {
   const { rows } = await tx.query<{ id: string; recent: boolean }>(
     `WITH attempts AS (
        SELECT f.id, f.type, f.created_tick, r.data, row_number() OVER (ORDER BY f.created_tick DESC, f.id) <= $4 AS recent
@@ -146,6 +148,7 @@ async function readReviewAttempts(tx: ReadTransaction, reviewed: Tick, discovery
   const facts: Record<string, Json> = {};
   let intent: TodoSpec | undefined;
   let olderCandidate: Json | undefined;
+  let paidCandidate: Json | undefined;
   const read = researchReader(tx);
   for (const { id: rawId, recent } of rows) {
     if (!recent && intent) break;
@@ -157,17 +160,22 @@ async function readReviewAttempts(tx: ReadTransaction, reviewed: Tick, discovery
     const attempt = retention ? undefined : workbookAttempt(fact.value);
     if (attempt?.paper.questions.some(question => question.sourceQuestionRef)) continue;
     const anchor = retention ? retentionReviewAnchor : attempt?.feedback.find(item => item.result === 'incorrect')?.questionId;
+    const independent = attempt && independentlyAuthoredPaper(attempt.paper);
     if (discovery && !intent && anchor) {
+      const eligibleLane = mode === 'paid' ? independent && await independentScoutSource(tx, fact)
+        : (mode === 'all-local' || !independent) && (!attempt || await reviewMaterialAvailable(tx, attempt.paper));
+      if (!eligibleLane) continue;
       const sourceFactRev = { id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch, anchor };
       const dedupKey = reviewDedupKey(sourceFactRev);
       const known = await tx.query(
         `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
          UNION ALL SELECT 1 FROM work WHERE family='todo' AND learner_id = $1 AND dedup_key = $3
           AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5
-         UNION ALL SELECT 1 FROM effects WHERE $6 AND learner_id=$1 AND label=$7
-          AND step_key=$3 AND started_tick<=$8 LIMIT 1`,
+         UNION ALL SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$6 AND label=$7
+          AND step_key=$3 AND (state='started' OR consumed_tick IS NOT NULL OR
+            NOT effect_may_settle(learner_id, owner_id, started_tick, input_basis)) LIMIT 1`,
         [tx.learner, worksheetId(id, fact.ref.rev, fact.accessEpoch), dedupKey,
-          JSON.stringify(sourceFactRev), String(settingsRevision), paid, scoutEffectLabel, reviewed],
+          JSON.stringify(sourceFactRev), String(settingsRevision), settingsId ?? null, scoutEffectLabel],
       );
       if (!known.rowCount) intent = {
         dedupKey, workerProfile: 'deterministic_compute', trigger: { kind: 'immediate' },
@@ -182,20 +190,25 @@ async function readReviewAttempts(tx: ReadTransaction, reviewed: Tick, discovery
           first_incorrect_question: anchor ? attempt.paper.questions.findIndex(item => item.id === anchor) + 1 : null }
         : { status: 'missed', observation: 'independent' },
     };
+    if (mode === 'paid' && intent?.sourceFactRev.id === id) {
+      paidCandidate = summary.data;
+      facts[id] = summary;
+      break;
+    }
     if (recent) facts[id] = summary;
     else if (intent?.sourceFactRev.id === id) olderCandidate = summary;
   }
-  return { facts, intent, olderCandidate };
+  return { facts, intent, olderCandidate, paidCandidate };
 }
 
 export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick, settingsRevision: number,
-  now: number, paid: boolean, eligible: (spec: TodoSpec) => Promise<boolean>) {
+  now: number, paidConfigured: boolean, eligible: (spec: TodoSpec) => Promise<boolean>) {
   const background = await readDeltas(tx, reviewed);
   const foreground = await readResearchForeground(tx, reviewed);
   const { events, discovery } = background;
   for (const event of foreground.events) events[event.event_id] = event;
   if (!Object.keys(events).length) return null;
-  const { facts, intent, olderCandidate } = await readReviewAttempts(tx, reviewed, discovery, settingsRevision, now, paid);
+  const { facts, intent, olderCandidate } = await readReviewAttempts(tx, discovery, settingsRevision, now, paidConfigured ? 'free' : 'all-local');
   const { rows } = await tx.query<{ todo_id: string }>(
     `SELECT slot_key AS todo_id FROM work WHERE family='todo' AND learner_id = $1 AND state IN ('pending','ready','waiting')
      ORDER BY registered_tick DESC, todo_id LIMIT $2`, [tx.learner, recentWindow + 1],
@@ -239,14 +252,24 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
       menu: action ? [noop, action] : [noop],
       response_format: response(noop) }),
   };
-  const candidate = intent && (facts[intent.sourceFactRev.id] ?? olderCandidate);
-  return { snapshot, request, intent, action, paidInput: action && candidate &&
-    typeof candidate === 'object' && 'fact_type' in candidate && candidate.fact_type === workbookAttemptType
-    ? { candidate: candidate.data, menu: [noop, action], response_format: response(noop) }
-    : undefined };
+  return { snapshot, request, intent, action };
 }
 
-export function researchDecision(prepared: NonNullable<Awaited<ReturnType<typeof prepareResearchTriage>>>, raw?: string) {
+export async function preparePaidResearchTriage(tx: ReadTransaction, settingsId: FactId, settingsRevision: number, now: number) {
+  const { facts, intent, paidCandidate } = await readReviewAttempts(tx, true, settingsRevision, now, 'paid', settingsId);
+  if (!intent || !paidCandidate) return null;
+  const action = { kind: 'emit_todo', template_id: reviewTemplate, source_fact_id: intent.sourceFactRev.id };
+  const snapshot: TriageSnapshot = { facts, todos: {}, inventory: {}, forecasts: {}, memos: {}, work: {},
+    signals: {}, events: {}, chain: null, budget: { remaining: 0 } };
+  const { id, revision: rev, accessEpoch } = intent.sourceFactRev;
+  const { rows: [clock] } = await tx.query<{ gather_tick: Tick }>('SELECT clock::text AS gather_tick FROM learners WHERE id=$1', [tx.learner]);
+  const manifest = parseManifest({ version: 1, learner: tx.learner, purpose: researchPurpose,
+    gatherTick: clock!.gather_tick, inputs: [{ kind: 'fact', id, rev, accessEpoch, mode: 'following' }] });
+  return { snapshot, intent, action, manifest,
+    paidInput: { candidate: paidCandidate, menu: [noop, action], response_format: response(noop) } };
+}
+
+export function researchDecision(prepared: Pick<NonNullable<Awaited<ReturnType<typeof prepareResearchTriage>>>, 'snapshot' | 'action'>, raw?: string) {
   const { snapshot, action } = prepared;
   raw ??= JSON.stringify(response(action ?? noop));
   try {

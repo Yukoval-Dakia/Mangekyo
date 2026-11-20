@@ -3,7 +3,7 @@ import { startOrWakeCoordinator } from '../../executors/temporal/src/index.ts';
 import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { effectBudgetUsage } from '../../kernel/src/work/effects.ts';
+import { consumePricedEffect, effectBudgetUsage } from '../../kernel/src/work/effects.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
@@ -26,13 +26,13 @@ import { stableId, studioLearner } from './identity.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';
 import {
-  activeRetentionReview, readWorksheet, readWorksheetById, researchReader, retentionReviewAnchor,
+  activeRetentionReview, independentScoutSource, reviewMaterialAvailable, readWorksheet, readWorksheetById, researchReader, retentionReviewAnchor,
   retentionReviewPermissionId, reviewEvidence, whenAvailable, workbookSource, worksheetId, type ReviewEvidence,
 } from './research-sources.ts';
 import {
-  prepareResearchTriage, reviewDedupKey, reviewGoal, researchDecision,
+  preparePaidResearchTriage, prepareResearchTriage, reviewDedupKey, reviewGoal, researchDecision,
 } from './research-triage-host.ts';
-import { sampleResearchScout, ScoutAuthorizationChanged, type ResearchScoutHost } from './research-scout.ts';
+import { sampleResearchScout, ScoutAuthorizationChanged, scoutEffectIdentity, type ResearchScoutHost } from './research-scout.ts';
 import { discoverUnderstandingTodos, eligibleExtraction, openUnderstandingExtraction, type UnderstandingTransport } from './research-understanding.ts';
 import { activityEvidenceTypes, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';
 import { extractorProfile } from '../../modules/companion/understanding.ts';
@@ -97,6 +97,7 @@ async function eligibleBasis(tx: ReadTransaction, spec: TodoSpec) {
     }
     if (source.type !== workbookAttemptType ||
         workbookAttempt(source.value).feedback.find(item => item.result === 'incorrect')?.questionId !== anchor) return null;
+    if (!await reviewMaterialAvailable(tx, workbookAttempt(source.value).paper)) return null;
     return { basis, evidence: reviewEvidence(source.value, anchor) };
   });
 }
@@ -207,55 +208,58 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       if (due.advanced) return { status: 'advanced' } as const;
       const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
       const watermark = await newResearchWatermark(tx);
-      if (!watermark) return waiting;
-      if (extract) {
-        const todos = await discoverUnderstandingTodos(tx, watermark.reviewed, current.revision, now, understandingTransport?.maySend);
-        if (todos.length) {
-          await tx.withLearnerWrite(async tick => {
-            for (const spec of todos) await emitTodo(tx, tick, spec, now, eligible);
-          });
+      if (watermark) {
+        if (extract) {
+          const todos = await discoverUnderstandingTodos(tx, watermark.reviewed, current.revision, now, understandingTransport?.maySend);
+          if (todos.length) {
+            await tx.withLearnerWrite(async tick => {
+              for (const spec of todos) await emitTodo(tx, tick, spec, now, eligible);
+            });
+            return { status: 'advanced' } as const;
+          }
+        }
+        const local = await prepareResearchTriage(tx, watermark.reviewed, current.revision, now, Boolean(current.scoutBudget), eligible);
+        if (local?.intent && researchDecision(local) === 'review') {
+          const todo = local.intent;
+          await tx.withLearnerWrite(tick => emitTodo(tx, tick, todo, now, eligible));
           return { status: 'advanced' } as const;
         }
-      }
-      const prepared = await prepareResearchTriage(tx, watermark.reviewed, current.revision, now, Boolean(current.scoutBudget), eligible);
-      if (!prepared) {
         await saveFactWatermark(tx, watermark.observed);
-        return waiting;
       }
-      return { status: 'sample', prepared, watermark, waiting, settingsRevision: current.revision, budget: current.scoutBudget } as const;
+      const budget = current.scoutBudget;
+      if (!budget || scoutHost?.route !== budget.route || budget.expiresAtMs <= Date.now()) return waiting;
+      const prepared = await preparePaidResearchTriage(tx, settingsId, current.revision, now);
+      return prepared ? { status: 'sample', prepared, waiting, settingsRevision: current.revision, budget } as const : waiting;
     });
-    if (scan.status !== 'sample') return scan;
+    if (scan.status !== 'sample' || !scoutHost) return scan.status === 'sample' ? scan.waiting : scan;
     signal.throwIfAborted();
-    const { budget, prepared } = scan;
-    const paid = Boolean(budget && prepared.paidInput);
-    if (paid && scoutHost?.route !== budget?.route) return scan.waiting;
+    const { budget, prepared, settingsRevision } = scan;
     const authorizeScout = async (tx: ReadTransaction) => {
       const current = await settings(tx);
-      if (current?.enabled !== true || current.revision !== scan.settingsRevision ||
-          current.coordinatorRef !== coordinatorRef || !budget || !prepared.intent ||
-          !(await eligibleBasis(tx, prepared.intent)) || budget.expiresAtMs <= Date.now())
+      if (current?.enabled !== true || current.revision !== settingsRevision ||
+          current.coordinatorRef !== coordinatorRef || !(await eligibleBasis(tx, prepared.intent)))
+        throw new ScoutAuthorizationChanged();
+      const { id } = prepared.intent.sourceFactRev;
+      const source = await whenAvailable(() => researchReader(tx).fact(id, { mode: 'following' }));
+      if (!source || !await independentScoutSource(tx, source) || budget.expiresAtMs <= Date.now())
         throw new ScoutAuthorizationChanged();
     };
-    let intent = !paid && researchDecision(prepared) === 'review' ? prepared.intent : undefined;
-    if (paid && budget && scoutHost &&
-        await sampleResearchScout(db, settingsId, scan.settingsRevision, budget, scoutHost, prepared, authorizeScout, signal))
-      intent = prepared.intent;
+    const review = await sampleResearchScout(db, settingsId, settingsRevision, budget, scoutHost,
+      prepared, authorizeScout, signal);
+    if (review === undefined) return scan.waiting;
     return db.tx(scope, async tx => {
-      await lockLearner(tx, tx.learner);
       signal.throwIfAborted();
-      const current = await settings(tx);
-      if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' };
-      const watermark = await newResearchWatermark(tx);
-      if (current.revision !== scan.settingsRevision || watermark?.observed !== scan.watermark.observed ||
-          watermark.reviewed !== scan.watermark.reviewed) return { status: 'advanced' };
-      if (intent && (!paid || (budget && budget.expiresAtMs > Date.now()))) await tx.withLearnerWrite(tick =>
-        emitTodo(tx, tick, intent, Date.now(), async spec => (await eligibleBasis(tx, spec)) !== null));
-      if (paid) {
-        // Mark receipts consumed alongside the review. The learner lock pins all earlier fact changes.
-        const { rows: [row] } = await tx.query<{ clock: Tick }>('SELECT clock::text AS clock FROM learners WHERE id=$1', [tx.learner]);
-        await saveFactWatermark(tx, row!.clock);
-      } else await saveFactWatermark(tx, watermark.observed);
-      return scan.waiting;
+      const consumed = await consumePricedEffect(tx, scoutEffectIdentity(settingsId, prepared.intent.dedupKey), async tick => {
+        if (!review) return null;
+        try {
+          await authorizeScout(tx);
+        } catch (error) {
+          if (error instanceof ScoutAuthorizationChanged) return null;
+          throw error;
+        }
+        return (await emitTodo(tx, tick, prepared.intent, Date.now(), async spec => Boolean(await eligibleBasis(tx, spec))))?.id ?? null;
+      });
+      return consumed ? { status: 'advanced' } : scan.waiting;
     });
   };
 

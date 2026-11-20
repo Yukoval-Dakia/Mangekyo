@@ -1,4 +1,4 @@
-import { migrateLifecycle, requireLifecycleCutover } from './lifecycle.ts';
+import { installErasureFence, migrateLifecycle, requireLifecycleCutover } from './lifecycle.ts';
 import type { Db, DbQuery } from './db/types.ts';
 import { newUlid } from './work/identity.ts';
 import { migrateTodoWork } from './work/migrate-todos.ts';
@@ -253,6 +253,15 @@ const migrations = [
     }
     // An older erasure writer would discard the monetary fields during compaction.
     await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=11');
+  },
+  async (tx: DbQuery) => {
+    await tx.query(`ALTER TABLE effects
+      ADD COLUMN consumed_tick bigint,
+      ADD COLUMN consumer_todo_id text,
+      ADD CHECK (consumed_tick IS NULL OR (reserved_usd_micros IS NOT NULL AND state<>'started')),
+      ADD CHECK (consumer_todo_id IS NULL OR (consumed_tick IS NOT NULL AND state='done'))`);
+    await installErasureFence(tx, true);
+    await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=12');
   },
 ] as const;
 

@@ -6,7 +6,7 @@ import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { EffectBudgetExceeded, EffectIdentityMismatch, runEffect } from '../../kernel/src/work/effects.ts';
 import type { researchScoutBudget } from '../../modules/companion/research.ts';
 import { studioLearner } from './identity.ts';
-import { scoutEffectLabel, researchDecision, type prepareResearchTriage } from './research-triage-host.ts';
+import { scoutEffectLabel, researchDecision, type preparePaidResearchTriage } from './research-triage-host.ts';
 
 const scope = { learner: studioLearner };
 const maxReplyBytes = 8192;
@@ -40,19 +40,22 @@ export function validateResearchScoutHost(host: ResearchScoutHost) {
 
 export class ScoutAuthorizationChanged extends Error {}
 
+export function scoutEffectIdentity(settingsId: FactId, dedupKey: string) {
+  return { ownerKind: 'session', ownerId: settingsId, stepKey: dedupKey, label: scoutEffectLabel } as const;
+}
+
 export async function sampleResearchScout(db: Db, settingsId: FactId, revision: number,
   budget: NonNullable<ReturnType<typeof researchScoutBudget>>, host: ResearchScoutHost,
-  prepared: NonNullable<Awaited<ReturnType<typeof prepareResearchTriage>>>,
+  prepared: NonNullable<Awaited<ReturnType<typeof preparePaidResearchTriage>>>,
   authorize: (tx: ReadTransaction) => Promise<void>, signal: AbortSignal) {
-  if (!prepared.paidInput || !prepared.intent || host.route !== budget.route || host.retentionDays > budget.maxRetentionDays ||
-      host.reserveUsdMicros > budget.maxPerCallMicros) return false;
+  if (host.route !== budget.route || host.retentionDays > budget.maxRetentionDays ||
+      host.reserveUsdMicros > budget.maxPerCallMicros) return undefined;
   const prompt = JSON.stringify(prepared.paidInput);
   const { route, reserveUsdMicros } = host;
   const maxOutputTokens = 256;
   try {
     const effect = await runEffect(db, {
-      ...scope, ownerKind: 'session', ownerId: settingsId, stepKey: prepared.intent.dedupKey,
-      label: scoutEffectLabel, input: { revision, route, reserveUsdMicros, maxOutputTokens, prompt },
+      ...scope, ...scoutEffectIdentity(settingsId, prepared.intent.dedupKey), input: { revision, route, reserveUsdMicros, maxOutputTokens, prompt },
     }, async (providerEffectId, checkDispatch) => {
       let dispatched = false;
       try {
@@ -85,16 +88,17 @@ export async function sampleResearchScout(db: Db, settingsId: FactId, revision: 
         if (!dispatched) return { decision: 'not_sent', actualUsdMicros: 0 };
         throw error;
       }
-    }, authorize, undefined, { route, limitUsdMicros: budget.limitMicros, reserveUsdMicros,
+    }, authorize, { manifest: prepared.manifest }, { route, limitUsdMicros: budget.limitMicros, reserveUsdMicros,
       actualUsdMicros: (result: Json) =>
         result && typeof result === 'object' && 'actualUsdMicros' in result && typeof result.actualUsdMicros === 'number'
           ? result.actualUsdMicros : null,
     });
+    if (effect.kind === 'unknown' && effect.inFlight) return undefined;
     const result = effect.kind === 'done' ? effect.result : null;
     return Boolean(result && typeof result === 'object' && 'decision' in result && result.decision === 'review');
   } catch (error) {
-    if (error instanceof EffectBudgetExceeded || error instanceof EffectIdentityMismatch ||
-        error instanceof ScoutAuthorizationChanged || error instanceof LifecycleError) return false;
+    if (error instanceof EffectBudgetExceeded || error instanceof ScoutAuthorizationChanged) return undefined;
+    if (error instanceof EffectIdentityMismatch || error instanceof LifecycleError) return false;
     throw error;
   }
 }
