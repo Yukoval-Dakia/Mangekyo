@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 const MAX_CODE_CHARS = 20_000;
+const MAX_PYTHON_INPUT_BYTES = 256 * 1024;
 const MAX_FILENAME_CHARS = 64;
 const MAX_FILES = 32;
 const MAX_FILE_BYTES = 16 * 1024;
@@ -73,7 +74,8 @@ try:
     payload = json.loads(raw.decode("utf-8"))
     code = payload["code"]
     files = payload.get("files") or {}
-    if not isinstance(code, str) or not isinstance(files, dict):
+    inputs = payload.get("inputs") or {}
+    if not isinstance(code, str) or not isinstance(files, dict) or not isinstance(inputs, dict):
         raise ValueError("bad input")
 except Exception:
     emit({"status": "fatal", "detail": "invalid input"})
@@ -99,7 +101,7 @@ err = Cap(16000)
 status = "ok"
 try:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        exec(compile(code, "<study>", "exec"), {"__name__": "__main__"})
+        exec(compile(code, "<study>", "exec"), {"__name__": "__main__", "inputs": inputs})
 except SystemExit as error:
     if error.code not in (None, 0):
         status = "error"
@@ -140,7 +142,7 @@ export type StudyTools = {
   names: readonly string[];
   snapshotFiles: () => Record<string, string>;
   restoreFiles: (files: Record<string, string>) => void;
-  execute: (name: string, args: unknown) => Promise<string>;
+  execute: (name: string, args: unknown, inputs?: Record<string, string>) => Promise<string>;
 };
 
 type PythonEnvelope = {
@@ -409,12 +411,13 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
     return `wrote ${value.name} (${bytes} bytes${previous === undefined ? '' : ', replaced'})`;
   }
 
-  async function runPython(args: unknown): Promise<string> {
+  async function runPython(args: unknown, inputs?: Record<string, string>): Promise<string> {
     const value = record(args);
     if (!value || !validText(value.code) || !value.code.trim()) return fail('python requires non-empty code');
     if (value.code.length > MAX_CODE_CHARS) return fail(`code exceeds ${MAX_CODE_CHARS} characters`);
     const name = `mangekyo-study-${randomUUID()}`;
-    const payload = JSON.stringify({ code: value.code, files: Object.fromEntries(workspace) });
+    const payload = JSON.stringify({ code: value.code, files: Object.fromEntries(workspace), inputs });
+    if (Buffer.byteLength(payload) > MAX_PYTHON_INPUT_BYTES) return fail('python input exceeded the limit');
     const outcome = await runPythonContainer(name, payload);
     if (outcome.kind === 'timeout') return fail(`python timed out after ${PYTHON_TIMEOUT_MS} ms`);
     if (outcome.kind === 'overflow') return fail('python output exceeded the limit');
@@ -508,10 +511,10 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
     }
   }
 
-  async function execute(name: string, args: unknown): Promise<string> {
+  async function execute(name: string, args: unknown, inputs?: Record<string, string>): Promise<string> {
     try {
       switch (name) {
-        case 'python': return await runPython(args);
+        case 'python': return await runPython(args, inputs);
         case 'read_file': return await readFile(args);
         case 'write_file': return await writeFile(args);
         case 'exa_search': return await search(args);
