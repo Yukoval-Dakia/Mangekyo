@@ -58,6 +58,7 @@ function paperDisplay(value: unknown): WorkspaceDisplay {
         '\n   容差：' + String(question.tolerance);
     }
     if (question.kind === 'exact') return head + '\n   答案：' + question.answers.join(' / ');
+    if (question.kind === 'bank') return head;
     return head + '\n   评分标准：' + question.rubric;
   }).join('\n');
   const source = paper.materialId ? '\n来源材料：' + paper.materialId : '';
@@ -73,7 +74,7 @@ function attemptDisplay(value: unknown): WorkspaceDisplay {
     return String(index + 1) + '. ' + question.prompt +
       '\n   我的作答：' + (answer === null || answer === undefined ? '未作答' : String(answer)) +
       (feedback ? '\n   反馈：' + feedback.result +
-        '\n   参考答案：' + expectedText(feedback.expected) +
+        (feedback.expected ? '\n   参考答案：' + expectedText(feedback.expected) : '') +
         (feedback.explanation ? '\n   说明：' + feedback.explanation : '') : '');
   }).join('\n');
   const title = attempt.paper.title;

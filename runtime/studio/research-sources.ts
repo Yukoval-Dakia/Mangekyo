@@ -46,9 +46,9 @@ export function reviewEvidence(data: unknown, questionId: string) {
   const index = attempt.paper.questions.findIndex(question => question.id === questionId);
   const question = attempt.paper.questions[index];
   const feedback = attempt.feedback.find(item => item.questionId === questionId);
-  if (!question || feedback?.result !== 'incorrect') throw new ResearchBasisChanged('原卷判题已变更。');
+  if (!question || feedback?.result !== 'incorrect' || !feedback.expected) throw new ResearchBasisChanged('原卷判题已变更。');
   return { paperId: attempt.paperId, paperTitle: attempt.paper.title, submittedAt: attempt.submittedAt,
-    questionNumber: index + 1, questionId, prompt: question.prompt, feedback };
+    questionNumber: index + 1, questionId, prompt: question.prompt, feedback: { ...feedback, expected: feedback.expected } };
 }
 export type ReviewEvidence = ReturnType<typeof reviewEvidence>;
 

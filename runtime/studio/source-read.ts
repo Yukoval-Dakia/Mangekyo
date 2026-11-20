@@ -2,7 +2,7 @@ import { activityQuestions } from '../../modules/activity/workspace-projection.t
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId, type Revision} from '../../kernel/src/declarations/ids.ts';
-import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
+import type {FactSnapshot, Json, ReadContext} from '../../kernel/src/declarations/types.ts';
 import {intakeFactType} from '../../modules/capture/intake-values.ts';
 import {materialType, storagePurpose} from '../../modules/activity/library-values.ts';
 import {goalType, studyGoal} from '../../modules/plan/goal-values.ts';
@@ -11,7 +11,8 @@ import {organizerTask, organizerTaskType} from '../../modules/plan/organizer-tas
 import {practiceSubmission, ridingPracticeType} from '../../modules/activity/practice-values.ts';
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';
-import {workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType} from '../../modules/activity/workbook-values.ts';
+import {readFrozenWorkbookRecord} from '../../modules/activity/workbook-bank.ts';
+import {workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, WorkbookSourceMismatch} from '../../modules/activity/workbook-values.ts';
 import {openTextbookReference, textbookBodyReference, textbookPageFrom, textbookPageType, type TextbookBlockBody} from '../../modules/content/textbook-page.ts';
 import {
   WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
@@ -194,6 +195,13 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     }
     if (sourceId === id && !path.size && !rootType(fact)) return;
     path.add(key);
+    await readFrozenWorkbookRecord({
+      async fact<Value = Json>(...args: Parameters<ReadContext['fact']>) {
+        const opened = await reader.fact(...args);
+        questionSources.push([opened, args[1].mode]);
+        return opened as FactSnapshot<Value>;
+      },
+    }, fact);
     if (fact.type === workspaceEntryType) {
       const entry = workspaceEntry(fact.value);
       for (const witness of entry.basis) {
@@ -284,7 +292,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     for (const proof of questionSources) access.track?.(...proof);
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkspaceInputError) return;
+    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
+        error instanceof WorkspaceInputError || error instanceof WorkbookSourceMismatch) return;
     throw error;
   }
 }
