@@ -110,3 +110,50 @@ it('freezes a clean cross-page print and keeps missing pages unsubmitted', async
   expect(paperReturnCoverage(sheet.pages, submitted.slice(0, -1))).toEqual([{ itemId: 'q1', status: 'unsubmitted' }]);
   expect(paperReturnCoverage(sheet.pages, submitted)).toEqual([{ itemId: 'q1', status: 'pages-received' }]);
 });
+
+it('machine extraction proposes a non-sticky revision and leaves the original locator intact', async () => {
+  const source = envelope();
+  const candidate = applyExtraction.schema.parse({
+    target: { id, rev: 1 },
+    blocks: [block('answer', { status: 'known', text: '0.5' })],
+  });
+  expect(applyExtraction.destructive).toBe(false);
+  const writes = await applyExtraction.write(readSource(source, 1), candidate, undefined);
+  expect(writes).toMatchObject([{ kind: 'revise', expectedRev: 1, data: {
+    originals: source.originals,
+    unit: { blocks: [{ body: { status: 'known', text: '0.5' } }] },
+  } }]);
+});
+
+it('uses a frozen question for a textbook print and omits unclassified textbook prose', async () => {
+  const questionId = factId('01KFS4AAA00000000000000002');
+  const assetRef = { learner, id: questionId, rev: rev(1) };
+  const page: FactSnapshot = {
+    type: 'content.textbookPage', ref: { learner, id, rev: rev(1) }, accessEpoch: '1' as Tick, purpose: ['storage'],
+    value: { title: '教材应用题', blocks: [
+      { id: 'exposition', parentId: null, body: { kind: 'text', text: 'EXPOSITION SECRET' } },
+      { id: 'question', parentId: null, body: { kind: 'reference', role: 'question', presentation: 'embed',
+        target: { fact: assetRef, type: 'content.asset', anchor: { kind: 'whole' } } } },
+    ] },
+  };
+  const question: FactSnapshot = {
+    type: 'content.asset', ref: assetRef, accessEpoch: '2' as Tick, purpose: ['storage'],
+    value: { kind: 'question', title: '应用题', promptBlockId: 'statement', blocks: [
+      { id: 'statement', parentId: null, body: { kind: 'text', text: '2 + 3 = ?' } },
+      { id: 'solution', parentId: null, body: { kind: 'text', text: 'SOLUTION SECRET' } },
+    ] },
+  };
+  const unused = async () => { throw new Error('Only fact reads are expected'); };
+  const read: ReadContext = {
+    fact: async <Value>(target: typeof id, options: Parameters<ReadContext['fact']>[1]) => {
+      expect(options).toEqual({ mode: 'pinned', rev: rev(1) });
+      return (target === id ? page : question) as FactSnapshot<Value>;
+    },
+    slot: unused,
+    range: unused,
+  };
+  const issued = { source: { id, rev: rev(1) }, epoch: '1', layout: { lines: 10, columns: 30 } };
+  const sheet = await projectIssuedPaper(read, issued);
+  expect(sheet.pages[0]?.pieces).toEqual([{ blockId: 'question.statement', itemId: 'question', text: '2 + 3 = ?' }]);
+  expect(JSON.stringify(sheet)).not.toMatch(/SECRET/);
+});
