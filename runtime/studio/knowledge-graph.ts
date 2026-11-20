@@ -1,4 +1,4 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -27,21 +27,20 @@ function versionKey(id: string, rev: number): string {
 
 export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {
   if (typeof input !== 'string' && (input.fact.type !== knowledgeEdgeType || input.anchor.kind !== 'whole' || input.textFact)) return;
-  const reader = createCommandReadContext(tx, sourcePurpose(access));
+  const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
   const opened: Parameters<SourceTrack>[] = [];
   const id = factId(typeof input === 'string' ? input : input.fact.id);
   try {
     const fact = await reader.fact(id, typeof input === 'string'
       ? { mode: 'following' } : { mode: 'pinned', rev: input.fact.rev as Revision });
-    if (fact.type !== knowledgeEdgeType || !sourceMaySend(access, fact)) return;
+    if (fact.type !== knowledgeEdgeType) return;
     let edge;
     try { edge = parseKnowledgeEdge(fact.value); }
     catch { return; }
 
     const sources = new Map<string, WorkspaceSource>();
     for (const use of edge.sourceUses) {
-      const snapshot = await reader.fact(use.id, { mode: 'pinned', rev: use.rev });
-      if (snapshot.accessEpoch !== use.accessEpoch || !sourceMaySend(access, snapshot)) return;
+      const snapshot = await reader.reopen({ ...use, mode: 'pinned' });
       const source = await resolveSource(tx, sourceReference(snapshot, whole), {
         ...access, track: (...witness) => opened.push(witness),
       });
@@ -56,8 +55,7 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
     let verification;
     if (edge.verification) {
       const use = edge.verification;
-      const proof = await reader.fact(use.id, { mode: 'pinned', rev: use.rev });
-      if (proof.type !== knowledgeEdgeEvidenceType || proof.accessEpoch !== use.accessEpoch || !sourceMaySend(access, proof)) return;
+      const proof = await reader.reopen({ ...use, mode: 'pinned', type: knowledgeEdgeEvidenceType });
       let evidence;
       try { evidence = parseEdgeEvidence(proof.value); }
       catch { return; }

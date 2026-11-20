@@ -1,7 +1,6 @@
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
-import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
-import type {Revision} from '../../kernel/src/declarations/ids.ts';
+import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
 import {isSourceFactId, sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
@@ -43,15 +42,14 @@ export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: Assess
   try { manifest = parseManifest(current.manifest); }
   catch { return; }
   if (manifest.learner !== tx.learner) return;
-  const reader = createCommandReadContext(tx, purpose);
+  const reader = createAuthorizedFactReader(tx, purpose, maySend);
   const facts: WorkspaceAssessmentBasis['facts'] = [];
   try {
     for (const input of manifest.inputs) {
       // The workbook publisher licenses direct fact inputs. Other input shapes need their own recipient policy.
       if (input.kind !== 'fact' || syntheticStudyRecords.has(input.id)) return;
       const mode = input.id === current.attempt_id ? 'following' : input.mode;
-      const fact = await reader.fact(input.id, mode === 'following' ? {mode} : {mode, rev: input.rev as Revision});
-      if (fact.ref.rev !== input.rev || fact.accessEpoch !== input.accessEpoch || !maySend(fact)) return;
+      const fact = await reader.reopen({...input, mode});
       if ((input.id === current.attempt_id && fact.type !== workbookAttemptType) ||
           (input.id === current.paper_id && fact.type !== workbookPaperType)) return;
       facts.push(mode === input.mode ? input : {...input, mode});

@@ -19,7 +19,7 @@ export class InvalidReadRequestError extends Error {}
 export class FactNotFoundError extends Error {}
 export class UnsupportedReadError extends Error {}
 
-export type FactReadDenial = 'purpose' | 'retracted';
+export type FactReadDenial = 'purpose' | 'retracted' | 'recipient' | 'changed';
 
 export class FactReadDeniedError extends Error {
   readonly reason: FactReadDenial;
@@ -199,6 +199,39 @@ export function createCommandReadContext(tx: ReadTransaction, purpose: string): 
       _scope: JsonObject,
     ): Promise<RangeSnapshot<Value>> => {
       throw new UnsupportedReadError('range reads are not implemented in this kernel unit');
+    },
+  };
+}
+
+type FactWitness = {
+  readonly id: FactId;
+  readonly rev: number;
+  readonly mode: FactReadOptions['mode'];
+  readonly accessEpoch: Tick;
+  readonly type?: string;
+};
+
+/** Execution-layer reader for a single snapshot or locked transaction. */
+export function createAuthorizedFactReader(
+  tx: ReadTransaction,
+  purpose: string,
+  maySend: (fact: FactSnapshot) => boolean,
+) {
+  const read = createCommandReadContext(tx, purpose);
+  async function fact(id: FactId, options: FactReadOptions) {
+    const snapshot = await read.fact(id, options);
+    if (!maySend(snapshot)) throw new FactReadDeniedError('recipient', 'Fact is unavailable to the recipient');
+    return snapshot;
+  }
+  return {
+    fact,
+    async reopen(witness: FactWitness) {
+      const { id, mode, rev, accessEpoch, type } = witness;
+      const snapshot = await fact(id, mode === 'pinned' ? {mode, rev: rev as Revision} : {mode});
+      if (snapshot.ref.rev !== rev || snapshot.accessEpoch !== accessEpoch || (type !== undefined && snapshot.type !== type)) {
+        throw new FactReadDeniedError('changed', 'Fact witness no longer matches');
+      }
+      return snapshot;
     },
   };
 }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { organizerNoteType } from '../../modules/activity/organizer-values.ts';
@@ -23,8 +23,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
   maySend: WorkspaceSourceRecipient) {
   try {
     const {kind, id, rev} = selection;
-    const fact = await createCommandReadContext(tx, purpose).fact(factId(id), {mode: 'pinned', rev: rev as Revision});
-    if (!maySend(fact)) return;
+    const fact = await createAuthorizedFactReader(tx, purpose, maySend).fact(factId(id), {mode: 'pinned', rev: rev as Revision});
     const sourceRef = sourceReference(fact, {kind: 'whole'});
     const witnesses = new Map<string, WorkspaceWitness>();
     const track: SourceTrack = (source, mode = 'following') => {

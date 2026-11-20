@@ -1,4 +1,6 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import {
+  createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError,
+} from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -30,18 +32,18 @@ async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cu
     [tx.learner, id, cutoff, ref?.rev ?? null],
   );
   if (!version) return;
-  const read = createCommandReadContext(tx, purpose);
+  const read = createAuthorizedFactReader(tx, purpose, access.maySend);
   const matches = (fact: FactSnapshot) => fact.type === workbookPaperType && sameWorkbookJson(workbookPaper(fact.value), attempt.paper);
   try {
     const frozen = await read.fact(id, { mode: 'pinned', rev: version.rev });
-    if (!access.maySend(frozen) || !matches(frozen)) return;
+    if (!matches(frozen)) return;
     access.track(frozen, 'pinned');
   } catch (error) {
     if (!(error instanceof FactReadDeniedError) || error.reason !== 'purpose') throw error;
     // A later grant can license an unchanged copy. Verify the archive only after
     // opening the currently authorized paper and matching its payload.
     const current = await read.fact(id, { mode: 'following' });
-    if (!access.maySend(current) || !matches(current)) return;
+    if (!matches(current)) return;
     const original = await createCommandReadContext(tx, storagePurpose).fact(id, { mode: 'pinned', rev: version.rev });
     if (!matches(original)) return;
     access.track(current, 'following');

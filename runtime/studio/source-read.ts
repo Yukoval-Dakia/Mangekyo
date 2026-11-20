@@ -1,4 +1,4 @@
-import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId, type Revision} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
@@ -168,12 +168,12 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const id = reference?.fact.id ?? input;
   if (!isSourceFactId(id) || (mode !== 'pinned' && mode !== 'following')) return;
   const anchor: SourceAnchorV1 = reference?.anchor ?? {kind: 'whole'};
-  const reader = createCommandReadContext(tx, sourcePurpose(access));
+  const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
+  const reader = createAuthorizedFactReader(tx, sourcePurpose(access), accepts);
   const seen = new Map<string, FactSnapshot>();
   const path = new Set<string>();
   const questionSources: Parameters<SourceTrack>[] = [];
   const checkedAttempts = new Set<string>();
-  const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
     (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
@@ -183,7 +183,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     if (path.has(key) || path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(key)) return;
     if (seen.has(key)) return seen.get(key);
     const fact = await reader.fact(factId(key), revision === undefined ? {mode: 'following'} : {mode: 'pinned', rev: revision});
-    if (!accepts(fact) || (key === id && !rootType(fact))) return;
+    if (key === id && !rootType(fact)) return;
     if (fact.type === workspaceEntryType) {
       const entry = workspaceEntry(fact.value);
       path.add(key);
@@ -207,10 +207,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     const rootRevision = reference?.fact.rev as Revision | undefined;
     if (reference && mode === 'following') {
       const original = await reader.fact(factId(id), {mode:'pinned', rev:rootRevision as Revision});
-      if (!rootType(original) || !accepts(original)) return;
+      if (!rootType(original)) return;
       if (textReference) {
         const text = await reader.fact(factId(textReference.id), {mode:'pinned', rev:textReference.rev as Revision});
-        if (original.type !== materialType || !isMaterialIntakePair(original.ref.id, text) || !accepts(text)) return;
+        if (original.type !== materialType || !isMaterialIntakePair(original.ref.id, text)) return;
         const oldText = intakeTextOf(text).text;
         const originalAnchor = anchor.kind === 'text' ? (() => {
           const {offset, nextOffset} = textSlice(oldText, anchor.start, Math.max(0, anchor.end-anchor.start));
@@ -239,14 +239,14 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         access.track?.(fact, reference ? mode : undefined);
         return {id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), ...projection};
       }
-      if (currentDocument.type !== intakeFactType || !accepts(currentDocument)) return;
+      if (currentDocument.type !== intakeFactType) return;
       const material = fact.type === materialType ? fact : await visit(relatedMaterialId(currentDocument));
       if (!material || material.type !== materialType || !isMaterialIntakePair(material.ref.id, currentDocument)) return;
       const document = fact.type === intakeFactType ? fact :
         mode === 'pinned' && documentRevision !== undefined
           ? await reader.fact(documentId, {mode: 'pinned', rev: documentRevision})
           : currentDocument;
-      if (!accepts(document) || !isMaterialIntakePair(material.ref.id, document)) return;
+      if (!isMaterialIntakePair(material.ref.id, document)) return;
       seen.set(documentId, document);
       linkedMaterial = material;
       body = document;
