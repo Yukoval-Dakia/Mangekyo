@@ -37,7 +37,7 @@ const presentationTool = {type:'function',function:{name:'mount_artifact',
     view:presentationCatalog.schema,predictionPrompt:{type:'string',maxLength:160},
     sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:{type:'string'}}}
   }}}};
-export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode; image?: true};
+export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode; writeBasis?: true};
 type Seen = {id: string; title: string; text: string; workspace: true};
 const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
 let declarations: ReturnType<typeof activity> | undefined;
@@ -59,7 +59,8 @@ export function openWorkspaceTools(options: {
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));
   const overviewBasis = new Map<string, WorkspaceWitness>();
-  const imageBasis = new Map(options.prior.filter(w => w.image).map(w => [`${w.id}:${w.rev}`,w]));
+  const writeBasis = new Map(options.prior.filter(w => w.writeBasis).map(w => [`${w.id}:${w.rev}`,w]));
+  const retainForWrites = (w: WorkspaceWitness) => writeBasis.set(`${w.id}:${w.rev}`,{...w,writeBasis:true});
   const opened = new Map<string, Seen>();
   const openedAnswers = new Map<string, WorkspaceWitness>();
   const produced = new Map<string, number>();
@@ -69,6 +70,7 @@ export function openWorkspaceTools(options: {
     const {id} = root;
     for (const witness of basis) options.track(witness, true);
     sources.set(id, root);
+    if (root.type === workspaceEntryType) retainForWrites(root);
     opened.set(id, {id, workspace: true, title: view.title, text: view.content});
     if (openedAnswer) openedAnswers.set(id, root);
   }
@@ -184,7 +186,7 @@ export function openWorkspaceTools(options: {
       text = JSON.stringify(value);
       if (result.image) {
         receiveImage?.(result.image);
-        for (const w of witnesses) imageBasis.set(`${w.id}:${w.rev}`,{...w,image:true});
+        for (const w of witnesses) retainForWrites(w);
       }
       if (value.ok) for (const witness of witnesses) overviewBasis.set(witness.id,witness);
     }
@@ -205,7 +207,11 @@ export function openWorkspaceTools(options: {
     const direct = new Set<string>([value.id,args.related,
       ...values.flatMap(item => [item.id, item.related, ...[...(item.results ?? []), ...(item.observations ?? []),
         ...(item.recentAttempts ?? [])].map(result => result.id)])].filter(id => typeof id === 'string'));
-    for (const w of witnesses) if (direct.has(w.id)) sources.set(w.id,w);
+    for (const w of witnesses) {
+      if (!direct.has(w.id)) continue;
+      sources.set(w.id,w);
+      if (w.type === workspaceEntryType) retainForWrites(w);
+    }
     if (name === 'read_workspace' && args.id === 'learner') {
       for (const w of witnesses) if (w.type === goalType || w.type === organizerTaskType) overviewBasis.set(w.id, w);
     }
@@ -267,8 +273,8 @@ export function openWorkspaceTools(options: {
     const basisById = new Map<string,{id:string;rev:number;epoch:string}>(previousBasis.map(w => [w.id,w]));
     for (const w of witnesses.values()) if (w.id !== id && !basisById.has(w.id))
       basisById.set(w.id,{id:w.id,rev:w.rev,epoch:w.epoch});
-    // Preloaded context and images can inform a write even when it only names the original answer.
-    for (const {id: sourceId, rev, epoch} of [...(currentObject?.basis ?? []), ...imageBasis.values()]) {
+    // A write can reuse the images and derived records included in its context.
+    for (const {id: sourceId, rev, epoch} of [...(currentObject?.basis ?? []), ...writeBasis.values()]) {
       if (sourceId === id) continue;
       const previous = basisById.get(sourceId);
       if (previous && (previous.rev !== rev || previous.epoch !== epoch))
@@ -368,7 +374,7 @@ export function openWorkspaceTools(options: {
     writes: () => [...receipts.values()],
     basis() {
       const basis = new Map([...sources, ...overviewBasis]);
-      for (const witness of imageBasis.values()) basis.set(witness.id,witness);
+      for (const witness of writeBasis.values()) basis.set(witness.id,witness);
       return [...basis.values()];
     },
   };

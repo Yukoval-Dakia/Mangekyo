@@ -399,7 +399,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             }
             for (const w of witnesses) {
               const newer = inherited.get(w.id);
-              if (!newer || (w.image && !newer.image)) inherited.set(w.id, w);
+              if (!newer || (w.writeBasis && !newer.writeBasis)) inherited.set(w.id, w);
             }
             if (witnesses.length) protectWorkspaceDispatch = true;
           }
