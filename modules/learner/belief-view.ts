@@ -1,4 +1,4 @@
-import type { BeliefTime, Directive, FactSnapshot, Hypothesis, RefusalBoundary } from '@mangekyo/kernel';
+import type { BeliefTime, BusWitness, Directive, FactSnapshot, Hypothesis, RefusalBoundary } from '@mangekyo/kernel';
 export type { RefusalBoundary } from '@mangekyo/kernel';
 import { instant, record, text, witnessIdentity, type Witness } from './memory-evidence.ts';
 
@@ -168,14 +168,25 @@ export type OpenHypothesis<Scope, Evidence> = {
 // Read the owner revisions and logical edges admitted by the same bus snapshot.
 // Opposite claims can remain valid simultaneously. Both sides stay addressable.
 export function hypothesesAsOf<Scope, Evidence>(rows: readonly OpenHypothesis<Scope, Evidence>[],
-  edges: readonly (BeliefTime & import('./extraction.ts').BeliefEdge)[], when: AsOf) {
+  edges: readonly (BeliefTime & import('./extraction.ts').BeliefEdge)[], when: AsOf, openedEvidence: readonly BusWitness[] = []) {
   const visible = rows.filter(row => beliefsAsOf([row.value], when).length > 0);
   const endpoints = new Set(visible.map(row => witnessIdentity(row.ref)));
+  // For submission → hypothesis edges the caller reopens the entire evidence chain
+  // under the actual recipient and purpose in the same learner snapshot.
+  const opened = new Map(openedEvidence.map(ref => [witnessIdentity(ref), ref]));
   const disputes = new Set<string>();
   const relations = beliefsAsOf(edges, when).filter(edge => {
     const from = witnessIdentity(edge.from_ref);
     const to = witnessIdentity(edge.to_ref);
-    if (!endpoints.has(from) || !endpoints.has(to)) return false;
+    if (!endpoints.has(to)) return false;
+    if (!endpoints.has(from)) {
+      const submission = opened.get(from);
+      return edge.kind === 'contradicts' && submission?.type === 'activity.retentionPosttestSubmission' &&
+        edge.basis.some(ref => witnessIdentity(ref) === from) && edge.basis.every(ref => {
+          const current = opened.get(witnessIdentity(ref));
+          return current?.type === ref.type && current.learner === ref.learner && ref.learner === submission.learner;
+        });
+    }
     if (edge.kind === 'contradicts') {
       if (from === to || !edge.basis.length) return false;
       disputes.add(from);

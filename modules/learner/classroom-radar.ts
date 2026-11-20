@@ -45,9 +45,10 @@ export function projectClassroomRadar(asOf: string, sources: ClassroomRadarSourc
   const top = [...weaknesses].sort(([a, x], [b, y]) => x - y || (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, 3).map(([kcId, mastery]) => ({kcId, mastery}));
   const aligned = measured?.length && measured.every(row => row.asOfAt === asOf);
+  const empty = sources.forecasts?.length === 0;
   return {
-    weakTop3: aligned && top.length ? {kind: 'value' as const, value: top} : missing,
-    forgetting24h: aligned ? count([...crossing]) : missing,
+    weakTop3: empty || (aligned && top.length) ? {kind: 'value' as const, value: top} : missing,
+    forgetting24h: empty || aligned ? count([...crossing]) : missing,
     highConfidenceWrong: count(sources.highConfidenceWrong),
     examGaps: count(sources.unassessedExamConcepts),
     exhaustedFamilies: count(sources.exhaustedVariantFamilies),

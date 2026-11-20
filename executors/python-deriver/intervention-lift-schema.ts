@@ -61,44 +61,58 @@ export function isInterventionLiftInput(value: unknown): value is WireInput {
 
 type WireOutcome = {kind: 'unknown'; reason: string} | {kind: 'value'; value: Record<string, unknown>};
 export function isInterventionLiftOutcome(value: unknown, input: WireInput): value is WireOutcome {
-  if (row(value, ['kind', 'reason']) && value.kind === 'unknown') {
-    return matches(value.reason, /^已满 14 天的可比独立前后测不足（[0-7]\/8）。$/);
+  const asOf = Date.parse(input.asOf);
+  const seen = new Set<string>();
+  const refs: VerificationRef[] = [];
+  let sum = 0, eligible = 0, pending = 0, unresolved = 0;
+  for (const pair of input.interventions) {
+    const start = Date.parse(pair.deliveredAt);
+    if (start > asOf) continue;
+    if (seen.has(pair.intervention.id)) return false;
+    seen.add(pair.intervention.id);
+    if (asOf < start + 14 * day) { pending++; continue; }
+    refs.push(pair.intervention);
+    const {baseline, posttest, plannedBaselineItem, plannedPosttestItem, comparisonKey} = pair;
+    if (!baseline || !posttest || !plannedBaselineItem.trim() || !plannedPosttestItem.trim() || !comparisonKey.trim() ||
+        plannedBaselineItem === plannedPosttestItem || baseline.item !== plannedBaselineItem ||
+        posttest.item !== plannedPosttestItem || baseline.comparisonKey !== comparisonKey || posttest.comparisonKey !== comparisonKey ||
+        baseline.independence !== 'independent' || posttest.independence !== 'independent' ||
+        baseline.score === null || posttest.score === null || (posttest.novelty !== 'isomorphic' && posttest.novelty !== 'transfer') ||
+        Date.parse(baseline.occurredAt) >= start || Date.parse(posttest.occurredAt) < start + 3 * day ||
+        Date.parse(posttest.occurredAt) > start + 14 * day) {
+      unresolved++;
+      continue;
+    }
+    for (const ref of [baseline.submission, posttest.submission]) {
+      if (seen.has(ref.id)) return false;
+      seen.add(ref.id);
+      refs.push(ref);
+    }
+    eligible++;
+    sum += posttest.score - baseline.score;
   }
+  if (eligible < minEligible)
+    return row(value, ['kind', 'reason']) && value.kind === 'unknown' &&
+      value.reason === `已满 14 天的可比独立前后测不足（${eligible}/${minEligible}）。`;
   if (!row(value, ['kind', 'value']) || value.kind !== 'value') return false;
   const result = value.value;
   if (!row(result, [...identityKeys, 'verdict', 'interval', 'pairedMean', 'eligible', 'pending', 'unresolved', 'verificationRefs']) ||
       result.playbookId !== input.playbookId || result.version !== input.version || result.strategyId !== input.strategyId ||
-      !integer(result.eligible, minEligible) || !integer(result.pending, 0) || !integer(result.unresolved, 0) ||
-      !bounded(result.pairedMean, -1, 1) || !Array.isArray(result.interval) || result.interval.length !== 2) return false;
-  const [low, high] = result.interval;
-  if (!bounded(low, -1, 1) || !bounded(high, low, 1) ||
-      result.verdict !== (low > 0 ? 'positive' : high < 0 ? 'negative' : 'inconclusive')) return false;
-  const asOf = Date.parse(input.asOf);
-  const delivered = input.interventions.filter(pair => Date.parse(pair.deliveredAt) <= asOf);
-  const closed = delivered.filter(pair => Date.parse(pair.deliveredAt) + 14 * day <= asOf);
-  if (result.eligible + result.unresolved !== closed.length || result.pending + closed.length !== delivered.length ||
-      !Array.isArray(result.verificationRefs) ||
-      result.verificationRefs.length !== closed.length + 2 * result.eligible) return false;
-  const refs = result.verificationRefs;
-  if (![...refs].every(witness)) return false;
-  const indexed = new Map(refs.map(ref => [ref.id, ref]));
-  const same = (ref: VerificationRef) => {
-    const sent = indexed.get(ref.id);
-    return sent?.rev === ref.rev && sent.accessEpoch === ref.accessEpoch;
-  };
-  const verified = closed.filter(pair => pair.baseline && pair.posttest &&
-    same(pair.baseline.submission) && same(pair.posttest.submission));
-  if (indexed.size !== refs.length || !closed.every(pair => same(pair.intervention)) ||
-      verified.length !== result.eligible) return false;
-  return verified.every(({baseline, posttest, plannedBaselineItem, plannedPosttestItem, comparisonKey, deliveredAt}) => {
-    const delivered = Date.parse(deliveredAt);
-    return baseline && posttest && baseline.independence === 'independent' && posttest.independence === 'independent' &&
-      baseline.score !== null && posttest.score !== null && plannedBaselineItem !== plannedPosttestItem &&
-      plannedBaselineItem.trim() && plannedPosttestItem.trim() && comparisonKey.trim() &&
-      baseline.item === plannedBaselineItem && posttest.item === plannedPosttestItem &&
-      baseline.comparisonKey === comparisonKey && posttest.comparisonKey === comparisonKey &&
-      (posttest.novelty === 'isomorphic' || posttest.novelty === 'transfer') &&
-      Date.parse(baseline.occurredAt) < delivered &&
-      Date.parse(posttest.occurredAt) >= delivered + 3 * day && Date.parse(posttest.occurredAt) <= delivered + 14 * day;
+      result.eligible !== eligible || result.pending !== pending || result.unresolved !== unresolved ||
+      result.pairedMean !== sum / eligible || !Array.isArray(result.interval) || result.interval.length !== 2 ||
+      !Array.isArray(result.verificationRefs) || result.verificationRefs.length !== refs.length) return false;
+  const closed = eligible + unresolved;
+  const radius = Math.sqrt(2 * Math.log(40) / closed);
+  const low = Math.max(-1, (sum - unresolved) / closed - radius);
+  const high = Math.min(1, (sum + unresolved) / closed + radius);
+  const [sentLow, sentHigh] = result.interval;
+  const verdict = (lo: number, hi: number) => lo > 0 ? 'positive' : hi < 0 ? 'negative' : 'inconclusive';
+  // libm and V8 may round the log/sqrt by an ulp. Never tolerate a change of verdict.
+  if (!bounded(sentLow, -1, 1) || !bounded(sentHigh, sentLow, 1) || Math.abs(sentLow - low) > Number.EPSILON ||
+      Math.abs(sentHigh - high) > Number.EPSILON || result.verdict !== verdict(low, high) ||
+      result.verdict !== verdict(sentLow, sentHigh)) return false;
+  return [...result.verificationRefs].every((sent, index) => {
+    const ref = refs[index];
+    return ref !== undefined && witness(sent) && sent.id === ref.id && sent.rev === ref.rev && sent.accessEpoch === ref.accessEpoch;
   });
 }

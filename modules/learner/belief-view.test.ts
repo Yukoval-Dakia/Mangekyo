@@ -75,6 +75,10 @@ it('co-projects assertion formats, preserving both conflicting witnesses and tem
     kind: 'contradicts' as const, author: 'companion' as const, confidence: null, sticky: false};
   expect(hypothesesAsOf(rows, [edge], asOf(3, 3)).hypotheses.map(row => row.value.kind))
     .toEqual(['observation', 'observation']);
+  const submission = {...ref(8), learner, type: 'activity.retentionPosttestSubmission', mode: 'following' as const};
+  const correction = {...edge, from_ref: submission, basis: [submission, ...edge.basis]};
+  expect(hypothesesAsOf(rows, [correction], asOf(3, 4), correction.basis).relations).toEqual([correction]);
+  expect(hypothesesAsOf(rows, [correction], asOf(3, 4), [submission]).relations).toEqual([]);
   const disputed = hypothesesAsOf(rows, [edge], asOf(3, 4));
   expect(disputed.hypotheses.map(row => [row.ref.id, row.value.status, row.value.evidence_refs[0].id]))
     .toEqual([[ref(20).id, 'disputed', ref(5).id], [ref(21).id, 'disputed', ref(6).id]]);

@@ -55,6 +55,15 @@ it('TS 与确定性 Python 在固定截止时间按相同配对和缺失边界�
   for (const [i, sealed] of cases.entries()) {
     expect(isInterventionLiftInput(sealed) && isInterventionLiftOutcome(outcomes[i], sealed)).toBe(true);
   }
+  const flat = input(positive.map(pair => ({...pair, posttest: {...pair.posttest!, score: pair.baseline!.score}})));
+  if (!isInterventionLiftInput(flat)) throw new Error('invalid fixture');
+  expect(isInterventionLiftOutcome(outcomes[0], flat)).toBe(false);
+  expect(isInterventionLiftOutcome(outcomes[2], flat)).toBe(false);
+  expect(isInterventionLiftOutcome(outcomes[2], {...flat, interventions: []})).toBe(false);
+  const unchanged = measureInterventionLift(flat);
+  if (unchanged.kind !== 'value') throw new Error('missing flat interval');
+  for (const override of [{pairedMean: 0.25}, {interval: [-1, 1]}, {eligible: 8}, {verdict: 'positive'}])
+    expect(isInterventionLiftOutcome({kind: 'value', value: {...unchanged.value, ...override}}, flat)).toBe(false);
   const assisted = cases[5];
   if (!isInterventionLiftInput(assisted)) throw new Error('invalid fixture');
   expect(isInterventionLiftOutcome(outcomes[0], assisted)).toBe(false);
