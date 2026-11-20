@@ -253,6 +253,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       };
       const mcp = step.provider.startsWith('tool:mcp:');
       const needsFreshEvidence = Boolean(assessments.size || retention.size || memorySend);
+      const sendsMcpContext = grants.length > 0 && !step.provider.startsWith('tool:');
       const effect = await runEffect(
         db,
         {
@@ -270,7 +271,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           try {
             // A resumed MCP call may authenticate and negotiate before sending tool arguments.
             const reply = await (mcp ? invoke(requestId, dispatch) :
-              needsFreshEvidence ? dispatch(() => invoke(requestId)) : invoke(requestId));
+              needsFreshEvidence || sendsMcpContext ? dispatch(() => invoke(requestId)) : invoke(requestId));
             return memorySend ? { reply, sent: { ...memorySend, requestId } } : reply;
           } catch (error) {
             console.warn('模型调用未能确认', requestId, error instanceof TeachingError ? error.code : 'transport_error');
@@ -337,6 +338,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           // Legacy overview replies can lack workspaceBasis. The saved route still bounds their reuse.
           if (previous.workspaceRevision && previous.workspaceRevision !== submission.workspaceRevision) {
             historyNotice = '工作区授权已变更，本轮省略了使用旧授权的对话。';
+            break;
+          }
+          if (previous.mcpGrants?.length && (!previous.mcpRevision || previous.mcpRevision !== submission.mcpRevision ||
+              JSON.stringify(previous.mcpGrants) !== JSON.stringify(grants))) {
+            historyNotice = '本轮的工具授权已变化，旧工具回复已省略。';
             break;
           }
           const reply = await readFeedback(tx, previousId);

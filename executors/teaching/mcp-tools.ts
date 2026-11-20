@@ -6,6 +6,10 @@ import { TeachingError } from './provider.ts';
 type ToolSchema = Awaited<ReturnType<typeof discoverMcpTools>>[number];
 export type RemoteTool = { server: McpServer; tool: ToolSchema; stateful: boolean };
 
+export function remoteToolDefinition(name: string, {tool}: RemoteTool) {
+  return {type: 'function', function: {name, description: tool.description, parameters: tool.inputSchema}};
+}
+
 export async function loadMcpTools(servers: readonly McpServer[], model: string, runEffect: TeachingDependencies['runEffect'], connections: McpTurnConnections) {
   const catalog = new Map<string, RemoteTool>();
   let catalogBytes = 0;

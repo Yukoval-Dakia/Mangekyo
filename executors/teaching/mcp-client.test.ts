@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {runStudyAgent} from './study-agent.ts';
+import {runCompanionTurn} from './index.ts';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, expect, it } from 'vitest';
@@ -72,26 +72,33 @@ function mcpServer(id: string, url: string, allowedTools: string[] = []): McpSer
 it('stops a recovered stateful turn before a new external tool request', async () => {
   const server = mcpServer('library', 'https://unused.invalid/mcp', ['next']);
   const name = 'mcp_next_' + createHash('sha256').update(JSON.stringify(['library', 'next'])).digest('hex').slice(0, 12);
-  const result = runStudyAgent([{role: 'user', content: '继续'}], {provider: {baseUrl: 'https://unused.invalid'}, tools: {mcpServers: [server]},
+  const effectSteps: number[] = [];
+  const call = (id: string, name: string, args: object) => ({id, type: 'function', function: {name, arguments: JSON.stringify(args)}});
+  const reply = (...calls: ReturnType<typeof call>[]) => JSON.stringify({reportedModel: 'group/auto-deepseek-v4-1-flash', calls});
+  const result = runCompanionTurn('继续', [], undefined, {provider: {baseUrl: 'https://unused.invalid'}, tools: {mcpServers: [server]},
     runEffect: async (step, invoke) => {
+      effectSteps.push(step.index);
       if (step.index === 20_000) return JSON.stringify({stateful: true, tools: [{name: 'next', description: '', inputSchema: {type: 'object'}}]});
-      if (step.index === 0) return JSON.stringify({reportedModel: 'group/auto-deepseek-v4-1-flash', calls: [{id: 'c1', type: 'function', function: {name, arguments: '{}'}}]});
+      if (step.index === 0) return reply(call('find', 'find_tools', {query: 'next'}), call('premature', name, {}));
+      if (step.index === 8) return reply(call('after-discovery', name, {}));
       return invoke('new-tool-request');
     }});
   await expect(result).rejects.toThrow('有状态 MCP 会话已中断');
+  expect(effectSteps).toEqual([20_000, 0, 8, 9]);
 });
 
 it.each([false, true])('rechecks authorization after a recovered stateless MCP handshake (revoked: %s)', async revoked => {
   const remote = await protocolServer({stateless:true});
   const server = mcpServer('library', remote.url, ['search']);
   const name = 'mcp_search_' + createHash('sha256').update(JSON.stringify(['library','search'])).digest('hex').slice(0,12);
-  const result = runStudyAgent([{role:'user',content:'继续'}], {provider:{baseUrl:'https://unused.invalid'}, tools:{mcpServers:[server]},
+  const result = runCompanionTurn('继续', [], undefined, {provider:{baseUrl:'https://unused.invalid'}, tools:{mcpServers:[server]},
     async runEffect(step, invoke) {
       if (step.index === 20_000) return JSON.stringify({stateful:false, tools:[searchTool]});
-      if (step.index === 0) return JSON.stringify({reportedModel:'group/auto-deepseek-v4-1-flash', calls:[
-        {id:'resumed',type:'function',function:{name,arguments:'{"query":"冻结预测证据"}'}},
+      if (step.index === 0 || step.index === 8) return JSON.stringify({reportedModel:'group/auto-deepseek-v4-1-flash', calls:[
+        step.index === 0 ? {id:'find',type:'function',function:{name:'find_tools',arguments:'{"query":"search"}'}}
+          : {id:'resumed',type:'function',function:{name,arguments:'{"query":"冻结预测证据"}'}},
       ]});
-      if (step.index === 8) return JSON.stringify({message:'完成'});
+      if (step.index === 16) return JSON.stringify({message:'完成'});
       return invoke('new-tool-request', async send => {
         if (revoked && remote.requests.some(request => request.rpc === 'notifications/initialized')) throw new Error('evidence_scope');
         return send();
