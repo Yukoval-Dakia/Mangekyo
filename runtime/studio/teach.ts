@@ -105,7 +105,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     inputs.set('retention:' + slot.derivationId, slot);
     for (const fact of facts) inputs.set(`retention-fact:${fact.id}:${fact.rev}:${fact.accessEpoch}:${fact.mode}`, fact);
   }
-  function trackFact(id: string, fact: FactSnapshot, mode: 'pinned' | 'following' = 'following') {
+  function trackFact(id: string, fact: Pick<FactSnapshot,'ref'|'accessEpoch'>, mode: 'pinned' | 'following' = 'following') {
     inputs.set(id, {
       kind: 'fact',
       id: fact.ref.id,
