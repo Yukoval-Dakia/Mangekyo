@@ -1,6 +1,7 @@
-import { derivationId, factId, type Revision, type Tick } from '@mangekyo/kernel';
-import type { HelpRef, HelpTarget } from './help-exposure-values.ts';
-import { gradeWorkbook, type WorkbookQuestion } from './workbook-values.ts';
+import { derivationId, factId, type FactRef, type Revision, type Tick } from '@mangekyo/kernel';
+import { sameHelpRef, sameHelpTarget, type HelpExposureEvent, type HelpRef, type HelpTarget } from './help-exposure-values.ts';
+import { projectHelpExposure, type AdmittedHelpEvent } from './help-exposure.ts';
+import { gradeWorkbook, workbookRequestId, type WorkbookQuestion } from './workbook-values.ts';
 
 export const recallIssuanceType = 'activity.recallIssuance';
 export const recallSubmissionType = 'activity.recallSubmission';
@@ -26,7 +27,7 @@ function ref(value: unknown): HelpRef {
   return { id: id(row.id), rev: row.rev as Revision };
 }
 
-export function recallText(value: unknown, limit: number): string {
+function recallText(value: unknown, limit: number): string {
   if (typeof value !== 'string' || !value.trim() || value.length > limit ||
       !value.isWellFormed() || value.includes('\0')) throw new Error('回忆题文本无效。');
   return value;
@@ -79,7 +80,7 @@ export function recallTarget(issuance: HelpRef, itemId: string): HelpTarget {
   return { activityId: issuance.id, issuance, item: { itemId, responseId: recallResponseId } };
 }
 
-export function gradeRecallItem(item: ReturnType<typeof recallIssuance>['items'][number], answer: string) {
+function gradeRecallItem(item: ReturnType<typeof recallIssuance>['items'][number], answer: string) {
   const base = { id: item.itemId, prompt: item.prompt, explanation: null };
   const question: WorkbookQuestion = item.rubric
     ? { ...base, kind: 'rubric', rubric: item.rubric, rubricVersion: 'rubric-v1' }
@@ -92,7 +93,7 @@ export function gradeRecallItem(item: ReturnType<typeof recallIssuance>['items']
   return feedback.result;
 }
 
-export function recallFields(value: unknown, names: readonly string[]): Record<string, unknown> {
+function recallFields(value: unknown, names: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).length !== names.length || names.some(name => !Object.hasOwn(value, name))) {
     throw new Error('回忆题请求字段无效。');
@@ -106,4 +107,55 @@ export function parseRecallMount(value: unknown) {
     throw new Error('回忆题挂载标识无效。');
   }
   return { turnId: factId(turnId), derivationId: derivationId(version), itemId: factId(itemId) };
+}
+
+export type RecallMount = ReturnType<typeof parseRecallMount>;
+type RecallItem = ReturnType<typeof recallIssuance>['items'][number];
+
+export function recallRevealInput(value: unknown) {
+  const { mount, requestId } = recallFields(value, ['mount', 'requestId']);
+  return { mount: parseRecallMount(mount), requestId: workbookRequestId(requestId) };
+}
+
+export function recallSubmitInput(value: unknown) {
+  const { mount, requestId, answer } = recallFields(value, ['mount', 'requestId', 'answer']);
+  return { mount: parseRecallMount(mount), requestId: workbookRequestId(requestId), answer: recallText(answer, 4000) };
+}
+
+export function recallMountedItem(issuance: Pick<ReturnType<typeof recallIssuance>, 'items'> & {
+  turn: HelpRef; version: string;
+}, mount: RecallMount) {
+  if (issuance.turn.id === mount.turnId && issuance.version === mount.derivationId) {
+    return issuance.items.find(item => item.itemId === mount.itemId);
+  }
+  return undefined;
+}
+
+export function recallItemView(mount: RecallMount, ref: HelpRef, item: RecallItem) {
+  return { ...mount, issuanceId: ref.id, responseId: recallResponseId, prompt: item.prompt };
+}
+
+export function recallRevealView(revealId: FactRef['id'], item: RecallItem) {
+  return { revealId, itemId: item.itemId, reference: item.answer, ...(item.rubric ? { rubric: item.rubric } : {}) };
+}
+
+export function recallDisplayEvent(reveal: HelpExposureEvent | null, ref: HelpRef, item: RecallItem) {
+  if (reveal?.kind === 'opened' && sameHelpTarget(reveal.mount, recallTarget(ref, item.itemId)) &&
+      sameHelpRef(reveal.content, ref) && reveal.step.kind === 'solution' &&
+      reveal.step.order === 1 && reveal.alsoAppliesTo.length === 0) {
+    return { ...reveal, kind: 'displayed' as const };
+  }
+  return undefined;
+}
+
+export function recallResultView(submission: ReturnType<typeof recallSubmission>, ref: FactRef, item: RecallItem,
+  cutoff: Tick, review: { events: readonly AdmittedHelpEvent[]; omitted: boolean },
+) {
+  const target = recallTarget(submission.issuance, submission.itemId);
+  const coverage = !review.omitted && submission.observation === 'complete' ? { submission: ref, target, through: cutoff } : null;
+  return {
+    submission: ref, itemId: item.itemId, responseId: recallResponseId,
+    result: gradeRecallItem(item, submission.answer),
+    exposure: projectHelpExposure({ submission: { ref, target, cutoff }, events: review.events, coverage }),
+  };
 }
