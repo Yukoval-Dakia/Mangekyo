@@ -3,7 +3,7 @@ import { api } from './api';
 import { roomPath, type Classroom } from './classroom-contract';
 
 type Summary = Pick<Classroom, 'id' | 'rev' | 'topic'> & { activeStepTitle?: string };
-type ListState = 'closed' | 'loading' | 'error' | Summary[];
+type ListState = 'closed' | 'loading' | 'error' | 'unconfirmed' | Summary[];
 
 export function TodayClassrooms() {
   const [list, setList] = useState<ListState>('closed');
@@ -36,11 +36,13 @@ export function TodayClassrooms() {
     pending.current = controller;
     setList('loading');
     try {
-      const { items } = await api<{ items: Summary[] }>('/classrooms?status=active', {
+      const { items, retryable } = await api<{ items: Summary[]; retryable?: true }>('/classrooms?status=active', {
         signal: controller.signal,
         cache: 'no-store',
       });
-      if (!controller.signal.aborted) setList(Array.isArray(items) ? items : 'error');
+      if (controller.signal.aborted) return;
+      if (!Array.isArray(items)) setList('error');
+      else setList(retryable && items.length === 0 ? 'unconfirmed' : items);
     } catch {
       if (!controller.signal.aborted) setList('error');
     }
@@ -56,6 +58,7 @@ export function TodayClassrooms() {
       </div>
       {list === 'loading' && <p role="status">正在读取进行中的课堂…</p>}
       {list === 'error' && <p role="status">暂时无法读取进行中的课堂。 <button className="text-button" onClick={open}>重试</button></p>}
+      {list === 'unconfirmed' && <p role="status">暂时无法核对课堂依据。 <button className="text-button" onClick={open}>重试</button></p>}
       {Array.isArray(list) && (list.length ? (
         <ul>
           {list.map(room => <li key={room.id}>

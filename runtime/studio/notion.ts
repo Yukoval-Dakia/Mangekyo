@@ -106,7 +106,7 @@ function notionHost(db: Db, scope = learnerScope) {
       return await connection.read(stream, () => snapshot(tx => live(tx, id, epoch, watermark, page)));
     } catch (error) {
       if (error instanceof NotionSourceUnavailable && error.invalidated) {
-        if (!rememberDenial) throw new RequestError(403, 'Notion 已撤回该来源的访问。');
+        if (!rememberDenial) throw error;
         const key = error.invalidated.kind === 'selection' ? 'root' : error.invalidated.pageId;
         await locked(async tx => {
           await live(tx, id, epoch, watermark);
@@ -198,6 +198,7 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false}: 
   type Authority = 'authorized' | 'withdrawn' | 'unconfirmed';
   const pages = new Map<string, Authority>();
   const witnesses = new Map<string, Authority>();
+  const withdrawnSelections = new Set<string>();
 
   async function pageFor(tx: ReadTransaction, fact: FactSnapshot) {
     if (fact.type !== captureSourceType) return;
@@ -205,13 +206,15 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false}: 
     if (source.kind !== 'notion') return;
     const page = await notionPageAuthority(tx, source);
     const key = notionPageKey(page);
-    return {...page, key, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
+    const selectionKey = JSON.stringify([page.selection.id, page.selection.selectionEpoch]);
+    return {...page, key, selectionKey, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
   }
 
   const check = (tx: ReadTransaction): CheckNotionRead => async fact => {
     const page = await pageFor(tx, fact);
     if (!page) return;
-    const authority = witnesses.get(page.witness);
+    // A later page can invalidate earlier successful probes of the same selection.
+    const authority = withdrawnSelections.has(page.selectionKey) ? 'withdrawn' : witnesses.get(page.witness);
     if (authority === 'withdrawn') throw new FactReadDeniedError('recipient', '未能确认 Notion 来源。');
     if (authority !== 'authorized') throw new NotionReadUnconfirmed();
   };
@@ -226,14 +229,20 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false}: 
       if (page) requested.set(page.witness, page);
     }));
     if (!requested.size && !publish) return initial;
-    for (const {key, witness, selection, pageId, watermark} of requested.values()) {
+    for (const {key, witness, selection, selectionKey, pageId, watermark} of requested.values()) {
+      if (withdrawnSelections.has(selectionKey)) continue;
       if (!pages.has(key)) {
         try {
           await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId, !readOnly);
           pages.set(key, 'authorized');
         } catch (error) {
-          if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
-          pages.set(key, error instanceof RequestError && error.status === 403 ? 'withdrawn' : 'unconfirmed');
+          if (error instanceof NotionSourceUnavailable && error.invalidated) {
+            if (error.invalidated.kind === 'selection') withdrawnSelections.add(selectionKey);
+            pages.set(key, 'withdrawn');
+          } else {
+            if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
+            pages.set(key, error instanceof RequestError && error.status === 403 ? 'withdrawn' : 'unconfirmed');
+          }
         }
       }
       witnesses.set(witness, pages.get(key)!);

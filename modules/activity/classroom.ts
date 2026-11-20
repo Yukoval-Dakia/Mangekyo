@@ -1,5 +1,4 @@
 import { derivationId, factId, type DerivationId, type FactId, type Revision } from '@mangekyo/kernel';
-import type { ActivityEvidenceReadScope } from './evidence-read.ts';
 import { object, studyCurrentObjectSelection } from './values.ts';
 
 export const classroomType = 'activity.classroom';
@@ -119,18 +118,6 @@ export function recoverClassroomAdjustment(state: Classroom, previous: FactId): 
 
 export function activeClassroomStep(state: Classroom) {
   return state.steps.find(step => step.status === 'active');
-}
-
-// Only identities leave this query. The classroom reader authorizes each current plan and step.
-export async function activeClassroomIds(tx: ActivityEvidenceReadScope) {
-  const {rows} = await tx.query<{id: string}>(
-    `SELECT f.id FROM facts f JOIN fact_revs r
-       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'status'='active'
-     ORDER BY f.changed_tick DESC, f.id`,
-    [tx.learner, classroomType],
-  );
-  return rows.map(row => factId(row.id));
 }
 
 export function transitionClassroom(state: Classroom, op: ClassroomOperation, turnId: FactId): Classroom {
