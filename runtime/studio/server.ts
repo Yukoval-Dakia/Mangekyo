@@ -195,7 +195,7 @@ async function runWorker(storeId: string) {
           await startWork(client, id, {taskQueue: lane.queue});
         }, lane.route);
         if (lane.route === jitRoute) {
-          await relayPending(db, (_, id) => startWork(client, id, { taskQueue: lane.queue }), 'capability_pending');
+          await relayPending(db, async (_, id) => { await startWork(client, id, { taskQueue: lane.queue }); }, 'capability_pending');
         }
         failed = false;
       } catch {
