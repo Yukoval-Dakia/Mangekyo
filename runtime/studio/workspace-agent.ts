@@ -15,7 +15,7 @@ import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAss
 import {learningToolError, openLearningBatch, parseLearningReference, parseOpenLearningArgs} from './workspace-open.ts';
 import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
 import {sourceRefV1} from '../../modules/activity/source-values.ts';
-import {workbookAttempt, workbookAttemptType} from '../../modules/activity/workbook-values.ts';
+import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/activity/library-values.ts';
 import {organizerTaskType} from '../../modules/activity/organizer-values.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
@@ -45,6 +45,7 @@ export function openWorkspaceTools(options: {
   track: (input: WorkspaceWitness) => void;
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
   trackRetention?: (basis: RetentionBasis) => void;
+  trackDiagnosis?: () => void;
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
@@ -74,7 +75,7 @@ export function openWorkspaceTools(options: {
       if (name === 'open_learning') {
         const parsed = parseOpenLearningArgs(args);
         text = JSON.stringify('ok' in parsed ? parsed : await openLearningBatch(tx,parsed,{
-          known:id => sources.has(id), maySend:options.maySend, track,
+          known:id => sources.has(id), maySend:options.maySend, track, trackAssessment,
         }, (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
           parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
       } else if (name === 'read_workspace') {
@@ -84,16 +85,20 @@ export function openWorkspaceTools(options: {
           options.trackRetention ? basis => retentionBasis.push(basis) : undefined));
       } else text = await workspaceSearch(tx,args,track,options.maySend);
       return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,
+        ...(name === 'read_workspace' ? {workbookProjection: 1} : {}),
         ...(name === 'read_learner_radar' ? {retentionBasis} : {})});
     },options.authorize);
     if (priorRead) await priorRead;
-    const {text, witnesses, assessmentBasis, retentionBasis = []} = JSON.parse(raw) as {
-      text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[]; retentionBasis?: RetentionBasis[];
+    const {text, witnesses, assessmentBasis, workbookProjection, retentionBasis = []} = JSON.parse(raw) as {
+      text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[]; workbookProjection?: number;
+      retentionBasis?: RetentionBasis[];
     };
     const value = JSON.parse(text);
     const trackedBasis = assessmentBasis ?? [];
-    const legacyWholeAttempt = !assessmentBasis && value.sourceRef?.fact.type === workbookAttemptType && value.sourceRef.anchor.kind === 'whole';
+    const legacyWorkbookRead = name === 'read_workspace' && workbookProjection !== 1 && value.sourceRef?.anchor.kind === 'whole' &&
+      [workbookPaperType, workbookAttemptType].includes(value.sourceRef.fact.type);
     const current = await db.snapshot({learner: studioLearner}, async tx => {
+      if (legacyWorkbookRead) return false;
       const reader = createCommandReadContext(tx, purpose);
       try {
         for (const witness of witnesses) {
@@ -101,8 +106,6 @@ export function openWorkspaceTools(options: {
           const fact = await reader.fact(input.id, input);
           if (fact.ref.rev !== witness.rev || fact.type !== witness.type ||
             fact.accessEpoch !== witness.epoch || !options.maySend(fact)) return false;
-          // Old whole-attempt receipts could include the frozen rubric inside content.
-          if (legacyWholeAttempt && fact.ref.id === value.id && workbookAttempt(fact.value).paper.questions.some(q => q.kind === 'rubric')) return false;
         }
       } catch (error) {
         if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return false;
@@ -126,13 +129,17 @@ export function openWorkspaceTools(options: {
     });
     if (!current) {
       if (retentionBasis.length) throw new TeachingError('evidence_scope', '保持依据已变化，本轮结果无法使用。');
-      if (trackedBasis.length || legacyWholeAttempt) throw new TeachingError('evidence_scope', '作答依据已变化，本轮结果无法使用。');
+      if (trackedBasis.length || legacyWorkbookRead) throw new TeachingError('evidence_scope', '作答依据已变化，本轮结果无法使用。');
       if (name === 'open_learning') return JSON.stringify(learningToolError('basis_stale','refs','读取依据在打开后已变化。',{
         tool:'open_learning',args,why:'重新读取当前获准的版本。',
       }));
       return workspaceSourceUnavailable;
     }
     const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
+    if (name === 'open_learning' && args.lens === 'diagnose' && values.some(item => item.lens === 'diagnose')) {
+      options.trackDiagnosis?.();
+      for (const witness of witnesses) overviewBasis.set(witness.id, witness);
+    }
     const direct = new Set<string>([value.id,args.related,
       ...values.flatMap(item => [item.id, item.related, ...[...(item.results ?? []), ...(item.observations ?? []),
         ...(item.recentAttempts ?? [])].map(result => result.id)])].filter(id => typeof id === 'string'));

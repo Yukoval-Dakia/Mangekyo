@@ -4,10 +4,10 @@ import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '
 import type {Revision} from '../../kernel/src/declarations/ids.ts';
 import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
 import {isSourceFactId, sourceRefV1} from '../../modules/activity/source-values.ts';
-import {workbookAttempt, workbookAttemptType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
+import {workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
 import {knowledgeEdgeKinds, knowledgeEdgeType} from '../../modules/content/knowledge-edge.ts';
 import {resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
-import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
+import {syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {readTeachingAttemptAssessments} from './learning-attempt-read.ts';
 import {textSlice} from './reading.ts';
@@ -23,10 +23,15 @@ export const workspaceSourceUnavailable = JSON.stringify({error: '未找到可�
 export type AssessmentSlot = Extract<ManifestInput, {kind: 'slot'}>;
 export type WorkspaceAssessmentBasis = {slot: AssessmentSlot; facts: Extract<ManifestInput, {kind: 'fact'}>[]};
 
+export function isWorkspaceAssessmentSlot(type: string) {
+  return type === workbookRubricAssessmentType || type === workbookFormalAssessmentType;
+}
+
 export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: AssessmentSlot, maySend: WorkspaceSourceRecipient): Promise<WorkspaceAssessmentBasis | undefined> {
-  if (slot.slotType !== workbookRubricAssessmentType || slot.mode !== 'following') return;
+  if (!isWorkspaceAssessmentSlot(slot.slotType) || slot.mode !== 'following') return;
   const {rows: [current]} = await tx.query<{manifest: unknown; attempt_id: string; paper_id: string}>(
-    `SELECT d.manifest,d.scope_keys->>'attemptId' AS attempt_id,d.scope_keys->>'paperId' AS paper_id
+    `SELECT d.manifest,COALESCE(d.scope_keys->>'attemptId',s.scope_keys->'submissionRef'->>'id') AS attempt_id,
+       COALESCE(d.scope_keys->>'paperId',s.scope_keys->'releaseRef'->>'id') AS paper_id
      FROM slot_state s JOIN derivations d
        ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.current_id)
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3 AND s.current_id=$4
@@ -57,6 +62,18 @@ export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: Assess
   }
   if (!facts.some(fact => fact.id === current.attempt_id) || !facts.some(fact => fact.id === current.paper_id)) return;
   return {slot, facts};
+}
+
+export async function readWorkspaceAttemptAssessments(tx: ReadTransaction, attempt: FactSnapshot,
+  maySend: WorkspaceSourceRecipient, track: (basis: WorkspaceAssessmentBasis) => void) {
+  const assessments = [];
+  for (const {ref, attempt: _attempt, ...assessment} of await readTeachingAttemptAssessments(tx, attempt, {purpose, recipientEligible: maySend(attempt)})) {
+    const basis = await workspaceAssessmentBasis(tx, ref, maySend);
+    if (!basis) continue;
+    track(basis);
+    assessments.push(assessment);
+  }
+  return assessments;
 }
 
 function referenceFromId(input: unknown) {
@@ -140,31 +157,9 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
   }});
   if (!record) return workspaceSourceUnavailable;
   const {sourceRef, title, tags, links} = record;
-  let original = record.content;
-  const assessments = [];
-  if (attempt && attempt.ref.id === sourceRef.fact.id && sourceRef.anchor.kind === 'whole' && typeof original === 'string') {
-    let value;
-    try { value = workbookAttempt(attempt.value); }
-    catch { return workspaceSourceUnavailable; }
-    const {paper, feedback} = value;
-    if (paper.questions.some(question => question.kind === 'rubric')) {
-      const rubric = '未随作答共享';
-      original = displayOf(workbookAttemptType, {...value,
-        paper: {...paper, questions: paper.questions.map(question => question.kind === 'rubric'
-          ? {...question, rubric, explanation: null} : question)},
-        feedback: feedback.map(item => item.expected.kind === 'rubric'
-          ? {...item, expected: {...item.expected, rubric}, explanation: null} : item),
-      }).text;
-      if (trackAssessment) {
-        for (const {ref, attempt: _attempt, ...assessment} of await readTeachingAttemptAssessments(tx, attempt, {purpose, recipientEligible: maySend(attempt)})) {
-          const basis = await workspaceAssessmentBasis(tx, ref, maySend);
-          if (!basis) continue;
-          trackAssessment(basis);
-          assessments.push(assessment);
-        }
-      }
-    }
-  }
+  const original = record.content;
+  const assessments = trackAssessment && attempt?.ref.id === sourceRef.fact.id && sourceRef.anchor.kind === 'whole'
+    ? await readWorkspaceAttemptAssessments(tx, attempt, maySend, trackAssessment) : [];
   const {content, nextOffset} = typeof original === 'string'
     ? textSlice(original, offset) : {content: original, nextOffset: null};
   return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? workspaceRecordKind(sourceRef.fact.type),

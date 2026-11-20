@@ -20,7 +20,7 @@ export type AssessmentScope = {
   submissionEpoch: string;
 };
 
-function slotKey(type: string, release: AssessmentRevisionRef, submission: AssessmentRevisionRef) {
+export function formalAssessmentSlotKey(type: string, release: AssessmentRevisionRef, submission: AssessmentRevisionRef) {
   return stableId(type, release.id, String(release.rev), submission.id, String(submission.rev));
 }
 
@@ -33,7 +33,7 @@ export async function registerFormalAssessment(
     releaseEpoch: release.accessEpoch, submissionEpoch: submission.accessEpoch,
   };
   const type = policy.slot.type;
-  const key = slotKey(type, scope.releaseRef, scope.submissionRef);
+  const key = formalAssessmentSlotKey(type, scope.releaseRef, scope.submissionRef);
   const inserted = await tx.query(
     `INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys, changed_tick)
      VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
@@ -42,12 +42,18 @@ export async function registerFormalAssessment(
   if (inserted.rowCount) await requestWork(tx, tick, { slotType: type, slotKey: key, deriver: policy.deriver });
 }
 
-type FormalAssessmentValue = {
+export type FormalAssessmentValue = {
   result: AssessmentResult;
   score: ReturnType<typeof readAssessmentScore>;
   criteria: (Pick<AssessmentCriterion, 'criterionId' | 'evaluator' | 'source' | 'maximum'> & { itemId: string })[];
   receipts: { itemId: string; criterionId: string; effectId: string; routeId: string; reportedModel?: string; quote?: string }[];
 };
+
+export function settledAssessmentState({result: {outcomes}}: FormalAssessmentValue) {
+  return outcomes.some(({ state }) => state === 'failed') ? 'failed'
+    : outcomes.some(({ state }) => state === 'blocked') ? 'blocked'
+    : outcomes.every(({ state }) => state === 'scored' || state === 'qualitative') ? 'complete' : 'incomplete';
+}
 
 export async function readFormalAssessment(
   tx: ReadTransaction, type: string, releaseRef: AssessmentRevisionRef, submissionRef: AssessmentRevisionRef, purpose: string,
@@ -60,7 +66,7 @@ export async function readFormalAssessment(
      LEFT JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
        AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
-    [tx.learner, type, slotKey(type, releaseRef, submissionRef)],
+    [tx.learner, type, formalAssessmentSlotKey(type, releaseRef, submissionRef)],
   );
   const refs = { releaseRef, submissionRef };
   if (slot?.value?.kind === 'value' && slot.current_id) {
@@ -68,11 +74,7 @@ export async function readFormalAssessment(
     if ((await revalidateManifest(tx, manifest)).kind !== 'valid' ||
         (purpose !== manifest.purpose && (await revalidateManifest(tx, manifest, purpose)).kind !== 'valid'))
       return { ...refs, state: 'blocked' as const, reason: assessmentInputsBlocked, score: null };
-    const { outcomes } = slot.value.value.result;
-    const state = outcomes.some(({ state }) => state === 'failed') ? 'failed'
-      : outcomes.some(({ state }) => state === 'blocked') ? 'blocked'
-      : outcomes.every(({ state }) => state === 'scored' || state === 'qualitative') ? 'complete' : 'incomplete';
-    return { ...refs, ...slot.value.value, state, derivationId: slot.current_id };
+    return { ...refs, ...slot.value.value, state: settledAssessmentState(slot.value.value), derivationId: slot.current_id };
   }
   if (slot?.last_error) return {
     ...refs, state: slot.last_error.reason === assessmentExecutionFailed ? 'failed' as const : 'blocked' as const,

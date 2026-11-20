@@ -97,7 +97,7 @@ export function sourceQuestions(fact: FactSnapshot): readonly {id: string; promp
   return [];
 }
 
-function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection | undefined {
+function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAccess['recipient']): SourceProjection | undefined {
   try {
     if (anchor.kind === 'question') {
       const question = sourceQuestions(fact).find(item => item.id === anchor.itemId);
@@ -122,6 +122,16 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection |
       if (content.isWellFormed()) return {title: source.title, content};
     } else if (fact.type === intakeFactType) {
       return {title:intakeTextOf(fact).title, content:intakeTextOf(fact).extraction.text};
+    } else if (recipient === 'workspace' && fact.type === workbookPaperType) {
+      const paper = workbookPaper(fact.value);
+      return {title: paper.title, content: paper.questions.map(({prompt}, index) => `${index + 1}. ${prompt}`).join('\n\n')};
+    } else if (recipient === 'workspace' && fact.type === workbookAttemptType) {
+      const {paper, answers, feedback} = workbookAttempt(fact.value);
+      const content = paper.questions.map(({id, prompt}, index) => {
+        const verdict = feedback.find(item => item.questionId === id)?.result;
+        return `${index + 1}. ${prompt}\n我的作答：${answers[id] ?? '未作答'}` + (verdict ? `\n反馈：${verdict}` : '');
+      }).join('\n\n');
+      return {title: paper.title, content};
     } else {
       const {title, text, kind, links, question} = displayOf(fact.type, fact.value);
       const tags = fact.type === workspaceEntryType ? workspaceEntry(fact.value).tags : undefined;
@@ -180,8 +190,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
           const {offset, nextOffset} = textSlice(oldText, anchor.start, Math.max(0, anchor.end-anchor.start));
           return {...anchor, start:offset, end:nextOffset ?? oldText.length};
         })() : anchor;
-        if (!project(text, originalAnchor)) return;
-      } else if (!project(original, anchor)) return;
+        if (!project(text, originalAnchor, access.recipient)) return;
+      } else if (!project(original, anchor, access.recipient)) return;
     }
     const fact = await visit(id, mode === 'pinned' ? rootRevision : undefined);
     if (!fact) return;
@@ -198,7 +208,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       } catch (error) {
         if (!(error instanceof FactNotFoundError)) throw error;
         if (fact.type !== materialType || textReference) return;
-        const projection = project(fact, anchor);
+        const projection = project(fact, anchor, access.recipient);
         if (!projection) return;
         access.track?.(fact, reference ? mode : undefined);
         return {id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), ...projection};
@@ -217,7 +227,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     }
     const projectionAnchor = (mode === 'following' && anchor.kind === 'text' && body.type === intakeFactType)
       ? {...anchor, end:Math.min(anchor.end, intakeTextOf(body).text.length)} : anchor;
-    const projection = project(body, projectionAnchor);
+    const projection = project(body, projectionAnchor, access.recipient);
     if (!projection) return;
     for (const witness of seen.values()) {
       const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;

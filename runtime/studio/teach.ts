@@ -34,13 +34,12 @@ import {
   type TeachingResponse,
 } from '../../executors/teaching/index.ts';
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
-import { workbookRubricAssessmentType } from '../../modules/activity/workbook-values.ts';
 import { caseId, type DisplayTurn } from './sessions.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
-import {workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
+import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
@@ -63,6 +62,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const inputs = new Map<string, ManifestInput>();
   const assessments = new Map<string, WorkspaceAssessmentBasis>();
   const retention = new Map<string, RetentionBasis>();
+  let protectWorkspaceDispatch = false;
   let liveMemoryRevision: number | undefined;
   let learningMemory: Awaited<ReturnType<typeof readMemoryGateway>>;
   let expandedMemory: typeof learningMemory;
@@ -252,7 +252,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         }
       };
       const mcp = step.provider.startsWith('tool:mcp:');
-      const needsFreshEvidence = Boolean(assessments.size || retention.size || memorySend);
+      const needsFreshEvidence = Boolean(protectWorkspaceDispatch || assessments.size || retention.size || memorySend);
       const sendsMcpContext = grants.length > 0 && !step.provider.startsWith('tool:');
       const effect = await runEffect(
         db,
@@ -365,7 +365,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           }
           const previousInputs = parseManifest(manifest).inputs;
           const assessmentSlots = previousInputs.filter((input): input is AssessmentSlot =>
-            input.kind === 'slot' && input.slotType === workbookRubricAssessmentType);
+            input.kind === 'slot' && isWorkspaceAssessmentSlot(input.slotType));
           const retentionSlots = previousInputs.filter((input): input is RadarSlot =>
             input.kind === 'slot' && isRadarRetentionSlot(input.slotType));
           if (response.workspaceBasis?.length || assessmentSlots.length || retentionSlots.length) {
@@ -389,6 +389,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               trackRetention(basis);
             }
             for (const w of witnesses) if (!inherited.has(w.id)) inherited.set(w.id, w);
+            if (witnesses.length) protectWorkspaceDispatch = true;
           }
           // Record the predecessor only when its reply enters the model context.
           if (!messages.length) trackFeedback(previousId, reply.id);
@@ -413,7 +414,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()],
         maySend,
         track(w) { inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w)); },
-        trackAssessment, trackRetention,
+        trackAssessment, trackRetention, trackDiagnosis() { protectWorkspaceDispatch = true; },
         async authorize(tx) {
           if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
           await validInputs(tx);

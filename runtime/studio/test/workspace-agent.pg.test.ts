@@ -139,6 +139,28 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const withdrawn = await access.undoObservation(written.ref.id,{undo_token:written.undo_token});
     expect(withdrawn).toMatchObject({status:'withdrawn',ref:{id:written.ref.id,rev:2}});
     expect(await access.undoObservation(written.ref.id,{undo_token:written.undo_token})).toEqual(withdrawn);
+
+    const diagnose = turn('diagnose frozen submission');
+    const diagnosis = {refs:attempt.id,lens:'diagnose'};
+    expect(await diagnose('open_learning',diagnosis,1)).toMatchObject({ok:false,code:'not_found'});
+    const paperGrant = await access.setTeaching(paper.id,{enabled:true,expectedRev:1});
+    expect(await diagnose('open_learning',{...diagnosis,refs:paper.id},2)).toMatchObject({ok:false,code:'not_found'});
+    const openedDiagnosis = await diagnose('open_learning',diagnosis,3);
+    expect(openedDiagnosis).toMatchObject({ok:true,items:[{
+      frozenPaper:{id:paper.id,rev:1},
+      questions:[{prompt:question.prompt,answer:'实测东北风',assessment:{verdict:'incorrect'},
+        independence:'unknown',help_exposure:{state:'unknown'}}],
+      image_crop:{state:'unavailable'},effective_duration_ms:{state:'unavailable'},
+    }]});
+    expect(JSON.stringify(openedDiagnosis)).not.toContain('参考答案独有字样');
+    const reopenedPaper = await diagnose('read_workspace',{id:paper.id},4);
+    expect(reopenedPaper.content).toContain(question.prompt);
+    expect(JSON.stringify(await diagnose('read_workspace',{id:JSON.stringify(reopenedPaper.sourceRef)},5)))
+      .not.toContain('参考答案独有字样');
+    expect(JSON.stringify(opened)).not.toContain('参考答案独有字样');
+    await access.setTeaching(paper.id,{enabled:false,expectedRev:paperGrant.rev});
+    expect(await diagnose('open_learning',diagnosis,3)).toMatchObject({ok:false,code:'basis_stale'});
+
     const privatePaper = await workbook.save({requestId:'search-preview',title:'检索速度卷',questions:[
       {kind:'exact',prompt:'写出速度单位。',answers:['内部答案标记']},
       {kind:'rubric',prompt:'解释全程速度。',rubric:'内部评分规则标记'},
