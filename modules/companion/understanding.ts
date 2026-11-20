@@ -13,6 +13,7 @@ const kinds = ['preference', 'claim', 'state', 'observation', 'misconception', '
 type Scope = { kind: 'general' } | { kind: 'object'; object: FactId };
 export type ActivityCitation = UnderstandingRef & {
   anchor: string; excerpt: string; direction: MemoryReviewDirection;
+  basis_digest?: string;
 };
 type Source = { ref: UnderstandingRef; kind: string; fragments: readonly {anchor: string; text: string; result?: string}[] };
 export type ExtractedUnderstanding = Understanding<Scope, ActivityCitation> & {
@@ -38,21 +39,27 @@ function scope(value: unknown): Scope {
   return {kind: 'object', object: claimId(input.object)};
 }
 
-function citation(value: unknown): ActivityCitation {
-  const input = exact(value, ['id', 'rev', 'accessEpoch', 'anchor', 'excerpt', 'direction']);
+function citation(value: unknown, persisted: boolean): ActivityCitation {
+  const fields = ['id', 'rev', 'accessEpoch', 'anchor', 'excerpt', 'direction'];
+  const withBasis = persisted && Object.hasOwn(claimRecord(value), 'basis_digest');
+  const input = exact(value, withBasis ? [...fields, 'basis_digest'] : fields);
+  const basis = input.basis_digest;
+  if (withBasis && (typeof basis !== 'string' || !/^[0-9a-f]{64}$/.test(basis)))
+    throw new ClaimInputError('活动依赖凭据无效。');
   const { direction } = input;
   if (direction !== 'support' && direction !== 'contradict' && direction !== 'unresolved')
     throw new ClaimInputError('证据方向无效。');
-  return {...claimRef(input), anchor: claimText(input.anchor, 160), excerpt: claimText(input.excerpt, 360), direction};
+  return {...claimRef(input), anchor: claimText(input.anchor, 160), excerpt: claimText(input.excerpt, 360), direction,
+    ...(typeof basis === 'string' ? {basis_digest: basis} : {})};
 }
 
-function understandingFields(fields: Record<string, unknown>) {
+function understandingFields(fields: Record<string, unknown>, persisted = false) {
   const kind = kinds.find(kind => kind === fields.kind);
   const ttl = fields.ttl === null ? null : claimExpiry(fields.ttl);
   if (!kind || (kind === 'state' && !ttl)) throw new ClaimInputError('短期状态必须带失效时间。');
   if (!Array.isArray(fields.evidence_refs) || !fields.evidence_refs.length || fields.evidence_refs.length > 6)
     throw new ClaimInputError('理解须引用 1–6 份原始活动。');
-  const evidence_refs = fields.evidence_refs.map(citation);
+  const evidence_refs = fields.evidence_refs.map(ref => citation(ref, persisted));
   if (new Set(evidence_refs.map(ref => ref.id)).size !== evidence_refs.length)
     throw new ClaimInputError('同一次原始活动只能计一次。');
   return {kind, text: claimText(fields.text, 600).trim(), scope: scope(fields.scope), ttl, evidence_refs};
@@ -65,7 +72,7 @@ export function isExtractedUnderstanding(value: unknown): boolean {
 export function extractedUnderstanding(value: unknown): ExtractedUnderstanding {
   const fields = exact(value, ['version', 'kind', 'text', 'scope', 'ttl', 'evidence_refs', 'sticky', 'undo_token']);
   if (fields.version !== 2 || typeof fields.sticky !== 'boolean') throw new ClaimInputError('理解版本无效。');
-  return {version: 2, ...understandingFields(fields), sticky: fields.sticky, undo_token: claimId(fields.undo_token)};
+  return {version: 2, ...understandingFields(fields, true), sticky: fields.sticky, undo_token: claimId(fields.undo_token)};
 }
 
 export function understandingProjection(fact: FactSnapshot) {
