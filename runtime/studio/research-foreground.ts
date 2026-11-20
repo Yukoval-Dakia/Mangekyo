@@ -6,7 +6,7 @@ import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
-import { methodName, purpose, slotType } from './identity.ts';
+import { confirmedTeachingMethod, methodName, purpose, slotType } from './identity.ts';
 import { researchReader, whenAvailable } from './research-sources.ts';
 
 const acceptedForeground = `FROM slot_state s JOIN derivations d
@@ -18,10 +18,12 @@ const acceptedForeground = `FROM slot_state s JOIN derivations d
     AND t.type='activity.studyTurn' AND $4=ANY(t.purpose) AND t.retracted_rev IS NULL`;
 const foregroundLimit = 4;
 
+export const companionTeachingMethods = [methodName, confirmedTeachingMethod];
+
 export const completedCompanionTurns = `SELECT s.slot_key AS id, d.effective_tick
   FROM slot_state s JOIN derivations d
     ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.last_id)
-  WHERE s.learner_id=$1 AND s.slot_type=$2 AND d.deriver=$3 AND NOT d.is_shadow
+  WHERE s.learner_id=$1 AND s.slot_type=$2 AND d.deriver=ANY($3::text[]) AND NOT d.is_shadow
     AND d.effective_tick>=d.gather_tick AND d.value->>'action'='companion_reply'`;
 
 export async function newResearchWatermark(tx: ReadTransaction) {
@@ -33,7 +35,7 @@ export async function newResearchWatermark(tx: ReadTransaction) {
          WHERE f.type='activity.studyTurn' AND f.retracted_rev IS NULL AND $4=ANY(f.purpose)),0)
      )::text AS observed,
      COALESCE((SELECT fact_tick FROM working_todo_watermarks WHERE learner_id=$1),0)::text AS reviewed`,
-    [tx.learner, slotType, methodName, researchPurpose],
+    [tx.learner, slotType, companionTeachingMethods, researchPurpose],
   );
   return row && BigInt(row.observed) > BigInt(row.reviewed) ? row : null;
 }

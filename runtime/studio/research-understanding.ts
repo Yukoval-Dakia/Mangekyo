@@ -22,9 +22,9 @@ import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
-import { methodName, slotType, stableId, studioLearner } from './identity.ts';
+import { slotType, stableId, studioLearner } from './identity.ts';
 import { whenAvailable } from './research-sources.ts';
-import { completedCompanionTurns } from './research-foreground.ts';
+import { companionTeachingMethods, completedCompanionTurns } from './research-foreground.ts';
 import { textSlice } from './reading.ts';
 import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
@@ -123,7 +123,7 @@ export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: 
         AND NOT EXISTS (SELECT 1 FROM work t WHERE t.family='todo' AND t.learner_id=f.learner_id
           AND t.dedup_key='understanding:'||f.id||':'||CASE WHEN f.type=$7 THEN 1 ELSE f.current_rev END)
     ) SELECT id FROM eligible WHERE seen>$6::bigint ORDER BY eligible.seen,id`,
-    [tx.learner, slotType, methodName, activityEvidenceTypes, researchPurpose, reviewed, turnEvidenceType]);
+    [tx.learner, slotType, companionTeachingMethods, activityEvidenceTypes, researchPurpose, reviewed, turnEvidenceType]);
   const todos: TodoInput[] = [];
   for (const row of rows) {
     const source = await openUnderstandingActivity(tx, row.id);
@@ -144,7 +144,7 @@ export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec) {
   const source = await openUnderstandingActivity(tx, id);
   if (source?.ref.rev !== revision || source.ref.accessEpoch !== accessEpoch || spec.dedupKey !== extractionKey(source)) return null;
   if (source.kind === 'conversation' && (!source.quoteOnly ||
-      !(await tx.query(`${completedCompanionTurns} AND s.slot_key=$4`, [tx.learner, slotType, methodName, id])).rowCount)) return null;
+      !(await tx.query(`${completedCompanionTurns} AND s.slot_key=$4`, [tx.learner, slotType, companionTeachingMethods, id])).rowCount)) return null;
   return source;
 }
 

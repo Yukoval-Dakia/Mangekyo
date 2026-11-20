@@ -157,7 +157,7 @@ async function runWorker(storeId: string) {
     const work = await readWork(db, ref);
     if (work?.deriver !== confirmedTeachingMethod) return;
     if (terminal) await recordTerminalFailure(db, ref);
-    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters);
+    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters, research.turnCompleted);
   }
   const lanes = [
     { queue, route: undefined, run: executeDefault },
