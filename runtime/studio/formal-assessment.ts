@@ -6,7 +6,7 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
 import {
-  readAssessmentScore, type AssessmentCriterion, type AssessmentResult, type AssessmentRevisionRef,
+  settledAssessmentState, type FormalAssessmentValue, type AssessmentRevisionRef,
 } from '../../modules/activity/assessment-values.ts';
 import { stableId } from './identity.ts';
 
@@ -40,19 +40,6 @@ export async function registerFormalAssessment(
     [tx.learner, type, key, JSON.stringify(scope), tick],
   );
   if (inserted.rowCount) await requestWork(tx, tick, { slotType: type, slotKey: key, deriver: policy.deriver });
-}
-
-export type FormalAssessmentValue = {
-  result: AssessmentResult;
-  score: ReturnType<typeof readAssessmentScore>;
-  criteria: (Pick<AssessmentCriterion, 'criterionId' | 'evaluator' | 'source' | 'maximum'> & { itemId: string })[];
-  receipts: { itemId: string; criterionId: string; effectId: string; routeId: string; reportedModel?: string; quote?: string }[];
-};
-
-export function settledAssessmentState({result: {outcomes}}: FormalAssessmentValue) {
-  return outcomes.some(({ state }) => state === 'failed') ? 'failed'
-    : outcomes.some(({ state }) => state === 'blocked') ? 'blocked'
-    : outcomes.every(({ state }) => state === 'scored' || state === 'qualitative') ? 'complete' : 'incomplete';
 }
 
 export async function readFormalAssessment(

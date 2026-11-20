@@ -12,7 +12,7 @@ import {
   type TrustedAssessmentPublicationSample,
 } from '../../modules/activity/assessment-publication.ts';
 import {
-  assessmentRelease, assessmentSubmission, readAssessmentScore, type AssessmentRelease, type AssessmentResult, type AssessmentRevisionRef,
+  assessmentRelease, assessmentSubmission, formalAssessmentValue, type AssessmentRelease, type AssessmentResult, type AssessmentRevisionRef,
   type AssessmentSubmission,
 } from '../../modules/activity/assessment-values.ts';
 import { artifactActionRecord } from '../../modules/activity/artifact-action.ts';
@@ -155,9 +155,7 @@ export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFa
     }
     const { release, submission } = sealed.plan.data as FrozenInputs;
     const result = evaluateSentenceBreaks(release, submission);
-    const criteria = release.items.flatMap(({ itemId, criteria }) =>
-      criteria.map(({ criterionId, evaluator, source, maximum }) => ({ itemId, criterionId, evaluator, source, maximum })));
-    const value = { result, score: readAssessmentScore(result, release, submission), criteria, receipts: [] };
+    const value = formalAssessmentValue(release, submission, result, []);
     await submitCandidate(db, ref, artifactAssessmentPolicy, sealed.id, { kind: 'value', value }, propagation);
   } catch (error) {
     if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
