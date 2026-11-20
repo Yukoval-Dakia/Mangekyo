@@ -68,9 +68,16 @@ function outputRow(value: unknown): value is ObservedRow | UnknownRow {
     value.score_rate === value.score.earned / value.score.maximum;
 }
 
-export function isExamPacingResult(value: unknown): value is ExamPacingResult {
+export function isExamPacingResult(value: unknown, input?: ExamPacingInput): value is ExamPacingResult {
   if (!record(value, ['method_version', 'attempts', 'strategy']) || value.method_version !== examPacingMethod ||
       !attempts(value.attempts, outputRow)) return false;
+  if (input && (value.attempts.length !== input.attempts.length || !value.attempts.every((row, index) => {
+    const supplied = input.attempts[index];
+    if (!supplied || row.id !== supplied.id) return false;
+    if (row.kind === 'unknown') return fields.every(key => row.missing.includes(key) === (supplied[key] == null));
+    return row.effective_duration_ms === supplied.effective_duration_ms &&
+      row.score.earned === supplied.score?.earned && row.score.maximum === supplied.score.maximum;
+  }))) return false;
   const observed = value.attempts.filter(row => row.kind === 'observed');
   const strategy = value.strategy;
   const candidates = observed.flatMap((first, i) =>
