@@ -1,11 +1,11 @@
 import sharp from 'sharp';
 import type {ImageCrop, StudyImage} from '../../executors/teaching/workspace-tools.ts';
-import type {ReadTransaction} from '../../kernel/src/db/types.ts';
+import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {intakeFactType, type IntakeOriginal} from '../../modules/capture/intake-values.ts';
 import {materialType} from '../../modules/activity/library-values.ts';
 import type {SourceRefV1} from '../../modules/activity/source-values.ts';
-import {readIntakeOriginalBytes} from './intake.ts';
+import {openIntakeObjects} from './intake-objects.ts';
 import {intakeTextOf} from './reading.ts';
 import {resolveSource, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
@@ -44,10 +44,10 @@ export async function planIntakeImage(tx: ReadTransaction, input: string, crop: 
 const maxInputPixels = 16_000_000;
 const maxCropBytes = 1100 * 1024;
 
-export async function cropIntakeImage({sourceRef, title, original, crop}: IntakeImage) {
+export async function cropIntakeImage(db: Db, {sourceRef, title, original, crop}: IntakeImage) {
   const unavailable = () => learningToolError('image_unavailable','refs','无法读取这份 PNG 或 JPEG 原件，原图上限为 1600 万像素。');
   try {
-    const bytes = await readIntakeOriginalBytes(sourceRef.fact.id, original);
+    const bytes = await openIntakeObjects(db).read(sourceRef.fact.id, original);
     const decoder = sharp(bytes, {limitInputPixels:maxInputPixels, failOn:'warning'});
     const {format, width, height} = await decoder.metadata();
     if (format !== (original.mediaType === 'image/png' ? 'png' : 'jpeg') || !width || !height || width * height > maxInputPixels)

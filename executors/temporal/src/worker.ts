@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import type { Client } from '@temporalio/client';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { heartbeat } from '@temporalio/activity';
@@ -16,6 +18,21 @@ export interface WorkWorkerConfig {
   buildId: string;
   onTerminalFailure: ExecuteWork;
   advanceCoordinator?: AdvanceCoordinator;
+}
+
+export async function activateLocalDeployment(client: Client, config: Pick<WorkWorkerConfig, 'address' | 'namespace' | 'buildId'>, deploymentName: string) {
+  if (!/^(localhost|127\.0\.0\.1):\d+$/.test(config.address)) throw new Error('自动激活构建仅限本机开发服务');
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await client.workflowService.setWorkerDeploymentCurrentVersion({
+        namespace: config.namespace, deploymentName, buildId: config.buildId,
+      });
+      return;
+    } catch (error) {
+      if (attempt >= 59) throw error;
+      await delay(500);
+    }
+  }
 }
 
 export type ExecuteWork = (executionRef: string) => Promise<unknown>;

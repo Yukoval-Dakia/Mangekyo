@@ -1,5 +1,6 @@
 import type { ReadTransaction } from '../db/types.ts';
-import type { Tick } from '../declarations/ids.ts';
+import { derivationId, type Tick } from '../declarations/ids.ts';
+import type { Outcome, SlotRef } from '../declarations/types.ts';
 import { canonicalJsonString } from '../commands/canonical.ts';
 import { parseManifest, type Manifest, type ManifestInput, type ManifestVerdict } from './manifest.ts';
 
@@ -118,4 +119,26 @@ async function checkInput(
     behind ||= current.get(member.slotKey) !== member.derivationId || row.lifecycle === 'superseded';
   }
   return valid(behind);
+}
+
+export async function readEffectiveSlotVersion<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string, pinnedId?: string) {
+  if (slot.learner !== tx.learner) return undefined;
+  const { rows: [row] } = await tx.query<{ id: string; value: Outcome<Value>; manifest: unknown; gather_tick: string }>(
+    `SELECT d.id,d.value,d.manifest,d.gather_tick::text
+       FROM slot_state s JOIN derivations d USING (learner_id,slot_type,slot_key)
+      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3 AND d.deriver=$4
+        AND d.effective_tick>=d.gather_tick AND NOT d.is_shadow AND d.invalidated_tick IS NULL
+        AND (($5::text IS NULL AND d.id=s.current_id AND d.lifecycle='effective'
+              AND d.freshness='current' AND d.selection_ended_tick IS NULL)
+          OR ($5 IS NOT NULL AND d.id=$5 AND d.lifecycle IN ('effective','superseded')))`,
+    [slot.learner, slot.type, slot.key, deriver, pinnedId ?? null],
+  );
+  if (!row || row.value?.kind !== 'value') return undefined;
+  const manifest = parseManifest(row.manifest);
+  if (manifest.gatherTick !== row.gather_tick) return undefined;
+  for (const requested of new Set([manifest.purpose, use])) {
+    const verdict = await revalidateManifest(tx, manifest, requested);
+    if (verdict.kind !== 'valid' || (!pinnedId && verdict.freshness !== 'current')) return undefined;
+  }
+  return { manifest, deriver, snapshot: { id: derivationId(row.id), slot, outcome: row.value } };
 }

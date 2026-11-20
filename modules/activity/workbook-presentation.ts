@@ -25,9 +25,24 @@ function parsePresentation(value: unknown) {
   if (phase === 'permit' && row.permit === undefined) gate = { phase };
   else if (phase === 'displayed' && typeof row.permit === 'string') gate = { phase, permit: factId(row.permit) };
   else if (phase !== undefined || row.permit !== undefined) throw new Error('无效的卷面呈现许可。');
+  if (row.issuanceId !== undefined && (kind !== 'question' || phase === undefined || typeof row.issuanceId !== 'string'))
+    throw new Error('无效的纸面发放标识。');
+  const print = row.issuanceId === undefined ? {} : { issuanceId: factId(row.issuanceId) };
   return kind === 'solution'
     ? { kind: 'solution' as const, paper, items: [...items].sort(), submission: helpRef(row.submission), ...gate }
-    : { kind: 'question' as const, paper, items: [...items].sort(), ...gate };
+    : { kind: 'question' as const, paper, items: [...items].sort(), ...gate, ...print };
+}
+
+export function printedWorkbookPresentation(
+  paper: ReturnType<typeof helpRef>,
+  issued: { issuanceId: FactId; pages: readonly { pieces: readonly { itemId: string | null }[] }[] },
+  permit?: FactId,
+) {
+  const items = [...new Set(issued.pages.flatMap(page => page.pieces.flatMap(piece => piece.itemId ? [piece.itemId] : [])))];
+  return workbookPresentation({
+    kind: 'question', paper, items, issuanceId: issued.issuanceId,
+    ...(permit ? { phase: 'displayed', permit } : { phase: 'permit' }),
+  });
 }
 
 export async function authorizeWorkbookPresentation(read: Pick<ReadContext, 'fact'>, data: ReturnType<typeof workbookPresentation>) {
@@ -46,6 +61,12 @@ export async function authorizeWorkbookPresentation(read: Pick<ReadContext, 'fac
   await readFrozenWorkbookBank(read, paper);
   if (!data.items.every(id => paper.questions.some(question => question.id === id))) {
     throw new WorkbookPresentationError('呈现题项与卷面不匹配。');
+  }
+  if ('issuanceId' in data && data.issuanceId) {
+    const issue = await read.fact(data.issuanceId, { mode: 'following' });
+    if (issue.type !== 'capture.paperIssuance' || issue.ref.rev !== 1 ||
+        !sameWorkbookJson(helpRef(object(issue.value).source), data.paper))
+      throw new WorkbookPresentationError('纸面发放与固定卷面不匹配。');
   }
   if (data.kind === 'solution') {
     const submission = await read.fact(data.submission.id, { mode: 'pinned', rev: data.submission.rev });
