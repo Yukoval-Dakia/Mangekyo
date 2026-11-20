@@ -1,5 +1,6 @@
+import { recoverDraft, selectDraft, pendingDraft, settleDraft, type Draft } from './today-draft';
 import { useDraftWatermark } from './draft-watermark';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, deletedSubmission, remember, remembered, submissionId } from './api';
 import {
   bindDeletionWatermark,
@@ -20,7 +21,7 @@ type Pack = {
   choices: string[];
 };
 type Activity = { kind: 'activity'; id: string; rev: number; href: string };
-type Draft = { choice: number; requestId: string; pending?: boolean };
+
 type Result = { id: string; rev: number; result: 'correct' | 'incorrect'; explanation: string };
 
 export function openLink(ref: ActivityRef, mode: string) {
@@ -48,13 +49,33 @@ function local<T>(key: string): T | null {
   }
 }
 
+const packKey = ({ id, rev }: ActivityRef) => 'today-pack:' + encodeURIComponent(id) + '@' + rev;
+
+export function cachedPack(ref: ActivityRef) {
+  const value = local<Pack>(packKey(ref));
+  return frozenPack(value, ref) ? value : null;
+}
+
+export function otherCachedPacks(inPlan: ActivityRef[]) {
+  const packs: Pack[] = [];
+  for (const storageKey of Object.keys(localStorage)) {
+    if (!/^mangekyo:today-pack:[^@]+@\d+$/.test(storageKey)) continue;
+    const value = local<Pack>(storageKey.slice('mangekyo:'.length));
+    if (!value || value.kind !== 'pack' || !frozenPack(value, value) ||
+        'mangekyo:' + packKey(value) !== storageKey) continue;
+    if (!inPlan.some(ref => ref.kind === 'pack' && ref.id === value.id && ref.rev === value.rev)) packs.push(value);
+  }
+  return packs;
+}
+
 export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode: string }) {
   const { kind, id, rev } = refValue;
   const watermark = useDraftWatermark();
-  const key = 'today-pack:' + encodeURIComponent(id) + '@' + rev;
-  const draftKey = key + ':answer';
+  const key = packKey(refValue);
+  const draftKey = 'mangekyo:' + key + ':answer';
   const [pack, setPack] = useState<Pack | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(() => local(draftKey));
+  const [draft, setDraft] = useState<Draft | null>(() => recoverDraft(draftKey));
+  const selectedId = useRef(draft?.requestId);
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -82,11 +103,13 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
             return;
           }
         }
+        remember(key, null);
         throw new Error('活动版本或入口不符。');
       } catch (failure) {
         if (controller.signal.aborted) return;
-        const cached = local<Pack>(key);
-        if (!navigator.onLine && frozenPack(cached, ref)) {
+        if (failure instanceof ApiError && [400, 401, 403, 404, 410].includes(failure.status)) remember(key, null);
+        const cached = cachedPack(ref);
+        if (failure instanceof TypeError && cached) {
           setPack(cached);
           setError('离线阅读已打开的内置题面。选择保存在本机。');
         } else setError(failure instanceof ApiError ? failure.message : '无法打开这个版本。请联网重试。');
@@ -107,7 +130,9 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
   }, []);
   const clearStale = useCallback(
     (requestId: string) => {
-      if (local<Draft>(draftKey)?.requestId === requestId) remember(draftKey, null);
+      settleDraft(draftKey, requestId, true);
+      if (selectedId.current !== requestId) return;
+      selectedId.current = undefined;
       setDraft((current) => (current?.requestId === requestId ? null : current));
       setConsent(false);
       setError('删除状态已变化，旧选择已清除。请重新作答。');
@@ -137,11 +162,16 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
 
   function choose(choice: number) {
     if (!pack || busy || !watermark.ready) return;
-    const next = { choice, requestId: submissionId() };
-    setDraft(next);
-    remember(draftKey, JSON.stringify(next));
-    setConsent(false);
-    setError('');
+    try {
+      const next = { choice, requestId: submissionId() };
+      selectDraft(draftKey, next);
+      selectedId.current = next.requestId;
+      setDraft(next);
+      setConsent(false);
+      setError('');
+    } catch {
+      setError('无法保存这次选择，请检查浏览器的本机存储。');
+    }
   }
   async function submit() {
     if (!pack || !draft || !consent || busy) return;
@@ -168,7 +198,8 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
         setError('本次未发送。服务端的删除水位暂时无法核对，选择已保留。');
         return;
       }
-      remember(draftKey, JSON.stringify({ ...draft, pending: true }));
+      if (selectedId.current !== draft.requestId) return;
+      pendingDraft(draftKey, draft);
       setDraft({ ...draft, pending: true });
       const response = await fetch('/api/today/submit', {
         method: 'POST',
@@ -194,16 +225,18 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
         typeof value.explanation !== 'string'
       )
         throw new Error('回执未确认');
+      settleDraft(draftKey, draft.requestId, true);
+      if (selectedId.current !== draft.requestId) return;
       setResult(value);
-      remember(draftKey, null);
     } catch (failure) {
+      if (selectedId.current !== draft.requestId) return;
       if (deletedSubmission(failure)) {
         clearStale(draft.requestId);
       } else {
         if (failure instanceof ApiError && failure.status >= 400 && failure.status < 500) {
           const editable = { ...draft, pending: false };
           setDraft(editable);
-          remember(draftKey, JSON.stringify(editable));
+          settleDraft(draftKey, draft.requestId, false);
         }
         setError(
           failure instanceof ApiError ? failure.message : '提交结果待核对。可以用同一选择和原请求重试。',

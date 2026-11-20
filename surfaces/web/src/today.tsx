@@ -3,6 +3,7 @@ import { api, ApiError, remember, remembered, requestId } from './api';
 import { PageTitle } from './workspace';
 import { RetentionPosttests } from './retention-posttests';
 import { openLink, TodayActivity, type ActivityRef } from './today-pack';
+import { rememberPlan, TodayHistory } from './today-history';
 import './today.css';
 
 type Mode = 'any' | 'one-hand' | 'voice';
@@ -74,6 +75,7 @@ function nextDay(day: string) {
 function TodayPlanPage({ mode }: { mode: Mode }) {
   const [plan, setPlan] = useState<TodayPlan | null>(null);
   const [error, setError] = useState('');
+  const [offline, setOffline] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
@@ -98,11 +100,13 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
       if (!document.hidden) setReload((n) => n + 1);
     };
     window.addEventListener('online', refresh);
+    window.addEventListener('offline', refresh);
     document.addEventListener('visibilitychange', refresh);
     const timer = window.setInterval(refresh, 60_000);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('online', refresh);
+      window.removeEventListener('offline', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
   }, []);
@@ -113,6 +117,13 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     });
     if (lastVisit.current) params.set('lastOpenedAt', lastVisit.current);
+    if (!navigator.onLine) {
+      setPlan(null);
+      setOffline(true);
+      setLoading(false);
+      setError('');
+      return;
+    }
     setLoading(true);
     setError('');
     void api<TodayPlan>('/today?' + params, { signal: controller.signal })
@@ -126,12 +137,15 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
           !Number.isFinite(value.totalMinutes)
         )
           throw new Error('规划回执不完整。');
+        rememberPlan(value, mode);
+        setOffline(false);
         setPlan(value);
         if (typeof value.openedAt === 'string') remember('today-last-open', value.openedAt);
       })
       .catch((failure) => {
         if (!controller.signal.aborted) {
           setPlan(null);
+          setOffline(failure instanceof TypeError);
           setError(
             failure instanceof ApiError && failure.status !== 404
               ? failure.message
@@ -310,7 +324,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
         ))}
       </div>
       {mutationError && <p role="alert">{mutationError}</p>}
-      {pending && (
+      {pending && !offline && (
         <button className="tonal-button" disabled={busy} onClick={() => void write(pending)}>
           用原请求核对安排
         </button>
@@ -323,6 +337,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
           </button>
         </p>
       )}
+      {offline && <TodayHistory />}
       {loading && !plan && <p role="status">正在读取今天的安排…</p>}
       {plan && (
         <section className="day-sheet" aria-busy={loading}>
@@ -439,7 +454,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
         <a href="/plan">学习计划</a>
         <a href="/review">错题回看</a>
       </div>
-      <RetentionPosttests />
+      {!offline && <RetentionPosttests />}
     </>
   );
 }
