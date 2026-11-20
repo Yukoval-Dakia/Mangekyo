@@ -5,8 +5,11 @@ import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import { captureIntakeCommand, correctIntakeCommand, completeCloudIntakeCommand, setIntakeResearchCommand, intakeDocument, intakeFactType, intakePurpose, materialType } from '../../modules/capture/intake-values.ts';
+import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+
+export const intakeCaptureId = (requestId: string) => commandId(stableId('intake-capture',requestId));
 
 export function intakeIdFor(materialId: FactId) { return factId(stableId('intake-document', materialId)); }
 
@@ -25,9 +28,16 @@ export function openIntakeLifecycle(db: Db, base: (id: string) => string) {
     if (typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 1) throw new RequestError(400, '材料版本无效。');
     const requestId = commandId(stableId('erase-intake', clientRequest(input.requestId)));
     return eraseOriginal(db, scope, {actor:'learner', confirmed:true, requestId, root, expectedRev:rev}, async tx => {
-      const documentId = intakeIdFor(root);
       const read = createCommandReadContext(tx, intakePurpose);
       const material = await read.fact(root, {mode:'following'});
+      if (material.type === captureSourceType) {
+        const source = sourceEnvelope(material.value);
+        if (source.kind !== 'paper-return' || source.originals.length !== 1 || source.originals[0]?.blobRef !== root)
+          throw new RequestError(404, '找不到这份交入原件。');
+        if (material.ref.rev !== rev) throw new LifecycleError(409, '原件已有新版本。请重新查看后确认。');
+        return {ids:[root],commandTypes:[captureSourceCommand]};
+      }
+      const documentId = intakeIdFor(root);
       const document = await read.fact(documentId, {mode:'following'});
       if (material.type !== materialType || document.type !== intakeFactType || intakeDocument(document.value).materialId !== root)
         throw new RequestError(404, '找不到这份交入原件。');

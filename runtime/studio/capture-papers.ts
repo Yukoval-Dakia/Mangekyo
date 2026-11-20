@@ -1,10 +1,11 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, derivationId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, derivationId, factId, type CommandId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { DerivationSnapshot, FactSnapshot, Json, Outcome, ReadContext, SlotRef } from '../../kernel/src/declarations/types.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
@@ -15,9 +16,10 @@ import {
   bindPaperCommandRead, collectPaperInput, collectPaperWrites, defaultPaperRunId, paperIssuance, paperIssuanceId,
   paperIssuanceType, paperRun, paperRunType, projectIssuedPaper, projectNewPaper, type PaperExtractionReader, type PaperIssuance,
 } from '../../modules/capture/paper.ts';
-import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
+import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { assetType, textbookPageType } from '../../modules/content/asset.ts';
 import { questionVerificationKey, questionVerificationType, type QuestionVerification } from '../../modules/content/question-state.ts';
+import type { IntakeOriginal } from '../../modules/capture/intake-values.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 
@@ -90,6 +92,7 @@ function input<T>(parse: () => T): T {
 async function paperRequest<T>(work: () => Promise<T>) {
   try { return await work(); }
   catch (error) {
+    if (error instanceof LifecycleError) throw error;
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError)
       throw new RequestError(404, '找不到当前可读取的纸面依据。');
     if (error instanceof Error && error.constructor === Error) throw new RequestError(409, conflict);
@@ -157,9 +160,30 @@ async function listPapers(tx: ReadTransaction) {
   return { sources, returns, issued };
 }
 
+type Collect = ReturnType<typeof collectPaperInput>;
+type PaperCommand = (type: string, data: Json, id?: CommandId, deletionWatermark?: string) => Promise<void>;
+
+export function paperReturnSelection(input: {issuanceId: unknown; page: unknown; purpose: unknown; retryId?: unknown}, id: FactId) {
+  const selected = typeof input.page === 'string' && /^\d+$/.test(input.page) ? Number(input.page) : null;
+  const {page, original, ...refs} = collectPaperInput({...input,page:selected,source:{id,rev:1},original:0});
+  if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1 ||
+      (input.purpose !== 'storage' && input.purpose !== 'learning' && input.purpose !== 'teaching' && input.purpose !== 'background-research'))
+    throw new Error('请选择发放页码和原件用途。');
+  return {...refs,page,original:0,purpose:input.purpose};
+}
+
+async function collect(read: ReadContext, command: PaperCommand, data: Collect) {
+  const runId = data.retryId ?? await defaultPaperRunId(data.issuanceId);
+  await command('capture.collectPaper', data as Json);
+  // Reopen all witnesses even if the command kernel replayed a saved receipt.
+  if ((await collectPaperWrites(read,data)).length) throw new RequestError(409, conflict);
+  const run = await read.fact(runId,{mode:'following'});
+  if (run.type !== paperRunType || paperRun(run.value).issuanceId !== data.issuanceId) throw new RequestError(409, conflict);
+  return {run,receipt:{issuanceId:data.issuanceId,runId,rev:run.ref.rev,page:data.page,independence:'unknown' as const}};
+}
+
 export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandHooks) {
-  async function write<T>(run: (read: ReadContext,
-    command: (type: string, data: Json) => Promise<void>) => Promise<T>) {
+  async function write<T>(run: (read: ReadContext, command: PaperCommand, tx: ReadTransaction) => Promise<T>) {
     return paperRequest(() => db.tx(scope, async tx => {
       await lockLearner(tx, tx.learner);
       const read = learnerRead(tx);
@@ -167,11 +191,11 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
         if (inner.learner !== tx.learner) throw new RequestError(409, conflict);
         return execute(tx);
       } }, { modules: [capture], hooks, bindCommandRead: (inner, request, base) => bindRead(inner, base, request.purpose) });
-      return run(read, async (type, data) => {
-        const receipt = await handle({ learner: tx.learner, actor: 'learner', purpose, type,
-          id: commandId(stableId(type, canonicalJsonString(data))), input: data });
+      return run(read, async (type, data, id = commandId(stableId(type,canonicalJsonString(data))), deletionWatermark) => {
+        const receipt = await handle({learner:tx.learner,actor:'learner',purpose,type,id,input:data,
+          ...(deletionWatermark === undefined ? {} : {deletionWatermark})});
         if (receipt.state !== 'done') throw new RequestError(409, conflict);
-      });
+      },tx);
     }));
   }
 
@@ -191,20 +215,51 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
         return readIssuedPaper(read, id, await read.fact(id, { mode: 'following' }));
       });
     },
+    async upload(selection: ReturnType<typeof paperReturnSelection>, upload: {
+      command: CommandId; deletionWatermark: string; title: string; original: IntakeOriginal; install: () => Promise<void>;
+    }) {
+      const {source,purpose: selectedPurpose,...assignment} = selection;
+      const {id,rev} = source;
+      return write(async (read,command,tx) => {
+        await assertUnburned(tx,'fact',[id]);
+        await assertUnburned(tx,'command',[upload.command]);
+        await assertDeletionWatermark(tx,upload.deletionWatermark);
+        const prior = await readRecordedCommand(tx,upload.command);
+        if (prior && prior.type !== captureSourceCommand) throw new RequestError(409,'同一个请求标识已用于普通交入。');
+        const recordedAt = prior
+          ? sourceEnvelope((await read.fact(id,{mode:'pinned',rev})).value).recordedAt
+          : new Date().toISOString();
+        await command(captureSourceCommand,{id,paperReturn:assignment,envelope:{
+          kind:'paper-return',retentionPolicy:'retained',occurredAt:null,recordedAt,
+          originals:[{...upload.original,blobRef:id}],unit:{kind:'capture',title:upload.title,blocks:[]},
+        },purpose:selectedPurpose === purpose ? [purpose] : [purpose,selectedPurpose]},upload.command,upload.deletionWatermark);
+        const {run,receipt} = await collect(read,command,{...assignment,source});
+        const target = paperRun(run.value).pages.find(page => page.number === assignment.page);
+        if (target?.source.id !== id || target.source.rev !== rev)
+          throw new RequestError(409,'这页已回收。请使用原请求或另起一次作答。');
+        if (!prior) {
+          try { await upload.install(); }
+          catch { throw new RequestError(500,'拍回原件未能保存。'); }
+        }
+        return {...receipt,intent:'paper-return' as const,id,revision:rev,title:upload.title,source,original:0,created:!prior};
+      });
+    },
     async collect(body: Record<string, unknown>) {
-      const { page, original, ...target } = input(() => collectPaperInput(body));
+      const data = input(() => collectPaperInput(body));
+      const {page,original,source} = data;
       if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1 ||
           typeof original !== 'number' || !Number.isSafeInteger(original) || original < 0)
-        throw new RequestError(400, '回收页码或原图索引无效。');
-      const data = { ...target, page, original };
-      const runId = data.retryId ?? await defaultPaperRunId(data.issuanceId);
-      return write(async (read, command) => {
-        await command('capture.collectPaper', data);
-        // The kernel can return a saved receipt without rerunning its read phase.
-        if ((await collectPaperWrites(read, data)).length) throw new RequestError(409, conflict);
-        const run = await read.fact(runId, { mode: 'following' });
-        if (run.type !== paperRunType || paperRun(run.value).issuanceId !== data.issuanceId) throw new RequestError(409, conflict);
-        return { issuanceId: data.issuanceId, runId, rev: run.ref.rev, page, independence: 'unknown' as const };
+        throw new RequestError(400,'回收页码或原图索引无效。');
+      return write(async (read,command,tx) => {
+        await assertUnburned(tx,'fact',[source.id]);
+        const {rows:[row]} = await tx.query<{assignment: unknown}>(
+          `SELECT c.input#>'{input,paperReturn}' AS assignment FROM fact_revs r
+          JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+          WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND c.type=$3`,[tx.learner,source.id,captureSourceCommand]);
+        const {source: _,...assignment} = data;
+        if (row?.assignment && canonicalJsonString(row.assignment) !== canonicalJsonString(assignment))
+          throw new RequestError(409,'回收页归属与本人上传时的选择不符。');
+        return (await collect(read,command,data)).receipt;
       });
     },
     async reprint(body: Record<string, unknown>) {

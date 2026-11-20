@@ -37,7 +37,9 @@ import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { cloudIntakeSlot, enqueueCloudIntake, mineruSupports, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
 
-import { intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
+import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
+import { paperReturnSelection, type openCapturePapers } from './capture-papers.ts';
+import { intakeCaptureId, intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 
@@ -236,6 +238,8 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       if (watermark !== undefined) await lifecycle.checkCapture(tx,id,watermark);
       const read = createCommandReadContext(tx, intakePurpose);
       const material = await read.fact(id, { mode: 'following' });
+      if (watermark !== undefined && material.type === captureSourceType)
+        throw new RequestError(409, '同一个请求标识已用于纸卷拍回。');
       const document = await read.fact(intakeId, { mode: 'following' });
       return { id, material, document, intakeId };
     });
@@ -246,7 +250,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     try {
       facts = await factsFor(materialId,watermark);
     } catch (error) {
-      if (error instanceof LifecycleError) throw error;
+      if (error instanceof LifecycleError || error instanceof RequestError) throw error;
       if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) {
         throw new RequestError(404, '这份材料或它的交入记录不存在。');
       }
@@ -286,8 +290,23 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   }
 
   async function originalFor(materialId: string) {
-    const metadata = await metadataFor(materialId);
-    const stored = await readStoredOriginal(base(metadata.id), factId(metadata.id));
+    const id = factId(materialId);
+    const original = await db.snapshot({learner:studioLearner},async tx => {
+      const read = createCommandReadContext(tx,intakePurpose);
+      try {
+        const source = await read.fact(id,{mode:'following'});
+        if (source.type === captureSourceType) {
+          const envelope = sourceEnvelope(source.value);
+          if (envelope.kind === 'paper-return' && envelope.originals[0]?.blobRef === id)
+            return envelope.originals[0];
+        }
+      } catch (error) {
+        if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+      }
+      return null;
+    });
+    const metadata = original ? {original} : await metadataFor(id);
+    const stored = await readStoredOriginal(base(id),id);
     if (stored.mediaType !== metadata.original.mediaType || stored.size !== metadata.original.size ||
         stored.sha256 !== metadata.original.sha256 || stored.name !== metadata.original.name ||
         digest(await readFile(stored.path)) !== metadata.original.sha256)
@@ -295,20 +314,15 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     return { metadata, stored };
   }
 
-  async function capture(input: CaptureInput) {
+  function prepareCapture(input: CaptureInput) {
     const requestId = clientRequest(input.requestId);
     if (!Buffer.isBuffer(input.bytes) || input.bytes.length === 0) throw new RequestError(400, '请选择要交入的文件。');
     if (input.bytes.length > intakeFileLimit) throw new RequestError(413, '文件超过 25 MB。');
     const materialId = factId(stableId('intake-material', requestId));
-    const intakeId = intakeIdFor(materialId);
     const deletionWatermark = submittedWatermark(input);
     const detected = detect(input.bytes, cleanName(input.filename), input.declaredType);
     const name = cleanName(input.filename) || '材料原件';
     const title = cleanTitle(input.title, name.replace(/\.[^.]+$/, '') || '材料原件');
-    const requested = input.extraction ?? 'local';
-    if (requested !== 'local' && requested !== 'mineru') throw new RequestError(400, '请选择有效的识别方式。');
-    const cloud = requested === 'mineru';
-    if (cloud && !mineruSupports(detected.mediaType)) throw new RequestError(415, 'MinerU 支持 PDF、PNG 和 JPEG。');
     const sha256 = digest(input.bytes);
     let original: IntakeOriginal;
     try {
@@ -317,7 +331,17 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     } catch (error) {
       throw new RequestError(400, error instanceof Error ? error.message : '交入材料无效。');
     }
-    const matches = (prior: IntakeMetadata) => prior.original.sha256 === sha256 && prior.original.name === original.name &&
+    return {requestId,materialId,deletionWatermark,detected,title,original};
+  }
+
+  async function capture(input: CaptureInput) {
+    const {requestId,materialId,deletionWatermark,detected,title,original} = prepareCapture(input);
+    const intakeId = intakeIdFor(materialId);
+    const requested = input.extraction ?? 'local';
+    if (requested !== 'local' && requested !== 'mineru') throw new RequestError(400, '请选择有效的识别方式。');
+    const cloud = requested === 'mineru';
+    if (cloud && !mineruSupports(detected.mediaType)) throw new RequestError(415, 'MinerU 支持 PDF、PNG 和 JPEG。');
+    const matches = (prior: IntakeMetadata) => prior.original.sha256 === original.sha256 && prior.original.name === original.name &&
       prior.title === title && prior.original.mediaType === detected.mediaType &&
       (prior.requestedExtraction ?? 'local') === requested;
     const prior = await metadataOrNull(materialId.toString(), deletionWatermark);
@@ -326,46 +350,34 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       return { ...prior, created: false };
     }
     if (cloud && !mineruToken()) throw new RequestError(503, 'MinerU 云识别尚未配置。');
-    const destination = base(materialId);
-    const staged = await stageOriginal(destination, input.bytes, original);
     let installed = false;
     try {
-      await writeFile(join(staged.directory, 'store-id'), (await lifecycle.storeId()) + ':' + materialId, {mode:0o600});
-      const extraction: IntakeExtraction = cloud ? {
-        status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
-        pages: null, truncated: false, characterCount: 0,
-      } : await extractLocalDocument(detected.kind, staged.path, input.bytes, intakeTextLimit);
-      const commandInput = {
-        materialId, intakeId, title, original, extraction,
-        ...(cloud ? { requestedExtraction: 'mineru' } : {}),
-      };
-      const save = createCommandHandler(db, {
-        ...runtime,
-        hooks: {
-          async onFactsChanged(tx, tick, changes) {
-            // The capture command has inserted both facts under the learner lock.
-            // Any previous directory at this ID is from an uncommitted capture.
-            await rm(destination, { recursive: true, force: true });
-            await rename(staged.directory, destination);
-            installed = true;
-            if (cloud) await enqueueCloudIntake(tx, tick, intakeId);
-            await hooks.onFactsChanged(tx, tick, changes);
+      await withOriginal(materialId,input.bytes,original,async (staged, install) => {
+        const extraction: IntakeExtraction = cloud ? {
+          status: 'pending', method: 'mineru', text: '', error: null, warnings: [],
+          pages: null, truncated: false, characterCount: 0,
+        } : await extractLocalDocument(detected.kind,staged,input.bytes,intakeTextLimit);
+        const commandInput = {
+          materialId, intakeId, title, original, extraction,
+          ...(cloud ? { requestedExtraction: 'mineru' } : {}),
+        };
+        const save = createCommandHandler(db, {
+          ...runtime,
+          hooks: {
+            async onFactsChanged(tx, tick, changes) {
+              await install();
+              installed = true;
+              if (cloud) await enqueueCloudIntake(tx, tick, intakeId);
+              await hooks.onFactsChanged(tx, tick, changes);
+            },
           },
-        },
-      });
-      await save({
-        learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: captureIntakeCommand,
-        id: commandId(stableId('intake-capture', requestId)), deletionWatermark,
-        input: commandInput,
+        });
+        await save({
+          learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: captureIntakeCommand,
+          id: intakeCaptureId(requestId), deletionWatermark, input: commandInput,
+        });
       });
     } catch (error) {
-      if (installed) {
-        await db.tx({ learner: studioLearner }, async tx => {
-          await lockLearner(tx, studioLearner);
-          const committed = await tx.query('SELECT id FROM facts WHERE learner_id=$1 AND id=$2', [studioLearner, materialId]);
-          if (committed.rows.length === 0) await rm(destination, { recursive: true, force: true });
-        }).catch(() => undefined);
-      }
       if (error instanceof LifecycleError) throw error;
       const raced = await metadataOrNull(materialId.toString(), deletionWatermark);
       if (raced && matches(raced)) return { ...raced, created: false };
@@ -373,10 +385,48 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
         throw new RequestError(409, '同一个请求标识已经用于不同内容。');
       }
       throw error;
-    } finally {
-      await rm(staged.directory, { recursive: true, force: true });
     }
-    return { ...(await metadataFor(materialId.toString())), created: installed };
+    return { ...(await metadataFor(materialId)), created: installed };
+  }
+
+  async function withOriginal<T>(id: FactId, bytes: Buffer, original: IntakeOriginal,
+    save: (staged: string, install: () => Promise<void>) => Promise<T>) {
+    const destination = base(id);
+    const staged = await stageOriginal(destination,bytes,original);
+    let installed = false;
+    try {
+      await writeFile(join(staged.directory,'store-id'), (await lifecycle.storeId()) + ':' + id, {mode:0o600});
+      return await save(staged.path,async () => {
+        // Installation runs under the learner lock after the original's commands succeed.
+        await rm(destination,{recursive:true,force:true});
+        await rename(staged.directory,destination);
+        installed = true;
+      });
+    } catch (error) {
+      if (installed) {
+        await db.tx({ learner: studioLearner }, async tx => {
+          await lockLearner(tx, studioLearner);
+          const committed = await tx.query('SELECT id FROM facts WHERE learner_id=$1 AND id=$2', [studioLearner, id]);
+          if (committed.rows.length === 0) await rm(destination, { recursive: true, force: true });
+        }).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      await rm(staged.directory,{recursive:true,force:true});
+    }
+  }
+
+  async function paperReturn(input: CaptureInput & Parameters<typeof paperReturnSelection>[0],
+    papers: ReturnType<typeof openCapturePapers>) {
+    const {requestId,materialId,deletionWatermark,detected,title,original} = prepareCapture(input);
+    if (detected.kind === 'text') throw new RequestError(415,'纸卷拍回需要照片或 PDF。');
+    if (input.extraction !== undefined) throw new RequestError(400,'纸卷拍回只保存原件，请移除识别选项。');
+    let selection;
+    try { selection = paperReturnSelection(input,materialId); }
+    catch { throw new RequestError(400,'请选择已发行纸卷、页码和原件用途。'); }
+    return withOriginal(materialId,input.bytes,original,(_,install) => papers.upload(selection,{
+      command:intakeCaptureId(requestId),deletionWatermark,title,original,install,
+    }));
   }
 
   async function cloudOriginal(materialId: string, expectedSha256: string) {
@@ -455,6 +505,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     },
     metadata: metadataFor,
     original: originalFor,
+    paperReturn,
     cloudOriginal,
     completeCloud,
   };
@@ -483,7 +534,7 @@ function decodeUtf8(value: string) {
   return Buffer.from(value, 'latin1').toString('utf8');
 }
 
-function intakeFormText(form: FormData, field: 'requestId' | 'title' | 'extraction' | 'deletionWatermark') {
+function intakeFormText(form: FormData, field: string) {
   const values = form.getAll(field);
   if (values.length === 0) return undefined;
   if (values.length !== 1 || typeof values[0] !== 'string') {
@@ -492,7 +543,7 @@ function intakeFormText(form: FormData, field: 'requestId' | 'title' | 'extracti
   return values[0];
 }
 
-async function sendOriginal(response: ServerResponse, metadata: IntakeMetadata, stored: StoredOriginal) {
+async function sendOriginal(response: ServerResponse, metadata: Pick<IntakeMetadata,'original'>, stored: StoredOriginal) {
   const stream = createReadStream(stored.path);
   stream.on('error', () => response.destroy());
   response.writeHead(200, {
@@ -511,6 +562,7 @@ export async function handleIntakeRequest(
   response: ServerResponse,
   pathname: string,
   method: string | undefined,
+  papers?: ReturnType<typeof openCapturePapers>,
 ): Promise<boolean> {
   if (pathname === '/api/lifecycle' && method === 'GET') {
     const state = await intake.lifecycle.state();
@@ -538,13 +590,20 @@ export async function handleIntakeRequest(
         if (!file || typeof file === 'string' || form.getAll('file').length !== 1)
           throw new RequestError(400, '请选择一个文件。');
         watermark = submittedWatermark({deletionWatermark:intakeFormText(form,'deletionWatermark')});
-        result = await intake.capture({
+        const intent = intakeFormText(form,'intent');
+        const upload = {
           deletionWatermark:watermark,
           requestId: intakeFormText(form, 'requestId'),
           title: intakeFormText(form, 'title'),
           extraction: intakeFormText(form, 'extraction'),
           filename: file.name, declaredType: file.type, bytes: Buffer.from(await file.arrayBuffer()),
-        });
+        };
+        if (intent === 'paper-return' && papers) result = await intake.paperReturn({
+          ...upload, issuanceId:intakeFormText(form,'issuanceId'), page:intakeFormText(form,'page'),
+          purpose:intakeFormText(form,'purpose'), retryId:intakeFormText(form,'retryId'),
+        },papers);
+        else if (intent === undefined) result = await intake.capture(upload);
+        else throw new RequestError(400,'交入用途无效。');
       } else {
         const requestId = request.headers['x-request-id'];
         if (typeof requestId !== 'string' || requestId.trim() === '') throw new RequestError(400, '请求标识无效。');
