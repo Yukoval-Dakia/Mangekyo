@@ -10,6 +10,7 @@ import {
   retentionDeadline as deadline, retentionFreezeRequest,
 } from '../../modules/activity/retention-posttest.ts';
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
+import { throughTick, validatesWorkbookHistory } from '../../modules/activity/evidence-read.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -76,11 +77,23 @@ async function findSlot<T, S>(tx: ReadTransaction, type: string, key: string) {
   return row;
 }
 
-async function project<T>(tx: ReadTransaction, key: string, row: SlotRow<T, unknown>) {
+export async function retentionHistoryValid(tx: ReadTransaction, id: DerivationId, observation?: RetentionObservation) {
+  const { rows: [row] } = await tx.query<{ target: RetentionTarget; effective_tick: Tick }>(
+    `SELECT value->'value'->'input'->'target' AS target,effective_tick::text FROM derivations
+       WHERE learner_id=$1 AND id=$2 AND slot_type=$3 AND NOT is_shadow`, [tx.learner, id, forecastSlot.type]);
+  if (!row?.target || !row.effective_tick) return false;
+  return validatesWorkbookHistory(tx, row.target, observation?.admittedAt ?? row.effective_tick, posttestIdFor(id),
+    observation?.exposure.kind === 'independent');
+}
+
+async function project<T extends RetentionForecast | ReconciliationValue>(tx: ReadTransaction, key: string, row: SlotRow<T, unknown>) {
   if (row.current_id && row.effective_tick && row.value?.kind === 'value') {
     const manifest = parseManifest(row.manifest);
     const verdict = await revalidateManifest(tx, manifest, retentionPurpose);
-    if (verdict.kind === 'valid') {
+    const value = row.value.value;
+    if (verdict.kind === 'valid' && ('observation' in value
+      ? await retentionHistoryValid(tx, value.forecastId, value.observation)
+      : await validatesWorkbookHistory(tx, value.input.target, row.effective_tick))) {
       return { key, state: 'current' as const, derivationId: derivationId(row.current_id),
         effectiveTick: row.effective_tick, freshness: verdict.freshness, value: row.value.value, basis: manifest };
     }
@@ -182,6 +195,12 @@ async function evidenceWatermark(tx: ReadTransaction) {
   return row.clock;
 }
 
+async function requireFreshVariant(tx: ReadTransaction, target: RetentionTarget, cutoff: Tick, issuance?: FactId) {
+  if (!await validatesWorkbookHistory(tx, target, throughTick(cutoff), issuance)) {
+    throw new RequestError(409, '当前不能按新变式发放或记录此题。');
+  }
+}
+
 function readAtWatermark(tx: ReadTransaction, tracked: ReadContext, cutoff: Tick): ReadContext {
   const base = createCommandReadContext(tx, retentionPurpose);
   return { ...tracked, async fact(id, options) {
@@ -240,6 +259,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
       const read = createCommandReadContext(tx, retentionPurpose);
       const opened = await openRetentionTarget(tx, read, id, itemId);
       const cutoff = await evidenceWatermark(tx);
+      await requireFreshVariant(tx, { ...opened.target, condition }, cutoff);
       let witnessedVariant = false;
       for (const attemptId of priorAttemptIds) {
         const { evidence, novelty } = await readComparableWorkbookEvidence(tx, read, opened, attemptId, cutoff);
@@ -353,6 +373,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
               items.push({ ...entry, state: 'submitted', reconciliationKey: reconciliationKeyFor(frozen.derivationId, attemptId) });
           } catch (error) {
             if (!(error instanceof FactNotFoundError)) throw error;
+            await requireFreshVariant(tx, frozen.value.input.target, await evidenceWatermark(tx), posttestIdFor(frozen.derivationId));
             if (scheduledAt && now < scheduledAt) items.push({ ...entry, state: 'scheduled', scheduledAt });
             else if (posttestOpensAt(window) <= now && now < through) items.push({ ...entry, state: 'ready' });
           }
@@ -369,6 +390,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     const observation = againstFrozenTarget(await readWorkbookObservation(tx, read, opened, attemptId, frozen.derivationId),
       frozen.value.input.target);
     afterFreeze(observation, window, frozen.effectiveTick);
+    if (!await retentionHistoryValid(tx, frozen.derivationId, observation)) throw new RequestError(409, forecastUnavailable);
     const key = reconciliationKeyFor(frozen.derivationId, attemptId);
     const existing = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, key);
     if (existing) {
@@ -393,6 +415,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
       if (!opened.sealed || opened.target.gradingVersion !== workbookGradingVersion) {
         throw new RequestError(422, '普通卷面缺少完整帮助见证，须从受控冻结卷开始后测。');
       }
+      await requireFreshVariant(tx, frozen.value.input.target, await evidenceWatermark(tx), posttestIdFor(frozen.derivationId));
       return posttest.start(tx, {
         forecastId: frozen.derivationId, forecastKey: factId(forecastKey), effectiveTick: frozen.effectiveTick,
         paper: opened.target.paper, paperEpoch: opened.accessEpoch, itemId: opened.target.itemId,
@@ -409,6 +432,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
         throw new RequestError(404, '后测不属于该预测。');
       }
       const { issuance } = await readPosttestIssuance(tx, read, factId(posttestId));
+      await requireFreshVariant(tx, frozen.value.input.target, await evidenceWatermark(tx), factId(posttestId));
       const attemptId = await posttest.submit(tx, factId(posttestId), issuance, opened.paper, input);
       const result = await reconcileAttempt(tx, current, attemptId);
       return { attemptId, reconciliation: { key: result.key, state: result.state } };
@@ -437,6 +461,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
           const read = readAtWatermark(tx, ctx.read, cutoff);
           const opened = await openRetentionTarget(tx, read, target.paper.id, target.itemId);
           sameTarget(opened, slot.scope_keys);
+          await requireFreshVariant(tx, target, ctx.snapshotTick);
           const observations: RetentionObservation[] = [];
           const evidenceRows: ActivityEvidenceObservation[] = [];
           const targetDimensions = await readItemDimensions(tx, read, opened.question.sourceQuestionRef, cutoff);
@@ -482,6 +507,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
           const observation = againstFrozenTarget(await readWorkbookObservation(tx, read, opened, attemptId, forecastId),
             frozen.value.input.target);
           afterFreeze(observation, window, frozen.effectiveTick);
+          if (!await retentionHistoryValid(tx, forecastId, observation)) throw new RequestError(409, forecastUnavailable);
           return { forecastId, forecast: frozen.value, observation };
         });
       });

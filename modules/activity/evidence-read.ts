@@ -4,8 +4,8 @@ import {
   helpExposure, helpExposureType, recordHelpExposureCommand, type HelpPresentation, type HelpRef,
 } from './help-exposure-values.ts';
 import { recallSubmissionType, submitRecallCommand } from './recall-values.ts';
-import { closedPosttest, posttestIssuanceType, posttestSubmissionType } from './retention-posttest.ts';
-import { submitWorkbookAttemptCommand, workbookAttemptType } from './workbook-values.ts';
+import { closedPosttest, issuePosttestCommand, posttestIssuanceType, posttestSubmissionType, retentionPaperType } from './retention-posttest.ts';
+import { submitWorkbookAttemptCommand, workbookAttemptType, workbookPaperType } from './workbook-values.ts';
 
 export type ActivityEvidenceReadScope = {
   learner: LearnerId;
@@ -105,4 +105,85 @@ export async function readEarlierControlledPosttests(
     [tx.learner, posttestIssuanceType, paperId, posttestSubmissionType, started, cutoff],
   );
   return rows;
+}
+
+export type WorkbookHistoryTarget = { paper: HelpRef; itemId: string };
+
+export function throughTick(tick: Tick) {
+  return String(BigInt(tick) + 1n) as Tick;
+}
+
+/** Private safety check over immutable event births. No foreign witness or help metadata leaves this reader. */
+export async function workbookItemHistory(
+  tx: ActivityEvidenceReadScope, target: WorkbookHistoryTarget, before: Tick, ownIssuance?: FactId,
+) {
+  const { rows: [row] } = await tx.query<{ seen: boolean; cross_help: boolean }>(
+    `WITH fence AS (
+      SELECT LEAST($5::bigint, min(r.tick)) AS tick
+      FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+      WHERE r.learner_id=$1 AND r.rev=1 AND r.author='learner' AND f.type=$14 AND c.type=$10
+        AND r.data->>'paperId'=$6
+    ), item AS (
+      SELECT q->'sourceQuestionRef' AS source FROM fact_revs r
+        CROSS JOIN LATERAL jsonb_array_elements(r.data->'questions') q
+      WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=$3 AND q->>'id'=$4
+    ), releases AS (
+      SELECT p.fact_id AS paper_id, p.fact_id AS mount_id, p.rev AS mount_rev, p.data, false AS controlled
+      FROM fact_revs p JOIN facts f ON (f.learner_id,f.id)=(p.learner_id,p.fact_id)
+      WHERE p.learner_id=$1 AND f.type=ANY($7::text[]) AND p.kind='value' AND p.tick<(SELECT tick FROM fence)
+      UNION ALL
+      SELECT p.fact_id, i.fact_id, i.rev, p.data, true
+      FROM fact_revs i JOIN facts f ON (f.learner_id,f.id)=(i.learner_id,i.fact_id)
+      JOIN commands c ON (c.learner_id,c.id)=(i.learner_id,i.command_id)
+      JOIN fact_revs p ON (p.learner_id,p.fact_id,p.rev)=
+        (i.learner_id,i.data->'paper'->>'id',(i.data->'paper'->>'rev')::int)
+      WHERE i.learner_id=$1 AND f.type=$8 AND c.type=$9 AND i.author='learner' AND i.rev=1
+        AND i.tick<(SELECT tick FROM fence) AND i.fact_id IS DISTINCT FROM $6
+    ), matches AS (
+      SELECT r.paper_id,r.mount_id,r.mount_rev,r.controlled,q->>'id' AS item_id FROM releases r
+        CROSS JOIN LATERAL jsonb_array_elements(r.data->'questions') q CROSS JOIN item
+      WHERE (r.paper_id=$2 AND q->>'id'=$4) OR q->'sourceQuestionRef'=item.source
+    ), assignments AS (
+      SELECT r.data, f.type FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+      WHERE r.learner_id=$1 AND r.rev=1 AND r.author='learner' AND r.tick<(SELECT tick FROM fence) AND c.type=$10
+        AND f.type=ANY($11::text[])
+    ), attempted AS (
+      SELECT DISTINCT m.paper_id, m.controlled,
+        EXISTS (SELECT 1 FROM jsonb_array_elements(a.data->'feedback') b
+          WHERE b->>'questionId'=m.item_id AND b->>'result'<>'unanswered') AS feedback
+      FROM assignments a CROSS JOIN item CROSS JOIN LATERAL jsonb_array_elements(a.data->'paper'->'questions') q
+      JOIN matches m ON m.mount_id=a.data->>'paperId' AND m.item_id=q->>'id'
+      WHERE (m.paper_id=$2 AND m.item_id=$4) OR q->'sourceQuestionRef'=item.source
+    ), helped AS (
+      SELECT DISTINCT m.paper_id FROM fact_revs r
+        JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+        JOIN matches m ON (m.mount_id,m.mount_rev::text)=
+          (r.data->'mount'->'issuance'->>'id',r.data->'mount'->'issuance'->>'rev')
+      WHERE r.learner_id=$1 AND f.type=$12 AND c.type=$13 AND r.rev=1 AND r.tick<(SELECT tick FROM fence)
+        AND r.data->>'kind' IN ('opened','displayed')
+        AND (r.data->'mount'->'item'->>'itemId'=m.item_id OR EXISTS (
+          SELECT 1 FROM jsonb_array_elements(r.data->'alsoAppliesTo') h WHERE h->>'itemId'=m.item_id))
+    )
+    SELECT EXISTS (SELECT 1 FROM matches WHERE controlled) OR EXISTS (SELECT 1 FROM attempted)
+        OR EXISTS (SELECT 1 FROM helped) AS seen,
+      EXISTS (SELECT 1 FROM attempted WHERE paper_id<>$2 AND feedback) OR
+        EXISTS (SELECT 1 FROM helped WHERE paper_id<>$2) AS cross_help`,
+    [tx.learner, target.paper.id, target.paper.rev, target.itemId, before, ownIssuance ?? null,
+      [workbookPaperType, retentionPaperType], posttestIssuanceType, issuePosttestCommand, submitWorkbookAttemptCommand,
+      [workbookAttemptType, posttestSubmissionType], helpExposureType, recordHelpExposureCommand, posttestSubmissionType],
+  );
+  if (!row) throw new Error('Missing workbook item safety result');
+  return row;
+}
+
+export async function validatesWorkbookHistory(
+  tx: ActivityEvidenceReadScope, target: WorkbookHistoryTarget & { condition: string },
+  before: Tick, ownIssuance?: FactId, independent = false,
+) {
+  if (target.condition !== 'variant' && !independent) return true;
+  const { seen, cross_help } = await workbookItemHistory(tx, target, before, ownIssuance);
+  return !(target.condition === 'variant' && seen) && !(independent && cross_help);
 }

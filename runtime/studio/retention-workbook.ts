@@ -15,7 +15,7 @@ import {
 import type { RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
 import { readPosttestIssuance, type PosttestFactReader } from './retention-posttest.ts';
 import { activityHelpProcess, controlledWorkbookHelp } from '../../modules/activity/evidence-slice.ts';
-import { readEarlierControlledPosttests } from '../../modules/activity/evidence-read.ts';
+import { readEarlierControlledPosttests, workbookItemHistory } from '../../modules/activity/evidence-read.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { RequestError } from './sessions.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
@@ -143,6 +143,9 @@ export async function readWorkbookEvidence(
       throw new RequestError(422, '交卷和冻结卷面的题项或判分条件不一致。');
     }
     process = await readExposure(tx, read, target, submission.ref, birth.tick);
+  }
+  if (controlled && process.helpLevel === 'independent' && (await workbookItemHistory(tx, target, birth.tick)).cross_help) {
+    process = activityHelpProcess({ kind: 'unknown', reason: 'incomplete-observation', evidenceRefs: [] }, []);
   }
   const result = attempt.feedback.find(item => item.questionId === target.itemId)?.result;
   const observation: RetentionObservation = {
