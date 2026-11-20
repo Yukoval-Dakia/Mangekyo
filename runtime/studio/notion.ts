@@ -238,8 +238,15 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false}: 
       }
       witnesses.set(witness, pages.get(key)!);
     }
-    // The repeatable snapshot must start after the learner lock has been acquired.
-    if (readOnly) return locked(() => snapshot(tx => project(tx,check(tx))));
+    if (readOnly) {
+      try {
+        return await db.snapshot({learner},tx => project(tx,check(tx)),{lockLearner:true});
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === '40001')
+          throw new RequestError(503, '课堂依据正在更新，请重试。');
+        throw error;
+      }
+    }
     return locked<P | T>(tx => publish ? publish(tx, check(tx)) : project(tx, check(tx)));
   }
 

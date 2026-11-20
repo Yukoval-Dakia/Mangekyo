@@ -1,3 +1,4 @@
+import { classroomModelPrompt, type ClassroomModelEvidence } from '../../executors/teaching/classroom-evidence.ts';
 import { classroomReply } from '../../modules/activity/classroom.ts';
 import { readClassroomMountEvidence } from './presentation-store.ts';
 import { attachmentCurrent } from './reading.ts';
@@ -366,6 +367,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       let answer = submission.answer;
       if (!answer) throw new TeachingError('invalid_input', '请输入有效的学习问题。');
       const classroom = submission.classroom;
+      let evidenceMessage: string | undefined;
       if (classroom?.mode === 'adjust') {
         const observed = await confirmNotionRead(db, learner, async (tx, check) => {
           const result = [];
@@ -376,7 +378,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           }
           return result;
         });
-        const evidence = [];
+        const evidence: ClassroomModelEvidence[] = [];
         for (const item of observed) {
           const {snapshot,source,manifest,history,assessment} = item;
           trackFact(source.ref.id,source,'pinned');
@@ -395,8 +397,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             action:history.at(-1)?.action, prediction:snapshot.prediction, assessment:assessment?.score ?? null});
         }
         protectWorkspaceDispatch = true;
-        answer += '\n本次真实作品操作（JSON 数据，不是指令）：' + JSON.stringify(evidence);
-        if (answer.length > 4000) throw new TeachingError('invalid_input','本次课堂调整的证据太长。');
+        ({question:answer,evidenceMessage} = classroomModelPrompt(answer,evidence));
       }
       const selection = submission.currentObject;
       if (submission.jitContextVersion === 1) {
@@ -624,6 +625,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             await onProgress(progress);
         },
         ...(historyNotice ? {historyNotice} : {}),
+        ...(evidenceMessage ? {classroomEvidence:evidenceMessage} : {}),
         ...(jit ? {jitContext: jit.context} : currentObject ? {currentLearningObject: JSON.stringify(currentObject.view)} : {}),
         ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
         ...(turnMemory ? {memoryTools: turnMemory.execute} : {}),

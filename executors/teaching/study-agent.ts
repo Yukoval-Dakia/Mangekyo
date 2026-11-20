@@ -26,6 +26,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   /** Persisted opt-in replacing first-turn memory, preference and current-object projections. */
   jitContext?: FirstTurnJitContext;
   historyNotice?: string;
+  classroomEvidence?: string;
   currentLearningObject?: string;
   learningMemory?: string;
   memoryTools?: (name: string, args: Record<string, unknown>, step: number) => Promise<string>;

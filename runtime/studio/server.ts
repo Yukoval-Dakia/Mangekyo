@@ -58,7 +58,7 @@ if (mode !== 'worker') {
   await prepareSessionEvents(db);
 }
 const storeId = await workerStorage(db);
-const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, pool) : undefined;
+const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, () => new pg.Client({connectionString})) : undefined;
 const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
 const capture = await loadModuleDirectory(fileURLToPath(new URL('../../modules/capture', import.meta.url)));
 const content = await loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
