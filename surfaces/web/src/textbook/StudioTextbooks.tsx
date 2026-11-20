@@ -4,6 +4,8 @@ import { api, requestId } from '../api';
 import { ListLink, PageTitle, ReadState, useResource } from '../workspace';
 import { TextbookWorkspace, textbookLink, type Page, type Transport } from './index';
 
+import { PageProposals } from './ProposalReview';
+
 const editorPath = '/textbooks/page';
 const pagePath = (id: string) => editorPath + textbookLink({ id });
 const transport: Transport = {
@@ -57,7 +59,7 @@ export default function StudioTextbooks({ editor, openAccess }: { editor: boolea
     <a className="back-link" href="/textbooks">‹ 教材列表</a>
     <ReadState resource={index} />
     {index.data && <TextbookWorkspace chapters={[{ title: '我的教材页', pages: index.data.pages }]}
-      initialPage={index.data.pages[0]?.id ?? ''} draftScope="studio" transport={transport} slots={{practice: page =>
+      initialPage={index.data.pages[0]?.id ?? ''} draftScope="studio" transport={transport} slots={{review: page => <PageProposals key={page.id} id={page.id} />, practice: page =>
         page.purpose?.some(value => value === 'teaching' || value === 'all')
           ? <RecordQuestionLink kind="page" record={page} />
           : <button className="text-button" onClick={openAccess}>在学习记录访问中开放教材</button>}} />}

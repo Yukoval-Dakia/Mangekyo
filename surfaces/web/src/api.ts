@@ -75,11 +75,16 @@ export interface SettingsUpdate {
 }
 
 export type StudyAttachment = { id: string; title: string; text: string; mode: 'ask' | 'prepare' };
+export type PageWrite =
+  | {status: 'saved'; undo_token: string}
+  | {status: 'proposed'; proposalId: string}
+  | {status: 'withdrawn' | 'reverted' | 'changed'};
+
 export interface Turn {
   turnId?: string;
   artifacts?: unknown;
   trace?: string[];
-  writes?: {id: string; rev: number; title: string; observation?:
+  writes?: {id: string; rev: number; title: string; page?: PageWrite; observation?:
     {status: 'saved'; text: string; undo_token: string} | {status: 'changed'} | {status: 'withdrawn'};
     memory?: {status: 'saved'; action: 'remember' | 'correct' | 'forget'; undo_token: string} |
       {status: 'changed'} | {status: 'withdrawn'}}[];
