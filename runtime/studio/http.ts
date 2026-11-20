@@ -1,3 +1,4 @@
+import type { openMemoryManagement } from './memory-management.ts';
 import { browseMcpTools } from '../../executors/teaching/mcp-client.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -90,6 +91,7 @@ export function serve(
     workbook: ReturnType<typeof openWorkbook>;
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
+    memoryManagement: ReturnType<typeof openMemoryManagement>;
     intake: ReturnType<typeof openIntake>;
     workspace: ReturnType<typeof openWorkspaceAccess>;
     research: ReturnType<typeof openResearch>;
@@ -233,6 +235,14 @@ export function serve(
       if (path === '/api/organizer' && method === 'GET') return json(res, 200, await student.organizer.snapshot());
       if (path === '/api/organizer/tasks' && method === 'POST') return json(res, 200, await student.organizer.task(await body(req)));
       if (path === '/api/organizer/notes' && method === 'POST') return json(res, 200, await student.organizer.note(await body(req)));
+      if (path === '/api/memory/claims' && method === 'GET')
+        return json(res, 200, await student.memoryManagement.list(url.searchParams.get('before')));
+      const memorySource = /^\/api\/memory\/claims\/sources\/([0-9A-HJKMNP-TV-Z]{26})\/revoke$/.exec(path);
+      if (memorySource?.[1] && method === 'POST')
+        return json(res, 200, await student.memoryManagement.revokeSource(memorySource[1], await body(req)));
+      const claim = /^\/api\/memory\/claims\/([0-9A-HJKMNP-TV-Z]{26})(\/undo)?$/.exec(path);
+      if (claim?.[1] && method === 'POST')
+        return json(res, 200, await (claim[2] ? student.memoryManagement.undo : student.memoryManagement.manage)(claim[1], await body(req)));
       if (path === '/api/memory' && method === 'GET') return json(res, 200, await student.memory.read());
       if (path === '/api/memory' && method === 'POST') return json(res, 200, await student.memory.save(await body(req)));
       if (path === '/api/cases' && method === 'GET') return json(res, 200, { cases });

@@ -1,17 +1,30 @@
-import { defineCommand, type FactWrite } from '@mangekyo/kernel';
-import { applyClaimCommand, claimInput, claimType, ClaimTargetError, explicitClaimRequest } from '../claim.ts';
+import { defineCommand, type FactSnapshot, type FactWrite } from '@mangekyo/kernel';
+import { applyClaimCommand, claimInput, claimType, ClaimInputError, matchesClaimEvidence, readClaimPredecessor } from '../claim.ts';
+
+function allowsTeaching(fact: FactSnapshot) {
+  return fact.purpose.includes('teaching') || fact.purpose.includes('all');
+}
 
 export default defineCommand({
   type: applyClaimCommand,
-  destructive: true,
-  schema: { parse: claimInput },
-  async write(ctx, { id, source, quote }): Promise<readonly FactWrite[]> {
-    const action = explicitClaimRequest(quote)!;
-    const target = action.target ? await ctx.read.fact(action.target, { mode: 'following' }) : undefined;
-    if (target && target.type !== claimType) throw new ClaimTargetError('指定的记录不是可管理的 Claim。');
-    const supersedes = target ? { id: target.ref.id, rev: target.ref.rev, accessEpoch: target.accessEpoch } : null;
-    return [{ kind: 'create', id, factType: claimType, data: { quote, source, supersedes },
-      purpose: action.action !== 'forget' && action.teaching ? ['storage', 'teaching'] : ['storage'] },
-    ...(target ? [{ kind: 'retract' as const, id: target.ref.id, expectedRev: target.ref.rev }] : [])];
+  destructive: false,
+  schema: {parse: claimInput},
+  async write(ctx, entries): Promise<readonly FactWrite[]> {
+    const writes: FactWrite[] = [];
+    for (const {id, data} of entries) {
+      const evidence = data.evidence_refs[0]!;
+      const source = await ctx.read.fact(evidence.id, {mode: 'following'});
+      if (!allowsTeaching(source) || !matchesClaimEvidence(source, evidence, evidence.excerpt, evidence.start))
+        throw new ClaimInputError('本轮教学用途或原话已变化。');
+      if (data.supersedes && !allowsTeaching(await readClaimPredecessor(ctx, data.supersedes)))
+        throw new ClaimInputError('目标记忆不允许教学用途。');
+      if (data.scope.kind === 'object') for (const ref of data.scope.basis) {
+        const object = await ctx.read.fact(ref.id, {mode: 'following'});
+        if (!allowsTeaching(object) || object.ref.rev !== ref.rev || object.accessEpoch !== ref.accessEpoch)
+          throw new ClaimInputError('学习对象范围已变化。');
+      }
+      writes.push({kind: 'create', id, factType: claimType, data, purpose: ['storage', 'teaching']});
+    }
+    return writes;
   },
 });

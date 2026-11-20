@@ -5,11 +5,11 @@ import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts'
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { isSourceFactId, sourceReference } from '../../modules/activity/source-values.ts';
-import { studyTurn } from '../../modules/activity/values.ts';
 import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
-import { memoryAssertion, memoryAssertionType, memoryLinkKinds, type MemoryLink } from '../../modules/companion/memory-assertion.ts';
+import { memoryAssertion, memoryAssertionType, type MemoryLink } from '../../modules/companion/memory-assertion.ts';
 import { memoryReviewDeriverVersion, reviewMemoryEvidence } from '../../modules/companion/memory-review.ts';
-import { claimType, claimValue, explicitClaimRequest } from '../../modules/companion/claim.ts';
+import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory-claims.ts';
+import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import { learnerPreference, learnerPreferenceType, type PreferenceScope } from '../../modules/learner/preference-values.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
 import { readLearningOverview } from './learning-overview.ts';
@@ -20,11 +20,12 @@ import type { WorkspaceWitness } from './workspace-agent.ts';
 type AnswerLocation = { id: string; itemId: string };
 export type MemoryScope = { preference: PreferenceScope; links: readonly MemoryLink[];
   conditions?: readonly string[]; attempt?: AnswerLocation; experienceTurn?: string };
-export type MemoryIntent = 'tutoring' | 'planning' | 'execution' | 'history';
+export type MemoryIntent = 'tutoring' | 'planning' | 'execution' | 'history' | 'management';
 const regionsByIntent = {
   tutoring: ['current_answer', 'preferences', 'claims', 'memory', 'course_knowledge', 'learner_model', 'verified_playbooks'],
-  planning: ['goal', 'scheduled_tasks', 'claims', 'learner_model', 'todo', 'inventory'],
+  planning: ['goal', 'scheduled_tasks', 'preferences', 'claims', 'learner_model', 'todo', 'inventory'],
   execution: ['current_answer', 'todo', 'chronicle', 'verified_playbooks', 'experience'],
+  management: ['claims'],
   history: ['current_answer', 'claims', 'memory', 'chronicle'],
 } as const;
 type MemoryRegion = typeof regionsByIntent[MemoryIntent][number];
@@ -33,35 +34,15 @@ type Omission = { region: MemoryRegion; reason: 'unknown' | 'basis_stale' } |
   { region: MemoryRegion; reason: 'budget'; expand: RegionPage };
 export type ContextBundle = { intent: MemoryIntent; data: Partial<Record<MemoryRegion, Json[]>>; omitted: Omission[] };
 type SentWitness = WorkspaceWitness & { fragment?: { itemId: string; slotId: 'answer'; end?: number } |
-  { field: 'answer'; start: 0; end: number } };
+  { field: 'answer'; start: number; end: number } };
 type RegionItem = { value: Json; sent: SentWitness[]; basis?: WorkspaceWitness[]; expiresAt?: string };
 type Regions = Map<MemoryRegion, RegionItem[]>;
 
-// Typed selectors share the existing message entry point. Natural-language titles never match a source identity.
-export function memoryScopeFromMessage(message: string): MemoryScope {
-  const input = /^学习范围[：:]([^\n]+)$/mu.exec(message)?.[1];
-  const preference: { subject?: string; activity?: string; context?: string } = {};
-  const links: MemoryLink[] = [];
-  const conditions = new Set<string>();
-  let attempt: AnswerLocation | undefined;
-  for (const token of (input?.trim().split(/\s+/u) ?? []).slice(0, 8)) {
-    const [key, value, extra] = token.split('=');
-    if (!value || extra !== undefined || value.length > 240) continue;
-    if (key === 'subject' || key === 'activity' || key === 'context') {
-      preference[key] = value;
-    } else if (key === 'condition') {
-      conditions.add(value);
-    } else if (key === 'attempt') {
-      const [id, itemId, rest] = value.split('/');
-      if (!attempt && isSourceFactId(id) && itemId && /^[A-Za-z0-9_-]{1,40}$/.test(itemId) && rest === undefined) {
-        attempt = { id, itemId };
-      }
-    } else {
-      const kind = memoryLinkKinds.find(kind => kind === key);
-      if (kind && isSourceFactId(value)) links.push({ kind, id: factId(value) });
-    }
-  }
-  return { preference, links, conditions: [...conditions], ...(attempt ? { attempt } : {}) };
+export function memoryScopeForObject(current: OpenedCurrentLearningObject | undefined): MemoryScope {
+  if (!current) return {preference: {}, links: [], conditions: []};
+  const {root, view} = current;
+  return {preference: {activity: view.alias === 'current_attempt' ? 'attempt' : 'page', context: root.id},
+    links: [{kind: 'source', id: factId(root.id)}], ...(current.answerSlot ? {attempt: {id: root.id, itemId: current.answerSlot}} : {})};
 }
 
 const witness = (fact: FactSnapshot): WorkspaceWitness => ({ id: fact.ref.id, rev: fact.ref.rev,
@@ -105,7 +86,7 @@ function packBundle(intent: MemoryIntent, regions: readonly MemoryRegion[], resu
 }
 
 async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: WorkspaceSourceRecipient, at: string,
-  requested: readonly MemoryRegion[]) {
+  requested: readonly MemoryRegion[], options: {ownTurn?: string; management?: boolean; query?: string}) {
   const results: Regions = new Map();
   function add(region: MemoryRegion, entry: RegionItem) {
     const items = results.get(region) ?? [];
@@ -151,29 +132,37 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     }
   }
 
-  if (requested.includes('claims')) {
-    const { rows } = await tx.query<{ id: string; tick: string }>(
-      `SELECT id,created_tick::text AS tick FROM facts WHERE learner_id=$1 AND type=$2
-       AND retracted_rev IS NULL AND 'teaching'=ANY(purpose) ORDER BY created_tick DESC,id LIMIT 24`, [tx.learner, claimType]);
-    for (const row of rows) {
+  if (requested.includes('claims') || wantsPreferences) {
+    for (const row of await currentMemoryClaims(tx, options)) {
       const fact = await open(row.id);
-      if (!fact) continue;
-      const claim = claimValue(fact.value);
-      const source = await open(claim.source.id);
-      if (!source || source.type !== 'activity.studyTurn' || source.ref.rev !== claim.source.rev ||
-          source.accessEpoch !== claim.source.accessEpoch) continue;
-      const submission = studyTurn(source.value);
-      if (submission.caseId !== 'companion' || submission.answer !== claim.quote) continue;
-      const { rows: [origin] } = await tx.query<{ author: string }>(
-        `SELECT author FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=$3`,
-        [tx.learner, source.ref.id, source.ref.rev],
-      );
-      if (origin?.author !== 'learner') continue;
-      const action = explicitClaimRequest(claim.quote);
-      if (!action || action.action === 'forget' || !action.teaching) continue;
-      add('claims', { value: { id: row.id, quote: claim.quote, source: claim.source, supersedes: claim.supersedes,
-        validFrom: null, recordedAt: null, recordedTick: row.tick },
-      sent: [witness(fact), { ...witness(source), fragment: { field: 'answer', start: 0, end: claim.quote.length } }] });
+      const claim = fact && readClaimValue(fact.value);
+      if (!fact || !claim) continue;
+      const legacy = claim.version === 0;
+      const evidence = legacy ? claim.source : claim.evidence_refs[0];
+      const excerpt = legacy ? claim.quote : claim.evidence_refs[0]?.excerpt;
+      const start = legacy ? 0 : claim.evidence_refs[0]?.start ?? 0;
+      if (!evidence || !excerpt) continue;
+      const source = await openClaimEvidence(tx, evidence, excerpt, start, legacy);
+      if (!source || !maySend(source)) continue;
+      const region = !options.management && !legacy && claim.category === 'preference' ? 'preferences' : 'claims';
+      if (!requested.includes(region)) continue;
+      if (!legacy && (claim.action === 'forget' || (claim.valid_until && claim.valid_until <= at))) continue;
+      const scopeBasis: WorkspaceWitness[] = [];
+      if (!legacy && claim.scope.kind === 'object') {
+        if (!options.management && claim.scope.object !== scope.preference.context) continue;
+        for (const ref of claim.scope.basis) {
+          const object = await open(ref.id);
+          if (object?.ref.rev === ref.rev && object.accessEpoch === ref.accessEpoch) scopeBasis.push(witness(object));
+        }
+        if (scopeBasis.length !== claim.scope.basis.length) continue;
+      }
+      add(region, {value: {id: row.id, rev: fact.ref.rev, text: legacy ? null : claim.text,
+        quote_excerpt: excerpt, kind: legacy ? 'legacy' : claim.category,
+        scope: legacy ? {kind: 'unknown'} : claim.scope.kind === 'object'
+          ? {kind: 'object', id: claim.scope.object} : claim.scope,
+        valid_until: legacy ? null : claim.valid_until, recordedTick: row.tick},
+      sent: [witness(fact), {...witness(source), fragment: {field: 'answer', start, end: start + excerpt.length}}],
+      basis: scopeBasis, ...(!legacy && claim.valid_until ? {expiresAt: claim.valid_until} : {})});
     }
   }
   if (!wantsMemory && !wantsPreferences && !wantsCourse && !wantsAnswer) return results;
@@ -292,9 +281,9 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
 export async function readMemoryGateway(options: {
   db: Db; owner: { kind: 'session' | 'derivation'; id: string; step: string }; scope: MemoryScope;
   intent: MemoryIntent; maxBytes: number; expand?: RegionPage; maySend: WorkspaceSourceRecipient;
-  authorize: (tx: ReadTransaction) => Promise<void>;
+  authorize: (tx: ReadTransaction) => Promise<void>; ownTurn?: string; query?: string;
 }) {
-  const { db, owner, scope, intent, maxBytes, expand, maySend, authorize } = options;
+  const { db, owner, scope, intent, maxBytes, expand, maySend, authorize, ownTurn, query } = options;
   if (!Number.isInteger(maxBytes) || maxBytes < 1024 || maxBytes > 16_384) throw new Error('记忆预算须在 1–16 KiB。');
   const available: readonly MemoryRegion[] = regionsByIntent[intent];
   if (expand && (!available.includes(expand.region) || !Number.isSafeInteger(expand.start) || expand.start < 0 ||
@@ -302,7 +291,8 @@ export async function readMemoryGateway(options: {
     throw new Error('记忆展开位置无效。');
   const regions = expand ? [expand.region] : available;
   const collect = async (tx: ReadTransaction) => {
-    const results = await collectRecall(tx, scope, maySend, new Date().toISOString(), regions);
+    const results = await collectRecall(tx, scope, maySend, new Date().toISOString(), regions, {management: intent === 'management',
+      ...(ownTurn ? {ownTurn} : {}), ...(query ? {query} : {})});
     const { bundle, selected } = packBundle(intent, regions, results, maxBytes, expand);
     const context = JSON.stringify(bundle);
     const sent = selected.flatMap(item => item.sent);
@@ -315,7 +305,7 @@ export async function readMemoryGateway(options: {
   };
   let recall: Awaited<ReturnType<typeof collect>> | undefined;
   const receipt = await recordLocalRead(db, { learner: studioLearner, ownerKind: owner.kind, ownerId: owner.id,
-    stepKey: owner.step, label: 'local:learning-memory', input: { purpose, intent, maxBytes, scope, ...(expand ? { expand } : {}) } }, async tx => {
+    stepKey: owner.step, label: 'local:learning-memory', input: { purpose, intent, maxBytes, scope, ...(expand ? { expand } : {}), ...(ownTurn ? {ownTurn} : {}), ...(query ? {query} : {}) } }, async tx => {
     recall = await collect(tx);
     return JSON.stringify(recall.receipt);
   }, authorize);

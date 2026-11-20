@@ -50,6 +50,7 @@ export function studyTurn(input: unknown) {
     caseId: field(value, 'caseId', 120),
     parentId: value.parentId === null ? null : factId(field(value, 'parentId')),
     answer,
+    ...(value.memoryVersion === 1 ? {memoryVersion: 1 as const} : {}),
     ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),
     ...(value.workspaceRevision === undefined ? {} : {workspaceRevision: field(value, 'workspaceRevision', 80)}),
     ...(value.attachment === undefined ? {} : { attachment: studyAttachment(value.attachment) }),

@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
 import { currentMemory, memoryId } from './memory.ts';
-import { memoryScopeFromMessage, readMemoryGateway } from './memory-gateway.ts';
-import { applyExplicitMemory } from './explicit-memory.ts';
+import { memoryScopeForObject, readMemoryGateway } from './memory-gateway.ts';
+import { areMemoryClaimsCurrent } from './memory-claims.ts';
+import { isMemoryConflict, openTurnMemory } from './turn-memory.ts';
+import { claimType } from '../../modules/companion/claim.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
@@ -68,6 +70,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   let liveMemoryRevision: number | undefined;
   let learningMemory: Awaited<ReturnType<typeof readMemoryGateway>>;
   let expandedMemory: typeof learningMemory;
+  const memoryPackets: NonNullable<typeof learningMemory>[] = [];
+  const memoryHeads = new Set<string>();
+  let memoryTurn: string | undefined;
   let authorizeWorkspaceRecipient: (() => Promise<void>) | undefined;
   const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
   function trackAssessment(basis: WorkspaceAssessmentBasis) {
@@ -114,7 +119,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   async function validInputs(tx: ReadTransaction) {
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
     const now = new Date().toISOString();
-    if ([learningMemory, expandedMemory].some(item => item?.receipt.expiresAt && item.receipt.expiresAt <= now)) throw new ChangedEvidence();
+    if (memoryPackets.some(item => item.receipt.expiresAt && item.receipt.expiresAt <= now) ||
+        !await areMemoryClaimsCurrent(tx, [...memoryHeads], memoryTurn)) throw new ChangedEvidence();
     if (currentObject || assessments.size || retention.size) {
       if (!authorizeWorkspaceRecipient) throw new ChangedEvidence();
       await authorizeWorkspaceRecipient();
@@ -143,7 +149,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     const manifest = await validInputs(tx);
     const id = stableId('feedback', ref.learner, ref.workId, ref.generation);
     const sourceIds = [...(feedback.workspaceBasis ?? []).filter(item => item.id !== memoryId),
-      ...(learningMemory?.receipt.sent ?? []), ...(expandedMemory?.receipt.sent ?? [])].map(item => item.id);
+      ...memoryPackets.flatMap(packet => packet.receipt.sent)].map(item => item.id);
     const digest = feedback.action === 'companion_reply' && feedback.completion !== 'receipts_only'
       ? foregroundDigest(job.slotKey, manifest, sourceIds, feedback.studyKit ? '本轮完成讲义和练习。'
         : feedback.writes?.length ? '本轮完成伴学回复并保存工作区变更。'
@@ -171,17 +177,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   });
   try {
     const submission = studyTurn(await read(job.slotKey));
-    if (submission.caseId === 'companion' && submission.answer) {
-      const explicit = await applyExplicitMemory(db, job.slotKey, submission.answer, async tx => {
-        if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
-        await validInputs(tx);
-      });
-      if (explicit) {
-        await settle({ action: 'memory_claim', model: 'local', rationale: '', reads: [], evidenceIds: [],
-          message: explicit.message, ...(explicit.receipt ? { memoryCommand: explicit.receipt } : {}) });
-        return;
-      }
-    }
+    if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
     const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
     const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
     const settings = await loadSettings(task);
@@ -224,7 +220,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const memorySend = step.learningMemory && learningMemory?.context ? {
         purpose, recipient: { id: settings.activeProviderId, endpoint: step.provider, protocol: settings.protocol,
           model: step.model, workspaceRevision: submission.workspaceRevision! },
-        requestDigest: step.requestDigest, fragments: [...learningMemory.receipt.sent, ...(expandedMemory?.receipt.sent ?? [])],
+        requestDigest: step.requestDigest, fragments: memoryPackets.flatMap(packet => packet.receipt.sent),
       } : undefined;
       const authorize = async (tx: ReadTransaction) => {
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
@@ -265,7 +261,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           stepKey: String(step.index),
           label: step.provider.startsWith('tool:') ? step.provider : 'teaching-model',
           input: { digest: step.requestDigest, provider: step.provider, model: step.model,
-            ...(memorySend ? { memoryBasis: [...learningMemory!.receipt.basis, ...(expandedMemory?.receipt.basis ?? [])] } : {}),
+            ...(memorySend ? { memoryBasis: memoryPackets.flatMap(packet => packet.receipt.basis) } : {}),
             ...(assessments.size ? {assessmentBasis: [...assessments.values()]} : {}),
             ...(retention.size ? {retentionBasis: [...retention.values()]} : {}) },
         },
@@ -308,14 +304,19 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         liveMemoryRevision = value.revision;
         return value.text;
       }) : undefined;
-      const memoryRequest = { db, scope: memoryScopeFromMessage(answer), intent: 'tutoring' as const, maySend,
+      const memoryRequest = { db, scope: memoryScopeForObject(currentObject), intent: 'tutoring' as const, maySend,
+        ...(memoryTurn ? {ownTurn: memoryTurn} : {}),
         async authorize(tx: ReadTransaction) {
           if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
           await validInputs(tx);
           await authorizeWorkspace();
         } };
       function trackMemory(packet: NonNullable<typeof learningMemory>) {
-        for (const entry of packet.receipt.basis) inputs.set('learning-memory:' + entry.id, workspaceInput(entry));
+        memoryPackets.push(packet);
+        for (const entry of packet.receipt.basis) {
+          inputs.set('learning-memory:' + entry.id + ':' + entry.rev, workspaceInput(entry));
+          if (entry.type === claimType) memoryHeads.add(entry.id);
+        }
       }
       if (submission.caseId === 'companion' && submission.workspaceRevision && !grants.length) {
         const { rows: [prior] } = await db.query<{ has_sample: boolean; has_memory: boolean }>(
@@ -360,6 +361,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             break;
           }
           const {value: response, manifest} = reply;
+          if (response.memoryManagement) {
+            historyNotice = '记忆管理已结束，本轮使用当前获准的记忆。';
+            break;
+          }
           if (response.action === 'memory_claim') {
             previousId = previous.parentId;
             continue;
@@ -443,16 +448,30 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           await checkWorkspaceRoute();
         },
       }) : undefined;
+      const turnInput = inputs.get(job.slotKey);
+      const turnMemory = memoryTurn && learningMemory && turnInput?.kind === 'fact' ? openTurnMemory({
+        db, turn: memoryTurn, answer, source: turnInput, ...(currentObject ? {currentObject} : {}),
+        authorize: memoryRequest.authorize,
+        async retrieve(query, step) {
+          const packet = await readMemoryGateway({...memoryRequest, intent: 'management', maxBytes: 8192,
+            ...(query ? {query} : {}), owner: {kind: 'session', id: job.slotKey, step: 'retrieve-memory:' + step}});
+          if (!packet) throw new ChangedEvidence();
+          trackMemory(packet);
+          return packet;
+        },
+      }) : undefined;
       const result = await runCompanionTurn(answer, publicHistory, material, {
         provider: settings, runEffect: runModelEffect,
         async onProgress(progress) {
           // The generated tool call included private answers. The host owns the public
           // confirmation once a formal artifact has been mounted.
-          if (progress.phase !== 'replying' || !workspace?.publishedFormalArtifact()) await onProgress(progress);
+          if (progress.phase !== 'replying' || (!workspace?.publishedFormalArtifact() && !turnMemory?.hasPending()))
+            await onProgress(progress);
         },
         ...(historyNotice ? {historyNotice} : {}),
         ...(currentObject ? {currentLearningObject: JSON.stringify(currentObject.view)} : {}),
         ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
+        ...(turnMemory ? {memoryTools: turnMemory.execute} : {}),
         ...(learningMemory?.bundle.omitted.some(item => item.reason === 'budget') ? {
           async openMemoryRegion(input: Record<string, unknown>, step: number) {
             if (expandedMemory) return JSON.stringify({ code: 'budget', message: '本轮已使用一次记忆区域展开。' });
@@ -470,13 +489,19 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           ...(publicSearchQuery ? {publicSearchQuery} : {}),
           allowSearch: submission.allowSearch === true && settings.allowSearch && (!privateContext || Boolean(publicSearchQuery)) } } : {}),
       }, attachment?.mode === 'prepare' && !submission.parentId, preference);
+      const memoryWrites = await turnMemory?.commit().catch(error => {
+        if (isMemoryConflict(error)) throw new ChangedEvidence();
+        throw error;
+      }) ?? [];
+      const writes = [...(workspace?.writes() ?? []), ...memoryWrites];
       feedback = {
         ...result,
         ...(workspace?.publishedFormalArtifact() ? { message: '断句题已发放。请先保存预测。', trace: [] } : {}),
         action: 'companion_reply', rationale: attachment ? '本次请求随附了你选择的材料片段。' : historyNotice,
         ...(learningMemoryDigest ? { learningMemoryDigest: expandedMemory
           ? createHash('sha256').update(learningMemoryDigest).update(expandedMemory.receipt.digest).digest('hex') : learningMemoryDigest } : {}),
-        ...(workspace?.writes().length ? {writes:workspace.writes()} : {}),
+        ...(writes.length ? {writes} : {}),
+        ...(turnMemory?.used() ? {memoryManagement: true} : {}),
         ...(workspace?.basis().length ? {workspaceBasis: workspace.basis()} : {}),
         evidenceIds: [], reads: [
           ...(workspace?.reads() ?? []),

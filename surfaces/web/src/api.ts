@@ -80,7 +80,9 @@ export interface Turn {
   artifacts?: unknown;
   trace?: string[];
   writes?: {id: string; rev: number; title: string; observation?:
-    {status: 'saved'; text: string; undo_token: string} | {status: 'changed'} | {status: 'withdrawn'}}[];
+    {status: 'saved'; text: string; undo_token: string} | {status: 'changed'} | {status: 'withdrawn'};
+    memory?: {status: 'saved'; action: 'remember' | 'correct' | 'forget'; undo_token: string} |
+      {status: 'changed'} | {status: 'withdrawn'}}[];
   recall?: { title: string; lesson: string; items: import('./recall-cards').RecallItem[] };
   answer?: string;
   action: "diagnostic_question" | "transfer_question" | "targeted_explanation" | "clarifying_question" | "companion_reply";
