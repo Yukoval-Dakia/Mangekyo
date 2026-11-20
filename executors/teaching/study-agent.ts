@@ -1,3 +1,4 @@
+import {artifactMountTrace} from './artifact-trace.ts';
 import type {FirstTurnJitContext} from './first-turn-jit.ts';
 import {learningToolError} from './tool-error.ts';
 import { createHash } from 'node:crypto';
@@ -91,7 +92,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'save_relation': return '提交有向知识边\n' + output.slice(0,700);
     case 'retrieve_memory': return '查找已获准的记忆';
     case 'save_memory': return '登记本轮记忆操作';
-    case 'mount_artifact': return '挂载交互作品 · ' + output.slice(0, 360);
+    case 'mount_artifact': return artifactMountTrace(output);
     case 'save_workspace': return '保存学习记录 · ' + String(args.title) + '\n' + output.slice(0, 500);
     default: return '工具不可用';
   }
@@ -199,10 +200,8 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const remote = remotes.get(name);
       const workspaceTool = workspace && nativeTools.some(tool => tool.function.name === name);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return {
-          content: JSON.stringify(learningToolError('invalid_args','args','请将工具参数作为 JSON 对象提交。')),
-          summary: '参数错误 · ' + name,
-        };
+        const content = JSON.stringify(learningToolError('invalid_args','args','请将工具参数作为 JSON 对象提交。'));
+        return {content, summary: name === 'mount_artifact' ? artifactMountTrace(content) : '参数错误 · ' + name};
       }
       const python = name === 'python' && args.inputs !== undefined ? results.pythonInputs(args.inputs) : undefined;
       if (python?.error) return {content: python.error, summary: 'Python 验算 · 输入不可用'};
