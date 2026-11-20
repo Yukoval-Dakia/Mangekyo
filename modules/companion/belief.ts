@@ -1,6 +1,8 @@
-import type { FactId, FactSnapshot, Json, ToolError } from '@mangekyo/kernel';
+import turnFact from '@mangekyo/module-activity/facts/turn';
+import type { StudyObjectWitness } from '@mangekyo/module-activity/facts/current-object';
+import type { FactId, FactSnapshot, Json, ReadContext, ToolError } from '@mangekyo/kernel';
 import { memoryReviewDeriverVersion, reviewMemoryEvidence } from './memory-review.ts';
-import type { memoryAssertion } from './memory-assertion.ts';
+import { memoryAssertionType, type memoryAssertion } from './memory-assertion.ts';
 import { activityEvidence } from './activity-evidence.ts';
 import { claimEvidence, claimExpiry, claimId, claimInput, claimType, claimRecord, ClaimInputError, claimText, claimValue, requirePreservedObjectScope, structuredClaim, type ClaimRef } from './claim.ts';
 import { citationExcerpt, extractedUnderstanding, reviewUnderstanding, understandingPresentation, opensCitation, understandingCitation, understandingProjection, type ActivityCitation, type ExtractedUnderstanding } from './understanding.ts';
@@ -141,17 +143,42 @@ export function turnClaimData(args: Record<string, unknown>, input: {explicit: b
 }
 
 export function turnHypothesisData(args: Record<string, unknown>, input: {
-  turn: string; object?: string; refs: readonly ActivityCitation[]; undoToken: string;
+  turn: string; object?: {id:string; basis:StudyObjectWitness[]}; refs: readonly ActivityCitation[]; undoToken: string;
   previous?: ExtractedUnderstanding; supersedes: ClaimRef | null;
 }) {
   const {turn, object, refs, undoToken, previous, supersedes} = input;
+  const objectBasis = previous ? previous.belief?.objectBasis
+    : args.scope === 'current_object' ? object?.basis : undefined;
   const data = extractedUnderstanding({version: 2, kind: 'observation', ttl: null, sticky: false,
     text: previous?.text ?? args.text,
-    scope: previous?.scope ?? (args.scope === 'general' ? {kind: 'general'} : {kind: 'object', object}),
+    scope: previous?.scope ?? (args.scope === 'general' ? {kind: 'general'} : {kind: 'object', object: object?.id}),
     evidence_refs: [...(previous?.evidence_refs ?? []), ...refs],
-    undo_token: undoToken, belief: {turn, forgotten: args.action === 'forget', supersedes},
+    undo_token: undoToken, belief: {turn, forgotten: args.action === 'forget', supersedes,
+      ...(objectBasis && {objectBasis})},
   });
   return {...data, belief: data.belief!};
+}
+
+// Historical object hypotheses can be recovered only through their original turn's frozen digest.
+export async function originalHypothesisObject(read: ReadContext, data: ExtractedUnderstanding) {
+  if (data.scope.kind !== 'object') return;
+  const objectId = data.scope.object;
+  const seen = new Set<string>();
+  let prior = data;
+  while (prior.belief?.supersedes) {
+    const ref = prior.belief.supersedes;
+    if (seen.has(ref.id)) return;
+    seen.add(ref.id);
+    const fact = await read.fact(ref.id, {mode:'pinned', rev:ref.rev});
+    if (fact.type !== memoryAssertionType || fact.accessEpoch !== ref.accessEpoch) return;
+    prior = extractedUnderstanding(fact.value);
+    if (prior.scope.kind !== 'object' || prior.scope.object !== objectId) return;
+  }
+  if (!prior.belief) return;
+  const turn = await read.fact(prior.belief.turn, {mode:'pinned', rev:1 as ClaimRef['rev']});
+  if (turn.type !== turnFact.type) return;
+  const object = turnFact.schema.parse(turn.value).currentObject;
+  return object?.id === objectId ? object : undefined;
 }
 
 export function checkedHypothesis(value: unknown, text: unknown) {
@@ -176,15 +203,16 @@ export function claimRecallValue(fact: FactSnapshot, claim: ReturnType<typeof cl
 
 export function managedUnderstanding(id: FactId, data: ExtractedUnderstanding, sources: Parameters<typeof reviewUnderstanding>[2]) {
   const evidenceState = sources.length === data.evidence_refs.length ? 'current' : 'unavailable';
+  const publicData = data.belief ? {...data, belief: {turn:data.belief.turn, supersedes:data.belief.supersedes, forgotten:data.belief.forgotten}} : data;
   return {evidenceState,
     ...(data.evidence_refs.some(ref => ref.span) ? {status: data.sticky ? 'learner-corrected' : 'tentative'} : {}),
     understanding: evidenceState === 'current'
       && !data.belief?.forgotten
-      ? {...data, kind: understandingPresentation(data, sources), ...(data.belief ? {category: 'hypothesis',
+      ? {...publicData, kind: understandingPresentation(data, sources), ...(data.belief ? {category: 'hypothesis',
           status: hypothesisStatus(data)} : {}),
         review: reviewUnderstanding(id, data, sources),
         evidence_refs: data.evidence_refs.map((ref, index) => ({...ref, excerpt: citationExcerpt(sources[index]!, ref)}))}
-      : {...data, text: null, scope: null, evidence_refs: []}};
+      : {...publicData, text: null, scope: null, evidence_refs: []}};
 }
 
 export function memoryReceipt(id: string, rev: number, action: TurnClaim['action'], undo_token: string) {

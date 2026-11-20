@@ -1,3 +1,4 @@
+import { openHypothesisObject } from './hypothesis-object.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
@@ -8,6 +9,7 @@ import {
   applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
 } from '../../modules/companion/claim.ts';
 import { managedUnderstanding, saveBeliefCommand, undoHypothesisCommand } from '../../modules/companion/belief.ts';
+import { notionReadScope } from './notion.ts';
 import { hypothesisIsHead, openObjectiveCitations } from './belief-evidence.ts';
 import { manageMemoryAssertionCommand, memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import { extractedUnderstanding } from '../../modules/companion/understanding.ts';
@@ -49,7 +51,7 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       if (before !== null) {
         try { claimId(before); } catch { throw new RequestError(400, '记忆分页位置无效。'); }
       }
-      return db.snapshot(scope, async tx => {
+      return notionReadScope(db, learner, {readOnly:true}).read(async (tx, check) => {
         const rows = await currentMemoryClaims(tx, {learner: true, ...(before ? {before} : {})});
         const items = [];
         for (const {id, tick} of rows.slice(0, 50)) {
@@ -71,9 +73,13 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
           if (!fact) continue;
           const data = extractedUnderstanding(fact.value);
           if (data.belief && !await hypothesisIsHead(tx, id)) continue;
-          const sources = data.belief
-            ? await openObjectiveCitations(tx, data.evidence_refs, purpose, () => true)
-            : await openUnderstandingCitations(tx, data.evidence_refs, 'storage');
+          let sources;
+          if (data.belief) {
+            const basis = await openHypothesisObject(tx, data, () => true, check);
+            sources = basis ? await openObjectiveCitations(tx, data.evidence_refs, purpose, () => true) : [];
+          } else {
+            sources = await openUnderstandingCitations(tx, data.evidence_refs, 'storage');
+          }
           understandings.push({ref: claimWitness(fact), ...managedUnderstanding(fact.ref.id, data, sources)});
         }
         return {items, understandings, next: rows.length > 50 ? rows[49]!.id : null};

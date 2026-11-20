@@ -1,7 +1,11 @@
+import type { StudyObjectWitness } from '../../modules/activity/current-object-basis.ts';
+import { extractedUnderstanding } from '../../modules/companion/understanding.ts';
+import { openHypothesisObject } from './hypothesis-object.ts';
+import type { WorkspaceSourceRecipient } from './source-read.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { manifestFactInputs, revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { memoryReceipt, saveBeliefCommand } from '../../modules/companion/belief.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -48,13 +52,24 @@ export async function areMemoryClaimsCurrent(tx: ReadTransaction, ids: readonly 
   return rowCount === ids.length;
 }
 
-export async function teachingMemoryBasis(tx: ReadTransaction, manifest: Manifest, turn: string) {
+export async function teachingMemoryBasis(tx: ReadTransaction, manifest: Manifest, turn: string, maySend: WorkspaceSourceRecipient = () => true) {
   if ((await revalidateManifest(tx, manifest)).kind !== 'valid') return;
-  const ids = manifest.inputs.flatMap(input => input.kind === 'fact' ? [input.id] : []);
-  const {rows} = await tx.query<{id: string; superseded: boolean}>(`SELECT f.id, EXISTS (${activeSuccessor()}) AS superseded
-    FROM facts f WHERE f.learner_id=$1 AND f.type=ANY($2::text[]) AND f.id=ANY($4::text[])`,
-  [tx.learner, [claimType, memoryAssertionType], turn, ids]);
-  return rows.some(row => row.superseded) ? undefined : new Set(rows.map(row => row.id));
+  const facts = await manifestFactInputs(tx, manifest.inputs);
+  const {rows} = await tx.query<{id: string; superseded: boolean; hypothesis: unknown}>(`SELECT f.id, EXISTS (${activeSuccessor()}) AS superseded,
+    CASE WHEN r.data ? 'belief' AND r.data#>>'{scope,kind}'='object' THEN r.data END AS hypothesis
+    FROM (SELECT DISTINCT * FROM unnest($4::text[], $5::int[]) AS input(id,rev)) input
+    JOIN facts f ON f.learner_id=$1 AND f.id=input.id AND f.type=ANY($2::text[])
+    JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,input.rev)`,
+  [tx.learner, [claimType, memoryAssertionType], turn, facts.map(f => f.id), facts.map(f => f.rev)]);
+  if (rows.some(row => row.superseded)) return;
+  const objects: StudyObjectWitness[] = [];
+  for (const {hypothesis} of rows) {
+    if (!hypothesis) continue;
+    const basis = await openHypothesisObject(tx, extractedUnderstanding(hypothesis), maySend);
+    if (!basis) return;
+    objects.push(...basis);
+  }
+  return {ids:new Set(rows.map(row => row.id)), objects};
 }
 
 export const turnMemoryKey = (turn: string, belief: boolean) => stableId(belief ? 'turn-belief-command' : 'turn-memory-command', turn);

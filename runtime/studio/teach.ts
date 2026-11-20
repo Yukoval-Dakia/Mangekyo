@@ -152,8 +152,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   function trackFeedback(id: string, reply: NonNullable<Awaited<ReturnType<typeof readFeedback>>>) {
     inputs.set('feedback:' + id, {kind: 'slot', slotType, slotKey: id, derivationId: derivationId(reply.id), mode: 'following'});
     for (const input of reply.manifest.inputs)
-      if (input.kind === 'fact' && reply.memoryBasis.has(input.id)) inputs.set(`feedback-basis:${input.id}:${input.rev}:${input.accessEpoch}:${input.mode}`, input);
-    if (reply.memoryBasis.size) protectWorkspaceDispatch = true;
+      if (input.kind === 'fact' && reply.memoryBasis.ids.has(input.id)) inputs.set(`feedback-basis:${input.id}:${input.rev}:${input.accessEpoch}:${input.mode}`, input);
+    for (const w of reply.memoryBasis.objects) {
+      trackNotion(w);
+      inputs.set(`feedback-object:${w.id}:${w.rev}:${w.mode}`,workspaceInput(w));
+    }
+    if (reply.memoryBasis.ids.size) protectWorkspaceDispatch = true;
   }
   async function validInputs(tx: ReadTransaction) {
     if ((checkTurnAccount && !await checkTurnAccount()) || (attachmentOrigin && !await attachmentCurrent(tx, attachmentOrigin)))
@@ -188,7 +192,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       gatherTick: clock?.tick,
       inputs: [...inputs.values()],
     });
-    if (!await teachingMemoryBasis(tx, manifest, slotKey)) throw new ChangedEvidence();
+    if (!await teachingMemoryBasis(tx, manifest, slotKey, maySend)) throw new ChangedEvidence();
     return manifest;
   }
   const settle = (feedback: DisplayTurn, optedIn: boolean) => finishWork(db, ref, async (tx, tick) => {

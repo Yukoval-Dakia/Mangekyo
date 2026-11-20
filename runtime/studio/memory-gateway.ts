@@ -1,3 +1,4 @@
+import { openHypothesisObject } from './hypothesis-object.ts';
 import { createHash } from 'node:crypto';
 import { recallPacket, recallRegions, type MemoryIntent, type MemoryRegion, type RegionPage,
   type RecallItem, type RecallRegions, type SentWitness } from '../../modules/companion/recall-packet.ts';
@@ -119,13 +120,13 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       const data = extractedUnderstanding(fact.value);
       const sources = await openObjectiveCitations(tx, data.evidence_refs, purpose, maySend);
       if (sources.length !== data.evidence_refs.length) continue;
-      const object = data.scope.kind === 'object' ? await open(data.scope.object) : undefined;
-      if (data.scope.kind === 'object' && !object) continue;
+      const objectBasis = await openHypothesisObject(tx, data, maySend);
+      if (!objectBasis) continue;
       const review = reviewUnderstanding(fact.ref.id, data, sources);
       const status = hypothesisStatus(data);
       add('claims', {value: {id, rev: fact.ref.rev, category: 'hypothesis', kind: 'observation', status,
         text: data.text, scope: data.scope, evidence_refs: data.evidence_refs, review},
-      sent: [witness(fact), ...sources.map(source => witness(source.fact))], basis: object ? [witness(object)] : []});
+      sent: [witness(fact), ...sources.map(source => witness(source.fact))], basis: objectBasis});
     }
   }
   if (wantsMemory || wantsPreferences || requested.includes('verified_playbooks')) {

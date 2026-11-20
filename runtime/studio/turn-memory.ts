@@ -1,3 +1,4 @@
+import { openHypothesisObject } from './hypothesis-object.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
@@ -62,10 +63,16 @@ export function openTurnMemory(options: {
       if (fact?.type !== memoryAssertionType || fact.ref.rev !== target.rev || fact.accessEpoch !== target.epoch ||
           !await hypothesisIsHead(tx, target.id, turn))
         throw new ClaimInputError('假设版本已变更。');
-      return checkedHypothesis(fact.value, text);
+      const data = checkedHypothesis(fact.value, text);
+      if (data.scope.kind === 'object') {
+        const basis = await openHypothesisObject(tx, data, belief.maySend);
+        if (!basis) throw new ClaimInputError('对象假设依据已变化。');
+        return {...data, belief:{...data.belief!, objectBasis:basis}};
+      }
+      return data;
     });
     const id = claimId(stableId('turn-memory-entry', turn, String(step)));
-    const data = turnHypothesisData(args, {turn, refs, ...(currentObject && {object: currentObject.root.id}),
+    const data = turnHypothesisData(args, {turn, refs, ...(currentObject && {object: {id:currentObject.root.id, basis:currentObject.basis}}),
       ...(previous && {previous}), supersedes: targetRef(target),
       undoToken: claimUndoToken(turnMemoryKey(turn, true), id)});
     assertions.push({id, data, quote});
@@ -116,6 +123,7 @@ export function openTurnMemory(options: {
         for (const {id, data, quote} of assertions) {
           if (data.belief.supersedes && !await hypothesisIsHead(tx, data.belief.supersedes.id, undefined, id))
             throw new ClaimInputError('目标假设已变化。');
+          if (!await openHypothesisObject(tx, data, options.belief!.maySend)) throw new ClaimInputError('对象假设依据已变化。');
           if (quote && !await openClaimEvidence(tx, quote, quote.excerpt, quote.start))
             throw new ClaimInputError('撤回原话不可用。');
           if ((await openObjectiveCitations(tx, data.evidence_refs, purpose, options.belief!.maySend)).length !== data.evidence_refs.length)

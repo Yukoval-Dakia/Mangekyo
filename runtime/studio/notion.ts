@@ -171,12 +171,12 @@ export async function teachingResultAuthority(tx: ReadTransaction, turnId: strin
     const manifest = parseManifest(rawManifest);
     if (manifest.purpose !== teaching || !await teachingTurnAllowed(tx,turn,grantCurrent,origin))
       return {state:'withdrawn'} as const;
-    const memoryBasis = await teachingMemoryBasis(tx, manifest, turnId);
-    if (!memoryBasis) return {state:'withdrawn'} as const;
     const recipient: NotionRecipient = () => true;
     if (turn.providerId && turn.protocol && turn.workspaceRevision)
       recipient.notionRecipientId = notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision);
-    await notionSendBasis(tx, await savedNotionWitnesses(tx, manifest.inputs), recipient, check);
+    const memoryBasis = await teachingMemoryBasis(tx, manifest, turnId, recipient);
+    if (!memoryBasis) return {state:'withdrawn'} as const;
+    await notionSendBasis(tx, [...await savedNotionWitnesses(tx, manifest.inputs), ...memoryBasis.objects], recipient, check);
     return {state:'authorized', memoryBasis} as const;
   } catch (error) {
     return error instanceof NotionReadUnconfirmed ? {state:'unconfirmed'} as const : {state:'withdrawn'} as const;

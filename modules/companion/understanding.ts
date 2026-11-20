@@ -1,3 +1,4 @@
+import type { StudyObjectWitness } from '@mangekyo/module-activity/facts/current-object';
 import type { FactId, FactSnapshot } from '@mangekyo/kernel';
 import { preferenceUnderstanding, type Understanding, type UnderstandingRef } from '@mangekyo/module-learner/facts/understanding';
 import {
@@ -51,13 +52,23 @@ type HypothesisWrite = {
   turn: FactId;
   supersedes: UnderstandingRef | null;
   forgotten: boolean;
+  objectBasis?: StudyObjectWitness[];
 };
 
 function hypothesisWrite(value: unknown): HypothesisWrite {
-  const {turn, supersedes, forgotten} = exact(value, ['turn', 'supersedes', 'forgotten']);
+  const hasBasis = Object.hasOwn(claimRecord(value), 'objectBasis');
+  const {turn, supersedes, forgotten, objectBasis} = exact(value, ['turn', 'supersedes', 'forgotten', ...(hasBasis ? ['objectBasis'] : [])]);
+  if (hasBasis && (!Array.isArray(objectBasis) || !objectBasis.length))
+    throw new ClaimInputError('对象假设缺少读取依据。');
+  const basis = Array.isArray(objectBasis) ? objectBasis.map((raw): StudyObjectWitness => {
+    const {id, rev, epoch, type, mode} = exact(raw, ['id', 'rev', 'epoch', 'type', 'mode']);
+    const ref = claimRef({id, rev, accessEpoch: epoch});
+    if (mode !== 'pinned' && mode !== 'following') throw new ClaimInputError('对象见证读取模式无效。');
+    return {id:ref.id, rev:ref.rev, epoch:ref.accessEpoch, type:claimText(type, 200), mode};
+  }) : undefined;
   if (typeof forgotten !== 'boolean')
     throw new ClaimInputError('假设变更缺少前驱。');
-  return {turn: claimId(turn), supersedes: supersedes === null ? null : claimRef(supersedes), forgotten};
+  return {turn: claimId(turn), supersedes: supersedes === null ? null : claimRef(supersedes), forgotten, ...(basis && {objectBasis: basis})};
 }
 
 function exact(value: unknown, fields: readonly string[]) {

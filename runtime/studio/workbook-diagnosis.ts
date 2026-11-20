@@ -20,7 +20,7 @@ import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from '
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorkspaceAttemptAssessments, type WorkspaceAssessmentBasis } from './workspace-read.ts';
 
-type Access = { purpose?: string; maySend: WorkspaceSourceRecipient; track: SourceTrack; trackAssessment?: (basis: WorkspaceAssessmentBasis) => void };
+type Access = { purpose?: string; ownerNotionRead?: true; maySend: WorkspaceSourceRecipient; track: SourceTrack; trackAssessment?: (basis: WorkspaceAssessmentBasis) => void };
 const unavailable = { state: 'unavailable' } as const;
 
 async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cutoff: Tick, access: Access) {
@@ -83,7 +83,7 @@ export async function openWorkbookQuestionSources(tx: ReadTransaction, submissio
   try {
     const paper = await openFrozenPaper(tx, attempt, birth.tick, access);
     if (!paper) return;
-    const sourceAccess = {recipient: 'workspace' as const, purpose: access.purpose ?? purpose, maySend: access.maySend, track: access.track};
+    const sourceAccess = {...access, recipient: 'workspace' as const, purpose: access.purpose ?? purpose};
     if (attempt.paper.materialId !== null) {
       const material = await resolveSource(tx, attempt.paper.materialId, sourceAccess);
       if (material?.sourceRef.fact.type !== materialType) return;
