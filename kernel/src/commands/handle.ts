@@ -1,9 +1,11 @@
-import type { Db, DbTransaction } from '../db/types.ts';
+import type { Db, DbTransaction, ReadTransaction } from '../db/types.ts';
 import { lockLearner } from '../db/learner.ts';
 import { commandId, learnerId, type CommandId, type LearnerId, type Tick } from '../declarations/ids.ts';
 import type {
   CommandContext,
   CommandReceipt,
+  FactWrite,
+  Json,
   JsonObject,
   ValueSchema,
 } from '../declarations/types.ts';
@@ -11,7 +13,6 @@ import type { LoadedModule } from '../loader.ts';
 import { canonicalJsonString } from './canonical.ts';
 import { createCommandReadContext } from './reads.ts';
 import type {
-  CommandHandler,
   CommandRequest,
   CommandRuntimeOptions,
   FactWriteTarget,
@@ -153,6 +154,7 @@ async function saveProposal(
   db: Db,
   request: CommandRequest,
   declaration: CommandDeclaration,
+  hooks: CommandRuntimeOptions['hooks'],
 ): Promise<CommandReceipt> {
   return db.tx({ learner: request.learner }, async (tx) => {
     await lockLearner(tx, request.learner);
@@ -160,6 +162,7 @@ async function saveProposal(
     if (existing) return checkReplay(existing, request);
 
     declaration.schema.parse(request.input);
+    await hooks.beforeProposal?.(tx, request);
     const receipt: CommandReceipt = {
       commandId: request.id,
       state: 'proposed',
@@ -183,6 +186,61 @@ async function saveProposal(
   });
 }
 
+type Proposal = {
+  readonly id: CommandId;
+  readonly input: Json;
+  readonly state: 'pending' | 'confirmed' | 'rejected' | 'conflict';
+};
+
+export async function readCommandProposals(tx: ReadTransaction, type: string, match: JsonObject, id?: CommandId) {
+  const { rows } = await tx.query<Proposal>(
+    `SELECT p.command_id AS id,p.input,p.state FROM proposals p
+     JOIN commands c ON (c.learner_id,c.id)=(p.learner_id,p.command_id)
+     WHERE p.learner_id=$1 AND c.type=$2 AND p.input @> $3::jsonb AND ($4::text IS NULL OR p.command_id=$4)
+     ORDER BY p.created_tick DESC,p.command_id DESC LIMIT 50`,
+    [tx.learner, type, canonicalJsonString(match), id ?? null],
+  );
+  return rows;
+}
+
+export function readRecordedCommand(tx: ReadTransaction, id: CommandId) {
+  return findStoredCommand(tx, tx.learner, id);
+}
+
+async function declaredWrites(tx: DbTransaction, request: CommandRequest, command: CommandModule, input: Json) {
+  const parsedInput = command.declaration.schema.parse(input);
+  const context: CommandContext = {
+    learner: request.learner,
+    read: createCommandReadContext(tx, request.purpose),
+  };
+  const readResult = await command.declaration.read?.(context);
+  return await command.declaration.write(context, parsedInput, readResult) as readonly FactWrite[];
+}
+
+async function commitCommand(
+  tx: DbTransaction, request: CommandRequest, options: CommandRuntimeOptions,
+  writes: readonly FactWrite[], writeTarget: FactWriteTarget,
+  decide?: { readonly proposalId: CommandId; readonly state: 'confirmed' | 'rejected' },
+): Promise<CommandReceipt> {
+  return tx.withLearnerWrite(async (tick) => {
+    const changes = await applyFactWrites(tx, tick, writes, writeOptions(request), writeTarget);
+    await options.hooks.onFactsChanged(tx, tick, changes);
+    if (decide) await tx.query(
+      'UPDATE proposals SET state=$3, decided_tick=$4 WHERE learner_id=$1 AND command_id=$2',
+      [request.learner, decide.proposalId, decide.state, tick],
+    );
+    const receipt: CommandReceipt = {
+      commandId: request.id,
+      state: decide?.state === 'rejected' ? 'rejected' : 'done',
+      wrote: changes.map((change) => change.ref),
+      proposals: [],
+      ...(decide ? {output: request.input} : {}),
+    };
+    await insertCommand(tx, request, receipt.state, receipt, tick);
+    return receipt;
+  });
+}
+
 async function executeCommand(
   db: Db,
   request: CommandRequest,
@@ -195,42 +253,22 @@ async function executeCommand(
     const existing = await findStoredCommand(tx, request.learner, request.id);
     if (existing) return checkReplay(existing, request);
 
-    const parsedInput = command.declaration.schema.parse(request.input);
-    const commandContext: CommandContext = {
-      learner: request.learner,
-      read: createCommandReadContext(tx, request.purpose),
-    };
-    const readResult = await command.declaration.read?.(commandContext);
-    const writes = await command.declaration.write(commandContext, parsedInput, readResult);
-
-    return tx.withLearnerWrite(async (tick) => {
-      const changes = await applyFactWrites(
-        tx,
-        tick,
-        writes as readonly never[],
-        writeOptions(request),
-        writeTarget,
-      );
-      await options.hooks.onFactsChanged(tx, tick, changes);
-      const receipt: CommandReceipt = {
-        commandId: request.id,
-        state: 'done',
-        wrote: changes.map((change) => change.ref),
-        proposals: [],
-      };
-      await insertCommand(tx, request, 'done', receipt, tick);
-      return receipt;
-    });
+    const writes = await declaredWrites(tx, request, command, request.input);
+    return commitCommand(tx, request, options, writes, writeTarget);
   });
 }
 
 export function createCommandHandler(
   db: Db,
   options: CommandRuntimeOptions,
-): CommandHandler {
+) {
   const { commands, facts } = commandModules(options.modules);
 
-  return async (request) => {
+  function writeTarget(command: CommandModule, type: string): FactWriteTarget {
+    const grants = options.crossModuleWrites?.[type];
+    return (fact, kind) => command.module.facts.get(fact) ?? (grants?.[kind]?.includes(fact) ? facts.get(fact) : undefined);
+  }
+  const handle = async (request: CommandRequest) => {
     validateRequest(request);
     const existing = await findStoredCommand(db, request.learner, request.id);
     if (existing) return checkReplay(existing, request);
@@ -239,10 +277,33 @@ export function createCommandHandler(
     if (!command) throw new Error(`Unknown command: ${request.type}`);
 
     if (request.actor === 'companion' && command.declaration.destructive) {
-      return saveProposal(db, request, command.declaration);
+      return saveProposal(db, request, command.declaration, options.hooks);
     }
-    const grants = options.crossModuleWrites?.[request.type];
-    return executeCommand(db, request, options, command, (type, kind) =>
-      command.module.facts.get(type) ?? (grants?.[kind]?.includes(type) ? facts.get(type) : undefined));
+    return executeCommand(db, request, options, command, writeTarget(command, request.type));
   };
+  return Object.assign(handle, {
+    async decideProposal(
+      decision: Omit<CommandRequest, 'actor' | 'input'> & { proposalId: CommandId; selection: Json },
+      select: (tx: ReadTransaction, proposedInput: Json) => Promise<Json | null>,
+    ) {
+      const { proposalId, selection, ...identity } = decision;
+      const request: CommandRequest = {...identity, actor:'learner', input:{proposalId, selection}};
+      validateRequest(request);
+      commandId(proposalId);
+      const command = commands.get(request.type);
+      if (!command?.declaration.destructive) throw new Error('Command does not support proposals');
+      return db.tx({learner:request.learner}, async tx => {
+        await lockLearner(tx, tx.learner);
+        const existing = await findStoredCommand(tx, tx.learner, request.id);
+        if (existing) return checkReplay(existing, request);
+        const [proposal] = await readCommandProposals(tx, request.type, {}, proposalId);
+        if (!proposal) throw new Error('Proposal not found');
+        if (proposal.state !== 'pending') throw new Error('Proposal already decided');
+        const input = await select(tx, proposal.input);
+        const writes = input === null ? [] : await declaredWrites(tx, request, command, input);
+        return commitCommand(tx, request, options, writes, writeTarget(command, request.type),
+          {proposalId, state:input === null ? 'rejected' : 'confirmed'});
+      });
+    },
+  });
 }
