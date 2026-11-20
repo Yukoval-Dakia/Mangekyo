@@ -1,6 +1,7 @@
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
+import { projectArtifactMountTrace } from '../../executors/teaching/artifact-trace.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -286,12 +287,13 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
   const projected = [];
   for (const { row, artifacts, writes } of turns) {
     if (!row.feedback) continue;
-    const { studyKit, ...feedback } = row.feedback;
+    const { studyKit, trace, ...feedback } = row.feedback;
     const recall = row.derivationId && studyKit
       ? await projectRecall?.(session, row.id, row.derivationId, studyKit, notion)
       : undefined;
     projected.push({
       ...feedback, ...(writes && {writes}), turnId: row.id, artifacts,
+      ...(trace && { trace: trace.map(projectArtifactMountTrace) }),
       ...(studyKit === undefined ? {} : { message: recall?.lesson ?? '' }),
       ...(recall ? { recall } : {}),
       ...(row.submission.answer ? { answer: row.submission.answer } : {}),

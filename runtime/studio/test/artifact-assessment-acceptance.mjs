@@ -40,6 +40,7 @@ const model = createServer(async (req, res) => {
     assert.ok(body.tools.some(tool => tool.function.name === 'mount_artifact'));
     const last = body.messages.at(-1);
     if (last.role === 'tool') {
+      generation.toolWire = last.content;
       generation.toolResult = JSON.parse(last.content);
       await generation.finish.promise;
       const content = generation.mode === 'formal' ? '参考答案为 gap-2、gap-4。' : '已完成这道练习的准备。';
@@ -249,11 +250,31 @@ try {
   }
 
   const { path, toolResult } = await start('rejected');
-  assert.match(toolResult.error, /独立核验/);
+  assert.deepEqual(toolResult, {
+    ok: false, code: 'invalid_args', field: 'sentenceBreaks', message: '正式断句需要宿主独立核验。',
+  });
+  const rejectedEvents = await fetch(base + path + '/events', { signal: AbortSignal.timeout(15000) });
+  assert.ok(rejectedEvents.ok);
+  const rejectedStream = rejectedEvents.text();
   generation.finish.resolve();
   const rejected = await ready(path);
   assert.equal(snapshot(rejected), undefined);
-  assertPrivate(rejected);
+  const wire = await rejectedStream;
+  const turnId = rejected.currentTurnId;
+  const { rows: archive } = await pool.query(`
+    SELECT d.id, d.value->'trace' AS trace
+    FROM slot_state s JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
+    WHERE s.slot_key=$1 AND d.value->>'action'='companion_reply'
+  `, [turnId]);
+  assert.equal(archive.length, 1);
+  const learnerResponse = await request(path);
+  assert.ok(learnerResponse.ok);
+  const learnerWire = await learnerResponse.text();
+  assert.deepEqual(JSON.parse(learnerWire), rejected);
+  await writeFile(resolve(directory, 'rejected-model.json'), generation.toolWire);
+  await writeFile(resolve(directory, 'rejected-learner.json'), learnerWire);
+  await writeFile(resolve(directory, 'rejected-learner.sse'), wire);
+  await writeFile(resolve(directory, 'rejected-archive.json'), JSON.stringify({ schema, path, turnId, ...archive[0] }, null, 2));
 
   const { path: exploration } = await start('exploration');
   generation.finish.resolve();
@@ -263,6 +284,14 @@ try {
   assert.equal(oldReceipt.snapshot.submitted, true);
   assert.ok(!('assessment' in oldReceipt.snapshot) && !('questionRef' in legacy));
   assert.equal((await pool.query("SELECT count(*)::int FROM work WHERE slot_type='activity.artifactFormalAssessment'")).rows[0].count, 4);
+  console.log('Formal scoring, Temporal settlement, replay and legacy exploration passed.');
+  assertPrivate(rejected);
+  assert.match(wire, /event: complete/u);
+  for (const line of wire.split('\n')) {
+    if (line.startsWith('data: ')) assertPrivate(JSON.parse(line.slice(6)));
+  }
+  assert.deepEqual(rejected.turns.at(-1).trace, ['挂载交互作品 · 未挂载']);
+  assert.deepEqual(archive[0].trace, rejected.turns.at(-1).trace);
   console.log('Studio HTTP/SSE → PG/outbox → Temporal → effective: 100/100, 100/100, 66/100, unsubmitted; changed rules rejected; legacy submission preserved.');
 } finally {
   generation?.finish.resolve();
