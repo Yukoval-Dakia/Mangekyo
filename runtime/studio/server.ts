@@ -16,7 +16,7 @@ import { serve } from './http.ts';
 import { openTextbook } from './textbook.ts';
 import { openIntake } from './intake.ts';
 import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
-import { readMineru, submitMineru } from './mineru.ts';
+import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
 import {
   artifactAssessmentSlot, executeArtifactAssessment, type ReadArtifactAssessmentWitness,

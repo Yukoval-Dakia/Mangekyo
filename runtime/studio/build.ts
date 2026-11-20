@@ -38,12 +38,14 @@ export async function sourceBuildId() {
     'modules/plan',
     'surfaces/shared/presentation',
     'modules/companion',
+    'executors/document-extraction',
     'executors/temporal/src',
     'executors/teaching',
     'runtime/studio',
   ]) {
     await scan(join(root, directory));
   }
+  await add(join(root, 'executors/document-extraction/extract-document.swift'));
   await add(join(root, 'pnpm-lock.yaml'));
   return 'dev-' + digest.digest('hex').slice(0, 20);
 }
