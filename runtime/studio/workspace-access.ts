@@ -1,3 +1,5 @@
+import { displayOf } from '../../modules/activity/workspace-source-projection.ts';
+export { displayOf } from '../../modules/activity/workspace-source-projection.ts';
 import { confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -17,11 +19,11 @@ import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { materialType } from '../../modules/activity/library-values.ts';
 import {
-  activityQuestions, activityWorkspaceDisplay, cleanText, summary, type WorkspaceDisplay as Display,
+  activityQuestions, type WorkspaceDisplay as Display,
 } from '../../modules/activity/workspace-projection.ts';
-import { goalType, studyGoal } from '../../modules/plan/goal-values.ts';
+import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerNoteType } from '../../modules/activity/organizer-values.ts';
-import { organizerTask, organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
+import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { ridingPracticeType } from '../../modules/activity/practice-values.ts';
 import { studyRecordType } from '../../modules/activity/values.ts';
@@ -39,7 +41,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { carryRubricAssessments } from './learning-attempt-read.ts';
 import { sourceRefV1 } from '../../modules/activity/source-values.ts';
 import { knowledgeEdgeEvidenceType, knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
-import { parseTextbookPage, textbookPageType } from '../../modules/content/textbook-page.ts';
+import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { openKnowledgeEdge, openKnowledgeEdgeEvidence } from './knowledge-graph.ts';
 import { resolveSource } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
@@ -204,51 +206,6 @@ function decodeCursor(value: string | null): Cursor | undefined {
 function authorOf(value: string): string {
   if (value === 'learner' || value === 'companion') return value;
   return 'unknown';
-}
-
-function goalDisplay(value: unknown): Display {
-  const goal = studyGoal(value);
-  if (goal.text === null) {
-    return { title: '未设置目标', excerpt: '当前没有学习目标。', text: '当前没有学习目标。' };
-  }
-  return { title: '学习目标', excerpt: summary(goal.text), text: cleanText(goal.text) };
-}
-
-function taskDisplay(value: unknown): Display {
-  const task = organizerTask(value);
-  const status = task.done ? '已完成' : '未完成';
-  const text = task.title + '\n日期：' + task.date + '\n状态：' + status;
-  return { title: task.title, excerpt: status + ' · ' + task.date, text: cleanText(text) };
-}
-
-function textbookDisplay(value: unknown): Display {
-  const { title, blocks } = parseTextbookPage(value);
-  const text = blocks.flatMap(({ body }) => {
-    switch (body.kind) {
-      case 'text': return [body.text];
-      case 'formula': return [body.latex];
-      case 'table': return body.rows.map(row => row.join(' ｜ '));
-      default: return [];
-    }
-  }).join('\n\n');
-  return { title, text: cleanText(text), excerpt: summary(text), kind: 'page' };
-}
-
-export function displayOf(type: string, value: unknown): Display {
-  try {
-    if (type === textbookPageType) return textbookDisplay(value);
-    if (type === goalType) return goalDisplay(value);
-    if (type === organizerTaskType) return taskDisplay(value);
-    const display = activityWorkspaceDisplay(type, value);
-    if (display) return display;
-  } catch {
-    // A malformed legacy fact must not make the learner's whole access page disappear.
-  }
-  return {
-    title: '无法显示的记录',
-    excerpt: '这条记录的格式暂时无法显示，但不会被提供给模型。',
-    text: '这条记录的格式暂时无法显示。',
-  };
 }
 
 function firstPurpose(value: unknown): string | undefined {
