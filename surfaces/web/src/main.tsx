@@ -24,6 +24,7 @@ import {
   type Workspace,
   type ChatLink,
 } from './workspace';
+import { OfflineStatus } from './offline-status';
 import './styles.css';
 import './shell.css';
 import './learning.css';
@@ -169,6 +170,7 @@ function App() {
           </div>
         </header>
         <main id="main-content" className="page-body">
+          <OfflineStatus />
           {content}
           <p className="visually-hidden" role="status">
             {notice}
@@ -206,3 +208,6 @@ function App() {
 }
 const root = document.getElementById('root');
 if (root) createRoot(root).render(<App />);
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator)
+  void navigator.serviceWorker.register('/offline-shell.js').catch(() => {});

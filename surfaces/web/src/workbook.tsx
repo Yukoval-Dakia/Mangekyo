@@ -1,3 +1,5 @@
+import { useDraftWatermark } from './draft-watermark';
+import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
@@ -7,7 +9,7 @@ import type {
   WorkbookSummary,
   WorkbookSourceQuestionRef,
 } from '../../../modules/activity/workbook-values.ts';
-import { api, ApiError, remember, remembered, requestId, type Settings } from './api';
+import { api, ApiError, deletedSubmission, submissionId, remember, remembered, requestId, type Settings } from './api';
 import { PageTitle, ReadState, useResource, type Material, type Resource } from './workspace';
 import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
@@ -789,6 +791,7 @@ function durationLabel(ms: number) {
 }
 
 function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
+  const watermark = useDraftWatermark();
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
   const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
@@ -825,16 +828,16 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   }, [view, draft, paperId]);
 
   useEffect(() => {
-    if (!view || draft || view.attempts.length > 0) return;
+    if (!watermark.ready || !view || draft || view.attempts.length > 0) return;
     const next: AttemptDraft = {
       version: paperId,
-      requestId: requestId(),
+      requestId: submissionId(),
       answers: {},
       focusIds: [],
     };
     remember(attemptDraftKey(paperId), JSON.stringify(next));
     setDraft(next);
-  }, [view, draft, paperId]);
+  }, [view, draft, paperId, watermark.ready]);
 
   useEffect(() => {
     if (justSubmitted.current && view) {
@@ -865,6 +868,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         .map((feedback) => feedback.questionId)
     : [];
   const showForm = Boolean(draft) || attempts.length === 0;
+  const answerDisabled = busy || !draft;
   const revision = view?.id === paperId ? view.revision : undefined;
   const feedback = (activeAttempt?.feedback ?? []).filter(item => view?.questions.some(q => q.id === item.questionId));
   const questions = useWorkbookPresentation(paperId, revision, [
@@ -905,7 +909,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   function startRedo(focus: 'wrong' | 'full') {
     const next: AttemptDraft = {
       version: paperId,
-      requestId: requestId(),
+      requestId: submissionId(),
       answers: {},
       focusIds: focus === 'wrong' ? wrongQuestionIds : [],
     };
@@ -929,6 +933,17 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     }
     setBusy(true);
     setError('');
+    if (!navigator.onLine) {
+      void enqueue({kind:'paper',id:draft.requestId,paperId,answers,effectiveDurationMs:clock.current?.submit()})
+        .then(() => {
+          remember(attemptDraftKey(paperId),null);
+          setDraft(null);
+          setError('已保存，待联机判分。');
+        })
+        .catch(() => {clock.current?.resume(); setError('无法存入待发队列，草稿仍在。');})
+        .finally(() => setBusy(false));
+      return;
+    }
     api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}/attempts`, {
       method: 'POST',
       body: { requestId: draft.requestId, answers, effectiveDurationMs: clock.current?.submit() },
@@ -941,6 +956,12 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         justSubmitted.current = true;
       })
       .catch((error: unknown) => {
+        if (deletedSubmission(error)) {
+          remember(attemptDraftKey(paperId),null);
+          setDraft(null);
+          setError('删除状态已变化，旧作答已清除。请重新作答。');
+          return;
+        }
         clock.current?.resume();
         setError(
           error instanceof ApiError
@@ -1017,6 +1038,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         </section>
       )}
       <div className="workbook-detail-grid">
+        {watermark.notice}
         {showForm && (
           <section className="workbook-attempt-panel">
             <div className="subhead">
@@ -1043,7 +1065,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     <label className="field">
                       <span>{question.unit ? `${question.unit}（数字）` : '数字答案'}</span>
                       <input
-                        disabled={busy}
+                        disabled={answerDisabled}
                         inputMode="decimal"
                         value={draft?.answers[question.id] ?? ''}
                         onChange={(event) => changeAnswer(question.id, event.currentTarget.value)}
@@ -1053,7 +1075,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     <label className="field">
                       <span>文字作答（交卷后可按评分标准批改）</span>
                       <textarea
-                        disabled={busy}
+                        disabled={answerDisabled}
                         maxLength={4000}
                         rows={4}
                         value={draft?.answers[question.id] ?? ''}
@@ -1064,7 +1086,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     <label className="field">
                       <span>{question.selfCheck ? '自评：写下你的答案，交卷后对照参考' : '文字答案'}</span>
                       <textarea
-                        disabled={busy}
+                        disabled={answerDisabled}
                         maxLength={4000}
                         rows={3}
                         value={draft?.answers[question.id] ?? ''}
@@ -1078,11 +1100,11 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 <p className="error-text" role="alert">{error}</p>
               )}
               <div className="workbook-attempt-actions">
-                <button type="button" className="text-button" disabled={busy} onClick={() => {
+                <button type="button" className="text-button" disabled={busy || (!watermark.ready && !view.attempts.length)} onClick={() => {
                   if (view.attempts.length === 0) {
                     const next: AttemptDraft = {
                       version: paperId,
-                      requestId: requestId(),
+                      requestId: submissionId(),
                       answers: {},
                       focusIds: [],
                     };
@@ -1117,11 +1139,11 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
               <div className="workbook-attempt-actions">
                 <RecordQuestionLink kind="attempt" record={activeAttempt} />
                 {wrongQuestionIds.length > 0 && (
-                  <button type="button" className="tonal-button" disabled={busy} onClick={() => startRedo('wrong')}>
+                  <button type="button" className="tonal-button" disabled={busy || !watermark.ready} onClick={() => startRedo('wrong')}>
                     重做错题（{wrongQuestionIds.length}）
                   </button>
                 )}
-                <button type="button" className="tonal-button" disabled={busy} onClick={() => startRedo('full')}>
+                <button type="button" className="tonal-button" disabled={busy || !watermark.ready} onClick={() => startRedo('full')}>
                   整卷重做
                 </button>
               </div>

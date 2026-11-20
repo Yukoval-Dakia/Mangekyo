@@ -5,6 +5,7 @@ import type { LoadedModule } from '../loader.ts';
 
 export type Actor = 'learner' | 'companion';
 export type CommandRequest = {
+  readonly deletionWatermark?: string;
   readonly learner: LearnerId;
   readonly id: CommandId;
   readonly type: string;

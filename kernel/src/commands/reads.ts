@@ -128,7 +128,8 @@ async function readFact(
             r.rev, r.kind, r.purpose AS revision_purpose, r.data
      FROM facts f LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev) =
        (f.learner_id,f.id,COALESCE($3::integer, f.current_rev))
-     WHERE f.learner_id=$1 AND f.id=$2`,
+     WHERE f.learner_id=$1 AND f.id=$2 AND NOT EXISTS
+       (SELECT 1 FROM tombstones WHERE learner_id=$1 AND kind='fact' AND id=$2)`,
     [tx.learner, factId, parsed.mode === 'pinned' ? parsed.rev : null],
   );
   const fact = factResult.rows[0];

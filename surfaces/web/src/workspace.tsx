@@ -1,5 +1,9 @@
+import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { api, remember, remembered, requestId, type Settings } from './api';
+import { ErasureProgress, readErasure, pendingErasures } from './erasure';
+import { latestKey } from './deletion-watermark';
+import { enqueue } from './offline-queue';
+import { api, deletedSubmission, remember, remembered, requestId, submissionId, type Settings } from './api';
 import { RetentionPosttests } from './retention-posttests';
 import { Icon } from './icons';
 import { LearningUnderstandings } from './learning-understandings';
@@ -27,6 +31,14 @@ export function useResource<T>(path: string): Resource<T> & {replace: (value: T)
       });
     return () => controller.abort();
   }, [path, version]);
+  useEffect(() => {
+    if (path !== '/workspace') return;
+    const refresh = () => {setData(undefined);setVersion(n => n + 1);};
+    const stored = (e:StorageEvent) => {if (e.key === latestKey) refresh();};
+    window.addEventListener(latestKey,refresh);
+    window.addEventListener('storage',stored);
+    return () => {window.removeEventListener(latestKey,refresh);window.removeEventListener('storage',stored);};
+  },[path]);
   return { data, error, reload: () => setVersion((n) => n + 1),
     replace(value) { setData(value); setError(false); setVersion(n => n + 1); } };
 }
@@ -236,6 +248,7 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
     <>
       <PageTitle title="材料"><a className="tonal-button" href="/intake"><Icon name="plus" /> 导入文件</a></PageTitle>
       <div className="study-actions library-actions"><a href="/textbooks">个人教材</a><a href="/papers">我的题库</a><a href="/notes">学习笔记</a><a href="/materials/workspace">同伴工作区</a><button className="text-button" onClick={capture}>交入文字</button></div>
+      {pendingErasures().map(id => <a key={id} href={materialPath(id)}>查看待核对的原件删除请求 · {id.slice(-6)}</a>)}
       <div className="library-controls">
         <label className="search-box">
           <Icon name="search" />
@@ -276,6 +289,14 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
 }
 
 export function SavedMaterial({ library, id }: { library: Resource<Workspace>; id: string }) {
+  const [erasure,setErasure] = useState(() => readErasure(id));
+  const [start,setStart] = useState(false);
+  useEffect(() => {
+    const restore = () => setErasure(readErasure(id));
+    window.addEventListener('storage',restore);
+    return () => window.removeEventListener('storage',restore);
+  },[id]);
+  if (erasure) return <ErasureProgress id={id} initial={erasure} start={start} onReset={() => {setStart(false);setErasure(null);library.reload();}}/>;
   const m = library.data?.materials.find((x) => x.id === id);
   return (
     <>
@@ -292,7 +313,7 @@ export function SavedMaterial({ library, id }: { library: Resource<Workspace>; i
             <a href={'/notes?material='+m.id}>写笔记</a>
             <a href={'/papers/new?material='+m.id}>自己编卷</a>
           </div>
-          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} previewText={m.text} changed={library.reload} />
+          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} previewText={m.text} changed={library.reload} erase={() => {setStart(true);setErasure(readErasure(id));}} />
         </article>
       ) : (
         library.data && <h1>未找到这份材料</h1>
@@ -368,6 +389,7 @@ export function EditDialog({
   saved: (id?: string) => void;
 }) {
   const isMaterial = kind === 'material';
+  const watermark = useDraftWatermark(isMaterial);
   const ref = useRef<HTMLDialogElement>(null);
   const [title, setTitle] = useState(() => (isMaterial ? (remembered('capture-title') ?? '') : ''));
   const [text, setText] = useState(() => (isMaterial ? (remembered('capture-text') ?? '') : currentGoal));
@@ -380,22 +402,31 @@ export function EditDialog({
   }, []);
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || (isMaterial && !watermark.ready)) return;
     const payload = isMaterial ? { title, text } : { text };
     const data = JSON.stringify(payload);
-    let id = requestId();
+    let id: string | undefined;
     try {
       const saved = JSON.parse(pendingIntent.current ?? remembered(intentKey) ?? 'null');
       if (saved?.data === data && typeof saved.id === 'string') id = saved.id;
     } catch {
       /* Recover a partially written browser draft. */
     }
+    id ??= isMaterial ? submissionId() : requestId();
     const intent = JSON.stringify({ data, id });
     pendingIntent.current = intent;
     remember(intentKey, intent);
     setBusy(true);
     setError('');
     try {
+      if (isMaterial && !navigator.onLine) {
+        await enqueue({kind:'material',id,title,text});
+        remember(intentKey,null);
+        remember('capture-title',null);
+        remember('capture-text',null);
+        close();
+        return;
+      }
       const result = await api<{ id?: string }>(isMaterial ? '/materials' : '/goal', {
         method: 'POST',
         body: { ...payload, requestId: id },
@@ -406,8 +437,15 @@ export function EditDialog({
         remember('capture-text', null);
       }
       saved(isMaterial ? result.id : undefined);
-    } catch {
-      setError('保存失败，文字还在。请再试一次。');
+    } catch (failure) {
+      if (isMaterial && deletedSubmission(failure)) {
+        pendingIntent.current = null;
+        remember(intentKey,null);
+        remember('capture-title',null);
+        remember('capture-text',null);
+        setTitle('');setText('');
+        setError('删除状态已变化，旧提交已清除。需要时请重新交入。');
+      } else setError('保存失败，文字还在。请再试一次。');
     } finally {
       setBusy(false);
     }
@@ -460,6 +498,7 @@ export function EditDialog({
             }}
           />
         </label>
+        {isMaterial && watermark.notice}
         {isMaterial && <p className="field-help">仅保存到我的材料。也可以<a href="/intake">导入文件或照片</a>。</p>}
         {error && (
           <p className="error-text" role="alert">
@@ -472,7 +511,7 @@ export function EditDialog({
           </button>
           <button
             className="primary-button"
-            disabled={busy || (isMaterial && (!title.trim() || !text.trim()))}
+            disabled={busy || (isMaterial && (!watermark.ready || !title.trim() || !text.trim()))}
           >
             {busy ? '保存中…' : '保存'}
           </button>

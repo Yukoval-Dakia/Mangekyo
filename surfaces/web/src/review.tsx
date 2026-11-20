@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { api, requestId } from './api';
+import { api, deletedSubmission, submissionId } from './api';
 import { PageTitle, ReadState, useResource } from './workspace';
 import { Message } from './message';
 import { useWorkbookPresentation } from './workbook-presentation';
@@ -24,12 +24,19 @@ export function Mistakes() {
     if (busy) return;
     const text = entries.join('\n\n');
     const title = '错题复习单 · '+new Intl.DateTimeFormat('zh-CN',{month:'long',day:'numeric'}).format(new Date());
-    if (intent.current.text !== text) intent.current = {text, id:requestId()};
+    if (intent.current.text !== text) intent.current = {text, id:submissionId()};
     setBusy(true);
     try {
       const {id} = await api<{id:string}>('/materials',{method:'POST',body:{requestId:intent.current.id,title,text}});
       location.assign('/companion?review=1&material='+id);
-    } catch { setError('复习单暂时未能保存，可以重试。');setBusy(false); }
+    } catch (error) {
+      if (deletedSubmission(error)) {
+        intent.current = {text:'',id:''};
+        items.reload();
+        setError('删除状态已变化，请核对当前错题后重新交入。');
+      } else setError('复习单暂时未能保存，可以重试。');
+      setBusy(false);
+    }
   }
   return <>
     <PageTitle title="错题回看"><a className="tonal-button" href="/papers">我的练习</a></PageTitle>

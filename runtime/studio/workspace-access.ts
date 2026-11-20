@@ -14,22 +14,22 @@ import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts'
 import type { Db, ReadTransaction, SqlValue } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { materialType, textMaterial } from '../../modules/activity/library-values.ts';
+import { materialType } from '../../modules/activity/library-values.ts';
+import {
+  activityQuestions, activityWorkspaceDisplay, cleanText, summary, type WorkspaceDisplay as Display,
+} from '../../modules/activity/workspace-projection.ts';
 import { goalType, studyGoal } from '../../modules/plan/goal-values.ts';
-import { organizerNote, organizerNoteType } from '../../modules/activity/organizer-values.ts';
+import { organizerNoteType } from '../../modules/activity/organizer-values.ts';
 import { organizerTask, organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
-import { practiceSubmission, ridingPracticeType } from '../../modules/activity/practice-values.ts';
-import { studyRecord } from '../../modules/activity/values.ts';
+import { ridingPracticeType } from '../../modules/activity/practice-values.ts';
+import { studyRecordType } from '../../modules/activity/values.ts';
 import {
-  WorkspaceInputError, workspaceEntry, workspaceEntryKinds as entryKinds, workspaceEntryType, setWorkspaceTeachingCommand,
+  WorkspaceInputError, workspaceEntryKinds as entryKinds, workspaceEntryType, setWorkspaceTeachingCommand,
 } from '../../modules/activity/workspace-values.ts';
 import {
-  workbookAttempt,
   workbookAttemptType,
-  workbookPaper,
   workbookPaperType,
-  type WorkbookExpected,
 } from '../../modules/activity/workbook-values.ts';
 import { sourceId, stableId, studioLearner } from './identity.ts';
 import { materialIntakeLink } from './reading.ts';
@@ -49,7 +49,6 @@ import {
   type ProviderSettings,
 } from './settings.ts';
 
-const studyRecordType = 'activity.studyRecord';
 const providerIdentifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const factIdentifier = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const maximumPage = 50;
@@ -91,16 +90,6 @@ type AccessRow = {
   readonly purpose: unknown;
   readonly created_tick: string | number | bigint;
   readonly author: string;
-};
-
-type Display = {
-  readonly title: string;
-  readonly excerpt: string;
-  readonly text: string;
-  readonly kind?: EntryKind;
-  readonly links?: readonly string[];
-  readonly tags?: readonly string[];
-  readonly question?: {prompt:string; answer?:string; rubric?:string};
 };
 
 type AccessItem = {
@@ -147,15 +136,6 @@ function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-function cleanText(value: string, limit?: number): string {
-  return value.replace(/\u0000/g, '').slice(0, limit);
-}
-
-function summary(value: string, limit = 240): string {
-  const compact = cleanText(value).replace(/\s+/g, ' ').trim();
-  return compact.length > limit ? compact.slice(0, limit) + '…' : compact;
 }
 
 function purposesOf(value: unknown): string[] {
@@ -222,93 +202,6 @@ function authorOf(value: string): string {
   return 'unknown';
 }
 
-function expectedText(expected: WorkbookExpected): string {
-  if (expected.kind === 'numeric') {
-    return String(expected.value) + (expected.unit ? ' ' + expected.unit : '') +
-      '（容差 ' + String(expected.tolerance) + '）';
-  }
-  if (expected.kind === 'exact') return expected.values.join(' / ');
-  return '评分标准：' + expected.rubric;
-}
-
-function practiceDisplay(value: unknown): Display {
-  const practice = practiceSubmission(value);
-  const questions = practice.paper.questions.map((question, index) =>
-    String(index + 1) + '. ' + question.prompt + (question.unit ? '（' + question.unit + '）' : '')
-  ).join('\n');
-  const feedback = practice.feedback.map((item, index) =>
-    String(index + 1) + '. ' + item.result +
-    '\n   我的作答：' + (item.answer === null ? '未作答' : String(item.answer)) +
-    '\n   参考答案：' + String(item.expected) +
-    '\n   说明：' + item.explanation
-  ).join('\n');
-  const text = practice.paper.title + '\n\n' + questions + '\n\n本次反馈\n' + feedback;
-  return { title: practice.paper.title, excerpt: summary(questions), text: cleanText(text) };
-}
-
-function paperDisplay(value: unknown): Display {
-  const paper = workbookPaper(value);
-  const questions = paper.questions.map((question, index) => {
-    const head = String(index + 1) + '. ' + question.prompt;
-    if (question.kind === 'numeric') {
-      return head + '\n   答案：' + String(question.answer) + (question.unit ? ' ' + question.unit : '') +
-        '\n   容差：' + String(question.tolerance);
-    }
-    if (question.kind === 'exact') return head + '\n   答案：' + question.answers.join(' / ');
-    return head + '\n   评分标准：' + question.rubric;
-  }).join('\n');
-  const source = paper.materialId ? '\n来源材料：' + paper.materialId : '';
-  const text = paper.title + '\n保存于：' + paper.savedAt + source + '\n\n' + questions;
-  return { title: paper.title, excerpt: summary(questions), text: cleanText(text) };
-}
-
-function attemptDisplay(value: unknown): Display {
-  const attempt = workbookAttempt(value);
-  const questions = attempt.paper.questions.map((question, index) => {
-    const feedback = attempt.feedback.find((item) => item.questionId === question.id);
-    const answer = attempt.answers[question.id];
-    return String(index + 1) + '. ' + question.prompt +
-      '\n   我的作答：' + (answer === null || answer === undefined ? '未作答' : String(answer)) +
-      (feedback ? '\n   反馈：' + feedback.result +
-        '\n   参考答案：' + expectedText(feedback.expected) +
-        (feedback.explanation ? '\n   说明：' + feedback.explanation : '') : '');
-  }).join('\n');
-  const title = attempt.paper.title;
-  return {
-    title,
-    excerpt: summary('提交于 ' + attempt.submittedAt + ' · ' + attempt.feedback.length + ' 题'),
-    text: cleanText(title + '\n提交于：' + attempt.submittedAt + '\n\n' + questions),
-  };
-}
-
-function noteDisplay(value: unknown): Display {
-  const note = organizerNote(value);
-  const source = note.source ? '\n来源材料：' + note.source.title + '（' + note.source.id + '）' : '';
-  return {
-    title: note.title,
-    excerpt: summary(note.markdown),
-    text: cleanText(note.title + source + '\n\n' + note.markdown),
-  };
-}
-
-function materialDisplay(value: unknown): Display {
-  const material = textMaterial(value);
-  return {
-    title: material.title,
-    excerpt: summary(material.text),
-    text: cleanText(material.title + '\n\n' + material.text),
-  };
-}
-
-function studyRecordDisplay(value: unknown): Display {
-  const record = studyRecord(value);
-  return {
-    title: record.title,
-    excerpt: summary(record.text),
-    text: cleanText(record.title + '\n\n' + record.text),
-  };
-}
-
 function goalDisplay(value: unknown): Display {
   const goal = studyGoal(value);
   if (goal.text === null) {
@@ -322,40 +215,6 @@ function taskDisplay(value: unknown): Display {
   const status = task.done ? '已完成' : '未完成';
   const text = task.title + '\n日期：' + task.date + '\n状态：' + status;
   return { title: task.title, excerpt: status + ' · ' + task.date, text: cleanText(text) };
-}
-
-function entryDisplay(value: unknown): Display {
-  const {kind,title,body,tags,links,answer,rubric} = workspaceEntry(value);
-  const details = [
-    body,
-    answer ? '参考答案\n' + answer : '',
-    rubric ? '评分标准\n' + rubric : '',
-    tags.length ? '标签：' + tags.join('、') : '',
-    links.length ? '关联：' + links.join('、') : '',
-  ].filter(Boolean).join('\n\n');
-  return {
-    title,
-    excerpt: summary(body || details || kind),
-    text: cleanText(title + '\n类型：' + kind + '\n\n' + details),
-    kind,
-    links,
-    tags,
-    ...(kind === 'question' ? {question:{prompt:body, ...(answer ? {answer} : {}), ...(rubric ? {rubric} : {})}} : {}),
-  };
-}
-
-function fixedQuestionPreview(fact: FactSnapshot): string | undefined {
-  const prompts = (questions: readonly {prompt: string}[]) => questions.map(({prompt}) => prompt).join('\n\n');
-  switch (fact.type) {
-    case workspaceEntryType: {
-      const entry = workspaceEntry(fact.value);
-      return entry.kind === 'question' ? entry.body : undefined;
-    }
-    case workbookPaperType: return prompts(workbookPaper(fact.value).questions);
-    case workbookAttemptType: return prompts(workbookAttempt(fact.value).paper.questions);
-    case ridingPracticeType: return prompts(practiceSubmission(fact.value).paper.questions);
-    default: return undefined;
-  }
 }
 
 function textbookDisplay(value: unknown): Display {
@@ -373,16 +232,11 @@ function textbookDisplay(value: unknown): Display {
 
 export function displayOf(type: string, value: unknown): Display {
   try {
-    if (type === ridingPracticeType) return practiceDisplay(value);
-    if (type === workbookPaperType) return paperDisplay(value);
-    if (type === workbookAttemptType) return attemptDisplay(value);
     if (type === textbookPageType) return textbookDisplay(value);
-    if (type === organizerNoteType) return noteDisplay(value);
-    if (type === materialType) return materialDisplay(value);
-    if (type === studyRecordType) return studyRecordDisplay(value);
     if (type === goalType) return goalDisplay(value);
     if (type === organizerTaskType) return taskDisplay(value);
-    if (type === workspaceEntryType) return entryDisplay(value);
+    const display = activityWorkspaceDisplay(type, value);
+    if (display) return display;
   } catch {
     // A malformed legacy fact must not make the learner's whole access page disappear.
   }
@@ -733,7 +587,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
           const {id, rev, sourceRef, title} = source;
           if (ref.anchor.kind === 'answer-slot') return {id, rev, sourceRef, title, content: null};
           if (ref.anchor.kind === 'question') return {id, rev, sourceRef, title, content: source.content};
-          const prompt = root && ref.anchor.kind === 'whole' ? fixedQuestionPreview(root) : undefined;
+          const prompt = root && ref.anchor.kind === 'whole' ? activityQuestions(root)?.map(({prompt}) => prompt).join('\n\n') : undefined;
           return prompt === undefined ? source : {id, rev, sourceRef, title, content: prompt};
         });
         if (!record) throw new RequestError(404, '找不到可读取的版本。');

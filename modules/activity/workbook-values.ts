@@ -96,6 +96,10 @@ export type WorkbookPaper = {
   assessmentRelease?: AssessmentRelease;
 };
 
+export function independentlyAuthoredPaper(paper: WorkbookPaper): boolean {
+  return paper.materialId === null && paper.questions.every(question => !question.sourceQuestionRef);
+}
+
 export type WorkbookQuestionDraft = { sourceQuestionRef?: WorkbookSourceQuestionRef } & (
   | {
     kind: 'numeric';

@@ -1,3 +1,4 @@
+import { assertUnburned } from '../lifecycle.ts';
 import {
   commandId,
   factId,
@@ -11,6 +12,7 @@ import { canonicalJsonString } from './canonical.ts';
 import type { FactRef, FactWrite, Json } from '../declarations/types.ts';
 import type { DbTransaction, ReadTransaction } from '../db/types.ts';
 import type { FactChange, FactWriteTarget, WriteOptions } from './contracts.ts';
+
 
 type FactSchema = { parse(value: unknown): unknown };
 
@@ -244,6 +246,7 @@ export async function applyFactWrites(
     seenFactIds.add(write.id);
   }
 
+  await assertUnburned(tx, 'fact', [...seenFactIds]);
   const rows = new Map<string, FactRow>();
   for (const write of validated) {
     const row = await readFactRow(tx, write.id);

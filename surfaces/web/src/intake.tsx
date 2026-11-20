@@ -1,5 +1,9 @@
+import { useDraftWatermark } from './draft-watermark';
+import { EraseOriginal } from './erasure';
+import { latestKey, bindDeletionWatermark, synchronizeDeletion, verifyGenerationReceipt } from './deletion-watermark';
+import { enqueue } from './offline-queue';
 import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'react';
-import { ApiError, api, remember, remembered, requestId } from './api';
+import { ApiError, api, remember, remembered, requestId, submissionId } from './api';
 import { Icon } from './icons';
 import { PageTitle, materialPath } from './workspace';
 import './intake.css';
@@ -81,6 +85,7 @@ function typeLabel(mediaType: string) {
 }
 
 export function Intake({}: Record<string, never>) {
+  const watermark = useDraftWatermark();
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [mineruAvailable, setMineruAvailable] = useState(false);
@@ -100,6 +105,13 @@ export function Intake({}: Record<string, never>) {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    const clear = () => setResult(null);
+    const stored = (e:StorageEvent) => {if (e.key === latestKey) clear();};
+    window.addEventListener(latestKey,clear);
+    window.addEventListener('storage',stored);
+    return () => {window.removeEventListener(latestKey,clear);window.removeEventListener('storage',stored);};
+  },[]);
   function selectFile(selected: File | null) {
     setFile(selected);
     setExtraction('local');
@@ -119,7 +131,7 @@ export function Intake({}: Record<string, never>) {
   const previous = file && matchingRequest();
 
   async function submit(startNew = false) {
-    if (busy || !file) return;
+    if (busy || !file || !watermark.ready) return;
     if (file.size === 0) {
       setError('这个文件是空的，请换一个。');
       return;
@@ -134,7 +146,7 @@ export function Intake({}: Record<string, never>) {
     }
     const existing = matchingRequest();
     if (startNew !== (existing?.conflict === true)) return;
-    const request = (!startNew && existing?.requestId) || requestId();
+    const request = (!startNew && existing?.requestId) || submissionId();
     const record: PendingRequest = { requestId: request };
     remember(intentKey, JSON.stringify(record));
     if (extraction === 'mineru' && storedRequest(intentKey)?.requestId !== request) {
@@ -150,14 +162,36 @@ export function Intake({}: Record<string, never>) {
     setBusy(true);
     setError('');
     try {
+      if (!navigator.onLine) {
+        if (extraction !== 'local') throw new Error('请在联网后确认云识别。');
+        await enqueue({kind:'file',id:request,title,file});
+        remember(intentKey,null);
+        pending.current.delete(intentKey);
+        selectFile(null);
+        setTitle('');
+        setResult(null);
+        return;
+      }
+      const watermark = bindDeletionWatermark(request);
+      await synchronizeDeletion();
+      form.set('deletionWatermark',watermark);
       const response = await fetch('/api/intake', { method: 'POST', body: form });
+      verifyGenerationReceipt(response,watermark);
       if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        if (response.status === 410 || failure?.code === 'deletion_watermark_stale') {
+          pending.current.delete(intentKey);
+          remember(intentKey,null);
+          if (storedRequest('intake-pending')?.requestId === request) remember('intake-pending', null);
+          selectFile(null);
+          setTitle('');
+          throw new Error('删除状态已变化，旧提交已清除。需要时请重新选择文件。');
+        }
         if (response.status === 409) {
           const conflict = { requestId: request, conflict: true };
           pending.current.set(intentKey, conflict);
           remember(intentKey, JSON.stringify(conflict));
         }
-        const failure = await response.json().catch(() => null);
         throw new Error(failure?.error ?? '交入未确认，请再试一次。');
       }
       const value: IntakeMetadata = await response.json();
@@ -228,6 +262,7 @@ export function Intake({}: Record<string, never>) {
             </fieldset>
           )}
           {!cloudAllowed && <p className="field-help">文件仅在本机处理。macOS 支持 PDF 和照片识别，UTF-8 文本可直接读取。</p>}
+          {watermark.notice}
           {file && <p className="field-help">
             {previous?.conflict ? <>原提交标识有冲突，请先到<a href="/materials">材料列表</a>核对。另开一次会创建新材料{extraction === 'mineru' ? '，并可能再次产生识别费用' : ''}。</>
               : previous ? '有尚未确认的提交。继续会沿用原请求标识。'
@@ -242,10 +277,10 @@ export function Intake({}: Record<string, never>) {
             <button type="button" className="text-button" disabled={busy || !file} onClick={() => selectFile(null)}>
               重选
             </button>
-            {previous?.conflict && <button type="button" className="primary-button" disabled={busy} onClick={() => void submit(true)}>
+            {previous?.conflict && <button type="button" className="primary-button" disabled={busy || !watermark.ready} onClick={() => void submit(true)}>
               {extraction === 'mineru' ? '另开一次并发送给 MinerU' : '另开一次本机交入'}
             </button>}
-            {!previous?.conflict && <button type="submit" className="primary-button" disabled={busy || !file}>
+            {!previous?.conflict && <button type="submit" className="primary-button" disabled={busy || !file || !watermark.ready}>
               {busy ? '正在保存…' : extraction === 'mineru' ? (previous ? '继续原提交给 MinerU' : '保存并发送给 MinerU') : (previous ? '继续原提交' : '保存并抽取')}
             </button>}
           </div>
@@ -272,13 +307,13 @@ export function Intake({}: Record<string, never>) {
   );
 }
 
-type OriginalProps = { id: string; receipt?: IntakeMetadata; previewText?: string; changed?: () => void };
+type OriginalProps = { id: string; receipt?: IntakeMetadata; previewText?: string; changed?: () => void; erase?:()=>void };
 
 export function MaterialOriginal(props: OriginalProps) {
   return <OriginalDetails key={props.id} {...props} />;
 }
 
-function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
+function OriginalDetails({ id, receipt, previewText, changed, erase }: OriginalProps) {
   const [metadata, setMetadata] = useState<IntakeMetadata | null>(receipt ?? null);
   const latest = useRef(receipt);
   const readGeneration = useRef(0);
@@ -421,6 +456,7 @@ function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
 
   return (
     <section className="intake-original" aria-label="原件与完整抽取">
+      {erase && <EraseOriginal id={id} revision={metadata.revision} onConfirmed={erase}/>}
       <header className="intake-original-head">
         <div>
           <h2>原件与完整抽取</h2>

@@ -1,3 +1,5 @@
+import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
+import { submittedWatermark } from './deletion-watermark.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import {
@@ -52,6 +54,8 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
     let archived;
     try {
       archived = await db.snapshot({ learner: studioLearner }, async (tx) => {
+        await assertUnburned(tx, 'fact', [attemptId]);
+        await assertDeletionWatermark(tx,submittedWatermark(input));
         const fact = await createCommandReadContext(tx, ridingPracticePurpose)
           .fact(attemptId, { mode: 'following' });
         return practiceSubmission(fact.value);
@@ -84,6 +88,7 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
       try {
         data = practiceInput(input);
       } catch (error) {
+        if (error instanceof LifecycleError) throw error;
         const accepted = await replay(attemptId, input);
         if (accepted) return accepted;
         throw new RequestError(400, error instanceof Error ? error.message : '练习提交格式无效。');
@@ -94,10 +99,11 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
           purpose: ridingPracticePurpose,
           actor: 'learner',
           type: ridingPracticeCommand,
-          id: submissionId,
+          id: submissionId, deletionWatermark:submittedWatermark(input),
           input: { id: attemptId, data },
         });
       } catch (error) {
+        if (error instanceof LifecycleError) throw error;
         const accepted = await replay(attemptId, input);
         if (accepted) return accepted;
         throw error;

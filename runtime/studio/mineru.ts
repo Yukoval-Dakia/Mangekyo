@@ -21,6 +21,7 @@ type ReadInput = {
   readonly token: string;
   readonly batchId: string;
   readonly dataId: string;
+  readonly beforeDownload?: () => Promise<void>;
   readonly signal?: AbortSignal | undefined;
   readonly fetch?: typeof fetch | undefined;
 };
@@ -304,6 +305,7 @@ export async function readMineru(input: ReadInput): Promise<MineruReadResult> {
   if (result.state === 'failed') return { state: 'failed', message: failedMessage(result.err_msg) };
   if (result.state !== 'done') throw new MineruError('MinerU 批次状态无效。');
   const zipUrl = validateZipUrl(result.full_zip_url);
+  await input.beforeDownload?.();
   const zip = await downloadZip(fetcher, zipUrl, signal);
   if (zip.byteLength === 0 || zip.byteLength > zipLimit) throw new MineruError('MinerU 结果过大。');
   const text = readMarkdown(zip);
