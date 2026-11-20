@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { api, remember, remembered, requestId, type Settings } from './api';
 import { RetentionPosttests } from './retention-posttests';
 import { Icon } from './icons';
+import { LearningUnderstandings } from './learning-understandings';
 import { LearningMemory } from './study-tools';
 import { MaterialOriginal } from './intake';
 
@@ -326,6 +327,7 @@ export function Me({
           <p>{library.data.goal || '你最近希望弄懂什么？'}</p>
         </section>
       )}
+      <LearningUnderstandings />
       <LearningMemory settings={settings} />
       <section className="surface-section profile-records">
         <div className="subhead">
@@ -347,7 +349,7 @@ export function Me({
         <Icon name="lock" />
         <div>
           <h2>资料用途</h2>
-          <p>材料默认保存在本机。只有在发送时选中的材料片段和主动保存的同伴备忘会用于相应对话。</p>
+          <p>你可以在材料的用途设置中查看授权。同伴对你的理解来自已获准的学习活动。</p>
         </div>
       </section>
     </>
