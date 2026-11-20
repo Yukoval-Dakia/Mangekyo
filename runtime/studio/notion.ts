@@ -248,7 +248,30 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false, s
     });
   }
 
-  return {read,check};
+  async function publishAfterChecks<P,T>(
+    project: (tx: DbTransaction, check: CheckNotionRead, collect: boolean) => Promise<P>,
+    publish: (tx: DbTransaction, prepared: P) => Promise<T>,
+  ): Promise<T> {
+    if (readOnly) throw new Error('A read-only Notion scope cannot publish');
+    signal?.throwIfAborted();
+    const first = await locked(async tx => {
+      signal?.throwIfAborted();
+      const plan = planner.prepare(fact=>pageFor(tx,fact));
+      const prepared = await project(tx,plan.collect,true);
+      if (!plan.empty()) return {plan};
+      return {response:await publish(tx,prepared)};
+    });
+    if (!first.plan) return first.response;
+    // A remote check runs with no learner transaction or pool connection held.
+    signal?.throwIfAborted();
+    await first.plan.resolve();
+    return locked(async tx => {
+      signal?.throwIfAborted();
+      return publish(tx,await project(tx,check(tx),false));
+    });
+  }
+
+  return {read,check,publishAfterChecks};
 }
 
 export type NotionReadScope = ReturnType<typeof notionReadScope>;

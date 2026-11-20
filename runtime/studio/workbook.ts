@@ -1,7 +1,7 @@
 import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { attemptView, projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
-import { historicalWorkbookMount, openWorkbookContext, type WorkbookContextAuthority } from './workbook-context.ts';
+import { historicalWorkbookMount, openWorkbookContext, type WorkbookContextAuthority, type WorkbookQuestionWithContext } from './workbook-context.ts';
 import { posttestIssuanceType } from '../../modules/activity/retention-posttest.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
@@ -165,8 +165,8 @@ async function sourceView(
 const factUnavailable = (error: unknown) => error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
 const workbookUnavailable = (error: unknown) => factUnavailable(error) ||
   (error instanceof RequestError && (error.status === 403 || error.status === 404));
-const allAttempts = (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>) =>
-  readWorkbookAttempts(tx, read, factUnavailable);
+const readAttempts = (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>, paperId?: FactId) =>
+  readWorkbookAttempts(tx, read, factUnavailable, paperId);
 
 async function requireSource(db: Db, id: string): Promise<void> {
   const exists = await db.snapshot({learner:studioLearner}, async tx =>
@@ -183,7 +183,7 @@ type FormalAssessmentView = Awaited<ReturnType<typeof readWorkbookAssessment>>;
 type WorkbookDetailWithAssessment = WorkbookDetail & {
   assessmentReleaseRef?: FormalAssessmentView['releaseRef'];
   attempts: (WorkbookAttemptView & { rev: number; formalAssessment?: FormalAssessmentView; paperRev?: number;
-    questions: Awaited<ReturnType<ReturnType<typeof openWorkbookContext>['questions']>> })[];
+    questions: WorkbookQuestionWithContext[] })[];
 };
 
 export function openWorkbook(db: Db, activity: LoadedModule, {
@@ -220,11 +220,11 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         ? null
         : await sourceView(tx, read, paper.materialId);
       const assessments = await allAssessments(tx, paperId);
+      const projectQuestions = capsules.questions(tx);
       const attempts: WorkbookDetailWithAssessment['attempts'] = [];
-      for (const { id: attemptId, rev, attempt, fact } of await allAttempts(tx, read)) {
-        if (attempt.paperId !== paperId) continue;
+      for (const { id: attemptId, rev, attempt, fact } of await readAttempts(tx, read, paperId)) {
         const mount = await historicalWorkbookMount(tx,paperId,fact,read);
-        const questions = mount ? await capsules.questions(tx,attempt.paper.questions,mount) : [];
+        const questions = mount ? await projectQuestions(attempt.paper.questions,mount) : [];
         const view = { ...attemptView(attemptId, attempt, assessments.get(attemptId) ?? []), rev, questions,
           ...(mount ? {paperRev:mount.paper.rev} : {}) };
         const release = attempt.paper.assessmentRelease;
@@ -238,7 +238,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         title: paper.title,
         savedAt: paper.savedAt,
         source,
-        questions: await capsules.questions(tx,paper.questions,{paper:{id:paperId,rev:revision},epoch}),
+        questions: await projectQuestions(paper.questions,{paper:{id:paperId,rev:revision},epoch}),
         ...(paper.assessmentRelease ? { assessmentReleaseRef: paper.assessmentRelease.releaseRef } : {}),
         attempts,
       };
@@ -249,7 +249,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     async list(): Promise<WorkbookSummary[]> {
       return db.snapshot({learner:studioLearner}, async tx => {
         const read = createCommandReadContext(tx,storagePurpose);
-        return readWorkbookSummaries(tx,await allAttempts(tx,read),id => readPaper(tx,id),
+        return readWorkbookSummaries(tx,await readAttempts(tx,read),id => readPaper(tx,id),
           id => sourceView(tx,read,id),workbookUnavailable);
       });
     },
@@ -281,7 +281,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     async review(): Promise<ReviewEntry[]> {
       return db.snapshot({ learner: studioLearner }, async tx => {
         const read = createCommandReadContext(tx, storagePurpose);
-        const attempts = await allAttempts(tx,read);
+        const attempts = await readAttempts(tx,read);
         return projectWorkbookReview(attempts,await allAssessments(tx), async paperId => {
           try { return Boolean(await readPaperOrNull(tx,factId(paperId))); }
           catch (error) {

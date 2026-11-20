@@ -42,13 +42,17 @@ export function attemptView(
 
 export async function readWorkbookAttempts(
   tx: ActivityEvidenceReadScope,
-  read: ReadContext, unavailable: (error: unknown) => boolean,
+  read: ReadContext, unavailable: (error: unknown) => boolean, paperId?: FactId,
 ): Promise<{ id: FactId; rev: Revision; attempt: WorkbookAttempt; fact: FactSnapshot }[]> {
   const { rows } = await tx.query<{ id: string }>(
-    `SELECT id FROM facts
-     WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-     ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookAttemptType],
+    `SELECT f.id FROM facts f
+     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
+       AND ($3::text IS NULL OR EXISTS (
+         SELECT FROM fact_revs r WHERE (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+           AND r.data->>'paperId'=$3
+       ))
+     ORDER BY f.created_tick DESC, f.id`,
+    [tx.learner, workbookAttemptType, paperId ?? null],
   );
   const attempts: Awaited<ReturnType<typeof readWorkbookAttempts>> = [];
   for (const row of rows) {
