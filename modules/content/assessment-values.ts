@@ -176,13 +176,22 @@ function criterion(value: unknown, slots: readonly AnswerSlot[]): AssessmentCrit
   };
 }
 
-/** Parse a stored question before it has a release identity. */
+/** Validate answer fields and the criteria referencing them as a single contract. */
 export function assessmentQuestionContract(responseSchema: unknown, assessmentContract: unknown) {
   const slots = unique(list(responseSchema, '作答位').map(slot), entry => entry.slotId, '作答位标识');
   const criteria = unique(list(assessmentContract, '冻结评估标准').map(entry => criterion(entry, slots)),
     entry => entry.criterionId, '标准标识');
   finite(criteria.reduce((total, entry) => total + (entry.maximum ?? 0), 0), '契约总分');
   return { slots, criteria };
+}
+
+/** Bind a product-authored rubric to the actual question revision at publication. */
+export function bindQuestionAssessment(responseSchema: unknown, assessmentContract: unknown, questionRef: AssessmentRevisionRef) {
+  const criteria = list(assessmentContract, '题目评估标准').map((entry, index) => {
+    if (!plainObject(entry) || Object.hasOwn(entry, 'source')) throw new Error('评分依据由系统绑定到固定题版。');
+    return { ...entry, source: { kind: 'product-rubric', ref: questionRef, path: `/assessment_contract/${index}` } };
+  });
+  return assessmentQuestionContract(responseSchema, criteria);
 }
 
 // Historical reads use the frozen contract even after an evaluator version is retired.
