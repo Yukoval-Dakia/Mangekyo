@@ -13,6 +13,15 @@ export default defineCommand({
   destructive: false,
   schema: creation(workbookPresentation),
   async write(ctx, { id, data }) {
+    if (data.phase === 'displayed') {
+      const { phase, permit, ...scope } = data;
+      if (!permit) throw new WorkbookPresentationError('缺少呈现许可。');
+      const reservation = await ctx.read.fact(permit, { mode: 'following' });
+      if (reservation.type !== workbookPresentationType ||
+          !sameWorkbookJson(reservation.value, { ...scope, phase: 'permit' })) {
+        throw new WorkbookPresentationError('许可与题面或反馈版本不匹配。');
+      }
+    }
     const shown = await ctx.read.fact(data.paper.id, { mode: 'pinned', rev: data.paper.rev });
     if (shown.type !== workbookPaperType) throw new WorkbookPresentationError('需要已送达的普通试卷。');
     const paper = workbookPaper(shown.value);

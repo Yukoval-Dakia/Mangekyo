@@ -351,6 +351,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         const key = commandId(stableId(recordWorkbookPresentationCommand, JSON.stringify(data)));
         await handle({ learner: studioLearner, actor: 'learner', purpose: storagePurpose,
           id: key, type: recordWorkbookPresentationCommand, input: { id: key, data } });
+        if (data.phase === 'permit') return { permit: key };
       } catch (error) {
         if (error instanceof WorkbookPresentationError) throw new RequestError(400, error.message);
         mapReadFailure(error, '找不到呈现的试卷。', '这份试卷当前不可读取。');
