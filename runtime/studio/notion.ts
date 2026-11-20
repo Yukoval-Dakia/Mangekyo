@@ -100,12 +100,13 @@ function notionHost(db: Db, scope = learnerScope) {
     return selection;
   }
 
-  async function provider<T>(selection: NotionSelection, watermark: string, stream: Parameters<typeof connection.read<T>>[0], page?: string) {
+  async function provider<T>(selection: NotionSelection, watermark: string, stream: Parameters<typeof connection.read<T>>[0], page?: string, rememberDenial = true) {
     const {id, selectionEpoch: epoch} = selection;
     try {
       return await connection.read(stream, () => snapshot(tx => live(tx, id, epoch, watermark, page)));
     } catch (error) {
       if (error instanceof NotionSourceUnavailable && error.invalidated) {
+        if (!rememberDenial) throw new RequestError(403, 'Notion 已撤回该来源的访问。');
         const key = error.invalidated.kind === 'selection' ? 'root' : error.invalidated.pageId;
         await locked(async tx => {
           await live(tx, id, epoch, watermark);
@@ -192,7 +193,7 @@ type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => P
 
 // A scope lasts for one projection (including any recall it mounts). No remote
 // authority carries over to a later HTTP request, stream refresh, or model send.
-export function notionReadScope(db: Db, learner: LearnerId) {
+export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false}: {readOnly?: boolean} = {}) {
   const {snapshot, locked, provider} = notionHost(db, {learner});
   type Authority = 'authorized' | 'withdrawn' | 'unconfirmed';
   const pages = new Map<string, Authority>();
@@ -218,6 +219,7 @@ export function notionReadScope(db: Db, learner: LearnerId) {
   async function read<T>(project: Projection<T>): Promise<T>;
   async function read<P, T>(project: Projection<P>, publish: Projection<T, DbTransaction>): Promise<T>;
   async function read<P, T>(project: Projection<P>, publish?: Projection<T, DbTransaction>): Promise<P | T> {
+    if (readOnly && publish) throw new Error('A read-only Notion scope cannot publish');
     const requested = new Map<string, NonNullable<Awaited<ReturnType<typeof pageFor>>>>();
     const initial = await snapshot(tx => project(tx, async fact => {
       const page = await pageFor(tx, fact);
@@ -227,7 +229,7 @@ export function notionReadScope(db: Db, learner: LearnerId) {
     for (const {key, witness, selection, pageId, watermark} of requested.values()) {
       if (!pages.has(key)) {
         try {
-          await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId);
+          await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId, !readOnly);
           pages.set(key, 'authorized');
         } catch (error) {
           if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
@@ -235,6 +237,15 @@ export function notionReadScope(db: Db, learner: LearnerId) {
         }
       }
       witnesses.set(witness, pages.get(key)!);
+    }
+    if (readOnly) {
+      try {
+        return await db.snapshot({learner},tx => project(tx,check(tx)),{lockLearner:true});
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === '40001')
+          throw new RequestError(503, '课堂依据正在更新，请重试。');
+        throw error;
+      }
     }
     return locked<P | T>(tx => publish ? publish(tx, check(tx)) : project(tx, check(tx)));
   }

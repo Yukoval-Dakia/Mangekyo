@@ -419,6 +419,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   return {
     sessionId,
     session: visibleSession,
+    mountsConfirmed: Boolean(permissions),
     applySnapshot,
     draft: draft?.text ?? "",
     outdatedDraft: Boolean(draft?.text.trim() && draft.parentId !== session?.currentTurnId),

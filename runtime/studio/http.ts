@@ -1,3 +1,5 @@
+import { classroomPath, factId as classroomFactId } from './classroom.ts';
+import type { ClassroomOperation } from '../../modules/activity/classroom.ts';
 import type { openStudioNotion } from './notion.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
@@ -91,7 +93,7 @@ const pages = new Set([
   '/practice/riding',
   '/companion',
   '/me',
-  '/classroom/first45',
+  '/classroom', '/classroom/first45',
 ]);
 export function serve(
   db: Db,
@@ -348,6 +350,14 @@ export function serve(
           throw new RequestError(400, error instanceof Error ? error.message : '设置无效。');
         }
       }
+      const classroom = classroomPath.exec(path);
+      if (classroom) {
+        const [, id, op] = classroom;
+        if (!id && method === 'POST') return json(res,202,await studio.classrooms.start(await body(req)));
+        if (id && !op && method === 'GET') return json(res,200,await studio.classrooms.get(classroomFactId(id)));
+        if (id && op === 'print' && method === 'GET') return json(res,200,await studio.classrooms.print(classroomFactId(id)));
+        if (id && op && op !== 'print' && method === 'POST') return json(res,200,await studio.classrooms.mutate(classroomFactId(id),op as ClassroomOperation,await body(req)));
+      }
       if (path === '/api/sessions' && method === 'POST') {
         const input = await body(req);
         return json(
@@ -386,7 +396,7 @@ export function serve(
         );
       }
       if (method !== 'GET' || path.startsWith('/api/')) throw new RequestError(404, '这个入口不存在。');
-      const appPage = pages.has(path) || /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path) || /^\/materials\/(?:saved|records)\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
+      const appPage = pages.has(path) || /^\/classroom\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path) || /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path) || /^\/materials\/(?:saved|records)\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
       const file = resolve(root, '.' + decodeURIComponent(appPage ? '/index.html' : path));
       if (!file.startsWith(resolve(root) + sep) || !types[extname(file)])
         throw new RequestError(404, '找不到页面。');

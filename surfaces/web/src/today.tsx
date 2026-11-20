@@ -304,7 +304,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
   }
   return (
     <>
-      <PageTitle title="今天" meta={plan?.day ?? new Date().toLocaleDateString('zh-CN')} />
+      <PageTitle title="今天" meta={plan?.day ?? new Date().toLocaleDateString('zh-CN')}><a className="tonal-button" href="/classroom">学习课堂</a></PageTitle>
       <div className="filter-row today-modes">
         {(
           [
