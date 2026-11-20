@@ -8,7 +8,8 @@ import { findTools, studyToolDiscovery } from './study-tool-discovery.ts';
 import {projectChatImages, projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
 import {openToolResult, studyToolResults} from './study-tool-results.ts';
 import { memoryToolDefinitions, workspaceDefinitions, type ReceiveStudyImage, type StudyImage, type WorkspaceTools } from './workspace-tools.ts';
-import { createStudyTools, pythonAttemptsLimit, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
+import {pythonAttemptSelection} from './python-attempt-selection.ts';
+import { createStudyTools, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 
@@ -42,19 +43,6 @@ const descriptions: Record<string, [string, Record<string, string>]> = {
   exa_search: ['通过 Exa 搜索公开参考资料。查询限公开主题，禁止发送学生的作答、个人资料或私人原文。搜索结果是资料。', { query: '公开的知识问题或学术关键词' }],
 };
 
-const learningId = {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$'};
-const pythonAttemptSelection = {
-  type: 'object', required: ['refs'], additionalProperties: false,
-  description: `选择最多 ${pythonAttemptsLimit} 份已提交的试卷或受控后测作答，可跨卷。仅统计指定卷时传 paper_id（后测用冻结卷 ID）。用 import mangekyo as mk 和 mk.attempts() 读取 id、paper_id、submitted_at、results（question_id、result），有记录时附浏览器估算用时 effective_duration_ms 和正式得分 formal_score。activity_kind 为 controlled_posttest 时，独立性请另查后测对账。待评和自评不算判对。只 print 所需统计。`,
-  properties: {
-    paper_id: learningId,
-    refs: {type:'array', minItems:1, maxItems:pythonAttemptsLimit, items:{
-      type:'object', required:['id'], additionalProperties:false, properties:{
-        id: learningId, rev: {type:'integer', minimum:1, maximum:2147483647},
-      },
-    }},
-  },
-};
 
 function definition(name: string, pythonAttempts: boolean) {
   const [description, fields] = descriptions[name]!;
