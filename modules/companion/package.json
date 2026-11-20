@@ -10,6 +10,10 @@
     "./memory-review": "./memory-review.ts"
   },
   "dependencies": {
-    "@mangekyo/kernel": "workspace:*"
+    "@mangekyo/kernel": "workspace:*",
+    "@mangekyo/module-activity": "workspace:*",
+    "@mangekyo/module-capture": "workspace:*",
+    "@mangekyo/module-content": "workspace:*",
+    "@mangekyo/module-learner": "workspace:*"
   }
 }

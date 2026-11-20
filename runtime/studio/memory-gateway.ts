@@ -10,7 +10,11 @@ import { memoryAssertion, memoryAssertionType, type MemoryLink } from '../../mod
 import { memoryReviewDeriverVersion, reviewMemoryEvidence } from '../../modules/companion/memory-review.ts';
 import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory-claims.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
-import { learnerPreference, learnerPreferenceType, type PreferenceScope } from '../../modules/learner/preference-values.ts';
+import { learnerPreferenceType, type PreferenceScope } from '../../modules/learner/preference-values.ts';
+import {
+  extractedUnderstanding, isExtractedUnderstanding, reviewUnderstanding, understandingPresentation, understandingProjection,
+} from '../../modules/companion/understanding.ts';
+import { openUnderstandingCitations } from './research-understanding.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
 import { readLearningOverview } from './learning-overview.ts';
 import { textSlice } from './reading.ts';
@@ -137,6 +141,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       const fact = await open(row.id);
       const claim = fact && readClaimValue(fact.value);
       if (!fact || !claim) continue;
+      const understanding = understandingProjection(fact)!;
       const legacy = claim.version === 0;
       const evidence = legacy ? claim.source : claim.evidence_refs[0];
       const excerpt = legacy ? claim.quote : claim.evidence_refs[0]?.excerpt;
@@ -160,9 +165,35 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
         quote_excerpt: excerpt, kind: legacy ? 'legacy' : claim.category,
         scope: legacy ? {kind: 'unknown'} : claim.scope.kind === 'object'
           ? {kind: 'object', id: claim.scope.object} : claim.scope,
-        valid_until: legacy ? null : claim.valid_until, recordedTick: row.tick},
+        valid_until: legacy ? null : claim.valid_until, recordedTick: row.tick, ttl: understanding.ttl, sticky: understanding.sticky,
+        evidence_refs: understanding.evidence_refs},
       sent: [witness(fact), {...witness(source), fragment: {field: 'answer', start, end: start + excerpt.length}}],
       basis: scopeBasis, ...(!legacy && claim.valid_until ? {expiresAt: claim.valid_until} : {})});
+    }
+  }
+  if (wantsMemory || wantsPreferences || requested.includes('verified_playbooks')) {
+    const {rows} = await tx.query<{id: string}>(`SELECT f.id FROM facts f JOIN fact_revs r
+        ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+      WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
+        AND f.purpose && ARRAY['teaching','all'] AND r.data->>'version'='2'
+        AND (r.data->'scope'->>'kind'='general' OR r.data->'scope'->>'object'=$3)
+      ORDER BY f.changed_tick DESC,f.id LIMIT 24`,
+    [tx.learner, memoryAssertionType, scope.preference.context ?? null]);
+    for (const {id} of rows) {
+      const fact = await open(id);
+      if (!fact) continue;
+      const value = extractedUnderstanding(fact.value);
+      if (value.ttl && value.ttl <= at) continue;
+      const sources = await openUnderstandingCitations(tx, value.evidence_refs, purpose, maySend);
+      if (sources.length !== value.evidence_refs.length) continue;
+      const kind = understandingPresentation(value, sources);
+      const region = kind === 'preference' ? 'preferences' : 'memory';
+      if (!requested.includes(region)) continue;
+      const review = reviewUnderstanding(fact.ref.id, value, sources);
+      add(region, {value: {id, rev: fact.ref.rev, kind, text: value.text, scope: value.scope,
+        ttl: value.ttl, sticky: value.sticky, evidence_refs: value.evidence_refs, review},
+      sent: [witness(fact), ...sources.map(source => source.basis[0]!)],
+      basis: sources.flatMap(source => source.basis.slice(1)), ...(value.ttl ? {expiresAt: value.ttl} : {})});
     }
   }
   if (!wantsMemory && !wantsPreferences && !wantsCourse && !wantsAnswer) return results;
@@ -230,10 +261,14 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     const fact = await open(id);
     if (!fact) continue;
     if (type === learnerPreferenceType) {
-      const { text, scope } = learnerPreference(fact.value);
-      add('preferences', { value: { id, text: textSlice(text, 0, 600).content, scope }, sent: [witness(fact)] });
+      const understanding = understandingProjection(fact)!;
+      const {text, scope, kind, ttl, sticky, evidence_refs} = understanding;
+      if (text !== null) add('preferences', {value: {id, rev: fact.ref.rev, text: textSlice(text, 0, 600).content,
+        scope, kind, ttl, sticky, evidence_refs}, sent: [witness(fact)]});
       continue;
     }
+    if (isExtractedUnderstanding(fact.value)) continue;
+    const understanding = understandingProjection(fact)!;
     const memory = memoryAssertion(fact.value);
     const { validFrom, validUntil, conditions = [] } = memory.scope;
     if ((validFrom && validFrom > at) || (validUntil && validUntil <= at) ||
@@ -266,7 +301,8 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     const review = reviewMemoryEvidence({ requestId: id, assertion: { id, text: memory.text, scope: memory.scope }, evidence });
     if (review.kind !== 'value') continue;
     const { assertion, outcome, findings, nextEvidence } = review.value;
-    const value = { method: memoryReviewDeriverVersion, assertion, outcome, findings, nextEvidence: [...nextEvidence],
+    const value = {id, rev: fact.ref.rev, kind: understanding.kind, ttl: understanding.ttl, sticky: understanding.sticky,
+      evidence_refs: understanding.evidence_refs, method: memoryReviewDeriverVersion, assertion, outcome, findings, nextEvidence: [...nextEvidence],
       sources: review.value.sources.map(source => {
         const item = originals.find(item => item.fact.ref.id === source.eventId)!;
         return { ...source, recordedTick: provenance.find(row => row.fact_id === source.eventId)!.tick,
@@ -297,7 +333,7 @@ export async function readMemoryGateway(options: {
     const context = JSON.stringify(bundle);
     const sent = selected.flatMap(item => item.sent);
     const witnesses = (items: readonly RegionItem[]) => [...new Map(items.flatMap(item =>
-      [...(item.basis ?? []), ...item.sent].map(ref => [ref.id, ref] as const))).values()];
+      [...(item.basis ?? []), ...item.sent].map(ref => [`${ref.id}:${ref.rev}`, ref] as const))).values()];
     const opened = witnesses([...results.values()].flat());
     const basis = witnesses(selected);
     const expiresAt = selected.flatMap(item => item.expiresAt ? [item.expiresAt] : []).sort()[0] ?? null;

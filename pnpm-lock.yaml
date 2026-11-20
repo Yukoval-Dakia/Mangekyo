@@ -80,6 +80,18 @@ importers:
       '@mangekyo/kernel':
         specifier: workspace:*
         version: link:../../kernel
+      '@mangekyo/module-activity':
+        specifier: workspace:*
+        version: link:../activity
+      '@mangekyo/module-capture':
+        specifier: workspace:*
+        version: link:../capture
+      '@mangekyo/module-content':
+        specifier: workspace:*
+        version: link:../content
+      '@mangekyo/module-learner':
+        specifier: workspace:*
+        version: link:../learner
 
   modules/content:
     dependencies:

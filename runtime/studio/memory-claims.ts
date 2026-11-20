@@ -2,7 +2,9 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { claimType, claimValue, ClaimInputError, matchesClaimEvidence, type ClaimRef } from '../../modules/companion/claim.ts';
-import { purpose } from './identity.ts';
+import { purpose, stableId } from './identity.ts';
+
+export const claimUndoToken = (command: string, id: string) => stableId('memory-undo-token', command, id);
 
 export const claimWitness = (fact: FactSnapshot): ClaimRef => ({
   id: fact.ref.id, rev: fact.ref.rev, accessEpoch: fact.accessEpoch,
