@@ -22,6 +22,7 @@ import { studioLearner } from './identity.ts';
 import type { openLibrary } from './library.ts';
 import type { openPractice } from './practice.ts';
 import { handleIntakeRequest, type openIntake } from './intake.ts';
+import type { openCapturePapers } from './capture-papers.ts';
 import type { openWorkbook } from './workbook.ts';
 import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
@@ -75,7 +76,7 @@ const types: Record<string, string> = {
 };
 const pages = new Set([
   '/',
-  '/today', '/papers', '/papers/new', '/plan', '/notes', '/review', '/intake',
+  '/today', '/papers', '/papers/new', '/papers/issued', '/plan', '/notes', '/review', '/intake',
   '/materials', '/materials/workspace',
   '/textbooks', '/textbooks/page',
   '/materials/riding',
@@ -97,6 +98,7 @@ export function serve(
     memory: ReturnType<typeof openMemory>;
     memoryManagement: ReturnType<typeof openMemoryManagement>;
     intake: ReturnType<typeof openIntake>;
+    capturePapers: ReturnType<typeof openCapturePapers>;
     workspace: ReturnType<typeof openWorkspaceAccess>;
     research: ReturnType<typeof openResearch>;
     recall: RecallHttp;
@@ -212,6 +214,11 @@ export function serve(
       const reading = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/reading$/.exec(path);
       if (reading?.[1] && method === 'GET') return json(res, 200, await library.reading(reading[1]));
       if (await handleIntakeRequest(student.intake, req, res, path, method)) return;
+      const paperOperation = path.slice('/api/capture/papers/'.length);
+      if (method === 'POST' && path.startsWith('/api/capture/papers/') &&
+          (paperOperation === 'issue' || paperOperation === 'collect' || paperOperation === 'reprint')) {
+        return json(res, 200, await student.capturePapers[paperOperation](await body(req)));
+      }
       if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());
       if (path === '/api/papers' && method === 'POST') return json(res, 201, await student.workbook.save(await body(req)));
       if (path === '/api/retention/posttests' && method === 'GET')

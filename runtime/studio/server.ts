@@ -15,6 +15,7 @@ import { sourceBuildId } from './build.ts';
 import { serve } from './http.ts';
 import { openTextbook } from './textbook.ts';
 import { openIntake } from './intake.ts';
+import { openCapturePapers } from './capture-papers.ts';
 import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
@@ -65,7 +66,8 @@ const understandingTransport = understandingModule
   : undefined;
 if (understandingModule && !understandingTransport) throw new Error('宿主模块须导出 understandingTransport');
 const research = openResearch(db, activity, companion, undefined, undefined, understandingTransport);
-const intake = openIntake(db, capture, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
+const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
+const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
 const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
@@ -96,7 +98,8 @@ async function openWeb() {
   const student = { textbook, relationReview:openRelationReview(db,content),
     workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
-    intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
+    intake, capturePapers: openCapturePapers(db, capture, captureHooks),
+    workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
     research, recall, retention, retentionComparison };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
