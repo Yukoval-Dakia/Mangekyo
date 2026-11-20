@@ -73,14 +73,18 @@ export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference
     track(fact, mode) { submission = fact; access.track(fact, mode); },
   });
   if (!source || !submission) return;
-  const { ref } = submission;
+  const opened = await openWorkbookQuestionSources(tx, submission, access);
+  return opened && {source, submission, ...opened};
+}
+
+export async function openWorkbookQuestionSources(tx: ReadTransaction, submission: FactSnapshot, access: Access) {
   const attempt = workbookAttempt(submission.value);
-  const birth = await readWorkbookSubmissionBirth(tx, ref.id);
+  const birth = await readWorkbookSubmissionBirth(tx, submission.ref.id);
   if (!birth || birth.condition !== null || birth.submitted_at !== attempt.submittedAt) return;
   try {
     const paper = await openFrozenPaper(tx, attempt, birth.tick, access);
     if (!paper) return;
-    const sourceAccess = { ...recipient, track: access.track };
+    const sourceAccess = {recipient: 'workspace' as const, maySend: access.maySend, track: access.track};
     if (attempt.paper.materialId !== null) {
       const material = await resolveSource(tx, attempt.paper.materialId, sourceAccess);
       if (material?.sourceRef.fact.type !== materialType) return;
@@ -92,7 +96,7 @@ export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference
       }, sourceAccess);
       if (question?.content !== prompt) return;
     }
-    return {source, submission, attempt, birth, paper, sourceAccess};
+    return {attempt, birth, paper, sourceAccess};
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
     throw error;

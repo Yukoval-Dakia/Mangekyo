@@ -18,7 +18,7 @@ import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learn
 import {sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/activity/library-values.ts';
-import {organizerTaskType} from '../../modules/activity/organizer-values.ts';
+import {organizerNoteType, organizerTaskType} from '../../modules/activity/organizer-values.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
@@ -101,33 +101,43 @@ export function openWorkspaceTools(options: {
       } else if (pythonAttempts) {
         text = JSON.stringify(await readPythonAttempts(tx,args,{known:id => sources.has(id), maySend:options.maySend, track}));
       } else text = await workspaceSearch(tx,args,track,options.maySend);
-      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,
+      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis, sourceProjection: 1,
         ...(name === 'read_workspace' ? {workbookProjection: 1} : {}),
         ...(name === 'read_learner_radar' ? {retentionBasis} : {})});
     },options.authorize);
     if (priorRead) await priorRead;
-    const {text, witnesses, assessmentBasis, workbookProjection, retentionBasis = []} = JSON.parse(raw) as {
+    const {text, witnesses, assessmentBasis, workbookProjection, sourceProjection, retentionBasis = []} = JSON.parse(raw) as {
       text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[]; workbookProjection?: number;
-      retentionBasis?: RetentionBasis[];
+      sourceProjection?: number; retentionBasis?: RetentionBasis[];
     };
     const value = JSON.parse(text);
     const trackedBasis = assessmentBasis ?? [];
     const legacyWorkbookRead = name === 'read_workspace' && workbookProjection !== 1 && value.sourceRef?.anchor.kind === 'whole' &&
       [workbookPaperType, workbookAttemptType].includes(value.sourceRef.fact.type);
+    const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
+    if (sourceProjection !== 1 && (name === 'read_workspace' || name === 'open_learning') && values.some(item => {
+      const ref = sourceRefV1(item.sourceRef);
+      return ref?.fact.type === organizerNoteType && ref.anchor.kind === 'whole';
+    })) throw new TeachingError('evidence_scope', '笔记读取规则已变化，请重新发送。');
     const current = await db.snapshot({learner: studioLearner}, async tx => {
       if (legacyWorkbookRead) return false;
       const reader = createCommandReadContext(tx, purpose);
+      let derivedSource = false;
       try {
         for (const witness of witnesses) {
           const input = workspaceInput(witness);
           const fact = await reader.fact(input.id, input);
           if (fact.ref.rev !== witness.rev || fact.type !== witness.type ||
             fact.accessEpoch !== witness.epoch || !options.maySend(fact)) return false;
+          if (fact.type === workspaceEntryType && ['observation','annotation'].includes(workspaceEntry(fact.value).kind))
+            derivedSource = true;
         }
       } catch (error) {
         if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return false;
         throw error;
       }
+      if (derivedSource && sourceProjection !== 1)
+        throw new TeachingError('evidence_scope', '观察的题源须重新核对，请重新发送。');
       if (trackedBasis.length && !options.trackAssessment) return false;
       for (const basis of trackedBasis) {
         const actual = await workspaceAssessmentBasis(tx, basis.slot, options.maySend);
@@ -138,7 +148,7 @@ export function openWorkspaceTools(options: {
         const actual = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend:options.maySend});
         if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
       }
-      for (const witness of witnesses) options.track(witness, pythonAttempts ? true : undefined);
+      for (const witness of witnesses) options.track(witness, pythonAttempts || derivedSource ? true : undefined);
       for (const basis of trackedBasis) options.trackAssessment?.(basis);
       for (const basis of retentionBasis) options.trackRetention?.(basis);
       await options.authorize(tx);
@@ -162,7 +172,6 @@ export function openWorkspaceTools(options: {
       }
       return JSON.stringify({...value,witnesses});
     }
-    const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
     if (name === 'open_learning' && args.lens === 'diagnose' && values.some(item => item.lens === 'diagnose')) {
       options.trackDiagnosis?.();
       for (const witness of witnesses) overviewBasis.set(witness.id, witness);

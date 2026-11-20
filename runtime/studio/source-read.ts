@@ -17,6 +17,7 @@ import {
 import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {intakeTextOf, isMaterialIntakePair, materialIntakeReference, materialTextOf, relatedIntakeId, relatedMaterialId, textSlice} from './reading.ts';
+import {openWorkbookQuestionSources} from './workbook-diagnosis.ts';
 
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
@@ -170,6 +171,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const reader = createCommandReadContext(tx, sourcePurpose(access));
   const seen = new Map<string, FactSnapshot>();
   const path = new Set<string>();
+  const questionSources: Parameters<SourceTrack>[] = [];
+  const checkedAttempts = new Set<string>();
   const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
@@ -187,6 +190,12 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       for (const witness of entry.basis) {
         const source = await visit(witness.id);
         if (!source || source.ref.rev !== witness.rev || source.accessEpoch !== witness.epoch) return;
+        if (access.recipient === 'workspace' && (entry.kind === 'observation' || entry.kind === 'annotation') &&
+            source.type === workbookAttemptType && !checkedAttempts.has(witness.id)) {
+          const opened = await openWorkbookQuestionSources(tx, source, {maySend: accepts, track: (...proof) => questionSources.push(proof)});
+          if (!opened) return;
+          checkedAttempts.add(witness.id);
+        }
       }
       if (!entry.links.every(link => seen.has(link))) return;
       path.delete(key);
@@ -250,6 +259,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
       access.track?.(witness, isReferenced ? mode : undefined);
     }
+    for (const proof of questionSources) access.track?.(...proof);
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkspaceInputError) return;
