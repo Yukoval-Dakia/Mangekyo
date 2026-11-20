@@ -1,3 +1,4 @@
+import { projectClassroomRadar } from './classroom-radar.ts';
 import { expect, it } from 'vitest';
 import type { CanonicalEvidenceSliceV1, FactId, Revision, Tick } from '@mangekyo/kernel';
 import { freezeCognition, retentionSlice, type RetentionInput } from './retention.ts';
@@ -37,4 +38,11 @@ it('scopes only witnessed exact-item submissions to an unclassified target, pres
   expect(input.canonicalEvidence!.events.every(e => !e.concept_ids.length)).toBe(true);
   const ambiguous = { ...canonicalEvidence, events: [event, { ...event, outcome: 'incorrect' as const }] };
   expect(retentionSlice({ ...input, canonicalEvidence: ambiguous }).events.every(e => !e.concept_ids.length)).toBe(true);
+});
+
+it('distinguishes an authorized empty forecast inventory from missing coverage', () => {
+  const at = '2026-11-21T00:00:00.000Z';
+  expect(projectClassroomRadar(at, {forecasts: []})).toMatchObject({
+    weakTop3: {kind: 'value', value: []}, forgetting24h: {kind: 'value', value: 0}});
+  expect(projectClassroomRadar(at, {}).forgetting24h.kind).toBe('unknown');
 });

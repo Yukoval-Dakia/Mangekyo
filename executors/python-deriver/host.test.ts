@@ -53,6 +53,29 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
   }
 });
 
+it('routes exam pacing and intervention Lift to one real worker with their own evidence contracts', async () => {
+  const host = createPythonDeriverHost();
+  try {
+    const outcomes = await Promise.all([
+      host.derive('plan/exam-pacing@1', {attempts: [
+        {id: 'first', effective_duration_ms: 1000, score: {earned: 2, maximum: 2}},
+        {id: 'second', effective_duration_ms: 2000, score: {earned: 1, maximum: 2}},
+        {id: 'unmeasured', score: null},
+      ]}),
+      host.derive('learner/intervention-lift@1', {playbookId: '00000000000000000000000001',
+        version: 1, strategyId: 'diagram', asOf: '2026-11-21T00:00:00.000Z', interventions: []}),
+    ]);
+    expect(outcomes[0]).toMatchObject({kind: 'ok', outcome: {kind: 'value', value: {
+      strategy: {kind: 'observed', comparisons: [{extra_duration_ms: 1000, score_rate_gap: 0.5}]},
+      attempts: [{id: 'first'}, {id: 'second'}, {kind: 'unknown', missing: ['effective_duration_ms', 'score']}],
+    }}});
+    expect(outcomes[1]).toMatchObject({kind: 'ok', outcome: {kind: 'unknown'}});
+    expect((await host.derive('plan/exam-pacing@1', sample)).kind).toBe('failed');
+  } finally {
+    await host.close();
+  }
+});
+
 it.each([
   { reason: 'timed out', script: 'import sys\nfor _ in sys.stdin: pass' },
   { reason: 'exited', script: 'import sys\nsys.stdin.readline()\nsys.exit(1)' },
