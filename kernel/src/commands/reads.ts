@@ -1,3 +1,4 @@
+import { FactNotFoundError } from '../declarations/read-errors.ts';
 import { isJson } from '../declarations/define.ts';
 import type { FactId, Revision, Tick } from '../declarations/ids.ts';
 import type {
@@ -16,7 +17,7 @@ const tickPattern = /^(?:0|[1-9][0-9]*)$/;
 const purposeAll = 'all';
 
 export class InvalidReadRequestError extends Error {}
-export class FactNotFoundError extends Error {}
+export { FactNotFoundError } from '../declarations/read-errors.ts';
 export class UnsupportedReadError extends Error {}
 
 export type FactReadDenial = 'purpose' | 'retracted' | 'recipient' | 'changed';
