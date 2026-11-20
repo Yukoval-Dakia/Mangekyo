@@ -100,7 +100,7 @@ async function listQuestions(tx: ReadTransaction) {
   return questions;
 }
 
-export function openIqdb(db: Db, verificationConfigured: boolean, issueBank?: IssueBank) {
+export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank) {
   return {
     questions: () => db.snapshot(scope, async tx => ({ questions: await listQuestions(tx) })),
     async proposals(raw: Record<string, unknown>) {
@@ -142,7 +142,6 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank?: Is
     },
     async papers(raw: Record<string, unknown>) {
       const input = validated(() => parsePaper(raw));
-      if (!issueBank) throw new RequestError(503, '题库发卷当前不可用。');
       return db.tx(scope, async tx => {
         await lockLearner(tx, tx.learner);
         let refs;

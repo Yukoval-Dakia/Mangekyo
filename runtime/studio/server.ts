@@ -102,7 +102,7 @@ async function openWeb() {
     assessment: workbookAssessment,
     onResearchFactsChanged: research.workbookChanged,
   });
-  const iqdb = openIqdb(db, Boolean(iqdbModule));
+  const iqdb = openIqdb(db, Boolean(iqdbModule), workbook.issueBank);
   const student = { textbook, relationReview:openRelationReview(db,content),
     workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
