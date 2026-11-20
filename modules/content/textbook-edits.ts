@@ -1,5 +1,5 @@
 import type { CommandContext, FactId, FactWrite, Revision } from '@mangekyo/kernel';
-import { editSequence, fields, key, list, optionalKey, pageId, record, revision } from './parse.ts';
+import { editSequence, fields, key, list, optionalKey, pageId, record, revision, text } from './parse.ts';
 import {
   checkTextbookTree,
   locateTextbookBlock,
@@ -16,6 +16,9 @@ export type TextbookEdit = { readonly blockId: string } & (
   | { readonly kind: 'rewrite'; readonly body: TextbookBlockBody }
   | ({ readonly kind: 'insert'; readonly body: TextbookBlockBody } & BlockPlacement)
   | ({ readonly kind: 'move' } & BlockPlacement)
+  | { readonly kind: 'insert_after'; readonly afterId: string; readonly body: TextbookBlockBody }
+  | { readonly kind: 'replace_anchor'; readonly anchor: string; readonly replacement: string }
+  | { readonly kind: 'delete_block' }
 );
 
 export type TextbookRevision = {
@@ -42,6 +45,15 @@ function parseEdit(input: unknown): TextbookEdit {
     case 'move':
       fields(value, 'kind', 'blockId', 'parentId', 'beforeId');
       return { kind, blockId, parentId: optionalKey(value.parentId), beforeId: optionalKey(value.beforeId) };
+    case 'insert_after':
+      fields(value, 'kind', 'blockId', 'afterId', 'body');
+      return { kind, blockId, afterId: key(value.afterId), body: parseTextbookBlockBody(value.body) };
+    case 'replace_anchor':
+      fields(value, 'kind', 'blockId', 'anchor', 'replacement');
+      return { kind, blockId, anchor: text(value.anchor, '教材锚点'), replacement: text(value.replacement, '教材替换正文', true) };
+    case 'delete_block':
+      fields(value, 'kind', 'blockId');
+      return { kind, blockId };
     default:
       throw new Error('教材编辑类型无效。');
   }
@@ -65,6 +77,28 @@ export function parseTextbookRevision(input: unknown): TextbookRevision {
 
 function applyEdit(blocks: readonly TextbookBlock[], edit: TextbookEdit): readonly TextbookBlock[] {
   const existing = blocks.find(block => block.id === edit.blockId);
+  if (edit.kind === 'delete_block') {
+    if (!existing) throw new Error(`教材块不存在：${edit.blockId}`);
+    if (blocks.some(block => block.parentId === edit.blockId)) throw new Error('教材块仍有子块，请先移出或删除子块。');
+    return blocks.filter(block => block !== existing);
+  }
+  if (edit.kind === 'insert_after') {
+    if (existing) throw new Error(`教材块已存在：${edit.blockId}`);
+    const index = blocks.findIndex(block => block.id === edit.afterId);
+    const anchor = blocks[index];
+    if (!anchor) throw new Error(`教材插入锚点不存在：${edit.afterId}`);
+    const inserted = { id: edit.blockId, parentId: anchor.parentId, body: edit.body };
+    return [...blocks.slice(0, index + 1), inserted, ...blocks.slice(index + 1)];
+  }
+  if (edit.kind === 'replace_anchor') {
+    if (existing?.body.kind !== 'text') throw new Error('教材文本锚点必须位于正文块。');
+    const before = existing.body.text;
+    const start = before.indexOf(edit.anchor);
+    if (start < 0 || before.indexOf(edit.anchor, start + 1) >= 0) throw new Error('教材文本锚点必须恰好匹配一处。');
+    const replacement = before.slice(0, start) + edit.replacement + before.slice(start + edit.anchor.length);
+    const body = parseTextbookBlockBody({ kind: 'text', text: replacement });
+    return blocks.map(block => block === existing ? { ...block, body } : block);
+  }
   if (edit.kind === 'rewrite') {
     if (!existing) throw new Error(`教材块不存在：${edit.blockId}`);
     return blocks.map(block => block === existing ? { ...block, body: edit.body } : block);
@@ -94,7 +128,7 @@ export async function writeTextbookRevision(
   let blocks = page.blocks;
   for (const edit of input.edits) {
     blocks = applyEdit(blocks, edit);
-    if (edit.kind !== 'move') await verifyTextbookBodyReference(ctx, edit.body);
+    if ('body' in edit) await verifyTextbookBodyReference(ctx, edit.body);
   }
   return [{ kind, id: input.id, expectedRev: input.expectedRev, data: { ...page, blocks } }];
 }
@@ -103,7 +137,11 @@ type EditReview = {
   readonly edit: TextbookEdit;
   readonly before: ReturnType<typeof locateTextbookBlock>;
 } & (
-  | { readonly state: 'ready'; readonly source: Awaited<ReturnType<typeof verifyTextbookBodyReference>> }
+  | {
+    readonly state: 'ready';
+    readonly after: ReturnType<typeof locateTextbookBlock>;
+    readonly source: Awaited<ReturnType<typeof verifyTextbookBodyReference>>;
+  }
   | { readonly state: 'invalid'; readonly reason: string }
 );
 
@@ -117,8 +155,8 @@ export async function previewTextbookRevision(ctx: CommandContext, input: unknow
     const before = locateTextbookBlock(page.blocks, edit.blockId);
     try {
       const next = applyEdit(blocks, edit);
-      const source = edit.kind === 'move' ? null : await verifyTextbookBodyReference(ctx, edit.body);
-      items.push({ edit, before, state: 'ready', source });
+      const source = 'body' in edit ? await verifyTextbookBodyReference(ctx, edit.body) : null;
+      items.push({ edit, before, state: 'ready', after: locateTextbookBlock(next, edit.blockId), source });
       blocks = next;
     } catch (error) {
       if (!(error instanceof Error)) throw error;
