@@ -7,6 +7,8 @@
     ".": "./module.ts",
     "./source": "./source.ts",
     "./extraction": "./extraction.ts",
+    "./notion-api": "./notion-api.ts",
+    "./notion-source": "./notion-source.ts",
     "./paper": "./paper.ts",
     "./facts/*": "./facts/*.ts"
   },
