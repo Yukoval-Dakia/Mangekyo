@@ -1,7 +1,7 @@
 import { recordFromQuery, recordFromSession, recordLabel, type CurrentObject } from './current-record';
-import { forTask } from './model-route';
+import { chatRoute, taskLabels, type Route } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { remembered, remember, sessionPath, type Session, type Settings, type StudyAttachment } from './api';
+import { api, remembered, remember, sessionPath, type Session, type Settings, type StudyAttachment } from './api';
 import { useConversation } from './conversation';
 import { Icon, Mark } from './icons';
 import { TeachingTurn } from './demo';
@@ -67,12 +67,33 @@ function ChatRoom({
   const chat = useConversation(mode, true, initial, false);
   const { session, sessionId, busy, streamingReply, progressLabel, reconnecting } = chat;
   const preparing = initial ? initial.attachment?.mode === 'prepare' : prepare;
-  const settings = allSettings && forTask(allSettings, preparing ? 'preparation' : 'companion');
+  const task = preparing ? 'preparation' : 'companion';
+  const [route, setRoute] = useState<Route>();
+  const [reviewingRoute, setReviewingRoute] = useState(false);
+  const [loadingRoute, setLoadingRoute] = useState(false);
+  const [routeError, setRouteError] = useState('');
+  useEffect(() => {
+    if (allSettings) setRoute(first => first ?? chatRoute(allSettings, task));
+  }, [allSettings, task]);
+  async function reviewNewRoute() {
+    setLoadingRoute(true);
+    setRouteError('');
+    try {
+      const next = chatRoute(await api<Settings>('/settings'), task);
+      if (!next || ((source || chat.accountConflict) && !next.accountRevision)) throw new Error();
+      setRoute(next);
+      setReviewingRoute(true);
+    } catch {
+      setRouteError('无法取得当前任务的发送账户，请检查设置并重试。');
+    } finally {
+      setLoadingRoute(false);
+    }
+  }
   const [authorizedDraft, setAuthorizedDraft] = useState<string>();
   const draftTurn = session?.currentTurnId ?? 'opening';
   const allowBackgroundUnderstanding = mode === 'companion' && authorizedDraft === draftTurn;
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
-  const grants = (settings?.mcpServers ?? []).filter(server => server.enabled && server.allowedTools.length)
+  const grants = (allSettings?.mcpServers ?? []).filter(server => server.enabled && server.allowedTools.length)
     .map(({id, url, allowedTools}) => ({id, url, allowedTools}));
   const permitted = grants.filter(server => selectedTools.includes(JSON.stringify(server)));
   const [openingRecord, setOpeningRecord] = useState(entry);
@@ -104,6 +125,8 @@ function ChatRoom({
   const pending = busy || session?.status === 'pending';
   const unavailable = session?.status === 'failed' || session?.status === 'unknown' || chat.invalidated;
   const value = sessionId ? chat.draft : opening;
+  const routeUnavailable = !route || (!!(source || shared) && !route.accountRevision);
+  const sendBlocked = routeUnavailable || loadingRoute || (chat.accountConflict && !reviewingRoute);
   function edit(text: string) {
     if (sessionId) chat.editDraft(text);
     else {
@@ -115,6 +138,7 @@ function ChatRoom({
     e.preventDefault();
     if (
       pending ||
+      sendBlocked ||
       unavailable ||
       !value.trim() ||
       chat.retryOperation ||
@@ -122,13 +146,14 @@ function ChatRoom({
       chat.refreshingConflict
     )
       return;
-    if (sessionId) chat.send(permitted, settings, selectedRecord, allowBackgroundUnderstanding || undefined);
+    if (sessionId) chat.send(permitted, route, selectedRecord, allowBackgroundUnderstanding || undefined);
     else if (excerptValid) {
       const attachment: StudyAttachment | undefined = source
         ? { id: source.id, title: source.title, text: excerpt, mode: prepare ? 'prepare' : 'ask' }
         : undefined;
-      chat.start(value.trim(), attachment, permitted, settings, selectedRecord, allowBackgroundUnderstanding || undefined);
+      chat.start(value.trim(), attachment, permitted, route, selectedRecord, allowBackgroundUnderstanding || undefined);
     }
+    setReviewingRoute(false);
     setSelectedTools([]);
   }
   const historyList = chats.data ?? [];
@@ -146,7 +171,7 @@ function ChatRoom({
             <h2>{prepare ? '从材料备课' : '带着材料提问'}</h2>
             <a href={materialPath(source.id)}>{source.title}</a>
             <label className="field"><span>随本次对话发送的原文选段</span>
-              <textarea rows={4} maxLength={3000} value={excerpt} disabled={busy} onChange={e => setExcerpt(e.target.value)} />
+              <textarea rows={4} maxLength={3000} value={excerpt} disabled={busy || !!chat.retryOperation} onChange={e => setExcerpt(e.target.value)} />
             </label>
             <p className="field-help">{excerptValid ? '点发送后，材料标题和这段文字会交给设置中的模型服务，并保存在这次对话里。你可以只留下需要的一段。需要联网核对时，在消息中另起一行写「公开检索：主题」。' : '请使用原文中连续的一段文字，最多 3000 字。'}</p>
           </div>}
@@ -197,7 +222,7 @@ function ChatRoom({
             <div className="notice problem" role="alert">
               {chat.problem.message}{' '}
               {(chat.retryOperation || chat.problem.source === "read") && <button className="text-button" onClick={chat.retry}>
-                重试
+                {chat.retryOperation ? "重试原请求" : "重试"}
               </button>}
             </div>
           )}
@@ -228,7 +253,17 @@ function ChatRoom({
                 onChange={event => setAuthorizedDraft(event.target.checked ? draftTurn : undefined)} />
               <span>允许后台从我这条消息整理学习观察</span>
             </label>}
-            {settings && <small>{settings.model} · {settings.baseUrl}</small>}
+            {route && <small>{taskLabels[task]} · {route.providerId} · {route.protocol} · {route.baseUrl} · {route.model} · {route.reasoningEffort}
+              {route.accountRevision && <> · 账户版本 {route.accountRevision}</>}</small>}
+            {chat.accountConflict && <p role="alert">发送账户已变更，草稿已保留。
+              {sessionId && <a href={shared ? '/companion?material=' + encodeURIComponent(shared.id) + (preparing ? '&mode=prepare' : '') : '/companion'} target="_blank" rel="noreferrer">在新对话中确认发送账户</a>}
+            </p>}
+            {routeUnavailable && <p role="status">等待确认任务的发送账户。</p>}
+            {!sessionId && !pending && !chat.retryOperation && !reviewingRoute &&
+              (routeUnavailable || chat.accountConflict || chat.problem?.source === 'write' ||
+                (allSettings && JSON.stringify(route) !== JSON.stringify(chatRoute(allSettings, task)))) &&
+              <button type="button" className="text-button" disabled={loadingRoute} onClick={() => void reviewNewRoute()}>查看当前账户以发起新请求</button>}
+            {routeError && <p role="alert">{routeError}</p>}
             {grants.length > 0 && <fieldset disabled={pending || unavailable || !!chat.retryOperation}>
               <legend>本轮允许使用的 MCP 工具</legend>
               <p className="field-help">选中的服务可收到同伴为调用工具传入的内容，其中可能包含本轮材料、对话或备忘。</p>
@@ -260,6 +295,7 @@ function ChatRoom({
               <button
                 className="primary-button"
                 disabled={
+                  sendBlocked ||
                   (!sessionId && !excerptValid) ||
                   !value.trim() ||
                   pending ||
@@ -269,7 +305,7 @@ function ChatRoom({
                   chat.outdatedDraft
                 }
               >
-                发送 <Icon name="send" />
+                {reviewingRoute ? '确认账户并作为新请求发送' : '发送'} <Icon name="send" />
               </button>
             </div>
           </form>

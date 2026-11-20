@@ -1,3 +1,4 @@
+import { unresolved, type PartialMountPermissions } from './mount-coverage.ts';
 import {
   validateArtifact,
   type Artifact,
@@ -34,6 +35,7 @@ export type { ArtifactIntentV1 };
 export interface MountedSession extends Session {
   mounts: ArtifactSnapshotV1[];
   withdrawn: ReadonlySet<string>;
+  uncertain: ReadonlySet<string>;
 }
 
 const counter = (value: unknown): value is number =>
@@ -158,17 +160,20 @@ function accept(mounts: ArtifactSnapshotV1[], withdrawn: ReadonlySet<string>, sn
 }
 
 // A progress header and its authorized snapshots come from one host read.
-export function authorizeMounts(session: MountedSession, turnId: string, ids: ReadonlyMap<string, number>) {
+export function authorizeMounts(session: MountedSession, turnId: string, ids: ReadonlyMap<string, number>, frame: PartialMountPermissions, covered: ReadonlySet<string>) {
   const withdrawn = new Set(session.withdrawn);
+  const uncertain = new Set(session.uncertain);
   const history = session.mounts.filter(m => m.turnId !== turnId);
   const current = session.mounts.filter(m => {
     if (m.turnId !== turnId) return false;
     if (ids.has(m.mountId)) return true;
+    if (unresolved(frame, m.mountId, covered)) { uncertain.add(m.mountId); return true; }
     withdrawn.add(m.mountId);
+    uncertain.delete(m.mountId);
     return false;
   });
-  current.sort((a, b) => ids.get(a.mountId)! - ids.get(b.mountId)!);
-  return { ...session, mounts: [...history, ...current], withdrawn };
+  current.sort((a, b) => (ids.get(a.mountId) ?? Infinity) - (ids.get(b.mountId) ?? Infinity));
+  return { ...session, mounts: [...history, ...current], withdrawn, uncertain };
 }
 
 // Only a session read (or its session header on the stream) grants a turn.
@@ -176,7 +181,7 @@ export function authorizeMounts(session: MountedSession, turnId: string, ids: Re
 export function streamSnapshot(previous: MountedSession | undefined, input: unknown, order?: ReadonlyMap<string, number>) {
   if (!previous || previous.status !== 'pending' || !previous.currentTurnId) return previous;
   const next = decode(input, previous.id, previous.currentTurnId);
-  if (!next || (order && !order.has(next.mountId))) return previous;
+  if (!next || previous.uncertain.has(next.mountId) || (order && !order.has(next.mountId))) return previous;
   const mounts = accept(previous.mounts, previous.withdrawn, next);
   return mounts === previous.mounts ? previous : { ...previous, mounts };
 }
@@ -185,12 +190,14 @@ export function readSession(
   current: Session,
   previous?: MountedSession,
   atRequest?: MountedSession,
+  covered: ReadonlySet<string> = new Set(),
 ): MountedSession {
   const same = previous?.id === current.id ? previous : undefined;
   const authorized = new Set(current.turns.map((t) => t.turnId));
   if (current.currentTurnId && current.status === 'pending') authorized.add(current.currentTurnId);
   let mounts = (same?.mounts ?? []).filter((m) => authorized.has(m.turnId));
   const withdrawn = new Set(same?.withdrawn);
+  const uncertain = new Set(same?.uncertain);
   function read(turnId: string, list: unknown) {
     if (!Array.isArray(list)) return;
     const incoming: ArtifactSnapshotV1[] = [];
@@ -204,13 +211,16 @@ export function readSession(
       if (
         m.turnId !== turnId ||
         incoming.some((s) => s.mountId === m.mountId) ||
-        (atRequest !== undefined && !atRequest.mounts.includes(m))
+        (atRequest !== undefined && (!atRequest.mounts.includes(m) ||
+          (uncertain.has(m.mountId) && !atRequest.uncertain.has(m.mountId))))
       )
         return true;
+      if (unresolved(current, m.mountId, covered)) { uncertain.add(m.mountId); return true; }
+      uncertain.delete(m.mountId);
       withdrawn.add(m.mountId);
       return false;
     });
-    for (const snapshot of incoming) mounts = accept(mounts, withdrawn, snapshot, true);
+    for (const snapshot of incoming) if (!uncertain.has(snapshot.mountId)) mounts = accept(mounts, withdrawn, snapshot, true);
     // A terminal read can be the first delivery of an earlier mounted stroke.
     const order = new Map(incoming.map((s, i) => [s.mountId, i]));
     const turnMounts = mounts.filter(m => m.turnId === turnId);
@@ -221,30 +231,39 @@ export function readSession(
     if (turn.turnId) read(turn.turnId, turn.artifacts);
   }
   if (current.status === 'pending' && current.currentTurnId) read(current.currentTurnId, current.artifacts);
-  return { ...current, mounts, withdrawn };
+  return { ...current, mounts, withdrawn, uncertain };
 }
 
 // A reconnect read may race with a turn change, a receipt or a withdrawal.
 // Refresh only the draft bases that are still current when this read returns.
-export function refreshDraftBases(latest: MountedSession, bases: ArtifactSnapshotV1[], read: MountedSession) {
+export function refreshDraftBases(latest: MountedSession, prior: MountedSession, ids: string[], read: MountedSession, confirmed: ReadonlySet<string>) {
   let mounts = latest.mounts;
   const withdrawn = new Set(latest.withdrawn);
-  for (const base of bases) {
-    if (base.sessionId !== read.id || !mounts.includes(base)) continue;
-    const current = read.mounts.find(m => m.turnId === base.turnId && m.mountId === base.mountId);
+  const uncertain = new Set(latest.uncertain);
+  const covered = new Set(ids);
+  for (const id of ids) {
+    const base = prior.mounts.find(m => m.mountId === id);
+    if (withdrawn.has(id) || latest.mounts.find(m => m.mountId === id) !== base) continue;
+    if (prior.uncertain.has(id) !== latest.uncertain.has(id)) continue;
+    const current = read.mounts.find(m => m.mountId === id);
+    if (!current && unresolved(read, id, covered)) { uncertain.add(id); continue; }
     if (!current) {
-      withdrawn.add(base.mountId);
+      withdrawn.add(id);
+      uncertain.delete(id);
       mounts = mounts.filter(m => m !== base);
       continue;
     }
-    if (current.stateRev < base.stateRev || current.viewSeq < base.viewSeq)
+    if (!confirmed.has(id)) continue;
+    if (base && (current.turnId !== base.turnId || current.stateRev < base.stateRev || current.viewSeq < base.viewSeq))
       throw new Error('Stale artifact checkpoint');
-    if (current.stateRev !== base.stateRev || current.viewSeq !== base.viewSeq ||
+    uncertain.delete(id);
+    if (!base) mounts = accept(mounts, withdrawn, current);
+    else if (current.stateRev !== base.stateRev || current.viewSeq !== base.viewSeq ||
         current.view.id !== base.view.id || current.view.revision !== base.view.revision ||
         current.predicting !== base.predicting || current.submitted !== base.submitted)
       mounts = mounts.map(m => m === base ? current : m);
   }
-  return { ...latest, mounts, withdrawn };
+  return { ...latest, mounts, withdrawn, uncertain };
 }
 
 export async function sendIntent(snapshot: ArtifactSnapshotV1, intent: ArtifactIntentV1) {
@@ -275,7 +294,7 @@ export function receiptSnapshot(
 ) {
   if (
     !previous ||
-    previous.id !== sent.sessionId ||
+    previous.id !== sent.sessionId || previous.uncertain.has(sent.mountId) ||
     !previous.mounts.some((m) => m.turnId === sent.turnId && m.mountId === sent.mountId) ||
     !isRecord(input) ||
     input.mountId !== sent.mountId

@@ -1,3 +1,5 @@
+import {artifactMountTrace} from './artifact-trace.ts';
+import type {FirstTurnJitContext} from './first-turn-jit.ts';
 import {learningToolError} from './tool-error.ts';
 import { createHash } from 'node:crypto';
 import type { TeachingDependencies, TeachingDispatch } from './index.ts';
@@ -26,6 +28,8 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   learningTools?: LearningTools;
   /** The Studio turn's persisted choice while only memory has migrated. */
   beliefTools?: boolean;
+  /** Persisted opt-in replacing first-turn memory, preference and current-object projections. */
+  jitContext?: FirstTurnJitContext;
   historyNotice?: string;
   currentLearningObject?: string;
   learningMemory?: string;
@@ -94,7 +98,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'save_relation': return '提交有向知识边\n' + output.slice(0,700);
     case 'retrieve_memory': return '查找已获准的记忆';
     case 'save_memory': return '登记本轮记忆操作';
-    case 'mount_artifact': return '挂载交互作品 · ' + output.slice(0, 360);
+    case 'mount_artifact': return artifactMountTrace(output);
     case 'save_workspace': return '保存学习记录 · ' + String(args.title) + '\n' + output.slice(0, 500);
     default: return '工具不可用';
   }
@@ -151,11 +155,14 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       ...(available ? { tools: definitions, ...(allowParallelCalls ? {} : { parallel_tool_calls: false }) } : {}) });
     const index = round * stride;
     const raw = await options.runEffect({ index, provider: endpoint, model, requestDigest: hash(JSON.stringify({endpoint, body})),
-      ...(options.learningMemory ? { learningMemory: true } : {}) }, async requestId => {
+      ...(options.jitContext ? {jitContext: true} : options.learningMemory ? {learningMemory: true} : {}) }, async (requestId, dispatch) => {
+      if (options.jitContext && !dispatch) {
+        throw new TeachingError('provider_configuration', '首轮学习资料需要宿主复验后才能发送。');
+      }
       let reportedModel: string | undefined;
       let lastText = '';
       let lastPush = 0;
-      const reply = await requestCompletion(endpoint, body, options.provider.apiKey, requestId, {
+      const send = () => requestCompletion(endpoint, body, options.provider.apiKey, requestId, {
         allowTools: available,
         model(value) { reportedModel = verifyTeachingModel(value, options.provider.apiKey, model); },
         async content(text) {
@@ -167,6 +174,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
           await options.onProgress({ phase: 'replying', message });
         },
       }, options.provider);
+      const reply = await (options.jitContext && dispatch ? dispatch(send) : send());
       if ('rejectedHttpStatus' in reply || 'truncated' in reply) return JSON.stringify(reply);
       const message = publicAssistantContent(reply.content ?? '').trim();
       return JSON.stringify({ reportedModel, ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
@@ -250,10 +258,8 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const remote = remotes.get(name);
       const workspaceTool = workspace && nativeTools.some(tool => tool.function.name === name);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return {
-          content: JSON.stringify(learningToolError('invalid_args','args','请将工具参数作为 JSON 对象提交。')),
-          summary: '参数错误 · ' + name,
-        };
+        const content = JSON.stringify(learningToolError('invalid_args','args','请将工具参数作为 JSON 对象提交。'));
+        return {content, summary: name === 'mount_artifact' ? artifactMountTrace(content) : '参数错误 · ' + name};
       }
       const python = name === 'python' && args.inputs !== undefined ? results.pythonInputs(args.inputs) : undefined;
       if (python?.error) return {content: python.error, summary: 'Python 验算 · 输入不可用'};

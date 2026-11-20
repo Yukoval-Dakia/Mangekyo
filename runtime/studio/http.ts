@@ -1,3 +1,4 @@
+import type { openStudioNotion } from './notion.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import type { openMemoryManagement } from './memory-management.ts';
@@ -34,9 +35,16 @@ import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
-import { saveSettings, publicSettings, loadSettings } from './settings.ts';
+import { freezeProviderAccount, saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
 
 import {actOnArtifact} from './presentation-store.ts';
+
+function knownMountIds(query: URLSearchParams) {
+  const ids = query.getAll('knownMountIds');
+  if (ids.length > 64 || ids.some(id => !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)))
+    throw new RequestError(400, '作品已见标识无效或过多。');
+  return new Set(ids);
+}
 
 async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   if (req.headers['content-type']?.split(';')[0] !== 'application/json')
@@ -91,6 +99,7 @@ export function serve(
   library: ReturnType<typeof openLibrary>,
   practice: ReturnType<typeof openPractice>,
   student: {
+    notion: ReturnType<typeof openStudioNotion>;
     textbook: ReturnType<typeof openTextbook>;
     relationReview: ReturnType<typeof openRelationReview>;
     workbook: ReturnType<typeof openWorkbook>;
@@ -134,6 +143,13 @@ export function serve(
         res.setHeader('X-Deletion-Watermark',watermark);
         return json(res,status,result);
       };
+      if (path === '/api/notion/settings' && method === 'GET') return json(res,200,await student.notion.settings());
+      const notionAction = /^\/api\/notion\/selections\/(grant|revoke|sync)$/.exec(path)?.[1];
+      const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})(\/purpose)?$/.exec(path);
+      if (method === 'POST' && (notionAction || notionSource?.[2]))
+        return await offlineSubmission(200,input => student.notion.mutate(notionAction ?? 'purpose',input,notionSource?.[1]));
+      if (method === 'GET' && notionSource?.[1] && !notionSource[2])
+        return await student.notion.read(notionSource[1],url.searchParams.get('view'), data => json(res,200,data));
       if (path === '/api/workspace/access' && method === 'GET') {
         return json(res, 200, await student.workspace.list(url.searchParams));
       }
@@ -311,7 +327,7 @@ export function serve(
       if (path === '/api/practice/riding' && method === 'POST')
         return await offlineSubmission(200,input => practice.submit(input));
       if (path === '/api/settings' && method === 'GET')
-        return json(res, 200, publicSettings(await loadSettings()));
+        return json(res, 200, publicSettings((await db.tx({learner:studioLearner},tx => freezeProviderAccount(tx))).settings));
       if (path === '/api/settings/mcp-tools' && method === 'POST') {
         const input = await body(req);
         if (typeof input.id !== 'string' || typeof input.url !== 'string' ||
@@ -327,7 +343,7 @@ export function serve(
       if (path === '/api/settings' && method === 'PUT') {
         const input = await body(req);
         try {
-          return json(res, 200, await saveSettings(input));
+          return json(res, 200, await saveLearnerSettings(db, input));
         } catch (error) {
           throw new RequestError(400, error instanceof Error ? error.message : '设置无效。');
         }
@@ -344,7 +360,7 @@ export function serve(
       const actionPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/artifact-actions$/.exec(path);
       if (actionPath?.[1] && method === 'POST') return json(res,200,await actOnArtifact(db,actionPath[1],await body(req)));
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
-      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], url.searchParams.get('watchMounts') === '1', res, student.recall.project);
+      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], url.searchParams.get('watchMounts') === '1', res, student.recall.project, knownMountIds(url.searchParams));
       const recall = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/recall\/(state|reveal|display|submit)$/.exec(path);
       if (recall?.[1] && recall[2] === 'state' && method === 'GET') {
         return json(res, 200, await student.recall.readState(recall[1], url.searchParams));
@@ -360,7 +376,7 @@ export function serve(
         return json(res, 200, await student.recall.submit(recall[1], input));
       }
       const match = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})(\/answers)?$/.exec(path);
-      if (match?.[1] && !match[2] && method === 'GET') return json(res, 200, await getSession(db, match[1], student.recall.project));
+      if (match?.[1] && !match[2] && method === 'GET') return json(res, 200, await getSession(db, match[1], student.recall.project, knownMountIds(url.searchParams)));
       if (match?.[1] && match[2] && method === 'POST') {
         const input = await body(req);
         return json(
@@ -387,6 +403,7 @@ export function serve(
         console.error('studio request failed', error instanceof Error ? error.name : 'error');
       json(res, expected ? error.status : 500, {
         error: expected ? error.message : '服务未能完成请求。',
+        ...(error instanceof RequestError && error.responseCode ? {code:error.responseCode} : {}),
       });
     }
   });

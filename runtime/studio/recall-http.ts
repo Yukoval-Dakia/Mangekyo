@@ -7,8 +7,10 @@ import { factId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
+import { parseRecallMount } from '../../modules/activity/recall-values.ts';
 import { workbookRequestId } from '../../modules/activity/workbook-values.ts';
 import { purpose, studioLearner } from './identity.ts';
+import type { NotionReadScope } from './notion.ts';
 import { openRecall, recallItemId, RecallRequestError, type RecallMount } from './recall.ts';
 
 export const recallDisplayToken = 'x-recall-display-token';
@@ -16,10 +18,8 @@ const idPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const isId = (value: unknown): value is string => typeof value === 'string' && idPattern.test(value);
 
 function readMount(value: unknown): RecallMount {
-  if (!value || typeof value !== 'object' || Object.keys(value).length !== 3 ||
-      !('turnId' in value) || !isId(value.turnId) || !('derivationId' in value) || !isId(value.derivationId) ||
-      !('itemId' in value) || !isId(value.itemId)) throw new RecallRequestError(400, '回忆题挂载标识无效。');
-  return { turnId: value.turnId, derivationId: value.derivationId, itemId: value.itemId };
+  try { return parseRecallMount(value); }
+  catch { throw new RecallRequestError(400, '回忆题挂载标识无效。'); }
 }
 
 function readRequestId(value: unknown) {
@@ -69,7 +69,7 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
   }
 
   return {
-    async project(sessionId: string, turnId: string, derivationId: string, rawKit: unknown) {
+    async project(sessionId: string, turnId: string, derivationId: string, rawKit: unknown, notion: NotionReadScope) {
       if (rawKit === undefined) return undefined;
       const kit = studyKit(rawKit);
       if (!kit) throw new RecallRequestError(409, '此会话的回忆题格式无效。');
@@ -78,11 +78,11 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
       for (const index of kit.questions.keys()) {
         const mount = { turnId, derivationId, itemId: recallItemId(turnId, derivationId, index) };
         try {
-          items.push(await service.get(mount));
+          items.push(await service.get(mount, notion));
         } catch (error) {
           if (index !== 0 || !(error instanceof RecallRequestError) || error.status !== 404) throw error;
           // One mount seals this version's complete set of items.
-          items.push(await service.mount(mount));
+          items.push(await service.mount(mount, notion));
         }
       }
       return { title: kit.title, lesson: kit.lesson, items };

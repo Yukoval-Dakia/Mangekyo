@@ -1,3 +1,4 @@
+import { selectedRoute } from './model-route';
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { ApiError, api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
 import { useConversation } from "./conversation";
@@ -229,7 +230,7 @@ function Conversation({ teachingCase, active, settings, needsSetup, openSettings
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (settings && canReply && !outdatedDraft && !conflict) conversation.send(undefined, settings);
+    if (settings && canReply && !outdatedDraft && !conflict) conversation.send(undefined, selectedRoute(settings));
   }
 
   function handleComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -248,7 +249,7 @@ function Conversation({ teachingCase, active, settings, needsSetup, openSettings
             <Mark />
             <div><h2>教研同伴</h2><p>{teachingCase.title}</p></div>
           </div>
-          {(session || invalidated) && <button type="button" className="tonal-button" disabled={!settings || waiting || Boolean(retryOperation)} onClick={() => conversation.start(undefined, undefined, undefined, settings)}><Icon name="plus" /> 新对话</button>}
+          {(session || invalidated) && <button type="button" className="tonal-button" disabled={!settings || waiting || Boolean(retryOperation)} onClick={() => conversation.start(undefined, undefined, undefined, selectedRoute(settings))}><Icon name="plus" /> 新对话</button>}
         </header>
         <div className="feed" ref={feed} role="region" aria-label="对话记录" tabIndex={0}>
           {turns.length > 0 && <ol className="turns">{turns.map((turn, index) => <TeachingTurn turn={turn} sessionId={session?.id} key={turn.turnId ?? index} mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={conversation.applySnapshot} />)}</ol>}
@@ -261,7 +262,7 @@ function Conversation({ teachingCase, active, settings, needsSetup, openSettings
               </div>
               {needsSetup
                 ? <button type="button" className="primary-button start-button" onClick={openSettings}>配置模型 <Icon name="arrow" /></button>
-                : <button type="button" className="primary-button start-button" disabled={!settings} onClick={() => conversation.start(undefined, undefined, undefined, settings)}>开始对话 <Icon name="arrow" /></button>}
+                : <button type="button" className="primary-button start-button" disabled={!settings} onClick={() => conversation.start(undefined, undefined, undefined, selectedRoute(settings))}>开始对话 <Icon name="arrow" /></button>}
             </div>
           )}
           {problem && (

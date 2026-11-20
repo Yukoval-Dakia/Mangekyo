@@ -1,5 +1,6 @@
 import { derivationId, factId, type Revision, type Tick } from '@mangekyo/kernel';
 import type { HelpRef, HelpTarget } from './help-exposure-values.ts';
+import { gradeWorkbook, type WorkbookQuestion } from './workbook-values.ts';
 
 export const recallIssuanceType = 'activity.recallIssuance';
 export const recallSubmissionType = 'activity.recallSubmission';
@@ -76,4 +77,33 @@ export function recallSubmission(value: unknown) {
 
 export function recallTarget(issuance: HelpRef, itemId: string): HelpTarget {
   return { activityId: issuance.id, issuance, item: { itemId, responseId: recallResponseId } };
+}
+
+export function gradeRecallItem(item: ReturnType<typeof recallIssuance>['items'][number], answer: string) {
+  const base = { id: item.itemId, prompt: item.prompt, explanation: null };
+  const question: WorkbookQuestion = item.rubric
+    ? { ...base, kind: 'rubric', rubric: item.rubric, rubricVersion: 'rubric-v1' }
+    : { ...base, kind: 'exact', answers: [item.answer], selfCheck: false };
+  const { feedback: [feedback] } = gradeWorkbook(
+    { title: '回忆题', materialId: null, savedAt: '', questions: [question] },
+    { [item.itemId]: answer },
+  );
+  if (!feedback) throw new Error('Missing Recall result');
+  return feedback.result;
+}
+
+export function recallFields(value: unknown, names: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).length !== names.length || names.some(name => !Object.hasOwn(value, name))) {
+    throw new Error('回忆题请求字段无效。');
+  }
+  return value as Record<string, unknown>;
+}
+
+export function parseRecallMount(value: unknown) {
+  const { turnId, derivationId: version, itemId } = recallFields(value, ['turnId', 'derivationId', 'itemId']);
+  if (typeof turnId !== 'string' || typeof version !== 'string' || typeof itemId !== 'string') {
+    throw new Error('回忆题挂载标识无效。');
+  }
+  return { turnId: factId(turnId), derivationId: derivationId(version), itemId: factId(itemId) };
 }
