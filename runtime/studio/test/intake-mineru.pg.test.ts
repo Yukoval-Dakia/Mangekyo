@@ -1,4 +1,6 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { factId } from '../../../kernel/src/declarations/ids.ts';
+import { intakeIdFor } from '../intake-lifecycle.ts';
+import { mkdtemp, readdir, rename, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -142,4 +144,50 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     expect((await capture('mineru-retry-save')).status).toBe(201);
   });
 
+  it('burns intake identities before replay and rejects a result returned after confirmation', async () => {
+    const state = async () => (await fetch(origin + '/api/lifecycle')).json() as Promise<{watermark:string}>;
+    expect((await state()).watermark).toBe('0');
+    const prior = await (await capture('delete-during-send')).json() as IntakeMetadata;
+    const path = origin + '/api/materials/' + prior.id;
+    const erase = (confirmation: string) => fetch(path + '/erasure', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({requestId:'delete-this-original',expectedRev:prior.revision,confirmation})});
+    expect((await erase('cancel')).status).toBe(403);
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<string>();
+    // Other tests may have queued ready work. Select this document's actual execution.
+    const {rows:[intent]} = await db.query<{execution_ref:string}>(
+      'SELECT execution_ref FROM work WHERE learner_id=$1 AND slot_key=$2',[studioLearner,intakeIdFor(factId(prior.id))]);
+    const ref = await acknowledgeStartedWork(db,intent!.execution_ref);
+    const running = openCloudIntakeWork(db,intake,{
+      submit:async () => { entered.resolve(); return release.promise; },
+      read:async () => { throw new Error('late result reached polling'); },
+    }).execute(ref!);
+    await entered.promise;
+    const confirmed = 'permanently-delete-original';
+    try {
+      const marker = join(directory,'intake',prior.id,'store-id');
+      await rename(marker,marker + '.offline');
+      const blocked = await (await erase(confirmed)).json() as {generation:string};
+      expect(blocked).toMatchObject({blocked:true,original:'pending'});
+      expect((await fetch(path + '/original')).status).toBe(404);
+      await rename(marker + '.offline',marker);
+      const receipt = await (await erase(confirmed)).json() as {generation:string};
+      expect(receipt.generation).toBe(blocked.generation);
+      expect(receipt).toMatchObject({blocked:true,original:'removed',copies:'unverified'});
+      expect(await (await erase(confirmed)).json()).toEqual(receipt);
+      expect(await readdir(join(directory,'intake',prior.id))).toEqual(['store-id']);
+      expect(await state()).toMatchObject({watermark:receipt.generation,tombstones:[{generation:receipt.generation},{generation:receipt.generation}]});
+      expect((await fetch(path + '/original')).status).toBe(404);
+      expect((await capture('delete-during-send')).status).toBe(410);
+      const stale = await capture('different-replay-id',null,'text/plain');
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({code:'deletion_watermark_stale'});
+    } finally { release.resolve('private-late-result'); await running; }
+    // A worker that loaded v7 before migration cannot reinstall the identity.
+    await expect(db.query(`INSERT INTO facts(learner_id,id,type,current_rev,created_tick,changed_tick)
+      VALUES ($1,$2,'legacy',1,1,1)`,[studioLearner,prior.id])).rejects.toThrow('Erased identity');
+    const ids = [prior.id,intakeIdFor(factId(prior.id))];
+    expect((await db.query('SELECT data FROM fact_revs WHERE learner_id=$1 AND fact_id=ANY($2)',[studioLearner,ids])).rows).toEqual([]);
+    expect((await db.query('SELECT result FROM effects WHERE learner_id=$1 AND owner_id=ANY($2)',[studioLearner,ids])).rows).toEqual([]);
+    expect((await db.query("SELECT input FROM commands WHERE learner_id=$1 AND input #>> '{input,materialId}'=$2",[studioLearner,prior.id])).rows).toEqual([]);
+  });
 });

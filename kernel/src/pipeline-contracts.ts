@@ -13,7 +13,7 @@ export type BusWitness = FactRef & {
 };
 export type BusReadResult<T> = { readonly items: readonly T[]; readonly witnesses: readonly BusWitness[] };
 export type BusQuery = { readonly types: readonly string[]; readonly limit?: number };
-export type BusMutation = { readonly id: CommandId; readonly type: string; readonly input: Json };
+export type BusMutation = { readonly deletionWatermark?: string; readonly id: CommandId; readonly type: string; readonly input: Json };
 export type PipelineBus<Projection, Preset, Mutation = BusMutation, Receipt = CommandReceipt> = {
   query(filter: BusQuery): Promise<BusReadResult<Projection>>;
   resolve(refs: readonly BusRef[], preset: Preset): Promise<BusReadResult<Projection>>;

@@ -29,7 +29,7 @@ export function openLibrary(db: Db, captureModule: LoadedModule, content: Loaded
     hooks,
     crossModuleWrites: { [captureMaterial]: { create: [materialType] } },
   });
-  async function write(type: string, requestId: string, input: Json) {
+  async function write(type: string, requestId: string, input: Json, deletionWatermark?: string) {
     try {
       return await handle({
         learner: studioLearner,
@@ -37,7 +37,7 @@ export function openLibrary(db: Db, captureModule: LoadedModule, content: Loaded
         purpose: storagePurpose,
         type,
         id: commandId(stableId('library', requestId)),
-        input,
+        input, ...(deletionWatermark === undefined ? {} : {deletionWatermark}),
       });
     } catch (error) {
       if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
@@ -78,11 +78,11 @@ export function openLibrary(db: Db, captureModule: LoadedModule, content: Loaded
       const goal = latestGoal ? await readValue(latestGoal.id) : null;
       return { materials, goal: goal === null ? null : studyGoal(goal).text };
     }),
-    async capture(input: { requestId: unknown; title: unknown; text: unknown }) {
+    async capture(input: { requestId: unknown; title: unknown; text: unknown }, deletionWatermark = '0') {
       const requestId = clientRequest(input?.requestId);
       const data = validate(textMaterial, input, '请输入材料标题（最多 240 字）和正文（最多 4000 字）。');
       const id = factId(stableId('text-material', requestId));
-      await write(captureMaterial, requestId, { id, data });
+      await write(captureMaterial, requestId, { id, data }, deletionWatermark);
       return { id };
     },
     async setGoal(input: { requestId: unknown; text: unknown }) {

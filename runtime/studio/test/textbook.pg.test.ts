@@ -3,7 +3,7 @@ import pg from 'pg';
 import { expect, it } from 'vitest';
 import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
 import { createPgDb } from '../../../kernel/src/db/pg.ts';
-import { kernelSchemaStatements } from '../../../kernel/src/schema.ts';
+import { applyKernelSchema } from '../../../kernel/src/schema.ts';
 import { commandId, factId, learnerId } from '../../../kernel/src/declarations/ids.ts';
 import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
 import { fileURLToPath } from 'node:url';
@@ -27,7 +27,7 @@ it.skipIf(!connectionString)('serves nested pages, retains conflicting edits, an
   const page = (id: string, parentId: string | null, value: string): TextbookBlock => ({ id, parentId, body: { kind: 'text', text: value } });
   const create = (name: string, title: string, content: TextbookBlock[]) => textbook.create({ learner, requestId: request(name), clientEditSeq: 0, page: { title, blocks: content } });
   try {
-    for (const sql of kernelSchemaStatements) await db.query(sql);
+    await applyKernelSchema(db);
     await db.query('INSERT INTO learners (id) VALUES ($1)', [learner]);
     const blocks = [page('root', null, '一级'), page('second', 'root', '二级'), page('third', 'second', '三级'), page('fourth', 'third', '四级'), page('fifth', 'fourth', '五级'), page('sixth', 'fifth', '六级')];
     const created = await create('create', '嵌套教材', blocks);

@@ -1,3 +1,5 @@
+import { LifecycleError } from '../../kernel/src/lifecycle.ts';
+import { submittedWatermark } from './deletion-watermark.ts';
 import type { openMemoryManagement } from './memory-management.ts';
 import { browseMcpTools } from '../../executors/teaching/mcp-client.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -123,6 +125,13 @@ export function serve(
       const url = new URL(req.url ?? '/', 'http://' + host);
       const path = url.pathname;
       const method = req.method;
+      const offlineSubmission = async (status: number, submit: (input: Record<string, unknown>, watermark: string) => Promise<unknown>) => {
+        const input = await body(req);
+        const watermark = submittedWatermark(input);
+        const result = await submit(input,watermark);
+        res.setHeader('X-Deletion-Watermark',watermark);
+        return json(res,status,result);
+      };
       if (path === '/api/workspace/access' && method === 'GET') {
         return json(res, 200, await student.workspace.list(url.searchParams));
       }
@@ -250,7 +259,7 @@ export function serve(
       const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print))?$/.exec(path);
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));
-      if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return json(res, 200, await student.workbook.submit(paper[1], await body(req)));
+      if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return await offlineSubmission(200,input => student.workbook.submit(paper[1]!,input));
       if (path === '/api/review' && method === 'GET') {
         const [mine, riding] = await Promise.all([student.workbook.review(), practice.read()]);
         return json(res, 200, [...mine, ...ridingReview(riding)]);
@@ -277,8 +286,7 @@ export function serve(
       if (path === '/api/conversations' && method === 'GET')
         return json(res, 200, await recentConversations(db));
       if (path === '/api/materials' && method === 'POST') {
-        const { requestId, title, text } = await body(req);
-        return json(res, 201, await library.capture({ requestId, title, text }));
+        return await offlineSubmission(201,({requestId,title,text},watermark) => library.capture({requestId,title,text},watermark));
       }
       if (path === '/api/goal' && method === 'POST') {
         const { requestId, text } = await body(req);
@@ -286,7 +294,7 @@ export function serve(
       }
       if (path === '/api/practice/riding' && method === 'GET') return json(res, 200, await practice.read());
       if (path === '/api/practice/riding' && method === 'POST')
-        return json(res, 200, await practice.submit(await body(req)));
+        return await offlineSubmission(200,input => practice.submit(input));
       if (path === '/api/settings' && method === 'GET')
         return json(res, 200, publicSettings(await loadSettings()));
       if (path === '/api/settings/mcp-tools' && method === 'POST') {
@@ -357,6 +365,7 @@ export function serve(
       res.writeHead(200, { 'Content-Type': types[extname(file)]! }).end(bytes);
     } catch (error) {
       if (error instanceof TextbookConflictError) return json(res, 409, error.toJSON());
+      if (error instanceof LifecycleError) return json(res,error.status,{error:error.message,code:error.code});
       const expected = error instanceof RequestError || error instanceof RecallRequestError;
       if (!expected)
         console.error('studio request failed', error instanceof Error ? error.name : 'error');

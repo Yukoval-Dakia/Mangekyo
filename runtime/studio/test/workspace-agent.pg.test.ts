@@ -5,7 +5,7 @@ import {expect,it} from 'vitest';
 import {createPgDb} from '../../../kernel/src/db/pg.ts';
 import {commandId, learnerId} from '../../../kernel/src/declarations/ids.ts';
 import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
-import {kernelSchemaStatements} from '../../../kernel/src/schema.ts';
+import {applyKernelSchema} from '../../../kernel/src/schema.ts';
 import {recordLocalRead} from '../../../kernel/src/work/effects.ts';
 import {loadModuleDirectory} from '../../../kernel/src/loader.ts';
 import {studioLearner,stableId} from '../identity.ts';
@@ -40,7 +40,7 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     return {source,page};
   }
   try {
-    for (const sql of kernelSchemaStatements) await db.query(sql);
+    await applyKernelSchema(db);
     await db.query('INSERT INTO learners (id) VALUES ($1)',[studioLearner]);
     const first = await author();
     expect(await author()).toEqual(first);

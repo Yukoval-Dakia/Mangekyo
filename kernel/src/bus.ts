@@ -102,7 +102,7 @@ export function createBusScope<T, Preset extends string>(host: ReadTransaction |
     query: (filter: BusQuery) => db.snapshot(scope, tx => readScope(tx, actor).query(filter)),
     resolve: (refs: readonly BusRef[], preset: Preset) =>
       db.snapshot(scope, tx => readScope(tx, actor).resolve(refs, preset)),
-    mutate: ({id, type, input}: BusMutation) =>
-      handle({learner, actor: actor.actor, purpose: actor.purpose, id, type, input}),
+    mutate: ({id, type, input, deletionWatermark}: BusMutation) =>
+      handle({learner, actor: actor.actor, purpose: actor.purpose, id, type, input, ...(deletionWatermark === undefined ? {} : {deletionWatermark})}),
   };
 }

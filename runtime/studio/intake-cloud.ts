@@ -1,3 +1,4 @@
+import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -84,7 +85,7 @@ function completed(text: string, pages: number | null): IntakeExtraction {
 class StoppedCloudIntake extends Error {}
 
 function intakeStopped(error: unknown) {
-  return error instanceof StoppedCloudIntake || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+  return (error instanceof LifecycleError && error.status === 410) || error instanceof StoppedCloudIntake || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
 }
 
 export function openCloudIntakeWork(db: Db, intake: {

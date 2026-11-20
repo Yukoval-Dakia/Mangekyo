@@ -1,3 +1,5 @@
+import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
+import { submittedWatermark } from './deletion-watermark.ts';
 import type { ReviewEntry } from './review.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
@@ -448,7 +450,13 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         invalid(error, '作答格式无效。');
       }
       const attemptId = factId(stableId('workbook-attempt', paperId, data.requestId));
-      const existing = await db.snapshot({ learner: studioLearner }, (tx) => readAttemptOrNull(tx, attemptId));
+      const deletionWatermark = submittedWatermark(input);
+      const priorAttempt = () => db.snapshot({ learner:studioLearner }, async tx => {
+        await assertUnburned(tx, 'fact', [attemptId,paperId]);
+        await assertDeletionWatermark(tx,deletionWatermark);
+        return readAttemptOrNull(tx,attemptId);
+      });
+      const existing = await priorAttempt();
       const paper = existing?.paper ?? await db.snapshot({ learner: studioLearner }, (tx) => readPaper(tx, paperId));
       let graded: ReturnType<typeof gradeWorkbook>;
       try {
@@ -471,7 +479,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           learner: studioLearner,
           actor: 'learner',
           purpose: storagePurpose,
-          type: submitWorkbookAttemptCommand,
+          type: submitWorkbookAttemptCommand, deletionWatermark,
           id: commandId(stableId('submit-workbook-attempt', attemptId)),
           input: {
             id: attemptId,
@@ -483,7 +491,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           throw new RequestError(403, '这份试卷当前不可读取。');
         }
         if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-          const saved = await db.snapshot({learner: studioLearner}, tx => readAttemptOrNull(tx, attemptId));
+          const saved = await priorAttempt();
           if (saved && isReplay(saved)) return get(paperId);
           throw new RequestError(409, '同一个提交标识已经用于不同的作答。');
         }

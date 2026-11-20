@@ -1,3 +1,4 @@
+import { migrateLifecycle } from './lifecycle.ts';
 import type { Db, DbQuery } from './db/types.ts';
 import { newUlid } from './work/identity.ts';
 import { migrateTodoWork } from './work/migrate-todos.ts';
@@ -230,6 +231,7 @@ const migrations = [
   },
   migrateWorkingState,
   migrateTodoWork,
+  migrateLifecycle,
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */

@@ -1,3 +1,4 @@
+import { assertDeletionWatermark, assertUnburned, deletionWatermark } from '../lifecycle.ts';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalizeJson, canonicalJsonString } from '../commands/canonical.ts';
@@ -25,6 +26,7 @@ type EffectRow = {
   state: 'started' | 'done' | 'unknown';
   result: unknown;
 };
+
 const json = z.json();
 
 /** A supplied authorization check runs under the learner lock for reservation and replay. */
@@ -40,6 +42,7 @@ export async function runEffect(
   const digest = createHash('sha256').update(canonicalJsonString(input)).digest('hex');
   const reservation = await db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
+    await assertUnburned(tx, 'fact', [request.ownerId]);
     await authorize?.(tx);
     const { rows: [prior] } = await tx.query<EffectRow>(
       `SELECT input_digest, provider_effect_id, state, result FROM effects
@@ -65,7 +68,7 @@ export async function runEffect(
         state: 'started',
         started_tick: tick,
       });
-      return { kind: 'invoke', providerEffectId, tick } as const;
+      return { kind: 'invoke', providerEffectId, tick, deletionWatermark: await deletionWatermark(tx) } as const;
     });
   });
   if (reservation.kind !== 'invoke') return reservation;
@@ -81,6 +84,9 @@ export async function runEffect(
   }
 
   await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+    await assertUnburned(tx, 'fact', [request.ownerId]);
+    await assertDeletionWatermark(tx,reservation.deletionWatermark);
+    await authorize?.(tx);
     const updated = await tx.query(
       `UPDATE effects SET state = $6, result = $7, ended_tick = $8
        WHERE learner_id = $1 AND owner_kind = $2 AND owner_id = $3 AND step_key = $4 AND label = $5
@@ -104,6 +110,7 @@ export async function recordLocalRead(
   const digest = createHash('sha256').update(canonicalJsonString(request.input)).digest('hex');
   return db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
+    await assertUnburned(tx, 'fact', [request.ownerId]);
     await authorize(tx);
     const { rows: [saved] } = await tx.query<Pick<EffectRow, 'state' | 'result' | 'input_digest'>>(
       `SELECT state, result, input_digest FROM effects
