@@ -2,13 +2,15 @@ import type { FactChange } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, type DerivationId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
-import type { FactRef, FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import type { FactRef, FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type Manifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import type { AdmittedHelpEvent } from '../../modules/activity/help-exposure.ts';
-import { helpExposure, helpExposureType, recordHelpExposureCommand, type HelpPresentation } from '../../modules/activity/help-exposure-values.ts';
+import { helpExposure, helpExposureType, recordHelpExposureCommand, type HelpPresentation, type HelpRef } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
+import { recallSubmissionType, submitRecallCommand } from '../../modules/activity/recall-values.ts';
+import { closedPosttest, posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
 import {
   sameWorkbookJson,
   submitWorkbookAttemptCommand,
@@ -28,47 +30,73 @@ type AssessmentRow = { id: string; slot_key: string; value: unknown; manifest: u
 type ArchivedAssessment = AssessmentRow & { original_id: string | null };
 const rubricPropagation = createPropagationHooks([]);
 
-export async function readWorkbookSubmissionBirth(tx: ReadTransaction, id: FactId) {
-  const { rows: [birth] } = await tx.query<{ tick: Tick; submitted_at: string; condition: string | null }>(
+const submissionCommands = {
+  [workbookAttemptType]: submitWorkbookAttemptCommand,
+  [posttestSubmissionType]: submitWorkbookAttemptCommand,
+  [recallSubmissionType]: submitRecallCommand,
+} as const;
+
+export async function readActivitySubmissionBirth(
+  tx: ReadTransaction, ref: FactRef, type: keyof typeof submissionCommands,
+) {
+  if (ref.learner !== tx.learner) return;
+  const { rows: [birth] } = await tx.query<{ tick: Tick; submitted_at: string | null; condition: string | null }>(
     `SELECT r.tick::text AS tick, c.input->'input'->'data'->>'submittedAt' AS submitted_at,
        c.input->'input'->>'condition' AS condition
-     FROM fact_revs r JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
+     FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+     JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
      WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.kind='value' AND r.author='learner'
-       AND c.type=$3 AND c.state='done'`,
-    [tx.learner, id, submitWorkbookAttemptCommand],
+       AND f.type=$3 AND c.type=$4 AND c.state='done'`,
+    [tx.learner, ref.id, type, submissionCommands[type]],
   );
-  return birth;
+  const condition = type === posttestSubmissionType ? closedPosttest : null;
+  return birth?.condition === condition ? {tick: birth.tick, submittedAt: birth.submitted_at} : undefined;
 }
 
-export async function readWorkbookHelpDisplays(
-  tx: ReadTransaction, purpose: string, paper: FactId, cutoff: Tick,
-  accept: (fact: FactSnapshot, display: HelpPresentation) => Promise<boolean>,
-): Promise<AdmittedHelpEvent[]> {
-  const { rows } = await tx.query<{ id: FactId; tick: Tick }>(
-    `SELECT f.id, r.tick::text FROM facts f
-     JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=1
-     JOIN fact_revs visible ON visible.learner_id=f.learner_id AND visible.fact_id=f.id AND visible.rev=f.current_rev
-     JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
-     WHERE f.learner_id=$1 AND f.type=$2 AND c.type=$3 AND c.state='done' AND r.tick<$4::bigint
-       AND f.retracted_rev IS NULL AND f.purpose && ARRAY[$6,'all']::text[]
-       AND visible.purpose && ARRAY[$6,'all']::text[]
-       AND visible.data=r.data AND visible.data->>'kind'='displayed' AND visible.data->'mount'->>'activityId'=$5`,
-    [tx.learner, helpExposureType, recordHelpExposureCommand, cutoff, paper, purpose],
+export async function readActivityHelpEvents(
+  tx: ReadTransaction, read: ReadContext, query: {
+    activities: readonly FactId[];
+    cutoff: Tick;
+    mode: 'pinned' | 'following';
+    issuance?: HelpRef;
+    includeOpens?: boolean;
+  },
+  admit?: (fact: FactSnapshot, event: HelpPresentation) => Promise<boolean>,
+) {
+  const { rows } = await tx.query<{ id: FactId; tick: Tick; unchanged: boolean }>(
+    `SELECT f.id, r.tick::text, visible.data=r.data AS unchanged
+     FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+     JOIN fact_revs visible ON (visible.learner_id,visible.fact_id,visible.rev)=(f.learner_id,f.id,f.current_rev)
+     JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+     WHERE r.learner_id=$1 AND f.type=$2 AND c.type=$3 AND c.state='done'
+       AND r.rev=1 AND r.kind='value' AND r.tick<$4::bigint AND r.data->>'kind'=ANY($5::text[])
+       AND (r.data->'mount'->>'activityId'=ANY($6::text[]) OR r.data->'mount'->'issuance'->>'id'=ANY($6::text[]))
+       AND ($7::jsonb IS NULL OR r.data->'mount'->'issuance' @> $7::jsonb)`,
+    [tx.learner, helpExposureType, recordHelpExposureCommand, query.cutoff,
+      query.includeOpens ? ['opened','displayed'] : ['displayed'], query.activities,
+      query.issuance ? JSON.stringify(query.issuance) : null],
   );
-  const read = createCommandReadContext(tx, purpose);
   const events: AdmittedHelpEvent[] = [];
+  let omitted = false;
   for (const row of rows) {
     try {
-      const fact = await read.fact(row.id, { mode: 'following' });
-      const display = helpExposure(fact.value);
-      if (display.kind === 'displayed' && await accept(fact, display)) {
-        events.push({ ref: fact.ref, value: display, admittedAt: row.tick });
+      if (query.mode === 'following' && !row.unchanged) {
+        omitted = true;
+        continue;
+      }
+      const fact = await read.fact(row.id, query.mode === 'pinned'
+        ? { mode: 'pinned', rev: 1 as Revision } : { mode: 'following' });
+      const value = helpExposure(fact.value);
+      if (value.kind !== 'displayed' && value.kind !== 'opened') continue;
+      if (!admit || await admit(fact, value)) {
+        events.push({ ref: fact.ref, value, admittedAt: row.tick });
       }
     } catch (error) {
       if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError)) throw error;
+      omitted = true;
     }
   }
-  return events;
+  return { events, omitted };
 }
 
 const currentAssessmentsSql = `SELECT d.id, d.slot_key, d.value, d.manifest, d.scope_keys->>'originalAssessmentId' AS original_id

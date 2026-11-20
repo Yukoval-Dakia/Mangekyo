@@ -10,7 +10,7 @@ import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { helpExposure, helpExposureRequest, helpExposureType, sameHelpRef, sameHelpTarget, type HelpRef } from '../../modules/activity/help-exposure-values.ts';
-import { projectHelpExposure, type AdmittedHelpEvent } from '../../modules/activity/help-exposure.ts';
+import { projectHelpExposure } from '../../modules/activity/help-exposure.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import {
   issueRecallCommand, recallIssuance, recallIssuanceType, recallResponseId, recallSubmission,
@@ -21,6 +21,7 @@ import { gradeWorkbook, workbookRequestId, type WorkbookQuestion } from '../../m
 import { readMaterialText } from './reading.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { purpose, slotType, stableId, studioLearner } from './identity.ts';
+import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 
 export type RecallMount = { turnId: string; derivationId: string; itemId: string };
 type DisplayWitness = { mount: RecallMount; revealId: string };
@@ -164,33 +165,14 @@ function writtenRef(receipt: CommandReceipt) {
 }
 
 async function resultFor(tx: ReadTransaction, submission: Submission, ref: FactRef, item: Item) {
-  const { rows: [rev] } = await tx.query<{ tick: Tick }>(
-    `SELECT tick::text FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=$3`,
-    [tx.learner, ref.id, ref.rev],
-  );
-  if (!rev) throw new Error('Missing Recall submission revision');
+  const admission = await readActivitySubmissionBirth(tx, ref, recallSubmissionType);
+  if (!admission) throw new RecallRequestError(409, '回忆题交答尚未确认。');
   const target = recallTarget(submission.issuance, submission.itemId);
-  const cutoff = rev.tick;
-  let coverage = submission.observation === 'complete' ? { submission: ref, target, through: cutoff } : null;
-  const { rows } = await tx.query<{ id: string; tick: Tick }>(
-    `SELECT r.fact_id AS id, r.tick::text FROM fact_revs r
-     JOIN facts f ON f.learner_id=r.learner_id AND f.id=r.fact_id
-     WHERE r.learner_id=$1 AND r.rev=1 AND r.tick<$2 AND r.data->>'kind'='displayed'
-       AND r.data->'mount'->'issuance' @> $3::jsonb AND f.type=$4`,
-    [tx.learner, cutoff, JSON.stringify(submission.issuance), helpExposureType],
-  );
-  const events: AdmittedHelpEvent[] = [];
-  for (const row of rows) {
-    try {
-      const fact = await optionalPinned(tx, { id: factId(row.id), rev: firstRevision });
-      if (fact?.type === helpExposureType) {
-        events.push({ ref: fact.ref, value: helpExposure(fact.value), admittedAt: row.tick });
-      }
-    } catch (error) {
-      if (!(error instanceof FactReadDeniedError)) throw error;
-      coverage = null;
-    }
-  }
+  const cutoff = admission.tick;
+  const { events, omitted } = await readActivityHelpEvents(tx, createCommandReadContext(tx, storagePurpose), {
+    activities: [target.activityId], cutoff, mode: 'pinned', issuance: submission.issuance,
+  });
+  const coverage = !omitted && submission.observation === 'complete' ? { submission: ref, target, through: cutoff } : null;
   const base = { id: item.itemId, prompt: item.prompt, explanation: null };
   const question: WorkbookQuestion = item.rubric
     ? { ...base, kind: 'rubric', rubric: item.rubric, rubricVersion: 'rubric-v1' }
