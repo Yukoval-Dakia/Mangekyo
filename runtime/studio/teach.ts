@@ -1,3 +1,4 @@
+import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { createHash } from 'node:crypto';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
@@ -250,26 +251,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         if (grants.length) checkMcpAccess(current);
         if (submission.workspaceRevision) await checkWorkspaceRoute(current);
       };
-      let dispatchDenied: ChangedEvidence | TeachingError | undefined;
-      const dispatch: TeachingDispatch = async send => {
-        try {
-          // The lock protects validation and starting the send, never the response wait.
-          const { response } = await db.tx(scope, async tx => {
-            await lockLearner(tx, learner);
-            await authorize(tx);
-            const response = send();
-            void response.catch(() => {});
-            return { response };
-          });
-          return response;
-        } catch (error) {
-          if (error instanceof ChangedEvidence || error instanceof TeachingError) dispatchDenied = error;
-          throw error;
-        }
-      };
+      let dispatchDenied: ChangedEvidence | TeachingError | LifecycleError | undefined;
       const mcp = step.provider.startsWith('tool:mcp:');
       const needsFreshEvidence = Boolean(jit || protectWorkspaceDispatch || assessments.size || retention.size || memorySend);
-      const sendsMcpContext = grants.length > 0 && !step.provider.startsWith('tool:');
       const effect = await runEffect(
         db,
         {
@@ -284,11 +268,30 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             ...(assessments.size ? {assessmentBasis: [...assessments.values()]} : {}),
             ...(retention.size ? {retentionBasis: [...retention.values()]} : {}) },
         },
-        async (requestId) => {
+        async (requestId, checkDispatch) => {
+          const dispatch: TeachingDispatch = async send => {
+            try {
+              // Start the transport under the same lock as the reservation and
+              // current authority check. The response wait is outside it.
+              const { response } = await db.tx(scope, async tx => {
+                await lockLearner(tx, learner);
+                await checkDispatch(tx);
+                await authorize(tx);
+                const response = send();
+                void response.catch(() => {});
+                return { response };
+              });
+              return response;
+            } catch (error) {
+              if (error instanceof ChangedEvidence || error instanceof TeachingError || error instanceof LifecycleError)
+                dispatchDenied = error;
+              throw error;
+            }
+          };
           try {
             // A resumed MCP call may authenticate and negotiate before sending tool arguments.
             const reply = await (mcp || step.jitContext ? invoke(requestId, dispatch) :
-              needsFreshEvidence || sendsMcpContext ? dispatch(() => invoke(requestId)) : invoke(requestId));
+              dispatch(() => invoke(requestId)));
             return memorySend ? { reply, sent: { ...memorySend, requestId } } : reply;
           } catch (error) {
             console.warn('模型调用未能确认', requestId, error instanceof TeachingError ? error.code : 'transport_error');
@@ -296,8 +299,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           }
         },
         authorize,
-      );
-      if (dispatchDenied) throw dispatchDenied;
+      ).catch(error => {
+        if (error instanceof LifecycleError) throw new ChangedEvidence();
+        throw error;
+      });
+      if (dispatchDenied) throw dispatchDenied instanceof LifecycleError ? new ChangedEvidence() : dispatchDenied;
       if (needsFreshEvidence) await db.snapshot(scope, validInputs);
       if (effect.kind === 'unknown') throw new UncertainEffect(effect.providerEffectId);
       if (memorySend && effect.result && typeof effect.result === 'object' && !Array.isArray(effect.result) &&
