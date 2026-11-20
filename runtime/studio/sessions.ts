@@ -11,7 +11,7 @@ import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { first45Answer, first45Histories, first45Question } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
-import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, routeMatchesInput, mcpRevision } from './harness.ts';
+import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
 import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, type StudyCurrentObjectSelection } from '../../modules/activity/values.ts';
 import { attachmentCurrent, attachmentSources } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
@@ -31,7 +31,7 @@ import {
   requestCommand,
   purpose,
   methodName,
-  jitMethodName,
+  confirmedTeachingMethod,
   slotType,
   textbookUndoId,
 } from './identity.ts';
@@ -294,17 +294,37 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
   }
   return { ...view, turns: projected };
 }
-async function retireUnboundTurns(db: Db) {
+async function fenceTeachingCutover(db: Db) {
   await db.tx({learner:studioLearner}, async tx => {
     await lockLearner(tx,tx.learner);
+    const gate = await tx.query(`SELECT 1 FROM pg_trigger
+      WHERE tgrelid='fact_revs'::regclass AND tgname='studio_confirmed_teaching'`);
+    if (!gate.rowCount) {
+      await tx.query(`
+      CREATE FUNCTION studio_confirmed_teaching() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.rev=1 AND (NEW.data->>'accountConfirmation' IS DISTINCT FROM '1' OR NEW.data->>'accountRevision' IS NULL)
+          AND EXISTS (SELECT 1 FROM facts f WHERE (f.learner_id,f.id)=(NEW.learner_id,NEW.fact_id) AND f.type='activity.studyTurn')
+          AND (NEW.data ?| ARRAY['attachment','jitContextVersion','accountRevision'] OR EXISTS (
+            SELECT 1 FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+            WHERE (f.learner_id,f.id)=(NEW.learner_id,NEW.data->>'sessionId')
+              AND r.data ?| ARRAY['attachment','jitContextVersion','accountRevision'])) THEN
+          RAISE EXCEPTION 'Protected teaching turn requires learner-confirmed account' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+      END $$`);
+      await tx.query(`CREATE TRIGGER studio_confirmed_teaching BEFORE INSERT ON fact_revs
+        FOR EACH ROW EXECUTE FUNCTION studio_confirmed_teaching()`);
+    }
     const {rows} = await tx.query<{id:string}>(`
       SELECT w.slot_key AS id FROM work w
       JOIN facts f ON (f.learner_id,f.id)=(w.learner_id,w.slot_key) AND f.type='activity.studyTurn'
       JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
       JOIN facts origin ON (origin.learner_id,origin.id)=(f.learner_id,r.data->>'sessionId')
       JOIN fact_revs root ON (root.learner_id,root.fact_id,root.rev)=(origin.learner_id,origin.id,origin.current_rev)
-      WHERE w.learner_id=$1 AND w.slot_type=$2 AND w.state='ready' AND r.data->>'accountRevision' IS NULL
-        AND (r.data->>'jitContextVersion'='1' OR root.data ? 'attachment')`, [tx.learner,slotType]);
+      WHERE w.learner_id=$1 AND w.slot_type=$2 AND w.state='ready' AND r.data->>'accountConfirmation' IS DISTINCT FROM '1'
+        AND (r.data ?| ARRAY['attachment','jitContextVersion','accountRevision']
+          OR root.data ?| ARRAY['attachment','jitContextVersion','accountRevision'])`, [tx.learner,slotType]);
     const ids=rows.map(row=>row.id);
     if (!ids.length) return;
     await tx.withLearnerWrite(async tick => {
@@ -346,14 +366,14 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
             scope_keys: '{}',
             changed_tick: tick,
           });
-          const guarded = Boolean(submission.accountRevision || submission.jitContextVersion || origin.attachment);
-          await requestWork(tx,tick,{slotType,slotKey:id,deriver:guarded ? jitMethodName : methodName},guarded ? 'routed_pending' : 'pending');
+          const guarded = requiresAccountConfirmation(submission) || requiresAccountConfirmation(origin);
+          await requestWork(tx,tick,{slotType,slotKey:id,deriver:guarded ? confirmedTeachingMethod : methodName},guarded ? 'routed_pending' : 'pending');
         }
       },
     }),
   });
   await db.query('INSERT INTO learners(id) VALUES($1) ON CONFLICT DO NOTHING', [studioLearner]);
-  await retireUnboundTurns(db);
+  await fenceTeachingCutover(db);
   for (const studyCase of cases)
     for (const evidence of first45Histories[studyCase.id]) {
       const id = sourceId(studyCase.id, evidence.id);
@@ -397,7 +417,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     const protectedTurn = origin?.attachment || origin?.jitContextVersion || attachment || jitCounter || accountRevision;
     const supplied = requestedAccount(requestedRoute);
     if (protectedTurn || supplied !== undefined) {
-      if (!account || supplied !== account.accountRevision || (protectedTurn && origin && !accountRevision) ||
+      if (!account || supplied !== account.accountRevision || (protectedTurn && origin && !origin.accountConfirmation) ||
           !routeMatchesInput(requestedRoute,settings) || (origin && !sameRoute(origin,settings))) throw confirmAccount();
     } else if (!routeMatchesInput(requestedRoute,settings)) {
       throw new RequestError(409, '模型配置已更改，请重新确认。');
@@ -421,7 +441,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       ...(attachmentBasis ? {attachment, attachmentBasis:attachmentBasis.digest} : {}),
       ...(boundObject ? {currentObject: boundObject} : {}),
       ...(jitCounter ? {jitContextVersion: 1, jitCounterId: jitCounter.id} : {}),
-      ...(accountRevision ? {accountRevision} : {}),
+      ...(accountRevision ? {accountRevision,accountConfirmation:1} : {}),
       ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),
       ...(workspaceRevision ? {workspaceRevision, ...(!grants?.length && {memoryVersion: 1})} : {}),
       model: settings.model, reasoningEffort: settings.reasoningEffort,
@@ -458,7 +478,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     );
     if (!row) return null;
     const existing = studyTurn(row.data);
-    if (existing.accountRevision && requestedAccount(requestedRoute) !== existing.accountRevision) throw confirmAccount();
+    if (existing.accountConfirmation && requestedAccount(requestedRoute) !== existing.accountRevision) throw confirmAccount();
     if (
       existing.sessionId !== session ||
       existing.answer !== answer ||

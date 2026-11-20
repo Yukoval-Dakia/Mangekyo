@@ -63,6 +63,7 @@ export function studyTurn(input: unknown) {
     ...(value.attachmentBasis === undefined ? {} : {attachmentBasis: field(value, 'attachmentBasis', 64)}),
     ...(value.currentObject === undefined ? {} : { currentObject: studyCurrentObject(value.currentObject) }),
     ...(accountRevision ? {accountRevision} : {}),
+    ...(value.accountConfirmation === 1 && accountRevision ? {accountConfirmation:1 as const} : {}),
     ...(value.providerId === undefined ? {} : {providerId: field(value, 'providerId', 100)}),
     ...(value.protocol === undefined ? {} : {protocol: field(value, 'protocol', 32)}),
     ...(value.mcpRevision === undefined ? {} : {mcpRevision: field(value, 'mcpRevision', 64)}),

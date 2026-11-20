@@ -42,7 +42,7 @@ import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
 import { caseId, type DisplayTurn } from './sessions.ts';
 import { jitWitnessesCurrent, prepareFirstTurnJit, studioJitCounter, type StudioJitCounter } from './first-turn-jit.ts';
 import { turnTask } from './model-routes.ts';
-import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
+import { sameRoute, requiresAccountConfirmation, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
 import {readCurrentLearningObject, type OpenedCurrentLearningObject} from './current-learning-object.ts';
@@ -50,7 +50,7 @@ import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { checkProviderAccount, loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
-import { jitMethodName, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
+import { confirmedTeachingMethod, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
 class UncertainEffect extends Error {
   constructor(requestId: string | null) {
@@ -64,7 +64,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
-  if (job.slotType !== slotType || (job.deriver !== methodName && job.deriver !== jitMethodName)) throw new Error('Unknown teaching method');
+  if (job.slotType !== slotType || (job.deriver !== methodName && job.deriver !== confirmedTeachingMethod)) throw new Error('Unknown teaching method');
   const learner = learnerId(ref.learner);
   const scope = { learner };
   const inputs = new Map<string, ManifestInput>();
@@ -196,10 +196,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   });
   try {
     const submission = studyTurn(await read(job.slotKey));
-    if ((submission.jitContextVersion && job.deriver !== jitMethodName) || (job.deriver === jitMethodName && !submission.accountRevision))
-      throw new ChangedEvidence();
     if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
     const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
+    const guarded = requiresAccountConfirmation(origin) || requiresAccountConfirmation(submission);
+    if (guarded !== (job.deriver === confirmedTeachingMethod) ||
+        (guarded && (!origin.accountConfirmation || !submission.accountConfirmation))) throw new ChangedEvidence();
     const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
     if (origin.attachment) {
       if (!origin.accountRevision || submission.accountRevision !== origin.accountRevision)

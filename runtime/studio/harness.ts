@@ -51,10 +51,12 @@ export async function workspaceRouteRevision(settings: Settings) {
   return provider && workspaceGrantRevision(await loadWorkspaceAccessRoutes(), provider);
 }
 
+export const requiresAccountConfirmation = (turn: StoredTurn) => Boolean(turn.attachment || turn.jitContextVersion || turn.accountRevision);
+
 export function workspaceGrantChecker() {
   let current: Promise<[Settings, WorkspaceRoutes]> | undefined;
   return async (turn: StoredTurn) => {
-    if ((turn.jitContextVersion || turn.attachment) && !turn.accountRevision) return false;
+    if (requiresAccountConfirmation(turn) && !turn.accountConfirmation) return false;
     if (!turn.workspaceRevision && !turn.accountRevision) return true;
     const [settings, routes] = await (current ??= Promise.all([loadSettings(), loadWorkspaceAccessRoutes()]));
     const provider = settings.providers.find(profile => profile.id === (turn.providerId ?? 'default'));

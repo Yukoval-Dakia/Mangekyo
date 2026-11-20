@@ -36,7 +36,7 @@ import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
-import { jitMethodName } from './identity.ts';
+import { confirmedTeachingMethod } from './identity.ts';
 import type { StudioJitCounter } from './first-turn-jit.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -135,7 +135,7 @@ async function runWorker(storeId: string) {
   async function executeDefault(ref: WorkRef, terminal: boolean) {
     if (await research.execute(ref, terminal)) return;
     const work = await readWork(db, ref);
-    if (!work || work.deriver === jitMethodName) return;
+    if (!work || work.deriver === confirmedTeachingMethod) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
@@ -151,22 +151,21 @@ async function runWorker(storeId: string) {
   };
   const connection = await Connection.connect({ address: workerConfig.address });
   const client = new Client({ connection, namespace: workerConfig.namespace });
-  const jitRoute = { deriver: jitMethodName };
+  const confirmedRoute = { deriver: confirmedTeachingMethod };
   async function executeGuarded(ref: WorkRef, terminal: boolean) {
     const work = await readWork(db, ref);
-    if (work?.deriver !== jitMethodName) return;
+    if (work?.deriver !== confirmedTeachingMethod) return;
     if (terminal) await recordTerminalFailure(db, ref);
     else await teach(db, ref, readArtifactAssessmentWitness, jitCounters);
   }
   const lanes = [
     { queue, route: undefined, run: executeDefault },
-    { queue: capabilityTaskQueue(queue, 'jit-v1'), route: jitRoute, run: executeGuarded },
+    { queue: capabilityTaskQueue(queue, 'teaching-confirmed-v1'), route: confirmedRoute, run: executeGuarded },
     ...(mineruToken() ? [{ queue: capabilityTaskQueue(queue, 'ocr-v1'), route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
   ];
   const workers = await Promise.all(lanes.map(lane => {
     async function execute(id: string, terminal = false) {
-      const ref = await acknowledgeStartedWork(db, id, lane.route)
-        ?? (lane.route === jitRoute ? await acknowledgeStartedWork(db, id, 'capability_pending') : null);
+      const ref = await acknowledgeStartedWork(db, id, lane.route);
       if (ref) await lane.run(ref, terminal);
     }
     return createWorkWorker(execute, {
@@ -194,9 +193,6 @@ async function runWorker(storeId: string) {
           if (!lane.route && await research.relayWake(client, queue, ref, id)) return;
           await startWork(client, id, {taskQueue: lane.queue});
         }, lane.route);
-        if (lane.route === jitRoute) {
-          await relayPending(db, async (_, id) => { await startWork(client, id, { taskQueue: lane.queue }); }, 'capability_pending');
-        }
         failed = false;
       } catch {
         if (!failed) console.error('执行交接暂时不可用，待办已保留。');

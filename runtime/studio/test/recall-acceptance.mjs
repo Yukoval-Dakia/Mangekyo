@@ -58,7 +58,7 @@ try {
       pages: null, error: null, warnings: [], truncated: false },
   } });
   await handle({ ...scope, id: turnId, actor: 'learner', type: 'activity.submitTurn', purpose, input: {
-    id: turnId, data: { sessionId: turnId, parentId: null, attachment, caseId: 'companion', answer: '备课', model, baseUrl, accountRevision },
+    id: turnId, data: { sessionId: turnId, parentId: null, attachment, caseId: 'companion', answer: '备课', model, baseUrl, accountRevision, accountConfirmation:1 },
   } });
   await db.tx(scope, tx => tx.withLearnerWrite(async tick => {
     const manifest = JSON.stringify({ version: 1, ...scope, purpose, gatherTick: tick, inputs: [
