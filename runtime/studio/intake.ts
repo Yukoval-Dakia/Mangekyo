@@ -24,7 +24,11 @@ import {
   intakeFileLimit,
   intakeOriginal,
   intakePurpose,
+  IntakeResearchConflict,
+  intakeResearchPermission,
+  intakeResearchPurpose,
   intakeTextLimit,
+  setIntakeResearchCommand,
   type IntakeExtraction,
   type IntakeMediaType,
   type IntakeOriginal,
@@ -47,6 +51,7 @@ export type IntakeMetadata = {
   readonly requestedExtraction?: 'mineru';
   readonly original: { readonly name: string; readonly mediaType: string; readonly size: number; readonly sha256: string };
   readonly corrected: boolean;
+  readonly backgroundResearch?: 'allowed' | 'private' | 'all';
   readonly revision: number;
 };
 
@@ -364,6 +369,9 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       ...(document.requestedExtraction ? { requestedExtraction: document.requestedExtraction } : {}),
       original: document.original,
       corrected: document.extraction.status === 'corrected',
+      ...(document.extraction.status === 'corrected' && document.extraction.method === 'learner' ? {
+        backgroundResearch: facts.document.purpose.includes('all') ? 'all' : facts.document.purpose.includes(intakeResearchPurpose) ? 'allowed' : 'private',
+      } : {}),
     };
   }
 
@@ -524,6 +532,21 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   return {
     capture,
     correct,
+    async setResearch(materialId: string, input: unknown) {
+      const id = factId(materialId);
+      let data;
+      try { data = intakeResearchPermission({ ...(input as object), materialId, intakeId: intakeIdFor(id) }); }
+      catch { throw new RequestError(400, '原件版本或后台用途无效。'); }
+      try {
+        await handle({learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: setIntakeResearchCommand,
+          id: commandId(stableId('intake-research', id, String(data.expectedRev), String(data.enabled))), input: data});
+      } catch (error) {
+        if (error instanceof IntakeResearchConflict) throw new RequestError(409, error.message);
+        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw new RequestError(404, '找不到这份原件。');
+        throw error;
+      }
+      return metadataFor(id);
+    },
     metadata: metadataFor,
     original: originalFor,
     cloudOriginal,
@@ -583,7 +606,7 @@ export async function handleIntakeRequest(
   pathname: string,
   method: string | undefined,
 ): Promise<boolean> {
-  const match = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction))?$/.exec(pathname);
+  const match = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction|research-permission))?$/.exec(pathname);
   if (pathname === '/api/intake/options' && method === 'GET')
     return json(response, 200, { mineru: Boolean(mineruToken()) }), true;
   if (pathname === '/api/intake') {
@@ -704,6 +727,19 @@ export async function handleIntakeRequest(
     if (action === 'correction') {
       json(response, 405, { error: '更正只接受提交。' });
       return true;
+    }
+    if (action === 'research-permission') {
+      if (method !== 'PUT') return json(response, 405, { error: '这个入口只接受用途设置。' }), true;
+      try {
+        const value: unknown = JSON.parse((await readBody(request, 4096)).toString('utf8'));
+        return json(response, 200, await intake.setResearch(id, value)), true;
+      } catch (error) {
+        if (error instanceof SyntaxError) return json(response, 400, { error: '用途请求格式无效。' }), true;
+        json(response, error instanceof RequestError ? error.status : 500, {
+          error: error instanceof RequestError ? error.message : '原件用途未能更新。',
+        });
+        return true;
+      }
     }
   }
   return false;

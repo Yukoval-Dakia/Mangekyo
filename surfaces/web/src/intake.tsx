@@ -23,6 +23,7 @@ export type IntakeMetadata = {
   };
   original: { name: string; mediaType: string; size: number; sha256: string };
   corrected: boolean;
+  backgroundResearch?: 'allowed' | 'private' | 'all';
 };
 
 const intakeLimit = 25 * 1024 * 1024;
@@ -293,6 +294,8 @@ function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
   const [correctionText, setCorrectionText] = useState('');
   const [correctionBusy, setCorrectionBusy] = useState(false);
   const [correctionError, setCorrectionError] = useState('');
+  const [researchBusy, setResearchBusy] = useState(false);
+  const [researchError, setResearchError] = useState('');
   const correctionIntent = useRef<{ text: string; revision: number; requestId: string } | null>(null);
 
   useEffect(() => {
@@ -350,9 +353,36 @@ function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
     };
   }, [id, receipt, refresh]);
 
+  function adoptMetadata(value: IntakeMetadata) {
+    if (latest.current && latest.current.revision > value.revision) return;
+    readGeneration.current += 1;
+    latest.current = value;
+    setMetadata(value);
+    setError('');
+    setPollPaused(false);
+  }
+
+  async function changeResearch(enabled: boolean) {
+    if (!metadata || researchBusy || correctionBusy) return;
+    setResearchBusy(true);
+    setResearchError('');
+    try {
+      adoptMetadata(await api<IntakeMetadata>('/materials/' + encodeURIComponent(id) + '/research-permission', {
+        method: 'PUT', body: {expectedRev: metadata.revision, enabled},
+      }));
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 409) {
+        setResearchError('原件版本已更新。请核对最新状态后重试。');
+        setRefresh(n => n + 1);
+      } else setResearchError('后台用途未更新，请重试。');
+    } finally {
+      setResearchBusy(false);
+    }
+  }
+
   async function saveCorrection(event: FormEvent) {
     event.preventDefault();
-    if (correctionBusy || !metadata) return;
+    if (correctionBusy || researchBusy || !metadata) return;
     const text = correctionText;
     const revision = metadata.revision;
     const previous = correctionIntent.current;
@@ -365,13 +395,7 @@ function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
         method: 'POST',
         body: { requestId: next, text, expectedRev: revision },
       });
-      if (!latest.current || value.revision >= latest.current.revision) {
-        readGeneration.current += 1;
-        latest.current = value;
-        setMetadata(value);
-        setError('');
-        setPollPaused(false);
-      }
+      adoptMetadata(value);
       correctionIntent.current = null;
       setCorrectionText(text);
       setCorrectionOpen(false);
@@ -433,6 +457,18 @@ function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
         </details>
       )}
       {metadata.truncated && <p className="field-help">材料卡片只显示前 4000 字，完整文字和原件都在这里。</p>}
+      {metadata.backgroundResearch && <div className="intake-research">
+        <label>
+          <input type="checkbox" checked={metadata.backgroundResearch !== 'private'}
+            disabled={researchBusy || correctionBusy || metadata.backgroundResearch === 'all'}
+            onChange={event => void changeResearch(event.target.checked)} /> 允许后台使用更正文字
+        </label>
+        <p className="field-help">{metadata.backgroundResearch === 'all'
+          ? '这份原件已设置为全部用途。'
+          : '后台可用你保存的更正文字整理学习观察。'}</p>
+        {researchBusy && <p className="field-help" role="status">正在更新用途…</p>}
+        {researchError && <p className="error-text" role="alert">{researchError}</p>}
+      </div>}
       <button className="text-button intake-correction-toggle" type="button" onClick={() => {
         if (!correctionOpen) setCorrectionText(metadata.fullText ?? '');
         setCorrectionOpen((open) => !open);
@@ -454,7 +490,7 @@ function OriginalDetails({ id, receipt, previewText, changed }: OriginalProps) {
             <button type="button" className="text-button" disabled={correctionBusy} onClick={() => setCorrectionOpen(false)}>
               取消
             </button>
-            <button className="primary-button" disabled={correctionBusy || !correctionText.trim()}>
+            <button className="primary-button" disabled={correctionBusy || researchBusy || !correctionText.trim()}>
               {correctionBusy ? '保存中…' : '保存更正'}
             </button>
           </div>
