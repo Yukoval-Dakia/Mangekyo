@@ -18,6 +18,9 @@ import { RequestError } from './sessions.ts';
 
 type Issuance = ReturnType<typeof posttestIssuance>;
 
+export const posttestIdFor = (forecast: string) => factId(stableId('retention-posttest', forecast));
+export const posttestAttemptFor = (issuance: string) => factId(stableId('retention-posttest-attempt', issuance));
+
 async function optionalFact(read: ReadContext, id: FactId) {
   try { return await read.fact(id, { mode: 'following' }); }
   catch (error) {
@@ -78,7 +81,7 @@ export function posttestWriter(db: Db, activity: LoadedModule) {
     },
 
     async start(tx: DbTransaction, data: Omit<Issuance, 'startedAt' | 'condition'>, paper: WorkbookPaper, notBefore: string) {
-      const id = factId(stableId('retention-posttest', data.forecastId));
+      const id = posttestIdFor(data.forecastId);
       const read = reader(tx);
       const existing = await optionalFact(read, id);
       if (!existing) {
@@ -104,7 +107,7 @@ export function posttestWriter(db: Db, activity: LoadedModule) {
       let graded: ReturnType<typeof gradeWorkbook>;
       try { graded = gradeWorkbook(paper, answers); }
       catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '后测作答无效。'); }
-      const attemptId = factId(stableId('retention-posttest-attempt', id));
+      const attemptId = posttestAttemptFor(id);
       const existing = await optionalFact(reader(tx), attemptId);
       if (existing) {
         const attempt = workbookAttempt(existing.value);

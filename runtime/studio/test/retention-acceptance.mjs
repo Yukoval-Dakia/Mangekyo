@@ -46,6 +46,7 @@ await grant(paper.id, 1);
 await grant(prior.id, 1);
 const { key } = await api(path + '/retention', flags, 'POST', 202);
 const frozen = await current(key);
+assert.ok(!(await api('retention/posttests')).items.some(item => item.forecastKey === key));
 assert.match((await api('workspace/access/records/' + paper.id)).text, /答案：12/);
 await api('retention/' + key + '/posttest', {}, 'POST', 422);
 assert.equal(frozen.value.estimate.kind, 'unknown');
@@ -83,6 +84,10 @@ async function controlled(priorAttemptIds, answer, verdict, during) {
     ...flags, requestId: randomUUID(), itemId: sealed.itemId, priorAttemptIds,
   }, 'POST', 202);
   const forecast = await current(key);
+  const listed = (await api('retention/posttests')).items;
+  assert.deepEqual(listed.find(item => item.forecastKey === key), {
+    forecastKey: key, title: '受控冻结卷', through: flags.through, state: 'ready',
+  });
   const startPath = `retention/${key}/posttest`;
   const issued = await api(startPath, {});
   assert.equal(issued.forecastId, forecast.derivationId);
@@ -93,6 +98,9 @@ async function controlled(priorAttemptIds, answer, verdict, during) {
   await api(submitPath, { answer, coverage: 'complete' }, 'POST', 400);
   const concurrent = await during?.();
   const { attemptId, reconciliation } = await api(submitPath, { answer });
+  assert.deepEqual((await api('retention/posttests')).items.find(item => item.forecastKey === key), {
+    ...listed.find(item => item.forecastKey === key), state: 'submitted', reconciliationKey: reconciliation.key,
+  });
   const result = await current(reconciliation.key);
   assert.deepEqual(result.value.observation.exposure, concurrent
     ? { kind: 'unknown', reason: 'incomplete-observation' } : { kind: 'independent' });
