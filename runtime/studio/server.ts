@@ -6,7 +6,7 @@ import { createPgDb } from '../../kernel/src/db/pg.ts';
 import { applyKernelSchema, workerStorage } from '../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { acknowledgeStartedWork, readWork, relayPending, type WorkRef } from '../../kernel/src/work/index.ts';
-import { startWork } from '../../executors/temporal/src/index.ts';
+import { capabilityTaskQueue, startWork } from '../../executors/temporal/src/index.ts';
 import { activateLocalDeployment, createWorkWorker } from '../../executors/temporal/src/worker.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { openStudio } from './sessions.ts';
@@ -145,7 +145,7 @@ async function runWorker(storeId: string) {
   const client = new Client({ connection, namespace: workerConfig.namespace });
   const lanes = [
     { queue, route: undefined, run: executeDefault },
-    ...(mineruToken() ? [{ queue: queue + '-ocr-v1', route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
+    ...(mineruToken() ? [{ queue: capabilityTaskQueue(queue, 'ocr-v1'), route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
   ];
   const workers = await Promise.all(lanes.map(lane => {
     async function execute(id: string, terminal = false) {
