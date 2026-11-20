@@ -8,12 +8,16 @@ import { createStudyTools } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 
+type StudyWorkspaceTools = WorkspaceTools & {
+  executeRead?: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>) => Promise<string>;
+};
+
 export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   historyNotice?: string;
   learningMemory?: string;
   openMemoryRegion?: (input: Record<string, unknown>, step: number) => Promise<string>;
   maxCompletionTokens?: 4096 | 8192;
-  tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: WorkspaceTools };
+  tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
 };
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 type ToolMessage = { role: 'assistant'; tool_calls: FunctionCall[]; providerTurn?: ProviderTurn; content: null } |
@@ -40,6 +44,7 @@ const memoryRegionTool = { type: 'function', function: { name: 'open_memory_regi
   description: '按本轮 ContextBundle.omitted 中的 expand 对象展开一个已授权的区域。',
   parameters: { type: 'object', properties: { region: { type: 'string' }, start: { type: 'integer' }, basisDigest: { type: 'string' } },
     required: ['region', 'start', 'basisDigest'], additionalProperties: false } } };
+const parallelReadOnlyWorkspaceTools = new Set(['search_workspace', 'read_workspace']);
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type ModelReply = { message?: string; reportedModel?: string; calls?: FunctionCall[]; providerTurn?: ProviderTurn };
 
@@ -72,6 +77,7 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
   const workspace = options.tools?.workspace;
   const maxToolCalls = workspace ? 12 : defaultToolBudget;
   const stride = workspace ? 16 : 8;
+  const allowParallelCalls = workspace?.executeRead && options.provider.protocol !== 'anthropic';
   const pinnedQuery = options.tools?.publicSearchQuery?.trim();
   const { model, reasoningEffort } = profileFor(options.provider);
   const remotes = await loadMcpTools(options.tools?.mcpServers ?? [], model, options.runEffect, connections);
@@ -92,7 +98,8 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
   for (let round = 0; round <= maxToolCalls; round++) {
     const available = trace.length < maxToolCalls && definitions.length > 0;
     const body = JSON.stringify({ model, ...(reasoningEffort === 'default' ? {} : {reasoning_effort: reasoningEffort}), stream: true, max_completion_tokens: options.maxCompletionTokens ?? 4096,
-      messages: workspace ? projectWorkspaceContext(messages) : messages, ...(available ? { tools: definitions, parallel_tool_calls: false } : {}) });
+      messages: workspace ? projectWorkspaceContext(messages) : messages,
+      ...(available ? { tools: definitions, ...(allowParallelCalls ? {} : { parallel_tool_calls: false }) } : {}) });
     const index = round * stride;
     const raw = await options.runEffect({ index, provider: endpoint, model, requestDigest: hash(JSON.stringify({endpoint, body})),
       ...(options.learningMemory ? { learningMemory: true } : {}) }, async requestId => {
@@ -127,34 +134,39 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
     }
     if (!available || !tools || !reply.reportedModel || !reply.calls.length || reply.calls.length + trace.length > maxToolCalls)
       throw new TeachingError('evidence_limit', '本轮工具请求缺少模型标识或超过工具预算。');
-    messages.push({ role: 'assistant', tool_calls: reply.calls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {}), content: null });
-    for (const [position, call] of reply.calls.entries()) {
+    const calls = reply.calls;
+    messages.push({ role: 'assistant', tool_calls: calls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {}), content: null });
+    const executeCall = async (call: FunctionCall, position: number, priorRead?: Promise<unknown>) => {
       const name = call.function.name;
-      if (!definitions.some(d => d.function.name === name)) throw new TeachingError('evidence_scope', '模型请求了本轮未开放的工具。');
-      await options.onProgress?.({ phase: name === 'python' ? 'checking' : 'reading' });
+      if (!definitions.some(tool => tool.function.name === name))
+        throw new TeachingError('evidence_scope', '模型请求了本轮未开放的工具。');
+      await options.onProgress?.({phase: name === 'python' ? 'checking' : 'reading'});
       let parsed: unknown;
       try { parsed = JSON.parse(call.function.arguments); } catch { /* Send an actionable tool response. */ }
       const args = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
       if (name === 'exa_search' && pinnedQuery) args.query = pinnedQuery;
       const remote = remotes.get(name);
-      const workspaceTool = workspace && nativeTools.some(item => item.function.name === name);
+      const workspaceTool = workspace && nativeTools.some(tool => tool.function.name === name);
       if ((remote || workspaceTool) && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
-        const content = JSON.stringify({error: name + ' 需要一个 JSON 对象，请将字段直接放在对象里。'});
-        trace.push('参数错误 · ' + name);
-        messages.push({role: 'tool', tool_call_id: call.id, content});
-        continue;
+        return {
+          content: JSON.stringify({error: name + ' 需要一个 JSON 对象，请将字段直接放在对象里。'}),
+          summary: '参数错误 · ' + name,
+        };
       }
       const execute = () => remote ? invokeMcpTool(remote, args, connections) : tools.execute(name, args);
       // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
+      const step = index + position + 1;
       let output: string;
       if (name === memoryRegionTool.function.name && options.openMemoryRegion) {
-        output = await options.openMemoryRegion(args, index + position + 1);
+        output = await options.openMemoryRegion(args, step);
       } else if (workspaceTool) {
-        output = await workspace.execute(name, args, index + position + 1);
+        output = priorRead && workspace.executeRead
+          ? await workspace.executeRead(name, args, step, priorRead)
+          : await workspace.execute(name, args, step);
       } else if (name === 'read_file' || name === 'write_file') {
         output = await execute();
       } else {
-        const raw = await options.runEffect({ index: index + position + 1, model, provider: remote ? 'tool:mcp:' + remote.server.id : 'tool:' + name,
+        const raw = await options.runEffect({ index: step, model, provider: remote ? 'tool:mcp:' + remote.server.id : 'tool:' + name,
           requestDigest: hash(JSON.stringify({name, args, messages})) }, async () => {
           if (remote?.stateful && !connections.hasStatefulSession(remote.server))
             return JSON.stringify({lostSession: true});
@@ -167,9 +179,39 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
         output = saved.output;
       }
       const content = output.slice(0, 16_000);
-      trace.push(name === memoryRegionTool.function.name ? '展开记忆区域' : remote
-        ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + content.slice(0, 600) : summarise(call, args, content));
-      messages.push({role: 'tool', tool_call_id: call.id, content});
+      const summary = name === memoryRegionTool.function.name ? '展开记忆区域' : remote
+        ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + content.slice(0, 600) : summarise(call, args, content);
+      return {content, summary};
+    };
+    function appendResult(call: FunctionCall, result: {content: string; summary: string}) {
+      trace.push(result.summary);
+      messages.push({role: 'tool', tool_call_id: call.id, content: result.content});
+    }
+    for (let position = 0; position < calls.length;) {
+      const start = position++;
+      const first = calls[start]!;
+      if (workspace?.executeRead && parallelReadOnlyWorkspaceTools.has(first.function.name)) {
+        while (position < calls.length && parallelReadOnlyWorkspaceTools.has(calls[position]!.function.name)) position++;
+      }
+      if (position === start + 1) {
+        appendResult(first, await executeCall(first, start));
+        continue;
+      }
+      let priorRead: Promise<unknown> = Promise.resolve();
+      const results = await Promise.allSettled(calls.slice(start, position).map((call, offset) => {
+        const previousRead = priorRead;
+        const current = (async () => {
+          const result = await executeCall(call, start + offset, previousRead);
+          await previousRead;
+          return result;
+        })();
+        priorRead = current;
+        return current;
+      }));
+      for (const [offset, result] of results.entries()) {
+        if (result.status === 'rejected') throw result.reason;
+        appendResult(calls[start + offset]!, result.value);
+      }
     }
   }
   throw new TeachingError('evidence_limit', '本轮工具额度已用完。');
