@@ -353,8 +353,8 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       const learner = scopedLearner(input.learner);
       const id = parseInput(() => pageId(input.id));
       const undoToken = parseInput(() => commandId(key(token)));
-      const {rows:[original]} = await db.query<{rev:number; priorRev:number|null; accepted:boolean}>(
-        `SELECT r.rev,r.corrects_rev AS "priorRev",r.author='learner' AS accepted
+      const {rows:[original]} = await db.query<{rev:number; priorRev:number|null}>(
+        `SELECT r.rev,r.corrects_rev AS "priorRev"
          FROM fact_revs r JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
          JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
          WHERE r.learner_id=$1 AND r.fact_id=$2 AND c.id=$3 AND c.state='done' AND f.type=$4
@@ -364,7 +364,7 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       if (!original) throw new RequestError(404, '找不到可撤回的教材变更。');
       const receipt = await handle({learner, actor:'learner', purpose:storage,
         id:textbookUndoId(undoToken), type:undoTextbookCommand,
-        input:{id,expectedRev:original.rev,priorRev:original.priorRev,accepted:original.accepted},
+        input:{id,expectedRev:original.rev,priorRev:original.priorRev},
       }).catch(error => {
         if (error instanceof FactReadDeniedError && error.reason === 'retracted')
           throw new RequestError(409, '教材已撤回。');
