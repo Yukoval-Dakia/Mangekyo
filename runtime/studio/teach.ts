@@ -10,6 +10,7 @@ import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { derivationId, factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -453,9 +454,19 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         if (w?.kind === 'fact') inherited.set(`${memoryId}:${w.rev}`, {id: memoryId, rev: w.rev, epoch: w.accessEpoch, type: 'companion.memory'});
       }
       const turnInput = inputs.get(job.slotKey);
+      // The original provider request digest includes the tool schema and system prompt.
+      // Persist the choice before the first sample so a retried turn keeps the same catalog.
+      const beliefTools = Boolean(memoryTurn && learningMemory && turnInput?.kind === 'fact' &&
+        await recordLocalRead(db, {learner, ownerKind: 'session', ownerId: job.slotKey, stepKey: 'belief-tools',
+          label: 'local:tool-contract', input: {tool: 'save_belief'}}, async tx => {
+          const {rowCount} = await tx.query(`SELECT 1 FROM effects
+            WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2 AND label='teaching-model' LIMIT 1`,
+          [learner, job.slotKey]);
+          return rowCount ? 'legacy' : 'belief';
+        }, memoryRequest.authorize) === 'belief');
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()], currentObject,
-        maySend,
+        maySend, beliefTools,
         pageBasis: [
           ...(turnInput?.kind === 'fact' ? [{id:turnInput.id,rev:turnInput.rev,epoch:turnInput.accessEpoch,type:'activity.studyTurn'}] : []),
           ...(learningMemory?.receipt.basis ?? []),
@@ -475,9 +486,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const turnMemory = memoryTurn && learningMemory && turnInput?.kind === 'fact' ? openTurnMemory({
         db, turn: memoryTurn, answer, source: turnInput, ...(currentObject ? {currentObject} : {}),
         authorize: memoryRequest.authorize,
+        ...(beliefTools ? {belief: {maySend, opened: citation => workspace?.openedBeliefEvidence(citation) ?? false}} : {}),
         async retrieve(query, step) {
           const packet = await readMemoryGateway({...memoryRequest, intent: 'management', maxBytes: 8192,
-            ...(query ? {query} : {}), owner: {kind: 'session', id: job.slotKey, step: 'retrieve-memory:' + step}});
+            ...(beliefTools ? {beliefTools} : {}), ...(query ? {query} : {}), owner: {kind: 'session', id: job.slotKey, step: 'retrieve-memory:' + step}});
           if (!packet) throw new ChangedEvidence();
           trackMemory(packet);
           return packet;
@@ -494,7 +506,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         ...(historyNotice ? {historyNotice} : {}),
         ...(currentObject ? {currentLearningObject: JSON.stringify(currentObject.view)} : {}),
         ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
-        ...(turnMemory ? {memoryTools: turnMemory.execute} : {}),
+        ...(turnMemory ? {memoryTools: turnMemory.execute, beliefTools} : {}),
         ...(learningMemory?.bundle.omitted.some(item => item.reason === 'budget') ? {
           async openMemoryRegion(input: Record<string, unknown>, step: number) {
             if (expandedMemory) return JSON.stringify(learningToolError('budget_or_limit','region','本轮已使用一次记忆区域展开。'));

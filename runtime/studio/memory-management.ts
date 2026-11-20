@@ -7,6 +7,8 @@ import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-va
 import {
   applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
 } from '../../modules/companion/claim.ts';
+import { hypothesisStatus, saveBeliefCommand, undoHypothesisCommand } from '../../modules/companion/belief.ts';
+import { hypothesisIsHead, openObjectiveCitations } from './belief-evidence.ts';
 import { manageMemoryAssertionCommand, memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import { citationExcerpt, extractedUnderstanding, reviewUnderstanding, understandingPresentation } from '../../modules/companion/understanding.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
@@ -20,7 +22,12 @@ import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
 export function openMemoryManagement(db: Db, activity: LoadedModule, companion: LoadedModule) {
   const learner = studioLearner;
   const scope = {learner};
-  const manageAssertion = createCommandHandler(db, {modules: [companion], hooks: createStudioCommandHooks()});
+  const manageAssertion = createCommandHandler(db, {modules: [companion], hooks: createStudioCommandHooks({
+    async afterFactsChanged(tx, _tick, changes) {
+      for (const {ref, factType} of changes)
+        if (factType === memoryAssertionType && !await hypothesisIsHead(tx, ref.id)) throw new ClaimInputError('已有后续核验。');
+    },
+  })});
   const revokeTurn = createCommandHandler(db, {modules: [activity], hooks: createStudioCommandHooks({
     async afterFactsChanged(tx, _tick, changes) {
       for (const change of changes) {
@@ -63,12 +70,18 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
           const fact = await openClaimFact(tx, factId(id), 'storage');
           if (!fact) continue;
           const data = extractedUnderstanding(fact.value);
-          const sources = await openUnderstandingCitations(tx, data.evidence_refs, 'storage');
+          if (data.belief && !await hypothesisIsHead(tx, id)) continue;
+          const sources = data.belief
+            ? await openObjectiveCitations(tx, data.evidence_refs, purpose, () => true)
+            : await openUnderstandingCitations(tx, data.evidence_refs, 'storage');
           const evidenceState = sources.length === data.evidence_refs.length ? 'current' : 'unavailable';
           understandings.push({ref: claimWitness(fact), evidenceState,
             ...(data.evidence_refs.some(ref => ref.span) ? {status: data.sticky ? 'learner-corrected' : 'tentative'} : {}),
             understanding: evidenceState === 'current'
-              ? {...data, kind: understandingPresentation(data, sources), review: reviewUnderstanding(fact.ref.id, data, sources),
+              && !data.belief?.forgotten
+              ? {...data, kind: understandingPresentation(data, sources), ...(data.belief ? {category: 'hypothesis',
+                  status: hypothesisStatus(data)} : {}),
+                review: reviewUnderstanding(fact.ref.id, data, sources),
                 evidence_refs: data.evidence_refs.map((ref, index) => ({...ref, excerpt: citationExcerpt(sources[index]!, ref)}))}
               : {...data, text: null, scope: null, evidence_refs: []}});
         }
@@ -80,15 +93,17 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       const request = clientRequest(input.requestId);
       let entry;
       try {
-        const {rowCount: extracted} = await db.query(`SELECT 1 FROM facts f JOIN fact_revs b
+        const {rows: [extracted]} = await db.query<{belief: boolean}>(`SELECT b.data ? 'belief' AS belief FROM facts f JOIN fact_revs b
           ON (b.learner_id,b.fact_id,b.rev)=(f.learner_id,f.id,1)
           WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3 AND b.data->>'version'='2'`, [learner, claimId(id), memoryAssertionType]);
         if (extracted) {
           if (input.action !== 'correct' && input.action !== 'forget') throw new ClaimInputError('记忆操作无效。');
           const {rev, accessEpoch} = claimRef({id, rev: input.rev, accessEpoch: input.accessEpoch});
+          // Keep the successor as a tombstone so a forgotten hypothesis cannot reappear through its predecessor.
+          const action = input.action === 'forget' ? extracted.belief ? 'forget-hypothesis' : 'forget-extracted' : 'correct-extracted';
           const receipt = await translate(() => manageAssertion({learner, actor: 'learner', purpose: 'storage',
             type: manageMemoryAssertionCommand, id: commandId(stableId('learner-understanding-command', id, request)),
-            input: input.action === 'forget' ? {id, action: 'forget-extracted', rev, accessEpoch}
+            input: input.action === 'forget' ? {id, action, rev, accessEpoch}
               : {id, action: 'correct-extracted', rev, accessEpoch, text: claimText(input.text, 600)}}));
           return {status: input.action === 'forget' ? 'withdrawn' : 'corrected', ref: receipt.wrote[0]};
         }
@@ -116,20 +131,21 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
     async undo(id: string, input: Record<string, unknown>) {
       if (typeof input.undo_token !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(input.undo_token))
         throw new RequestError(400, '撤回凭据无效。');
-      const {rows: [extracted]} = await db.query(
-        `SELECT 1 FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1
+      const {rows: [extracted]} = await db.query<{belief: boolean}>(
+        `SELECT data ? 'belief' AS belief FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1
           AND data->>'version'='2' AND data->>'undo_token'=$3`, [learner, id, input.undo_token]);
       if (extracted) {
         const receipt = await translate(() => manageAssertion({learner, actor: 'learner', purpose: 'storage',
-          type: manageMemoryAssertionCommand, id: commandId(stableId('undo-memory-command', input.undo_token as string)),
-          input: {id, action: 'undo-extracted', token: input.undo_token as string}}));
+          type: extracted.belief ? undoHypothesisCommand : manageMemoryAssertionCommand,
+          id: commandId(stableId('undo-memory-command', input.undo_token as string)),
+          input: {id, ...(extracted.belief ? {} : {action: 'undo-extracted'}), token: input.undo_token as string}}));
         return {status: 'withdrawn', ref: receipt.wrote[0]};
       }
       const {rows: [born]} = await db.query<{command_id: string}>(`
         SELECT r.command_id FROM facts f JOIN fact_revs r ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
         JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
         WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3 AND r.rev=1
-          AND c.state='done' AND c.type=ANY($4::text[])`, [learner, id, claimType, [applyClaimCommand, manageClaimCommand]]);
+          AND c.state='done' AND c.type=ANY($4::text[])`, [learner, id, claimType, [applyClaimCommand, manageClaimCommand, saveBeliefCommand]]);
       if (!born || claimUndoToken(born.command_id, id) !== input.undo_token)
         throw new RequestError(404, '找不到该条目对应的可撤回凭据。');
       const handle = createCommandHandler(db, {modules: [companion], hooks: createStudioCommandHooks({

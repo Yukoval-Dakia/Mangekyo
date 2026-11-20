@@ -169,7 +169,7 @@ function projectRetention(selected: SelectionRead) {
   }
   const evidence = [...sources].map(fact => {
     const ref = { id: fact.ref.id, rev: fact.ref.rev, type: fact.type };
-    if (fact.type === workbookPaperType || fact.type === workbookAttemptType) {
+    if (fact.type === workbookPaperType || fact.type === workbookAttemptType || fact.type === posttestSubmission) {
       const anchor = fact.type === workbookPaperType ? { kind: 'question', itemId } as const
         : { kind: 'answer-slot', itemId, slotId: 'answer' } as const;
       return { ...ref, open: { tool: 'open_learning', args: { refs: JSON.stringify(sourceReference(fact, anchor)) } } };

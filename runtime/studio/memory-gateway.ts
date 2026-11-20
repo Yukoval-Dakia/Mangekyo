@@ -14,6 +14,8 @@ import { learnerPreferenceType, type PreferenceScope } from '../../modules/learn
 import {
   extractedUnderstanding, isExtractedUnderstanding, reviewUnderstanding, understandingPresentation, understandingProjection,
 } from '../../modules/companion/understanding.ts';
+import { hypothesisStatus } from '../../modules/companion/belief.ts';
+import { openObjectiveCitations } from './belief-evidence.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
 import { readLearningOverview } from './learning-overview.ts';
@@ -90,7 +92,7 @@ function packBundle(intent: MemoryIntent, regions: readonly MemoryRegion[], resu
 }
 
 async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: WorkspaceSourceRecipient, at: string,
-  requested: readonly MemoryRegion[], options: {ownTurn?: string; management?: boolean; query?: string}) {
+  requested: readonly MemoryRegion[], options: {ownTurn?: string; management?: boolean; query?: string; beliefTools?: boolean}) {
   const results: Regions = new Map();
   function add(region: MemoryRegion, entry: RegionItem) {
     const items = results.get(region) ?? [];
@@ -162,7 +164,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
         if (scopeBasis.length !== claim.scope.basis.length) continue;
       }
       add(region, {value: {id: row.id, rev: fact.ref.rev, text: legacy ? null : claim.text,
-        ...(!legacy && claim.authority && {authority: claim.authority, ...(claim.refusal && {refusal: claim.refusal})}),
+        ...(!legacy && claim.authority && {authority: claim.authority, ...(options.beliefTools && {category: claim.authority}), ...(claim.refusal && {refusal: claim.refusal})}),
         quote_excerpt: excerpt, kind: legacy ? 'legacy' : claim.category,
         scope: legacy ? {kind: 'unknown'} : claim.scope.kind === 'object'
           ? {kind: 'object', id: claim.scope.object} : claim.scope,
@@ -172,11 +174,27 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       basis: scopeBasis, ...(!legacy && claim.valid_until ? {expiresAt: claim.valid_until} : {})});
     }
   }
+  if (options.management && options.beliefTools) {
+    for (const {id} of await currentMemoryClaims(tx, {...options, type: memoryAssertionType})) {
+      const fact = await open(id);
+      if (!fact) continue;
+      const data = extractedUnderstanding(fact.value);
+      const sources = await openObjectiveCitations(tx, data.evidence_refs, purpose, maySend);
+      if (sources.length !== data.evidence_refs.length) continue;
+      const object = data.scope.kind === 'object' ? await open(data.scope.object) : undefined;
+      if (data.scope.kind === 'object' && !object) continue;
+      const review = reviewUnderstanding(fact.ref.id, data, sources);
+      const status = hypothesisStatus(data);
+      add('claims', {value: {id, rev: fact.ref.rev, category: 'hypothesis', kind: 'observation', status,
+        text: data.text, scope: data.scope, evidence_refs: data.evidence_refs, review},
+      sent: [witness(fact), ...sources.map(source => witness(source.fact))], basis: object ? [witness(object)] : []});
+    }
+  }
   if (wantsMemory || wantsPreferences || requested.includes('verified_playbooks')) {
     const {rows} = await tx.query<{id: string}>(`SELECT f.id FROM facts f JOIN fact_revs r
         ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
       WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
-        AND f.purpose && ARRAY['teaching','all'] AND r.data->>'version'='2'
+        AND f.purpose && ARRAY['teaching','all'] AND r.data->>'version'='2' AND NOT (r.data ? 'belief')
         AND (r.data->'scope'->>'kind'='general' OR r.data->'scope'->>'object'=$3)
       ORDER BY f.changed_tick DESC,f.id LIMIT 24`,
     [tx.learner, memoryAssertionType, scope.preference.context ?? null]);
@@ -318,7 +336,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
 export async function readMemoryGateway(options: {
   db: Db; owner: { kind: 'session' | 'derivation'; id: string; step: string }; scope: MemoryScope;
   intent: MemoryIntent; maxBytes: number; expand?: RegionPage; maySend: WorkspaceSourceRecipient;
-  authorize: (tx: ReadTransaction) => Promise<void>; ownTurn?: string; query?: string;
+  authorize: (tx: ReadTransaction) => Promise<void>; ownTurn?: string; query?: string; beliefTools?: boolean;
 }) {
   const { db, owner, scope, intent, maxBytes, expand, maySend, authorize, ownTurn, query } = options;
   if (!Number.isInteger(maxBytes) || maxBytes < 1024 || maxBytes > 16_384) throw new Error('记忆预算须在 1–16 KiB。');
@@ -329,6 +347,7 @@ export async function readMemoryGateway(options: {
   const regions = expand ? [expand.region] : available;
   const collect = async (tx: ReadTransaction) => {
     const results = await collectRecall(tx, scope, maySend, new Date().toISOString(), regions, {management: intent === 'management',
+      ...(options.beliefTools ? {beliefTools:true} : {}),
       ...(ownTurn ? {ownTurn} : {}), ...(query ? {query} : {})});
     const { bundle, selected } = packBundle(intent, regions, results, maxBytes, expand);
     const context = JSON.stringify(bundle);
@@ -342,7 +361,7 @@ export async function readMemoryGateway(options: {
   };
   let recall: Awaited<ReturnType<typeof collect>> | undefined;
   const receipt = await recordLocalRead(db, { learner: studioLearner, ownerKind: owner.kind, ownerId: owner.id,
-    stepKey: owner.step, label: 'local:learning-memory', input: { purpose, intent, maxBytes, scope, ...(expand ? { expand } : {}), ...(ownTurn ? {ownTurn} : {}), ...(query ? {query} : {}) } }, async tx => {
+    stepKey: owner.step, label: 'local:learning-memory', input: { purpose, intent, maxBytes, scope, ...(options.beliefTools ? {beliefTools:true} : {}), ...(expand ? { expand } : {}), ...(ownTurn ? {ownTurn} : {}), ...(query ? {query} : {}) } }, async tx => {
     recall = await collect(tx);
     return JSON.stringify(recall.receipt);
   }, authorize);

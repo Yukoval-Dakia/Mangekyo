@@ -195,8 +195,8 @@ async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[
   const ids = writes.filter(write => write.observation || write.memory ||
     write.page?.status === 'saved' || write.relation?.status === 'saved').map(write => write.id);
   if (!ids.length) return writes;
-  const {rows} = await tx.query<{id: string; current_rev: number; retracted_rev: number | null}>(
-    'SELECT id,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
+  const {rows} = await tx.query<{id: string; type: string; current_rev: number; retracted_rev: number | null}>(
+    'SELECT id,type,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
   const facts = new Map(rows.map(row => [row.id, row]));
   return Promise.all(writes.map(async write => {
     const fact = facts.get(write.id);
@@ -211,13 +211,13 @@ async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[
     }
     if (!write.observation && !write.memory) return write;
     if (fact && fact.retracted_rev === null && fact.current_rev === write.rev &&
-        (!write.memory || await areMemoryClaimsCurrent(tx, [write.id]))) return write;
+        (!write.memory || await areMemoryClaimsCurrent(tx, [write.id], undefined, undefined, false, fact.type))) return write;
     const state: WriteState = {status: fact?.retracted_rev ? 'withdrawn' : 'changed'};
     return write.memory ? {...write, memory: state} : {...write, observation: state};
   }));
 }
 
-async function recoverRelationReceipts(tx: ReadTransaction, turnIds: string[]) {
+async function recoverRevokedReceipts(tx: ReadTransaction, turnIds: string[]) {
   if (!turnIds.length) return new Map<string, WorkspaceWriteReceipt[]>();
   const { rows } = await tx.query<{ id: string; writes: WorkspaceWriteReceipt[] }>(
     `SELECT s.slot_key AS id, d.value->'writes' AS writes FROM slot_state s
@@ -227,6 +227,7 @@ async function recoverRelationReceipts(tx: ReadTransaction, turnIds: string[]) {
     [tx.learner, slotType, turnIds],
   );
   return new Map(rows.map(({ id, writes }) => [id, writes.flatMap<WorkspaceWriteReceipt>(write => {
+    if (write.memory) return [{id: write.id, rev: write.rev, title: '记忆回执', memory: write.memory}];
     const relation = write.relation?.status === 'proposed'
       ? { status: 'proposed' as const, proposalId: write.relation.proposalId }
       : write.relation?.status === 'saved'
@@ -244,7 +245,7 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
     const currentObject = last.submission.currentObject;
-    const recovered = await recoverRelationReceipts(tx,
+    const recovered = await recoverRevokedReceipts(tx,
       timeline.filter(row => row.feedback?.action === 'reply_unavailable').map(row => row.id));
     return {
       id: session,

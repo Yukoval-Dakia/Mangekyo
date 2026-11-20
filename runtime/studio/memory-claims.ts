@@ -13,33 +13,34 @@ export const claimWitness = (fact: FactSnapshot): ClaimRef => ({
 const activeSuccessor = (ignoreEntry = 'NULL') => `SELECT 1 FROM facts sf JOIN fact_revs sr
   ON (sr.learner_id,sr.fact_id,sr.rev)=(sf.learner_id,sf.id,sf.current_rev)
   WHERE sf.learner_id=f.learner_id AND sf.type=f.type AND sf.retracted_rev IS NULL
-    AND sr.data->'supersedes'->>'id'=f.id
-    AND sr.data->>'version'='1' AND sf.id IS DISTINCT FROM ${ignoreEntry}
-    AND ($3::text IS NULL OR sr.data#>>'{evidence_refs,0,id}' IS DISTINCT FROM $3)`;
+    AND COALESCE(sr.data#>>'{supersedes,id}', sr.data#>>'{belief,supersedes,id}')=f.id
+    AND (sr.data->>'version'='1' OR sr.data ? 'belief') AND sf.id IS DISTINCT FROM ${ignoreEntry}
+    AND ($3::text IS NULL OR COALESCE(sr.data#>>'{belief,turn}', sr.data#>>'{evidence_refs,0,id}') IS DISTINCT FROM $3)`;
 
 export async function currentMemoryClaims(tx: ReadTransaction, options: {
-  ownTurn?: string | undefined; management?: boolean; query?: string; before?: string; learner?: boolean;
+  ownTurn?: string | undefined; management?: boolean; query?: string; before?: string; learner?: boolean; type?: string;
 }) {
-  const {ownTurn, management, query, before, learner} = options;
+  const {ownTurn, management, query, before, learner, type = claimType} = options;
   const {rows} = await tx.query<{id: ClaimRef['id']; tick: string}>(`
     SELECT f.id,f.created_tick::text AS tick FROM facts f
     JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
-      AND ($3::text IS NULL OR r.data#>>'{evidence_refs,0,id}' IS DISTINCT FROM $3)
+      AND ($2='companion.claim' OR r.data ? 'belief')
+      AND ($3::text IS NULL OR COALESCE(r.data#>>'{belief,turn}', r.data#>>'{evidence_refs,0,id}') IS DISTINCT FROM $3)
       AND NOT EXISTS (${activeSuccessor()})
       AND ($4::text IS NULL OR position(lower($4) in lower(COALESCE(r.data->>'text',r.data->>'quote','')))>0)
       AND ($5::text IS NULL OR f.id<$5)
-      AND ($6::boolean OR (r.data->>'action' IS DISTINCT FROM 'forget' AND (f.purpose && ARRAY['teaching','all'])))
+      AND ($6::boolean OR (r.data->>'action' IS DISTINCT FROM 'forget' AND r.data#>>'{belief,forgotten}' IS DISTINCT FROM 'true' AND (f.purpose && ARRAY['teaching','all'])))
     ORDER BY CASE WHEN $6 THEN 0 ELSE f.created_tick END DESC,f.id DESC LIMIT $7`,
-    [tx.learner, claimType, ownTurn ?? null, query ?? null, before ?? null, Boolean(learner), learner || management ? 51 : 24]);
+    [tx.learner, type, ownTurn ?? null, query ?? null, before ?? null, Boolean(learner), learner || management ? 51 : 24]);
   return rows;
 }
 
-export async function areMemoryClaimsCurrent(tx: ReadTransaction, ids: readonly string[], ownTurn?: string, ignoreEntry?: string, allowRetracted = false) {
+export async function areMemoryClaimsCurrent(tx: ReadTransaction, ids: readonly string[], ownTurn?: string, ignoreEntry?: string, allowRetracted = false, type = claimType) {
   if (!ids.length) return true;
   const {rowCount} = await tx.query(`SELECT 1 FROM facts f
     WHERE f.learner_id=$1 AND f.type=$2 AND ($6::boolean OR f.retracted_rev IS NULL) AND f.id=ANY($4::text[])
-      AND NOT EXISTS (${activeSuccessor('$5::text')})`, [tx.learner, claimType, ownTurn ?? null, ids, ignoreEntry ?? null, allowRetracted]);
+      AND NOT EXISTS (${activeSuccessor('$5::text')})`, [tx.learner, type, ownTurn ?? null, ids, ignoreEntry ?? null, allowRetracted]);
   return rowCount === ids.length;
 }
 

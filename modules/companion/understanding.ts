@@ -19,7 +19,21 @@ type Source = { ref: UnderstandingRef; kind: string; quoteOnly?: true; fragments
 export type ExtractedUnderstanding = Understanding<Scope, ActivityCitation> & {
   version: 2;
   undo_token: FactId;
+  belief?: HypothesisWrite;
 };
+
+type HypothesisWrite = {
+  turn: FactId;
+  supersedes: UnderstandingRef | null;
+  forgotten: boolean;
+};
+
+function hypothesisWrite(value: unknown): HypothesisWrite {
+  const {turn, supersedes, forgotten} = exact(value, ['turn', 'supersedes', 'forgotten']);
+  if (typeof forgotten !== 'boolean')
+    throw new ClaimInputError('假设变更缺少前驱。');
+  return {turn: claimId(turn), supersedes: supersedes === null ? null : claimRef(supersedes), forgotten};
+}
 
 function exact(value: unknown, fields: readonly string[]) {
   const record = claimRecord(value);
@@ -39,7 +53,7 @@ function scope(value: unknown): Scope {
   return {kind: 'object', object: claimId(input.object)};
 }
 
-function citation(value: unknown, persisted: boolean): ActivityCitation {
+export function understandingCitation(value: unknown, persisted = false): ActivityCitation {
   const record = claimRecord(value);
   const hasSpan = Object.hasOwn(record, 'span');
   const fields = ['id', 'rev', 'accessEpoch', 'anchor', hasSpan ? 'span' : 'excerpt', 'direction'];
@@ -66,7 +80,7 @@ function understandingFields(fields: Record<string, unknown>, persisted = false)
   if (!kind || (kind === 'state' && !ttl)) throw new ClaimInputError('短期状态必须带失效时间。');
   if (!Array.isArray(fields.evidence_refs) || !fields.evidence_refs.length || fields.evidence_refs.length > 6)
     throw new ClaimInputError('理解须引用 1–6 份原始活动。');
-  const evidence_refs = fields.evidence_refs.map(ref => citation(ref, persisted));
+  const evidence_refs = fields.evidence_refs.map(ref => understandingCitation(ref, persisted));
   if (new Set(evidence_refs.map(ref => ref.id)).size !== evidence_refs.length)
     throw new ClaimInputError('同一次原始活动只能计一次。');
   return {kind, text: claimText(fields.text, 600).trim(), scope: scope(fields.scope), ttl, evidence_refs};
@@ -77,9 +91,16 @@ export function isExtractedUnderstanding(value: unknown): boolean {
 }
 
 export function extractedUnderstanding(value: unknown): ExtractedUnderstanding {
-  const fields = exact(value, ['version', 'kind', 'text', 'scope', 'ttl', 'evidence_refs', 'sticky', 'undo_token']);
+  const base = ['version', 'kind', 'text', 'scope', 'ttl', 'evidence_refs', 'sticky', 'undo_token'];
+  const belief = Object.hasOwn(claimRecord(value), 'belief');
+  const fields = exact(value, belief ? [...base, 'belief'] : base);
   if (fields.version !== 2 || typeof fields.sticky !== 'boolean') throw new ClaimInputError('理解版本无效。');
-  return {version: 2, ...understandingFields(fields, true), sticky: fields.sticky, undo_token: claimId(fields.undo_token)};
+  const data = understandingFields(fields, true);
+  if (belief && (data.kind !== 'observation' || data.ttl !== null ||
+      data.evidence_refs.some(ref => ref.direction === 'unresolved' || ref.span !== undefined || ref.basis_digest !== undefined)))
+    throw new ClaimInputError('实证假设须保留客观依据及证据方向。');
+  return {version: 2, ...data, sticky: fields.sticky, undo_token: claimId(fields.undo_token),
+    ...(belief ? {belief: hypothesisWrite(fields.belief)} : {})};
 }
 
 export function understandingProjection(fact: FactSnapshot) {

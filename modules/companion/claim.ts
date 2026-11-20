@@ -1,4 +1,4 @@
-import { factId, type CommandContext, type FactId, type FactSnapshot, type Revision, type Tick } from '@mangekyo/kernel';
+import { factId, type CommandContext, type FactId, type FactSnapshot, type FactWrite, type Revision, type Tick } from '@mangekyo/kernel';
 
 export const claimType = 'companion.claim';
 export const applyClaimCommand = 'companion.saveTurnMemory';
@@ -65,7 +65,7 @@ function claimScope(input: unknown) {
 }
 export type ClaimScope = ReturnType<typeof claimScope>;
 
-function claimEvidence(input: unknown) {
+export function claimEvidence(input: unknown) {
   const value = claimRecord(input);
   const {start} = value;
   if (typeof start !== 'number' || !Number.isSafeInteger(start) || start < 0 || start > 4000)
@@ -95,8 +95,9 @@ export function structuredClaim(input: unknown) {
   if (action === 'forget') return {...common, action, text: null, valid_until: null} as const;
   const valid_until = claimExpiry(value.valid_until);
   if (category === 'state' && !valid_until) throw new ClaimInputError('短期状态必须提供明确有效期。');
-  const text = claimText(value.text, 600).trim();
-  if (directive && origin === 'turn' && text !== common.evidence_refs[0]?.excerpt.trim())
+  const inputText = claimText(value.text, 600);
+  const text = directive && inputText === common.evidence_refs[0]?.excerpt ? inputText : inputText.trim();
+  if (directive && origin === 'turn' && text.trim() !== common.evidence_refs[0]?.excerpt.trim())
     throw new ClaimInputError('主权规则须保留学习者本轮逐字原话。');
   if (directive && category !== 'state' && valid_until !== null)
     throw new ClaimInputError('只有短期状态可设置有效期。限时拒绝请填写重新开放条件。');
@@ -119,7 +120,7 @@ export function claimValue(input: unknown) {
 
 export function editableTurnClaim(input: unknown) {
   const claim = claimValue(input);
-  if (claim.version === 0 || claim.sticky || claim.category === 'refusal')
+  if (claim.version === 0 || claim.sticky || claim.authority === 'directive')
     throw new ClaimInputError('这条记忆由学习者保留，请在「我 → 记忆」更正或忘掉。');
   return claim;
 }
@@ -164,4 +165,36 @@ export function matchesClaimEvidence(fact: FactSnapshot, ref: ClaimRef, excerpt:
   if (caseId !== 'companion' || typeof answer !== 'string') return false;
   return legacy ? answer === excerpt : memoryVersion === 1 && typeof workspaceRevision === 'string' &&
     answer.slice(start, start + excerpt.length) === excerpt;
+}
+
+function allowsTeaching(fact: FactSnapshot) {
+  return fact.purpose.includes('teaching') || fact.purpose.includes('all');
+}
+
+export async function writeTurnClaims(ctx: CommandContext, entries: ReturnType<typeof claimInput>, directive = false): Promise<readonly FactWrite[]> {
+  const writes: FactWrite[] = [];
+  for (const {id, data} of entries) {
+    const evidence = data.evidence_refs[0]!;
+    const source = await ctx.read.fact(evidence.id, {mode: 'following'});
+    if (!allowsTeaching(source) || !matchesClaimEvidence(source, evidence, evidence.excerpt, evidence.start))
+      throw new ClaimInputError('本轮教学用途或原话已变化。');
+    if (data.supersedes) {
+      const target = await readClaimPredecessor(ctx, data.supersedes);
+      if (!allowsTeaching(target)) throw new ClaimInputError('目标记忆不允许教学用途。');
+      const previous = directive ? structuredClaim(target.value) : editableTurnClaim(target.value);
+      if (previous.action === 'forget' || (directive && previous.authority !== 'directive') ||
+          (directive && previous.category !== data.category))
+        throw new ClaimInputError('更正须沿用同类生效中的主权规则。');
+      if (previous.authority && data.authority !== previous.authority)
+        throw new ClaimInputError('更正须保留学习者主权规则。');
+      requirePreservedObjectScope(previous.scope, data.scope);
+    }
+    if (data.scope.kind === 'object') for (const ref of data.scope.basis) {
+      const object = await ctx.read.fact(ref.id, {mode: 'following'});
+      if (!allowsTeaching(object) || object.ref.rev !== ref.rev || object.accessEpoch !== ref.accessEpoch)
+        throw new ClaimInputError('学习对象范围已变化。');
+    }
+    writes.push({kind: 'create', id, factType: claimType, data, purpose: ['storage', 'teaching']});
+  }
+  return writes;
 }

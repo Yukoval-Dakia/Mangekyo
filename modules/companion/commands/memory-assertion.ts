@@ -11,9 +11,10 @@ export default defineCommand({
     const input = claimRecord(value);
     if (input.action === 'undo-extracted') return {action: 'undo-extracted' as const,
       id: claimId(input.id), expectedRev: undefined, token: claimId(input.token)};
-    if (input.action === 'forget-extracted') {
+    const {action} = input;
+    if (action === 'forget-extracted' || action === 'forget-hypothesis') {
       const expected = claimRef(input);
-      return {action: 'forget-extracted' as const, id: expected.id, expectedRev: expected.rev, accessEpoch: expected.accessEpoch};
+      return {action, id: expected.id, expectedRev: expected.rev, accessEpoch: expected.accessEpoch} as const;
     }
     if (input.action === 'correct-extracted') {
       const expected = claimRef(input);
@@ -35,11 +36,18 @@ export default defineCommand({
       const current = await ctx.read.fact(id, { mode: 'following' });
       if (current.type !== memoryAssertionType || current.ref.rev !== expectedRev)
         throw new ClaimInputError('记忆类型或版本已变更。');
-      if (input.action === 'correct-extracted' || input.action === 'forget-extracted') {
+      if (input.action === 'correct-extracted' || input.action === 'forget-extracted' || input.action === 'forget-hypothesis') {
         const prior = extractedUnderstanding(current.value);
         if (current.accessEpoch !== input.accessEpoch) throw new ClaimInputError('理解用途已变更。');
+        if (input.action === 'forget-hypothesis') {
+          if (!prior.belief || prior.belief.forgotten) throw new ClaimInputError('假设已撤回。');
+          return [{kind: 'correct', id, expectedRev, data: {...prior, sticky: true, belief: {...prior.belief, forgotten: true}}}];
+        }
+        if (prior.belief?.forgotten) throw new ClaimInputError('假设已撤回。');
         if (input.action === 'forget-extracted') return [{kind: 'retract', id, expectedRev}];
-        return [{kind: 'correct', id, expectedRev, data: {...prior, text: input.text, sticky: true}}];
+        if (input.action === 'correct-extracted')
+          return [{kind: 'correct', id, expectedRev, data: {...prior, text: input.text, sticky: true}}];
+        throw new ClaimInputError('记忆操作无效。');
       }
       if (input.action === 'retract') return [{ kind: 'retract', id, expectedRev }];
       if (input.action === 'teaching') {
