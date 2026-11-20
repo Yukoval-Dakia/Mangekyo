@@ -1,6 +1,6 @@
 import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -48,8 +48,8 @@ async function delayedSitting(tx: ReadTransaction, read: Reader, earlier: TraceA
 }
 
 async function stableQuestion(tx: ReadTransaction, item: Opened, edgeId: string, through: NonNullable<Awaited<ReturnType<typeof cutoff>>>,
-  read: Reader) {
-  const edge = await openKnowledgeEdge(tx, edgeId, { recipient: 'workspace', purpose: retentionPurpose, maySend: () => true });
+  read: Reader, open: (id: string) => ReturnType<typeof openKnowledgeEdge>) {
+  const edge = await open(edgeId);
   if (!edge || edge.value.kind !== 'variant_of' || edge.value.variant?.spoilsNext !== 'none') return;
   for (const [fact, mode] of edge.opened) {
     const opened = await read.fact(fact.ref.id, mode === 'following' ? { mode } : { mode: 'pinned', rev: fact.ref.rev });
@@ -63,6 +63,8 @@ async function stableQuestion(tx: ReadTransaction, item: Opened, edgeId: string,
 }
 
 export async function workbookBacktrace(tx: ReadTransaction, input: Input, reader: Reader) {
+  const open = (id: string) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:retentionPurpose,maySend:() => true,
+    readNotionWitness: fact => reader.fact(fact.ref.id,{mode:'pinned',rev:fact.ref.rev})});
   const root = collect(reader, tx);
   try {
     const item = await openRetentionTarget(tx, root.read, factId(input.paper.id), input.itemId);
@@ -71,12 +73,13 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
     const through = await cutoff(tx, item, input.attemptRef, root.read);
     if (!through) return null;
     const source = item.question.sourceQuestionRef;
-    const conceptIds = await readItemDimensions(tx, root.read, source, through.observedThrough);
+    const conceptIds = await readItemDimensions(tx, root.read, source, through.observedThrough,open);
     if (!conceptIds.length) return null;
     const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, source, through.observedThrough, ['variant_of']);
+    const matches = new Map<string, {text:string; content:{id:FactId; rev:Revision}; witnesses:readonly BusWitness[]}>();
     for (const { id } of edges) {
       const graph = collect(reader, tx);
-      const related = await stableQuestion(tx, item, id, through, graph.read).catch(error => {
+      const related = await stableQuestion(tx, item, id, through, graph.read, open).catch(error => {
         if (!unavailable(error)) throw error;
       });
       if (!related) continue;
@@ -86,7 +89,7 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
           const old = await openRetentionTarget(tx, candidate.read, factId(row.paper), row.item);
           const ref = old.question.sourceQuestionRef;
           if (ref?.id !== related.oldQuestion.id || ref.rev !== related.oldQuestion.rev || old.question.prompt === item.question.prompt) continue;
-          const oldConcepts = await readItemDimensions(tx, candidate.read, ref, through.observedThrough);
+          const oldConcepts = await readItemDimensions(tx, candidate.read, ref, through.observedThrough,open);
           const history: TraceAttempt[] = [];
           for (const id of row.attempts) {
             const { observation, process } = await readWorkbookEvidence(tx, candidate.read, old, factId(id));
@@ -96,16 +99,17 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
               methodIds: [], outcome: observation.result, helpLevel: process.helpLevel });
           }
           const { independentSuccesses: [later, earlier] } = backtrace({ learner: tx.learner, conceptIds, mechanismIds: [], methodIds: [], ...through }, history, candidate.witnesses());
-          if (later && earlier && await delayedSitting(tx, candidate.read, earlier, later) &&
+          const key = ref.id + ':' + ref.rev;
+          if (!matches.has(key) && later && earlier && await delayedSitting(tx, candidate.read, earlier, later) &&
               await workbookWitnessesBy(tx, candidate.witnesses(), through.observedThrough))
-            return { text: old.question.prompt, content: { id: factId(ref.id), rev: ref.rev },
-              witnesses: collect(reader, tx, [...root.witnesses(), ...candidate.witnesses()]).witnesses() as readonly BusWitness[] };
+            matches.set(key,{ text: old.question.prompt, content: { id: factId(ref.id), rev: ref.rev },
+              witnesses: collect(reader, tx, [...root.witnesses(), ...candidate.witnesses()]).witnesses() as readonly BusWitness[] });
         } catch (error) {
           if (!unavailable(error)) throw error;
         }
       }
     }
-    return null;
+    return matches.size === 1 ? matches.values().next().value! : null;
   } catch (error) {
     if (unavailable(error)) return null;
     throw error;

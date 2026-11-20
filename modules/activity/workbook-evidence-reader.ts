@@ -58,13 +58,13 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   /** SQL only discovers IDs. Opening a knowledge edge checks its endpoints, proof and all source witnesses. */
   async function readItemEdges(
     tx: Tx, read: ReadContext, source: WorkbookSourceQuestionRef | undefined, cutoff: Tick,
-    kinds: readonly ('targets_concept' | 'variant_of')[],
+    kinds: readonly ('targets_concept' | 'variant_of')[], open = (id: FactId) => openEdge(tx,id),
   ) {
     if (!source) return [];
     const rows = await workbookLinkCandidates(tx, edgeType, source, cutoff, kinds);
     const edges = [];
     for (const { id } of rows) {
-      const edge = await openEdge(tx,id);
+      const edge = await open(id);
       if (!edge) continue;
       if (!await workbookWitnessesBy(tx, edge.opened.map(([fact]) => fact.ref), cutoff)) continue;
       for (const [fact, mode] of edge.opened) {
@@ -77,8 +77,9 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
 
   async function readItemDimensions(
     tx: Tx, read: ReadContext, source: WorkbookSourceQuestionRef | undefined, cutoff: Tick,
+    open?: (id: FactId) => ReturnType<typeof openEdge>,
   ) {
-    const edges = await readItemEdges(tx, read, source, cutoff, ['targets_concept']);
+    const edges = await readItemEdges(tx, read, source, cutoff, ['targets_concept'],open);
     return [...new Set(edges.map(edge => edge.to.fact.id))].sort();
   }
 
