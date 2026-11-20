@@ -10,6 +10,7 @@
   - `05-SURFACES-PRIVACY-OPS-AND-ACCEPTANCE.md`（四处 Material 3 Expressive 表面、离线多设备、数据自主与永久删除、低打扰设置、危机转介、全量贯通验收总表）
   - `06-DATA-REUSE-AND-THIN-CAPABILITIES.md`（少建层、数据多元复用矩阵、大模块小能力设计原则，以及以极轻小能力落地的 6 项高阶智能跃升）
   - `07-LIVING-INFRASTRUCTURE-AND-ALWAYS-ON-MAINTENANCE.md`（四齿轮能力回环、Notion 只读扩展、4 块活基础设施地基原语、Always-On 4 大家族与慢变量全域维护）
+  - `08-UNIFIED-PIPELINE-REFACTOR.md`（**最高收口与精简裁决层**：物理极简统一 × R0 记忆深度零妥协 × 产品能力一毫米不缩水；底层模型、总线原语、前哨协议与工具目录均以 `08` 为最终实现基准）
 
 ---
 
