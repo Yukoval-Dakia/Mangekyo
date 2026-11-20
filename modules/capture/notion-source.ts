@@ -1,6 +1,6 @@
 import { factId, type CommandContext, type FactSnapshot, type LearnerId, type Revision } from '@mangekyo/kernel';
 import { captureSourceType, sourceEnvelope, type SourceEnvelope } from './source.ts';
-import { NotionSourceUnavailable, type NotionRoot } from './notion-api.ts';
+import { notionConfirmPageAccess, NotionSourceUnavailable, type NotionReadRequest, type NotionReadResponse, type NotionRoot } from './notion-api.ts';
 import { diffNotionBlocks } from './notion-diff.ts';
 import { notionId, notionRecord, notionSelectionId, notionSourceId, notionSourceProjection, notionTimestamp } from './notion-values.ts';
 
@@ -116,6 +116,19 @@ export async function prepareNotionBoundedSnapshot(
 export function openNotionBoundedSnapshot(snapshot: NotionBoundedSnapshot, current: NotionBoundedUse | null, now: string) {
   if (!notionBoundedUseAllowed(snapshot.use, current, now)) throw new Error('Notion 本轮授权无效。');
   return snapshot.projection;
+}
+
+// Drive immediately before each outbound use, including recovered cache. The
+// host binds the transport to this dispatch, re-resolves the live grant and
+// clock after the GET, and sends only the resulting projection. A failed check
+// stops this send. Apply confirmed invalidation with the dispatch witness only.
+export async function* notionBoundedSnapshotForSend(
+  snapshot: NotionBoundedSnapshot,
+  resolveCurrent: () => Promise<{ readonly use: NotionBoundedUse | null; readonly now: string }>,
+): AsyncGenerator<NotionReadRequest, NotionBoundedSnapshot['projection'], NotionReadResponse> {
+  yield* notionConfirmPageAccess(snapshot.use.selection.root, snapshot.use.pageId);
+  const { use, now } = await resolveCurrent();
+  return openNotionBoundedSnapshot(snapshot, use, now);
 }
 
 export type NotionBoundedHandle = { readonly id: string };

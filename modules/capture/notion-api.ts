@@ -20,6 +20,8 @@ export class NotionSourceUnavailable extends Error {
   }
 }
 export class NotionSourceChanged extends Error {}
+export class NotionSourceUnconfirmed extends Error {}
+export class NotionChildUnavailable extends Error {}
 
 function response({ status, body }: NotionReadResponse, sourceBoundary?: NotionInvalidatedSource) {
   const invalidated = status === 401 ? { kind: 'selection' } as const
@@ -151,6 +153,9 @@ function* notionReadChildren(pageId: string, parentId: string | null, seenBlocks
   do {
     const query: string = cursor === null ? 'page_size=100' : `page_size=100&start_cursor=${encodeURIComponent(cursor)}`;
     const reply = yield { method: 'GET', path: `/v1/blocks/${parentId ?? pageId}/children?${query}` };
+    if (parentId !== null && (reply.status === 403 || reply.status === 404)) {
+      throw new NotionChildUnavailable('Notion 子块已不可用。');
+    }
     const page = pagination(reply, cursors, parentId === null ? boundary : undefined);
     for (const entry of page.results) {
       const block = notionRecord(entry);
@@ -205,17 +210,35 @@ async function notionRowProperties(page: ReturnType<typeof pageMetadata>): Promi
   return blocks.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
-export async function* notionReadPage(root: NotionRoot, requestedPage: string):
-  AsyncGenerator<NotionReadRequest, { pageId: string; lastEditedTime: string; title: string; blocks: ProjectedBlock[] }, NotionReadResponse> {
+// Drive with the same authorized transport. Deliver transport failures through
+// generator.throw so a failed check is distinguishable from confirmed revocation.
+export function* notionConfirmPageAccess(root: NotionRoot, requestedPage: string):
+  Generator<NotionReadRequest, ReturnType<typeof pageMetadata>, NotionReadResponse> {
   const selected = { ...root, id: notionId(root.id) };
   const pageId = notionId(requestedPage);
   if (selected.kind === 'page' && selected.id !== pageId) throw new NotionSourceUnavailable('Notion 页面不在获准来源内。');
-  const get = { method: 'GET', path: `/v1/pages/${pageId}` } as const;
-  const boundary = pageBoundary(selected, pageId);
-  const first = pageMetadata(response(yield get, boundary), selected, pageId);
+  try {
+    const reply = yield { method: 'GET', path: `/v1/pages/${pageId}` };
+    return pageMetadata(response(reply, pageBoundary(selected, pageId)), selected, pageId);
+  } catch (error) {
+    if (error instanceof NotionSourceUnavailable) throw error;
+    throw new NotionSourceUnconfirmed('无法确认 Notion 页面授权。', { cause: error });
+  }
+}
+
+export async function* notionReadPage(root: NotionRoot, requestedPage: string):
+  AsyncGenerator<NotionReadRequest, { pageId: string; lastEditedTime: string; title: string; blocks: ProjectedBlock[] }, NotionReadResponse> {
+  const selected = { ...root };
+  const first = yield* notionConfirmPageAccess(selected, requestedPage);
+  const pageId = first.pageId;
   const blocks: ProjectedBlock[] = [];
-  yield* notionReadChildren(pageId, null, new Set(), blocks, boundary);
-  const last = pageMetadata(response(yield get, boundary), selected, pageId);
+  try {
+    yield* notionReadChildren(pageId, null, new Set(), blocks, pageBoundary(selected, pageId));
+  } catch (error) {
+    if (error instanceof NotionChildUnavailable) yield* notionConfirmPageAccess(selected, pageId);
+    throw error;
+  }
+  const last = yield* notionConfirmPageAccess(selected, pageId);
   if (first.lastEditedTime !== last.lastEditedTime || first.title !== last.title) {
     throw new NotionSourceChanged('拉取期间 Notion 页面有更新，请重试。');
   }

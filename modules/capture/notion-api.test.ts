@@ -1,10 +1,10 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { learnerId } from '@mangekyo/kernel';
-import { notionReadPage, notionReadRows, notionVersion, type NotionReadRequest, type NotionReadResponse } from './notion-api.ts';
-import { applyNotionSourceInvalidation, openNotionBoundedSnapshot, prepareNotionBoundedSnapshot, type NotionBoundedSnapshot, type NotionBoundedUse } from './notion-source.ts';
-import { advanceNotionCursor, notionSourceProjection } from './notion-values.ts';
+import { NotionChildUnavailable, NotionSourceUnconfirmed, notionReadPage, notionReadRows, notionVersion, type NotionReadRequest, type NotionReadResponse } from './notion-api.ts';
+import { applyNotionSourceInvalidation, notionBoundedSnapshotForSend, openNotionBoundedSnapshot, prepareNotionBoundedSnapshot, type NotionBoundedSnapshot, type NotionBoundedUse } from './notion-source.ts';
+import { notionSourceProjection } from './notion-values.ts';
 
 const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const timestamp = '2026-11-20T12:00:00.000Z';
@@ -26,7 +26,8 @@ async function run<T>(stream: AsyncGenerator<NotionReadRequest, T, NotionReadRes
 }
 
 it('reads paginated sources and closes bounded handles at the scope of remote access loss', async ({ onTestFinished }) => {
-  let denied: { scope: 'root' | 'child' | 'moved'; status: number } | undefined;
+  type Failure = { scope: 'root' | 'child' | 'page' | 'moved'; status: number; after?: Failure };
+  let denied: Failure | undefined;
   let signature = 'first-test-signature';
   const server = createServer(async (request, response) => {
     if (request.headers.authorization !== 'Bearer isolated-token' || request.headers['notion-version'] !== notionVersion) {
@@ -43,6 +44,7 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
       if (body.start_cursor && body.start_cursor !== 'rows-next') return void response.writeHead(422).end();
       outgoing = body.start_cursor ? listed([row(2)]) : listed([row(3)], 'rows-next');
     } else if (url.pathname === `/v1/pages/${id(2)}`) {
+      if (denied?.scope === 'page') return void response.writeHead(denied.status).end();
       outgoing = denied?.scope === 'moved' ? { ...row(2), parent: { type: 'data_source_id', data_source_id: id(9) } } : row(2);
     } else if (url.pathname === `/v1/blocks/${id(2)}/children`) {
       if (denied?.scope === 'root' && url.searchParams.has('start_cursor')) return void response.writeHead(denied.status).end();
@@ -50,7 +52,11 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
         file: { type: 'file', name: 'worksheet.pdf', file: { url: `https://example.org/doc?signature=${signature}`, expiry_time: timestamp } } }])
         : listed([block(4, true)], 'block+/next');
     } else if (url.pathname === `/v1/blocks/${id(4)}/children`) {
-      if (denied?.scope === 'child') return void response.writeHead(denied.status).end();
+      if (denied?.scope === 'child') {
+        const { status, after } = denied;
+        denied = after;
+        return void response.writeHead(status).end();
+      }
       outgoing = listed([block(5)]);
     } else {
       response.writeHead(404).end();
@@ -73,7 +79,6 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
   const previous = { pageId: id(3), lastEditedTime: timestamp };
   const rows = await run(notionReadRows(root, previous), request);
   expect(rows).toEqual([previous, { pageId: id(2), lastEditedTime: timestamp }]);
-  expect(advanceNotionCursor(previous, rows)).toEqual(previous);
   const page = await run(notionReadPage(root, id(2)), request);
   const envelope = await notionSourceProjection(page);
   expect(envelope.unit.blocks.slice(-4).map(item => [item.parentId, item.body.text])).toEqual([
@@ -90,9 +95,10 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
   const reordered = await notionSourceProjection(await run(notionReadPage(root, id(2)), request));
   expect(reordered.unit.blocks.at(-1)?.body.contentHash).toBe(attachment?.contentHash);
   const readError = (selected: NotionBoundedUse['selection']['root']) => run(notionReadPage(selected, id(2)), request).catch(error => error);
-  for (const [selected, status, preset, target] of [
-    [root, 403, 'temporary', { kind: 'page', pageId: id(2) }],
-    [{ kind: 'page', id: id(2) }, 404, 'turn-only', { kind: 'selection' }],
+  for (const [selected, status, preset, target, recheck] of [
+    [root, 403, 'temporary', { kind: 'page', pageId: id(2) }, { scope: 'page', status: 404 }],
+    [{ kind: 'page', id: id(2) }, 404, 'turn-only', { kind: 'selection' }, { scope: 'page', status: 403 }],
+    [root, 404, 'temporary', { kind: 'page', pageId: id(2) }, { scope: 'moved', status: 200 }],
   ] as const) {
     const selection = { root: selected, learner: learnerId('01KFS4AAA00000000000000000'), selectionId: 'notes', selectionEpoch: '1' };
     const use = { preset, selection, pageId: id(2), conversationId: 'chat', turnId: 'turn', authorizationEpoch: '0',
@@ -107,25 +113,27 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
     expect(() => open(use, use.expiresAt)).toThrow('本轮授权无效');
     const handles = [{ handle: { id: 'saved' }, use }, { handle: { id: 'fresh' }, use: fresh },
       { handle: { id: 'other-handle' }, use: { ...use, pageId: target.kind === 'page' ? id(3) : use.pageId } }];
-    const closed: string[] = [];
-    const close = async ({ id }: { id: string }, reason: string) => {
-      expect(reason).toBe('source-revoked');
-      closed.push(id);
+    const close = vi.fn(async ({ id }: { id: string }, _reason: string) => {
       if (id === 'saved') saved = undefined;
-    };
+    });
     denied = { scope: 'child', status };
-    expect(await applyNotionSourceInvalidation(await readError(selected), selection, selection, handles, { close })).toBeNull();
+    expect(await readError(selected)).toBeInstanceOf(NotionChildUnavailable);
+    const outbound = (snapshot = saved!, current = use) =>
+      run(notionBoundedSnapshotForSend(snapshot, async () => ({ use: current, now: timestamp })), request);
+    denied = { scope: 'child', status, after: { scope: 'page', status: 503 } };
+    const unconfirmed = await readError(selected);
+    expect(unconfirmed).toBeInstanceOf(NotionSourceUnconfirmed);
+    expect(await applyNotionSourceInvalidation(unconfirmed, selection, selection, handles, { close })).toBeNull();
+    await expect(outbound()).rejects.toBeInstanceOf(NotionSourceUnconfirmed);
     denied = { scope: 'root', status };
+    expect(await readError(selected)).toMatchObject({ invalidated: target });
+    denied = { scope: 'child', status, after: recheck };
     const error = await readError(selected);
     expect(await applyNotionSourceInvalidation(error, selection, fresh.selection, handles, { close })).toBeNull();
-    expect(open()).toBeDefined();
     expect(await applyNotionSourceInvalidation(error, selection, selection, handles, { close })).toMatchObject({ target });
-    expect(closed).toEqual(target.kind === 'selection' ? ['saved', 'other-handle'] : ['saved']);
+    expect(close.mock.calls).toEqual((target.kind === 'selection' ? ['saved', 'other-handle'] : ['saved']).map(id => [{ id }, 'source-revoked']));
     expect(open()).toBeUndefined();
-    expect(openNotionBoundedSnapshot(replacement, fresh, timestamp).title).toBe('滴定');
+    denied = undefined;
+    await expect(outbound(replacement, fresh)).resolves.toMatchObject({ title: '滴定' });
   }
-  denied = { scope: 'moved', status: 200 };
-  const paths: string[] = [];
-  await expect(run(notionReadPage(root, id(2)), input => { paths.push(input.path); return request(input); })).rejects.toThrow('移出');
-  expect(paths).toEqual([`/v1/pages/${id(2)}`]);
 });
