@@ -9,7 +9,10 @@ export type NotionRetainedPreset = 'storage' | 'learning';
 export type NotionPreset = NotionRetainedPreset | 'turn-only' | 'temporary';
 export type NotionRecipientUse = { readonly id: string; readonly purpose: string };
 type SelectionSettings = { id: string; root: NotionRoot; preset: NotionPreset; recipients: NotionRecipientUse[] };
-export type NotionSelection = SelectionSettings & { active: boolean; selectionEpoch: string; learner: LearnerId };
+type ContinuousUse = NotionRecipientUse & { sinceEpoch: string };
+export type NotionSelection = SelectionSettings & {
+  active: boolean; selectionEpoch: string; learner: LearnerId; continuity: readonly ContinuousUse[];
+};
 export type NotionReadOptions = Parameters<ReadContext['fact']>[1];
 export type NotionFactReader = { fact(id: FactId, options: NotionReadOptions): Promise<FactSnapshot> };
 
@@ -60,10 +63,31 @@ function settings(row: Record<string, unknown>): SelectionSettings {
   return { id: notionSelectionId(row.selectionId), root: notionRoot(row.root), preset, recipients: uses };
 }
 
-export function selectionValue(input: unknown) {
+export function selectionValue(input: unknown): SelectionSettings & { active: boolean; continuity?: ContinuousUse[] } {
   const row = notionRecord(input);
   if (typeof row.active !== 'boolean') throw new Error('选源状态无效。');
-  return { ...settings({ ...row, selectionId: row.id }), active: row.active };
+  const value = { ...settings({ ...row, selectionId: row.id }), active: row.active };
+  if (row.continuity === undefined) return value;
+  if (!Array.isArray(row.continuity)) throw new Error('选源连续授权记录无效。');
+  const continuity = row.continuity.map(input => {
+    const { id, purpose, sinceEpoch } = notionRecord(input);
+    return { ...recipientUse({ id, purpose }), sinceEpoch: notionEpoch(sinceEpoch) };
+  });
+  return { ...value, continuity };
+}
+
+function retainedUses(value: SelectionSettings & { active: boolean }, learner: LearnerId): NotionRecipientUse[] {
+  if (!value.active || (value.preset !== 'learning' && value.preset !== 'storage')) return [];
+  return [{ id: learner, purpose: 'storage' }, ...value.recipients];
+}
+
+function nextContinuity(value: SelectionSettings & { active: boolean }, learner: LearnerId,
+  epoch: string, previous?: NotionSelection) {
+  const sameRoot = previous?.active && previous.root.kind === value.root.kind && previous.root.id === value.root.id;
+  return retainedUses(value, learner).map(use => {
+    const existing = sameRoot && previous.continuity.find(entry => entry.id === use.id && entry.purpose === use.purpose);
+    return { ...use, sinceEpoch: existing ? existing.sinceEpoch : epoch };
+  });
 }
 
 export async function notionSelectionFactId(learner: LearnerId, selectionId: string) {
@@ -81,7 +105,12 @@ export async function readNotionSelection(read: NotionFactReader, learner: Learn
     throw new Error('选源记录不匹配。');
   const value = selectionValue(snapshot.value);
   if (value.id !== selectionId) throw new Error('选源记录不匹配。');
-  return { ...value, learner, selectionEpoch: String(snapshot.ref.rev) };
+  const selectionEpoch = String(snapshot.ref.rev);
+  // Older settings only prove their current revision's grant.
+  const continuity = value.continuity ?? nextContinuity(value, learner, selectionEpoch);
+  if (continuity.some(use => use.sinceEpoch === '0' || BigInt(use.sinceEpoch) > BigInt(selectionEpoch)))
+    throw new Error('选源连续授权代次无效。');
+  return { ...value, learner, selectionEpoch, continuity };
 }
 
 function changeTarget(row: Record<string, unknown>) {
@@ -106,7 +135,9 @@ export async function changeNotionSelection(ctx: CommandContext, target: ReturnT
   const id = await notionSelectionFactId(ctx.learner, target.selectionId);
   if (!current) {
     if (!grant) throw new Error('找不到选源。');
-    return [{ kind: 'create' as const, id, factType: notionSelectionType, purpose: ['storage'], data: { ...grant, active: true } }];
+    const data = { ...grant, active: true };
+    return [{ kind: 'create' as const, id, factType: notionSelectionType, purpose: ['storage'],
+      data: { ...data, continuity: nextContinuity(data, ctx.learner, '1') } }];
   }
   if (!current.active && !grant) return [];
   let data;
@@ -121,7 +152,8 @@ export async function changeNotionSelection(ctx: CommandContext, target: ReturnT
     data = { id: current.id, root: current.root, preset: current.preset, recipients: [], active: false };
   }
   const expectedRev = Number(current.selectionEpoch) as FactSnapshot['ref']['rev'];
-  return [{ kind: 'correct' as const, id, expectedRev, data }];
+  const continuity = nextContinuity(data, ctx.learner, String(expectedRev + 1), current);
+  return [{ kind: 'correct' as const, id, expectedRev, data: { ...data, continuity } }];
 }
 
 export function selectionAllows(selection: NotionSelection | null, purpose: string, recipientId: string) {

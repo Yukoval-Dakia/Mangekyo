@@ -153,15 +153,23 @@ export async function applyNotionSourceInvalidation(
   return invalidation;
 }
 
-function matchesSelection(selection: NotionSelection, source: SourceEnvelope) {
+function matchesRoot(selection: NotionSelection, source: SourceEnvelope) {
   return selection.active && source.kind === 'notion' && source.sourceSelectionId === selection.id &&
-    source.sourceSelectionEpoch === selection.selectionEpoch && source.sourceRoot?.kind === selection.root.kind &&
+    source.sourceRoot?.kind === selection.root.kind &&
     source.sourceRoot.id === selection.root.id && (selection.root.kind === 'data-source' || source.externalId === selection.root.id);
 }
 
 export function notionSourceRecipient(selection: NotionSelection | null, purpose: string, recipientId: string) {
-  return (fact: FactSnapshot): boolean => !!selection && fact.type === captureSourceType && fact.ref.learner === selection.learner &&
-    selectionAllows(selection, purpose, recipientId) && matchesSelection(selection, sourceEnvelope(fact.value));
+  return (fact: FactSnapshot): boolean => {
+    if (!selection || fact.type !== captureSourceType || fact.ref.learner !== selection.learner ||
+        !selectionAllows(selection, purpose, recipientId)) return false;
+    const source = sourceEnvelope(fact.value);
+    if (!matchesRoot(selection, source) || !source.sourceSelectionEpoch) return false;
+    const use = selection.continuity?.find(entry => entry.id === recipientId && entry.purpose === purpose);
+    if (!use) return false;
+    const origin = BigInt(source.sourceSelectionEpoch);
+    return origin >= BigInt(use.sinceEpoch) && origin <= BigInt(selection.selectionEpoch);
+  };
 }
 
 export type SelectedNotionAccess = {
@@ -174,7 +182,14 @@ export type SelectedNotionAccess = {
 
 /** Both readers belong to the same snapshot. sourceRead also applies current and pinned fact purposes. */
 export async function openSelectedNotionSource(access: SelectedNotionAccess, id: FactId, options: NotionReadOptions) {
-  const current = await access.sourceRead.fact(id, { mode: 'following' });
+  const requested = await access.sourceRead.fact(id, options);
+  return authorizeNotionRead(access, id, options, requested);
+}
+
+async function authorizeNotionRead(
+  access: SelectedNotionAccess, id: FactId, options: NotionReadOptions, requested: FactSnapshot,
+) {
+  const current = options.mode === 'following' ? requested : await access.sourceRead.fact(id, { mode: 'following' });
   if (current.type !== captureSourceType || current.ref.learner !== access.learner || current.ref.id !== id)
     throw new Error('Notion 选源不可用。');
   const source = sourceEnvelope(current.value);
@@ -182,17 +197,26 @@ export async function openSelectedNotionSource(access: SelectedNotionAccess, id:
   const selection = await readNotionSelection(access.selectionRead, access.learner, source.sourceSelectionId);
   const allowed = notionSourceRecipient(selection, access.purpose, access.recipientId);
   const check = (fact: FactSnapshot) => fact.ref.id === id && fact.purpose.includes(access.purpose) && allowed(fact);
-  if (!check(current)) throw new Error('Notion 选源不可用。');
-  if (options.mode === 'following') return current;
-  const pinned = await access.sourceRead.fact(id, options);
-  if (pinned.ref.rev !== options.rev || !check(pinned)) throw new Error('Notion 选源不可用。');
-  return pinned;
+  if (!check(current) || (options.mode === 'pinned' && (requested.ref.rev !== options.rev || !check(requested))))
+    throw new Error('Notion 选源不可用。');
+  return requested;
+}
+
+/** Pass this fact reader to the host's recursive basis walker; bind it again at actual egress. */
+export function withSelectedNotionSources(access: SelectedNotionAccess): NotionFactReader {
+  return {
+    async fact(id, options) {
+      const requested = await access.sourceRead.fact(id, options);
+      if (requested.type !== captureSourceType || sourceEnvelope(requested.value).kind !== 'notion') return requested;
+      return authorizeNotionRead(access, id, options, requested);
+    },
+  };
 }
 
 export async function checkNotionAdmission(ctx: CommandContext, id: FactId, source: SourceEnvelope, purposes: readonly string[]) {
   if (!source.sourceSelectionId || !source.externalId) throw new Error('Notion 选源不可用。');
   const selection = await readNotionSelection(ctx.read, ctx.learner, source.sourceSelectionId);
-  if (!selection || !matchesSelection(selection, source) ||
+  if (!selection || !matchesRoot(selection, source) || selection.selectionEpoch !== source.sourceSelectionEpoch ||
       await notionSourceId(ctx.learner, selection.id, source.externalId, selection.selectionEpoch) !== id ||
       !purposes.every(use => notionRetainedPurposes(selection.preset).includes(use))) throw new Error('Notion 选源或用途已变更。');
 }
@@ -250,4 +274,17 @@ export function notionRevisionDiff(previous: SourceEnvelope, next: SourceEnvelop
     return { id, parentId, contentHash: body.contentHash };
   });
   return diffNotionBlocks(blocks(previous), blocks(next));
+}
+
+export class UnchangedNotionSourceError extends Error {
+  readonly code = 'notion_source_unchanged';
+  constructor() { super('Notion 原件内容未变化。'); }
+}
+
+/** The worker may skip dispatch after checking access and identity under the learner lock.
+ * A timestamp-only upstream edit advances the sync cursor without copying the page again.
+ */
+export function notionRefreshHasChanges(previous: SourceEnvelope, next: SourceEnvelope) {
+  const diff = notionRevisionDiff(previous, next);
+  return previous.unit.title !== next.unit.title || Object.values(diff).some(ids => ids.length > 0);
 }

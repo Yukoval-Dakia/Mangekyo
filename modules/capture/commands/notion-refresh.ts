@@ -1,5 +1,5 @@
 import { defineCommand } from '@mangekyo/kernel';
-import { checkNotionAdmission, notionRevisionDiff, notionSourceTarget, readNotionSourceTarget, refreshNotionSourceCommand } from '../notion-source.ts';
+import { checkNotionAdmission, notionRefreshHasChanges, UnchangedNotionSourceError, notionSourceTarget, readNotionSourceTarget, refreshNotionSourceCommand } from '../notion-source.ts';
 import { notionRecord } from '../notion-values.ts';
 import { reviseSourceWrite, sourceEnvelope } from '../source.ts';
 
@@ -15,9 +15,9 @@ export default defineCommand({
     const { current, source } = await readNotionSourceTarget(ctx, input);
     await checkNotionAdmission(ctx, input.id, input.envelope, current.purpose);
     const write = reviseSourceWrite(current, input.expectedRev, input.envelope);
-    const diff = notionRevisionDiff(source, input.envelope);
-    if (source.occurredAt === input.envelope.occurredAt && source.unit.title === input.envelope.unit.title &&
-        Object.values(diff).every(ids => ids.length === 0)) return [];
+    // The kernel journals the raw request even for an empty write list. A no-change
+    // result must leave this transaction before the command receipt is inserted.
+    if (!notionRefreshHasChanges(source, input.envelope)) throw new UnchangedNotionSourceError();
     return [write];
   },
 });
