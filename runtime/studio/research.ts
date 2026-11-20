@@ -11,7 +11,7 @@ import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, readReadyWork, readWork, type WorkRef,
 } from '../../kernel/src/work/index.ts';
 import {
-  cancelResearchTodos, checkTodoTriggers, completeTodo, emitTodo, endDispatchedTodo, enqueueWork, newFactWatermark,
+  cancelResearchTodos, checkTodoTriggers, completeTodo, emitTodo, endDispatchedTodo, enqueueWork,
   readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec,
 } from '../../kernel/src/work/todos.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
@@ -21,6 +21,7 @@ import {
   researchSettings, researchSettingsType, worksheetDraft,
 } from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { newResearchWatermark } from './research-foreground.ts';
 import {
   readWorksheet, researchReader, reviewEvidence, whenAvailable, workbookSource, worksheetId, type ReviewEvidence,
 } from './research-sources.ts';
@@ -147,7 +148,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       const due = await checkTodoTriggers(tx, now, eligible);
       if (due.advanced) return { status: 'advanced' } as const;
       const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
-      const watermark = await newFactWatermark(tx);
+      const watermark = await newResearchWatermark(tx);
       if (!watermark) return waiting;
       const prepared = await prepareResearchTriage(tx, watermark.reviewed, current.revision, now, eligible);
       if (!prepared) {
@@ -164,7 +165,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       signal.throwIfAborted();
       const current = await settings(tx);
       if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' };
-      const watermark = await newFactWatermark(tx);
+      const watermark = await newResearchWatermark(tx);
       if (current.revision !== scan.settingsRevision || watermark?.observed !== scan.watermark.observed ||
           watermark.reviewed !== scan.watermark.reviewed) return { status: 'advanced' };
       if (intent) await tx.withLearnerWrite(tick =>
