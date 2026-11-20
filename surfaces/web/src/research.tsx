@@ -121,7 +121,7 @@ function ScoutGrant({ offer, current, revision, refresh }: {
 
   return <details className="research-sheet">
     <summary>付费前哨授权</summary>
-    <p>接收方 {offer.route} 可使用已开放作答的卷名、提交时间和首道错题序号选择复习任务。
+    <p>接收方 {offer.route} 会收到已开放作答的标识、卷名、提交时间和首道错题序号，用于选择复习任务。
       最多留存 {offer.maxRetentionDays} 天，每次最多 {offer.maxPerCallMicros} USD 微元。</p>
     <p>1 美元为 1,000,000 微元。累计上限包含已付及待结算的费用。</p>
     <label>累计上限（USD 微元）<input type="number" min={offer.maxPerCallMicros} step="1" value={limit}
