@@ -52,7 +52,7 @@ export function openWorkspaceTools(options: {
   const opened = new Map<string, Seen>();
   const produced = new Map<string, number>();
   const receipts = new Map<string,{id:string;rev:number;title:string}>();
-  async function read(name: string, args: Record<string, unknown>, step: number) {
+  async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>) {
     if (!isJson(args)) return JSON.stringify({error:'请将查询字段放在一个 JSON 对象里。'});
     const raw = await recordLocalRead(db, {learner:studioLearner, ownerKind:'session', ownerId:turn,
       stepKey:String(step), label:'local:'+name, input:args}, async tx => {
@@ -66,6 +66,7 @@ export function openWorkspaceTools(options: {
         : await workspaceSearch(tx,args,track,options.maySend);
       return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis});
     },options.authorize);
+    if (priorRead) await priorRead;
     const {text, witnesses, assessmentBasis} = JSON.parse(raw) as {
       text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[];
     };
@@ -181,25 +182,30 @@ export function openWorkspaceTools(options: {
       throw error;
     }
   }
+  async function execute(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>) {
+    if (name === 'mount_artifact' && options.presentationManifest) {
+      if (Object.keys(args).some(key => !['view','predictionPrompt','sentenceBreaks'].includes(key))) return JSON.stringify({error:'仅支持 view、predictionPrompt 和 sentenceBreaks。'});
+      const result = await mountArtifact(db,turn,step,args,async tx => {
+        await options.authorize(tx);
+        return options.presentationManifest!(tx);
+      },options.readArtifactAssessmentWitness);
+      if (args.sentenceBreaks !== undefined && result.state === 'done') publishedFormalArtifact = true;
+      return JSON.stringify(result);
+    }
+    const tool = workspaceDefinitions.find(tool => tool.function.name === name);
+    if (!tool) return JSON.stringify({error:'请从本轮提供的工作区工具中选择。'});
+    const fields = tool.function.parameters.properties;
+    const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
+    if (unknown) return JSON.stringify({error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
+    return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead);
+  }
   return {
     ...(options.presentationManifest ? {presentationTool} : {}),
-    async execute(name: string, args: Record<string, unknown>, step: number) {
-      if (name === 'mount_artifact' && options.presentationManifest) {
-        if (Object.keys(args).some(key => !['view','predictionPrompt','sentenceBreaks'].includes(key))) return JSON.stringify({error:'仅支持 view、predictionPrompt 和 sentenceBreaks。'});
-        const result = await mountArtifact(db,turn,step,args,async tx => {
-          await options.authorize(tx);
-          return options.presentationManifest!(tx);
-        },options.readArtifactAssessmentWitness);
-        if (args.sentenceBreaks !== undefined && result.state === 'done') publishedFormalArtifact = true;
-        return JSON.stringify(result);
-      }
-      const tool = workspaceDefinitions.find(tool => tool.function.name === name);
-      if (!tool) return JSON.stringify({error:'请从本轮提供的工作区工具中选择。'});
-      const fields = tool.function.parameters.properties;
-      const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
-      if (unknown) return JSON.stringify({error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
-      return name === 'save_workspace' ? save(args, step) : read(name, args, step);
-    },
+    execute,
+    executeRead: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>) =>
+      name === 'search_workspace' || name === 'read_workspace'
+        ? execute(name, args, step, priorRead)
+        : execute(name, args, step),
     publishedFormalArtifact: () => publishedFormalArtifact,
     reads: () => [...opened.values()],
     writes: () => [...receipts.values()],
