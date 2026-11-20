@@ -4,6 +4,7 @@ import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
 import {posttestSubmissionType, retentionPaperType} from '../../modules/activity/retention-posttest.ts';
 import {isSourceFactId} from '../../modules/activity/source-values.ts';
+import {workbookAttemptView} from '../../modules/activity/workbook-assessment-values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {purpose} from './identity.ts';
 import {readActivitySubmissionBirth} from './learning-attempt-read.ts';
@@ -85,7 +86,7 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
     const collected: Parameters<SourceTrack>[] = [];
     const sources = {maySend: access.maySend, track: (...fact: Parameters<SourceTrack>) => collected.push(fact)};
     let paperId = attempt.paperId;
-    let score: PythonAttemptRow['formal_score'];
+    let formal: Awaited<ReturnType<typeof readReleasedAssessment>>;
     if (controlled) {
       const birth = await readActivitySubmissionBirth(tx, opened.fact.ref, posttestSubmissionType);
       if (!birth || !birth.unchanged || birth.submittedAt !== attempt.submittedAt) {
@@ -109,20 +110,19 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
         continue;
       }
     } else if (await openWorkbookQuestionSources(tx, opened.fact, sources)) {
-      const formal = await readReleasedAssessment(tx, attempt, opened.fact, sources);
-      if (formal.state === 'complete' && formal.score) {
-        score = {earned:formal.score.earned, maximum:formal.score.maximum};
-      }
+      formal = await readReleasedAssessment(tx, attempt, opened.fact, sources);
     } else {
       issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});
       continue;
     }
     for (const fact of collected) access.track(...fact);
     access.track(opened.fact, 'following');
+    const score = formal?.state === 'complete' ? formal.score : null;
+    const {feedback} = workbookAttemptView(ref.id, attempt, [], formal?.result);
     rows.push({
       id:ref.id, paper_id:paperId, submitted_at:attempt.submittedAt,
       ...(controlled ? {activity_kind:'controlled_posttest'} : {}),
-      results:attempt.feedback.map(({questionId, result}) => ({question_id:questionId, result})),
+      results:feedback.map(({questionId, result}) => ({question_id:questionId, result})),
       ...(attempt.effectiveDurationMs === undefined ? {} : {effective_duration_ms:attempt.effectiveDurationMs}),
       ...(score ? {formal_score:score} : {}),
     });

@@ -1,18 +1,19 @@
 import { activityQuestions } from '../../modules/activity/workspace-projection.ts';
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
-import {factId, type Revision} from '../../kernel/src/declarations/ids.ts';
-import type {FactSnapshot, Json, ReadContext} from '../../kernel/src/declarations/types.ts';
+import {factId, type FactId, type Revision} from '../../kernel/src/declarations/ids.ts';
+import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {intakeFactType} from '../../modules/capture/intake-values.ts';
 import {materialType, storagePurpose} from '../../modules/activity/library-values.ts';
 import {goalType, studyGoal} from '../../modules/plan/goal-values.ts';
 import {organizerNote, organizerNoteType} from '../../modules/activity/organizer-values.ts';
 import {organizerTask, organizerTaskType} from '../../modules/plan/organizer-task-values.ts';
 import {practiceSubmission, ridingPracticeType} from '../../modules/activity/practice-values.ts';
-import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
+import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';
 import {readFrozenWorkbookRecord} from '../../modules/activity/workbook-bank.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, WorkbookSourceMismatch} from '../../modules/activity/workbook-values.ts';
+import {assetType, parseAsset, questionPrompt} from '../../modules/content/asset.ts';
 import {openTextbookReference, textbookBodyReference, textbookPageFrom, textbookPageType, type TextbookBlockBody} from '../../modules/content/textbook-page.ts';
 import {
   WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
@@ -26,7 +27,7 @@ import {openWorkbookQuestionSources} from './workbook-diagnosis.ts';
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = (fact: FactSnapshot) => boolean;
-export type SourceAccess = { track?: SourceTrack } & (
+export type SourceAccess = { track?: SourceTrack; rootType?: string } & (
   | {recipient: 'learner'}
   | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string}
 );
@@ -164,6 +165,23 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAc
   return undefined;
 }
 
+async function openPinnedQuestion(tx: ReadTransaction, ref: SourceRefV1, access: SourceAccess):
+  Promise<(SourceProjection & {id: FactId; rev: Revision; sourceRef: SourceRefV1}) | undefined> {
+  if (ref.anchor.kind !== 'question' || ref.anchor.itemId !== 'question' || ref.textFact) return;
+  const read = createAuthorizedFactReader(tx, purpose, fact => sourceMaySend(access, fact));
+  const root = await read.fact(factId(ref.fact.id), {mode: 'pinned', rev: ref.fact.rev as Revision});
+  if (root.type !== assetType) return;
+  const asset = parseAsset(root.value);
+  if (asset.kind !== 'question') return;
+  for (const {id, rev, type, epoch} of asset.basis ?? []) {
+    const basis = await read.fact(id, {mode: 'pinned', rev});
+    if (basis.type !== type || basis.accessEpoch !== epoch) return;
+    access.track?.(basis, 'pinned');
+  }
+  access.track?.(root, 'pinned');
+  return {id: root.ref.id, rev: root.ref.rev, sourceRef: ref, title: asset.title, content: questionPrompt(asset)};
+}
+
 export async function resolveSource(tx: ReadTransaction, input: unknown, access: SourceAccess, mode: SourceReadMode = 'pinned') {
   const reference = sourceRefV1(input);
   const textReference = reference?.textFact;
@@ -179,7 +197,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const questionSources: Parameters<SourceTrack>[] = [];
   const checkedAttempts = new Set<string>();
   const rootType = (fact: FactSnapshot) =>
-    (!reference || fact.type === reference.fact.type) &&
+    (!access.rootType || fact.type === access.rootType) && (!reference || fact.type === reference.fact.type) &&
     (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
       (access.recipient === 'workspace' && fact.type === textbookPageType));
 
@@ -195,13 +213,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     }
     if (sourceId === id && !path.size && !rootType(fact)) return;
     path.add(key);
-    await readFrozenWorkbookRecord({
-      async fact<Value = Json>(...args: Parameters<ReadContext['fact']>) {
-        const opened = await reader.fact(...args);
-        questionSources.push([opened, args[1].mode]);
-        return opened as FactSnapshot<Value>;
-      },
-    }, fact);
+    await readFrozenWorkbookRecord(reader, fact, (...proof) => questionSources.push(proof));
     if (fact.type === workspaceEntryType) {
       const entry = workspaceEntry(fact.value);
       for (const witness of entry.basis) {
@@ -234,6 +246,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     return fact;
   }
   try {
+    if (reference?.fact.type === assetType && access.recipient === 'learner' && mode === 'pinned' && !access.rootType)
+      return await openPinnedQuestion(tx, reference, access);
     const rootRevision = reference?.fact.rev as Revision | undefined;
     if (reference && mode === 'following') {
       const original = await reader.fact(factId(id), {mode:'pinned', rev:rootRevision as Revision});

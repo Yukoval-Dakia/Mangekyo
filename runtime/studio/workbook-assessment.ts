@@ -26,7 +26,7 @@ import { storagePurpose } from '../../modules/activity/library-values.ts';
 import formalAssessmentSlot from '../../modules/activity/slots/workbook-formal-assessment.ts';
 import {
   workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
-  workbookFormalAssessmentType, workbookPaper, workbookPaperType, WorkbookSourceMismatch, type WorkbookDraft,
+  workbookFormalAssessmentType, workbookPaper, workbookPaperType, WorkbookSourceMismatch, type WorkbookDraft, type WorkbookPaper,
 } from '../../modules/activity/workbook-values.ts';
 import {
   assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment,
@@ -42,6 +42,11 @@ const policy: CandidatePolicy = {
   purpose: workbookAssessmentPurpose,
 };
 const bankPolicy: CandidatePolicy = { ...policy, deriver: 'activity/workbook-bank-assessment-v1' };
+const assessmentPolicy = (paper: WorkbookPaper) => paper.questions.some(question => question.kind === 'bank') ? bankPolicy : policy;
+const publicBankAssessment = (value: FormalAssessmentValue) => ({ ...value,
+  criteria: value.criteria.map(({ source, ...criterion }) =>
+    ({ ...criterion, source: { kind: source.kind, ref: source.ref } })),
+});
 const propagation = createPropagationHooks([]);
 const maxOutputTokens = 512;
 
@@ -134,7 +139,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
       const release = attempt.paper.assessmentRelease;
       if (!release) continue;
       const paper = await read.fact(release.releaseRef.id, { mode: 'pinned', rev: release.releaseRef.rev });
-      await registerFormalAssessment(tx, tick, attempt.paper.questions.some(question => question.kind === 'bank') ? bankPolicy : policy, paper, fact);
+      await registerFormalAssessment(tx, tick, assessmentPolicy(attempt.paper), paper, fact);
     }
   };
 
@@ -243,6 +248,9 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
 export async function readSavedWorkbookAssessment(
   tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submission: FactSnapshot, paper: FactSnapshot,
 ) {
+  if (paper.ref.id !== releaseRef.id || submission.type !== workbookAttemptType || paper.type !== workbookPaperType) return;
+  const selectedPolicy = assessmentPolicy(workbookPaper(paper.value));
+  if (selectedPolicy === bankPolicy) await authorizeBankBasis(tx, releaseRef);
   const { rows: [row] } = await tx.query<{
     id: string; scope_keys: AssessmentScope; manifest: unknown; value: { kind: 'value'; value: FormalAssessmentValue } | null;
   }>(
@@ -256,15 +264,14 @@ export async function readSavedWorkbookAssessment(
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.scope_keys->'releaseRef'=$3::jsonb
        AND s.scope_keys->'submissionRef'->>'id'=$4 AND (s.scope_keys->'submissionRef'->>'rev')::int<=$5
      ORDER BY (s.scope_keys->'submissionRef'->>'rev')::int DESC LIMIT 1`,
-    [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, policy.deriver],
+    [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, selectedPolicy.deriver],
   );
   if (row?.value?.kind !== 'value') return;
   const { value } = row.value;
   const { submissionRef, releaseEpoch, submissionEpoch } = row.scope_keys;
-  if (!sameRef(value.result.releaseRef, releaseRef) || !sameRef(value.result.submissionRef, submissionRef) ||
-      paper.ref.id !== releaseRef.id || submission.type !== workbookAttemptType || paper.type !== workbookPaperType) return;
+  if (!sameRef(value.result.releaseRef, releaseRef) || !sameRef(value.result.submissionRef, submissionRef)) return;
   const manifest = parseManifest(row.manifest);
-  if (manifest.learner !== tx.learner || manifest.purpose !== policy.purpose || manifest.inputs.length !== 2) return;
+  if (manifest.learner !== tx.learner || manifest.purpose !== selectedPolicy.purpose || manifest.inputs.length !== 2) return;
   for (const [original, current, epoch, mode] of [
     [releaseRef, paper.ref, releaseEpoch, 'pinned'], [submissionRef, submission.ref, submissionEpoch, 'following'],
   ] as const) {
@@ -272,7 +279,8 @@ export async function readSavedWorkbookAssessment(
       input.rev === original.rev && input.accessEpoch === epoch && input.mode === mode)) return;
     if (!await revisionsOnlyChangeGrants(tx, original.id, original.rev, current.rev)) return;
   }
-  return { ...value, releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
+  return { ...(selectedPolicy === bankPolicy ? publicBankAssessment(value) : value),
+    releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
 }
 
 export async function readWorkbookAssessment(tx: ReadTransaction, release: AssessmentRelease, submissionRef: AssessmentRevisionRef) {
@@ -286,8 +294,7 @@ export async function readWorkbookAssessment(tx: ReadTransaction, release: Asses
   }
   const result = await readFormalAssessment(tx, workbookAssessmentSlot, release.releaseRef, submissionRef, storagePurpose);
   if (bank && 'criteria' in result && result.criteria)
-    return { ...result, criteria: result.criteria.map(({ source, ...criterion }) =>
-      ({ ...criterion, source: { kind: source.kind, ref: source.ref } })) };
+    return { ...result, ...publicBankAssessment(result) };
   if (result.state !== 'blocked' || 'derivationId' in result) return result;
   try {
     const read = createCommandReadContext(tx, storagePurpose);

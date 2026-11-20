@@ -78,7 +78,11 @@ export async function freezeWorkbookBank(read: ReadContext, id: FactId, input: J
   }) };
 }
 
-export async function readFrozenWorkbookBank(read: Pick<ReadContext, 'fact'>, paper: WorkbookPaper) {
+type FrozenBankRead = { fact(id: FactId, options: Parameters<ReadContext['fact']>[1]): Promise<FactSnapshot> };
+
+export async function readFrozenWorkbookBank(
+  read: FrozenBankRead, paper: WorkbookPaper, track?: (fact: FactSnapshot, mode: 'pinned') => void,
+) {
   for (const question of paper.questions) {
     if (question.kind !== 'bank') continue;
     const ref = question.sourceQuestionRef;
@@ -87,11 +91,14 @@ export async function readFrozenWorkbookBank(read: Pick<ReadContext, 'fact'>, pa
       if (fact.type !== witness.type || fact.accessEpoch !== witness.epoch ||
           (!fact.purpose.includes('teaching') && !fact.purpose.includes('all')))
         throw new WorkbookSourceMismatch('题目或来源当前不可读取。');
+      track?.(fact, 'pinned');
     }
   }
 }
 
-export async function readFrozenWorkbookRecord(read: Pick<ReadContext, 'fact'>, fact: FactSnapshot) {
-  if (fact.type === workbookPaperType) await readFrozenWorkbookBank(read, workbookPaper(fact.value));
-  if (fact.type === workbookAttemptType) await readFrozenWorkbookBank(read, workbookAttempt(fact.value).paper);
+export async function readFrozenWorkbookRecord(
+  read: FrozenBankRead, fact: FactSnapshot, track?: Parameters<typeof readFrozenWorkbookBank>[2],
+) {
+  if (fact.type === workbookPaperType) await readFrozenWorkbookBank(read, workbookPaper(fact.value), track);
+  if (fact.type === workbookAttemptType) await readFrozenWorkbookBank(read, workbookAttempt(fact.value).paper, track);
 }

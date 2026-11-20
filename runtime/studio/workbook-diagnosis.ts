@@ -1,3 +1,4 @@
+import { revisionsOnlyChangeGrants } from '../../kernel/src/commands/fact-collection.ts';
 import {
   createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
@@ -7,10 +8,12 @@ import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { projectHelpExposure } from '../../modules/activity/help-exposure.ts';
 import { helpAppliesTo } from '../../modules/activity/help-exposure-values.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
+import { workbookAttemptView } from '../../modules/activity/workbook-assessment-values.ts';
+import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
-  type WorkbookAttempt,
+  WorkbookSourceMismatch, type WorkbookAttempt,
 } from '../../modules/activity/workbook-values.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { purpose } from './identity.ts';
@@ -21,6 +24,8 @@ import { readWorkspaceAttemptAssessments, type WorkspaceAssessmentBasis } from '
 
 type Access = { maySend: WorkspaceSourceRecipient; track: SourceTrack; trackAssessment?: (basis: WorkspaceAssessmentBasis) => void };
 const unavailable = { state: 'unavailable' } as const;
+const sourceUnavailable = (error: unknown) => error instanceof FactReadDeniedError ||
+  error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch;
 
 async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cutoff: Tick, access: Access) {
   const id = factId(attempt.paperId);
@@ -43,7 +48,7 @@ async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cu
     // A later grant can license an unchanged copy. Verify the archive only after
     // opening the currently authorized paper and matching its payload.
     const current = await read.fact(id, { mode: 'following' });
-    if (!matches(current)) return;
+    if (!matches(current) || !await revisionsOnlyChangeGrants(tx, id, version.rev, current.ref.rev)) return;
     const original = await createCommandReadContext(tx, storagePurpose).fact(id, { mode: 'pinned', rev: version.rev });
     if (!matches(original)) return;
     access.track(current, 'following');
@@ -53,26 +58,34 @@ async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cu
 
 export async function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot, access: Access) {
   const release = attempt.paper.assessmentRelease;
-  if (!release) return unavailable;
-  const read = createCommandReadContext(tx, purpose);
-  const current = await read.fact(submission.ref.id, { mode: 'following' });
-  const paper = await read.fact(factId(release.releaseRef.id), { mode: 'following' });
-  if (current.ref.rev !== submission.ref.rev || !access.maySend(current) || !access.maySend(paper)) return unavailable;
-  const result = await readSavedWorkbookAssessment(tx, release.releaseRef, current, paper);
-  if (!result) return unavailable;
-  // These current grants, rather than the original scoring epochs, license the diagnosis.
-  access.track(current, 'following');
-  access.track(paper, 'following');
-  return { state: result.state, score: result.score };
+  if (!release) return;
+  const read = createAuthorizedFactReader(tx, purpose, access.maySend);
+  try {
+    const current = await read.fact(submission.ref.id, { mode: 'following' });
+    const paper = await read.fact(release.releaseRef.id, { mode: 'following' });
+    if (current.ref.rev !== submission.ref.rev) return;
+    const result = await readSavedWorkbookAssessment(tx, release.releaseRef, current, paper);
+    if (!result) return;
+    // Current grants license the unchanged paper and submission.
+    access.track(current, 'following');
+    access.track(paper, 'following');
+    return result;
+  } catch (error) {
+    if (sourceUnavailable(error)) return;
+    throw error;
+  }
 }
 
 export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
   if (typeof reference !== 'string' && (reference.fact.type !== workbookAttemptType || reference.anchor.kind !== 'whole')) return;
+  const id = typeof reference === 'string' ? reference : reference.fact.id;
   let submission: FactSnapshot | undefined;
-  const recipient = { recipient: 'workspace' as const, maySend: access.maySend };
   const source = await resolveSource(tx, reference, {
-    ...recipient, maySend: fact => fact.type === workbookAttemptType && access.maySend(fact),
-    track(fact, mode) { submission = fact; access.track(fact, mode); },
+    recipient: 'workspace', rootType: workbookAttemptType, maySend: access.maySend,
+    track(fact, mode) {
+      if (fact.ref.id === id && fact.type === workbookAttemptType) submission = fact;
+      access.track(fact, mode);
+    },
   });
   if (!source || !submission) return;
   const opened = await openWorkbookQuestionSources(tx, submission, access);
@@ -80,6 +93,7 @@ export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference
 }
 
 export async function openWorkbookQuestionSources(tx: ReadTransaction, submission: FactSnapshot, access: Access) {
+  if (submission.type !== workbookAttemptType || submission.ref.learner !== tx.learner) return;
   const attempt = workbookAttempt(submission.value);
   const birth = await readActivitySubmissionBirth(tx, submission.ref, workbookAttemptType);
   if (!birth || birth.submittedAt !== attempt.submittedAt) return;
@@ -91,8 +105,9 @@ export async function openWorkbookQuestionSources(tx: ReadTransaction, submissio
       const material = await resolveSource(tx, attempt.paper.materialId, sourceAccess);
       if (material?.sourceRef.fact.type !== materialType) return;
     }
-    for (const { sourceQuestionRef, prompt } of attempt.paper.questions) {
-      if (!sourceQuestionRef) continue;
+    await readFrozenWorkbookBank(createAuthorizedFactReader(tx, purpose, access.maySend), attempt.paper, access.track);
+    for (const { kind, sourceQuestionRef, prompt } of attempt.paper.questions) {
+      if (kind === 'bank' || !sourceQuestionRef) continue;
       const question = await resolveSource(tx, {
         v: 1, fact: { ...sourceQuestionRef, type: workspaceEntryType }, anchor: { kind: 'question', itemId: 'question' },
       }, sourceAccess);
@@ -100,7 +115,7 @@ export async function openWorkbookQuestionSources(tx: ReadTransaction, submissio
     }
     return {attempt, birth, paper, sourceAccess};
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
+    if (sourceUnavailable(error)) return;
     throw error;
   }
 }
@@ -111,7 +126,6 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
   const {source, submission, attempt, birth, paper, sourceAccess} = opened;
   const {ref} = submission;
   try {
-
     // Workbook creates the original issuance at revision 1. Grants can add
     // revisions of the same paper. Ordinary workbooks have no coverage proof.
     const targets = attempt.paper.questions.map(({ id }) => ({
@@ -130,12 +144,15 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
     const assessments = new Map((access.trackAssessment
       ? await readWorkspaceAttemptAssessments(tx, submission, access.maySend, access.trackAssessment) : [])
       .map(({ questionId, verdict, score }) => [questionId, { verdict, ...(score ? { score } : {}) }]));
-    const formalAssessment = attempt.paper.assessmentRelease ? await readReleasedAssessment(tx, attempt, submission, access) : undefined;
+    const formal = await readReleasedAssessment(tx, attempt, submission, access);
+    const feedback = workbookAttemptView(ref.id, attempt, [], formal?.result).feedback;
+    const formalAssessment = formal ? { state: formal.state, score: formal.score }
+      : attempt.paper.assessmentRelease ? unavailable : undefined;
     const questions = attempt.paper.questions.map((question, index) => {
       const { id, prompt, kind } = question;
       const observed = projectHelpExposure({ submission: { ref, target: targets[index]!, cutoff: birth.tick },
         events, coverage: null });
-      const { result } = attempt.feedback[index]!;
+      const { result } = feedback[index]!;
       const assessment = assessments.get(id) ?? { verdict: result };
       return { id, prompt, answer: attempt.answers[id], kind, assessment,
         ...(kind === 'numeric' ? { unit: question.unit } : {}),
@@ -152,7 +169,7 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
       concept_history: unavailable,
       mastery: unavailable, retention: unavailable };
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
+    if (sourceUnavailable(error)) return;
     throw error;
   }
 }
