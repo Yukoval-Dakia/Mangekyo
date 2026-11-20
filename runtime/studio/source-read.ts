@@ -38,6 +38,7 @@ type SourceProjection = {
   kind?: WorkspaceEntryKind;
   tags?: readonly string[];
   links?: readonly string[];
+  question?: {prompt:string; answer?:string; rubric?:string};
 };
 
 function intakeDocumentForRead(fact: FactSnapshot) {
@@ -85,9 +86,23 @@ export function sourceSearchExcerpt(fact: FactSnapshot, content: SourceProjectio
   }
 }
 
+export function sourceQuestions(fact: FactSnapshot): readonly {id: string; prompt: string}[] {
+  if (fact.type === workbookPaperType) return workbookPaper(fact.value).questions;
+  if (fact.type === workbookAttemptType) return workbookAttempt(fact.value).paper.questions;
+  if (fact.type === ridingPracticeType) return practiceSubmission(fact.value).paper.questions;
+  if (fact.type === workspaceEntryType) {
+    const entry = workspaceEntry(fact.value);
+    if (entry.kind === 'question') return [{id: 'question', prompt: entry.body}];
+  }
+  return [];
+}
+
 function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection | undefined {
   try {
-    if (anchor.kind === 'answer-slot') {
+    if (anchor.kind === 'question') {
+      const question = sourceQuestions(fact).find(item => item.id === anchor.itemId);
+      if (question) return {title: displayOf(fact.type, fact.value).title, content: question.prompt};
+    } else if (anchor.kind === 'answer-slot') {
       if (fact.type !== workbookAttemptType || anchor.slotId !== 'answer' || anchor.path?.length) return;
       const attempt = workbookAttempt(fact.value);
       const answer = attempt.answers[anchor.itemId];
@@ -108,9 +123,9 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection |
     } else if (fact.type === intakeFactType) {
       return {title:intakeTextOf(fact).title, content:intakeTextOf(fact).extraction.text};
     } else {
-      const {title, text, kind, links} = displayOf(fact.type, fact.value);
+      const {title, text, kind, links, question} = displayOf(fact.type, fact.value);
       const tags = fact.type === workspaceEntryType ? workspaceEntry(fact.value).tags : undefined;
-      return {title, content: text, ...(kind ? {kind} : {}), ...(tags ? {tags} : {}), ...(links ? {links} : {})};
+      return {title, content: text, ...(kind ? {kind} : {}), ...(tags ? {tags} : {}), ...(links ? {links} : {}), ...(question ? {question} : {})};
     }
   } catch {
     return;

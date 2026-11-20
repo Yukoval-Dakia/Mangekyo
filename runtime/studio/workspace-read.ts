@@ -168,6 +168,6 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
   const {content, nextOffset} = typeof original === 'string'
     ? textSlice(original, offset) : {content: original, nextOffset: null};
   return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? workspaceRecordKind(sourceRef.fact.type),
-    title, content, tags, links, sourceRef, ...(assessments.length ? {assessments} : {}),
+    title, content, tags, links, sourceRef, ...(record.question ? {question:record.question} : {}), ...(assessments.length ? {assessments} : {}),
     ...(nextOffset === null ? {} : {nextOffset})});
 }

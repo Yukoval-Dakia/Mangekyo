@@ -9,7 +9,12 @@ function tool(name: string, description: string, properties: Record<string, unkn
   }}};
 }
 export const workspaceKinds = ['question', 'page', 'concept', 'relation', 'observation', 'annotation'] as const;
+export const openLearningLimit = 8;
 export const workspaceDefinitions = [
+  tool('open_learning', '打开 1–8 个已获准的学习对象。refs 可传 id、sourceRef JSON 字符串或这些引用的数组。part 可传 question:<题号> 或 assessment。', {
+    refs: {anyOf: [text, {type: 'array', minItems: 1, maxItems: openLearningLimit, items: text}]},
+    part: text,
+  }, ['refs']),
   tool('search_workspace', '找学习记录、题或笔记。用 conceptId 查有向知识边，用 sourceRef 重开版本。', {
     query: text, kind: {enum: ['attempt','paper','material','note','goal','task', ...workspaceKinds], type: 'string'},
     kinds: strings, tags: strings, since: text, related: text, cursor: text,

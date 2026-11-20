@@ -12,6 +12,7 @@ import {TeachingError} from '../../executors/teaching/provider.ts';
 import {workspaceDefinitions} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
+import {learningToolError, openLearningBatch, parseOpenLearningArgs} from './workspace-open.ts';
 import {workbookAttempt, workbookAttemptType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/activity/library-values.ts';
 import {organizerTaskType} from '../../modules/activity/organizer-values.ts';
@@ -63,9 +64,17 @@ export function openWorkspaceTools(options: {
         witnesses.set(key, {id:fact.ref.id, type:fact.type, rev:fact.ref.rev, epoch:fact.accessEpoch, ...(mode ? {mode} : {})});
       };
       const assessmentBasis: WorkspaceAssessmentBasis[] = [];
-      const text = name === 'read_workspace'
-        ? await workspaceRead(tx,args,track,options.maySend,options.trackAssessment ? basis => assessmentBasis.push(basis) : undefined)
-        : await workspaceSearch(tx,args,track,options.maySend);
+      const trackAssessment = options.trackAssessment ? (basis: WorkspaceAssessmentBasis) => assessmentBasis.push(basis) : undefined;
+      let text;
+      if (name === 'open_learning') {
+        const parsed = parseOpenLearningArgs(args);
+        text = JSON.stringify('ok' in parsed ? parsed : await openLearningBatch(tx,parsed,{
+          known:id => sources.has(id), maySend:options.maySend, track,
+        }, (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
+          parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
+      } else if (name === 'read_workspace') {
+        text = await workspaceRead(tx,args,track,options.maySend,trackAssessment);
+      } else text = await workspaceSearch(tx,args,track,options.maySend);
       return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis});
     },options.authorize);
     if (priorRead) await priorRead;
@@ -73,6 +82,7 @@ export function openWorkspaceTools(options: {
       text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[];
     };
     const value = JSON.parse(text);
+    const trackedBasis = assessmentBasis ?? [];
     const legacyWholeAttempt = !assessmentBasis && value.sourceRef?.fact.type === workbookAttemptType && value.sourceRef.anchor.kind === 'whole';
     const current = await db.snapshot({learner: studioLearner}, async tx => {
       const reader = createCommandReadContext(tx, purpose);
@@ -89,28 +99,35 @@ export function openWorkspaceTools(options: {
         if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return false;
         throw error;
       }
-      if (assessmentBasis?.length && !options.trackAssessment) return false;
-      for (const basis of assessmentBasis ?? []) {
+      if (trackedBasis.length && !options.trackAssessment) return false;
+      for (const basis of trackedBasis) {
         const actual = await workspaceAssessmentBasis(tx, basis.slot, options.maySend);
         if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
       }
       for (const witness of witnesses) options.track(witness);
-      for (const basis of assessmentBasis ?? []) options.trackAssessment?.(basis);
+      for (const basis of trackedBasis) options.trackAssessment?.(basis);
       await options.authorize(tx);
       return true;
     });
     if (!current) {
-      if (assessmentBasis?.length || legacyWholeAttempt) throw new TeachingError('evidence_scope', '作答依据已变化，本轮结果无法使用。');
+      if (trackedBasis.length || legacyWholeAttempt) throw new TeachingError('evidence_scope', '作答依据已变化，本轮结果无法使用。');
+      if (name === 'open_learning') return JSON.stringify(learningToolError('basis_stale','refs','读取依据在打开后已变化。',{
+        tool:'open_learning',args,why:'重新读取当前获准的版本。',
+      }));
       return workspaceSourceUnavailable;
     }
-    const direct = new Set<string>([value.id,args.related,...[...(value.results ?? []), ...(value.observations ?? []),
-      ...(value.recentAttempts ?? [])].map(item => item.id)].filter(id => typeof id === 'string'));
+    const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
+    const direct = new Set<string>([value.id,args.related,
+      ...values.flatMap(item => [item.id, item.related, ...[...(item.results ?? []), ...(item.observations ?? []),
+        ...(item.recentAttempts ?? [])].map(result => result.id)])].filter(id => typeof id === 'string'));
     for (const w of witnesses) if (direct.has(w.id)) sources.set(w.id,w);
     if (name === 'read_workspace' && args.id === 'learner') {
       for (const w of witnesses) if (w.type === goalType || w.type === organizerTaskType) overviewBasis.set(w.id, w);
     }
-    if (name === 'read_workspace' && typeof value.id === 'string' && witnesses.some(w => w.id === value.id)) {
-      opened.set(value.id, {id: value.id, workspace:true, title: String(value.title ?? value.kind ?? '学习记录'), text: String(value.content ?? text).slice(0, 3000)});
+    for (const item of name === 'search_workspace' ? [] : values) {
+      if (typeof item?.id === 'string' && witnesses.some(w => w.id === item.id)) {
+        opened.set(item.id, {id:item.id, workspace:true, title:String(item.title ?? item.kind ?? '学习记录'), text:String(item.content ?? JSON.stringify(item)).slice(0,3000)});
+      }
     }
     return text;
   }
@@ -198,14 +215,18 @@ export function openWorkspaceTools(options: {
     if (!tool) return JSON.stringify({error:'请从本轮提供的工作区工具中选择。'});
     const fields = tool.function.parameters.properties;
     const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
-    if (unknown) return JSON.stringify({error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
+    if (unknown) return JSON.stringify(name === 'open_learning'
+      ? learningToolError('invalid_args',unknown.slice(0,60),'可用字段为 refs、part。',{
+          tool:'open_learning',args:Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(fields,key))),why:'仅传工具支持的字段。',
+        })
+      : {error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
     return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead);
   }
   return {
     ...(options.presentationManifest ? {presentationTool} : {}),
     execute,
     executeRead: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>) =>
-      name === 'search_workspace' || name === 'read_workspace'
+      name === 'search_workspace' || name === 'read_workspace' || name === 'open_learning'
         ? execute(name, args, step, priorRead)
         : execute(name, args, step),
     publishedFormalArtifact: () => publishedFormalArtifact,
