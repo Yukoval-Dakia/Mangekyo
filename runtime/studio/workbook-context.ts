@@ -175,7 +175,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       try { target = workbookReadingMount(query); }
       catch { throw new RequestError(400,'帮助挂载格式无效。'); }
       try {
-        return await notionReadScope(db,studioLearner,signal).read(async (tx,check) => {
+        return await notionReadScope(db,studioLearner,{signal}).read(async (tx,check) => {
           const {mount,paper} = await resolveMount(tx,createCommandReadContext(tx,purpose),id,target.paperRev,target.attemptRef);
           const items = await Promise.all(paper.questions.map(async item => ({
             itemId:item.id,readingContext:(await discover(tx,mount,item,check)).handles,

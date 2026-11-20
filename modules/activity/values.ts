@@ -1,4 +1,5 @@
 import { factId } from '@mangekyo/kernel';
+import { classroomTurn } from './classroom.ts';
 import { isSourceFactId } from './source-values.ts';
 
 export function object(input: unknown): Record<string, unknown> {
@@ -55,6 +56,7 @@ export function studyTurn(input: unknown) {
     caseId: field(value, 'caseId', 120),
     parentId: value.parentId === null ? null : factId(field(value, 'parentId')),
     answer,
+    ...(value.classroom === undefined ? {} : {classroom: classroomTurn(value.classroom)}),
     ...(value.memoryVersion === 1 ? {memoryVersion: 1 as const} : {}),
     ...(value.jitContextVersion === 1 ? {jitContextVersion: 1 as const, jitCounterId: field(value, 'jitCounterId', 100)} : {}),
     ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),

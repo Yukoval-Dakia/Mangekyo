@@ -303,3 +303,21 @@ p, h1, h2, h3, ol, ul, figure { margin: 0; }
 .research-sheet { margin-top: 12px; }
 .research-sheet ol { padding-inline-start: 1.6em; line-height: 1.7; }
 .research-sheet blockquote { margin: 8px 0; padding-inline-start: 14px; border-left: 3px solid var(--line); overflow-wrap: anywhere; }
+.activity-reentry {
+  display: flex;
+  align-items: center;
+  gap: .25rem .7rem;
+  padding: .45rem .7rem;
+  border-inline-start: 3px solid currentColor;
+}
+
+.activity-reentry > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-reentry > button { flex: none; }
+@media (max-width: 480px) {
+  .activity-reentry { gap: .25rem; padding-inline: .4rem; }
+  .activity-reentry > button { padding-inline: .2rem; }
+}

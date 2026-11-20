@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { api, type Session, type Settings } from './api';
 import { DemoClassroom } from './demo';
+import { ClassroomPrint } from './classroom-print';
+import { ClassroomStart } from './classroom-start';
+import { ClassroomRoom } from './classroom';
 import { Companion } from './companion';
 import { Icon, Mark, type IconName } from './icons';
 import { SettingsDialog } from './settings';
@@ -140,6 +143,12 @@ function App() {
         openSettings={() => open('settings')}
       />
     );
+  else if (path === '/classroom') content = <ClassroomStart settings={settings.data} />;
+  else if (/^\/classroom\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path)) {
+    const id = path.split('/')[2]!;
+    const preview = path.endsWith('/print');
+    content = <>{!preview && <div className="classroom-screen"><ClassroomRoom id={id} /></div>}<ClassroomPrint id={id} preview={preview} /></>;
+  }
   else if (path === '/companion') content = <Companion chats={chats} settings={settings.data} />;
   else if (path === '/me') content = <Me library={library} chats={chats} settings={settings.data && forTask(settings.data, 'companion')} editGoal={() => open('goal')} />;
   return (

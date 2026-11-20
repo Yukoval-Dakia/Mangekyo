@@ -1,0 +1,21 @@
+.classroom-form, .classroom-controls { display: grid; gap: 1rem; justify-items: start; }
+.classroom-form label, .classroom-controls label { width: 100%; }
+.classroom-controls, .classroom-work { border: 0; min-width: 0; padding: 0; margin: 0; }
+.classroom-controls { margin-block: 1.5rem; }
+.classroom-steps { list-style: decimal; padding-inline-start: 1.8rem; }
+.classroom-steps > li { padding: .8rem .5rem; border-bottom: 1px solid var(--line, #ddd); }
+.classroom-steps h2 { margin-block: .25rem .6rem; }
+.classroom-steps .heading-meta { margin: 0; }
+.classroom-print-output { display: none; }
+.classroom-paper > ol { padding-inline-start: 1.8rem; }
+.classroom-paper .artifact-controls button.primary-button { display: none; }
+.classroom-paper .av-figure { break-inside: avoid; }
+.classroom-paper .artifact-controls { opacity: 1; }
+@media print {
+  body:has(.classroom-print-output) .classroom-screen,
+  body:has(.classroom-print-output) #main-content > :not(.classroom-print-output),
+  body:has(.classroom-print-output) .product-shell > :not(.shell-body) { display: none !important; }
+  .classroom-print-output { display: block; }
+  .classroom-paper > ol > li { break-inside: auto; }
+  .classroom-paper h2, .classroom-paper h3 { break-after: avoid; }
+}
