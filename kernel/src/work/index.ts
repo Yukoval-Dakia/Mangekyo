@@ -1,7 +1,7 @@
 import { lockLearner } from '../db/learner.ts';
 import type { Db, DbQuery, DbTransaction } from '../db/types.ts';
 import { learnerId, type Tick } from '../declarations/ids.ts';
-import { clearWaits, readCurrentWork, readReadyWork, setPending, type WorkRef, type WorkRequest } from './demand.ts';
+import { clearWaits, readCurrentWork, readReadyWork, setPending, todoSlot, type WorkRef, type WorkRequest } from './demand.ts';
 
 export type { WorkRef, WorkRequest } from './demand.ts';
 export { readReadyWork, requestWork } from './demand.ts';
@@ -64,18 +64,21 @@ export async function relayPending(
   if (!last) return 0;
 
   let cursor = '';
+  let priority = -1;
   let delivered = 0;
   const errors: unknown[] = [];
   for (;;) {
-    const { rows } = await db.query<{ intent_id: string }>(
-      `SELECT o.intent_id ${currentIntent} WHERE o.state = 'pending' AND o.intent_id > $1 AND o.intent_id <= $2
-       ORDER BY o.intent_id LIMIT 100`,
-      [cursor, last.intent_id],
+    const { rows } = await db.query<{ intent_id: string; priority: number }>(
+      `SELECT o.intent_id, w.priority ${currentIntent}
+       WHERE o.state = 'pending' AND (w.priority, o.intent_id) > ($3, $1) AND o.intent_id <= $2
+       ORDER BY w.priority, o.intent_id LIMIT 100`,
+      [cursor, last.intent_id, priority],
     );
     if (rows.length === 0) break;
 
-    for (const { intent_id: executionRef } of rows) {
+    for (const { intent_id: executionRef, priority: currentPriority } of rows) {
       cursor = executionRef;
+      priority = currentPriority;
       try {
         const ref = await currentPendingIntent(db, executionRef);
         if (!ref) continue;
@@ -111,10 +114,11 @@ async function closeWork(
   return db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
     const work = await readCurrentWork(tx, ref, state === 'cancelled' ? ['ready', 'waiting'] : ['ready']);
-    if (!work) return false;
+    // Todo publication records the result and satisfies the work atomically in completeTodo.
+    if (!work || (work.slotType === todoSlot && state === 'satisfied')) return false;
     return tx.withLearnerWrite(async tick => {
       await tx.query(
-        `UPDATE work SET state = $4, gather = NULL, gather_manifest = NULL
+        `UPDATE work SET state = $4, revision = revision + CASE WHEN family='todo' THEN 1 ELSE 0 END, gather = NULL, gather_manifest = NULL
          WHERE learner_id = $1 AND id = $2 AND generation = $3`,
         [learner, ref.workId, ref.generation, state],
       );
