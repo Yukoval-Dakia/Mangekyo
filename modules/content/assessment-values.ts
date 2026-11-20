@@ -223,3 +223,5 @@ export function assessmentPublicationInput(value: unknown, registered: readonly 
   }
   return release;
 }
+
+export { selectionConstraintEvaluator, validateSelectionConstraint, matchesSelectionConstraint } from './selection-constraint.ts';
