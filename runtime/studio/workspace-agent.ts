@@ -13,6 +13,7 @@ import {openLearningLimit, workspaceDefinitions, type WorkspaceWriteReceipt} fro
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {learningToolError, openLearningBatch, parseLearningReference, parseOpenLearningArgs} from './workspace-open.ts';
+import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
 import {sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttempt, workbookAttemptType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/activity/library-values.ts';
@@ -43,6 +44,7 @@ export function openWorkspaceTools(options: {
   maySend: (input: FactSnapshot) => boolean;
   track: (input: WorkspaceWitness) => void;
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
+  trackRetention?: (basis: RetentionBasis) => void;
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
@@ -66,6 +68,7 @@ export function openWorkspaceTools(options: {
         witnesses.set(key, {id:fact.ref.id, type:fact.type, rev:fact.ref.rev, epoch:fact.accessEpoch, ...(mode ? {mode} : {})});
       };
       const assessmentBasis: WorkspaceAssessmentBasis[] = [];
+      const retentionBasis: RetentionBasis[] = [];
       const trackAssessment = options.trackAssessment ? (basis: WorkspaceAssessmentBasis) => assessmentBasis.push(basis) : undefined;
       let text;
       if (name === 'open_learning') {
@@ -76,12 +79,16 @@ export function openWorkspaceTools(options: {
           parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
       } else if (name === 'read_workspace') {
         text = await workspaceRead(tx,args,track,options.maySend,trackAssessment);
+      } else if (name === 'read_learner_radar') {
+        text = JSON.stringify(await readLearnerRadar(tx,args,options.maySend,track,
+          options.trackRetention ? basis => retentionBasis.push(basis) : undefined));
       } else text = await workspaceSearch(tx,args,track,options.maySend);
-      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis});
+      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,
+        ...(name === 'read_learner_radar' ? {retentionBasis} : {})});
     },options.authorize);
     if (priorRead) await priorRead;
-    const {text, witnesses, assessmentBasis} = JSON.parse(raw) as {
-      text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[];
+    const {text, witnesses, assessmentBasis, retentionBasis = []} = JSON.parse(raw) as {
+      text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[]; retentionBasis?: RetentionBasis[];
     };
     const value = JSON.parse(text);
     const trackedBasis = assessmentBasis ?? [];
@@ -106,12 +113,19 @@ export function openWorkspaceTools(options: {
         const actual = await workspaceAssessmentBasis(tx, basis.slot, options.maySend);
         if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
       }
+      if (retentionBasis.length && !options.trackRetention) return false;
+      for (const basis of retentionBasis) {
+        const actual = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend:options.maySend});
+        if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
+      }
       for (const witness of witnesses) options.track(witness);
       for (const basis of trackedBasis) options.trackAssessment?.(basis);
+      for (const basis of retentionBasis) options.trackRetention?.(basis);
       await options.authorize(tx);
       return true;
     });
     if (!current) {
+      if (retentionBasis.length) throw new TeachingError('evidence_scope', '保持依据已变化，本轮结果无法使用。');
       if (trackedBasis.length || legacyWholeAttempt) throw new TeachingError('evidence_scope', '作答依据已变化，本轮结果无法使用。');
       if (name === 'open_learning') return JSON.stringify(learningToolError('basis_stale','refs','读取依据在打开后已变化。',{
         tool:'open_learning',args,why:'重新读取当前获准的版本。',
@@ -126,7 +140,8 @@ export function openWorkspaceTools(options: {
     if (name === 'read_workspace' && args.id === 'learner') {
       for (const w of witnesses) if (w.type === goalType || w.type === organizerTaskType) overviewBasis.set(w.id, w);
     }
-    for (const item of name === 'search_workspace' ? [] : values) {
+    if (name === 'read_learner_radar') for (const w of witnesses) overviewBasis.set(w.id,w);
+    for (const item of name === 'search_workspace' || name === 'read_learner_radar' ? [] : values) {
       if (typeof item?.id === 'string' && witnesses.some(w => w.id === item.id)) {
         opened.set(item.id, {id:item.id, workspace:true, title:String(item.title ?? item.kind ?? '学习记录'), text:String(item.content ?? JSON.stringify(item)).slice(0,3000)});
         const ref = sourceRefV1(item.sourceRef);
@@ -264,7 +279,7 @@ export function openWorkspaceTools(options: {
     ...(options.presentationManifest ? {presentationTool} : {}),
     execute,
     executeRead: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>) =>
-      name === 'search_workspace' || name === 'read_workspace' || name === 'open_learning'
+      name === 'search_workspace' || name === 'read_workspace' || name === 'open_learning' || name === 'read_learner_radar'
         ? execute(name, args, step, priorRead)
         : execute(name, args, step),
     publishedFormalArtifact: () => publishedFormalArtifact,

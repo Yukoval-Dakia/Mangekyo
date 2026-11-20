@@ -60,6 +60,8 @@ export type TeachingProgress =
   | { phase: 'thinking' | 'reading' | 'checking' }
   | { phase: 'replying'; message: string };
 
+export type TeachingDispatch = <T>(send: () => Promise<T>) => Promise<T>;
+
 export type TeachingDependencies = {
   provider: TeachingProvider;
   onProgress?: (progress: TeachingProgress) => Promise<void>;
@@ -69,8 +71,9 @@ export type TeachingDependencies = {
    * Reuse completed effects and surface unknown effects without invoking again.
    * Pass the unique request ID persisted before sending to invoke. It is sent as
    * X-Client-Request-Id for provider correlation where supported.
+   * MCP uses the dispatch callback immediately before sending an RPC request.
    */
-  runEffect: (step: TeachingModelStep, invoke: (clientRequestId: string) => Promise<string>) => Promise<string>;
+  runEffect: (step: TeachingModelStep, invoke: (clientRequestId: string, dispatch?: TeachingDispatch) => Promise<string>) => Promise<string>;
 };
 
 type TeachDecision = { type: 'teach' } & (

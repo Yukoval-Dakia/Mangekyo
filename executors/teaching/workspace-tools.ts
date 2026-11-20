@@ -11,6 +11,10 @@ function tool(name: string, description: string, properties: Record<string, unkn
 export const workspaceKinds = ['question', 'page', 'concept', 'relation', 'observation', 'annotation'] as const;
 export const openLearningLimit = 8;
 export const workspaceDefinitions = [
+  tool('read_learner_radar', '读取当前获准的冻结保持预测和对账、目标、未完成任务、先修查询入口及可用卷面。缺证时保留未知。', {
+    scope: {type:'object', additionalProperties:false, properties:{subject_id:text, kc_ids:{...strings, maxItems:8}}},
+    horizon_hours: {type:'integer', minimum:1, maximum:168, description:'只看观察窗口在未来指定小时内截止的保持记录。'},
+  }),
   tool('open_learning', '打开 1–8 个已获准的学习对象。refs 可传 id、sourceRef JSON 字符串或这些引用的数组。part 可传 question:<题号> 或 assessment。', {
     refs: {anyOf: [text, {type: 'array', minItems: 1, maxItems: openLearningLimit, items: text}]},
     part: text,

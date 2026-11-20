@@ -1,4 +1,5 @@
 import {cancelBody, responseTooLarge, readBoundedText} from './bounded-response.ts';
+import type {TeachingDispatch} from './index.ts';
 export type McpServer = {
   id: string;
   url: string;
@@ -290,7 +291,7 @@ class McpSession {
     return headers;
   }
 
-  private async post(payload: unknown, deadline: Deadline): Promise<Response> {
+  private async post(payload: unknown, deadline: Deadline, dispatch?: TeachingDispatch): Promise<Response> {
     let body: string;
     try {
       body = JSON.stringify(payload);
@@ -301,21 +302,20 @@ class McpSession {
       throw new Error('MCP request exceeds the byte limit');
     }
 
-    try {
-      return await fetch(this.server.url, {
-        method: 'POST',
-        headers: this.headers(),
-        body,
-        redirect: 'error',
-        signal: deadline.signal,
-      });
-    } catch {
-      if (deadline.signal.aborted) throw new Error('MCP operation timed out');
-      throw new Error('MCP request failed');
-    }
+    const send = async () => {
+      try {
+        return await fetch(this.server.url, {
+          method: 'POST', headers: this.headers(), body, redirect: 'error', signal: deadline.signal,
+        });
+      } catch {
+        if (deadline.signal.aborted) throw new Error('MCP operation timed out');
+        throw new Error('MCP request failed');
+      }
+    };
+    return dispatch ? dispatch(send) : send();
   }
 
-  async initialize(deadline: Deadline): Promise<void> {
+  async initialize(deadline: Deadline, dispatch?: TeachingDispatch): Promise<void> {
     const id = this.nextId++;
     const response = await this.post({
       jsonrpc: '2.0',
@@ -326,7 +326,7 @@ class McpSession {
         capabilities: {},
         clientInfo: { name: 'mangekyo-teaching', version: '1' },
       },
-    }, deadline);
+    }, deadline, dispatch);
 
     const sessionId = response.headers.get('mcp-session-id');
     if (sessionId !== null) {
@@ -349,20 +349,20 @@ class McpSession {
     this.negotiatedVersion = result.protocolVersion;
   }
 
-  async notifyInitialized(deadline: Deadline): Promise<void> {
+  async notifyInitialized(deadline: Deadline, dispatch?: TeachingDispatch): Promise<void> {
     const response = await this.post({
       jsonrpc: '2.0',
       method: 'notifications/initialized',
-    }, deadline);
+    }, deadline, dispatch);
     await cancelBody(response);
     if (!response.ok) throw new Error(`MCP initialized notification failed with HTTP ${response.status}`);
     this.initialized = true;
   }
 
-  async request(method: string, params: JsonObject, deadline: Deadline): Promise<unknown> {
+  async request(method: string, params: JsonObject, deadline: Deadline, dispatch?: TeachingDispatch): Promise<unknown> {
     if (!this.initialized) throw new Error('MCP session is not initialized');
     const id = this.nextId++;
-    const response = await this.post({ jsonrpc: '2.0', id, method, params }, deadline);
+    const response = await this.post({ jsonrpc: '2.0', id, method, params }, deadline, dispatch);
     return rpcResult(await readRpcResponse(response, id, deadline));
   }
 
@@ -423,15 +423,15 @@ export class McpTurnConnections {
 
 type SessionAction<T> = (request: (method: string, params: JsonObject) => Promise<unknown>, config: ServerConfig) => Promise<T>;
 
-async function withSession<T>(server: McpServer, action: SessionAction<T>, connections?: McpTurnConnections): Promise<T> {
+async function withSession<T>(server: McpServer, action: SessionAction<T>, connections?: McpTurnConnections, dispatch?: TeachingDispatch): Promise<T> {
   const session = connections?.session(server) ?? new McpSession(serverConfig(server));
   const deadline = createDeadline(operationTimeoutMs);
   try {
     if (!session.initialized) {
-      await session.initialize(deadline);
-      await session.notifyInitialized(deadline);
+      await session.initialize(deadline, dispatch);
+      await session.notifyInitialized(deadline, dispatch);
     }
-    return await action((method, params) => session.request(method, params, deadline), session.server);
+    return await action((method, params) => session.request(method, params, deadline, dispatch), session.server);
   } catch (error) {
     if (connections) await connections.discard(server);
     if (deadline.signal.aborted) throw new Error('MCP operation timed out');
@@ -456,8 +456,8 @@ function readTool(value: unknown): McpTool {
   return { name: value.name, description, inputSchema: value.inputSchema };
 }
 
-export function discoverMcpTools(server: McpServer, connections?: McpTurnConnections): Promise<McpTool[]> {
-  return listTools(server, true, connections);
+export function discoverMcpTools(server: McpServer, connections?: McpTurnConnections, dispatch?: TeachingDispatch): Promise<McpTool[]> {
+  return listTools(server, true, connections, dispatch);
 }
 
 // Settings can browse the catalog before granting any tool to a turn.
@@ -465,7 +465,7 @@ export async function browseMcpTools(server: McpServer) {
   return (await listTools(server, false)).map(({name, description}) => ({name, description}));
 }
 
-async function listTools(server: McpServer, authorizedOnly: boolean, connections?: McpTurnConnections): Promise<McpTool[]> {
+async function listTools(server: McpServer, authorizedOnly: boolean, connections?: McpTurnConnections, dispatch?: TeachingDispatch): Promise<McpTool[]> {
   return withSession(server, async (request, config) => {
     const tools: McpTool[] = [];
     const seenNames = new Set<string>();
@@ -506,7 +506,7 @@ async function listTools(server: McpServer, authorizedOnly: boolean, connections
       cursor = next;
     }
     throw new Error('MCP tools/list exceeded the page limit');
-  }, connections);
+  }, connections, dispatch);
 }
 
 function renderToolResult(value: unknown): string {
@@ -545,6 +545,7 @@ export async function callMcpTool(
   name: string,
   args: Record<string, unknown>,
   connections?: McpTurnConnections,
+  dispatch?: TeachingDispatch,
 ): Promise<string> {
   const config = serverConfig(server);
   if (!validName(name) || !config.allowedTools.has(name)) {
@@ -555,5 +556,5 @@ export async function callMcpTool(
   return withSession(server, async request => {
     const result = await request('tools/call', { name, arguments: args });
     return renderToolResult(result);
-  }, connections);
+  }, connections, dispatch);
 }
