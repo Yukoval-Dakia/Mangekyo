@@ -187,7 +187,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
         throw error;
       }
     },
-    async event(id: FactId, input: Record<string, unknown>) {
+    async event(id: FactId, input: Record<string, unknown>, signal: AbortSignal) {
       let event: ReturnType<typeof workbookReadingContext>;
       try { event = workbookReadingContext(input); }
       catch { throw new RequestError(400, '帮助请求格式无效。'); }
@@ -212,12 +212,13 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
         }
         return {openingId, displayRef, presentation, card, purpose:mount.issuance ? retentionPurpose : purpose};
       };
-      try { return await notionReadScope(db,studioLearner).read((tx,check) => prepare(tx,check,true), async (tx,check) => {
+      try { return await notionReadScope(db,studioLearner,{signal}).read((tx,check) => prepare(tx,check,true), async (tx,check) => {
         const prepared = await prepare(tx,check);
         if (!prepared) throw denied();
         const {openingId, displayRef, presentation, card} = prepared;
         const handle = createCommandHandler(withinLearnerTransaction(db,tx),{modules:[activity],hooks});
         const eventId = event.phase === 'opened' ? openingId : factId(stableId('paper-capsule-display',openingId));
+        signal.throwIfAborted();
         const receipt = await handle({...scope,actor:'learner',...helpExposureRequest(eventId,{...presentation,kind:event.phase}),
           purpose:prepared.purpose});
         if (receipt.state !== 'done' || receipt.wrote[0]?.id !== eventId) throw denied();

@@ -256,7 +256,8 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
 
     get,
     readingLabels: (id: string, query: URLSearchParams, signal: AbortSignal) => capsules.labels(factIdOf(id,'找不到这份试卷。'),query,signal),
-    readingContext: (id: string, input: Record<string,unknown>) => capsules.event(factIdOf(id,'找不到这份试卷。'),input),
+    readingContext: (id: string, input: Record<string,unknown>, signal: AbortSignal) =>
+      capsules.event(factIdOf(id,'找不到这份试卷。'),input,signal),
     async sheet(id: string) {
       return db.snapshot({ learner: studioLearner }, async tx => {
         const { paper, revision } = await readPaperSnapshot(tx, factIdOf(id, '找不到这份试卷。'));

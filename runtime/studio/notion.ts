@@ -225,10 +225,12 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false, s
   async function read<P, T>(project: Projection<P>, publish: Projection<T, DbTransaction>): Promise<T>;
   async function read<P, T>(project: Projection<P>, publish?: Projection<T, DbTransaction>): Promise<P | T> {
     if (readOnly && publish) throw new Error('A read-only Notion scope cannot publish');
+    signal?.throwIfAborted();
     const {initial,prepared} = await snapshot(async tx=>{
       const prepared = planner.prepare(fact=>pageFor(tx,fact));
       return {initial:await project(tx,prepared.collect),prepared};
     });
+    signal?.throwIfAborted();
     if (prepared.empty() && !publish) return initial;
     await prepared.resolve();
     if (readOnly) {
