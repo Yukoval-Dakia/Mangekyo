@@ -1,49 +1,17 @@
 import { factId, type FactId, type Json, type JsonObject, type Revision } from '@mangekyo/kernel';
 
-// Fact references are scoped to the learner by the caller. A revision is always explicit.
-export type AssessmentRevisionRef = { readonly id: FactId; readonly rev: Revision };
-export type AssessmentEvaluatorRef = { readonly id: string; readonly version: string };
-export type AssessmentAnswerValue =
-  | { readonly kind: 'numeric'; readonly value: number; readonly unit: string | null }
-  | { readonly kind: 'text'; readonly value: string }
-  | { readonly kind: 'attachment'; readonly ref: AssessmentRevisionRef }
-  | { readonly kind: 'trace'; readonly ref: AssessmentRevisionRef }
-  | { readonly kind: 'structured'; readonly value: JsonObject | readonly Json[] };
+import type {
+  AssessmentAnswerValue, AssessmentInputAddress, AssessmentRelease, AssessmentRevisionRef,
+} from '@mangekyo/module-content/facts/assessment';
+export {
+  assessmentPublicationInput, assessmentRelease,
+  type AssessmentAnswerValue, type AssessmentCriterion, type AssessmentEvaluatorRef,
+  type AssessmentInputAddress, type AssessmentRelease, type AssessmentRevisionRef,
+} from '@mangekyo/module-content/facts/assessment';
 
 type AnswerKind = AssessmentAnswerValue['kind'];
-// JSON Pointer relative to the slot. The empty pointer addresses its root.
-export type AssessmentInputAddress = { readonly slotId: string; readonly path: string };
-type AnswerSlot = {
-  readonly slotId: string;
-  readonly schemaVersion: string;
-  readonly fields: readonly { readonly path: string; readonly kind: AnswerKind }[];
-};
-export type AssessmentCriterion = {
-  readonly criterionId: string;
-  // Each address is required for scored results. Alternatives can share one field shape.
-  readonly inputs: readonly AssessmentInputAddress[];
-  readonly evaluator: AssessmentEvaluatorRef;
-  readonly parameters: Json;
-  readonly source: {
-    readonly kind: 'school-rubric' | 'product-rubric';
-    readonly ref: AssessmentRevisionRef;
-    readonly path?: string;
-  };
-  readonly maximum: number | null;
-  readonly missingEvidence: 'insufficient-evidence' | 'allow-qualitative';
-};
-type AssessmentItem = {
-  readonly itemId: string;
-  readonly promptRef?: AssessmentRevisionRef;
-  readonly workRef?: AssessmentRevisionRef;
-  readonly slots: readonly AnswerSlot[];
-  readonly criteria: readonly AssessmentCriterion[];
-};
+type AssessmentItem = AssessmentRelease['items'][number];
 
-export type AssessmentRelease = {
-  readonly releaseRef: AssessmentRevisionRef;
-  readonly items: readonly AssessmentItem[];
-};
 export type AssessmentSubmission = {
   readonly releaseRef: AssessmentRevisionRef;
   readonly submissionRef: AssessmentRevisionRef;
@@ -164,79 +132,6 @@ function inputKey({ slotId, path }: AssessmentInputAddress): string {
 
 function addresses(value: unknown, label: string): AssessmentInputAddress[] {
   return unique(list(value, label).map(entry => inputAddress(record(entry, label, ['slotId', 'path']))), inputKey, label);
-}
-
-const answerKinds = ['numeric', 'text', 'attachment', 'trace', 'structured'] as const;
-
-function slot(value: unknown): AnswerSlot {
-  const { slotId, schemaVersion, fields } = record(value, '作答位', ['slotId', 'schemaVersion', 'fields']);
-  return {
-    slotId: token(slotId, '作答位标识'),
-    schemaVersion: token(schemaVersion, '作答位 schema 版本'),
-    fields: unique(list(fields, '作答字段').map(entry => {
-      const { path, kind } = record(entry, '作答字段', ['path', 'kind']);
-      return { path: pointer(path), kind: choice(kind, answerKinds, '作答字段类型') };
-    }), field => field.path, '作答字段路径'),
-  };
-}
-
-function criterion(value: unknown, slots: readonly AnswerSlot[]): AssessmentCriterion {
-  const row = record(value, '评估标准', ['criterionId', 'inputs', 'evaluator', 'parameters', 'source', 'maximum', 'missingEvidence']);
-  const criterionId = token(row.criterionId, '标准标识');
-  const inputs = addresses(row.inputs, '标准输入');
-  for (const { slotId, path } of inputs) {
-    if (!slots.find(slot => slot.slotId === slotId)?.fields.some(field => field.path === path)) {
-      throw new Error(`标准 ${criterionId} 引用了未声明的作答位或路径。`);
-    }
-  }
-  const evaluator = record(row.evaluator, '判定器', ['id', 'version']);
-  const source = record(row.source, '规则来源', ['kind', 'ref', 'path']);
-  const maximum = row.maximum === null ? null : finite(row.maximum, '标准满分');
-  if (maximum !== null && maximum <= 0) throw new Error('标准满分必须为正数，无分值标准须明确为 null。');
-  return {
-    criterionId, inputs,
-    evaluator: { id: token(evaluator.id, '判定器标识'), version: token(evaluator.version, '判定器版本') },
-    parameters: json(row.parameters),
-    source: {
-      kind: choice(source.kind, ['school-rubric', 'product-rubric'], '规则来源类型'),
-      ref: revisionRef(source.ref, '规则来源'),
-      ...(source.path === undefined ? {} : { path: pointer(source.path) }),
-    },
-    maximum,
-    missingEvidence: choice(row.missingEvidence, ['insufficient-evidence', 'allow-qualitative'], '缺证据政策'),
-  };
-}
-
-// Historical reads use the frozen contract even after an evaluator version is retired.
-export function assessmentRelease(value: unknown): AssessmentRelease {
-  const release = record(value, '发放契约', ['releaseRef', 'items']);
-  const items = unique(list(release.items, '发放题目').map(entry => {
-    const item = record(entry, '发放题目', ['itemId', 'promptRef', 'workRef', 'slots', 'criteria']);
-    const slots = unique(list(item.slots, '作答位').map(slot), entry => entry.slotId, '作答位标识');
-    return {
-      itemId: token(item.itemId, '题目标识'),
-      ...(item.promptRef === undefined ? {} : { promptRef: revisionRef(item.promptRef, '题面') }),
-      ...(item.workRef === undefined ? {} : { workRef: revisionRef(item.workRef, '作品') }),
-      slots,
-      criteria: unique(list(item.criteria, '冻结评估标准').map(entry => criterion(entry, slots)), entry => entry.criterionId, '标准标识'),
-    };
-  }), item => item.itemId, '题目标识');
-  const maximum = items.flatMap(item => item.criteria).reduce((total, entry) => total + (entry.maximum ?? 0), 0);
-  finite(maximum, '契约总分');
-  return { releaseRef: revisionRef(release.releaseRef, '发放'), items };
-}
-
-// The caller supplies the trusted evaluator catalog. Success supplies input for independent publication verification.
-export function assessmentPublicationInput(value: unknown, registered: readonly AssessmentEvaluatorRef[]): AssessmentRelease {
-  const release = assessmentRelease(value);
-  for (const item of release.items) {
-    for (const { criterionId, evaluator } of item.criteria) {
-      if (!registered.some(entry => entry.id === evaluator.id && entry.version === evaluator.version)) {
-        throw new Error(`题目 ${item.itemId} 的标准 ${criterionId} 使用了未注册的判定器 ${evaluator.id}@${evaluator.version}。`);
-      }
-    }
-  }
-  return release;
 }
 
 function answerValue(value: unknown, kind: AnswerKind): AssessmentAnswerValue {

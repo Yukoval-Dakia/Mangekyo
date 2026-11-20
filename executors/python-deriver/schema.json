@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mangekyo:CanonicalEvidenceSlice:v1",
+  "x-derivers": {
+    "learner/cognition@1": "cognition@1",
+    "learner/retention-forecast@1": "dimensioned-retention@1"
+  },
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "refs": { "type": "array", "items": { "$ref": "#/$defs/text" } },
+    "time": { "type": "string", "format": "date-time" },
+    "nonnegative": { "type": "number", "minimum": 0 },
+    "probability": { "type": "number", "minimum": 0, "maximum": 1 },
+    "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "novelty": { "enum": ["same", "isomorphic", "transfer"] },
+    "state": { "enum": ["known", "unknown"] },
+    "methodVersion": { "enum": ["cognition@1", "dimensioned-retention@1"] },
+    "dimension": { "anyOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] },
+    "evidenceRef": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "rev"],
+      "properties": { "ref": { "$ref": "#/$defs/text" }, "rev": { "$ref": "#/$defs/revision" } }
+    },
+    "omission": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "reason"],
+      "properties": {
+        "ref": {
+          "type": "object", "additionalProperties": false, "required": ["id", "rev"],
+          "properties": { "id": { "$ref": "#/$defs/text" }, "rev": { "$ref": "#/$defs/revision" } }
+        },
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    },
+    "event": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "rev", "occurred_at", "concept_ids", "item_novelty", "help_level", "outcome", "claim_ids"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/text" },
+        "rev": { "$ref": "#/$defs/revision" },
+        "occurred_at": { "$ref": "#/$defs/time" },
+        "concept_ids": { "$ref": "#/$defs/refs" },
+        "item_novelty": { "$ref": "#/$defs/novelty" },
+        "help_level": { "enum": ["independent", "hinted", "solution_seen"] },
+        "outcome": { "enum": ["correct", "incorrect", "unknown"] },
+        "score_norm": { "$ref": "#/$defs/probability" },
+        "effective_duration_ms": { "$ref": "#/$defs/nonnegative" },
+        "confidence": { "$ref": "#/$defs/probability" },
+        "error_stage": { "enum": ["reading", "modeling", "strategy", "execution", "expression"] },
+        "claim_ids": { "$ref": "#/$defs/refs" },
+        "representation": { "$ref": "#/$defs/text" },
+        "context": { "$ref": "#/$defs/text" },
+        "method": { "$ref": "#/$defs/text" }
+      }
+    },
+    "deadline": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "at"],
+      "properties": { "ref": { "$ref": "#/$defs/text" }, "at": { "$ref": "#/$defs/time" } }
+    },
+    "constraints": {
+      "type": "object", "additionalProperties": false, "required": ["budget_min", "locks", "deadlines"],
+      "properties": {
+        "budget_min": { "anyOf": [{ "$ref": "#/$defs/nonnegative" }, { "type": "null" }] },
+        "locks": { "$ref": "#/$defs/refs" },
+        "deadlines": { "type": "array", "items": { "$ref": "#/$defs/deadline" } }
+      }
+    },
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "concept_ids", "item_novelty", "est_min"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/text" },
+        "concept_ids": { "$ref": "#/$defs/refs" },
+        "item_novelty": { "$ref": "#/$defs/novelty" },
+        "est_min": { "type": "number", "exclusiveMinimum": 0 },
+        "representation": { "$ref": "#/$defs/text" },
+        "context": { "$ref": "#/$defs/text" },
+        "method": { "$ref": "#/$defs/text" }
+      }
+    },
+    "input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["clock_watermark", "as_of_at", "events", "constraints", "candidate_pool"],
+      "properties": {
+        "clock_watermark": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$(?![\\s\\S])" },
+        "as_of_at": { "$ref": "#/$defs/time" },
+        "events": { "type": "array", "items": { "$ref": "#/$defs/event" } },
+        "omissions": { "type": "array", "items": { "$ref": "#/$defs/omission" } },
+        "constraints": { "$ref": "#/$defs/constraints" },
+        "candidate_pool": { "type": "array", "items": { "$ref": "#/$defs/candidate" } }
+      }
+    },
+    "unknownUncertainty": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "reason", "needed"],
+      "properties": {
+        "kind": { "enum": ["unknown"] },
+        "reason": { "$ref": "#/$defs/text" },
+        "needed": { "$ref": "#/$defs/text" }
+      }
+    },
+    "intervalUncertainty": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "low", "high"],
+      "properties": {
+        "kind": { "enum": ["interval"] },
+        "low": { "$ref": "#/$defs/probability" },
+        "high": { "$ref": "#/$defs/probability" }
+      }
+    },
+    "unknownDimension": {
+      "type": "object", "additionalProperties": false,
+      "required": ["concept_id", "representation", "context", "method", "item_novelty", "state", "uncertainty", "evidence_refs"],
+      "properties": {
+        "concept_id": { "$ref": "#/$defs/text" },
+        "representation": { "$ref": "#/$defs/dimension" },
+        "context": { "$ref": "#/$defs/dimension" },
+        "method": { "$ref": "#/$defs/dimension" },
+        "item_novelty": { "$ref": "#/$defs/novelty" },
+        "state": { "enum": ["unknown"] },
+        "uncertainty": { "$ref": "#/$defs/unknownUncertainty" },
+        "evidence_refs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
+      }
+    },
+    "knownDimension": {
+      "type": "object", "additionalProperties": false,
+      "required": ["concept_id", "representation", "context", "method", "item_novelty", "state", "uncertainty", "evidence_refs", "mastery_prob", "r_now", "stability_days", "difficulty", "effective_evidence", "interval_days", "last_at"],
+      "properties": {
+        "concept_id": { "$ref": "#/$defs/text" },
+        "representation": { "$ref": "#/$defs/dimension" },
+        "context": { "$ref": "#/$defs/dimension" },
+        "method": { "$ref": "#/$defs/dimension" },
+        "item_novelty": { "$ref": "#/$defs/novelty" },
+        "state": { "enum": ["known"] },
+        "uncertainty": { "$ref": "#/$defs/intervalUncertainty" },
+        "evidence_refs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } },
+        "mastery_prob": { "$ref": "#/$defs/probability" },
+        "r_now": { "$ref": "#/$defs/probability" },
+        "stability_days": { "type": "number", "exclusiveMinimum": 0 },
+        "difficulty": { "$ref": "#/$defs/probability" },
+        "effective_evidence": { "$ref": "#/$defs/nonnegative" },
+        "interval_days": { "type": "array", "items": { "$ref": "#/$defs/nonnegative" } },
+        "last_at": { "$ref": "#/$defs/time" },
+        "crossing_at": { "$ref": "#/$defs/time" }
+      }
+    },
+    "rankedCandidate": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "info_gain", "est_min", "reason_code"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/text" },
+        "info_gain": { "$ref": "#/$defs/nonnegative" },
+        "est_min": { "type": "number", "exclusiveMinimum": 0 },
+        "reason_code": { "$ref": "#/$defs/text" }
+      }
+    },
+    "anomaly": {
+      "type": "object", "additionalProperties": false, "required": ["type", "refs"],
+      "properties": { "type": { "$ref": "#/$defs/text" }, "refs": { "$ref": "#/$defs/refs" } }
+    },
+    "output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method_version", "state", "state_vector", "uncertainty", "ranked_candidates", "anomalies"],
+      "properties": {
+        "method_version": { "$ref": "#/$defs/methodVersion" },
+        "state": { "$ref": "#/$defs/state" },
+        "state_vector": {
+          "type": "array", "items": {
+            "anyOf": [{ "$ref": "#/$defs/knownDimension" }, { "$ref": "#/$defs/unknownDimension" }]
+          }
+        },
+        "r_now": { "$ref": "#/$defs/probability" },
+        "crossing_at": { "$ref": "#/$defs/time" },
+        "uncertainty": {
+          "anyOf": [{ "$ref": "#/$defs/intervalUncertainty" }, { "$ref": "#/$defs/unknownUncertainty" }]
+        },
+        "ranked_candidates": { "type": "array", "items": { "$ref": "#/$defs/rankedCandidate" } },
+        "anomalies": { "type": "array", "items": { "$ref": "#/$defs/anomaly" } },
+        "artifacts": { "type": "array", "items": { "type": "string", "pattern": "^@calc_.+$(?![\\s\\S])" } }
+      }
+    }
+  }
+}
