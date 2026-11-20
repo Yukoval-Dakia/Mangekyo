@@ -169,6 +169,22 @@ export function workspaceStoredReceipt(
     ...(observation ? {observation:{status:'saved',text:String(entry.body),undo_token:command}} : {})};
 }
 
+export function radarArguments(args: Record<string, unknown>, isFactId: (value: unknown) => boolean) {
+  const { scope, horizon_hours: hours } = args;
+  if (hours !== undefined && (typeof hours !== 'number' || !Number.isSafeInteger(hours) || hours < 1 || hours > 168)) return;
+  if (scope !== undefined) {
+    if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return;
+    const { subject_id, kc_ids, ...other } = scope as Record<string, unknown>;
+    if (Object.keys(other).length || (subject_id !== undefined && !isFactId(subject_id)) ||
+        (kc_ids !== undefined && (!Array.isArray(kc_ids) || kc_ids.length > 8 || !kc_ids.every(isFactId)))) return;
+    if (subject_id !== undefined || (Array.isArray(kc_ids) && kc_ids.length)) return { scoped: true };
+  }
+  const now = Date.now();
+  return { scoped: false, horizon: hours === undefined ? undefined : {
+    from: new Date(now).toISOString(), through: new Date(now + hours * 3_600_000).toISOString(),
+  } };
+}
+
 export function observationToolInput(args: Record<string, unknown>, isReference: (value: string) => boolean) {
   const {title, text, evidence_refs: refs} = args;
   if (typeof title !== 'string' || !title.trim() || typeof text !== 'string' || !text.trim())
