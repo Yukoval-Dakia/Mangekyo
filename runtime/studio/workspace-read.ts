@@ -1,7 +1,9 @@
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
-import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {createBusScope} from '../../kernel/src/bus.ts';
+import type {Revision} from '../../kernel/src/declarations/ids.ts';
+import {FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
 import {isSourceFactId, sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
@@ -45,17 +47,23 @@ export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: Assess
   try { manifest = parseManifest(current.manifest); }
   catch { return; }
   if (manifest.learner !== tx.learner) return;
-  const reader = createAuthorizedFactReader(tx, purpose, maySend);
+  const bus = createBusScope(tx, {
+    actor: 'companion', purpose, maySend, defaultPreset: 'assessmentBasis',
+    presets: new Map([['assessmentBasis', (fact: FactSnapshot) => fact.type]]),
+  });
   const facts: WorkspaceAssessmentBasis['facts'] = [];
+  for (const input of manifest.inputs) {
+    // The workbook publisher licenses direct fact inputs. Other input shapes need their own recipient policy.
+    if (input.kind !== 'fact' || syntheticStudyRecords.has(input.id)) return;
+    facts.push(input.id === current.attempt_id ? {...input, mode:'following'} : input);
+  }
   try {
-    for (const input of manifest.inputs) {
-      // The workbook publisher licenses direct fact inputs. Other input shapes need their own recipient policy.
-      if (input.kind !== 'fact' || syntheticStudyRecords.has(input.id)) return;
-      const mode = input.id === current.attempt_id ? 'following' : input.mode;
-      const fact = await reader.reopen({...input, mode});
-      if ((input.id === current.attempt_id && fact.type !== workbookAttemptType) ||
-          (input.id === current.paper_id && fact.type !== workbookPaperType)) return;
-      facts.push(mode === input.mode ? input : {...input, mode});
+    for (let offset = 0; offset < facts.length; offset += 8) {
+      const refs = facts.slice(offset, offset + 8).map(ref => ({...ref, rev: ref.rev as Revision}));
+      const {witnesses} = await bus.resolve(refs, 'assessmentBasis');
+      if (witnesses.some(w =>
+        (w.id === current.attempt_id && w.type !== workbookAttemptType) ||
+        (w.id === current.paper_id && w.type !== workbookPaperType))) return;
     }
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
