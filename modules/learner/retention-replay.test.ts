@@ -21,3 +21,18 @@ it('binds the frozen cutoff and selects only the exact target from a multi-dimen
   expect(freezeCognition(input, output).estimate).toMatchObject({ kind: 'probabilistic', probability: 0.7 });
   expect(freezeCognition({ ...input, target: { ...input.target, condition: 'variant' } }, output).estimate.kind).toBe('unknown');
 });
+
+it('scopes only witnessed exact-item submissions to an unclassified target, preserving the raw slice', () => {
+  const now = '2026-11-20T00:00:00Z', rev = 2 as Revision, tick = '4' as Tick;
+  const event = { ref: 'a', rev, occurred_at: now, item_novelty: 'same' as const, concept_ids: [],
+    help_level: 'independent' as const, outcome: 'correct' as const, claim_ids: [] };
+  const canonicalEvidence: CanonicalEvidenceSliceV1 = { clock_watermark: tick, as_of_at: now, events: [
+    event, { ...event, rev: 1 }, { ...event, ref: 'other' }, { ...event, item_novelty: 'transfer' }],
+    constraints: { budget_min: null, locks: [], deadlines: [] }, candidate_pool: [] };
+  const input: RetentionInput = { target: { activity: 'frozen-workbook-item', paper: { id: 'p' as FactId, rev },
+    itemId: 'q', condition: 'same-item', gradingVersion: '1' }, window: { requestedAt: now, through: now },
+    observedThrough: tick, canonicalEvidence, observations: [{ submission: { id: 'a' as FactId, rev },
+      admittedAt: tick, result: 'correct', submittedAt: now, exposure: { kind: 'independent' } }] };
+  expect(retentionSlice(input).events.map(e => e.concept_ids)).toEqual([['frozen-item/p/2/q'], [], [], []]);
+  expect(input.canonicalEvidence!.events.every(e => !e.concept_ids.length)).toBe(true);
+});

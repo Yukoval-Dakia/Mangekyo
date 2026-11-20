@@ -179,7 +179,17 @@ export function retentionSlice(input: RetentionInput): CanonicalEvidenceSliceV1 
         Date.parse(slice.as_of_at) !== Date.parse(input.window.requestedAt) ||
         slice.events.some(e => Date.parse(e.occurred_at) > Date.parse(slice.as_of_at)))
       throw new Error('Canonical evidence does not match the frozen forecast cutoff');
-    return slice;
+    if (input.target.dimensions?.kcId || input.target.condition !== 'same-item') return slice;
+    // Activity has already matched these frozen submissions to this exact paper
+    // revision and item. Scope only their same-item events to the forecast;
+    // the canonical slice persisted in input keeps the real knowledge links.
+    const localBucket = retentionBucketId(input);
+    const sameItem = new Set(input.observations.filter(o => comparableObservation(input, o) &&
+      BigInt(o.admittedAt) <= BigInt(input.observedThrough) && Date.parse(o.submittedAt) <= Date.parse(slice.as_of_at))
+      .map(o => o.submission.id + '/' + o.submission.rev));
+    if (!sameItem.size) return slice;
+    return { ...slice, events: slice.events.map(e => e.item_novelty === 'same' && sameItem.has(e.ref + '/' + e.rev) &&
+      !e.concept_ids.includes(localBucket) ? { ...e, concept_ids: [...e.concept_ids, localBucket] } : e) };
   }
   const events = input.observations.flatMap<EvidenceEventV1>(observation => {
     const { exposure, dimensions = {} } = observation;
