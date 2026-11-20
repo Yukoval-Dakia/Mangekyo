@@ -59,7 +59,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
     const authorized = createCommandReadContext(tx,purpose);
     async function authorize(fact: FactSnapshot) {
       if (fact.type === captureSourceType && sourceEnvelope(fact.value).kind === 'notion' &&
-          !notionSourceRecipient(await authority.notionSelection?.(tx,fact) ?? null,purpose,'learner')(fact))
+          !notionSourceRecipient(await authority.notionSelection?.(tx,fact) ?? null,purpose,tx.learner)(fact))
         throw new FactReadDeniedError('recipient','本卷未授权此 Notion 选源。');
       return fact;
     }
