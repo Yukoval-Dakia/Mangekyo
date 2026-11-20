@@ -189,6 +189,8 @@ export class NotionReadUnconfirmed extends FactReadDeniedError {
   constructor() { super('recipient', '暂时无法确认 Notion 来源。'); }
 }
 
+export class NotionReadUnchecked extends NotionReadUnconfirmed {}
+
 export type CheckNotionRead = (fact: FactSnapshot) => Promise<void>;
 type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => Promise<T>;
 
@@ -213,6 +215,7 @@ export function notionReadScope(db: Db, learner: LearnerId, signal?: AbortSignal
     const page = await pageFor(tx, fact);
     if (!page) return;
     const authority = witnesses.get(page.witness);
+    if (authority === undefined) throw new NotionReadUnchecked();
     if (authority === 'withdrawn') throw new FactReadDeniedError('recipient', '未能确认 Notion 来源。');
     if (authority !== 'authorized') throw new NotionReadUnconfirmed();
   };
