@@ -10,7 +10,7 @@ import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
 import type {PreparedPythonAttempts} from '../../executors/teaching/study-agent.ts';
-import {openLearningLimit, workspaceDefinitions, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
+import {openLearningLimit, workspaceDefinitions, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {learningToolError, openLearningBatch, parseLearningReference, parseOpenLearningArgs} from './workspace-open.ts';
@@ -23,6 +23,7 @@ import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEnt
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
 import {readPythonAttempts} from './python-attempts.ts';
+import {cropIntakeImage, planIntakeImage, type IntakeImage} from './intake-image.ts';
 
 import {presentationCatalog} from '../../surfaces/shared/presentation/index.ts';
 import type {Manifest} from '../../kernel/src/derivations/manifest.ts';
@@ -70,7 +71,7 @@ export function openWorkspaceTools(options: {
     opened.set(id, {id, workspace: true, title: view.title, text: view.content});
     if (openedAnswer) openedAnswers.set(id, root);
   }
-  async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>) {
+  async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>, receiveImage?: ReceiveStudyImage) {
     const pythonAttempts = name === 'python_attempts';
     if (!isJson(args)) return JSON.stringify(pythonAttempts
       ? learningToolError('invalid_args','attempts','请选择试卷及作答引用。')
@@ -86,13 +87,22 @@ export function openWorkspaceTools(options: {
       const assessmentBasis: WorkspaceAssessmentBasis[] = [];
       const retentionBasis: RetentionBasis[] = [];
       const trackAssessment = options.trackAssessment ? (basis: WorkspaceAssessmentBasis) => assessmentBasis.push(basis) : undefined;
-      let text;
+      let text: string;
+      let intakeImage: IntakeImage | undefined;
       if (name === 'open_learning') {
         const parsed = parseOpenLearningArgs(args);
-        text = JSON.stringify('ok' in parsed ? parsed : await openLearningBatch(tx,parsed,{
-          known:id => sources.has(id), maySend:options.maySend, track, trackAssessment, currentObject: currentObject?.view,
-        }, (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
-          parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
+        const access = {known:(id: string) => sources.has(id), maySend:options.maySend, track, trackAssessment};
+        if ('ok' in parsed) text = JSON.stringify(parsed);
+        else if (parsed.part.kind === 'image_crop') {
+          const plan = await planIntakeImage(tx,parsed.refs[0]!,parsed.part.crop,access);
+          if ('ok' in plan) text = JSON.stringify(plan);
+          else {
+            intakeImage = plan;
+            text = JSON.stringify({ok:true});
+          }
+        } else text = JSON.stringify(await openLearningBatch(tx,{...parsed,part:parsed.part},{...access,currentObject:currentObject?.view},
+          (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
+            parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
       } else if (name === 'read_workspace') {
         text = await workspaceRead(tx,args,track,options.maySend,trackAssessment);
       } else if (name === 'read_learner_radar') {
@@ -101,21 +111,22 @@ export function openWorkspaceTools(options: {
       } else if (pythonAttempts) {
         text = JSON.stringify(await readPythonAttempts(tx,args,{known:id => sources.has(id), maySend:options.maySend, track}));
       } else text = await workspaceSearch(tx,args,track,options.maySend);
-      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis, sourceProjection: 1,
+      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,intakeImage,sourceProjection:1,
         ...(name === 'read_workspace' ? {workbookProjection: 1} : {}),
         ...(name === 'read_learner_radar' ? {retentionBasis} : {})});
     },options.authorize);
     if (priorRead) await priorRead;
-    const {text, witnesses, assessmentBasis, workbookProjection, sourceProjection, retentionBasis = []} = JSON.parse(raw) as {
+    const {text:storedText, witnesses, assessmentBasis, workbookProjection, sourceProjection, retentionBasis = [], intakeImage} = JSON.parse(raw) as {
       text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[]; workbookProjection?: number;
-      sourceProjection?: number; retentionBasis?: RetentionBasis[];
+      sourceProjection?: number; retentionBasis?: RetentionBasis[]; intakeImage?: IntakeImage;
     };
-    const value = JSON.parse(text);
+    let text = storedText;
+    let value = JSON.parse(text);
     const trackedBasis = assessmentBasis ?? [];
     const legacyWorkbookRead = name === 'read_workspace' && workbookProjection !== 1 && value.sourceRef?.anchor.kind === 'whole' &&
       [workbookPaperType, workbookAttemptType].includes(value.sourceRef.fact.type);
-    const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
-    if (sourceProjection !== 1 && (name === 'read_workspace' || name === 'open_learning') && values.some(item => {
+    const storedItems: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
+    if (sourceProjection !== 1 && (name === 'read_workspace' || name === 'open_learning') && storedItems.some(item => {
       const ref = sourceRefV1(item.sourceRef);
       return ref?.fact.type === organizerNoteType && ref.anchor.kind === 'whole';
     })) throw new TeachingError('evidence_scope', '笔记读取规则已变化，请重新发送。');
@@ -148,7 +159,7 @@ export function openWorkspaceTools(options: {
         const actual = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend:options.maySend});
         if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
       }
-      for (const witness of witnesses) options.track(witness, pythonAttempts || derivedSource ? true : undefined);
+      for (const witness of witnesses) options.track(witness, pythonAttempts || derivedSource || intakeImage ? true : undefined);
       for (const basis of trackedBasis) options.trackAssessment?.(basis);
       for (const basis of retentionBasis) options.trackRetention?.(basis);
       await options.authorize(tx);
@@ -163,6 +174,16 @@ export function openWorkspaceTools(options: {
       }));
       return workspaceSourceUnavailable;
     }
+    if (intakeImage) {
+      if (intakeImage.crop && !receiveImage)
+        return JSON.stringify(learningToolError('image_unavailable','part','当前调用入口不接收原图裁剪。'));
+      // Replay the pixel read from the verified original. The journal holds only its pinned basis.
+      const result = await cropIntakeImage(intakeImage);
+      value = result.value;
+      text = JSON.stringify(value);
+      if (result.image) receiveImage?.(result.image);
+      if (value.ok) for (const witness of witnesses) overviewBasis.set(witness.id,witness);
+    }
     if (pythonAttempts) {
       if (value.ok !== true) return text;
       for (const w of witnesses) {
@@ -172,6 +193,7 @@ export function openWorkspaceTools(options: {
       }
       return JSON.stringify({...value,witnesses});
     }
+    const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
     if (name === 'open_learning' && args.lens === 'diagnose' && values.some(item => item.lens === 'diagnose')) {
       options.trackDiagnosis?.();
       for (const witness of witnesses) overviewBasis.set(witness.id, witness);
@@ -304,7 +326,7 @@ export function openWorkspaceTools(options: {
     }
     return save({kind:'observation',title,body:text,links:[...evidence.keys()]},step,[...evidence.values()]);
   }
-  async function execute(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>) {
+  async function execute(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>, receiveImage?: ReceiveStudyImage) {
     if (name === 'mount_artifact' && options.presentationManifest) {
       if (Object.keys(args).some(key => !['view','predictionPrompt','sentenceBreaks'].includes(key))) return JSON.stringify({error:'仅支持 view、predictionPrompt 和 sentenceBreaks。'});
       const result = await mountArtifact(db,turn,step,args,async tx => {
@@ -324,17 +346,18 @@ export function openWorkspaceTools(options: {
         })
       : {error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
     if (name === 'record_observation') return recordObservation(args,step);
-    return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead);
+    return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead, receiveImage);
   }
   return {
     ...(options.presentationManifest ? {presentationTool} : {}),
-    execute,
+    execute: (name: string, args: Record<string, unknown>, step: number, receiveImage?: ReceiveStudyImage) =>
+      execute(name, args, step, undefined, receiveImage),
     async preparePythonAttempts(args: Record<string, unknown>, step: number): Promise<PreparedPythonAttempts> {
       return JSON.parse(await read('python_attempts', args, step));
     },
-    executeRead: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>) =>
+    executeRead: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>, receiveImage?: ReceiveStudyImage) =>
       name === 'search_workspace' || name === 'read_workspace' || name === 'open_learning' || name === 'read_learner_radar'
-        ? execute(name, args, step, priorRead)
+        ? execute(name, args, step, priorRead, receiveImage)
         : execute(name, args, step),
     publishedFormalArtifact: () => publishedFormalArtifact,
     reads: () => [...opened.values()],

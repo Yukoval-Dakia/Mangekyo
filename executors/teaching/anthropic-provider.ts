@@ -148,7 +148,11 @@ export function anthropicRequestBody(value: unknown): Record<string, unknown> {
       if (typeof id !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(id)) {
         throw new TeachingError('provider_configuration', '教学模型工具结果缺少调用标识。');
       }
-      const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '');
+      const text = typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '');
+      const image = record(message.image);
+      const content = image?.mediaType === 'image/png' && typeof image.data === 'string' ? [
+        {type:'text', text}, {type:'image', source:{type:'base64', media_type:image.mediaType, data:image.data}},
+      ] : text;
       push('user', [{ type: 'tool_result', tool_use_id: id, content }]);
       continue;
     }
