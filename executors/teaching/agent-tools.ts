@@ -1,3 +1,4 @@
+import { learningToolError, type ToolError, type ToolErrorCode } from './tool-error.ts';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
@@ -166,12 +167,11 @@ export type StudyTools = {
   names: readonly string[];
   snapshotFiles: () => Record<string, string>;
   restoreFiles: (files: Record<string, string>) => void;
-  execute: (name: string, args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]) => Promise<string>;
+  execute: (name: string, args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]) => Promise<string | ToolError>;
 };
 
 type PythonEnvelope = {
   status: 'ok' | 'error' | 'fatal';
-  detail?: string;
   stdout: string;
   stderr: string;
   files: Record<string, string>;
@@ -187,8 +187,8 @@ function clip(text: string, limit: number): string {
   return text.length <= limit ? text : text.slice(0, limit) + '…';
 }
 
-function fail(message: string): string {
-  return 'error: ' + clip(message, 600);
+function fail(code: ToolErrorCode, message: string, field?: string) {
+  return learningToolError(code,field,message);
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -204,9 +204,9 @@ function validText(value: unknown): value is string {
   return typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
 }
 
-export function pythonCodeError(code: unknown): string | undefined {
-  if (!validText(code) || !code.trim()) return fail('python requires non-empty code');
-  if (code.length > MAX_CODE_CHARS) return fail(`code exceeds ${MAX_CODE_CHARS} characters`);
+export function pythonCodeError(code: unknown): ToolError | undefined {
+  if (!validText(code) || !code.trim()) return fail('invalid_args','请输入 Python 代码。','code');
+  if (code.length > MAX_CODE_CHARS) return fail('budget_or_limit',`代码超过 ${MAX_CODE_CHARS} 字符，请拆成几次计算。`,'code');
   return undefined;
 }
 
@@ -353,7 +353,6 @@ function readEnvelope(text: string): PythonEnvelope | undefined {
   }
   return {
     status,
-    ...(typeof envelope.detail === 'string' ? { detail: clip(envelope.detail, 200) } : {}),
     stdout,
     stderr,
     files,
@@ -417,48 +416,48 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
   const searchEnabled = options?.allowSearch === true;
   const names = Object.freeze(searchEnabled ? [...baseNames, 'exa_search'] : [...baseNames]);
 
-  async function readFile(args: unknown): Promise<string> {
+  async function readFile(args: unknown): Promise<string | ToolError> {
     const value = record(args);
-    if (!value || !validFilename(value.name)) return fail('read_file requires a flat filename');
+    if (!value || !validFilename(value.name)) return fail('invalid_args','请输入不含目录的文件名。','name');
     const content = workspace.get(value.name);
-    return content === undefined ? fail(`file not found: ${value.name}`) : content;
+    return content === undefined ? fail('not_found',`未找到文件 ${value.name}。`,'name') : content;
   }
 
-  async function writeFile(args: unknown): Promise<string> {
+  async function writeFile(args: unknown): Promise<string | ToolError> {
     const value = record(args);
-    if (!value || !validFilename(value.name)) return fail('write_file requires a flat filename');
-    if (!validText(value.content)) return fail('write_file requires text content');
+    if (!value || !validFilename(value.name)) return fail('invalid_args','请输入不含目录的文件名。','name');
+    if (!validText(value.content)) return fail('invalid_args','文件内容须为文本。','content');
     const bytes = Buffer.byteLength(value.content);
-    if (bytes > MAX_FILE_BYTES) return fail(`file exceeds ${MAX_FILE_BYTES} bytes`);
+    if (bytes > MAX_FILE_BYTES) return fail('budget_or_limit',`单个文件限 ${MAX_FILE_BYTES} 字节，请缩短文本。`,'content');
     const previous = workspace.get(value.name);
     const total = [...workspace.entries()].reduce(
       (sum, [name, text]) => sum + (name === value.name ? 0 : Buffer.byteLength(text)),
       0,
     );
-    if (total + bytes > MAX_WORKSPACE_BYTES) return fail(`workspace exceeds ${MAX_WORKSPACE_BYTES} bytes`);
-    if (!workspace.has(value.name) && workspace.size >= MAX_FILES) return fail(`workspace exceeds ${MAX_FILES} files`);
+    if (total + bytes > MAX_WORKSPACE_BYTES) return fail('budget_or_limit',`文件总量限 ${MAX_WORKSPACE_BYTES} 字节，请缩短现有文件。`,'content');
+    if (!workspace.has(value.name) && workspace.size >= MAX_FILES) return fail('budget_or_limit',`文件数量限 ${MAX_FILES}，请复用现有文件。`,'name');
     workspace.set(value.name, value.content);
     return `wrote ${value.name} (${bytes} bytes${previous === undefined ? '' : ', replaced'})`;
   }
 
-  async function runPython(args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]): Promise<string> {
+  async function runPython(args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]): Promise<string | ToolError> {
     const code = record(args)?.code;
     const error = pythonCodeError(code);
     if (error) return error;
     const name = `mangekyo-study-${randomUUID()}`;
     const payload = JSON.stringify({ code, files: Object.fromEntries(workspace), inputs, attempts });
-    if (Buffer.byteLength(payload) > MAX_PYTHON_INPUT_BYTES) return fail('python input exceeded the limit');
+    if (Buffer.byteLength(payload) > MAX_PYTHON_INPUT_BYTES) return fail('budget_or_limit','Python 输入超过限制，请减少作答或结果句柄。','inputs');
     const outcome = await runPythonContainer(name, payload);
-    if (outcome.kind === 'timeout') return fail(`python timed out after ${PYTHON_TIMEOUT_MS} ms`);
-    if (outcome.kind === 'overflow') return fail('python output exceeded the limit');
-    if (outcome.kind === 'unavailable') return fail('python unavailable: docker is not accessible');
+    if (outcome.kind === 'timeout') return fail('budget_or_limit',`Python 超过 ${PYTHON_TIMEOUT_MS} 毫秒，请缩小计算范围。`,'code');
+    if (outcome.kind === 'overflow') return fail('budget_or_limit','Python 输出超过限制，请只输出结果摘要。','code');
+    if (outcome.kind === 'unavailable') return fail('tool_unavailable','当前无法启动 Python 沙箱。');
 
     const stdout = outcome.stdout.toString('utf8');
     const stderr = outcome.stderr.toString('utf8');
     const envelope = readEnvelope(stdout);
-    if (!envelope) return fail(dockerFailure(stderr, outcome.code));
+    if (!envelope) return fail('tool_unavailable',dockerFailure(stderr, outcome.code));
     if (envelope.status === 'fatal') {
-      return fail(envelope.detail ? `python unavailable: ${envelope.detail}` : 'python unavailable');
+      return fail('execution_failed','Python 沙箱未能准备输入。请缩小输入或改用其他工具。','inputs');
     }
 
     const collected: Record<string, string> = {};
@@ -475,7 +474,10 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
     }
 
     const parts: string[] = [];
-    if (envelope.status === 'error') parts.push('python exited with an error');
+    if (envelope.status === 'error') {
+      const detail = envelope.stderr.trim().split('\n').at(-1);
+      return fail('execution_failed',detail || 'Python 程序退出。请检查代码。','code');
+    }
     if (envelope.stdout.trim()) parts.push(envelope.stdout.trimEnd());
     if (envelope.stderr.trim()) parts.push(envelope.stderr.trimEnd());
     if (!parts.length) parts.push('(no output)');
@@ -484,12 +486,12 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
     return clip(parts.join('\n'), MAX_PYTHON_RESULT_CHARS);
   }
 
-  async function search(args: unknown): Promise<string> {
-    if (!searchEnabled) return fail('exa_search unavailable');
+  async function search(args: unknown): Promise<string | ToolError> {
+    if (!searchEnabled) return fail('tool_unavailable','在线检索当前不可用。');
     const value = record(args);
-    if (!value || !validText(value.query) || !value.query.trim()) return fail('exa_search requires a query');
+    if (!value || !validText(value.query) || !value.query.trim()) return fail('invalid_args','请输入检索主题。','query');
     const query = value.query.trim();
-    if (query.length > MAX_QUERY_CHARS) return fail(`query exceeds ${MAX_QUERY_CHARS} characters`);
+    if (query.length > MAX_QUERY_CHARS) return fail('invalid_args',`检索主题最多 ${MAX_QUERY_CHARS} 字符。`,'query');
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
@@ -501,13 +503,13 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
           body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
             params: {name: 'web_search_exa', arguments: {query, numResults: 2}} }),
         });
-        if (!response.ok) { await response.body?.cancel(); return fail('Exa HTTP ' + response.status); }
+        if (!response.ok) { await response.body?.cancel(); return fail(response.status === 429 ? 'budget_or_limit' : 'execution_failed','检索服务返回 HTTP ' + response.status + '。'); }
         const raw = await readBounded(response, MAX_SEARCH_RESPONSE_BYTES);
-        if (!raw) return fail('Exa search response exceeded the limit');
+        if (!raw) return fail('budget_or_limit','结果超过限制，请缩小检索范围。','query');
         const packets = response.headers.get('content-type')?.includes('text/event-stream')
           ? raw.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()) : [raw];
         const result = packets.map(packet => JSON.parse(packet)).find(packet => packet.id === 1)?.result;
-        if (!result || result.isError || !Array.isArray(result.content)) return fail('Exa search unavailable');
+        if (!result || result.isError || !Array.isArray(result.content)) return fail('execution_failed','检索服务未能完成查询。');
         return clip(result.content.filter((part: {type?: string; text?: unknown}) => part.type === 'text' && validText(part.text))
           .map((part: {text: string}) => part.text).join('\n'), MAX_SEARCH_RESULT_CHARS) || 'no results';
       }
@@ -523,35 +525,35 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
         }),
         signal: controller.signal,
       });
-      if (!response.ok) return fail(`exa search failed (HTTP ${response.status})`);
+      if (!response.ok) return fail(response.status === 429 ? 'budget_or_limit' : 'execution_failed',`检索服务返回 HTTP ${response.status}。`);
       const body = await readBounded(response, MAX_SEARCH_RESPONSE_BYTES);
-      if (body === undefined) return fail('exa search response exceeded the limit');
+      if (body === undefined) return fail('budget_or_limit','结果超过限制，请缩小检索范围。','query');
       try {
         return renderSearch(JSON.parse(body));
       } catch {
-        return fail('exa search returned invalid JSON');
+        return fail('execution_failed','检索服务返回了无法读取的结果。');
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        return fail(`exa search timed out after ${SEARCH_TIMEOUT_MS} ms`);
+        return fail('budget_or_limit','检索超时，请缩小检索范围。','query');
       }
-      return fail('exa search unavailable');
+      return fail('execution_failed','检索服务未能完成查询。');
     } finally {
       clearTimeout(timer);
     }
   }
 
-  async function execute(name: string, args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]): Promise<string> {
+  async function execute(name: string, args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]): Promise<string | ToolError> {
     try {
       switch (name) {
         case 'python': return await runPython(args, inputs, attempts);
         case 'read_file': return await readFile(args);
         case 'write_file': return await writeFile(args);
         case 'exa_search': return await search(args);
-        default: return fail(`unknown tool: ${clip(name, 80)}`);
+        default: return fail('tool_unavailable','请使用本轮已开放的工具。','name');
       }
     } catch {
-      return fail('tool failed');
+      return fail('execution_failed','工具未能完成。可调整输入或换用其他工具。');
     }
   }
 

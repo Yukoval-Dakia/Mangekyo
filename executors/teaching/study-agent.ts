@@ -1,3 +1,4 @@
+import {learningToolError} from './tool-error.ts';
 import { createHash } from 'node:crypto';
 import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
@@ -176,9 +177,9 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
     const executeCall = async (call: FunctionCall, position: number, priorRead?: Promise<unknown>) => {
       const name = call.function.name;
       if (!definitions.some(tool => tool.function.name === name)) {
-        if (discovery) return {content: JSON.stringify({ok: false, code: 'tool_unavailable',
-          message: '当前请求未开放此工具。可先查找获准的工具或使用当前工具继续。',
-          next: {tool: findTools.function.name, args: {query: name}}}), summary: '工具不可用'};
+        if (discovery) return {content: JSON.stringify(learningToolError('tool_unavailable','name','当前请求未开放此工具。',{
+          tool:findTools.function.name, args:{query:name}, why:'确认本轮已授权且下一次请求可用的工具。',
+        })), summary: '工具不可用'};
         throw new TeachingError('evidence_scope', '模型请求了本轮未开放的工具。');
       }
       await options.onProgress?.({phase: name === 'python' ? 'checking' : 'reading'});
@@ -190,17 +191,9 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       if (name === 'exa_search' && pinnedQuery) args.query = pinnedQuery;
       const remote = remotes.get(name);
       const workspaceTool = workspace && nativeTools.some(tool => tool.function.name === name);
-      if ((remote || workspaceTool) && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return {
-          content: JSON.stringify(name === 'save_page'
-            ? {ok:false, code:'invalid_args', field:'args', message:'请传教材保存的 JSON 对象。',
-              next:{tool:'save_page',args:{},why:'新建填 title 与 content 或 blocks；修改填 ref 与 patch。'}}
-            : name === 'save_relation'
-            ? {ok:false, code:'invalid_args', field:'args', message:'请传知识边的 JSON 对象。',
-              next:{tool:'save_relation',args:{},why:'填写 kind、from、to 与 scope。'}}
-            : name === 'open_learning'
-            ? {ok:false, code:'invalid_args', field:'args', message:'请传包含 refs 的 JSON 对象。'}
-            : {error: name + ' 需要一个 JSON 对象，请将字段直接放在对象里。'}),
+          content: JSON.stringify(learningToolError('invalid_args','args','请将工具参数作为 JSON 对象提交。')),
           summary: '参数错误 · ' + name,
         };
       }
@@ -211,11 +204,11 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       if (name === 'python' && args.attempts !== undefined) {
         const summary = 'Python 验算 · 作答选择不可用';
         if (!workspace?.preparePythonAttempts || !args.attempts || typeof args.attempts !== 'object' || Array.isArray(args.attempts)) {
-          return {summary, content:JSON.stringify({ok:false, code:'invalid_args', field:'attempts', message:'工作区已开放时可选择已提交的作答引用。'})};
+          return {summary, content:JSON.stringify(learningToolError('invalid_args','attempts','工作区已开放时可选择已提交的作答引用。'))};
         }
         const codeError = pythonCodeError(args.code);
         if (codeError) {
-          return {summary, content:JSON.stringify({ok:false, code:'invalid_args', field:'code', message:codeError})};
+          return {summary, content:JSON.stringify(codeError)};
         }
         const prepared = await workspace.preparePythonAttempts(args.attempts as Record<string, unknown>, step);
         if (!prepared.ok) return {summary, content:JSON.stringify(prepared)};
@@ -238,7 +231,8 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
           ? await workspace.executeRead(name, args, step, priorRead ?? Promise.resolve(), receiveImage)
           : await workspace.execute(name, args, step, receiveImage);
       } else if (name === 'read_file' || name === 'write_file') {
-        output = await execute();
+        const value = await execute();
+        output = typeof value === 'string' ? value : JSON.stringify(value);
       } else {
         const raw = await options.runEffect({ index: step, model, provider: remote ? 'tool:mcp:' + remote.server.id : 'tool:' + name,
           requestDigest: hash(JSON.stringify({name, args, messages})) }, async (_, dispatch) => {
@@ -251,9 +245,9 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         const saved = JSON.parse(raw);
         if (saved.lostSession) throw new TeachingError('provider_unavailable', '本轮有状态 MCP 会话已中断，请重新发送，已完成的工具操作不会重复。');
         if (name === 'python') tools.restoreFiles(saved.files);
-        output = attempts ? JSON.stringify({text: saved.output,
+        output = typeof saved.output !== 'string' ? JSON.stringify(saved.output) : attempts ? JSON.stringify({text: saved.output,
           sources: attempts.witnesses.map(({id, rev}) => ({id, rev})),
-          ...(attempts.issues.length ? {ok:false, code:'partial_success', field:'refs', issues:attempts.issues} : {}),
+          ...(attempts.issues.length ? {...learningToolError('partial_success','refs','部分作答未打开，详见逐项结果。'), issues:attempts.issues} : {}),
         }) : saved.output;
       }
       const files = name === 'python' ? Object.entries(tools.snapshotFiles()).filter(([name, value]) => before[name] !== value) : [];

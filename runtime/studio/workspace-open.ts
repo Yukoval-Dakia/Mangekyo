@@ -1,4 +1,5 @@
 import {imageCropEdgeLimit, openLearningLimit, type ImageCrop} from '../../executors/teaching/workspace-tools.ts';
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
@@ -11,14 +12,6 @@ import {sourceQuestions, textbookText, type SourceTrack, type WorkspaceSourceRec
 import {textbookPageFrom, textbookPageType} from '../../modules/content/textbook-page.ts';
 import {readWorkbookDiagnosis} from './workbook-diagnosis.ts';
 import type {WorkspaceAssessmentBasis} from './workspace-read.ts';
-
-type ToolErrorCode = 'not_found' | 'access_revoked' | 'basis_stale' | 'version_conflict' | 'invalid_args' | 'partial_success' | 'evidence_not_opened' | 'image_unavailable';
-
-export function learningToolError(code: ToolErrorCode, field: string, message: string, next?: {
-  tool: 'open_learning' | 'search_workspace' | 'record_observation' | 'save_page' | 'save_relation'; args: Record<string, unknown>; why: string;
-}) {
-  return {ok:false as const, code, field, message, ...(next && {next})};
-}
 
 const searchNext = {tool:'search_workspace' as const, args:{}, why:'从当前可读结果选择引用。'};
 type Part = {kind:'whole' | 'assessment'} | {kind:'question'; index:number} | {kind:'block'; blockId:string};

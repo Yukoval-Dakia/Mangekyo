@@ -1,3 +1,4 @@
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -90,7 +91,7 @@ export function openTurnMemory(options: {
         message: '已记录本轮拟保存的操作。以本轮结束时的回执为准。'});
     } catch (error) {
       if (!(error instanceof ClaimInputError)) throw error;
-      return JSON.stringify({ok: false, code: 'invalid_memory', message: error.message});
+      return JSON.stringify(learningToolError('invalid_memory',undefined,error.message));
     }
   }
 

@@ -1,3 +1,4 @@
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
@@ -18,7 +19,9 @@ import {
 } from './workspace-search.ts';
 
 type Arguments = Record<string, unknown>;
-export const workspaceSourceUnavailable = JSON.stringify({error: '未找到可用于教学的记录。可用 search_workspace 查找当前可读的 id。'});
+const workspaceSourceUnavailable = JSON.stringify(learningToolError('not_found','id','未找到当前可读的学习记录。',{
+  tool:'search_workspace',args:{},why:'查询当前已授权的学习记录。',
+}));
 export type AssessmentSlot = Extract<ManifestInput, {kind: 'slot'}>;
 export type WorkspaceAssessmentBasis = {slot: AssessmentSlot; facts: Extract<ManifestInput, {kind: 'fact'}>[]};
 
@@ -115,7 +118,7 @@ export async function workspaceQuery(tx: ReadTransaction, args: Arguments, acces
     });
     if (graph) return {...graph, unappliedFilters: unappliedWorkspaceFilters(criteria)};
   } catch (error) {
-    if (error instanceof WorkspaceSearchError) return {error: error.message};
+    if (error instanceof WorkspaceSearchError) return {error: error.message, code:error.code, field:error.field};
     throw error;
   }
   return undefined;
@@ -123,6 +126,12 @@ export async function workspaceQuery(tx: ReadTransaction, args: Arguments, acces
 
 export async function workspaceSearch(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient): Promise<string> {
   const result = await workspaceQuery(tx, args, {recipient:'workspace', track, maySend});
+  if (result && 'error' in result && result.code) {
+    const {cursor, ...query} = args;
+    return JSON.stringify(learningToolError(result.code,result.field,result.error,result.code === 'basis_stale' ? {
+      tool:'search_workspace',args:query,why:'去掉旧分页位置，重新查询。',
+    } : undefined));
+  }
   return result ? JSON.stringify(result) : workspaceSourceUnavailable;
 }
 
@@ -139,9 +148,10 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
         required:['conceptId']}, note:'观察关联具体作答。按 id 打开依据，未观察到的能力保留未知。'});
   }
   const reference = referenceFromId(args.id);
-  if (!reference) return JSON.stringify({error:'id 可传 search_workspace 的记录 id 或读回的 sourceRef JSON 字符串。查看学情概览时传 learner。'});
+  if (!reference) return JSON.stringify(learningToolError('invalid_args','id','使用记录 id 或 sourceRef。学情概览使用 learner。'));
   const offset = args.offset ?? 0;
-  if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) return JSON.stringify({error:'offset 须为非负整数。'});
+  if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0)
+    return JSON.stringify(learningToolError('invalid_args','offset','offset 须为非负整数。'));
   if (typeof reference !== 'string' && reference.fact.type === knowledgeEdgeType) {
     const edge = await openKnowledgeEdge(tx, reference, {recipient:'workspace', maySend});
     if (!edge) return workspaceSourceUnavailable;

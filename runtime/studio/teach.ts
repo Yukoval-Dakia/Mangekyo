@@ -1,3 +1,4 @@
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { createHash } from 'node:crypto';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
 import { currentMemory, memoryId } from './memory.ts';
@@ -479,10 +480,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         ...(turnMemory ? {memoryTools: turnMemory.execute} : {}),
         ...(learningMemory?.bundle.omitted.some(item => item.reason === 'budget') ? {
           async openMemoryRegion(input: Record<string, unknown>, step: number) {
-            if (expandedMemory) return JSON.stringify({ code: 'budget', message: '本轮已使用一次记忆区域展开。' });
+            if (expandedMemory) return JSON.stringify(learningToolError('budget_or_limit','region','本轮已使用一次记忆区域展开。'));
             const omitted = learningMemory?.bundle.omitted.find(item => item.reason === 'budget' &&
               item.expand.region === input.region && item.expand.start === input.start && item.expand.basisDigest === input.basisDigest);
-            if (omitted?.reason !== 'budget') return JSON.stringify({ code: 'not_found', field: 'region', message: '请使用本轮提供的展开位置。' });
+            if (omitted?.reason !== 'budget') return JSON.stringify(learningToolError('not_found','region','请使用本轮提供的展开位置。'));
             expandedMemory = await readMemoryGateway({ ...memoryRequest, maxBytes: 16_384, expand: omitted.expand,
               owner: { kind: 'session', id: job.slotKey, step: `memory-region:${step}` } });
             if (!expandedMemory) throw new ChangedEvidence();

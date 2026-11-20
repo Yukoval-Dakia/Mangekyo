@@ -1,3 +1,4 @@
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
@@ -62,19 +63,19 @@ export async function mountArtifact(
   readWitness?: ReadArtifactAssessmentWitness,
 ) {
   const checked = validateArtifact(args.view);
-  if (!checked.ok) return { error: checked.error };
+  if (!checked.ok) return learningToolError('invalid_args','view',checked.error);
   const prompt = args.predictionPrompt ?? null;
   if (prompt !== null && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 160))
-    return { error: '预测提示应为 1–160 字。' };
+    return learningToolError('invalid_args','predictionPrompt','预测提示应为 1–160 字。');
   const id = stableId('artifact-mount', turnId, String(step));
   const view = { ...checked.view, id: 'work-' + id.toLowerCase() };
   let assessment: ReturnType<typeof qualifyArtifactAssessment> | undefined;
   if (args.sentenceBreaks !== undefined) {
-    if (!prompt) return { error: '正式断句须先保存预测。' };
+    if (!prompt) return learningToolError('invalid_args','predictionPrompt','正式断句须先保存预测。');
     try {
       assessment = qualifyArtifactAssessment({ id: factId(id), rev: 1 as Revision }, view, prompt, args.sentenceBreaks, readWitness);
     } catch (error) {
-      return { error: error instanceof Error ? error.message : '正式断句无法发放。' };
+      return learningToolError('invalid_args','sentenceBreaks',error instanceof Error ? error.message : '正式断句无法发放。');
     }
   }
   const data = await db.snapshot(scope, async (tx) => {

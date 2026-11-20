@@ -1,3 +1,4 @@
+import {learningToolError} from './tool-error.ts';
 import {cancelBody, responseTooLarge, readBoundedText} from './bounded-response.ts';
 import type {TeachingDispatch} from './index.ts';
 export type McpServer = {
@@ -537,7 +538,9 @@ function renderToolResult(value: unknown): string {
     ? ''
     : JSON.stringify(value.structuredContent);
   const rendered = [text, structured].filter(part => part.length > 0).join('\n\n');
-  return value.isError === true ? `error: ${rendered}` : rendered;
+  return value.isError === true
+    ? JSON.stringify(learningToolError('execution_failed',undefined,text.trim() || '远程工具报告执行失败。'))
+    : rendered;
 }
 
 export async function callMcpTool(

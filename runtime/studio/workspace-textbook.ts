@@ -10,7 +10,8 @@ import {parseSavePage, parseTextbookRevision, previewTextbookRevision} from '../
 import {checkTextbookBasis, parseTextbookBasis, textbookPageFrom, textbookPageType} from '../../modules/content/textbook-page.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
-import {learningToolError, parseLearningReference} from './workspace-open.ts';
+import {learningToolError} from '../../executors/teaching/tool-error.ts';
+import {parseLearningReference} from './workspace-open.ts';
 import type {WorkspaceSourceRecipient} from './source-read.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 
