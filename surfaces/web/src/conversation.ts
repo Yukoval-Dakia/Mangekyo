@@ -3,6 +3,7 @@ import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionP
 
 import type { CurrentObject } from "./current-record";
 import {selectedRoute, type Route, type McpGrant} from './model-route';
+import { mountBatches, mountQuery } from "./presentation/mount-coverage.ts";
 import { editorDrafts } from "./presentation/editor-draft";
 import { useMountPermissions } from "./presentation/mount-permissions";
 import { authorizeMounts, refreshDraftBases, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
@@ -34,11 +35,19 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     sessionRef.current = value;
     renderSession(value);
   }
-  const permissions = useMountPermissions(sessionId, active, (watchedSession, removed) => {
+  const lastGrants = useRef<{ session: string; ids: ReadonlySet<string> }>(undefined);
+  function knownIds(id: string) {
     const latest = sessionRef.current;
-    if (!latest || latest.id !== watchedSession) return;
+    return [...new Set([...(latest?.id === id ? latest.mounts.map(m => m.mountId) : []),
+      ...(lastGrants.current?.session === id ? lastGrants.current.ids : [])])];
+  }
+  const permissions = useMountPermissions(sessionId, active, knownIds, (watchedSession, removed, unknown, ids) => {
+    lastGrants.current = { session: watchedSession, ids };
+    const latest = sessionRef.current;
+    if (!latest || latest.id !== watchedSession || (!removed.length && !unknown.length)) return;
     const withdrawn = new Set([...latest.withdrawn, ...removed]);
-    setSession({ ...latest, withdrawn, mounts: latest.mounts.filter(m => !withdrawn.has(m.mountId)) });
+    const uncertain = new Set([...latest.uncertain, ...unknown].filter(id => !withdrawn.has(id)));
+    setSession({ ...latest, withdrawn, uncertain, mounts: latest.mounts.filter(m => !withdrawn.has(m.mountId)) });
   });
   // Reads, receipts and turn events supply content. Only the current session
   // permission stream can make that content visible, including after completion.
@@ -46,13 +55,16 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [checkedConnection, setCheckedConnection] = useState<symbol>();
   const visibleSession = session && {
     ...session,
-    mounts: session.mounts.filter(m => session.id === sessionId && permissions?.ids.has(m.mountId) &&
+    mounts: session.mounts.filter(m => session.id === sessionId && permissions?.ids.has(m.mountId) && !session.uncertain.has(m.mountId) &&
       (!editorDrafts.has(m) || checkedConnection === connection)),
   };
   function applySnapshot(sent: ArtifactSnapshotV1, input: unknown) {
     const latest = sessionRef.current;
     if (!latest?.mounts.some(m => m.sessionId === sent.sessionId && m.turnId === sent.turnId && m.mountId === sent.mountId)) return;
-    if (input === undefined) setRefresh(n => n + 1);
+    if (input === null) {
+      if (latest.mounts.includes(sent))
+        setSession({ ...latest, uncertain: new Set([...latest.uncertain, sent.mountId]) });
+    } else if (input === undefined) setRefresh(n => n + 1);
     else setSession(receiptSnapshot(latest, sent, input));
   }
   const [draft, setDraft] = useState<{ text: string; parentId: string }>();
@@ -66,28 +78,42 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [problem, setProblem] = useState<{ source: "read" | "write"; message: string }>();
   const [refresh, setRefresh] = useState(0);
 
+  const uncertainKey = JSON.stringify([...(session?.uncertain ?? [])].sort());
   const checkDraftBases = useEffectEvent(async (signal: AbortSignal) => {
     const prior = sessionRef.current;
-    const bases = prior?.mounts.filter(m => editorDrafts.has(m));
-    if (!prior || !bases?.length || prior.id !== sessionId) return;
-    const read = await api<Session>(sessionPath(prior.id), { signal });
-    if (signal.aborted) return;
-    if (read.id !== prior.id || read.caseId !== caseId || !Array.isArray(read.turns))
-      throw new Error("Session identity mismatch");
-    const latest = sessionRef.current;
-    if (latest?.id === read.id) setSession(refreshDraftBases(latest, bases, readSession(read)));
+    if (!prior || prior.id !== sessionId || !permissions) return;
+    const ids = new Set(prior.uncertain);
+    for (const m of prior.mounts) if (editorDrafts.has(m) && checkedConnection !== connection) ids.add(m.mountId);
+    if (prior.status !== "pending") for (const id of permissions.ids) {
+      if (!prior.withdrawn.has(id) && !prior.mounts.some(m => m.mountId === id)) ids.add(id);
+    }
+    for (const batch of mountBatches(ids)) {
+      const read = await api<Session>(mountQuery(sessionPath(prior.id), batch), { signal });
+      if (signal.aborted) return;
+      if (read.id !== prior.id || read.caseId !== caseId || !Array.isArray(read.turns))
+        throw new Error("Session identity mismatch");
+      const latest = sessionRef.current;
+      if (latest?.id === read.id) setSession(refreshDraftBases(latest, prior, batch, readSession(read), permissions.ids));
+    }
   });
   useEffect(() => {
-    if (!connection) return;
+    if (!permissions) return;
     const controller = new AbortController();
-    void checkDraftBases(controller.signal).then(() => {
-      if (!controller.signal.aborted) setCheckedConnection(connection);
-    }).catch(() => {
-      if (!controller.signal.aborted)
-        setProblem({ source: "read", message: "暂时无法核对作品版本，草稿保留在当前页面。请重试。" });
-    });
-    return () => controller.abort();
-  }, [connection, refresh]);
+    let timer: ReturnType<typeof setTimeout>;
+    async function check() {
+      try {
+        await checkDraftBases(controller.signal);
+        if (!controller.signal.aborted) setCheckedConnection(connection);
+      } catch {
+        if (!controller.signal.aborted)
+          setProblem({ source: "read", message: "暂时无法核对作品版本，草稿保留在当前页面。请重试。" });
+      }
+      if (!controller.signal.aborted && sessionRef.current?.uncertain.size)
+        timer = setTimeout(check, 15000);
+    }
+    void check();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [permissions, connection, uncertainKey, session?.id, refresh]);
 
   const [streamingReply, setStreamingReply] = useState<string>();
   const [progressLabel, setProgressLabel] = useState<string>();
@@ -100,9 +126,12 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   useEffect(() => {
     if (!active || !sessionId || busy || retryOperation) return;
     const controller = new AbortController();
-    const source = sessionEvents(sessionId);
+    const hints = mountBatches(knownIds(sessionId))[0] ?? [];
+    const covered = new Set(hints);
+    const source = sessionEvents(sessionId, hints);
+    let reconnectTimer: ReturnType<typeof setTimeout>;
     const baseline = sessionRef.current?.id === sessionId ? sessionRef.current : undefined;
-    let batch: { id: string; turn: string; order?: Map<string, number> } | undefined;
+    let batch: { id: string; turn: string; order?: Map<string, number>; frame: SessionEvent } | undefined;
     const retiredTurns = new Set<string>();
     let terminal = false;
     let didHydrate = Boolean(baseline);
@@ -139,7 +168,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const atRequest = sessionRef.current;
       const requestedBatch = batch;
       try {
-        const current = await api<Session>(sessionPath(sessionId!), { signal: controller.signal });
+        const hints = mountBatches(knownIds(sessionId!))[0] ?? [];
+        const current = await api<Session>(mountQuery(sessionPath(sessionId!), hints), { signal: controller.signal });
         if (controller.signal.aborted || number !== readNumber || (mode === 'stream' && terminal)) return;
         const latest = sessionRef.current;
         if (completed && (completed.currentTurnId !== current.currentTurnId || completed.status !== current.status)) {
@@ -154,7 +184,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
         // snapshots follow on the same connection, including after reconnect.
         if (batch?.order && requestedBatch !== batch && current.status === 'pending' && current.currentTurnId === batch.turn)
           delete current.artifacts;
-        setSession(readSession(current, latest, atRequest));
+        setSession(readSession(current, latest, atRequest, new Set(hints)));
         clearReadProblem();
         if (mode === 'complete') {
           setStreamingReply(undefined);
@@ -196,16 +226,17 @@ export function useConversation(caseId: string, active: boolean, initialSession?
           previous?.turns.some(t => t.turnId === update.session.currentTurnId)) return;
       if (previous?.currentTurnId && previous.currentTurnId !== turn) retiredTurns.add(previous.currentTurnId);
       const ids = update.authorizedMountIds;
-      batch = { id: event.lastEventId, turn };
+      batch = { id: event.lastEventId, turn, frame: update };
       if (ids !== undefined) {
         batch.order = new Map(Array.isArray(ids) && ids.every(id => typeof id === 'string')
           ? ids.map((id, i) => [id, i]) : []);
       }
+      for (const id of batch.order?.keys() ?? []) covered.add(id);
       const next = { ...previous, ...update.session };
       if (previous?.currentTurnId !== next.currentTurnId) delete next.currentObject;
-      const mounted = { ...next, turns: previous?.turns ?? [], withdrawn: previous?.withdrawn ?? new Set(),
+      const mounted = { ...next, turns: previous?.turns ?? [], uncertain: previous?.uncertain ?? new Set<string>(), withdrawn: previous?.withdrawn ?? new Set(),
         mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] };
-      setSession(batch.order ? authorizeMounts(mounted, turn, batch.order) : mounted);
+      setSession(batch.order ? authorizeMounts(mounted, turn, batch.order, update, covered) : mounted);
       setProgressLabel(update.phase ? progressLabels[update.phase] : undefined);
       setStreamingReply(update.message);
       // Restore prior turns for a remembered session while the current one streams.
@@ -225,7 +256,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const latest = sessionRef.current;
       const next = streamSnapshot(latest, input, batch.order);
       if (!next || next === latest) return;
-      setSession(batch.order ? authorizeMounts(next, batch.turn, batch.order) : next);
+      setSession(batch.order ? authorizeMounts(next, batch.turn, batch.order, batch.frame, covered) : next);
     });
 
     source.addEventListener("complete", (event: MessageEvent<string>) => {
@@ -260,12 +291,17 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       if (controller.signal.aborted || terminal) return;
       batch = undefined;
       setReconnecting(true);
-      void hydrate(source.readyState === EventSource.CLOSED ? 'complete' : 'stream');
+      if (source.readyState === EventSource.CLOSED) void hydrate('complete');
+      else {
+        source.close();
+        reconnectTimer = setTimeout(() => setRefresh(n => n + 1), 1000);
+      }
     };
 
     return () => {
       source.close();
       controller.abort();
+      clearTimeout(reconnectTimer);
       readAssessment.current = undefined;
     };
   }, [active, busy, caseId, refresh, retryOperation, sessionId, sessionKey]);

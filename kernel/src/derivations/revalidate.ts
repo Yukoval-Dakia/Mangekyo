@@ -36,6 +36,28 @@ export async function revalidateManifest(
   return valid(behind);
 }
 
+/** Enumerate the fact witnesses of a manifest already revalidated by the caller. */
+export async function manifestFactInputs(tx: ReadTransaction, inputs: Manifest['inputs']) {
+  const facts: Extract<Manifest['inputs'][number], {kind: 'fact'}>[] = [];
+  const seen = new Set<string>();
+  let pending = inputs;
+  while (pending.length) {
+    const slots = new Set<string>();
+    for (const input of pending) {
+      if (input.kind === 'fact') facts.push(input);
+      else if (input.kind === 'slot') slots.add(input.derivationId);
+      else for (const member of input.members) slots.add(member.derivationId);
+    }
+    const ids = [...slots].filter(id => !seen.has(id));
+    if (!ids.length) break;
+    ids.forEach(id => seen.add(id));
+    const {rows} = await tx.query<{manifest: unknown}>(
+      'SELECT manifest FROM derivations WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
+    pending = rows.flatMap(row => parseManifest(row.manifest).inputs);
+  }
+  return facts;
+}
+
 async function checkDerivation(
   tx: ReadTransaction,
   id: string,
