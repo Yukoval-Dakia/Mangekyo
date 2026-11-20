@@ -68,6 +68,9 @@ function ChatRoom({
   const { session, sessionId, busy, streamingReply, progressLabel, reconnecting } = chat;
   const preparing = initial ? initial.attachment?.mode === 'prepare' : prepare;
   const settings = allSettings && forTask(allSettings, preparing ? 'preparation' : 'companion');
+  const [authorizedDraft, setAuthorizedDraft] = useState<string>();
+  const draftTurn = session?.currentTurnId ?? 'opening';
+  const allowBackgroundUnderstanding = mode === 'companion' && authorizedDraft === draftTurn;
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const grants = (settings?.mcpServers ?? []).filter(server => server.enabled && server.allowedTools.length)
     .map(({id, url, allowedTools}) => ({id, url, allowedTools}));
@@ -119,12 +122,12 @@ function ChatRoom({
       chat.refreshingConflict
     )
       return;
-    if (sessionId) chat.send(permitted, settings, selectedRecord);
+    if (sessionId) chat.send(permitted, settings, selectedRecord, allowBackgroundUnderstanding || undefined);
     else if (excerptValid) {
       const attachment: StudyAttachment | undefined = source
         ? { id: source.id, title: source.title, text: excerpt, mode: prepare ? 'prepare' : 'ask' }
         : undefined;
-      chat.start(value.trim(), attachment, permitted, settings, selectedRecord);
+      chat.start(value.trim(), attachment, permitted, settings, selectedRecord, allowBackgroundUnderstanding || undefined);
     }
     setSelectedTools([]);
   }
@@ -168,7 +171,7 @@ function ChatRoom({
               {[
                 ...(session?.turns ?? []).map((turn, i) =>
                   <TeachingTurn key={turn.turnId ?? i} turn={turn} sessionId={session?.id} materialId={shared?.id}
-                    mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={chat.applySnapshot}
+                    mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={chat.applySnapshot} reload={chat.reload}
                     discuss={pending || unavailable ? undefined : (question, answer) => {
                       chat.editDraft('题目：' + question + '\n我的回答：' + answer + '\n请根据我的回答指出下一步。');
                       textarea.current?.focus();
@@ -219,6 +222,12 @@ function ChatRoom({
                   history.replaceState(null, '', '/companion');
                 }}>解除关联</button>}
             </fieldset>}
+            {mode === 'companion' && <label className="workbook-check">
+              <input type="checkbox" checked={allowBackgroundUnderstanding}
+                disabled={pending || unavailable || !!chat.retryOperation}
+                onChange={event => setAuthorizedDraft(event.target.checked ? draftTurn : undefined)} />
+              <span>允许后台从我这条消息整理学习观察</span>
+            </label>}
             {settings && <small>{settings.model} · {settings.baseUrl}</small>}
             {grants.length > 0 && <fieldset disabled={pending || unavailable || !!chat.retryOperation}>
               <legend>本轮允许使用的 MCP 工具</legend>

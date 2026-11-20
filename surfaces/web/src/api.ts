@@ -86,6 +86,7 @@ export type RelationWrite =
   | {status: 'withdrawn' | 'changed'};
 
 export interface Turn {
+  backgroundUnderstanding?: {allowed: boolean; rev: number; accessEpoch: string};
   turnId?: string;
   artifacts?: unknown;
   trace?: string[];

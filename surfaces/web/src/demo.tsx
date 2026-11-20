@@ -98,7 +98,40 @@ function WorkspaceWrite({item}: {item: NonNullable<Turn['writes']>[number]}) {
   </li>;
 }
 
-export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, sessionId, materialId, discuss }: {
+function TurnResearchConsent({turnId, grant, reload}: {
+  turnId: string; grant: NonNullable<Turn['backgroundUnderstanding']>; reload: () => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [withdrawnRev, setWithdrawnRev] = useState<number>();
+  async function revoke() {
+    if (pending) return;
+    setPending(true);
+    setNotice('');
+    try {
+      await api('/memory/claims/sources/' + encodeURIComponent(turnId) + '/revoke', {
+        method: 'POST', body: {expectedRev: grant.rev, purpose: 'background-research'},
+      });
+      setWithdrawnRev(grant.rev);
+    } catch (error) {
+      setNotice(error instanceof ApiError && error.status === 409
+        ? '这条消息的授权已变化，正在重新读取。' : '暂时无法确认撤回结果，请重试。');
+    } finally {
+      reload();
+      setPending(false);
+    }
+  }
+  return <div>
+    {grant.allowed && withdrawnRev !== grant.rev
+      ? <button type="button" className="text-button" disabled={pending} onClick={revoke}>
+        {pending ? '正在撤回…' : '撤回本条消息的后台整理授权'}
+      </button> : <small>本条消息未开放后台整理</small>}
+    {notice && grant.allowed && <p role="status">{notice}</p>}
+  </div>;
+}
+
+export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, sessionId, materialId, discuss, reload }: {
+  reload?: () => void;
   turn?: Turn | undefined;
   answer?: string | undefined;
   message?: string | undefined;
@@ -134,6 +167,8 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
             <WorkspaceWrite key={item.id + ':' + item.rev} item={item} />
         )}</ul>}
 
+          {reload && turn.turnId && turn.backgroundUnderstanding &&
+            <TurnResearchConsent turnId={turn.turnId} grant={turn.backgroundUnderstanding} reload={reload} />}
           {turn.recall && sessionId && <StudyCards kit={turn.recall} sessionId={sessionId} materialId={materialId} discuss={discuss} />}
           <details className="evidence">
             <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
