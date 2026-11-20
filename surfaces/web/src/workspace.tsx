@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api, remember, remembered, requestId, type Settings } from './api';
+import { RetentionPosttests } from './retention-posttests';
 import { Icon } from './icons';
 import { LearningMemory } from './study-tools';
 import { MaterialOriginal } from './intake';
@@ -110,6 +111,11 @@ export function Today({ library, chats }: { library: Resource<Workspace>; chats:
   const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(
     new Date(),
   );
+  const selected = new URLSearchParams(location.search).get('posttest');
+  if (selected !== null) return <>
+    <PageTitle title="今天" meta={date} />
+    <RetentionPosttests selected={selected} />
+  </>;
   return (
     <>
       <PageTitle title="今天" meta={date} />
@@ -130,6 +136,7 @@ export function Today({ library, chats }: { library: Resource<Workspace>; chats:
       <div className="today-lower">
         <section className="surface-section">
           <div className="subhead"><h2>我的练习</h2><a href="/papers">全部练习</a></div>
+          <RetentionPosttests />
           <ReadState resource={papers} />
           {papers.data?.slice(0, 2).map(p => <ListLink key={p.id} href={'/papers/'+p.id} title={p.title} detail="继续作答或查看反馈" icon="practice" />)}
           <ListLink href="/review" title="错题回看" detail="从上次答错的题回到原卷" icon="history" />
