@@ -25,6 +25,9 @@ export const workspaceDefinitions = [
   tool('read_workspace', '按 id 读原文，learner 读学情概览。长文用 nextOffset 续读。', {
     id: text, offset: {type: 'integer', minimum: 0},
   }, ['id']),
+  tool('record_observation', '从本轮已打开的原答记录一条可撤回的推断。evidence_refs 使用读回的引用或记录 id。', {
+    title: text, text, evidence_refs: {...strings, minItems: 1, maxItems: openLearningLimit},
+  }, ['title','text','evidence_refs']),
   tool('save_workspace', '新建给 kind、title、body；修改给 id 和变动字段。教材或方法笔记用 page。出题时 body 只写题面，解答放 answer，评分放 rubric。links 填来源 id，关系按起点、终点排列。', {
     kind: {type: 'string', enum: workspaceKinds}, title: text, body: text, tags: strings, links: strings,
     answer: text, rubric: text, id: {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$', description:'仅更新时用已有 id；创建时省略。'}, rev: integer,

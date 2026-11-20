@@ -17,7 +17,7 @@ import { organizerNote, organizerNoteType, organizerTask, organizerTaskType } fr
 import { practiceSubmission, ridingPracticeType } from '../../modules/activity/practice-values.ts';
 import { studyRecord } from '../../modules/activity/values.ts';
 import {
-  workspaceEntry, workspaceEntryKinds as entryKinds, workspaceEntryType, setWorkspaceTeachingCommand,
+  WorkspaceInputError, workspaceEntry, workspaceEntryKinds as entryKinds, workspaceEntryType, setWorkspaceTeachingCommand,
 } from '../../modules/activity/workspace-values.ts';
 import {
   workbookAttempt,
@@ -584,6 +584,27 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
 
   return {
     categories: categories.map(({ id, label }) => ({ id, label })),
+
+    async undoObservation(id: string, input: Record<string, unknown>) {
+      const token = input.undo_token;
+      if (typeof token !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(token))
+        throw new RequestError(400,'撤回凭据无效。');
+      const {rowCount} = await db.query(
+        `SELECT 1 FROM fact_revs r JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+         WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.author='companion' AND c.id=$3
+           AND c.type='activity.saveWorkspaceEntry' AND c.state='done' AND r.data->>'kind'='observation'`,
+        [studioLearner,id,token]);
+      if (!rowCount) throw new RequestError(404,'找不到可撤回的观察。');
+      try {
+        const receipt = await handle({learner:studioLearner,actor:'learner',purpose:'storage',
+          id:commandId(stableId('withdraw-workspace-observation',token)),type:'activity.withdrawWorkspaceObservation',input:{id}});
+        return {status:'withdrawn',ref:receipt.wrote[0]};
+      } catch (error) {
+        if (error instanceof WorkspaceInputError || error instanceof FactReadDeniedError)
+          throw new RequestError(409,'观察版本已变化。');
+        throw error;
+      }
+    },
 
     async list(params: URLSearchParams) {
       if (params.has('conceptId') || params.has('since') || params.has('exposureFilter') || params.has('tags') || params.has('kinds')) {
