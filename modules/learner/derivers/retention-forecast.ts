@@ -1,5 +1,5 @@
 import { defineDeriver, type GatherContext } from '@mangekyo/kernel';
-import { defaultRetentionMethod, evaluateRetention, forecastType, readRetentionMethod, type RetentionInput } from '../retention.ts';
+import { evaluateRetention, forecastType, readAnyRetentionMethod, type RetentionInput } from '../retention.ts';
 
 export default defineDeriver({
   name: 'learner/retention-forecast',
@@ -11,9 +11,12 @@ export default defineDeriver({
       kind: 'input', data: { ...input, observedThrough: ctx.snapshotTick }, effects: [],
     }));
   },
-  derive({ method = defaultRetentionMethod, ...input }) {
-    const algorithm = readRetentionMethod(method);
+  // Older sealed jobs predate method selection. New jobs bind the selected
+  // version at enqueue; the executor handles Python via evaluateFrozenRetention.
+  derive({ method = 'last-independent-result@1', ...input }) {
+    const algorithm = readAnyRetentionMethod(method);
     if (!algorithm) return { kind: 'unknown', reason: '冻结预测使用了未知的保持方法。' };
+    if ('engine' in algorithm) throw new Error('Python retention method requires the sealed Python executor');
     return { kind: 'value', value: evaluateRetention(algorithm, input) };
   },
 });

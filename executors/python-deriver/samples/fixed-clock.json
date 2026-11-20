@@ -1,0 +1,19 @@
+{
+  "clock_watermark": "9007199254740993",
+  "as_of_at": "2026-11-21T01:02:03.1Z",
+  "events": [
+    {
+      "ref": "fixture-attempt",
+      "rev": 1,
+      "occurred_at": "2026-11-21T01:02:03.1Z",
+      "concept_ids": ["K"],
+      "item_novelty": "transfer",
+      "help_level": "independent",
+      "outcome": "correct",
+      "claim_ids": []
+    }
+  ],
+  "omissions": [{ "ref": { "id": "fixture-unobserved", "rev": 1 }, "reason": "help-unknown" }],
+  "constraints": { "budget_min": null, "locks": [], "deadlines": [] },
+  "candidate_pool": []
+}
