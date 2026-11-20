@@ -71,7 +71,7 @@ function notionBlock(value: unknown, blockId: string) {
     typeof body.text === 'string' && body.text.trim() ? body.text : undefined;
 }
 
-async function discover(access: PaperCapsuleAccess, sourceQuestionRef: FrozenQuestionRef, edgeIds: readonly FactId[]) {
+async function discover(access: PaperCapsuleAccess, sourceQuestionRef: FrozenQuestionRef, edgeIds: readonly FactId[], only?: CapsuleKind) {
   if (!access.purpose.trim() || !access.recipient.trim() || edgeIds.length === 0) return [];
   try {
     const { id, rev } = sourceQuestionRef;
@@ -89,7 +89,8 @@ async function discover(access: PaperCapsuleAccess, sourceQuestionRef: FrozenQue
     }
     const graph = await walkKnowledgeEdges(access, {
       root: { kind: 'question', sourceUse: question }, edgeIds, mode: 'pinned', hops: 2,
-      acceptEdge: edge => acceptedPaperEdge(question, edge), uniquePaths: true,
+      acceptEdge: edge => acceptedPaperEdge(question, edge) && (only === undefined ||
+        (edge.kind === 'instance_of') === (only === 'archetype')), uniquePaths: true,
       unavailable: error => unavailable(access, error),
     });
     const context = { version: 1 as const, learner: access.learner, purpose: access.purpose, recipient: access.recipient, question };
@@ -125,8 +126,8 @@ async function discover(access: PaperCapsuleAccess, sourceQuestionRef: FrozenQue
 }
 
 /** Candidate IDs come from the host's authorized graph query. Only opaque handles leave discovery. */
-export async function listPaperCapsules(access: PaperCapsuleAccess, sourceQuestionRef: FrozenQuestionRef, edgeIds: readonly FactId[]) {
-  return Promise.all((await discover(access, sourceQuestionRef, edgeIds)).map(async ({ binding }) => ({
+export async function listPaperCapsules(access: PaperCapsuleAccess, sourceQuestionRef: FrozenQuestionRef, edgeIds: readonly FactId[], only?: CapsuleKind) {
+  return Promise.all((await discover(access, sourceQuestionRef, edgeIds, only)).map(async ({ binding }) => ({
     kind: binding.kind, ref: await access.seal(binding),
   })));
 }
