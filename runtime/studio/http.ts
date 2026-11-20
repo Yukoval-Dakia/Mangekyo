@@ -366,6 +366,8 @@ export function serve(
       const classroom = classroomPath.exec(path);
       if (classroom) {
         const [, id, op] = classroom;
+        if (!id && method === 'GET' && url.searchParams.get('status') === 'active')
+          return json(res,200,await studio.classrooms.listActive());
         if (!id && method === 'POST') return json(res,202,await studio.classrooms.start(await body(req)));
         if (id && !op && method === 'GET') return json(res,200,await studio.classrooms.get(classroomFactId(id)));
         if (id && op === 'print' && method === 'GET') return json(res,200,await studio.classrooms.print(classroomFactId(id)));

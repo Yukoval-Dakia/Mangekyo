@@ -4,26 +4,29 @@ export type NotionAuthority = 'authorized' | 'withdrawn' | 'unconfirmed';
 export type CheckNotionRead = ((fact: FactSnapshot) => Promise<void>) & {
   choose?: (proofs: readonly (readonly FactSnapshot[])[]) => Promise<number | undefined>;
 };
-type Page = {key:string; witness:string};
+type Page = {key:string; witness:string; selectionKey:string};
 type Describe<P> = (fact: FactSnapshot) => Promise<P | undefined>;
-type Verify<P> = (page: P, signal: AbortSignal) => Promise<NotionAuthority>;
+type Verify<P> = (page: P, signal: AbortSignal) => Promise<NotionAuthority | 'selection-withdrawn'>;
 
 export function notionReadPlan<P extends Page>(verify: Verify<P>, rejected: (status?: NotionAuthority) => Error, signal?: AbortSignal) {
   const checked = new Map<string,NotionAuthority>();
   const pages = new Map<string,NotionAuthority>();
 
+  const withdrawnSelections = new Set<string>();
+  const authorityFor = (page: P) => withdrawnSelections.has(page.selectionKey) ? 'withdrawn' : checked.get(page.witness);
+
   function reader(describe: Describe<P>): CheckNotionRead {
     async function check(fact: FactSnapshot) {
       const page = await describe(fact);
       if (!page) return;
-      const authority = checked.get(page.witness);
+      const authority = authorityFor(page);
       if (authority !== 'authorized') throw rejected(authority);
     }
     return Object.assign(check,{async choose(proofs: readonly (readonly FactSnapshot[])[]) {
       let unchecked = false;
       for (const [index,proof] of proofs.entries()) {
         const alternatives = await Promise.all(proof.map(describe));
-        const states = alternatives.map(page=>page ? checked.get(page.witness) : 'authorized');
+        const states = alternatives.map(page=>page ? authorityFor(page) : 'authorized');
         if (states.every(state=>state==='authorized')) return index;
         if (states.every(state=>state==='authorized'||state===undefined)) unchecked = true;
       }
@@ -48,7 +51,7 @@ export function notionReadPlan<P extends Page>(verify: Verify<P>, rejected: (sta
     };
     const active = new Map<string,{users:number; controller:AbortController; task:Promise<NotionAuthority>}>();
     function acquire(page: P) {
-      const done = pages.get(page.key);
+      const done = withdrawnSelections.has(page.selectionKey) ? 'withdrawn' : pages.get(page.key);
       if (done) return {task:Promise.resolve(done), release() {}};
       let entry = active.get(page.key);
       if (!entry) {
@@ -56,6 +59,10 @@ export function notionReadPlan<P extends Page>(verify: Verify<P>, rejected: (sta
         const abort = signal ? AbortSignal.any([signal,controller.signal]) : controller.signal;
         const task = verify(page,abort).then(authority=>{
           abort.throwIfAborted();
+          if (authority === 'selection-withdrawn') {
+            withdrawnSelections.add(page.selectionKey);
+            return 'withdrawn' as const;
+          }
           pages.set(page.key,authority);
           return authority;
         }).finally(()=>{ if (active.get(page.key)?.controller===controller) active.delete(page.key); });

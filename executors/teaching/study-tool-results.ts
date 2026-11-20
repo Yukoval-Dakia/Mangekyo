@@ -1,7 +1,7 @@
 import {learningToolError, type ToolErrorCode} from './tool-error.ts';
 import {createHash} from 'node:crypto';
 import type {CalculationArtifact} from './agent-tools.ts';
-import type {ResultHandle} from './learning-tools.ts';
+import type {DeliveredToolRange, ResultHandle} from './learning-tools.ts';
 
 export const openToolResult = { type: 'function', function: {
   name: 'open_tool_result', description: '按本轮句柄读取工具原始结果的一段。Python 可将同一句柄放入 inputs 直接验算。',
@@ -36,15 +36,16 @@ export function studyToolResults() {
     return handle;
   }
   return {
-    publish(tool: string, step: number, output: string, files: [string, string][]) {
+    publish(tool: string, step: number, output: string, files: [string, string][]): {content: string; preview?: string; delivery?: DeliveredToolRange} {
       const artifacts = files.map(([name, value]) => ({name, handle:store('calc', step, value)}));
       const metadata = artifacts.length ? {artifacts} : {};
       const bytes = Buffer.byteLength(output);
-      if (bytes <= 800) return {content: artifacts.length ? withReferences(output, metadata) : output};
+      const delivery = tool === 'retrieve_memory' ? {delivery:{step, output, start:0, end:output.length}} : {};
+      if (bytes <= 800) return {content: artifacts.length ? withReferences(output, metadata) : output, ...delivery};
       const handle = store(tool === 'python' ? 'calc' : 'res', step, output);
       const preview = JSON.stringify({archived:true, tool, handle, bytes, ...metadata});
       if (bytes > 16_000) return {content:preview};
-      return {content:bytes > 2048 || artifacts.length ? withReferences(output, {handle, ...metadata}) : output, preview};
+      return {content:bytes > 2048 || artifacts.length ? withReferences(output, {handle, ...metadata}) : output, preview, ...delivery};
     },
     publishLearning(tool: string, step: number, output: string, files: readonly CalculationArtifact[]) {
       const artifacts = files.map(({name, mediaType, value}) => ({

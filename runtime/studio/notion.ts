@@ -111,7 +111,7 @@ function notionHost(db: Db, scope = learnerScope) {
     } catch (error) {
       signal?.throwIfAborted();
       if (error instanceof NotionSourceUnavailable && error.invalidated) {
-        if (!rememberDenial) throw new RequestError(403, 'Notion 已撤回该来源的访问。');
+        if (!rememberDenial) throw error;
         const key = error.invalidated.kind === 'selection' ? 'root' : error.invalidated.pageId;
         await locked(async tx => {
           await live(tx, id, epoch, watermark);
@@ -206,7 +206,8 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false, s
     if (source.kind !== 'notion') return;
     const page = await notionPageAuthority(tx, source);
     const key = notionPageKey(page);
-    return {...page, key, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
+    const selectionKey = JSON.stringify([page.selection.id, page.selection.selectionEpoch]);
+    return {...page, key, selectionKey, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
   }
   const planner = notionReadPlan<NonNullable<Awaited<ReturnType<typeof pageFor>>>>(async ({selection,pageId,watermark},abort) => {
     try {
@@ -214,6 +215,8 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false, s
       return 'authorized';
     } catch (error) {
       abort.throwIfAborted();
+      if (error instanceof NotionSourceUnavailable && error.invalidated)
+        return error.invalidated.kind === 'selection' ? 'selection-withdrawn' : 'withdrawn';
       if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
       return error instanceof RequestError && error.status===403 ? 'withdrawn' : 'unconfirmed';
     }
