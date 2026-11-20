@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import type { TeachingDependencies } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
 import { loadMcpTools, invokeMcpTool } from './mcp-tools.ts';
-import {projectWorkspaceContext} from './workspace-context.ts';
+import {projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
+import {openToolResult, studyToolResults} from './study-tool-results.ts';
 import { workspaceDefinitions, type WorkspaceTools } from './workspace-tools.ts';
 import { createStudyTools } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
@@ -20,8 +21,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
 };
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
-type ToolMessage = { role: 'assistant'; tool_calls: FunctionCall[]; providerTurn?: ProviderTurn; content: null } |
-  { role: 'tool'; tool_call_id: string; content: string };
+type ToolMessage = { role: 'assistant'; tool_calls: FunctionCall[]; providerTurn?: ProviderTurn; content: null } | ToolResultMessage;
 
 const descriptions: Record<string, [string, Record<string, string>]> = {
   python: ['在隔离的 Python 中运算，以 print 输出结果。文件工具和 Python 共用当前工作目录，直接用文件名打开文件。', { code: 'Python 3 程序' }],
@@ -34,7 +34,9 @@ function definition(name: string) {
   const [description, fields] = descriptions[name]!;
   const properties = Object.fromEntries(Object.entries(fields).map(([field, help]) => [field, { type: 'string', description: help }]));
   return { type: 'function', function: { name, description, parameters: {
-    type: 'object', properties, required: Object.keys(fields), additionalProperties: false,
+    type: 'object', properties: {...properties, ...(name === 'python' && {inputs: {
+      type: 'array', items: {type:'string'}, maxItems: 8, description: '本轮工具结果句柄。程序中的 inputs 字典按句柄读取原始文本。',
+    }})}, required: Object.keys(fields), additionalProperties: false,
   } } };
 }
 
@@ -76,6 +78,8 @@ export async function runStudyAgent(initial: Message[], options: StudyAgentOptio
 
 async function runStudyRounds(initial: Message[], options: StudyAgentOptions, streamReply: boolean, connections: McpTurnConnections) {
   const tools = options.tools && createStudyTools(options.tools);
+  const results = studyToolResults();
+  const previews = new WeakMap<ToolResultMessage, string>();
   const workspace = options.tools?.workspace;
   const maxToolCalls = workspace ? 12 : defaultToolBudget;
   const stride = workspace ? 16 : 8;
@@ -91,7 +95,7 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
   const nativeTools = workspace
     ? [...workspaceDefinitions, ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
     : [];
-  const definitions = [...builtins, ...nativeTools, ...(options.openMemoryRegion ? [memoryRegionTool] : []), ...Array.from(remotes, ([name, {tool}]) => ({
+  const definitions = [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []), ...Array.from(remotes, ([name, {tool}]) => ({
     type: 'function', function: {name, description: tool.description, parameters: tool.inputSchema},
   }))];
   const messages: (Message | ToolMessage)[] = [...initial];
@@ -100,7 +104,7 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
   for (let round = 0; round <= maxToolCalls; round++) {
     const available = trace.length < maxToolCalls && definitions.length > 0;
     const body = JSON.stringify({ model, ...(reasoningEffort === 'default' ? {} : {reasoning_effort: reasoningEffort}), stream: true, max_completion_tokens: options.maxCompletionTokens ?? 4096,
-      messages: definitions.length ? projectWorkspaceContext(messages) : messages,
+      messages: definitions.length ? projectWorkspaceContext(messages, previews) : messages,
       ...(available ? { tools: definitions, ...(allowParallelCalls ? {} : { parallel_tool_calls: false }) } : {}) });
     const index = round * stride;
     const raw = await options.runEffect({ index, provider: endpoint, model, requestDigest: hash(JSON.stringify({endpoint, body})),
@@ -146,6 +150,7 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
       let parsed: unknown;
       try { parsed = JSON.parse(call.function.arguments); } catch { /* Send an actionable tool response. */ }
       const args = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
+      if (name === openToolResult.function.name) return {...results.open(args), summary: '读取工具结果'};
       if (name === 'exa_search' && pinnedQuery) args.query = pinnedQuery;
       const remote = remotes.get(name);
       const workspaceTool = workspace && nativeTools.some(tool => tool.function.name === name);
@@ -157,10 +162,14 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
           summary: '参数错误 · ' + name,
         };
       }
-      const execute = () => remote ? invokeMcpTool(remote, args, connections) : tools.execute(name, args);
+      const python = name === 'python' && args.inputs !== undefined ? results.pythonInputs(args.inputs) : undefined;
+      if (python?.error) return {content: python.error, summary: 'Python 验算 · 输入不可用'};
+      const execute = () => remote ? invokeMcpTool(remote, args, connections)
+        : tools.execute(name, args, python?.inputs);
       // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
       const step = index + position + 1;
       let output: string;
+      const before = name === 'python' ? tools.snapshotFiles() : {};
       if (name === memoryRegionTool.function.name && options.openMemoryRegion) {
         output = await options.openMemoryRegion(args, step);
       } else if (workspaceTool) {
@@ -182,14 +191,17 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
         if (name === 'python') tools.restoreFiles(saved.files);
         output = saved.output;
       }
-      const content = output.slice(0, 16_000);
+      const files = name === 'python' ? Object.entries(tools.snapshotFiles()).filter(([name, value]) => before[name] !== value) : [];
+      const result = results.publish(name, step, output, files);
       const summary = name === memoryRegionTool.function.name ? '展开记忆区域' : remote
-        ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + content.slice(0, 600) : summarise(call, args, content);
-      return {content, summary};
+        ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + output.slice(0, 600) : summarise(call, args, output);
+      return {...result, summary};
     };
-    function appendResult(call: FunctionCall, result: {content: string; summary: string}) {
+    function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string}) {
       trace.push(result.summary);
-      messages.push({role: 'tool', tool_call_id: call.id, content: result.content});
+      const message: ToolResultMessage = {role: 'tool', tool_call_id: call.id, content: result.content};
+      if (result.preview) previews.set(message, result.preview);
+      messages.push(message);
     }
     for (let position = 0; position < calls.length;) {
       const start = position++;
