@@ -223,8 +223,9 @@ async function commitCommand(
   decide?: { readonly proposalId: CommandId; readonly state: 'confirmed' | 'rejected' },
 ): Promise<CommandReceipt> {
   return tx.withLearnerWrite(async (tick) => {
-    const changes = await applyFactWrites(tx, tick, writes, writeOptions(request), writeTarget);
-    await options.hooks.onFactsChanged(tx, tick, changes);
+    const changes = decide?.state === 'rejected' ? [] :
+      await applyFactWrites(tx, tick, writes, writeOptions(request), writeTarget);
+    if (decide?.state !== 'rejected') await options.hooks.onFactsChanged(tx, tick, changes);
     if (decide) await tx.query(
       'UPDATE proposals SET state=$3, decided_tick=$4 WHERE learner_id=$1 AND command_id=$2',
       [request.learner, decide.proposalId, decide.state, tick],
