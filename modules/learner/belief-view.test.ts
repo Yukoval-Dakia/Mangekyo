@@ -79,6 +79,9 @@ it('co-projects assertion formats, preserving both conflicting witnesses and tem
   const correction = {...edge, from_ref: submission, basis: [submission, ...edge.basis]};
   expect(hypothesesAsOf(rows, [correction], asOf(3, 4), correction.basis).relations).toEqual([correction]);
   expect(hypothesesAsOf(rows, [correction], asOf(3, 4), [submission]).relations).toEqual([]);
+  const pinned = {...submission, mode: 'pinned' as const};
+  expect(hypothesesAsOf(rows, [correction], asOf(3, 4), [pinned, ...edge.basis]).relations).toEqual([]);
+  expect(hypothesesAsOf(rows, [correction], asOf(3, 4), [...correction.basis, pinned]).relations).toEqual([correction]);
   const disputed = hypothesesAsOf(rows, [edge], asOf(3, 4));
   expect(disputed.hypotheses.map(row => [row.ref.id, row.value.status, row.value.evidence_refs[0].id]))
     .toEqual([[ref(20).id, 'disputed', ref(5).id], [ref(21).id, 'disputed', ref(6).id]]);

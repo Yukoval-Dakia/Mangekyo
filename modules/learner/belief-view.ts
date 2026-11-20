@@ -173,19 +173,17 @@ export function hypothesesAsOf<Scope, Evidence>(rows: readonly OpenHypothesis<Sc
   const endpoints = new Set(visible.map(row => witnessIdentity(row.ref)));
   // For submission → hypothesis edges the caller reopens the entire evidence chain
   // under the actual recipient and purpose in the same learner snapshot.
-  const opened = new Map(openedEvidence.map(ref => [witnessIdentity(ref), ref]));
+  const readKey = (ref: BusWitness) => JSON.stringify([ref.learner, ref.type, ref.id, ref.rev, ref.accessEpoch, ref.mode]);
+  const opened = new Set(openedEvidence.map(readKey));
   const disputes = new Set<string>();
   const relations = beliefsAsOf(edges, when).filter(edge => {
     const from = witnessIdentity(edge.from_ref);
     const to = witnessIdentity(edge.to_ref);
     if (!endpoints.has(to)) return false;
     if (!endpoints.has(from)) {
-      const submission = opened.get(from);
-      return edge.kind === 'contradicts' && submission?.type === 'activity.retentionPosttestSubmission' &&
-        edge.basis.some(ref => witnessIdentity(ref) === from) && edge.basis.every(ref => {
-          const current = opened.get(witnessIdentity(ref));
-          return current?.type === ref.type && current.learner === ref.learner && ref.learner === submission.learner;
-        });
+      const submission = edge.basis.find(ref => ref.type === 'activity.retentionPosttestSubmission' && witnessIdentity(ref) === from);
+      return edge.kind === 'contradicts' && submission !== undefined &&
+        edge.basis.every(ref => ref.learner === submission.learner && opened.has(readKey(ref)));
     }
     if (edge.kind === 'contradicts') {
       if (from === to || !edge.basis.length) return false;
