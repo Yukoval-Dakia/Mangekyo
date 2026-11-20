@@ -48,6 +48,12 @@ node runtime/studio/test/mcp-acceptance.mjs http://127.0.0.1:4317 服务ID 工�
 
 `pnpm studio:serve` 可启动已构建的前后端。设置 `MANGEKYO_PROCESS=web` 可单独接收命令，`MANGEKYO_PROCESS=worker` 可单独运行交接和 Worker。开发构建按源码指纹固定版本；发行环境应使用唯一构建 ID、显式管理版本流量，并保留仍有在途任务的旧 Worker。保存模型设置后，新会话使用对应配置。续聊时会核对原会话绑定的模型和端点，切回原配置即可继续。[Temporal 适配器](executors/temporal/README.md)
 
+### 保持方法对照
+
+向本机 Studio 的 `POST /api/retention/comparisons` 提交 `{ requestId, method, reconciliationKeys }`，每批可选 1–32 条已有对账。用返回的 `key` 调用 `GET /api/retention/comparisons/:key`。Temporal 使用原预测冻结输入和原对账观察水位，回读覆盖率、分类错误率和缺项。当前方法输出类别或未知，比较不估计概率校准。对账依据失效时，报告变为 `stale`。
+
+默认方法为 `last-independent-result@1`，候选 `elapsed-independent-evidence@1` 使用固定的时间衰减规则。维护者可用 `MANGEKYO_RETENTION_METHOD` 明确选择方法，重启接收预测请求的 Studio 或 Web 进程。方法随新预测冻结，清除配置即可切回默认，旧预测和对账保留。影子结果不参与生产推导选择与排程。
+
 ### MinerU 云识别
 
 在运行 Studio 的环境设置从 [MinerU API 管理页](https://mineru.net/apiManage/) 取得的 `MANGEKYO_MINERU_TOKEN`。Web 与 Worker 分开运行时，两者都需这个变量，并使用同一数据库和交入原件目录。重启后可在「交入材料」为 PDF、PNG 或 JPEG 选择 MinerU。原件会先保存在本地，再由 Worker 发送给 MinerU。材料详情显示结果，也可在等待或失败时查看原件和手动更正。本地抽取仍是默认选项。
