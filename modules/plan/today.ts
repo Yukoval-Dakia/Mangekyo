@@ -1,3 +1,4 @@
+import type { CanonicalEvidenceSliceV1 } from '@mangekyo/kernel';
 import type { GoalStatus } from './goal-values.ts';
 import type { Campaign, PlanRule } from './rules.ts';
 import { examForecast, type FrozenExamForecast } from './exam-forecast.ts';
@@ -28,11 +29,7 @@ export type PlanCandidate = {
 export type TodayInput = {
   now: string;
   timeZone: string;
-  constraints: {
-    budget_min: number | null;
-    locks: readonly string[];
-    deadlines: readonly { ref: string; at: string }[];
-  };
+  constraints: CanonicalEvidenceSliceV1['constraints'];
   candidates: readonly PlanCandidate[];
   goal?: { id: string; text: string | null; status: GoalStatus };
   rules?: readonly PlanRule[];
