@@ -1,3 +1,4 @@
+import { activityQuestions } from '../../modules/activity/workspace-projection.ts';
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId, type Revision} from '../../kernel/src/declarations/ids.ts';
@@ -100,15 +101,8 @@ export function sourceSearchExcerpt(fact: FactSnapshot, content: SourceProjectio
   }
 }
 
-export function sourceQuestions(fact: FactSnapshot): readonly {id: string; prompt: string}[] {
-  if (fact.type === workbookPaperType) return workbookPaper(fact.value).questions;
-  if (fact.type === workbookAttemptType) return workbookAttempt(fact.value).paper.questions;
-  if (fact.type === ridingPracticeType) return practiceSubmission(fact.value).paper.questions;
-  if (fact.type === workspaceEntryType) {
-    const entry = workspaceEntry(fact.value);
-    if (entry.kind === 'question') return [{id: 'question', prompt: entry.body}];
-  }
-  return [];
+export function sourceQuestions(fact: FactSnapshot) {
+  return activityQuestions(fact) ?? [];
 }
 
 function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAccess['recipient']): SourceProjection | undefined {
