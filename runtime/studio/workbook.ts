@@ -1,8 +1,9 @@
-import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
+import { readable, readFactCollection } from '../../kernel/src/commands/fact-collection.ts';
+import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import type { ReviewEntry } from './review.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import {
   createCommandReadContext,
@@ -10,6 +11,8 @@ import {
   FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
 import { commandId, derivationId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { isJson } from '../../kernel/src/declarations/define.ts';
+import type { Json, JsonObject } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -32,9 +35,9 @@ import {
   workbookAttempt,
   workbookAttemptRequest,
   workbookAttemptType,
+  workbookBankReference,
   workbookAssessmentRequest,
   workbookAssessmentResult,
-  workbookCorrectCount,
   workbookDraft,
   WorkbookSourceMismatch,
   workbookPaper,
@@ -50,37 +53,24 @@ import {
   type WorkbookDetail,
   type WorkbookDraft,
   type WorkbookPaper,
-  type WorkbookRubricAssessment,
-  type WorkbookRubricAssessmentView,
-  type WorkbookRubricQuestion,
   type WorkbookSourceView,
   type WorkbookSummary,
 } from '../../modules/activity/workbook-values.ts';
-import { recordWorkbookPresentationCommand, workbookPresentation, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
+import { authorizeWorkbookPresentation, recordWorkbookPresentationCommand, workbookPresentation, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
+import { includesBankReferences, readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
+import { completedLegacyRubric, legacyRubricInput, rubricAssessmentIdentity, sameWorkbookDraft, workbookAttemptView, workbookAttemptUsage, workbookMistakes, workbookSummary } from '../../modules/activity/workbook-assessment-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { loadSettings } from './settings.ts';
 import { allAssessments } from './learning-attempt-read.ts';
+import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import {
   frozenSubmission, openWorkbookAssessment, prepareWorkbookRelease, readWorkbookAssessment,
 } from './workbook-assessment.ts';
 
 class UncertainRubricEffect extends Error {}
-
-function assessmentKey(
-  attemptId: FactId,
-  question: WorkbookRubricQuestion,
-): FactId {
-  return factId(stableId(
-    'workbook-rubric-assessment',
-    attemptId,
-    question.id,
-    question.rubricVersion,
-    question.rubric,
-  ));
-}
 
 function invalid(error: unknown, message: string): never {
   if (error instanceof RequestError) throw error;
@@ -107,7 +97,7 @@ async function factType(tx: ReadTransaction, id: FactId): Promise<string | null>
 function mapReadFailure(error: unknown, missing: string, denied: string): never {
   if (error instanceof RequestError) throw error;
   if (error instanceof FactNotFoundError) throw new RequestError(404, missing);
-  if (error instanceof FactReadDeniedError) throw new RequestError(403, denied);
+  if (error instanceof FactReadDeniedError || error instanceof WorkbookSourceMismatch) throw new RequestError(403, denied);
   throw error;
 }
 
@@ -116,9 +106,11 @@ async function readPaperSnapshot(tx: ReadTransaction, id: FactId) {
     throw new RequestError(404, '找不到这份试卷。');
   }
   try {
-    const fact = await createCommandReadContext(tx, storagePurpose)
-      .fact(factId(id), { mode: 'following' });
-    return { paper: workbookPaper(fact.value), revision: fact.ref.rev };
+    const read = createCommandReadContext(tx, storagePurpose);
+    const fact = await read.fact(id, { mode: 'following' });
+    const paper = workbookPaper(fact.value);
+    await readFrozenWorkbookBank(read, paper);
+    return { paper, revision: fact.ref.rev };
   } catch (error) {
     mapReadFailure(error, '找不到这份试卷。', '这份试卷当前不可读取。');
   }
@@ -130,13 +122,7 @@ async function readPaper(tx: ReadTransaction, id: FactId) {
 
 async function readPaperOrNull(tx: ReadTransaction, id: FactId): Promise<WorkbookPaper | null> {
   if (await factType(tx, id) !== workbookPaperType) return null;
-  try {
-    const fact = await createCommandReadContext(tx, storagePurpose)
-      .fact(factId(id), { mode: 'following' });
-    return workbookPaper(fact.value);
-  } catch (error) {
-    mapReadFailure(error, '找不到这份试卷。', '这份试卷当前不可读取。');
-  }
+  return readPaper(tx, id);
 }
 
 async function readAttemptOrNull(tx: ReadTransaction, id: FactId): Promise<WorkbookAttempt | null> {
@@ -150,87 +136,23 @@ async function readAttemptOrNull(tx: ReadTransaction, id: FactId): Promise<Workb
   }
 }
 
-async function sourceView(
-  tx: ReadTransaction,
-  read: ReturnType<typeof createCommandReadContext>,
-  id: string,
-): Promise<WorkbookSourceView> {
-  if (await factType(tx, factId(id)) !== materialType) {
-    return { id, title: null, available: false };
-  }
-  try {
-    const fact = await read.fact(factId(id), { mode: 'following' });
-    return { id, title: textMaterial(fact.value).title, available: true };
-  } catch (error) {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) {
-      return { id, title: null, available: false };
-    }
-    throw error;
-  }
+async function sourceView(read: ReturnType<typeof createCommandReadContext>, id: string): Promise<WorkbookSourceView> {
+  const fact = await readable(() => read.fact(factId(id), { mode: 'following' }));
+  return fact?.type === materialType ? { id, title: textMaterial(fact.value).title, available: true }
+    : { id, title: null, available: false };
 }
 
-function attemptView(
-  id: string,
-  attempt: WorkbookAttempt,
-  assessments: WorkbookRubricAssessmentView[],
-): WorkbookAttemptView {
-  return {
-    id,
-    requestId: attempt.requestId,
-    submittedAt: attempt.submittedAt,
-    ...(attempt.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: attempt.effectiveDurationMs }),
-    gradingVersion: attempt.gradingVersion,
-    answers: attempt.answers,
-    feedback: attempt.feedback.map(item => item.result === 'unanswered' ? {...item, expected: null, explanation: null} : item),
-    assessments,
-    correctCount: workbookCorrectCount(attempt.feedback),
-    total: attempt.paper.questions.filter(
-      q => q.kind !== 'rubric' && (q.kind !== 'exact' || !q.selfCheck),
-    ).length,
-  };
-}
-
-async function allAttempts(
-  tx: ReadTransaction,
-  read: ReturnType<typeof createCommandReadContext>,
-): Promise<{ id: FactId; rev: Revision; attempt: WorkbookAttempt }[]> {
-  const { rows } = await tx.query<{ id: string }>(
-    `SELECT id FROM facts
-     WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-     ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookAttemptType],
-  );
-  const attempts: Awaited<ReturnType<typeof allAttempts>> = [];
-  for (const row of rows) {
-    try {
-      const fact = await read.fact(factId(row.id), { mode: 'following' });
-      attempts.push({ id: fact.ref.id, rev: fact.ref.rev, attempt: workbookAttempt(fact.value) });
-    } catch (error) {
-      if (!(error instanceof FactReadDeniedError) && !(error instanceof FactNotFoundError)) throw error;
-    }
+async function allAttempts(tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>) {
+  const attempts = [];
+  for await (const fact of readFactCollection(tx, read, [workbookAttemptType], { newestFirst: true, idAscending: true })) {
+    attempts.push({ id: fact.ref.id, rev: fact.ref.rev, attempt: workbookAttempt(fact.value) });
   }
   return attempts;
 }
 
-async function requireSource(db: Db, id: string): Promise<void> {
-  const exists = await db.snapshot({ learner: studioLearner }, async (tx) => {
-    if (await factType(tx, factId(id)) !== materialType) return false;
-    try {
-      const fact = await createCommandReadContext(tx, storagePurpose)
-        .fact(factId(id), { mode: 'following' });
-      textMaterial(fact.value);
-      return true;
-    } catch (error) {
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return false;
-      throw error;
-    }
-  });
-  if (!exists) throw new RequestError(400, '来源材料不存在或当前不可读取。');
-}
-
-function sameDraft(paper: WorkbookPaper, draft: Omit<WorkbookPaper, 'savedAt'>): boolean {
-  const { savedAt: _, ...savedDraft } = paper;
-  return sameWorkbookJson(savedDraft, draft);
+async function requireSource(db: Db, id: string) {
+  const source = await db.snapshot({ learner: studioLearner }, tx => sourceView(createCommandReadContext(tx, storagePurpose), id));
+  if (!source.available) throw new RequestError(400, '来源材料不存在或当前不可读取。');
 }
 
 type FormalAssessmentView = Awaited<ReturnType<typeof readWorkbookAssessment>>;
@@ -252,10 +174,55 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       await onResearchFactsChanged?.(tx, tick, changes);
     },
   });
-  const handle = createCommandHandler(db, {
-    modules: [activity],
-    hooks,
-  });
+  const commands = { modules: [activity], hooks };
+  const handle = createCommandHandler(db, commands);
+
+  function inTransaction(tx: DbTransaction) {
+    return { ...db, query: tx.query, tx: async <Result>(scope: { learner: typeof tx.learner },
+      run: (tx: DbTransaction) => Promise<Result>) => {
+      if (scope.learner !== tx.learner) throw new Error('试卷事务的学习者不匹配。');
+      return run(tx);
+    } };
+  }
+
+  async function saveBank(tx: DbTransaction, input: unknown) {
+    if (!isJson(input) || input === null || Array.isArray(input) || typeof input !== 'object')
+      throw new RequestError(400, '题库组卷格式无效。');
+    const { requestId, title, questions, materialId, assessmentRelease } = input as JsonObject;
+    if (assessmentRelease !== undefined) throw new RequestError(400, '题库题项的评估契约由服务器冻结。');
+    let request: string;
+    try { request = workbookRequestId(requestId); }
+    catch (error) { invalid(error, '题库请求标识无效。'); }
+    const paperId = factId(stableId('workbook-paper', request));
+    const key = commandId(stableId('save-workbook-paper', paperId));
+    const deletionWatermark = submittedWatermark(input);
+    await assertUnburned(tx, 'fact', [paperId, ...(typeof materialId === 'string' ? [materialId] : [])]);
+    const recorded = await readRecordedCommand(tx, key);
+    const previous = (recorded?.input as { input?: { savedAt?: string } } | undefined)?.input;
+    const bankDraft = { title, questions, materialId: materialId ?? null };
+    if (!isJson(bankDraft)) throw new RequestError(400, '题库组卷格式无效。');
+    const bound = createCommandHandler(inTransaction(tx),
+      { ...commands, bindCommandRead: (inner, _, base) => ({ ...base, slot: readCurrentQuestionVerification(inner) }) });
+    try {
+      if (Array.isArray(questions)) await assertUnburned(tx, 'fact', questions.flatMap(question => {
+        const ref = workbookBankReference(question);
+        return ref ? [ref.id] : [];
+      }));
+      const receipt = await bound({ learner: tx.learner, actor: 'learner', purpose: storagePurpose,
+        id: key, type: saveWorkbookPaperCommand, deletionWatermark,
+        input: { id: paperId, bankDraft, savedAt: previous?.savedAt ?? new Date().toISOString() } });
+      if (receipt.state !== 'done' || !receipt.wrote.some(ref => ref.id === paperId))
+        throw new RequestError(409, '试卷发放未完成。');
+      await readPaper(tx, paperId);
+      return { id: paperId };
+    } catch (error) {
+      if (error instanceof LifecycleError) throw error;
+      if (error instanceof WorkbookSourceMismatch ||
+          (error instanceof Error && error.message === 'Command ID already used with a different command identity'))
+        throw new RequestError(409, '题版、来源、独立核验或请求标识已变化。');
+      invalid(error, '试卷格式无效。');
+    }
+  }
 
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
     const paperId = factIdOf(id, '找不到这份试卷。');
@@ -264,16 +231,16 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const read = createCommandReadContext(tx, storagePurpose);
       const source = paper.materialId === null
         ? null
-        : await sourceView(tx, read, paper.materialId);
+        : await sourceView(read, paper.materialId);
       const assessments = await allAssessments(tx, paperId);
       const attempts: WorkbookDetailWithAssessment['attempts'] = [];
       for (const { id: attemptId, rev, attempt } of await allAttempts(tx, read)) {
         if (attempt.paperId !== paperId) continue;
-        const view = { ...attemptView(attemptId, attempt, assessments.get(attemptId) ?? []), rev };
         const release = attempt.paper.assessmentRelease;
-        attempts.push(release
-          ? { ...view, formalAssessment: await readWorkbookAssessment(tx, release, { id: attemptId, rev }) }
-          : view);
+        const formal = release && await readWorkbookAssessment(tx, release, { id: attemptId, rev });
+        const view = workbookAttemptView(attemptId, attempt, assessments.get(attemptId) ?? [],
+          formal && 'result' in formal ? formal.result : undefined);
+        attempts.push({ ...view, rev, ...(formal ? { formalAssessment: formal } : {}) });
       }
       return {
         id: paperId,
@@ -289,50 +256,22 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   }
 
   return {
+    issueBank: (tx: DbTransaction, input: { requestId: string; questionRefs: readonly { id: FactId; rev: Revision }[]; deletionWatermark?: string }) =>
+      saveBank(tx, { requestId: input.requestId, title: '题库练习', deletionWatermark: input.deletionWatermark ?? '0',
+        questions: input.questionRefs.map(sourceQuestionRef => ({ sourceQuestionRef })) } satisfies Json),
     async list(): Promise<WorkbookSummary[]> {
       return db.snapshot({ learner: studioLearner }, async (tx) => {
         const read = createCommandReadContext(tx, storagePurpose);
-        const attempts = await allAttempts(tx, read);
-        const grouped = new Map<string, { count: number; last: string | null }>();
-        for (const { attempt } of attempts) {
-          const current = grouped.get(attempt.paperId) ?? { count: 0, last: null };
-          current.count += 1;
-          if (current.last === null || attempt.submittedAt > current.last) {
-            current.last = attempt.submittedAt;
-          }
-          grouped.set(attempt.paperId, current);
-        }
-        const { rows } = await tx.query<{ id: string }>(
-          `SELECT id FROM facts
-           WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-           ORDER BY created_tick DESC, id`,
-          [tx.learner, workbookPaperType],
-        );
+        const grouped = workbookAttemptUsage(await allAttempts(tx, read));
         const summaries: WorkbookSummary[] = [];
-        for (const row of rows) {
+        for await (const fact of readFactCollection(tx, read, [workbookPaperType], { newestFirst: true, idAscending: true })) {
           try {
-            const paper = await readPaper(tx, factId(row.id));
-            const source = paper.materialId === null
-              ? null
-              : await sourceView(tx, read, paper.materialId);
-            const usage = grouped.get(row.id);
-            summaries.push({
-              id: row.id,
-              title: paper.title,
-              questionCount: paper.questions.length,
-              savedAt: paper.savedAt,
-              sourceId: paper.materialId,
-              sourceTitle: source?.title ?? null,
-              attemptCount: usage?.count ?? 0,
-              lastAttemptAt: usage?.last ?? null,
-            });
+            const paper = workbookPaper(fact.value);
+            await readFrozenWorkbookBank(read, paper);
+            const source = paper.materialId === null ? null : await sourceView(read, paper.materialId);
+            summaries.push(workbookSummary(fact.ref.id, paper, source, grouped.get(fact.ref.id)));
           } catch (error) {
-            if (
-              error instanceof FactReadDeniedError ||
-              error instanceof FactNotFoundError ||
-              (error instanceof RequestError && (error.status === 403 || error.status === 404))
-            ) continue;
-            throw error;
+            if (!(error instanceof WorkbookSourceMismatch || error instanceof FactReadDeniedError || error instanceof FactNotFoundError)) throw error;
           }
         }
         return summaries;
@@ -351,8 +290,14 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         const data = workbookPresentation(input);
         if (data.paper.id !== id) throw new WorkbookPresentationError('呈现卷面不匹配。');
         const key = commandId(stableId(recordWorkbookPresentationCommand, JSON.stringify(data)));
-        await handle({ learner: studioLearner, actor: 'learner', purpose: storagePurpose,
-          id: key, type: recordWorkbookPresentationCommand, input: { id: key, data } });
+        await db.tx({ learner: studioLearner }, async tx => {
+          await lockLearner(tx, tx.learner);
+          await authorizeWorkbookPresentation(createCommandReadContext(tx, storagePurpose), data);
+          await createCommandHandler(inTransaction(tx), commands)({
+            learner: tx.learner, actor: 'learner', purpose: storagePurpose,
+            id: key, type: recordWorkbookPresentationCommand, input: { id: key, data },
+          });
+        });
         if (data.phase === 'permit') return { permit: key };
       } catch (error) {
         if (error instanceof WorkbookPresentationError) throw new RequestError(400, error.message);
@@ -377,29 +322,20 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
             }
           }
           if (!available.get(attempt.paperId)) continue;
-          for (const f of attempt.feedback) {
-            const key = attempt.paperId + '/' + f.questionId;
-            const grade = assessments.get(id)?.find(result => result.questionId === f.questionId);
-            const verdict = grade?.verdict ?? f.result;
-            if (verdict === 'pending' || verdict === 'unanswered' || verdict === 'self-check' || seen.has(key)) continue;
-            seen.add(key);
-            if (verdict !== 'incorrect' && verdict !== 'partial') continue;
-            const q = attempt.paper.questions.find(q => q.id === f.questionId);
-            if (!q) continue;
-            const expected = f.expected.kind === 'exact'
-              ? f.expected.values.join(' / ')
-              : f.expected.kind === 'rubric'
-                ? f.expected.rubric
-                : [f.expected.value, f.expected.unit].filter(x => x !== null).join(' ');
-            result.push({ paperId: attempt.paperId, title: attempt.paper.title, questionId: q.id,
-              prompt: q.prompt, answer: String(f.answer), expected, explanation: grade?.feedback ?? f.explanation });
-          }
+          result.push(...workbookMistakes(attempt, assessments.get(id) ?? [], seen));
         }
         return result;
       });
     },
 
     async save(input: unknown): Promise<WorkbookDetailWithAssessment> {
+      if (includesBankReferences(input)) {
+        const { id } = await db.tx({ learner: studioLearner }, async tx => {
+          await lockLearner(tx, tx.learner);
+          return saveBank(tx, input);
+        });
+        return get(id);
+      }
       let draft: WorkbookDraft & Pick<WorkbookPaper, 'assessmentRelease'>;
       let paperId: FactId;
       try {
@@ -415,7 +351,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         readPaperOrNull(tx, paperId),
       );
       if (existing) {
-        if (!sameDraft(existing, draft)) {
+        if (!sameWorkbookDraft(existing, draft)) {
           throw new RequestError(409, '同一个请求标识已经用于不同的试卷。');
         }
         return get(paperId);
@@ -442,7 +378,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         }
         if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
           const saved = await db.snapshot({learner: studioLearner}, tx => readPaperOrNull(tx, paperId));
-          if (saved && sameDraft(saved, draft)) return get(paperId);
+          if (saved && sameWorkbookDraft(saved, draft)) return get(paperId);
           throw new RequestError(409, '同一个请求标识已经用于不同的试卷。');
         }
         throw error;
@@ -474,10 +410,10 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const priorAttempt = () => db.snapshot({ learner:studioLearner }, async tx => {
         await assertUnburned(tx, 'fact', [attemptId,paperId]);
         await assertDeletionWatermark(tx,deletionWatermark);
-        return readAttemptOrNull(tx,attemptId);
+        return { existing: await readAttemptOrNull(tx, attemptId), current: await readPaper(tx, paperId) };
       });
-      const existing = await priorAttempt();
-      const paper = existing?.paper ?? await db.snapshot({ learner: studioLearner }, (tx) => readPaper(tx, paperId));
+      const { existing, current } = await priorAttempt();
+      const paper = existing?.paper ?? current;
       let graded: ReturnType<typeof gradeWorkbook>;
       try {
         graded = gradeWorkbook(paper, data.answers);
@@ -507,11 +443,11 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           },
         });
       } catch (error) {
-        if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) {
+        if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch) {
           throw new RequestError(403, '这份试卷当前不可读取。');
         }
         if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-          const saved = await priorAttempt();
+          const { existing: saved } = await priorAttempt();
           if (saved && isReplay(saved)) return get(paperId);
           throw new RequestError(409, '同一个提交标识已经用于不同的作答。');
         }
@@ -539,18 +475,10 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         if (!attempt || attempt.paperId !== paperId) {
           throw new RequestError(404, '找不到这次作答。');
         }
-        if (attempt.paper.assessmentRelease?.items.some(item => item.itemId === request.questionId)) {
-          throw new RequestError(409, '此题已经随交卷登记自动评估，请刷新作答查看状态。');
-        }
-        const question = attempt.paper.questions.find(({ id }) => id === request.questionId);
-        if (!question || question.kind !== 'rubric') {
-          throw new RequestError(400, '这道题没有可用的评分标准。');
-        }
-        const answer = attempt.answers[question.id];
-        if (typeof answer !== 'string' || !answer.trim()) {
-          throw new RequestError(400, '这次作答没有可供批改的文字。');
-        }
-        const id = assessmentKey(attemptId, question);
+        const input = legacyRubricInput(attempt, request.questionId);
+        if (input.state !== 'ready') throw new RequestError(input.status, input.reason);
+        const { question, answer } = input;
+        const id = factId(stableId(...rubricAssessmentIdentity(attemptId, question)));
         const reads = createCommandReadContext(tx, storagePurpose);
         const inputs = [];
         for (const source of [paperId, attemptId]) {
@@ -644,23 +572,11 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         }
       }
 
-      const data: WorkbookRubricAssessment = {
-        attemptId,
-        paperId,
-        questionId: selected.question.id,
-        requestId: request.requestId,
-        assessedAt: new Date().toISOString(),
-        consent: request.consent,
-        ...(request.publicSearchQuery ? {publicSearchQuery: request.publicSearchQuery} : {}),
-        assessmentVersion: workbookRubricAssessmentVersion,
-        rubricVersion: selected.question.rubricVersion,
-        rubric: selected.question.rubric,
-        providerBaseUrl: settings.baseUrl,
-        requestedModel: settings.model,
-        providerProtocol: settings.protocol,
-        providerId: settings.activeProviderId,
-        ...result,
-      };
+      const data = completedLegacyRubric({
+        attemptId, paperId, question: selected.question, request, result, assessedAt: new Date().toISOString(),
+        route: { providerBaseUrl: settings.baseUrl, requestedModel: settings.model,
+          providerProtocol: settings.protocol, providerId: settings.activeProviderId },
+      });
       await db.tx({learner: studioLearner}, async tx => {
         await lockLearner(tx, tx.learner);
         if ((await revalidateManifest(tx, selected.manifest)).kind !== 'valid') throw new RequestError(409, '本次批改依据已经变化。');

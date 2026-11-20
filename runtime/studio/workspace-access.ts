@@ -24,12 +24,14 @@ import { organizerTask, organizerTaskType } from '../../modules/plan/organizer-t
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { ridingPracticeType } from '../../modules/activity/practice-values.ts';
 import { studyRecordType } from '../../modules/activity/values.ts';
+import { readFrozenWorkbookRecord } from '../../modules/activity/workbook-bank.ts';
 import {
   WorkspaceInputError, workspaceEntryKinds as entryKinds, workspaceEntryType, setWorkspaceTeachingCommand,
 } from '../../modules/activity/workspace-values.ts';
 import {
   workbookAttemptType,
   workbookPaperType,
+  WorkbookSourceMismatch,
 } from '../../modules/activity/workbook-values.ts';
 import { sourceId, stableId, studioLearner } from './identity.ts';
 import { materialIntakeLink } from './reading.ts';
@@ -261,10 +263,12 @@ async function readDisplay(
   const purpose = firstPurpose(row.purpose);
   if (!purpose) return null;
   try {
-    const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' });
+    const read = createCommandReadContext(tx, purpose);
+    const snapshot = await read.fact(factId(row.id), { mode: 'following' });
+    await readFrozenWorkbookRecord(read, snapshot);
     return { display: displayOf(row.type, snapshot.value), purposes, fact: snapshot };
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return null;
+    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch) return null;
     throw error;
   }
 }

@@ -29,6 +29,7 @@ import type { openWorkspaceAccess } from './workspace-access.ts';
 import type { openResearch } from './research.ts';
 import type { openRetention } from './retention.ts';
 import type { openRetentionComparison } from './retention-comparison.ts';
+import type { openIqdb } from './iqdb.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
@@ -102,6 +103,7 @@ export function serve(
     recall: RecallHttp;
     retention: ReturnType<typeof openRetention>;
     retentionComparison: ReturnType<typeof openRetentionComparison>;
+    iqdb: ReturnType<typeof openIqdb>;
   },
   port: number,
 ) {
@@ -132,6 +134,15 @@ export function serve(
         res.setHeader('X-Deletion-Watermark',watermark);
         return json(res,status,result);
       };
+      if (path === '/api/iqdb/questions' && method === 'GET') {
+        return json(res, 200, await student.iqdb.questions());
+      }
+      if (path === '/api/iqdb/proposals' && method === 'POST') {
+        return await offlineSubmission(201,(input,watermark) => student.iqdb.proposals(input,watermark));
+      }
+      if (path === '/api/iqdb/papers' && method === 'POST') {
+        return await offlineSubmission(201,(input,watermark) => student.iqdb.papers(input,watermark));
+      }
       if (path === '/api/workspace/access' && method === 'GET') {
         return json(res, 200, await student.workspace.list(url.searchParams));
       }

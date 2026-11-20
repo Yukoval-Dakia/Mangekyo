@@ -12,6 +12,16 @@ export const questionMetaDraftType = 'content.questionMetaDraft';
 export const questionKey = ({ id, rev }: { id: string; rev: number }) => `${id}:${rev}`;
 export const questionVerificationKey = (input: { id: string; rev: number; recheck?: number }) =>
   `${questionKey(input)}:${input.recheck ?? 0}`;
+export function parseQuestionVerificationKey(key: string) {
+  const [rawId, rawRev, rawRecheck] = key.split(':');
+  try {
+    const version = { id: pageId(rawId), rev: revision(Number(rawRev)), recheck: Number(rawRecheck) };
+    if (Number.isSafeInteger(version.recheck) && version.recheck >= 0 && questionVerificationKey(version) === key)
+      return version;
+  } catch { /* Treat an invalid slot coordinate as unavailable. */ }
+  return undefined;
+}
+
 export const questionStateId = (id: FactId) => contentStableId(questionStateType, id);
 
 export function parseQuestionDisposition(input: unknown) {
