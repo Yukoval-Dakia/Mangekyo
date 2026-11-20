@@ -184,17 +184,16 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       if (!fact) continue;
       const value = extractedUnderstanding(fact.value);
       if (value.ttl && value.ttl <= at) continue;
-      const sources = await openUnderstandingCitations(tx, value.evidence_refs, purpose);
+      const sources = await openUnderstandingCitations(tx, value.evidence_refs, purpose, maySend);
       if (sources.length !== value.evidence_refs.length) continue;
-      const sourceFacts = await Promise.all(sources.map(source => open(source.ref.id)));
-      if (!sourceFacts.every(source => source !== undefined)) continue;
       const kind = understandingPresentation(value, sources);
       const region = kind === 'preference' ? 'preferences' : 'memory';
       if (!requested.includes(region)) continue;
       const review = reviewUnderstanding(fact.ref.id, value, sources);
       add(region, {value: {id, rev: fact.ref.rev, kind, text: value.text, scope: value.scope,
         ttl: value.ttl, sticky: value.sticky, evidence_refs: value.evidence_refs, review},
-      sent: [witness(fact), ...sourceFacts.map(witness)], ...(value.ttl ? {expiresAt: value.ttl} : {})});
+      sent: [witness(fact), ...sources.map(source => source.basis[0]!)],
+      basis: sources.flatMap(source => source.basis.slice(1)), ...(value.ttl ? {expiresAt: value.ttl} : {})});
     }
   }
   if (!wantsMemory && !wantsPreferences && !wantsCourse && !wantsAnswer) return results;
@@ -334,7 +333,7 @@ export async function readMemoryGateway(options: {
     const context = JSON.stringify(bundle);
     const sent = selected.flatMap(item => item.sent);
     const witnesses = (items: readonly RegionItem[]) => [...new Map(items.flatMap(item =>
-      [...(item.basis ?? []), ...item.sent].map(ref => [ref.id, ref] as const))).values()];
+      [...(item.basis ?? []), ...item.sent].map(ref => [`${ref.id}:${ref.rev}`, ref] as const))).values()];
     const opened = witnesses([...results.values()].flat());
     const basis = witnesses(selected);
     const expiresAt = selected.flatMap(item => item.expiresAt ? [item.expiresAt] : []).sort()[0] ?? null;

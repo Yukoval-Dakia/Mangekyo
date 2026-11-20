@@ -18,9 +18,12 @@ import { researchPurpose } from '../../modules/companion/research.ts';
 import { claimUndoToken, claimWitness } from './memory-claims.ts';
 import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
+import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { methodName, slotType, stableId, studioLearner } from './identity.ts';
 import { whenAvailable } from './research-sources.ts';
+import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
+import type { WorkspaceWitness } from './workspace-agent.ts';
 
 // A zero-cost host supplies an authorized route. A paid route requires budget admission first.
 export type UnderstandingTransport = {
@@ -29,17 +32,29 @@ export type UnderstandingTransport = {
   sample(request: { instructions: string; input: string; providerEffectId: string }): Promise<string>;
 };
 const windowMs = 86_400_000;
-const sourceReader = (tx: ReadTransaction, purpose: string) =>
-  createAuthorizedFactReader(tx, purpose, fact => fact.purpose.includes(researchPurpose) || fact.purpose.includes('all'));
+const mayResearch: WorkspaceSourceRecipient = fact => fact.purpose.includes(researchPurpose) || fact.purpose.includes('all');
+const sourceReader = (tx: ReadTransaction, purpose: string) => createAuthorizedFactReader(tx, purpose, mayResearch);
 
-async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpose = researchPurpose) {
-  const fact = await whenAvailable(() => sourceReader(tx, purpose).fact(factId(id), {mode: 'following'}));
+async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpose = researchPurpose,
+  maySend: WorkspaceSourceRecipient = mayResearch) {
+  const allows: WorkspaceSourceRecipient = fact => mayResearch(fact) && maySend(fact);
+  const reader = createAuthorizedFactReader(tx, purpose, allows);
+  const fact = await whenAvailable(() => reader.fact(factId(id), {mode: 'following'}));
   if (!fact) return null;
   const {rows: [provenance]} = await tx.query<{ author: string; born: Tick }>(`
     SELECT last.author,f.created_tick::text AS born
     FROM facts f JOIN fact_revs last ON (last.learner_id,last.fact_id,last.rev)=(f.learner_id,f.id,f.current_rev)
     WHERE f.learner_id=$1 AND f.id=$2`, [tx.learner, id]);
   if (provenance?.author !== 'learner') return null;
+  const ref = claimWitness(fact);
+  const basis: WorkspaceWitness[] = [{id: ref.id, rev: ref.rev, epoch: ref.accessEpoch, type: fact.type, mode:'following'}];
+  if (fact.type === textbookPageType) {
+    const page = await resolveSource(tx, id, {recipient:'workspace', purpose, maySend:allows, track(source, mode) {
+      if (source.ref.id === ref.id && source.ref.rev === ref.rev) return;
+      basis.push({id:source.ref.id, rev:source.ref.rev, epoch:source.accessEpoch, type:source.type, mode:mode ?? 'following'});
+    }}, 'following');
+    if (!page) return null;
+  }
   const activity = activityEvidence(fact);
   if (!activity) return null;
   if ((fact.type === workbookAttemptType || fact.type === posttestSubmissionType) &&
@@ -48,11 +63,12 @@ async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpos
     ...fragment, text: fragment.text.slice(0, 1200).toWellFormed(),
     ...(fragment.prompt ? {prompt: fragment.prompt.slice(0, 350).toWellFormed()} : {}),
   }));
-  return fragments.length ? {kind: activity.kind, ref: claimWitness(fact), fragments, ...provenance} : null;
+  return fragments.length ? {kind: activity.kind, ref, basis, fragments, ...provenance} : null;
 }
 
-export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], purpose?: string) {
-  const sources = await Promise.all(refs.map(ref => openUnderstandingActivity(tx, ref.id, purpose)));
+export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], purpose?: string,
+  maySend?: WorkspaceSourceRecipient) {
+  const sources = await Promise.all(refs.map(ref => openUnderstandingActivity(tx, ref.id, purpose, maySend)));
   return sources.flatMap((source, index) => source && opensCitation(source, refs[index]!) ? [source] : []);
 }
 
@@ -196,8 +212,10 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
       const handle = createCommandHandler(db, {modules: [companion], hooks: {async onFactsChanged(tx, tick) {
         // The command has already written its revisions. Revalidate source/consent without rereading revised targets.
         const current = await readTodo(tx, todoId);
+        const citations = entries.flatMap(entry => entry.data.evidence_refs);
         if (current?.revision !== todo.revision || !await readReadyWork(tx, ref) ||
             !await settingsCurrent(tx, todo.spec.settingsRevision) || !await eligibleExtraction(tx, todo.spec) ||
+            (await openUnderstandingCitations(tx, citations)).length !== citations.length ||
             await learnerGovernedSince(tx, source.born, source.ref.id) ||
             !await completeTodo(tx, tick, current, entries[0]!.id)) throw new ClaimInputError('抽取工作已失效。');
       }}});

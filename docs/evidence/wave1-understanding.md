@@ -21,3 +21,5 @@
 - 同一套 Coordinator / Todo / Work / effects 消费授权教材保存。Todo `01M7WM2X7P9DEDM00JMDAWMM33` 对应 Work `01M7WM2X83MYRQMV9ZP8RX7R5P`。同一观察从 rev 1 更新到 rev 2，保留 support 与 contradict，复核结果为未决。另一条有教学用途的教材观察被实际 Memory Gateway 读回，只获教研授权的作答观察不进入教学上下文。
 - 逐字引文不匹配时 Todo 进 `failed`、effect 保留 `unknown`，没有理解写入。本人在模型响应送回前更正另一条理解时，到达的结果触发 `cancelled`，已保存的本人修订保持粘性。移除作答教研授权后，包含该原答的观察隐藏正文和来源。原撤回凭据仍能撤回它。本人忘掉另一条已改过的理解后，用同一请求重试返回相同回执。只保存的教材页面未进入记录的模型请求。
 - 本地 PostgreSQL 16 和 Temporal 1.32.2，Coordinator `coordinator:58277e6b-188c-40ba-8855-c7d9b67194d8`。注入零费用传输只用于隔离验收。运行记录、原始出站请求与模型回复、复现驱动位于 `/tmp/mangekyo-understanding-9de60344/final/` 下的 `evidence.json`、`ledger.json`、Temporal 历史 JSON、`transport.jsonl`、`proof.ts`、`host.mjs`。未使用真实模型、付费路由、TEST、浏览器或部署。
+
+合入候选在 #55 基线上复跑了正反证据、假引文、迟到结果、撤权和撤回。教材正文保留原有块与来源见证。抽取和同伴读取复用教材的来源遍历，按各自用途和接收方验权。隔离 PG 对比确认，只有页面获准但来源仅限存储时，旧候选返回正文，修订后的候选没有返回正文。随后在 Studio 和 Temporal 联验中，派生页未进入实际注入传输。普通学生给教材开启后台教研的界面仍待接入。

@@ -26,11 +26,11 @@ export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = (fact: FactSnapshot) => boolean;
 export type SourceAccess = { track?: SourceTrack } & (
   | {recipient: 'learner'}
-  | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient}
+  | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string}
 );
 
 export function sourcePurpose(access: SourceAccess): string {
-  return access.recipient === 'learner' ? storagePurpose : purpose;
+  return access.recipient === 'learner' ? storagePurpose : access.purpose ?? purpose;
 }
 
 export function sourceMaySend(access: SourceAccess, fact: FactSnapshot): boolean {
