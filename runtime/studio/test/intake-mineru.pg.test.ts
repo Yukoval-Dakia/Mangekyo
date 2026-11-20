@@ -1,13 +1,14 @@
+import { workerStorage } from '../../../kernel/src/schema.ts';
 import { factId } from '../../../kernel/src/declarations/ids.ts';
 import { intakeIdFor } from '../intake-lifecycle.ts';
-import { mkdtemp, readdir, rename, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { aroundAll, describe, expect, it, vi } from 'vitest';
 import { acknowledgeStartedWork, relayPending, runEffect, type WorkRef } from '../../../kernel/src/work/index.ts';
 import { studioLearner } from '../identity.ts';
-import { openCloudIntakeWork, type MineruClient } from '../intake-cloud.ts';
+import { cloudIntakeRoute, openCloudIntakeWork, type MineruClient } from '../intake-cloud.ts';
 import { handleIntakeRequest, openIntake, type IntakeMetadata } from '../intake.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { loadStudioTestModule } from './modules.ts';
@@ -61,9 +62,9 @@ describe.skipIf(!testDatabaseUrl)('MinerU intake in PostgreSQL', () => {
       'SELECT execution_ref FROM work WHERE learner_id=$1 AND slot_key=$2', [studioLearner, owner]);
     let selected: WorkRef | undefined;
     await relayPending(db, async (_, intent) => {
-      const ref = await acknowledgeStartedWork(db, intent);
+      const ref = await acknowledgeStartedWork(db, intent, cloudIntakeRoute);
       if (intent === work?.execution_ref && ref) selected = ref;
-    });
+    }, cloudIntakeRoute);
     if (!selected) throw new Error('No durable intake work for ' + owner);
     return selected;
   }
@@ -144,6 +145,28 @@ describe.skipIf(!testDatabaseUrl)('MinerU intake in PostgreSQL', () => {
     expect((await capture('mineru-retry-save')).status).toBe(201);
   });
 
+  it('isolates same-request originals and rollback across stores sharing the object root', async () => {
+    const key = 'two-stores-one-request';
+    const a = await (await capture(key,'local','text/plain')).json() as IntakeMetadata;
+    await withLearnerDatabase(studioLearner, async other => {
+      let fail = true;
+      const b = openIntake(other,await loadStudioTestModule('capture'),await loadStudioTestModule('content'),{
+        async onFactsChanged() { if (fail) throw new Error('rollback second store'); },
+      });
+      const input = {requestId:key,filename:'b.txt',bytes:Buffer.from('second store')};
+      await expect(b.capture(input)).rejects.toThrow('rollback second store');
+      expect((await intake.original(a.id)).bytes.toString()).toBe('本地文本');
+      fail = false;
+      const [first,replay] = await Promise.all([b.capture(input),b.capture(input)]);
+      expect([first.created,replay.created].sort()).toEqual([false,true]);
+      expect(first.id).toBe(a.id);
+      expect((await b.original(first.id)).bytes.toString()).toBe('second store');
+      expect(await b.lifecycle.erase(first.id,{requestId:'erase-second-store',expectedRev:1,confirmation:'permanently-delete-original'}))
+        .toMatchObject({original:'removed'});
+      expect((await intake.original(a.id)).bytes.toString()).toBe('本地文本');
+    });
+  });
+
   it('burns intake identities before replay and rejects a result returned after confirmation', async () => {
     expect((await state()).watermark).toBe('0');
     const prior = await (await capture('delete-during-send')).json() as IntakeMetadata;
@@ -163,7 +186,8 @@ describe.skipIf(!testDatabaseUrl)('MinerU intake in PostgreSQL', () => {
     await db.query(`INSERT INTO effects (learner_id,owner_kind,owner_id,step_key,label,input_digest,state,started_tick)
       SELECT id,'session','legacy-session','call','external','digest','started',clock FROM learners WHERE id=$1`, [studioLearner]);
     try {
-      const marker = join(directory,'intake',prior.id,'store-id');
+      const location = join(directory,'intake',(await workerStorage(db)) + '.' + prior.id);
+      const marker = join(location,'store-id');
       await rename(marker,marker + '.offline');
       const blocked = await (await erase(prior)).json() as {generation:string};
       expect(blocked).toMatchObject({blocked:true,original:'pending'});
@@ -173,7 +197,7 @@ describe.skipIf(!testDatabaseUrl)('MinerU intake in PostgreSQL', () => {
       expect(receipt.generation).toBe(blocked.generation);
       expect(receipt).toMatchObject({blocked:true,original:'removed',copies:'unverified'});
       expect(await (await erase(prior)).json()).toEqual(receipt);
-      expect(await readdir(join(directory,'intake',prior.id))).toEqual(['store-id']);
+      expect(await readdir(location)).toEqual(['store-id']);
       expect(await state()).toMatchObject({watermark:receipt.generation,tombstones:[{generation:receipt.generation},{generation:receipt.generation}]});
       expect((await fetch(path + '/original')).status).toBe(404);
       expect((await capture('delete-during-send')).status).toBe(410);
@@ -246,5 +270,17 @@ describe.skipIf(!testDatabaseUrl)('MinerU intake in PostgreSQL', () => {
     expect((await intake.metadata(b.id)).extraction.error).toContain('已停止轮询和重传');
     expect((await db.query('SELECT input_basis,result FROM effects WHERE owner_id=$1',[owner])).rows)
       .toEqual([{input_basis:null,result:'original-legacy-batch'}]);
+  });
+  it('keeps a legacy original with no store marker pending after logical erasure', async () => {
+    const {watermark} = await state();
+    const file = await (await capture('unmarked-original',null,'text/plain',watermark)).json() as IntakeMetadata;
+    const root = join(directory,'intake');
+    const legacy = join(root,file.id);
+    await rename(join(root,(await workerStorage(db)) + '.' + file.id),legacy);
+    await rm(join(legacy,'store-id'));
+    expect((await intake.original(file.id)).bytes.toString()).toBe('本地文本');
+    expect(await (await erase(file)).json()).toMatchObject({original:'pending'});
+    expect((await fetch(origin + '/api/materials/' + file.id + '/original')).status).toBe(404);
+    expect(await readFile(join(legacy,'original'),'utf8')).toBe('本地文本');
   });
 });

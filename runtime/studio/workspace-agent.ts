@@ -222,7 +222,7 @@ export function openWorkspaceTools(options: {
       if (intakeImage.crop && !receiveImage)
         return JSON.stringify(learningToolError('image_unavailable','part','当前调用入口不接收原图裁剪。'));
       // Replay the pixel read from the verified original. The journal holds only its pinned basis.
-      const result = await cropIntakeImage(intakeImage);
+      const result = await cropIntakeImage(db,intakeImage);
       value = result.value;
       text = JSON.stringify(value);
       if (result.image) {

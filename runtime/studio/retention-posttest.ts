@@ -1,3 +1,4 @@
+import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -46,10 +47,7 @@ export function posttestWriter(db: Db, activity: LoadedModule) {
 
   // The same lock covers the live forecast check, formal command and reconciliation enqueue.
   async function write(tx: DbTransaction, type: string, id: FactId, data: Json) {
-    const handle = createCommandHandler({ ...db, query: tx.query, tx: async (scope, run) => {
-      if (scope.learner !== tx.learner) throw new Error('Posttest command learner mismatch');
-      return run(tx);
-    } }, { modules: [activity], hooks });
+    const handle = createCommandHandler(withinLearnerTransaction(db, tx), { modules: [activity], hooks });
     const receipt = await handle({ learner: tx.learner, actor: 'learner', purpose: retentionTeachingPurpose,
       type, id: commandId(stableId(type, id)), input: { id, data, condition: closedPosttest } });
     if (receipt.state !== 'done') throw new RequestError(409, '这次后测操作已失效。');

@@ -5,9 +5,9 @@ import { Client, Connection } from '@temporalio/client';
 import { createPgDb } from '../../kernel/src/db/pg.ts';
 import { applyKernelSchema, workerStorage } from '../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
-import { acknowledgeStartedWork, readWork, relayPending } from '../../kernel/src/work/index.ts';
+import { acknowledgeStartedWork, readWork, relayPending, type WorkRef } from '../../kernel/src/work/index.ts';
 import { capabilityTaskQueue, startWork } from '../../executors/temporal/src/index.ts';
-import { createWorkWorker } from '../../executors/temporal/src/worker.ts';
+import { activateLocalDeployment, createWorkWorker } from '../../executors/temporal/src/worker.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { openStudio } from './sessions.ts';
 import { recordTerminalFailure, teach } from './teach.ts';
@@ -15,7 +15,8 @@ import { sourceBuildId } from './build.ts';
 import { serve } from './http.ts';
 import { openTextbook } from './textbook.ts';
 import { openIntake } from './intake.ts';
-import { cloudIntakeSlot, openCloudIntakeWork } from './intake-cloud.ts';
+import { openCapturePapers } from './capture-papers.ts';
+import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
 import {
@@ -67,7 +68,8 @@ const understandingTransport = understandingModule
   : undefined;
 if (understandingModule && !understandingTransport) throw new Error('宿主模块须导出 understandingTransport');
 const research = openResearch(db, activity, companion, undefined, undefined, understandingTransport);
-const intake = openIntake(db, capture, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
+const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
+const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
 const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
@@ -104,7 +106,8 @@ async function openWeb() {
   const student = { textbook, relationReview:openRelationReview(db,content),
     workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
-    intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
+    intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
+    workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
     research, recall, retention, retentionComparison };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
@@ -129,14 +132,10 @@ if (mode === 'web') {
 async function runWorker(storeId: string) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
-  const jitQueue = capabilityTaskQueue(queue,'jit-v1');
-  const jitLane = {deriver:jitMethodName};
-  async function execute(id: string, terminal = false, jit = false) {
-    const ref = jit ? await acknowledgeStartedWork(db,id,jitLane) ?? await acknowledgeStartedWork(db,id,'capability_pending')
-      : await acknowledgeStartedWork(db,id);
-    if (!ref || (!jit && await research.execute(ref, terminal))) return;
+  async function executeDefault(ref: WorkRef, terminal: boolean) {
+    if (await research.execute(ref, terminal)) return;
     const work = await readWork(db, ref);
-    if (!work || jit !== (work.deriver === jitMethodName)) return;
+    if (!work || work.deriver === jitMethodName) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
@@ -148,54 +147,56 @@ async function runWorker(storeId: string) {
   const workerConfig = {
     address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
     namespace: process.env.TEMPORAL_NAMESPACE || 'default',
-    taskQueue: queue,
-    deploymentName: queue,
-    advanceCoordinator: research.advance,
-    onTerminalFailure: (id: string) => execute(id, true),
     buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
   };
   const connection = await Connection.connect({ address: workerConfig.address });
   const client = new Client({ connection, namespace: workerConfig.namespace });
-  const workers = [await createWorkWorker(execute, workerConfig)];
-  workers.push(await createWorkWorker(id => execute(id,false,true), {
-    ...workerConfig, taskQueue:jitQueue, deploymentName:jitQueue,
-    onTerminalFailure:id => execute(id,true,true),
+  const jitRoute = { deriver: jitMethodName };
+  async function executeGuarded(ref: WorkRef, terminal: boolean) {
+    const work = await readWork(db, ref);
+    if (work?.deriver !== jitMethodName) return;
+    if (terminal) await recordTerminalFailure(db, ref);
+    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters);
+  }
+  const lanes = [
+    { queue, route: undefined, run: executeDefault },
+    { queue: capabilityTaskQueue(queue, 'jit-v1'), route: jitRoute, run: executeGuarded },
+    ...(mineruToken() ? [{ queue: capabilityTaskQueue(queue, 'ocr-v1'), route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
+  ];
+  const workers = await Promise.all(lanes.map(lane => {
+    async function execute(id: string, terminal = false) {
+      const ref = await acknowledgeStartedWork(db, id, lane.route)
+        ?? (lane.route === jitRoute ? await acknowledgeStartedWork(db, id, 'capability_pending') : null);
+      if (ref) await lane.run(ref, terminal);
+    }
+    return createWorkWorker(execute, {
+      ...workerConfig, taskQueue: lane.queue, deploymentName: lane.queue,
+      ...(lane.route ? {} : {advanceCoordinator: research.advance}),
+      onTerminalFailure: id => execute(id, true),
+    });
   }));
   let stopping = false;
-  const running = Promise.all(workers.map(({worker}) => worker.run()));
+  const runs = workers.map(({worker}) => worker.run());
+  const running = Promise.all(runs);
   void running.catch((error) => {
     console.error('Temporal Worker 停止', error.name);
     process.exitCode = 1;
     stopping = true;
   });
   if (process.env.MANGEKYO_ACTIVATE_LOCAL_BUILD === '1') {
-    if (!/^(localhost|127\.0\.0\.1):\d+$/.test(workerConfig.address))
-      throw new Error('自动激活构建仅限本机开发服务');
-    for (const deploymentName of [queue,jitQueue]) {
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await client.workflowService.setWorkerDeploymentCurrentVersion({
-            namespace:workerConfig.namespace,deploymentName,buildId:workerConfig.buildId,
-          });
-          break;
-        } catch (error) {
-          if (attempt >= 59) throw error;
-          await delay(500);
-        }
-      }
-    }
+    await Promise.all(lanes.map(lane => activateLocalDeployment(client, workerConfig, lane.queue)));
   }
-  async function relay() {
+  async function relay(lane: typeof lanes[number]) {
     let failed = false;
     while (!stopping) {
       try {
         await relayPending(db, async (ref, id) => {
-          if (!(await research.relayWake(client, queue, ref, id))) await startWork(client, id, { taskQueue: queue });
-        });
-        const startJit = async (_: unknown,id: string) => { await startWork(client,id,{taskQueue:jitQueue}); };
-        await relayPending(db,startJit,jitLane);
-        // Drain the trial v9 JIT lane using its unchanged queue.
-        await relayPending(db,startJit,'capability_pending');
+          if (!lane.route && await research.relayWake(client, queue, ref, id)) return;
+          await startWork(client, id, {taskQueue: lane.queue});
+        }, lane.route);
+        if (lane.route === jitRoute) {
+          await relayPending(db, (_, id) => startWork(client, id, { taskQueue: lane.queue }), 'capability_pending');
+        }
         failed = false;
       } catch {
         if (!failed) console.error('执行交接暂时不可用，待办已保留。');
@@ -204,7 +205,7 @@ async function runWorker(storeId: string) {
       await delay(failed ? 2500 : 500);
     }
   }
-  const relaying = relay();
+  const relaying = Promise.all(lanes.map(relay));
   let closing = false;
   async function stop() {
     if (closing) return;
@@ -213,7 +214,7 @@ async function runWorker(storeId: string) {
     stopEvents?.();
     server?.close();
     for (const {worker} of workers) if (worker.getState() === 'RUNNING') worker.shutdown();
-    await Promise.allSettled([running, relaying]);
+    await Promise.allSettled([...runs, relaying]);
     await pythonHost.close();
     await Promise.all(workers.map(({connection}) => connection.close()));
     await connection.close();

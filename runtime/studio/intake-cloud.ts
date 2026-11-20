@@ -19,6 +19,7 @@ import { studioLearner } from './identity.ts';
 
 export const cloudIntakeSlot = 'activity.intakeCloudExtraction';
 const cloudIntakeDeriver = 'activity.mineruExtraction';
+export const cloudIntakeRoute = { deriver: cloudIntakeDeriver };
 
 export type MineruClient = { submit: typeof submitMineru; read: typeof readMineru };
 
@@ -34,7 +35,7 @@ export async function enqueueCloudIntake(tx: DbTransaction, tick: Tick, intakeId
   await tx.insert('slot_state', {
     learner_id: tx.learner, slot_type: cloudIntakeSlot, slot_key: intakeId, scope_keys: '{}', changed_tick: tick,
   });
-  await requestWork(tx, tick, { slotType: cloudIntakeSlot, slotKey: intakeId, deriver: cloudIntakeDeriver });
+  await requestWork(tx, tick, { slotType: cloudIntakeSlot, slotKey: intakeId, deriver: cloudIntakeDeriver }, 'routed_pending');
 }
 
 async function cloudInput(tx: ReadTransaction, intakeId: string) {
