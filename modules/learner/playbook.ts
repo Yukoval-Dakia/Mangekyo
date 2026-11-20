@@ -1,9 +1,11 @@
-import { factId, type DerivationSnapshot, type ReadContext, type Revision, type Playbook as KernelPlaybook } from '@mangekyo/kernel';
+import { factId, type DerivationSnapshot, type FactId, type ReadContext, type Revision, type Playbook as KernelPlaybook } from '@mangekyo/kernel';
+import { interventionLiftType } from './intervention-lift.ts';
 import { allows, integer, openWitness, record, text, witnessList, type Witness } from './memory-evidence.ts';
 
 export const playbookType = 'learner.playbook';
 export const understandingStatusType = 'learner.understandingStatus';
-export const liftType = 'learner.interventionLift';
+export const liftType = interventionLiftType;
+export const retirePlaybookCommand = 'learner.retirePlaybook';
 
 function steps(value: unknown, empty = false): string[] {
   if (!Array.isArray(value) || value.length > 32 || (!empty && !value.length)) throw new Error('策略需要结构化步骤和条件。');
@@ -52,6 +54,20 @@ export type PlaybookStatus = {
   playbookId: string; version: number; strategyId: string; status: 'candidate' | 'verified' | 'demoted';
   reason: string; liftId: string | null; verificationRefs: Witness[];
 };
+
+export function readPlaybookLift(read: ReadContext, learner: DerivationSnapshot<unknown>['slot']['learner'],
+  id: FactId, proposal: Playbook) {
+  return read.slot({learner, type: liftType, key: JSON.stringify([id, proposal.version])}, {mode: 'following'});
+}
+
+export function playbookGardeningProposal(id: FactId, expectedRev: Revision, status: PlaybookStatus) {
+  if (status.status !== 'demoted') return null;
+  return {
+    light: 'yellow' as const,
+    dedupKey: `retire-playbook/${id}/${expectedRev}`,
+    command: {type: retirePlaybookCommand, input: {id, expectedRev, version: status.version}},
+  };
+}
 export function verifiedStatus(playbookId: string, proposal: Playbook,
   lift: DerivationSnapshot<unknown>): PlaybookStatus {
   const base = {playbookId, version: proposal.version, strategyId: proposal.strategyId, liftId: lift.id};
@@ -69,8 +85,8 @@ export function verifiedStatus(playbookId: string, proposal: Playbook,
     reason: result.verdict === 'positive' ? '独立后测正 Lift。' : '独立后测负 Lift，停止推荐。', verificationRefs};
 }
 
-// Resolve for one authorized teaching snapshot. Re-open original and posttest
-// witnesses under teaching permission before returning any proposed steps.
+// The host binds this reader to one learner, the teaching purpose, the actual
+// recipient and current slot selection, and revalidates the basis before send.
 export async function readVerifiedPlaybook(read: ReadContext, ref: Witness) {
   const fact = await openWitness(read, ref, 'teaching');
   if (fact.type !== playbookType) throw new Error('引用未指向策略。');
@@ -79,12 +95,18 @@ export async function readVerifiedPlaybook(read: ReadContext, ref: Witness) {
   if (!basis.teaching) return null;
   const current = await read.slot<PlaybookStatus>({learner: fact.ref.learner, type: understandingStatusType,
     key: ref.id}, {mode: 'following'});
-  if (current.outcome.kind !== 'value') return null;
+  if (current.slot.learner !== fact.ref.learner || current.slot.type !== understandingStatusType ||
+      current.slot.key !== ref.id || current.outcome.kind !== 'value') return null;
   const checked = current.outcome.value;
   if (checked.status !== 'verified' || checked.playbookId !== ref.id || checked.version !== proposal.version ||
       checked.strategyId !== proposal.strategyId || !checked.liftId) return null;
-  for (const verification of witnessList(checked.verificationRefs)) {
+  const lift = await readPlaybookLift(read, fact.ref.learner, ref.id, proposal);
+  const verified = verifiedStatus(ref.id, proposal, lift);
+  if (lift.slot.learner !== fact.ref.learner || lift.id !== checked.liftId || verified.status !== 'verified') return null;
+  const verificationRefs = verified.verificationRefs;
+  for (const verification of verificationRefs) {
     await openWitness(read, verification, 'teaching');
   }
-  return {proposal, status: checked, statusId: current.id};
+  return {proposal, status: verified, statusId: current.id,
+    basis: [ref, ...proposal.reflection.evidence_refs, ...verificationRefs]};
 }

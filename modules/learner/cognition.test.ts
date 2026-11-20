@@ -15,7 +15,7 @@ it('separates real time and knowledge time, and keeps same-condition counterevid
   expect(beliefsAsOf(rows, {validAt: at(4), knownAt: at(9)})).toEqual([rows[0]]);
   expect(beliefsAsOf(rows, {validAt: at(4), knownAt: at(10)})).toEqual([]);
   const history = ['supports', 'supports', 'contradicts', 'contradicts', 'contradicts', 'supports'].map((d, i): HypothesisEvidence =>
-    ({ref: ref(i+1), direction: d as HypothesisEvidence['direction'], occurredAt: at(i), recordedAt: at(i),
+    ({ref: ref(i+1), direction: d as HypothesisEvidence['direction'], occurredAt: at(i), recordedAt: at(i), origin: 'chronicle',
       assessment: i < 3 ? 'observation' : i === 3 ? 'independent-variant' : 'independent-transfer', source: 'business-event'}));
   const view = hypothesisView(history, {validAt: at(6), knownAt: at(5)});
   expect(view.trajectory.map(s => s.stage)).toEqual(['supported', 'disputed', 'improving', 'retired', 'relapsed']);

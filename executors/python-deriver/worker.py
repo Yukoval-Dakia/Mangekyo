@@ -19,9 +19,20 @@ def handle(request):
         return {"id": request_id, "error": "invalid request"}
 
     evidence = request["input"]
-    if not is_evidence_slice(evidence):
-        return {"id": request_id, "error": "invalid CanonicalEvidenceSlice@v1"}
     try:
+        if version == "intervention-lift@1":
+            from intervention_lift import derive
+            return {"id": request_id, "value": derive(evidence, method_version=version)}
+        if version == "plan/exam-pacing@1":
+            import exam_pacing
+            if not exam_pacing.is_pacing_input(evidence):
+                return {"id": request_id, "error": "invalid exam pacing input"}
+            result = exam_pacing.derive(evidence, method_version=version)
+            if not exam_pacing.is_pacing_result(result):
+                return {"id": request_id, "error": "invalid exam pacing output"}
+            return {"id": request_id, "value": {"kind": "value", "value": result}}
+        if not is_evidence_slice(evidence):
+            return {"id": request_id, "error": "invalid CanonicalEvidenceSlice@v1"}
         from cognition import derive
 
         result = derive(evidence, method_version=version)
@@ -29,7 +40,7 @@ def handle(request):
             return {"id": request_id, "error": "invalid cognition output"}
         return {"id": request_id, "value": {"kind": "value", "value": result}}
     except Exception:
-        return {"id": request_id, "error": "cognition computation failed"}
+        return {"id": request_id, "error": "deriver computation failed"}
 
 
 def main():
