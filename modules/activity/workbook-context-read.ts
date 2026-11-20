@@ -4,6 +4,19 @@ import { sameHelpRef, type HelpRef } from './help-exposure-values.ts';
 import { recordWorkbookPresentationCommand, workbookPresentation, workbookPresentationType } from './workbook-presentation.ts';
 import { sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from './workbook-values.ts';
 
+type ReadFact = (...args: Parameters<ReadContext['fact']>) => Promise<FactSnapshot>;
+
+/** Reuse exact fact reads within a single discovery transaction and authorization scope. */
+export function memoWorkbookFacts(read: ReadFact): Pick<ReadContext,'fact'> {
+  const facts = new Map<string,Promise<FactSnapshot>>();
+  return {fact<Value>(id: FactId, options: Parameters<ReadFact>[1]) {
+    const key = JSON.stringify([id,options.mode,options.mode === 'pinned' ? options.rev : null]);
+    const result = facts.get(key) ?? read(id,options);
+    facts.set(key,result);
+    return result as Promise<FactSnapshot<Value>>;
+  }};
+}
+
 export type BoundWorkbookMount = {paper: HelpRef; attemptRef?: HelpRef; epoch: string; attemptEpoch?: string; issuance?: HelpRef};
 
 export async function historicalWorkbookMount(tx: ActivityEvidenceReadScope, paperId: FactId, submission: FactSnapshot, read: ReadContext, unavailable: (error: unknown) => boolean): Promise<BoundWorkbookMount | null> {
