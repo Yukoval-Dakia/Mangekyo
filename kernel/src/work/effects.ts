@@ -27,11 +27,38 @@ type EffectRow = {
   basis_current: boolean;
   legacy: boolean;
   provider_effect_id: string | null;
+  budget_route: string | null;
+  reserved_usd_micros: string | null;
   state: 'started' | 'done' | 'unknown';
   result: unknown;
 };
 
 const json = z.json();
+
+export class EffectBudgetExceeded extends Error {}
+export class EffectIdentityMismatch extends Error {}
+
+type EffectBudget = {
+  readonly route: string;
+  readonly limitUsdMicros: number;
+  readonly reserveUsdMicros: number;
+  readonly actualUsdMicros: (result: Json) => number | null;
+};
+
+export async function effectBudgetUsage(tx: ReadTransaction) {
+  const { rows: [row] } = await tx.query<{ settled: string; held: string }>(
+    `SELECT COALESCE(sum(actual_usd_micros),0)::text AS settled,
+      COALESCE(sum(reserved_usd_micros) FILTER (WHERE actual_usd_micros IS NULL),0)::text AS held
+      FROM (
+        SELECT reserved_usd_micros,actual_usd_micros FROM effects
+        WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL
+        UNION ALL
+        SELECT reserved_usd_micros,actual_usd_micros FROM erased_effect_receipts
+        WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL
+      ) charges`, [tx.learner],
+  );
+  return { settled: BigInt(row!.settled), held: BigInt(row!.held) };
+}
 
 /** A supplied authorization check runs under the learner lock for reservation and replay. */
 export async function runEffect(
@@ -41,23 +68,31 @@ export async function runEffect(
   authorize?: (tx: ReadTransaction) => Promise<void> | void,
   // Supplied by the host only for a closed set of independently authored fact inputs.
   basis?: { manifest: Manifest; work?: WorkRef & { ownerSlot?: WorkRequest } },
+  // Priced effects must persist only content-free receipts. Financial settlement survives withdrawal of consent.
+  budget?: EffectBudget,
 ): Promise<EffectResult> {
   const { ownerKind, ownerId, stepKey, label, input } = request;
   const learner = learnerId(request.learner);
   const identity = [learner, ownerKind, ownerId, stepKey, label] as const;
   const digest = createHash('sha256').update(canonicalJsonString(input)).digest('hex');
+  if (budget && (!Number.isSafeInteger(budget.reserveUsdMicros) || budget.reserveUsdMicros <= 0 ||
+      !Number.isSafeInteger(budget.limitUsdMicros) || budget.limitUsdMicros <= 0 || !budget.route))
+    throw new Error('Invalid effect budget');
   const reservation = await db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
     await assertUnburned(tx, 'fact', [request.ownerId]);
     await authorize?.(tx);
     const { rows: [prior] } = await tx.query<EffectRow>(
-      `SELECT input_digest, provider_effect_id, state, result, input_basis IS NULL AS legacy,
+      `SELECT input_digest, provider_effect_id, state, result, budget_route, reserved_usd_micros::text,
+              input_basis IS NULL AS legacy,
               effect_may_settle(learner_id, owner_id, started_tick, input_basis) AS basis_current FROM effects
        WHERE learner_id = $1 AND owner_kind = $2 AND owner_id = $3 AND step_key = $4 AND label = $5`,
       identity,
     );
     if (prior) {
-      if (prior.input_digest !== digest) throw new Error('Effect identity already used with different input');
+      if (prior.input_digest !== digest || prior.budget_route !== (budget?.route ?? null) ||
+          prior.reserved_usd_micros !== (budget ? String(budget.reserveUsdMicros) : null))
+        throw new EffectIdentityMismatch('Effect identity already used with different input');
       if (prior.state === 'done') {
         if (!prior.basis_current && prior.legacy)
           throw new LifecycleError(409, '旧发送凭据缺少跨删除水位的输入依据。', 'legacy_effect_basis_missing');
@@ -67,6 +102,11 @@ export async function runEffect(
       return { kind: 'unknown', providerEffectId: prior.provider_effect_id } as const;
     }
 
+    if (budget) {
+      const { settled, held } = await effectBudgetUsage(tx);
+      if (settled + held + BigInt(budget.reserveUsdMicros) > BigInt(budget.limitUsdMicros))
+        throw new EffectBudgetExceeded('Effect budget exhausted');
+    }
     const providerEffectId = newUlid();
     return tx.withLearnerWrite(async tick => {
       await tx.insert('effects', {
@@ -80,6 +120,7 @@ export async function runEffect(
         state: 'started',
         started_tick: tick,
         input_basis: basis ? JSON.stringify(basis) : null,
+        ...(budget && { reserved_usd_micros: budget.reserveUsdMicros, budget_route: budget.route }),
       });
       return { kind: 'invoke', providerEffectId, tick, deletionWatermark: await deletionWatermark(tx) } as const;
     });
@@ -103,8 +144,13 @@ export async function runEffect(
 
   let outcome: EffectResult;
   let encoded: string | null = null;
+  let actual: number | null = null;
   try {
     const result = canonicalizeJson(await invoke(reservation.providerEffectId, checkDispatch));
+    if (budget) {
+      const reported = budget.actualUsdMicros(result);
+      if (reported !== null && Number.isSafeInteger(reported) && reported >= 0) actual = reported;
+    }
     encoded = JSON.stringify(result);
     outcome = { kind: 'done', result };
   } catch {
@@ -112,14 +158,16 @@ export async function runEffect(
   }
 
   await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
-    await assertUnburned(tx, 'fact', [request.ownerId]);
-    if (!basis) await assertDeletionWatermark(tx,reservation.deletionWatermark);
-    await authorize?.(tx);
+    if (!budget) {
+      await assertUnburned(tx, 'fact', [request.ownerId]);
+      if (!basis) await assertDeletionWatermark(tx,reservation.deletionWatermark);
+      await authorize?.(tx);
+    }
     const updated = await tx.query(
-      `UPDATE effects SET state = $6, result = $7, ended_tick = $8
+      `UPDATE effects SET state = $6, result = $7, ended_tick = $8, actual_usd_micros = $10
        WHERE learner_id = $1 AND owner_kind = $2 AND owner_id = $3 AND step_key = $4 AND label = $5
          AND state = 'started' AND started_tick = $9`,
-      [...identity, outcome.kind, encoded, tick, reservation.tick],
+      [...identity, outcome.kind, encoded, tick, reservation.tick, actual],
     );
     if (updated.rowCount !== 1) throw new Error('Effect reservation no longer active');
   }));

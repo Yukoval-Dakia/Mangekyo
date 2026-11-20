@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
-import { readTodo, type TodoInput, type TodoSpec } from '../../kernel/src/work/todos.ts';
+import { readTodo, type TodoSpec } from '../../kernel/src/work/todos.ts';
 import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
@@ -18,16 +18,13 @@ import {
   parseTriageResponse, triagePromptBlock, TriageResponseError, type TriageSnapshot,
 } from './research-triage/index.ts';
 
+export const scoutEffectLabel = 'background-research-scout-v1';
 export const reviewGoal = '为一份正式错题作答准备复习单';
 const reviewTemplate = 'review_submitted_attempt';
 const retrySheetLifetimeMs = 24 * 60 * 60 * 1000;
 const recentWindow = 8;
 const detailLimit = 4;
 const noop = { kind: 'noop' } as const;
-
-export type ResearchTriageRequest = Readonly<{ stablePrefix: string; deltaSuffix: string }>;
-/** In-process sampling seam. The studio does not mount a provider or authorize an external effect here. */
-export type ResearchTriageTransport = (request: ResearchTriageRequest, signal: AbortSignal) => string | Promise<string>;
 
 export function reviewDedupKey({ id, revision, accessEpoch }: TodoSpec['sourceFactRev']) {
   return 'review-attempt:' + id + ':' + revision + ':' + accessEpoch;
@@ -77,7 +74,7 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
       add('goal_or_task_changed', { fact_type: row.type });
     } else {
       discovery = true;
-      if (row.type === researchSettingsType) add('research_enabled', { paid_budget: 0 });
+      if (row.type === researchSettingsType) add('research_enabled', {});
       else if (row.type === retentionReviewPermissionType) {
         if (await activeRetentionReview(tx, fact)) add('authorized_retention_miss', { status: 'missed' });
       } else add('authorized_attempt_changed', { submitted_at: workbookAttempt(fact.value).submittedAt });
@@ -133,7 +130,7 @@ async function readResearchOverview(tx: ReadTransaction) {
   };
 }
 
-async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, settingsRevision: number, now: number) {
+async function readReviewAttempts(tx: ReadTransaction, reviewed: Tick, discovery: boolean, settingsRevision: number, now: number, paid: boolean) {
   const { rows } = await tx.query<{ id: string; recent: boolean }>(
     `WITH attempts AS (
        SELECT f.id, f.type, f.created_tick, r.data, row_number() OVER (ORDER BY f.created_tick DESC, f.id) <= $4 AS recent
@@ -147,7 +144,7 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
     [tx.learner, workbookAttemptType, researchPurpose, recentWindow, discovery, retentionReviewPermissionType],
   );
   const facts: Record<string, Json> = {};
-  let intent: TodoInput | undefined;
+  let intent: TodoSpec | undefined;
   let olderCandidate: Json | undefined;
   const read = researchReader(tx);
   for (const { id: rawId, recent } of rows) {
@@ -166,9 +163,11 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
       const known = await tx.query(
         `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
          UNION ALL SELECT 1 FROM work WHERE family='todo' AND learner_id = $1 AND dedup_key = $3
-          AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5 LIMIT 1`,
+          AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5
+         UNION ALL SELECT 1 FROM effects WHERE $6 AND learner_id=$1 AND label=$7
+          AND step_key=$3 AND started_tick<=$8 LIMIT 1`,
         [tx.learner, worksheetId(id, fact.ref.rev, fact.accessEpoch), dedupKey,
-          JSON.stringify(sourceFactRev), String(settingsRevision)],
+          JSON.stringify(sourceFactRev), String(settingsRevision), paid, scoutEffectLabel, reviewed],
       );
       if (!known.rowCount) intent = {
         dedupKey, workerProfile: 'deterministic_compute', trigger: { kind: 'immediate' },
@@ -190,13 +189,13 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
 }
 
 export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick, settingsRevision: number,
-  now: number, eligible: (spec: TodoSpec) => Promise<boolean>) {
+  now: number, paid: boolean, eligible: (spec: TodoSpec) => Promise<boolean>) {
   const background = await readDeltas(tx, reviewed);
   const foreground = await readResearchForeground(tx, reviewed);
   const { events, discovery } = background;
   for (const event of foreground.events) events[event.event_id] = event;
   if (!Object.keys(events).length) return null;
-  const { facts, intent, olderCandidate } = await readReviewAttempts(tx, discovery, settingsRevision, now);
+  const { facts, intent, olderCandidate } = await readReviewAttempts(tx, reviewed, discovery, settingsRevision, now, paid);
   const { rows } = await tx.query<{ todo_id: string }>(
     `SELECT slot_key AS todo_id FROM work WHERE family='todo' AND learner_id = $1 AND state IN ('pending','ready','waiting')
      ORDER BY registered_tick DESC, todo_id LIMIT $2`, [tx.learner, recentWindow + 1],
@@ -240,13 +239,16 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
       menu: action ? [noop, action] : [noop],
       response_format: response(noop) }),
   };
-  return { snapshot, request, intent, action };
+  const candidate = intent && (facts[intent.sourceFactRev.id] ?? olderCandidate);
+  return { snapshot, request, intent, action, paidInput: action && candidate &&
+    typeof candidate === 'object' && 'fact_type' in candidate && candidate.fact_type === workbookAttemptType
+    ? { candidate: candidate.data, menu: [noop, action], response_format: response(noop) }
+    : undefined };
 }
 
-export async function selectResearchTodo(prepared: NonNullable<Awaited<ReturnType<typeof prepareResearchTriage>>>,
-  transport: ResearchTriageTransport | undefined, signal: AbortSignal) {
-  const { snapshot, request, intent, action } = prepared;
-  const raw = transport ? await transport(request, signal) : JSON.stringify(response(action ?? noop));
+export function researchDecision(prepared: NonNullable<Awaited<ReturnType<typeof prepareResearchTriage>>>, raw?: string) {
+  const { snapshot, action } = prepared;
+  raw ??= JSON.stringify(response(action ?? noop));
   try {
     const envelope = JSON.parse(raw);
     const selected = action && isDeepStrictEqual(envelope?.actions, [action]);
@@ -254,11 +256,12 @@ export async function selectResearchTodo(prepared: NonNullable<Awaited<ReturnTyp
     // whose shape and source must match exactly before reducing it to the shared noop shape.
     const parsed = parseTriageResponse(selected ? JSON.stringify({ ...envelope, actions: [noop] }) : raw,
       snapshot);
-    if (selected && parsed.matchedSkill === null && parsed.memoTable.length === 0 && parsed.nextRecheckHint === null) {
-      return intent;
+    if (parsed.matchedSkill === null && parsed.memoTable.length === 0 && parsed.nextRecheckHint === null) {
+      if (selected) return 'review';
+      if (isDeepStrictEqual(envelope?.actions, [noop])) return 'noop';
     }
   } catch (error) {
     if (!(error instanceof SyntaxError || error instanceof TriageResponseError)) throw error;
   }
-  return undefined;
+  return 'invalid_reply';
 }

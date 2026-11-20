@@ -10,3 +10,25 @@ Local, model-agnostic assets for the Always-Doing sentinel described in `docs/de
 - `score-fixtures.mjs` — runnable entry for bundled simulated outputs from the repository root: `pnpm --filter @mangekyo/studio exec tsx research-triage/score-fixtures.mjs`. These are fixture outputs for scoring/validator regression, not a real-model evaluation.
 
 This directory intentionally has no PG/schema, Temporal, provider, UI, or shared package changes. A later host can materialize the same snapshot from PG, call a cheap model with `triagePromptBlock(wakeSource)`, then pass the raw reply through `parseTriageResponse` before applying orchestration primitives. No credentials or paid model are used here.
+
+## Studio 的付费前哨
+
+通过现有 `PUT /api/research/settings` 提交 `requestId`、当前 `revision`、`enabled`，以及
+`scoutBudget: { limitMicros, expiresAtMs, route }`。金额使用整数 USD 微元
+（1 USD = 1,000,000 微元），有效期使用 Unix 毫秒。额度按学习者累计计入已结算费用与
+仍占用的预留。暂停、续期、提高上限和换路由均延续同一账本。省略 `scoutBudget` 时保留
+原设置，传 `null` 则撤回付费授权。未配置时仍可运行本地确定性复习单。
+
+Worker 的 `MANGEKYO_RESEARCH_SCOUT_MODULE` 载入可信服务端模块中的 `researchScoutHost`。
+宿主提供 `route`、`reserveUsdMicros` 和 `sample(input, signal)`。路由标识随接收者或
+定价策略换代。宿主须在 `sample` 被调用时启动一次请求、执行报价的单次硬上限和传入的
+输出 token 上限，并禁止内部重试或后备路由。宿主回传 `reply`、实际 `actualUsdMicros`
+和实际 `servedModel`。缺少实际费用时留空，只有明确确认零实付时传零。未安装匹配
+宿主时等待；当前树没有第三方付费宿主实现。真实供应商接线需要相同币种的可执行单次
+硬上限、可核对实付以及明确版本的接收者。
+
+前哨只向该宿主发送获准小卷作答的摘要和预绑定菜单，不发送题面、原答或参考答案。
+以作答修订与访问代次作为作用身份。预算预留、发送标识、结果决定和实付沿用内核效果
+回执。费用未知和交付未知都保留上限，迄今的结果无自动补发。已经发生的支出可以在
+暂停或失去用途后结算，成果应用仍复验设置与来源。发生永久删除水位冲突时沿用内核
+效果的保守占用。更新 schema 11 前应停止旧 Studio/Worker，由新版本接管。

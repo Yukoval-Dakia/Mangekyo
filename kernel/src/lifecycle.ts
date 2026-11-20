@@ -150,8 +150,10 @@ export async function eraseOriginal(db: Db, scope: LearnerScope, request: Erasur
       await tx.query(`DELETE FROM commands WHERE learner_id=$1 AND id IN (${commands})`, [tx.learner,tick]);
       await tx.query('DELETE FROM fact_revs WHERE learner_id=$1 AND fact_id=ANY($2)', [tx.learner,ids]);
       await tx.query('DELETE FROM facts WHERE learner_id=$1 AND id=ANY($2)', [tx.learner,ids]);
-      await tx.query(`INSERT INTO erased_effect_receipts(learner_id,provider_effect_id,owner_id,started_tick,erased_tick,settlement)
-        SELECT learner_id,provider_effect_id,owner_id,started_tick,$3,CASE WHEN state='done' THEN 'done' ELSE 'unknown' END
+      await tx.query(`INSERT INTO erased_effect_receipts(learner_id,provider_effect_id,owner_id,started_tick,erased_tick,settlement,
+        reserved_usd_micros,actual_usd_micros,budget_route)
+        SELECT learner_id,provider_effect_id,owner_id,started_tick,$3,CASE WHEN state='done' THEN 'done' ELSE 'unknown' END,
+          reserved_usd_micros,actual_usd_micros,budget_route
         FROM effects WHERE learner_id=$1 AND owner_id=ANY($2) AND provider_effect_id IS NOT NULL`, [tx.learner,ids,tick]);
       await tx.query('DELETE FROM effects WHERE learner_id=$1 AND owner_id=ANY($2)', [tx.learner,ids]);
       await tx.query(`UPDATE work SET state='cancelled',generation=generation+1,execution_ref=NULL,gather=NULL,gather_manifest=NULL

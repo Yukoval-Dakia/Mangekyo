@@ -32,12 +32,23 @@ export function retentionReviewPermission(value: unknown) {
   return { key: factId(String(key)), resultId: derivationId(String(resultId)), allowed: researchEnabled(allowed) };
 }
 
+/** One cumulative USD budget, denominated in integer millionths of a dollar. */
+export function researchScoutBudget(value: unknown) {
+  if (value === null) return null;
+  const { limitMicros, expiresAtMs, route } = object(value);
+  if (typeof limitMicros !== 'number' || !Number.isSafeInteger(limitMicros) || limitMicros <= 0 ||
+      typeof expiresAtMs !== 'number' || !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= 0 ||
+      typeof route !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$/.test(route))
+    throw new Error('前哨额度、到期时间或服务标识无效。');
+  return { limitMicros, expiresAtMs, route };
+}
+
 export function researchSettings(value: unknown) {
-  const { enabled, coordinatorRef } = object(value);
+  const { enabled, coordinatorRef, scoutBudget } = object(value);
   if (typeof coordinatorRef !== 'string' ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(coordinatorRef))
     throw new Error('教研协调器标识无效。');
-  return { enabled: researchEnabled(enabled), coordinatorRef };
+  return { enabled: researchEnabled(enabled), coordinatorRef, scoutBudget: researchScoutBudget(scoutBudget ?? null) };
 }
 
 function researchSource(value: unknown) {

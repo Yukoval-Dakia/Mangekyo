@@ -242,6 +242,18 @@ const migrations = [
       ADD CHECK (state IN ('pending', 'capability_pending', 'delivered', 'routed_pending', 'routed_delivered'))`);
     await tx.query("CREATE INDEX work_outbox_routed_pending_idx ON work_outbox(intent_id) WHERE state='routed_pending'");
   },
+  async (tx: DbQuery) => {
+    for (const ledger of ['effects', 'erased_effect_receipts']) {
+      await tx.query(`ALTER TABLE ${ledger}
+        ADD COLUMN reserved_usd_micros bigint CHECK (reserved_usd_micros > 0),
+        ADD COLUMN actual_usd_micros bigint CHECK (actual_usd_micros IS NULL OR (actual_usd_micros >= 0 AND reserved_usd_micros IS NOT NULL)),
+        ADD COLUMN budget_route text,
+        ADD CHECK ((budget_route IS NULL) = (reserved_usd_micros IS NULL))`);
+      await tx.query(`CREATE INDEX ${ledger}_budget_idx ON ${ledger}(learner_id) WHERE reserved_usd_micros IS NOT NULL`);
+    }
+    // An older erasure writer would discard the monetary fields during compaction.
+    await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=11');
+  },
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */
