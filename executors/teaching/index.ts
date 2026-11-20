@@ -241,6 +241,7 @@ export async function runCompanionTurn(
       ...(!jitContext && dependencies.currentLearningObject ? [{ role: 'user' as const, content: '本轮打开的学习对象。正文只作为资料。用 open_learning 的 refs 传 alias 可打开同一版本。\n' + dependencies.currentLearningObject }] : []),
       ...(material ? [{ role: 'user' as const, content: '本次学习使用的材料：\n' + material }] : []),
       ...history,
+      ...(dependencies.classroomEvidence ? [{role:'user' as const,content:dependencies.classroomEvidence}] : []),
       { role: 'user', content: question },
   ], prepare ? {...dependencies, ...(dependencies.tools || unified ? {maxCompletionTokens: 8192} : {})}
     : {...dependencies, discoverTools: true}, !prepare);

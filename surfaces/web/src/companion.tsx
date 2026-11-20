@@ -160,6 +160,7 @@ function ChatRoom({
   return (
     <>
       <PageTitle title="同伴">
+        <a className="tonal-button" href="/classroom">按主题开课</a>
         <a className="tonal-button" href="/companion">
           <Icon name="plus" /> 新对话
         </a>

@@ -1,7 +1,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { scopedInsert } from './insert.ts';
 import { lockLearner, nextTick } from './learner.ts';
-import type { Db, DbQuery, DbTransaction, LearnerScope, SqlValue, Tick } from './types.ts';
+import type { Db, DbQuery, DbTransaction, LearnerScope, ReadTransaction, SnapshotOptions, SqlValue, Tick } from './types.ts';
 
 export function createPgliteDb(database: PGlite): Db {
   return {
@@ -17,13 +17,16 @@ export function createPgliteDb(database: PGlite): Db {
         },
       }));
     },
-    async snapshot<Result>(scope: LearnerScope, read: (tx: import('./types.ts').ReadTransaction) => Promise<Result>) {
+    async snapshot<Result>(scope: LearnerScope, read: (tx: ReadTransaction) => Promise<Result>,
+      {lockLearner: locked = false}: SnapshotOptions = {}) {
       return database.transaction(async (transaction) => {
-        await transaction.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-        return read({ ...scope, query: async <Row>(sql: string, params: readonly SqlValue[] = []) => {
+        await transaction.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ' + (locked ? '' : ' READ ONLY'));
+        const tx: ReadTransaction = { ...scope, query: async <Row>(sql: string, params: readonly SqlValue[] = []) => {
           const result = await transaction.query<Row>(sql, [...params]);
           return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
-        } });
+        } };
+        if (locked) await lockLearner(tx,scope.learner);
+        return read(tx);
       });
     },
     async tx<Result>(scope: LearnerScope, run: (tx: DbTransaction) => Promise<Result>) {

@@ -1,0 +1,3035 @@
+{
+  "host": "072e2cf0f56608f64e7f7736aa39fe40542a2c59",
+  "joint": "a3b8f105d0438fea24bc65e51ed49ab1280a5a21",
+  "seedIds": [
+    "DEC76FFF80D0AA474BAC7B4BC9",
+    "17809EE39D2184CFD01D7957A7"
+  ],
+  "courses": [
+    {
+      "topic": "弹簧振子的周期比较",
+      "material": false,
+      "reads": [
+        {
+          "name": "first ready",
+          "data": {
+            "id": "5B5628CBBAE01781D8B31543A1",
+            "rev": 1,
+            "topic": "弹簧振子的周期比较",
+            "minutes": 20,
+            "sessionId": "05EABACB0999692B087A3D7C21",
+            "status": "active",
+            "steps": [
+              {
+                "id": "05EABACB0999692B087A3D7C21-1",
+                "title": "比较弹簧伸长",
+                "status": "active",
+                "turnId": "05EABACB0999692B087A3D7C21"
+              },
+              {
+                "id": "05EABACB0999692B087A3D7C21-2",
+                "title": "推导比例",
+                "status": "pending"
+              },
+              {
+                "id": "05EABACB0999692B087A3D7C21-3",
+                "title": "纠正控制变量",
+                "status": "pending"
+              }
+            ],
+            "activeStepId": "05EABACB0999692B087A3D7C21-1",
+            "generation": "ready"
+          }
+        },
+        {
+          "name": "adjust ready",
+          "data": {
+            "id": "5B5628CBBAE01781D8B31543A1",
+            "rev": 2,
+            "topic": "弹簧振子的周期比较",
+            "minutes": 20,
+            "sessionId": "05EABACB0999692B087A3D7C21",
+            "status": "active",
+            "steps": [
+              {
+                "id": "05EABACB0999692B087A3D7C21-1",
+                "title": "比较弹簧伸长",
+                "status": "active",
+                "turnId": "05EABACB0999692B087A3D7C21"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-1",
+                "title": "对照质量保持不变",
+                "status": "pending"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-2",
+                "title": "变化质量重新比较",
+                "status": "pending"
+              }
+            ],
+            "activeStepId": "05EABACB0999692B087A3D7C21-1",
+            "generation": "ready"
+          }
+        },
+        {
+          "name": "advanced",
+          "data": {
+            "id": "5B5628CBBAE01781D8B31543A1",
+            "rev": 3,
+            "topic": "弹簧振子的周期比较",
+            "minutes": 20,
+            "sessionId": "05EABACB0999692B087A3D7C21",
+            "status": "active",
+            "steps": [
+              {
+                "id": "05EABACB0999692B087A3D7C21-1",
+                "title": "比较弹簧伸长",
+                "status": "presented",
+                "turnId": "05EABACB0999692B087A3D7C21"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-1",
+                "title": "对照质量保持不变",
+                "status": "active",
+                "turnId": "5B871BCA810DF775F103B79B1D"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-2",
+                "title": "变化质量重新比较",
+                "status": "pending"
+              }
+            ],
+            "activeStepId": "58D25263E2673A41E0ED83E259-1",
+            "generation": "ready"
+          }
+        },
+        {
+          "name": "skipped",
+          "data": {
+            "id": "5B5628CBBAE01781D8B31543A1",
+            "rev": 4,
+            "topic": "弹簧振子的周期比较",
+            "minutes": 20,
+            "sessionId": "05EABACB0999692B087A3D7C21",
+            "status": "active",
+            "steps": [
+              {
+                "id": "05EABACB0999692B087A3D7C21-1",
+                "title": "比较弹簧伸长",
+                "status": "presented",
+                "turnId": "05EABACB0999692B087A3D7C21"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-1",
+                "title": "对照质量保持不变",
+                "status": "skipped",
+                "turnId": "5B871BCA810DF775F103B79B1D"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-2",
+                "title": "变化质量重新比较",
+                "status": "active",
+                "turnId": "F3A940DB5D4D45FC61C15DD383"
+              }
+            ],
+            "activeStepId": "58D25263E2673A41E0ED83E259-2",
+            "generation": "pending"
+          }
+        },
+        {
+          "name": "finish",
+          "data": {
+            "id": "5B5628CBBAE01781D8B31543A1",
+            "rev": 5,
+            "topic": "弹簧振子的周期比较",
+            "minutes": 20,
+            "sessionId": "05EABACB0999692B087A3D7C21",
+            "status": "finished",
+            "steps": [
+              {
+                "id": "05EABACB0999692B087A3D7C21-1",
+                "title": "比较弹簧伸长",
+                "status": "presented",
+                "turnId": "05EABACB0999692B087A3D7C21"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-1",
+                "title": "对照质量保持不变",
+                "status": "skipped",
+                "turnId": "5B871BCA810DF775F103B79B1D"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-2",
+                "title": "变化质量重新比较",
+                "status": "presented",
+                "turnId": "F3A940DB5D4D45FC61C15DD383"
+              }
+            ],
+            "activeStepId": null
+          }
+        },
+        {
+          "name": "archived",
+          "data": {
+            "id": "5B5628CBBAE01781D8B31543A1",
+            "rev": 6,
+            "topic": "弹簧振子的周期比较",
+            "minutes": 20,
+            "sessionId": "05EABACB0999692B087A3D7C21",
+            "status": "archived",
+            "steps": [
+              {
+                "id": "05EABACB0999692B087A3D7C21-1",
+                "title": "比较弹簧伸长",
+                "status": "presented",
+                "turnId": "05EABACB0999692B087A3D7C21"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-1",
+                "title": "对照质量保持不变",
+                "status": "skipped",
+                "turnId": "5B871BCA810DF775F103B79B1D"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-2",
+                "title": "变化质量重新比较",
+                "status": "presented",
+                "turnId": "F3A940DB5D4D45FC61C15DD383"
+              }
+            ],
+            "activeStepId": null
+          }
+        },
+        {
+          "name": "reopened",
+          "data": {
+            "id": "5B5628CBBAE01781D8B31543A1",
+            "rev": 6,
+            "topic": "弹簧振子的周期比较",
+            "minutes": 20,
+            "sessionId": "05EABACB0999692B087A3D7C21",
+            "status": "archived",
+            "steps": [
+              {
+                "id": "05EABACB0999692B087A3D7C21-1",
+                "title": "比较弹簧伸长",
+                "status": "presented",
+                "turnId": "05EABACB0999692B087A3D7C21"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-1",
+                "title": "对照质量保持不变",
+                "status": "skipped",
+                "turnId": "5B871BCA810DF775F103B79B1D"
+              },
+              {
+                "id": "58D25263E2673A41E0ED83E259-2",
+                "title": "变化质量重新比较",
+                "status": "presented",
+                "turnId": "F3A940DB5D4D45FC61C15DD383"
+              }
+            ],
+            "activeStepId": null
+          }
+        }
+      ],
+      "probes": [
+        {
+          "name": "start same id",
+          "status": 202,
+          "id": "5B5628CBBAE01781D8B31543A1"
+        },
+        {
+          "name": "adjust replay",
+          "status": 200,
+          "rev": 2
+        },
+        {
+          "name": "stale advance",
+          "status": 409,
+          "data": {
+            "error": "课堂已更新，请刷新。"
+          }
+        },
+        {
+          "name": "archive settled action replay",
+          "status": 200
+        },
+        {
+          "name": "archive new action",
+          "status": 409
+        }
+      ],
+      "entry": "/classroom",
+      "id": "5B5628CBBAE01781D8B31543A1",
+      "initialSession": {
+        "id": "05EABACB0999692B087A3D7C21",
+        "caseId": "companion",
+        "currentTurnId": "05EABACB0999692B087A3D7C21",
+        "status": "ready",
+        "turns": [
+          {
+            "model": "classroom-fixture",
+            "reads": [],
+            "action": "companion_reply",
+            "message": "先预测，再把模拟滑块移到你选的读数。",
+            "rationale": "",
+            "evidenceIds": [],
+            "reportedModel": "classroom-fixture",
+            "reasoningEffort": "default",
+            "foregroundDigest": {
+              "id": "05EABACB0999692B087A3D7C21",
+              "kind": "companion_completed",
+              "summary": "本轮完成一次伴学回复。",
+              "sourceRefs": [
+                {
+                  "id": "05EABACB0999692B087A3D7C21",
+                  "rev": 1,
+                  "kind": "fact",
+                  "mode": "following",
+                  "accessEpoch": "0"
+                }
+              ]
+            },
+            "turnId": "05EABACB0999692B087A3D7C21",
+            "artifacts": [
+              {
+                "version": 1,
+                "sessionId": "05EABACB0999692B087A3D7C21",
+                "turnId": "05EABACB0999692B087A3D7C21",
+                "mountId": "2F13FD22AEA1BD0D51D518A5C1",
+                "viewSeq": 0,
+                "stateRev": 0,
+                "view": {
+                  "fallback": "你预测哪个读数的周期更长？",
+                  "id": "work-2f13fd22aea1bd0d51d518a5c1",
+                  "revision": "spring-r1",
+                  "sections": [
+                    {
+                      "id": "prediction",
+                      "layout": "stack",
+                      "nodes": [
+                        {
+                          "id": "estimate",
+                          "kind": "note",
+                          "label": "你预测哪个读数的周期更长？"
+                        },
+                        {
+                          "id": "record-prediction",
+                          "inputs": [
+                            "estimate"
+                          ],
+                          "intent": "saveDraft",
+                          "kind": "action",
+                          "label": "保存预测"
+                        }
+                      ],
+                      "title": "观察之前"
+                    }
+                  ],
+                  "title": "先写下你的预测",
+                  "version": 1
+                },
+                "submitted": false,
+                "predicting": true,
+                "unavailable": {},
+                "prediction": null,
+                "saved": [],
+                "commandId": null
+              }
+            ],
+            "trace": [
+              "挂载交互作品 · 已挂载"
+            ]
+          }
+        ]
+      },
+      "initialFrames": [
+        {
+          "requestId": "48289.302",
+          "timestamp": 2705575.583009,
+          "eventName": "mount-permissions",
+          "eventId": "",
+          "data": "{\"sessionId\":\"05EABACB0999692B087A3D7C21\",\"authorizedMountIds\":[]}"
+        },
+        {
+          "requestId": "48289.303",
+          "timestamp": 2705575.583295,
+          "eventName": "progress",
+          "eventId": "05EABACB0999692B087A3D7C21:0:0",
+          "data": "{\"session\":{\"id\":\"05EABACB0999692B087A3D7C21\",\"caseId\":\"companion\",\"currentTurnId\":\"05EABACB0999692B087A3D7C21\",\"status\":\"pending\"},\"phase\":\"queued\",\"authorizedMountIds\":[]}"
+        },
+        {
+          "requestId": "48289.303",
+          "timestamp": 2705575.781593,
+          "eventName": "progress",
+          "eventId": "05EABACB0999692B087A3D7C21:1:0",
+          "data": "{\"session\":{\"id\":\"05EABACB0999692B087A3D7C21\",\"caseId\":\"companion\",\"currentTurnId\":\"05EABACB0999692B087A3D7C21\",\"status\":\"pending\"},\"phase\":\"thinking\",\"authorizedMountIds\":[]}"
+        },
+        {
+          "requestId": "48289.303",
+          "timestamp": 2705575.802995,
+          "eventName": "progress",
+          "eventId": "05EABACB0999692B087A3D7C21:2:0",
+          "data": "{\"session\":{\"id\":\"05EABACB0999692B087A3D7C21\",\"caseId\":\"companion\",\"currentTurnId\":\"05EABACB0999692B087A3D7C21\",\"status\":\"pending\"},\"phase\":\"reading\",\"authorizedMountIds\":[]}"
+        },
+        {
+          "requestId": "48289.302",
+          "timestamp": 2705575.816185,
+          "eventName": "mount-permissions",
+          "eventId": "",
+          "data": "{\"sessionId\":\"05EABACB0999692B087A3D7C21\",\"authorizedMountIds\":[\"2F13FD22AEA1BD0D51D518A5C1\"]}"
+        },
+        {
+          "requestId": "48289.303",
+          "timestamp": 2705575.81771,
+          "eventName": "progress",
+          "eventId": "05EABACB0999692B087A3D7C21:2:0:2F13FD22AEA1BD0D51D518A5C1-0",
+          "data": "{\"session\":{\"id\":\"05EABACB0999692B087A3D7C21\",\"caseId\":\"companion\",\"currentTurnId\":\"05EABACB0999692B087A3D7C21\",\"status\":\"pending\"},\"phase\":\"reading\",\"authorizedMountIds\":[\"2F13FD22AEA1BD0D51D518A5C1\"]}"
+        },
+        {
+          "requestId": "48289.303",
+          "timestamp": 2705575.817792,
+          "eventName": "artifact-snapshot",
+          "eventId": "05EABACB0999692B087A3D7C21:2:0:2F13FD22AEA1BD0D51D518A5C1-0",
+          "data": "{\"version\":1,\"sessionId\":\"05EABACB0999692B087A3D7C21\",\"turnId\":\"05EABACB0999692B087A3D7C21\",\"mountId\":\"2F13FD22AEA1BD0D51D518A5C1\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"fallback\":\"你预测哪个读数的周期更长？\",\"id\":\"work-2f13fd22aea1bd0d51d518a5c1\",\"revision\":\"spring-r1\",\"sections\":[{\"id\":\"prediction\",\"layout\":\"stack\",\"nodes\":[{\"id\":\"estimate\",\"kind\":\"note\",\"label\":\"你预测哪个读数的周期更长？\"},{\"id\":\"record-prediction\",\"inputs\":[\"estimate\"],\"intent\":\"saveDraft\",\"kind\":\"action\",\"label\":\"保存预测\"}],\"title\":\"观察之前\"}],\"title\":\"先写下你的预测\",\"version\":1},\"submitted\":false,\"predicting\":true,\"unavailable\":{},\"prediction\":null,\"saved\":[],\"commandId\":null}"
+        },
+        {
+          "requestId": "48289.303",
+          "timestamp": 2705575.834219,
+          "eventName": "complete",
+          "eventId": "05EABACB0999692B087A3D7C21:ready",
+          "data": "{\"session\":{\"id\":\"05EABACB0999692B087A3D7C21\",\"caseId\":\"companion\",\"currentTurnId\":\"05EABACB0999692B087A3D7C21\",\"status\":\"ready\"},\"message\":\"先预测，再把模拟滑块移到你选的读数。\"}"
+        }
+      ],
+      "acted": {
+        "version": 1,
+        "sessionId": "05EABACB0999692B087A3D7C21",
+        "turnId": "05EABACB0999692B087A3D7C21",
+        "mountId": "2F13FD22AEA1BD0D51D518A5C1",
+        "viewSeq": 2,
+        "stateRev": 2,
+        "view": {
+          "fallback": "比较伸长后的周期。",
+          "id": "work-2f13fd22aea1bd0d51d518a5c1",
+          "revision": "spring-r1",
+          "sections": [
+            {
+              "id": "explore",
+              "layout": "stack",
+              "nodes": [
+                {
+                  "description": "柱长随伸长量变化。",
+                  "height": 96,
+                  "id": "spring-picture",
+                  "kind": "scene",
+                  "label": "滑块联动弹簧图",
+                  "objects": [
+                    {
+                      "fill": "paper",
+                      "height": 22,
+                      "id": "spring-bar",
+                      "kind": "rect",
+                      "stroke": "muted",
+                      "width": 190,
+                      "x": 20,
+                      "y": 30
+                    },
+                    {
+                      "fill": "ink",
+                      "height": 22,
+                      "id": "stretch-marker",
+                      "kind": "rect",
+                      "stroke": "none",
+                      "width": 14,
+                      "x": {
+                        "source": "stretch",
+                        "values": [
+                          36,
+                          88,
+                          150
+                        ]
+                      },
+                      "y": 30
+                    },
+                    {
+                      "id": "reading",
+                      "kind": "reading",
+                      "source": "stretch",
+                      "x": 20,
+                      "y": 76
+                    }
+                  ],
+                  "width": 240
+                },
+                {
+                  "id": "stretch",
+                  "initial": 0,
+                  "kind": "range",
+                  "label": "伸长量",
+                  "unit": "厘米",
+                  "values": [
+                    2,
+                    5,
+                    8
+                  ]
+                },
+                {
+                  "id": "reason",
+                  "kind": "note",
+                  "label": "写下你的观察"
+                },
+                {
+                  "id": "save",
+                  "inputs": [
+                    "stretch",
+                    "reason"
+                  ],
+                  "intent": "saveDraft",
+                  "kind": "action",
+                  "label": "记录观察"
+                }
+              ],
+              "title": "实验"
+            }
+          ],
+          "title": "弹簧读数",
+          "version": 1
+        },
+        "submitted": false,
+        "predicting": false,
+        "unavailable": {},
+        "prediction": {
+          "id": "2CD221E15462CA777DC58E228A",
+          "answer": {
+            "kind": "text",
+            "text": "我预测改变伸长量后周期可能变化。"
+          }
+        },
+        "saved": [
+          {
+            "answers": {
+              "reason": {
+                "kind": "text",
+                "text": "我改变了读数，质量不变。"
+              },
+              "stretch": {
+                "kind": "quantity",
+                "unit": "厘米",
+                "value": 8
+              }
+            },
+            "trace": {
+              "omitted": 0,
+              "steps": [
+                {
+                  "kind": "adjust",
+                  "unit": "厘米",
+                  "value": 5,
+                  "nodeId": "stretch"
+                },
+                {
+                  "kind": "adjust",
+                  "unit": "厘米",
+                  "value": 8,
+                  "nodeId": "stretch"
+                }
+              ]
+            }
+          }
+        ],
+        "commandId": "2A8D547F5E1227905CA2B82EF8"
+      },
+      "reopenedMount": {
+        "version": 1,
+        "sessionId": "05EABACB0999692B087A3D7C21",
+        "turnId": "05EABACB0999692B087A3D7C21",
+        "mountId": "2F13FD22AEA1BD0D51D518A5C1",
+        "viewSeq": 2,
+        "stateRev": 2,
+        "view": {
+          "fallback": "比较伸长后的周期。",
+          "id": "work-2f13fd22aea1bd0d51d518a5c1",
+          "revision": "spring-r1",
+          "sections": [
+            {
+              "id": "explore",
+              "layout": "stack",
+              "nodes": [
+                {
+                  "description": "柱长随伸长量变化。",
+                  "height": 96,
+                  "id": "spring-picture",
+                  "kind": "scene",
+                  "label": "滑块联动弹簧图",
+                  "objects": [
+                    {
+                      "fill": "paper",
+                      "height": 22,
+                      "id": "spring-bar",
+                      "kind": "rect",
+                      "stroke": "muted",
+                      "width": 190,
+                      "x": 20,
+                      "y": 30
+                    },
+                    {
+                      "fill": "ink",
+                      "height": 22,
+                      "id": "stretch-marker",
+                      "kind": "rect",
+                      "stroke": "none",
+                      "width": 14,
+                      "x": {
+                        "source": "stretch",
+                        "values": [
+                          36,
+                          88,
+                          150
+                        ]
+                      },
+                      "y": 30
+                    },
+                    {
+                      "id": "reading",
+                      "kind": "reading",
+                      "source": "stretch",
+                      "x": 20,
+                      "y": 76
+                    }
+                  ],
+                  "width": 240
+                },
+                {
+                  "id": "stretch",
+                  "initial": 0,
+                  "kind": "range",
+                  "label": "伸长量",
+                  "unit": "厘米",
+                  "values": [
+                    2,
+                    5,
+                    8
+                  ]
+                },
+                {
+                  "id": "reason",
+                  "kind": "note",
+                  "label": "写下你的观察"
+                },
+                {
+                  "id": "save",
+                  "inputs": [
+                    "stretch",
+                    "reason"
+                  ],
+                  "intent": "saveDraft",
+                  "kind": "action",
+                  "label": "记录观察"
+                }
+              ],
+              "title": "实验"
+            }
+          ],
+          "title": "弹簧读数",
+          "version": 1
+        },
+        "submitted": false,
+        "predicting": false,
+        "unavailable": {},
+        "prediction": {
+          "id": "2CD221E15462CA777DC58E228A",
+          "answer": {
+            "kind": "text",
+            "text": "我预测改变伸长量后周期可能变化。"
+          }
+        },
+        "saved": [
+          {
+            "answers": {
+              "reason": {
+                "kind": "text",
+                "text": "我改变了读数，质量不变。"
+              },
+              "stretch": {
+                "kind": "quantity",
+                "unit": "厘米",
+                "value": 8
+              }
+            },
+            "trace": {
+              "omitted": 0,
+              "steps": [
+                {
+                  "kind": "adjust",
+                  "unit": "厘米",
+                  "value": 5,
+                  "nodeId": "stretch"
+                },
+                {
+                  "kind": "adjust",
+                  "unit": "厘米",
+                  "value": 8,
+                  "nodeId": "stretch"
+                }
+              ]
+            }
+          }
+        ],
+        "commandId": "2A8D547F5E1227905CA2B82EF8"
+      },
+      "reopenedText": "跳到正文\nMangekyō\n交入材料\n今天\n材料\n同伴\n我\n学习设置\n‹ 学习课堂\n\n已归档 · 20 分钟 · 第 6 版\n\n弹簧振子的周期比较\n\n已呈现\n\n比较弹簧伸长\n学习同伴\n\n先预测，再把模拟滑块移到你选的读数。\n\n弹簧读数\n实验\n滑块联动弹簧图\n8 厘米\n\n柱长随伸长量变化。\n\n伸长量\n8 厘米\n写下你的观察\n记录观察\n\n当时的预测 · 我预测改变伸长量后周期可能变化。\n\n已记录 · 回执 2A8D547F5E1227905CA2B82EF8\n\n本轮信息\n\n已跳过\n\n对照质量保持不变\n学习同伴\n\n保持质量一致，再比较伸长量。\n\n本轮信息\n\n已呈现\n\n变化质量重新比较\n学习同伴\n\n保持质量一致，再比较伸长量。\n\n本轮信息\n按这个主题另开一课"
+    },
+    {
+      "topic": "古文断句的主谓识别",
+      "material": true,
+      "reads": [
+        {
+          "name": "first ready",
+          "data": {
+            "id": "652322BC39686DED2CDEFE48D5",
+            "rev": 1,
+            "topic": "古文断句的主谓识别",
+            "minutes": 20,
+            "sessionId": "447462A37C036D449467D32309",
+            "status": "active",
+            "steps": [
+              {
+                "id": "447462A37C036D449467D32309-1",
+                "title": "初读断句",
+                "status": "active",
+                "turnId": "447462A37C036D449467D32309"
+              },
+              {
+                "id": "447462A37C036D449467D32309-2",
+                "title": "复述停顿规则",
+                "status": "pending"
+              },
+              {
+                "id": "447462A37C036D449467D32309-3",
+                "title": "迁移到新文章",
+                "status": "pending"
+              }
+            ],
+            "activeStepId": "447462A37C036D449467D32309-1",
+            "generation": "ready"
+          }
+        },
+        {
+          "name": "adjust ready",
+          "data": {
+            "id": "652322BC39686DED2CDEFE48D5",
+            "rev": 2,
+            "topic": "古文断句的主谓识别",
+            "minutes": 20,
+            "sessionId": "447462A37C036D449467D32309",
+            "status": "active",
+            "steps": [
+              {
+                "id": "447462A37C036D449467D32309-1",
+                "title": "初读断句",
+                "status": "active",
+                "turnId": "447462A37C036D449467D32309"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-1",
+                "title": "新句识别主谓",
+                "status": "pending"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-2",
+                "title": "解释歧义",
+                "status": "pending"
+              }
+            ],
+            "activeStepId": "447462A37C036D449467D32309-1",
+            "generation": "ready"
+          }
+        },
+        {
+          "name": "advanced",
+          "data": {
+            "id": "652322BC39686DED2CDEFE48D5",
+            "rev": 3,
+            "topic": "古文断句的主谓识别",
+            "minutes": 20,
+            "sessionId": "447462A37C036D449467D32309",
+            "status": "active",
+            "steps": [
+              {
+                "id": "447462A37C036D449467D32309-1",
+                "title": "初读断句",
+                "status": "presented",
+                "turnId": "447462A37C036D449467D32309"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-1",
+                "title": "新句识别主谓",
+                "status": "active",
+                "turnId": "6855484726AC12927113049E61"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-2",
+                "title": "解释歧义",
+                "status": "pending"
+              }
+            ],
+            "activeStepId": "AEB374037754AC7898042A2C37-1",
+            "generation": "ready"
+          }
+        },
+        {
+          "name": "finish",
+          "data": {
+            "id": "652322BC39686DED2CDEFE48D5",
+            "rev": 4,
+            "topic": "古文断句的主谓识别",
+            "minutes": 20,
+            "sessionId": "447462A37C036D449467D32309",
+            "status": "finished",
+            "steps": [
+              {
+                "id": "447462A37C036D449467D32309-1",
+                "title": "初读断句",
+                "status": "presented",
+                "turnId": "447462A37C036D449467D32309"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-1",
+                "title": "新句识别主谓",
+                "status": "presented",
+                "turnId": "6855484726AC12927113049E61"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-2",
+                "title": "解释歧义",
+                "status": "skipped"
+              }
+            ],
+            "activeStepId": null
+          }
+        },
+        {
+          "name": "archived",
+          "data": {
+            "id": "652322BC39686DED2CDEFE48D5",
+            "rev": 5,
+            "topic": "古文断句的主谓识别",
+            "minutes": 20,
+            "sessionId": "447462A37C036D449467D32309",
+            "status": "archived",
+            "steps": [
+              {
+                "id": "447462A37C036D449467D32309-1",
+                "title": "初读断句",
+                "status": "presented",
+                "turnId": "447462A37C036D449467D32309"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-1",
+                "title": "新句识别主谓",
+                "status": "presented",
+                "turnId": "6855484726AC12927113049E61"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-2",
+                "title": "解释歧义",
+                "status": "skipped"
+              }
+            ],
+            "activeStepId": null
+          }
+        },
+        {
+          "name": "reopened",
+          "data": {
+            "id": "652322BC39686DED2CDEFE48D5",
+            "rev": 5,
+            "topic": "古文断句的主谓识别",
+            "minutes": 20,
+            "sessionId": "447462A37C036D449467D32309",
+            "status": "archived",
+            "steps": [
+              {
+                "id": "447462A37C036D449467D32309-1",
+                "title": "初读断句",
+                "status": "presented",
+                "turnId": "447462A37C036D449467D32309"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-1",
+                "title": "新句识别主谓",
+                "status": "presented",
+                "turnId": "6855484726AC12927113049E61"
+              },
+              {
+                "id": "AEB374037754AC7898042A2C37-2",
+                "title": "解释歧义",
+                "status": "skipped"
+              }
+            ],
+            "activeStepId": null
+          }
+        }
+      ],
+      "probes": [
+        {
+          "name": "start same id",
+          "status": 202,
+          "id": "652322BC39686DED2CDEFE48D5"
+        },
+        {
+          "name": "adjust replay",
+          "status": 200,
+          "rev": 2
+        },
+        {
+          "name": "stale advance",
+          "status": 409,
+          "data": {
+            "error": "课堂已更新，请刷新。"
+          }
+        },
+        {
+          "name": "archive settled action replay",
+          "status": 200
+        },
+        {
+          "name": "archive new action",
+          "status": 409
+        },
+        {
+          "name": "revoked archive",
+          "status": 404,
+          "data": {
+            "error": "这次课堂不可读。"
+          }
+        },
+        {
+          "name": "revoked replay",
+          "status": 409,
+          "data": {
+            "error": "此回合已停止。"
+          }
+        }
+      ],
+      "entry": "/classroom?record=page&id=D391974DE6456EA147BF1B73C4&rev=2",
+      "id": "652322BC39686DED2CDEFE48D5",
+      "initialSession": {
+        "id": "447462A37C036D449467D32309",
+        "caseId": "companion",
+        "currentTurnId": "447462A37C036D449467D32309",
+        "status": "ready",
+        "turns": [
+          {
+            "model": "classroom-fixture",
+            "reads": [
+              {
+                "id": "D391974DE6456EA147BF1B73C4",
+                "text": "本页标识：客至松门，不以停顿长短判答案",
+                "title": "本机断句教材",
+                "workspace": true
+              }
+            ],
+            "action": "companion_reply",
+            "message": "断句题已发放。请先保存预测。",
+            "rationale": "",
+            "evidenceIds": [],
+            "reportedModel": "classroom-fixture",
+            "workspaceBasis": [
+              {
+                "id": "D391974DE6456EA147BF1B73C4",
+                "rev": 2,
+                "mode": "pinned",
+                "type": "content.textbookPage",
+                "epoch": "1"
+              }
+            ],
+            "reasoningEffort": "default",
+            "foregroundDigest": {
+              "id": "447462A37C036D449467D32309",
+              "kind": "companion_completed",
+              "summary": "本轮依据已授权的学习记录给出伴学回复。",
+              "sourceRefs": [
+                {
+                  "id": "447462A37C036D449467D32309",
+                  "rev": 1,
+                  "kind": "fact",
+                  "mode": "following",
+                  "accessEpoch": "0"
+                },
+                {
+                  "id": "D391974DE6456EA147BF1B73C4",
+                  "rev": 2,
+                  "kind": "fact",
+                  "mode": "pinned",
+                  "accessEpoch": "1"
+                }
+              ]
+            },
+            "turnId": "447462A37C036D449467D32309",
+            "artifacts": [
+              {
+                "version": 1,
+                "sessionId": "447462A37C036D449467D32309",
+                "turnId": "447462A37C036D449467D32309",
+                "mountId": "EB6C56C66EEF6233C9F1C989E5",
+                "viewSeq": 0,
+                "stateRev": 0,
+                "view": {
+                  "fallback": "你预计哪里停顿？",
+                  "id": "work-eb6c56c66eef6233c9f1c989e5",
+                  "revision": "passage-r1",
+                  "sections": [
+                    {
+                      "id": "prediction",
+                      "layout": "stack",
+                      "nodes": [
+                        {
+                          "id": "estimate",
+                          "kind": "note",
+                          "label": "你预计哪里停顿？"
+                        },
+                        {
+                          "id": "record-prediction",
+                          "inputs": [
+                            "estimate"
+                          ],
+                          "intent": "saveDraft",
+                          "kind": "action",
+                          "label": "保存预测"
+                        }
+                      ],
+                      "title": "观察之前"
+                    }
+                  ],
+                  "title": "先写下你的预测",
+                  "version": 1
+                },
+                "submitted": false,
+                "predicting": true,
+                "unavailable": {},
+                "prediction": null,
+                "questionRef": {
+                  "id": "EB6C56C66EEF6233C9F1C989E5",
+                  "rev": 1
+                },
+                "saved": [],
+                "commandId": null
+              }
+            ],
+            "trace": []
+          }
+        ]
+      },
+      "initialFrames": [
+        {
+          "requestId": "48289.1295",
+          "timestamp": 2705591.528067,
+          "eventName": "mount-permissions",
+          "eventId": "",
+          "data": "{\"sessionId\":\"447462A37C036D449467D32309\",\"authorizedMountIds\":[]}"
+        },
+        {
+          "requestId": "48289.1296",
+          "timestamp": 2705591.529664,
+          "eventName": "progress",
+          "eventId": "447462A37C036D449467D32309:0:0",
+          "data": "{\"session\":{\"id\":\"447462A37C036D449467D32309\",\"caseId\":\"companion\",\"currentTurnId\":\"447462A37C036D449467D32309\",\"status\":\"pending\"},\"phase\":\"queued\",\"authorizedMountIds\":[]}"
+        },
+        {
+          "requestId": "48289.1296",
+          "timestamp": 2705591.967418,
+          "eventName": "progress",
+          "eventId": "447462A37C036D449467D32309:1:0",
+          "data": "{\"session\":{\"id\":\"447462A37C036D449467D32309\",\"caseId\":\"companion\",\"currentTurnId\":\"447462A37C036D449467D32309\",\"status\":\"pending\"},\"phase\":\"thinking\",\"authorizedMountIds\":[]}"
+        },
+        {
+          "requestId": "48289.1296",
+          "timestamp": 2705592.007737,
+          "eventName": "progress",
+          "eventId": "447462A37C036D449467D32309:2:0",
+          "data": "{\"session\":{\"id\":\"447462A37C036D449467D32309\",\"caseId\":\"companion\",\"currentTurnId\":\"447462A37C036D449467D32309\",\"status\":\"pending\"},\"phase\":\"reading\",\"authorizedMountIds\":[]}"
+        },
+        {
+          "requestId": "48289.1295",
+          "timestamp": 2705592.032141,
+          "eventName": "mount-permissions",
+          "eventId": "",
+          "data": "{\"sessionId\":\"447462A37C036D449467D32309\",\"authorizedMountIds\":[\"EB6C56C66EEF6233C9F1C989E5\"]}"
+        },
+        {
+          "requestId": "48289.1296",
+          "timestamp": 2705592.03376,
+          "eventName": "progress",
+          "eventId": "447462A37C036D449467D32309:2:0:EB6C56C66EEF6233C9F1C989E5-0",
+          "data": "{\"session\":{\"id\":\"447462A37C036D449467D32309\",\"caseId\":\"companion\",\"currentTurnId\":\"447462A37C036D449467D32309\",\"status\":\"pending\"},\"phase\":\"reading\",\"authorizedMountIds\":[\"EB6C56C66EEF6233C9F1C989E5\"]}"
+        },
+        {
+          "requestId": "48289.1296",
+          "timestamp": 2705592.033828,
+          "eventName": "artifact-snapshot",
+          "eventId": "447462A37C036D449467D32309:2:0:EB6C56C66EEF6233C9F1C989E5-0",
+          "data": "{\"version\":1,\"sessionId\":\"447462A37C036D449467D32309\",\"turnId\":\"447462A37C036D449467D32309\",\"mountId\":\"EB6C56C66EEF6233C9F1C989E5\",\"viewSeq\":0,\"stateRev\":0,\"view\":{\"fallback\":\"你预计哪里停顿？\",\"id\":\"work-eb6c56c66eef6233c9f1c989e5\",\"revision\":\"passage-r1\",\"sections\":[{\"id\":\"prediction\",\"layout\":\"stack\",\"nodes\":[{\"id\":\"estimate\",\"kind\":\"note\",\"label\":\"你预计哪里停顿？\"},{\"id\":\"record-prediction\",\"inputs\":[\"estimate\"],\"intent\":\"saveDraft\",\"kind\":\"action\",\"label\":\"保存预测\"}],\"title\":\"观察之前\"}],\"title\":\"先写下你的预测\",\"version\":1},\"submitted\":false,\"predicting\":true,\"unavailable\":{},\"prediction\":null,\"questionRef\":{\"id\":\"EB6C56C66EEF6233C9F1C989E5\",\"rev\":1},\"saved\":[],\"commandId\":null}"
+        },
+        {
+          "requestId": "48289.1296",
+          "timestamp": 2705592.059039,
+          "eventName": "complete",
+          "eventId": "447462A37C036D449467D32309:ready",
+          "data": "{\"session\":{\"id\":\"447462A37C036D449467D32309\",\"caseId\":\"companion\",\"currentTurnId\":\"447462A37C036D449467D32309\",\"status\":\"ready\"},\"message\":\"断句题已发放。请先保存预测。\"}"
+        }
+      ],
+      "departure": "{\"binding\":\"[\\\"652322BC39686DED2CDEFE48D5\\\",1,\\\"447462A37C036D449467D32309\\\",\\\"447462A37C036D449467D32309-1\\\",\\\"447462A37C036D449467D32309\\\",[[\\\"EB6C56C66EEF6233C9F1C989E5\\\",\\\"passage-r1\\\",0,0]]]\",\"itemId\":\"447462A37C036D449467D32309-1\",\"lastActionAt\":1795208233546}",
+      "card": "上次停在「初读断句」\n继续这步\n收起",
+      "focus": {
+        "tag": "TEXTAREA",
+        "id": "classroom-step-447462A37C036D449467D32309-1"
+      },
+      "acted": {
+        "version": 1,
+        "sessionId": "447462A37C036D449467D32309",
+        "turnId": "447462A37C036D449467D32309",
+        "mountId": "EB6C56C66EEF6233C9F1C989E5",
+        "viewSeq": 2,
+        "stateRev": 2,
+        "view": {
+          "fallback": "读原文，选择停顿位置。",
+          "id": "work-eb6c56c66eef6233c9f1c989e5",
+          "revision": "passage-r1",
+          "sections": [
+            {
+              "id": "passage",
+              "layout": "stack",
+              "nodes": [
+                {
+                  "id": "breakpoints",
+                  "items": [
+                    {
+                      "id": "gap-2",
+                      "label": "有客"
+                    },
+                    {
+                      "id": "gap-4",
+                      "label": "至门"
+                    },
+                    {
+                      "id": "gap-6",
+                      "label": "主人"
+                    },
+                    {
+                      "id": "gap-8",
+                      "label": "问之"
+                    }
+                  ],
+                  "kind": "selection",
+                  "label": "原文与断点",
+                  "layout": "passage",
+                  "selected": [],
+                  "tail": "而笑"
+                },
+                {
+                  "id": "hand-in",
+                  "inputs": [
+                    "breakpoints"
+                  ],
+                  "intent": "submit",
+                  "kind": "action",
+                  "label": "交卷"
+                }
+              ],
+              "title": "原文"
+            }
+          ],
+          "title": "尝试两种断句",
+          "version": 1
+        },
+        "submitted": true,
+        "predicting": false,
+        "unavailable": {},
+        "prediction": {
+          "id": "DCCDCEBD3EA6EDD66EBC34B3ED",
+          "rev": 1,
+          "answer": {
+            "kind": "text",
+            "text": "我先读出两处停顿。"
+          }
+        },
+        "questionRef": {
+          "id": "EB6C56C66EEF6233C9F1C989E5",
+          "rev": 1
+        },
+        "assessment": {
+          "releaseRef": {
+            "id": "EB6C56C66EEF6233C9F1C989E5",
+            "rev": 1
+          },
+          "submissionRef": {
+            "id": "DBCB6406C058655218BCB25EDB",
+            "rev": 1
+          },
+          "score": {
+            "earned": 100,
+            "maximum": 100
+          },
+          "result": {
+            "outcomes": [
+              {
+                "state": "scored",
+                "earned": 100,
+                "itemId": "hand-in",
+                "evidence": [
+                  {
+                    "path": "",
+                    "slotId": "breakpoints"
+                  }
+                ],
+                "criterionId": "breaks"
+              }
+            ],
+            "releaseRef": {
+              "id": "EB6C56C66EEF6233C9F1C989E5",
+              "rev": 1
+            },
+            "submissionRef": {
+              "id": "DBCB6406C058655218BCB25EDB",
+              "rev": 1
+            }
+          },
+          "criteria": [
+            {
+              "itemId": "hand-in",
+              "source": {
+                "ref": {
+                  "id": "EB6C56C66EEF6233C9F1C989E5",
+                  "rev": 1
+                },
+                "kind": "product-rubric",
+                "path": "/assessment/release/items/0/criteria/0/parameters"
+              },
+              "maximum": 100,
+              "evaluator": {
+                "id": "sentence-breaks",
+                "version": "1"
+              },
+              "criterionId": "breaks"
+            }
+          ],
+          "receipts": [],
+          "state": "complete",
+          "derivationId": "01M7XBZHF57HM478JRYAPYSA5E"
+        },
+        "saved": [
+          {
+            "answers": {
+              "breakpoints": {
+                "ids": [
+                  "gap-2",
+                  "gap-4"
+                ],
+                "kind": "selection"
+              }
+            },
+            "trace": {
+              "omitted": 0,
+              "steps": [
+                {
+                  "kind": "toggle",
+                  "nodeId": "breakpoints",
+                  "objectId": "gap-2",
+                  "selected": true
+                },
+                {
+                  "kind": "toggle",
+                  "nodeId": "breakpoints",
+                  "objectId": "gap-4",
+                  "selected": true
+                }
+              ]
+            }
+          }
+        ],
+        "commandId": "905F196803DDF222FD730CB338"
+      },
+      "originalPage": {
+        "kind": "textbook",
+        "learner": "691F38927C0F0C8A7DE5FFF70C",
+        "id": "D391974DE6456EA147BF1B73C4",
+        "rev": 2,
+        "accessEpoch": "1",
+        "purpose": [
+          "storage",
+          "teaching"
+        ],
+        "title": "本机断句教材",
+        "blocks": [
+          {
+            "id": "excerpt",
+            "parentId": null,
+            "body": {
+              "kind": "text",
+              "text": "本页标识：客至松门，不以停顿长短判答案"
+            }
+          }
+        ],
+        "references": []
+      },
+      "revision": {
+        "status": 200,
+        "data": {
+          "commandId": "E7EEEF58F9610D08283DB4720C",
+          "state": "done",
+          "wrote": [
+            {
+              "learner": "691F38927C0F0C8A7DE5FFF70C",
+              "id": "D391974DE6456EA147BF1B73C4",
+              "rev": 3
+            }
+          ],
+          "proposals": [],
+          "requestId": "7625bbb3-d9ed-4185-b9e5-5b9ff59c81a1",
+          "clientEditSeq": 1,
+          "id": "D391974DE6456EA147BF1B73C4",
+          "expectedRev": 2,
+          "rev": 3
+        }
+      },
+      "reopenedMount": {
+        "version": 1,
+        "sessionId": "447462A37C036D449467D32309",
+        "turnId": "447462A37C036D449467D32309",
+        "mountId": "EB6C56C66EEF6233C9F1C989E5",
+        "viewSeq": 2,
+        "stateRev": 2,
+        "view": {
+          "fallback": "读原文，选择停顿位置。",
+          "id": "work-eb6c56c66eef6233c9f1c989e5",
+          "revision": "passage-r1",
+          "sections": [
+            {
+              "id": "passage",
+              "layout": "stack",
+              "nodes": [
+                {
+                  "id": "breakpoints",
+                  "items": [
+                    {
+                      "id": "gap-2",
+                      "label": "有客"
+                    },
+                    {
+                      "id": "gap-4",
+                      "label": "至门"
+                    },
+                    {
+                      "id": "gap-6",
+                      "label": "主人"
+                    },
+                    {
+                      "id": "gap-8",
+                      "label": "问之"
+                    }
+                  ],
+                  "kind": "selection",
+                  "label": "原文与断点",
+                  "layout": "passage",
+                  "selected": [],
+                  "tail": "而笑"
+                },
+                {
+                  "id": "hand-in",
+                  "inputs": [
+                    "breakpoints"
+                  ],
+                  "intent": "submit",
+                  "kind": "action",
+                  "label": "交卷"
+                }
+              ],
+              "title": "原文"
+            }
+          ],
+          "title": "尝试两种断句",
+          "version": 1
+        },
+        "submitted": true,
+        "predicting": false,
+        "unavailable": {},
+        "prediction": {
+          "id": "DCCDCEBD3EA6EDD66EBC34B3ED",
+          "rev": 1,
+          "answer": {
+            "kind": "text",
+            "text": "我先读出两处停顿。"
+          }
+        },
+        "questionRef": {
+          "id": "EB6C56C66EEF6233C9F1C989E5",
+          "rev": 1
+        },
+        "assessment": {
+          "releaseRef": {
+            "id": "EB6C56C66EEF6233C9F1C989E5",
+            "rev": 1
+          },
+          "submissionRef": {
+            "id": "DBCB6406C058655218BCB25EDB",
+            "rev": 1
+          },
+          "score": {
+            "earned": 100,
+            "maximum": 100
+          },
+          "result": {
+            "outcomes": [
+              {
+                "state": "scored",
+                "earned": 100,
+                "itemId": "hand-in",
+                "evidence": [
+                  {
+                    "path": "",
+                    "slotId": "breakpoints"
+                  }
+                ],
+                "criterionId": "breaks"
+              }
+            ],
+            "releaseRef": {
+              "id": "EB6C56C66EEF6233C9F1C989E5",
+              "rev": 1
+            },
+            "submissionRef": {
+              "id": "DBCB6406C058655218BCB25EDB",
+              "rev": 1
+            }
+          },
+          "criteria": [
+            {
+              "itemId": "hand-in",
+              "source": {
+                "ref": {
+                  "id": "EB6C56C66EEF6233C9F1C989E5",
+                  "rev": 1
+                },
+                "kind": "product-rubric",
+                "path": "/assessment/release/items/0/criteria/0/parameters"
+              },
+              "maximum": 100,
+              "evaluator": {
+                "id": "sentence-breaks",
+                "version": "1"
+              },
+              "criterionId": "breaks"
+            }
+          ],
+          "receipts": [],
+          "state": "complete",
+          "derivationId": "01M7XBZHF57HM478JRYAPYSA5E"
+        },
+        "saved": [
+          {
+            "answers": {
+              "breakpoints": {
+                "ids": [
+                  "gap-2",
+                  "gap-4"
+                ],
+                "kind": "selection"
+              }
+            },
+            "trace": {
+              "omitted": 0,
+              "steps": [
+                {
+                  "kind": "toggle",
+                  "nodeId": "breakpoints",
+                  "objectId": "gap-2",
+                  "selected": true
+                },
+                {
+                  "kind": "toggle",
+                  "nodeId": "breakpoints",
+                  "objectId": "gap-4",
+                  "selected": true
+                }
+              ]
+            }
+          }
+        ],
+        "commandId": "905F196803DDF222FD730CB338"
+      },
+      "reopenedText": "跳到正文\nMangekyō\n交入材料\n今天\n材料\n同伴\n我\n学习设置\n‹ 学习课堂\n\n已归档 · 20 分钟 · 第 5 版\n\n古文断句的主谓识别\n\n已呈现\n\n初读断句\n学习同伴\n\n断句题已发放。请先保存预测。\n\n尝试两种断句\n原文\n原文与断点\n有客／\n至门／\n主人·\n问之·\n而笑\n有客／至门／主人问之而笑\n交卷\n\n当时的预测 · 我先读出两处停顿。\n\n已提交 · 回执 905F196803DDF222FD730CB338\n\n正式得分　100 / 100\n\n本轮信息\n\n已呈现\n\n新句识别主谓\n学习同伴\n\n新句只看由谁完成动作。\n\n本轮信息\n\n已跳过\n\n解释歧义\n按这个主题另开一课",
+      "revoke": {
+        "status": 200,
+        "data": {
+          "id": "D391974DE6456EA147BF1B73C4",
+          "rev": 4,
+          "teaching": false,
+          "changed": true
+        }
+      },
+      "deniedText": "跳到正文\nMangekyō\n交入材料\n今天\n材料\n同伴\n我\n学习设置\n返回学习课堂\n\n当前无法访问这节课。\n\n重新读取",
+      "withdrawnSession": {
+        "id": "447462A37C036D449467D32309",
+        "caseId": "companion",
+        "currentTurnId": "6855484726AC12927113049E61",
+        "status": "ready",
+        "turns": [
+          {
+            "action": "reply_unavailable",
+            "model": "classroom-fixture",
+            "rationale": "",
+            "message": "本轮已完成，依据已变更，旧回复已隐藏。",
+            "reads": [],
+            "evidenceIds": [],
+            "turnId": "447462A37C036D449467D32309",
+            "artifacts": []
+          },
+          {
+            "action": "reply_unavailable",
+            "model": "classroom-fixture",
+            "rationale": "",
+            "message": "本轮已完成，依据已变更，旧回复已隐藏。",
+            "reads": [],
+            "evidenceIds": [],
+            "turnId": "AEB374037754AC7898042A2C37",
+            "artifacts": []
+          },
+          {
+            "action": "reply_unavailable",
+            "model": "classroom-fixture",
+            "rationale": "",
+            "message": "本轮已完成，依据已变更，旧回复已隐藏。",
+            "reads": [],
+            "evidenceIds": [],
+            "turnId": "6855484726AC12927113049E61",
+            "artifacts": []
+          }
+        ]
+      }
+    }
+  ],
+  "model": {
+    "type": "fixed-response loopback",
+    "requested": "classroom-fixture",
+    "baseUrl": "http://127.0.0.1:52767/v1"
+  },
+  "chrome": "Chrome/157.0.8103.52",
+  "history": {
+    "list": [
+      {
+        "id": "09D1F5CB6419183DC10D03EB4C",
+        "title": "我是用来核对课堂历史的普通对话。",
+        "caseId": "companion"
+      }
+    ],
+    "visible": "最近对话\n我是用来核对课堂历史的普通对话。",
+    "openedText": "跳到正文\nMangekyō\n交入材料\n今天\n材料\n同伴\n我\n学习设置\n同伴\n按主题开课\n新对话\n你\n\n我是用来核对课堂历史的普通对话。\n\n学习同伴\n\n这是普通对话的历史回读。\n\n本轮信息\n同伴对话 · classroom-model · openai · http://127.0.0.1:52767/v1 · classroom-fixture · default · 账户版本 e7e27b73-b882-4449-9aef-d0b342476b83\n⌘ / Ctrl + Enter\n发送\n最近对话\n我是用来核对课堂历史的普通对话。"
+  },
+  "springAfterOtherSourceRevocation": "跳到正文\nMangekyō\n交入材料\n今天\n材料\n同伴\n我\n学习设置\n‹ 学习课堂\n\n已归档 · 20 分钟 · 第 6 版\n\n弹簧振子的周期比较\n\n已呈现\n\n比较弹簧伸长\n学习同伴\n\n先预测，再把模拟滑块移到你选的读数。\n\n弹簧读数\n实验\n滑块联动弹簧图\n8 厘米\n\n柱长随伸长量变化。\n\n伸长量\n8 厘米\n写下你的观察\n记录观察\n\n当时的预测 · 我预测改变伸长量后周期可能变化。\n\n已记录 · 回执 2A8D547F5E1227905CA2B82EF8\n\n本轮信息\n\n已跳过\n\n对照质量保持不变\n学习同伴\n\n保持质量一致，再比较伸长量。\n\n本轮信息\n\n已呈现\n\n变化质量重新比较\n学习同伴\n\n保持质量一致，再比较伸长量。\n\n本轮信息\n按这个主题另开一课",
+  "requests": [
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.66"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.67"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.68"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.71"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.78"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions",
+      "post": {
+        "route": {
+          "providerId": "classroom-model",
+          "protocol": "openai",
+          "baseUrl": "http://127.0.0.1:52767/v1",
+          "model": "classroom-fixture",
+          "reasoningEffort": "default",
+          "accountRevision": "e7e27b73-b882-4449-9aef-d0b342476b83"
+        },
+        "mcpGrants": [],
+        "caseId": "companion",
+        "requestId": "3e6527af-a000-4276-955f-0d76c7cdca03",
+        "question": "我是用来核对课堂历史的普通对话。"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions",
+      "status": 202,
+      "networkId": "48289.79"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/09D1F5CB6419183DC10D03EB4C/events?watchMounts=1",
+      "status": 200,
+      "networkId": "48289.80"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/09D1F5CB6419183DC10D03EB4C/events",
+      "status": 200,
+      "networkId": "48289.81"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.82"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/09D1F5CB6419183DC10D03EB4C",
+      "status": 200,
+      "networkId": "48289.84"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/retention/posttests",
+      "status": 200,
+      "networkId": "48289.151"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.153"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.154"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.156"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.155"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/today?mode=any&timeZone=Asia%2FTokyo",
+      "status": 200,
+      "networkId": "48289.152"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.224"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.227"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.225"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.226"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms",
+      "post": {
+        "requestId": "01583aaf-6985-4214-95a8-81ad9dadd534",
+        "topic": "弹簧振子的周期比较",
+        "route": {
+          "providerId": "classroom-model",
+          "protocol": "openai",
+          "baseUrl": "http://127.0.0.1:52767/v1",
+          "model": "classroom-fixture",
+          "reasoningEffort": "default",
+          "accountRevision": "e7e27b73-b882-4449-9aef-d0b342476b83"
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.228"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms",
+      "status": 202,
+      "networkId": "48289.229"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.300"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.297"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.298"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.296"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.299"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.301"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1",
+      "status": 200,
+      "networkId": "48289.302"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events",
+      "status": 200,
+      "networkId": "48289.303"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.304"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.305"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.376"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.374"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.373"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.375"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.377"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.445"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.448"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.446"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.447"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/09D1F5CB6419183DC10D03EB4C",
+      "status": 200,
+      "networkId": "48289.444"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/09D1F5CB6419183DC10D03EB4C/events?watchMounts=1",
+      "status": 200,
+      "networkId": "48289.450"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/09D1F5CB6419183DC10D03EB4C/events",
+      "status": 200,
+      "networkId": "48289.451"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/memory",
+      "status": 200,
+      "networkId": "48289.519"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.520"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.523"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.521"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/memory/claims",
+      "status": 200,
+      "networkId": "48289.518"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.522"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.524"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.591"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.594"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.592"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.593"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.595"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.663"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.664"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.666"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.665"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.662"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.667"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1&knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.669"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.670"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.671"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/artifact-actions",
+      "post": {
+        "version": 1,
+        "requestId": "43ded11b-59e2-4d46-a453-0455cffe5144",
+        "mountId": "2F13FD22AEA1BD0D51D518A5C1",
+        "baseStateRev": 0,
+        "action": {
+          "version": 1,
+          "artifactId": "work-2f13fd22aea1bd0d51d518a5c1",
+          "revision": "spring-r1",
+          "nodeId": "record-prediction",
+          "intent": "saveDraft",
+          "trace": {
+            "omitted": 0,
+            "steps": []
+          },
+          "answers": {
+            "estimate": {
+              "kind": "text",
+              "text": "我预测改变伸长量后周期可能变化。"
+            }
+          }
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.673"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/artifact-actions",
+      "status": 200,
+      "networkId": "48289.672"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/artifact-actions",
+      "post": {
+        "version": 1,
+        "requestId": "ed1bbead-17b5-4e9c-843b-00a7f93e9aee",
+        "mountId": "2F13FD22AEA1BD0D51D518A5C1",
+        "baseStateRev": 1,
+        "action": {
+          "version": 1,
+          "artifactId": "work-2f13fd22aea1bd0d51d518a5c1",
+          "revision": "spring-r1",
+          "nodeId": "save",
+          "intent": "saveDraft",
+          "trace": {
+            "omitted": 0,
+            "steps": [
+              {
+                "kind": "adjust",
+                "nodeId": "stretch",
+                "value": 5,
+                "unit": "厘米"
+              },
+              {
+                "kind": "adjust",
+                "nodeId": "stretch",
+                "value": 8,
+                "unit": "厘米"
+              }
+            ]
+          },
+          "answers": {
+            "stretch": {
+              "kind": "quantity",
+              "value": 8,
+              "unit": "厘米"
+            },
+            "reason": {
+              "kind": "text",
+              "text": "我改变了读数，质量不变。"
+            }
+          }
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/artifact-actions",
+      "status": 200,
+      "networkId": "48289.674"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/adjust",
+      "post": {
+        "requestId": "59ba7906-03b1-4e87-ab19-766952b19d27",
+        "expectedRev": 1,
+        "note": "按我刚才的操作调整"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/adjust",
+      "status": 200,
+      "networkId": "48289.675"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.677"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.676"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1&knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.678"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.679"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.680"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.681"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/advance",
+      "post": {
+        "requestId": "8162cb3c-cdb3-449b-8638-041f7eb7ab4e",
+        "expectedRev": 2
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/advance",
+      "status": 200,
+      "networkId": "48289.682"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.684"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.683"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1&knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.685"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.686"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.687"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.688"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/skip",
+      "post": {
+        "requestId": "30fb7a6b-5360-4eca-90d8-9560738d85a3",
+        "expectedRev": 3
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/skip",
+      "status": 200,
+      "networkId": "48289.689"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.691"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.690"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1&knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.692"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.693"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.694"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.695"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/finish",
+      "post": {
+        "requestId": "2ea0bf75-f3df-49f7-9ec0-0f96d6f99e7d",
+        "expectedRev": 4
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/finish",
+      "status": 200,
+      "networkId": "48289.696"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.698"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.697"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1&knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.699"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.700"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.701"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/archive",
+      "post": {
+        "requestId": "87a73b7e-c822-4879-9b42-21664e177b3f",
+        "expectedRev": 5
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1/archive",
+      "status": 200,
+      "networkId": "48289.702"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.704"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.703"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1&knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.705"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.706"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.707"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/memory",
+      "status": 200,
+      "networkId": "48289.775"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.776"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/memory/claims",
+      "status": 200,
+      "networkId": "48289.774"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.779"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.777"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.778"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.780"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.847"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.850"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.848"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.849"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.851"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.919"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.920"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.922"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.921"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.918"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.923"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1&knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.925"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.926"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.927"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/papers",
+      "status": 200,
+      "networkId": "48289.994"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.996"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.997"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/organizer/index",
+      "status": 200,
+      "networkId": "48289.995"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.998"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.999"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1000"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1069"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1070"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1071"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1072"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/textbooks",
+      "status": 200,
+      "networkId": "48289.1073"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1074"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1144"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1143"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1145"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1146"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/textbooks",
+      "status": 200,
+      "networkId": "48289.1147"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/textbooks/D391974DE6456EA147BF1B73C4",
+      "status": 200,
+      "networkId": "48289.1148"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/textbooks/D391974DE6456EA147BF1B73C4/proposals",
+      "status": 200,
+      "networkId": "48289.1149"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1150"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1217"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1220"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1218"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1219"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms",
+      "post": {
+        "requestId": "1748fa7e-9b18-4594-a260-a1be19c1dd9c",
+        "topic": "古文断句的主谓识别",
+        "currentObject": {
+          "kind": "page",
+          "id": "D391974DE6456EA147BF1B73C4",
+          "rev": 2
+        },
+        "route": {
+          "providerId": "classroom-model",
+          "protocol": "openai",
+          "baseUrl": "http://127.0.0.1:52767/v1",
+          "model": "classroom-fixture",
+          "reasoningEffort": "default",
+          "accountRevision": "e7e27b73-b882-4449-9aef-d0b342476b83"
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1221"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms",
+      "status": 202,
+      "networkId": "48289.1222"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1290"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1291"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1293"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1289"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309",
+      "status": 200,
+      "networkId": "48289.1294"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?watchMounts=1",
+      "status": 200,
+      "networkId": "48289.1295"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events",
+      "status": 200,
+      "networkId": "48289.1296"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1292"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1297"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1298"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/papers",
+      "status": 200,
+      "networkId": "48289.1366"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/organizer/index",
+      "status": 200,
+      "networkId": "48289.1367"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1368"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1369"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1371"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1370"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1440"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1439"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1441"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1442"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1438"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309",
+      "status": 200,
+      "networkId": "48289.1443"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?watchMounts=1&knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1445"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1446"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1447"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/artifact-actions",
+      "post": {
+        "version": 1,
+        "requestId": "82be62f4-1efc-4171-b782-fd3916c1fea7",
+        "mountId": "EB6C56C66EEF6233C9F1C989E5",
+        "baseStateRev": 0,
+        "action": {
+          "version": 1,
+          "artifactId": "work-eb6c56c66eef6233c9f1c989e5",
+          "revision": "passage-r1",
+          "nodeId": "record-prediction",
+          "intent": "saveDraft",
+          "trace": {
+            "omitted": 0,
+            "steps": []
+          },
+          "answers": {
+            "estimate": {
+              "kind": "text",
+              "text": "我先读出两处停顿。"
+            }
+          }
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1449"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/artifact-actions",
+      "status": 200,
+      "networkId": "48289.1448"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/artifact-actions",
+      "post": {
+        "version": 1,
+        "requestId": "bac03264-0c19-4775-886d-408298f527be",
+        "mountId": "EB6C56C66EEF6233C9F1C989E5",
+        "baseStateRev": 1,
+        "action": {
+          "version": 1,
+          "artifactId": "work-eb6c56c66eef6233c9f1c989e5",
+          "revision": "passage-r1",
+          "nodeId": "hand-in",
+          "intent": "submit",
+          "trace": {
+            "omitted": 0,
+            "steps": [
+              {
+                "kind": "toggle",
+                "nodeId": "breakpoints",
+                "objectId": "gap-2",
+                "selected": true
+              },
+              {
+                "kind": "toggle",
+                "nodeId": "breakpoints",
+                "objectId": "gap-4",
+                "selected": true
+              }
+            ]
+          },
+          "answers": {
+            "breakpoints": {
+              "kind": "selection",
+              "ids": [
+                "gap-2",
+                "gap-4"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/artifact-actions",
+      "status": 200,
+      "networkId": "48289.1450"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1451"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5/adjust",
+      "post": {
+        "requestId": "3789f20c-2117-428d-bea7-5e97939be38c",
+        "expectedRev": 1,
+        "note": "按我刚才的操作调整"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5/adjust",
+      "status": 200,
+      "networkId": "48289.1452"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1454"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309",
+      "status": 200,
+      "networkId": "48289.1453"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?watchMounts=1&knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1455"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1456"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1457"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1458"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5/advance",
+      "post": {
+        "requestId": "cf3f377a-145f-4081-8a8c-94a78b7c14c2",
+        "expectedRev": 2
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5/advance",
+      "status": 200,
+      "networkId": "48289.1459"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1461"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309",
+      "status": 200,
+      "networkId": "48289.1460"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?watchMounts=1&knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1462"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1463"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1464"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1465"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5/finish",
+      "post": {
+        "requestId": "176ccd25-e6fa-4602-aa96-76dffb502b64",
+        "expectedRev": 3
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5/finish",
+      "status": 200,
+      "networkId": "48289.1466"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1468"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309",
+      "status": 200,
+      "networkId": "48289.1467"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?watchMounts=1&knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1469"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1470"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1471"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5/archive",
+      "post": {
+        "requestId": "1bb083b0-18a8-4a2a-8a5a-f0cc2a38743b",
+        "expectedRev": 4
+      }
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5/archive",
+      "status": 200,
+      "networkId": "48289.1472"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1474"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309",
+      "status": 200,
+      "networkId": "48289.1473"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?watchMounts=1&knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1475"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1476"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1477"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/memory",
+      "status": 200,
+      "networkId": "48289.1545"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/memory/claims",
+      "status": 200,
+      "networkId": "48289.1544"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1548"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1547"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1546"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1549"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1617"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1618"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1619"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1620"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1621"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1689"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1690"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1692"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1691"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 200,
+      "networkId": "48289.1688"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309",
+      "status": 200,
+      "networkId": "48289.1693"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?watchMounts=1&knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1695"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309/events?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1696"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/447462A37C036D449467D32309?knownMountIds=EB6C56C66EEF6233C9F1C989E5",
+      "status": 200,
+      "networkId": "48289.1697"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 404,
+      "networkId": "48289.1698"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1766"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1769"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1767"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1768"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/652322BC39686DED2CDEFE48D5",
+      "status": 404,
+      "networkId": "48289.1765"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/memory",
+      "status": 200,
+      "networkId": "48289.1837"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1838"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1839"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/memory/claims",
+      "status": 200,
+      "networkId": "48289.1836"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1840"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1841"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1910"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1912"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1909"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1911"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/workspace",
+      "status": 200,
+      "networkId": "48289.1981"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/conversations",
+      "status": 200,
+      "networkId": "48289.1982"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/lifecycle",
+      "status": 200,
+      "networkId": "48289.1984"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/settings",
+      "status": 200,
+      "networkId": "48289.1983"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/classrooms/5B5628CBBAE01781D8B31543A1",
+      "status": 200,
+      "networkId": "48289.1980"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21",
+      "status": 200,
+      "networkId": "48289.1985"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?watchMounts=1&knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.1987"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21/events?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.1988"
+    },
+    {
+      "url": "http://127.0.0.1:52768/api/sessions/05EABACB0999692B087A3D7C21?knownMountIds=2F13FD22AEA1BD0D51D518A5C1",
+      "status": 200,
+      "networkId": "48289.1989"
+    }
+  ],
+  "errors": []
+}

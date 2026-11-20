@@ -1,3 +1,4 @@
+import { openClassrooms } from './classroom.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
@@ -82,6 +83,7 @@ export function clientRequest(value: unknown): string {
   return value;
 }
 export type DisplayTurn = {
+  classroomPlan?: string[];
   studyKit?: StudyKit;
   trace?: string[];
   completion?: 'receipts_only';
@@ -156,7 +158,7 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     if (!stored.parentId && stored.attachment)
       materialAvailable = await attachmentCurrent(tx,stored) && await grantCurrent(stored);
     const {attachment: _attachment, ...withoutAttachment} = stored;
-    const submission = materialAvailable ? stored : withoutAttachment;
+    const submission = stored.classroom ? {...withoutAttachment,answer:null} : materialAvailable ? stored : withoutAttachment;
     let authority: 'authorized' | 'unconfirmed' | 'withdrawn' = 'withdrawn';
     if (materialAvailable && row.value) {
       if (check) authority = (await teachingResultAuthority(tx, row.id, stored, row.manifest, grantCurrent, check)).state;
@@ -186,7 +188,7 @@ export function recentConversations(db: Db) {
       `SELECT r.data->>'sessionId' AS id FROM facts f
        JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
        WHERE f.learner_id=$1 AND f.type='activity.studyTurn' AND f.retracted_rev IS NULL
-         AND r.data->>'caseId' IN ('companion','riding')
+         AND r.data->>'caseId' IN ('companion','riding') AND NOT (r.data ? 'classroom')
        GROUP BY r.data->>'sessionId' ORDER BY MAX(f.created_tick) DESC LIMIT 100`, [studioLearner]);
     const result = [];
     for (const row of rows) {
@@ -275,52 +277,63 @@ export function sessionMountPermissions(db: Db, session: string) {
   });
 }
 
-export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project'], knownMounts: ReadonlySet<string> = new Set()) {
-  const notion = notionReadScope(db, studioLearner);
-  const { turns, ...view } = await notion.read(async (tx, check) => {
-    const timeline = await history(tx, session, check);
-    const last = timeline.at(-1);
-    if (!last) throw new RequestError(404, '这次学习会话不存在。');
-    const mounts = await readableTurnMounts(tx, session, timeline, check);
-    const currentObject = last.submission.currentObject;
-    const recoveryIds = timeline.filter(row => !row.feedback || row.feedback.action === 'reply_unavailable').map(row => row.id);
-    const recovered = await recoverRevokedReceipts(tx, recoveryIds);
-    const memory = await recoverTurnMemoryReceipts(tx, recoveryIds.filter(id => !recovered.get(id)?.some(write => write.memory)));
-    return {
-      id: session,
-      caseId: last.submission.caseId,
-      currentTurnId: last.id,
-      ...(last.backgroundUnderstanding ? {backgroundUnderstanding: last.backgroundUnderstanding} : {}),
-      ...(timeline[0]?.submission.attachment ? { attachment: timeline[0].submission.attachment } : {}),
-      ...(currentObject ? {currentObject: {alias: currentObjectAlias(currentObject.kind), id: currentObject.id, rev: currentObject.rev}} : {}),
-      status: last.status,
-      ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
-      ...(last.error ? { error: last.error } : {}),
-      ...(last.status === 'pending' ? { artifacts: mounts.get(last.id)?.snapshots ?? [] } : {}),
-      ...mountPermissionFields([...mounts.values()].flatMap(turn => turn.unconfirmed), knownMounts),
-      turns: await Promise.all(timeline.filter(row => row.feedback || memory.has(row.id)).map(async row => {
-        const writes = row.feedback?.writes ?? [...(recovered.get(row.id) ?? []), ...(memory.get(row.id) ?? [])];
-        return {row, feedback: row.feedback ?? unavailableReply(row.submission.model),
-          writes: writes.length ? await projectWrites(tx, writes) : undefined, artifacts: mounts.get(row.id)?.snapshots ?? []};
-      })),
-    };
-  });
+async function sessionProjection(tx: ReadTransaction, session: string, check: CheckNotionRead, knownMounts: ReadonlySet<string>) {
+  const timeline = await history(tx, session, check);
+  const last = timeline.at(-1);
+  if (!last) throw new RequestError(404, '这次学习会话不存在。');
+  const mounts = await readableTurnMounts(tx, session, timeline, check);
+  const currentObject = last.submission.classroom ? undefined : last.submission.currentObject;
+  const recoveryIds = timeline.filter(row => !row.feedback || row.feedback.action === 'reply_unavailable').map(row => row.id);
+  const recovered = await recoverRevokedReceipts(tx, recoveryIds);
+  const memory = await recoverTurnMemoryReceipts(tx, recoveryIds.filter(id => !recovered.get(id)?.some(write => write.memory)));
+  return {
+    id: session,
+    caseId: last.submission.caseId,
+    currentTurnId: last.id,
+    ...(last.backgroundUnderstanding ? {backgroundUnderstanding: last.backgroundUnderstanding} : {}),
+    ...(timeline[0]?.submission.attachment ? { attachment: timeline[0].submission.attachment } : {}),
+    ...(currentObject ? {currentObject: {alias: currentObjectAlias(currentObject.kind), id: currentObject.id, rev: currentObject.rev}} : {}),
+    status: last.status,
+    ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
+    ...(last.error ? { error: last.error } : {}),
+    ...(last.status === 'pending' ? { artifacts: mounts.get(last.id)?.snapshots ?? [] } : {}),
+    ...mountPermissionFields([...mounts.values()].flatMap(turn => turn.unconfirmed), knownMounts),
+    turns: await Promise.all(timeline.filter(row => row.feedback || memory.has(row.id)).map(async row => {
+      const writes = row.feedback?.writes ?? [...(recovered.get(row.id) ?? []), ...(memory.get(row.id) ?? [])];
+      return {row, feedback: row.feedback ?? unavailableReply(row.submission.model),
+        writes: writes.length ? await projectWrites(tx, writes) : undefined, artifacts: mounts.get(row.id)?.snapshots ?? []};
+    })),
+  };
+}
+
+async function formatSession({turns,...view}: Awaited<ReturnType<typeof sessionProjection>>,
+  recall?: (turn: string, derivation: string, kit: StudyKit) => ReturnType<RecallHttp['project']>) {
   const projected = [];
-  for (const {row, feedback: value, artifacts, writes} of turns) {
-    const {studyKit, trace, ...feedback} = value;
-    const recall = row.derivationId && studyKit
-      ? await projectRecall?.(session, row.id, row.derivationId, studyKit, notion)
+  for (const { row, artifacts, writes, feedback: value } of turns) {
+    const { studyKit, classroomPlan: _plan, trace, ...feedback } = value;
+    const projectedRecall = row.derivationId && studyKit
+      ? await recall?.(row.id,row.derivationId,studyKit)
       : undefined;
     projected.push({
       ...feedback, ...(writes && {writes}), turnId: row.id, artifacts,
       ...(row.backgroundUnderstanding ? {backgroundUnderstanding: row.backgroundUnderstanding} : {}),
       ...(trace && { trace: trace.map(projectArtifactMountTrace) }),
-      ...(studyKit === undefined ? {} : { message: recall?.lesson ?? '' }),
-      ...(recall ? { recall } : {}),
+      ...(studyKit === undefined ? {} : { message: projectedRecall?.lesson ?? '' }),
+      ...(projectedRecall ? {recall:projectedRecall} : {}),
       ...(row.submission.answer ? { answer: row.submission.answer } : {}),
     });
   }
   return { ...view, turns: projected };
+}
+
+export async function readClassroomSession(tx: ReadTransaction, session: string, check: CheckNotionRead) {
+  return formatSession(await sessionProjection(tx,session,check,new Set()));
+}
+
+export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project'], knownMounts: ReadonlySet<string> = new Set()) {
+  const notion = notionReadScope(db,studioLearner);
+  return formatSession(await notion.read((tx,check) => sessionProjection(tx,session,check,knownMounts)),
+    projectRecall && ((turn,derivation,kit) => projectRecall(session,turn,derivation,kit,notion)));
 }
 async function fenceTeachingCutover(db: Db) {
   await db.tx({learner:studioLearner}, async tx => {
@@ -368,9 +381,7 @@ async function fenceTeachingCutover(db: Db) {
 export async function openStudio(db: Db, activity: LoadedModule, {projectRecall, jitCounters = [], enableJit = false}: {
   projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[]; enableJit?: boolean;
 } = {}) {
-  const handle = createCommandHandler(db, {
-    modules: [activity],
-    hooks: createStudioCommandHooks({
+  const hooks = createStudioCommandHooks({
       async afterFactsChanged(tx, tick, changes) {
         for (const change of changes) {
           if (change.factType !== 'activity.studyTurn' || change.kind !== 'create') continue;
@@ -398,8 +409,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
           await requestWork(tx,tick,{slotType,slotKey:id,deriver:guarded ? confirmedTeachingMethod : methodName},guarded ? 'routed_pending' : 'pending');
         }
       },
-    }),
   });
+  const handle = createCommandHandler(db, {modules:[activity],hooks});
   await db.query('INSERT INTO learners(id) VALUES($1) ON CONFLICT DO NOTHING', [studioLearner]);
   await fenceTeachingCutover(db);
   for (const studyCase of cases)
@@ -550,6 +561,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     return value === true;
   }
   return {
+    classrooms: openClassrooms(db,activity,hooks),
     async start(selected: CaseId, requestId: string, question?: unknown, shared?: unknown, requestedMcp?: unknown,
       requestedRoute?: unknown, requestedObject?: unknown, requestedBackground?: unknown) {
       const grants = requestedGrants(requestedMcp);
@@ -590,6 +602,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       if (prior) return prior;
       const last = (await loadHistory(db, session)).at(-1);
       if (!last) throw new RequestError(404, '学习会话不存在。');
+      if (last.submission.classroom) throw new RequestError(409, '请在课堂步骤内完成学习活动。');
       if (last.id !== parent) throw new RequestError(409, '此题已有回答，请刷新后查看下一步。');
       if (last.status !== 'ready') throw new RequestError(409, '请先等同伴完成这一轮。');
       try {
