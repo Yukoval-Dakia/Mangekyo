@@ -79,9 +79,11 @@ export function QuestionContext({ itemId, readingContext, source, previous, hist
 }) {
   const presentation = useQuestionPresentation(itemId);
   const items: ReadingItem[] = [];
-  if (presentation && historical === Boolean(presentation.attempt) && Array.isArray(readingContext)) {
+  if (presentation && historical === Boolean(presentation.attempt)) {
     const kinds = new Set<ReadingContextEntry['kind']>();
-    for (const entry of readingContext) {
+    const entries = (readingContext ?? []).filter(entry => entry?.kind === 'archetype' || entry?.kind === 'backtrace');
+    if (presentation.notion) entries.push(presentation.notion);
+    for (const entry of entries) {
       const label = entry && capsuleLabel(entry.kind);
       if (!label || typeof entry.ref !== 'string' || !entry.ref.trim() || kinds.has(entry.kind)) continue;
       kinds.add(entry.kind);
@@ -92,7 +94,7 @@ export function QuestionContext({ itemId, readingContext, source, previous, hist
   }
   // A later solution permit adds references without remounting an open question capsule.
   const scope = JSON.stringify([itemId, presentation?.paper.id, presentation?.paper.rev, presentation?.permit,
-    presentation?.attempt?.id, presentation?.attempt?.rev, items.map(item => item.id), source?.id, source?.rev]);
+    presentation?.attempt?.id, presentation?.attempt?.rev, source?.id, source?.rev]);
   if (referencesAllowed && source) {
     items.push({ id: [source.id, source.rev].join('/'), label: '原题 · 第 ' + source.rev + ' 版',
       content: <SourcePreview source={source} /> });

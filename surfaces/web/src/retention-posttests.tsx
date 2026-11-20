@@ -121,7 +121,7 @@ function IssuedQuestionContext({ issue }: { issue: Issue }) {
   }>('/papers/' + encodeURIComponent(issue.id));
   if (error || data?.id !== issue.id || !Number.isSafeInteger(data.revision) || data.revision < 1) return null;
   const item = data.questions.find(question => question.id === issue.item.id);
-  if (!item?.readingContext?.length) return null;
+  if (!item) return null;
   return <QuestionPresentation value={{ paper: { id: issue.id, rev: data.revision }, permit: issue.id, items: [item.id] }}>
     <QuestionContext itemId={item.id} readingContext={item.readingContext} />
   </QuestionPresentation>;

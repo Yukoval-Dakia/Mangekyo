@@ -1,4 +1,4 @@
-import {createContext, useContext, useEffect, useState, useSyncExternalStore} from 'react';
+import {createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode} from 'react';
 import {api, ApiError} from './api';
 
 function onVisibilityChange(notify: () => void) {
@@ -11,13 +11,49 @@ export function useVisibleDocument() {
 
 type Pinned = {id: string; rev: number};
 type QuestionPermit = {paper: Pinned; permit: string; items: readonly string[]; attempt?: Pinned};
-export const QuestionPresentation = createContext<QuestionPermit | null>(null);
+type DeferredLabels = {paperRev: number; attemptRef?: Pinned; items: {
+  itemId: string; readingContext: {kind: 'notion'; ref: string}[];
+}[]};
+const Presentation = createContext<{grant: QuestionPermit | null; labels?: DeferredLabels | undefined}>({grant: null});
+
+export function QuestionPresentation({value, children}: {value: QuestionPermit | null; children: ReactNode}) {
+  const visible = useVisibleDocument();
+  const [result, setResult] = useState<{scope: string; labels: DeferredLabels}>();
+  const paper = value?.paper;
+  const attempt = value?.attempt;
+  const scope = visible && value ? JSON.stringify([value.paper.id, value.paper.rev, value.permit,
+    attempt?.id, attempt?.rev, [...value.items].sort()]) : undefined;
+  const params = new URLSearchParams({paperRev: String(paper?.rev)});
+  if (attempt) {
+    params.set('attemptId', attempt.id);
+    params.set('attemptRev', String(attempt.rev));
+  }
+  const path = paper && '/papers/' + encodeURIComponent(paper.id) + '/reading-context?' + params;
+  const rev = paper?.rev, attemptId = attempt?.id, attemptRev = attempt?.rev;
+  useEffect(() => {
+    setResult(undefined);
+    if (!path || !scope) return;
+    const controller = new AbortController();
+    void api<DeferredLabels>(path, {signal: controller.signal}).then(labels => {
+      if (!controller.signal.aborted && labels?.paperRev === rev && Array.isArray(labels.items) &&
+          (attemptId === undefined ? labels.attemptRef === undefined :
+            labels.attemptRef?.id === attemptId && labels.attemptRef.rev === attemptRev)) {
+        setResult({scope, labels});
+      }
+    }).catch(() => { /* Optional reading context can be unavailable. */ });
+    return () => controller.abort();
+  }, [path, scope, rev, attemptId, attemptRev]);
+  const labels = result && result.scope === scope ? result.labels : undefined;
+  return <Presentation value={{grant: value, labels}}>{children}</Presentation>;
+}
 
 export function useQuestionPresentation(itemId: string) {
-  const granted = useContext(QuestionPresentation);
+  const {grant: granted, labels} = useContext(Presentation);
   if (!granted?.items.includes(itemId)) return null;
   const {paper, permit, attempt} = granted;
-  return {paper, permit, ...(attempt ? {attempt} : {})};
+  const entries = labels?.items.find(item => item?.itemId === itemId)?.readingContext;
+  const notion = Array.isArray(entries) ? entries.find(entry => entry?.kind === 'notion' && typeof entry.ref === 'string' && entry.ref.trim()) : undefined;
+  return {paper, permit, notion, ...(attempt ? {attempt} : {})};
 }
 
 type Receipt = {key: string; permit?: string; error?: string};
