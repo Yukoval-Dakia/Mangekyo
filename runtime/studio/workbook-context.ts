@@ -10,14 +10,14 @@ import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  historicalWorkbookMount as readHistory, memoWorkbookFacts, workbookCapsuleLinkCandidates, verifyWorkbookQuestionPermit, type BoundWorkbookMount as BoundMount,
+  historicalWorkbookMount as readHistory, memoWorkbookFacts, withWorkbookWorkspaceBasis, workbookCapsuleLinkCandidates, verifyWorkbookQuestionPermit, type BoundWorkbookMount as BoundMount,
 } from '../../modules/activity/workbook-context-read.ts';
 import { helpExposureRequest, helpExposureType, helpRef, type HelpRef, type HelpPresentation } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose as purpose } from '../../modules/activity/library-values.ts';
 import { posttestIssuanceType } from '../../modules/activity/retention-posttest.ts';
 import { workbookReadingContext, workbookReadingMount } from '../../modules/activity/workbook-presentation.ts';
 import { sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, workbookQuestionView, type WorkbookQuestion } from '../../modules/activity/workbook-values.ts';
-import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
+import { WorkspaceInputError, workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { workbookWitnessReader } from '../../modules/activity/workbook-backtrace-values.ts';
 import { notionReadScope, NotionReadUnchecked, type CheckNotionRead } from './notion.ts';
 import type { openRetention } from './retention.ts';
@@ -31,7 +31,7 @@ import { resolveSource } from './source-read.ts';
 type Reader = Pick<ReadContext,'fact'>;
 export type WorkbookContextAuthority = {
   activePosttest?: ReturnType<typeof openRetention>['activePosttest'];
-  backtrace?: (tx: ReadTransaction, target: {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef}, read: Reader) =>
+  backtrace?: (tx: ReadTransaction, target: {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef}, local: Reader, check: Reader) =>
     Promise<null | {text: string; content: HelpRef; witnesses: readonly BusWitness[]}>;
 };
 type Kind = 'notion' | 'archetype' | 'backtrace';
@@ -70,7 +70,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       const read = memoWorkbookFacts(selected.fact);
       if (kind === 'backtrace') {
         const trace = await authority.backtrace?.(tx,{paper:mount.paper,itemId:item.id,question,
-          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},read);
+          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},memoWorkbookFacts(selectedWorkbookRead(tx,use,source).fact),read);
         if (!trace || pending) continue;
         const ref = sign('backtrace',mount,item.id,question,trace.content,trace.witnesses);
         handles.push({kind,ref});
@@ -79,7 +79,8 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       }
       const bindings = new Map<string, PaperCapsuleBinding>();
       const access = {
-        learner: tx.learner, purpose:use, recipient:tx.learner, read, isUnavailable: unavailable,
+        learner: tx.learner, purpose:use, recipient:tx.learner, read:withWorkbookWorkspaceBasis(read),
+        isUnavailable: (error: unknown) => unavailable(error) || error instanceof WorkspaceInputError,
         async reopenLegacyQuestion(this: {read:Reader},ref: HelpRef) {
           const sources: [FactSnapshot, 'pinned' | 'following' | undefined][] = [];
           const value = await resolveSource(tx, {v:1,fact:{...ref,type:workspaceEntryType},anchor:{kind:'whole'}}, {
@@ -107,7 +108,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       if (collectPages) return {handles};
       const binding = bindings.get(label.ref)!;
       const proof = workbookWitnessReader(read,tx);
-      const matched = await openPaperCapsule({...access,read:proof.read},label.ref,binding.trail.map(step=>step.edge.id),question);
+      const matched = await openPaperCapsule({...access,read:withWorkbookWorkspaceBasis(proof.read)},label.ref,binding.trail.map(step=>step.edge.id),question);
       if (!matched || pending) continue;
       const {id,rev} = binding.trail.at(-1)!.endpoint.sourceUse;
       return {handles,card:{kind,text:matched.kind === 'notion-block' ? matched.text : matched.title,

@@ -13,7 +13,6 @@ import {
   resolveSource, sourceMaySend, sourcePurpose, type SourceAccess, type SourceTrack,
 } from './source-read.ts';
 
-type GraphAccess = SourceAccess & { readNotionWitness?: (fact: FactSnapshot) => Promise<FactSnapshot> };
 const whole = { kind: 'whole' } as const;
 const graphLimit = 64;
 export type WorkspaceSource = NonNullable<Awaited<ReturnType<typeof resolveSource>>>;
@@ -28,7 +27,7 @@ function versionKey(id: string, rev: number): string {
   return `${id}:${rev}`;
 }
 
-export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeEdge, access: GraphAccess) {
+export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeEdge, access: SourceAccess) {
   const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
   const sources = new Map<string, WorkspaceSource>();
   const opened: Parameters<SourceTrack>[] = [];
@@ -83,7 +82,7 @@ export async function openKnowledgeEdgeEvidence(tx: ReadTransaction, input: stri
   }
 }
 
-export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: GraphAccess) {
+export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {
   if (typeof input !== 'string' && (input.fact.type !== knowledgeEdgeType || input.anchor.kind !== 'whole' || input.textFact)) return;
   const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
   const id = factId(typeof input === 'string' ? input : input.fact.id);
