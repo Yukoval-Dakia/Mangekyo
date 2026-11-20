@@ -46,15 +46,13 @@ export function researchScoutBudget(value: unknown) {
 }
 
 export function researchSettings(value: unknown) {
-  const { enabled, coordinatorRef, scoutBudget } = object(value);
+  const { enabled, coordinatorRef, scoutConsent } = object(value);
   if (typeof coordinatorRef !== 'string' ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(coordinatorRef))
     throw new Error('教研协调器标识无效。');
-  const saved = scoutBudget == null ? null : object(scoutBudget);
-  // Older grants did not authorize a retention period or a per-call ceiling.
-  const budget = saved?.maxRetentionDays !== undefined && saved.maxPerCallMicros !== undefined
-    ? researchScoutBudget(saved) : null;
-  return { enabled: researchEnabled(enabled), coordinatorRef, scoutBudget: budget };
+  // Earlier workers can only read scoutBudget. A consent with retention and price terms
+  // uses its own field so those workers cannot dispatch without enforcing the terms.
+  return { enabled: researchEnabled(enabled), coordinatorRef, scoutBudget: researchScoutBudget(scoutConsent ?? null) };
 }
 
 function researchSource(value: unknown) {

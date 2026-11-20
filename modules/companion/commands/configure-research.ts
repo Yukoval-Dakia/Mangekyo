@@ -14,7 +14,7 @@ export default defineCommand({
   async write(ctx, { id, revision, enabled, scoutBudget }): Promise<readonly FactWrite[]> {
     if (revision === 0) {
       return [{ kind: 'create', id, factType: researchSettingsType, purpose: [researchPurpose],
-        data: { enabled, coordinatorRef: crypto.randomUUID(), ...(enabled && scoutBudget && { scoutBudget }) } }];
+        data: { enabled, coordinatorRef: crypto.randomUUID(), ...(enabled && scoutBudget && { scoutConsent: scoutBudget }) } }];
     }
     const fact = await ctx.read.fact(id, { mode: 'following' });
     const prior = researchSettings(fact.value);
@@ -23,6 +23,6 @@ export default defineCommand({
     const continuing = enabled && prior.enabled ? prior.scoutBudget : null;
     const budget = enabled ? (scoutBudget === undefined ? continuing : scoutBudget) : null;
     if (prior.enabled === enabled && JSON.stringify(prior.scoutBudget) === JSON.stringify(budget)) return [];
-    return [{ kind: 'correct', id, expectedRev: revision, data: { ...prior, enabled, scoutBudget: budget } }];
+    return [{ kind: 'correct', id, expectedRev: revision, data: { enabled, coordinatorRef: prior.coordinatorRef, scoutConsent: budget } }];
   },
 });
