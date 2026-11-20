@@ -360,7 +360,8 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
            ORDER BY s.changed_tick DESC, s.slot_key LIMIT 24`,
           [tx.learner, forecastSlot.type, retentionPaperType, forecastKey, parentReconciliation],
         );
-      const { rows } = await readRows(selected, null);
+      const initial = await readRows(selected, null);
+      const rows = [...initial.rows];
       const now = new Date().toISOString();
       const items: PosttestListItem[] = [];
       for (const { slot_key: forecastKey, scope_keys: scheduled, current_id: currentId } of rows) {
