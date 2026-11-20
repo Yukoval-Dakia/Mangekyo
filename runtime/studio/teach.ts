@@ -489,6 +489,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()], currentObject,
         maySend,
+        ...(jit ? {jitBasis:jit.basis} : {}),
         pageBasis: [
           ...(turnInput?.kind === 'fact' ? [{id:turnInput.id,rev:turnInput.rev,epoch:turnInput.accessEpoch,type:'activity.studyTurn'}] : []),
           ...(learningMemory?.receipt.basis ?? []),
@@ -506,7 +507,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           await checkWorkspaceRoute();
         },
       }) : undefined;
-      const turnMemory = memoryTurn && (learningMemory || jit) && turnInput?.kind === 'fact' ? openTurnMemory({
+      // Claim commands only bind the learner quote and optional object scope.
+      // They cannot preserve the independent sources included in a JIT frame.
+      const turnMemory = memoryTurn && (learningMemory || (jit && !jit.basis.length)) && turnInput?.kind === 'fact' ? openTurnMemory({
         db, turn: memoryTurn, answer, source: turnInput, ...(currentObject ? {currentObject} : {}),
         authorize: memoryRequest.authorize,
         async retrieve(query, step) {

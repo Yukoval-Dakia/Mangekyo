@@ -59,6 +59,7 @@ export function openWorkspaceTools(options: {
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
   pageBasis?: readonly WorkspaceWitness[];
+  jitBasis?: readonly WorkspaceWitness[];
   currentObject?: OpenedCurrentLearningObject | undefined;
 }) {
   const {db, turn, currentObject} = options;
@@ -81,7 +82,7 @@ export function openWorkspaceTools(options: {
     relationOpened.set(key,{ref,witness});
   };
   const saveRelation = openWorkspaceRelation({db,turn,opened:relationOpened,
-    authorize:options.authorize,maySend:options.maySend,
+    authorize:options.authorize,maySend:options.maySend, modelBasis:options.jitBasis,
     saved(key, receipt) { receipts.set(key, receipt); },
   });
   const rememberPageSource = (w: WorkspaceWitness) => pageSources.set(`${w.id}:${w.rev}`,w);
@@ -99,7 +100,7 @@ export function openWorkspaceTools(options: {
       if (witness) rememberPageOpen(witness);
     },
   });
-  if (currentObject) {
+  if (currentObject && options.jitBasis === undefined) {
     const {view, root, basis, openedAnswer} = currentObject;
     const {id} = root;
     for (const witness of basis) {
@@ -329,14 +330,15 @@ export function openWorkspaceTools(options: {
     const changesEvidence = !rev || Object.hasOwn(fields, 'body') || Object.hasOwn(fields, 'links');
     if (changesEvidence && (entry.kind === 'observation' || entry.kind === 'annotation') &&
         (!Array.isArray(entry.links) || !entry.links.some(link => typeof link === 'string' &&
-          opened.has(link) && workspaceAttemptTypes.includes(sources.get(link)?.type ?? ''))))
+          (options.jitBasis !== undefined ? openedAnswers.has(link)
+            : opened.has(link) && workspaceAttemptTypes.includes(sources.get(link)?.type ?? '')))))
       return JSON.stringify(learningToolError('evidence_not_opened','links','先打开原始作答，再把其 id 放入 links。'));
     // Fields retained by a patch still depend on the sources of the previous revision.
     const basisById = new Map<string,{id:string;rev:number;epoch:string}>(previousBasis.map(w => [w.id,w]));
     for (const w of witnesses.values()) if (w.id !== id && !basisById.has(w.id))
       basisById.set(w.id,{id:w.id,rev:w.rev,epoch:w.epoch});
     // A write can reuse the images and derived records included in its context.
-    for (const {id: sourceId, rev, epoch} of [...(currentObject?.basis ?? []), ...writeBasis.values()]) {
+    for (const {id: sourceId, rev, epoch} of [...(currentObject?.basis ?? []), ...writeBasis.values(), ...(options.jitBasis ?? [])]) {
       if (sourceId === id) continue;
       const previous = basisById.get(sourceId);
       if (previous && (previous.rev !== rev || previous.epoch !== epoch))
