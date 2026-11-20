@@ -112,8 +112,12 @@ export function evaluateQuestionVerification(
 
 /** Server-only release read. Use a witness-tracking context and project for the actual recipient. */
 export async function openQuestionForRelease(
-  read: ReadContext, id: FactId, releaseUse: string,
+  read: Pick<ReadContext, 'fact' | 'slot'>, id: FactId, releaseUse: string | readonly string[],
 ) {
+  const releaseUses = typeof releaseUse === 'string' ? [releaseUse] : [...releaseUse];
+  if (!releaseUses.length || releaseUses.some(use => typeof use !== 'string' || !use.trim())) {
+    throw new Error('请提供至少一种有效的题目发放用途。');
+  }
   const question = await read.fact(id, { mode: 'following' });
   if (question.type !== assetType) throw new Error('请选择题目资产。');
   const asset = questionAsset(question.value);
@@ -122,7 +126,7 @@ export async function openQuestionForRelease(
   }
   await checkQuestionTeachingSources(read, asset);
   const { state } = await readQuestionState(read, id);
-  const stop = state.restrictions.find(entry => entry.scope === 'all' || entry.scope === releaseUse);
+  const stop = state.restrictions.find(entry => entry.scope === 'all' || releaseUses.includes(entry.scope));
   if (stop) throw new Error(stop.reason);
   const slot = await read.slot<QuestionVerification>({
     learner: question.ref.learner, type: questionVerificationType, key: questionVerificationKey({ ...question.ref, recheck: state.recheck }),

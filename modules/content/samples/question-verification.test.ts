@@ -1,5 +1,6 @@
 import { derivationId, factId, learnerId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { expect, it } from 'vitest';
+import { openQuestionForRelease as openReleaseContract } from '@mangekyo/module-content/facts/question-release';
 import {
   gather, openQuestionForRelease, questionVerificationEffectResult, settle, type QuestionVerificationEffectReceipt,
 } from '@mangekyo/module-content/question-verification';
@@ -48,7 +49,7 @@ it('matches unordered ledger receipts to the sealed owner, step, method, and ful
       ? Object.fromEntries(Object.entries(value).reverse()) : value;
   })) as typeof receipts;
   expect(settle(sealed, replay)).toMatchObject({ value: { status: 'ready', invocations: invocationIds } });
-  expect(typeof openQuestionForRelease).toBe('function');
+  expect(openReleaseContract).toBe(openQuestionForRelease);
   const [first, ...rest] = receipts;
   const mismatches = [
     [first!, ...rest.slice(1)],
