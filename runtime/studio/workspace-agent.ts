@@ -18,7 +18,7 @@ import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learn
 import {sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/activity/library-values.ts';
-import {organizerTaskType} from '../../modules/activity/organizer-values.ts';
+import {organizerNoteType, organizerTaskType} from '../../modules/activity/organizer-values.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
@@ -28,6 +28,7 @@ import {presentationCatalog} from '../../surfaces/shared/presentation/index.ts';
 import type {Manifest} from '../../kernel/src/derivations/manifest.ts';
 import {mountArtifact} from './presentation-store.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
+import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 
 const presentationTool = {type:'function',function:{name:'mount_artifact',
   description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+presentationCatalog.bindings,
@@ -51,8 +52,9 @@ export function openWorkspaceTools(options: {
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
+  currentObject?: OpenedCurrentLearningObject | undefined;
 }) {
-  const {db, turn} = options;
+  const {db, turn, currentObject} = options;
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));
   const overviewBasis = new Map<string, WorkspaceWitness>();
@@ -60,6 +62,14 @@ export function openWorkspaceTools(options: {
   const openedAnswers = new Map<string, WorkspaceWitness>();
   const produced = new Map<string, number>();
   const receipts = new Map<string,WorkspaceWriteReceipt>();
+  if (currentObject) {
+    const {view, root, basis, openedAnswer} = currentObject;
+    const {id} = root;
+    for (const witness of basis) options.track(witness, true);
+    sources.set(id, root);
+    opened.set(id, {id, workspace: true, title: view.title, text: view.content});
+    if (openedAnswer) openedAnswers.set(id, root);
+  }
   async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>) {
     const pythonAttempts = name === 'python_attempts';
     if (!isJson(args)) return JSON.stringify(pythonAttempts
@@ -80,7 +90,7 @@ export function openWorkspaceTools(options: {
       if (name === 'open_learning') {
         const parsed = parseOpenLearningArgs(args);
         text = JSON.stringify('ok' in parsed ? parsed : await openLearningBatch(tx,parsed,{
-          known:id => sources.has(id), maySend:options.maySend, track, trackAssessment,
+          known:id => sources.has(id), maySend:options.maySend, track, trackAssessment, currentObject: currentObject?.view,
         }, (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
           parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
       } else if (name === 'read_workspace') {
@@ -91,33 +101,43 @@ export function openWorkspaceTools(options: {
       } else if (pythonAttempts) {
         text = JSON.stringify(await readPythonAttempts(tx,args,{known:id => sources.has(id), maySend:options.maySend, track}));
       } else text = await workspaceSearch(tx,args,track,options.maySend);
-      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,
+      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis, sourceProjection: 1,
         ...(name === 'read_workspace' ? {workbookProjection: 1} : {}),
         ...(name === 'read_learner_radar' ? {retentionBasis} : {})});
     },options.authorize);
     if (priorRead) await priorRead;
-    const {text, witnesses, assessmentBasis, workbookProjection, retentionBasis = []} = JSON.parse(raw) as {
+    const {text, witnesses, assessmentBasis, workbookProjection, sourceProjection, retentionBasis = []} = JSON.parse(raw) as {
       text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[]; workbookProjection?: number;
-      retentionBasis?: RetentionBasis[];
+      sourceProjection?: number; retentionBasis?: RetentionBasis[];
     };
     const value = JSON.parse(text);
     const trackedBasis = assessmentBasis ?? [];
     const legacyWorkbookRead = name === 'read_workspace' && workbookProjection !== 1 && value.sourceRef?.anchor.kind === 'whole' &&
       [workbookPaperType, workbookAttemptType].includes(value.sourceRef.fact.type);
+    const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
+    if (sourceProjection !== 1 && (name === 'read_workspace' || name === 'open_learning') && values.some(item => {
+      const ref = sourceRefV1(item.sourceRef);
+      return ref?.fact.type === organizerNoteType && ref.anchor.kind === 'whole';
+    })) throw new TeachingError('evidence_scope', '笔记读取规则已变化，请重新发送。');
     const current = await db.snapshot({learner: studioLearner}, async tx => {
       if (legacyWorkbookRead) return false;
       const reader = createCommandReadContext(tx, purpose);
+      let derivedSource = false;
       try {
         for (const witness of witnesses) {
           const input = workspaceInput(witness);
           const fact = await reader.fact(input.id, input);
           if (fact.ref.rev !== witness.rev || fact.type !== witness.type ||
             fact.accessEpoch !== witness.epoch || !options.maySend(fact)) return false;
+          if (fact.type === workspaceEntryType && ['observation','annotation'].includes(workspaceEntry(fact.value).kind))
+            derivedSource = true;
         }
       } catch (error) {
         if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return false;
         throw error;
       }
+      if (derivedSource && sourceProjection !== 1)
+        throw new TeachingError('evidence_scope', '观察的题源须重新核对，请重新发送。');
       if (trackedBasis.length && !options.trackAssessment) return false;
       for (const basis of trackedBasis) {
         const actual = await workspaceAssessmentBasis(tx, basis.slot, options.maySend);
@@ -128,7 +148,7 @@ export function openWorkspaceTools(options: {
         const actual = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend:options.maySend});
         if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
       }
-      for (const witness of witnesses) options.track(witness, pythonAttempts ? true : undefined);
+      for (const witness of witnesses) options.track(witness, pythonAttempts || derivedSource ? true : undefined);
       for (const basis of trackedBasis) options.trackAssessment?.(basis);
       for (const basis of retentionBasis) options.trackRetention?.(basis);
       await options.authorize(tx);
@@ -152,7 +172,6 @@ export function openWorkspaceTools(options: {
       }
       return JSON.stringify({...value,witnesses});
     }
-    const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
     if (name === 'open_learning' && args.lens === 'diagnose' && values.some(item => item.lens === 'diagnose')) {
       options.trackDiagnosis?.();
       for (const witness of witnesses) overviewBasis.set(witness.id, witness);
@@ -222,6 +241,14 @@ export function openWorkspaceTools(options: {
     const basisById = new Map<string,{id:string;rev:number;epoch:string}>(previousBasis.map(w => [w.id,w]));
     for (const w of witnesses.values()) if (w.id !== id && !basisById.has(w.id))
       basisById.set(w.id,{id:w.id,rev:w.rev,epoch:w.epoch});
+    // Preloaded context can inform a write even when the tool only names the original answer.
+    for (const {id: sourceId, rev, epoch} of currentObject?.basis ?? []) {
+      if (sourceId === id) continue;
+      const previous = basisById.get(sourceId);
+      if (previous && (previous.rev !== rev || previous.epoch !== epoch))
+        return JSON.stringify(learningToolError('basis_stale','evidence_refs','本轮关联的依据已有其他版本，请重新打开后再保存。'));
+      basisById.set(sourceId,{id:sourceId,rev,epoch});
+    }
     const basis = [...basisById.values()];
     const handle = createCommandHandler(db, {modules: [await (declarations ??= activity())],
       hooks: createStudioCommandHooks({afterFactsChanged: tx => options.authorize(tx)})});

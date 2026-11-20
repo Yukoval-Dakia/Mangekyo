@@ -6,6 +6,7 @@ import {createPgDb} from '../../../kernel/src/db/pg.ts';
 import {commandId, learnerId} from '../../../kernel/src/declarations/ids.ts';
 import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
 import {kernelSchemaStatements} from '../../../kernel/src/schema.ts';
+import {recordLocalRead} from '../../../kernel/src/work/effects.ts';
 import {loadModuleDirectory} from '../../../kernel/src/loader.ts';
 import {studioLearner,stableId} from '../identity.ts';
 import {resolveSource} from '../source-read.ts';
@@ -15,6 +16,8 @@ import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organ
 import {learningOverviewPurpose, readLearningOverview} from '../learning-overview.ts';
 import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
 import {workspaceQuery} from '../workspace-read.ts';
+import {openTextbook} from '../textbook.ts';
+import {readCurrentLearningObject} from '../current-learning-object.ts';
 
 const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 it.skipIf(!connectionString)('reopens authorized workspace versions and searches directed knowledge links in PostgreSQL', async () => {
@@ -64,10 +67,40 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(hidden.content).toBeUndefined();
 
     const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity',import.meta.url)));
-    const access = openWorkspaceAccess(db, activity); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
+    const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
+    const access = openWorkspaceAccess(db, activity, content); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
+    const textbook = openTextbook(db, content, {async onFactsChanged() {}});
+    const teachingPage = await textbook.create({learner:studioLearner, requestId:'textbook-teaching', clientEditSeq:0,
+      page:{title:'我的教材', blocks:[{id:'intro', parentId:null, body:{kind:'text',text:'比对分段计时'}}]}});
+    expect(await access.list(new URLSearchParams({category:'textbook'}))).toMatchObject({items:[{
+      id:teachingPage.id, title:'我的教材', teaching:false, purposes:['storage'], excerpt:'比对分段计时',
+    }]});
+    const pageInput = {learner:studioLearner, id:teachingPage.id, purpose:'teaching'};
+    await expect(textbook.get(pageInput)).rejects.toMatchObject({status:403});
+    expect(await access.setTeaching(teachingPage.id,{enabled:true,expectedRev:1})).toMatchObject({rev:2,teaching:true});
+    expect(await textbook.get(pageInput)).toMatchObject({rev:2,accessEpoch:'1'});
+    await expect(textbook.get({...pageInput,rev:1})).rejects.toMatchObject({status:403});
+    await access.setTeaching(teachingPage.id,{enabled:false,expectedRev:2});
+    await expect(textbook.get({...pageInput,rev:2})).rejects.toMatchObject({status:403});
+    expect(await textbook.get({...pageInput,purpose:'storage'})).toMatchObject({rev:3,accessEpoch:'2',title:'我的教材'});
     const overview = (callerPurpose = learningOverviewPurpose, maySend: (fact: LearningOverviewFact) => boolean = () => true) =>
       db.snapshot({learner: studioLearner}, tx => readLearningOverview(tx, {callerPurpose, maySend}));
     const library = openLibrary(db, activity), organizer = openOrganizer(db, activity);
+    const noteSource = await library.capture({requestId:'private-note-source', title:'仅本人可见的来源', text:'来源正文'});
+    const note = await organizer.note({requestId:'linked-note', materialId:noteSource.id, title:'关联笔记', markdown:'本人记录'});
+    const noteGrant = await access.setTeaching(note.id,{enabled:true,expectedRev:1});
+    const bind = (kind: 'page' | 'attempt', id: string, rev: number) => db.snapshot({learner:studioLearner},
+      tx => readCurrentLearningObject(tx,{kind,id,rev},() => true));
+    const boundNote = await bind('page',note.id,noteGrant.rev);
+    expect(boundNote?.view).toMatchObject({title:'关联笔记',content:'本人记录'});
+    const oldNote = await db.snapshot({learner:studioLearner},tx => resolveSource(tx,note.id,{recipient:'learner'}));
+    expect(oldNote?.content).toContain(noteSource.id);
+    const noteArgs = {id:note.id};
+    await recordLocalRead(db,{learner:studioLearner,ownerKind:'session',ownerId:stableId('old note receipt'),
+      stepKey:'1',label:'local:read_workspace',input:noteArgs},async () =>
+      JSON.stringify({text:JSON.stringify(oldNote),witnesses:[boundNote!.root],workbookProjection:1}),async () => {});
+    await expect(turn('old note receipt')('read_workspace',noteArgs,1)).rejects.toMatchObject({code:'evidence_scope'});
+    expect(await turn('new note read')('read_workspace',noteArgs,1)).toMatchObject({content:'本人记录'});
     expect((await overview()).goal).toMatchObject({state: 'empty'});
     await library.setGoal({requestId: 'overview-old', text: '旧目标'}); await library.setGoal({requestId: 'overview-current', text: '保持每日法语输入'});
     const task = await organizer.task({requestId: 'overview-task', title: '复习动词', date: '2026-11-19'});
@@ -139,11 +172,14 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const withdrawn = await access.undoObservation(written.ref.id,{undo_token:written.undo_token});
     expect(withdrawn).toMatchObject({status:'withdrawn',ref:{id:written.ref.id,rev:2}});
     expect(await access.undoObservation(written.ref.id,{undo_token:written.undo_token})).toEqual(withdrawn);
+    const legacyObservation = await observe('record_observation',{...evidence,text:question.prompt},4);
+    expect(legacyObservation).toMatchObject({ok:true});
 
     const diagnose = turn('diagnose frozen submission');
     const diagnosis = {refs:attempt.id,lens:'diagnose'};
     expect(await diagnose('open_learning',diagnosis,1)).toMatchObject({ok:false,code:'not_found'});
     const paperGrant = await access.setTeaching(paper.id,{enabled:true,expectedRev:1});
+    expect(await diagnose('read_workspace',{id:legacyObservation.ref.id},7)).toMatchObject({content:expect.stringContaining(question.prompt)});
     expect(await diagnose('open_learning',{...diagnosis,refs:paper.id},2)).toMatchObject({ok:false,code:'not_found'});
     const openedDiagnosis = await diagnose('open_learning',diagnosis,3);
     expect(openedDiagnosis).toMatchObject({ok:true,items:[{
@@ -158,8 +194,20 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(JSON.stringify(await diagnose('read_workspace',{id:JSON.stringify(reopenedPaper.sourceRef)},5)))
       .not.toContain('参考答案独有字样');
     expect(JSON.stringify(opened)).not.toContain('参考答案独有字样');
+    const currentAttempt = await bind('attempt',attempt.id,opened.rev);
+    expect(currentAttempt?.openedAnswer).toBe(true);
+    const bound = openWorkspaceTools({db,turn:stableId('bound observation'),prior:[],authorize:async () => {},
+      track() {},maySend:() => true,currentObject:currentAttempt});
+    const observation = JSON.parse(await bound.execute('record_observation',evidence,1));
+    expect(observation).toMatchObject({ok:true});
     await access.setTeaching(paper.id,{enabled:false,expectedRev:paperGrant.rev});
     expect(await diagnose('open_learning',diagnosis,3)).toMatchObject({ok:false,code:'basis_stale'});
+    expect(await diagnose('read_workspace',{id:observation.ref.id},6)).toEqual({error:expect.any(String)});
+    expect(await diagnose('read_workspace',{id:legacyObservation.ref.id},7)).toEqual({error:expect.any(String)});
+    expect(await diagnose('read_workspace',{id:legacyObservation.ref.id},8)).toEqual({error:expect.any(String)});
+    const legacyOwnerRead = await db.snapshot({learner:studioLearner},tx =>
+      resolveSource(tx,legacyObservation.ref.id,{recipient:'learner'}));
+    expect(legacyOwnerRead?.content).toContain(question.prompt);
 
     const privatePaper = await workbook.save({requestId:'search-preview',title:'检索速度卷',questions:[
       {kind:'exact',prompt:'写出速度单位。',answers:['内部答案标记']},
@@ -185,7 +233,6 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
       kind, scope:'运动学', from:{kind:kind === 'prereq_of' ? 'concept' : 'question', sourceUse:use(from.id)}, to:{kind:targetKind, sourceUse:use(to.id)},
       sourceUses:[use(from.id), use(to.id)],
     });
-    const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
     const handle = createCommandHandler(db, {modules:[content], hooks:{async onFactsChanged() {}}});
     const write = (type:string, key:string, actor:'learner'|'companion', edge:ReturnType<typeof claim>, proof = {}) =>
       handle({learner:studioLearner, id:commandId(stableId(key)), actor, purpose:'teaching', type:'content.'+type,

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { RecordQuestionLink, teachingPage } from './current-record';
+import { useEffect, useRef, useState } from 'react';
 import { api, ApiError } from './api';
 import { Icon } from './icons';
 import './workspace-access.css';
@@ -58,6 +59,7 @@ const categoryLabels: Record<string, string> = {
   paper: '试卷',
   attempt: '作答',
   note: '笔记',
+  textbook: '个人教材',
   material: '材料',
   record: '学习记录',
   entry: '生成条目',
@@ -75,12 +77,16 @@ function failureMessage(failure: unknown, fallback: string) {
     : fallback;
 }
 
-export function WorkspaceAccessPanel({ disabled = false }: { disabled?: boolean }) {
+export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false }: { disabled?: boolean; textbookAccess?: boolean }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (textbookAccess) heading.current?.focus();
+  }, [textbookAccess]);
   const [page, setPage] = useState<AccessPage>();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [categories, setCategories] = useState<{ id: string; label: string }[]>([]);
   const [view, setView] = useState<{ category: string; query: string; cursor: string | undefined }>({
-    category: 'all',
+    category: textbookAccess ? 'textbook' : 'all',
     query: '',
     cursor: undefined,
   });
@@ -245,7 +251,7 @@ export function WorkspaceAccessPanel({ disabled = false }: { disabled?: boolean 
   return (
     <section className="settings-section access-panel" aria-labelledby="workspace-access-title">
       <div className="settings-section-heading">
-        <h3 id="workspace-access-title">学习记录访问</h3>
+        <h3 id="workspace-access-title" ref={heading} tabIndex={-1}>学习记录访问</h3>
         <span className="settings-meta">{loading ? '读取中…' : currentPage + ' / 分页'}</span>
       </div>
       <p className="field-help">
@@ -382,6 +388,7 @@ export function WorkspaceAccessPanel({ disabled = false }: { disabled?: boolean 
                   </small>
                 </div>
                 <div className="access-record-actions">
+                  {teachingPage(item) && <RecordQuestionLink kind="page" record={item} />}
                   <button type="button" className="text-button" onClick={() => toggleDetail(item)}>
                     {expanded ? '收起' : '查看'}
                   </button>

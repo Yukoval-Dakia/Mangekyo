@@ -20,6 +20,7 @@ export type PreparedPythonAttempts = Extract<PythonAttemptsRead, {ok:false}> | (
 
 export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   historyNotice?: string;
+  currentLearningObject?: string;
   learningMemory?: string;
   openMemoryRegion?: (input: Record<string, unknown>, step: number) => Promise<string>;
   maxCompletionTokens?: 4096 | 8192;

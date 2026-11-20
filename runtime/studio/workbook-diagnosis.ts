@@ -64,7 +64,7 @@ async function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAtte
   return { state: result.state, score: result.score };
 }
 
-export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
+export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
   if (typeof reference !== 'string' && (reference.fact.type !== workbookAttemptType || reference.anchor.kind !== 'whole')) return;
   let submission: FactSnapshot | undefined;
   const recipient = { recipient: 'workspace' as const, maySend: access.maySend };
@@ -73,14 +73,18 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
     track(fact, mode) { submission = fact; access.track(fact, mode); },
   });
   if (!source || !submission) return;
-  const { ref } = submission;
+  const opened = await openWorkbookQuestionSources(tx, submission, access);
+  return opened && {source, submission, ...opened};
+}
+
+export async function openWorkbookQuestionSources(tx: ReadTransaction, submission: FactSnapshot, access: Access) {
   const attempt = workbookAttempt(submission.value);
-  const birth = await readWorkbookSubmissionBirth(tx, ref.id);
+  const birth = await readWorkbookSubmissionBirth(tx, submission.ref.id);
   if (!birth || birth.condition !== null || birth.submitted_at !== attempt.submittedAt) return;
   try {
     const paper = await openFrozenPaper(tx, attempt, birth.tick, access);
     if (!paper) return;
-    const sourceAccess = { ...recipient, track: access.track };
+    const sourceAccess = {recipient: 'workspace' as const, maySend: access.maySend, track: access.track};
     if (attempt.paper.materialId !== null) {
       const material = await resolveSource(tx, attempt.paper.materialId, sourceAccess);
       if (material?.sourceRef.fact.type !== materialType) return;
@@ -92,6 +96,19 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
       }, sourceAccess);
       if (question?.content !== prompt) return;
     }
+    return {attempt, birth, paper, sourceAccess};
+  } catch (error) {
+    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
+    throw error;
+  }
+}
+
+export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
+  const opened = await openWorkbookDiagnosisSource(tx, reference, access);
+  if (!opened) return;
+  const {source, submission, attempt, birth, paper, sourceAccess} = opened;
+  const {ref} = submission;
+  try {
 
     // Workbook creates the original issuance at revision 1. Grants can add
     // revisions of the same paper. Ordinary workbooks have no coverage proof.

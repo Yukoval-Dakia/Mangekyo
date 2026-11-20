@@ -277,7 +277,8 @@ export function serve(
         return json(
           res,
           202,
-          await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment, input.mcpGrants, input.route),
+          await studio.start(caseId(input.caseId), clientRequest(input.requestId), input.question, input.attachment, input.mcpGrants, input.route,
+            input.currentObject),
         );
       }
       const actionPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/artifact-actions$/.exec(path);
@@ -305,7 +306,7 @@ export function serve(
         return json(
           res,
           202,
-          await studio.answer(match[1], input.parentId, input.answer, clientRequest(input.requestId), input.mcpGrants, input.route),
+          await studio.answer(match[1], input.parentId, input.answer, clientRequest(input.requestId), input.mcpGrants, input.route, input.currentObject),
         );
       }
       if (method !== 'GET' || path.startsWith('/api/')) throw new RequestError(404, '这个入口不存在。');

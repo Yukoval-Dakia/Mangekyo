@@ -1,7 +1,6 @@
 import { forTask, selectedRoute } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
-  WorkbookAttemptView,
   WorkbookDetail,
   WorkbookQuestionView,
   WorkbookRubricAssessmentView,
@@ -11,6 +10,7 @@ import type {
 import { api, ApiError, remember, remembered, requestId, type Settings } from './api';
 import { PageTitle, ReadState, useResource, type Material, type Resource } from './workspace';
 import { ExpectedView } from './expected-view';
+import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
 import './workbook.css';
 
@@ -1070,6 +1070,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </p>
               </div>
               <div className="workbook-attempt-actions">
+                <RecordQuestionLink kind="attempt" record={activeAttempt} />
                 {wrongQuestionIds.length > 0 && (
                   <button type="button" className="tonal-button" disabled={busy} onClick={() => startRedo('wrong')}>
                     重做错题（{wrongQuestionIds.length}）

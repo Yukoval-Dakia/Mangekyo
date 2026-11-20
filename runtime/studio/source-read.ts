@@ -9,6 +9,7 @@ import {practiceSubmission, ridingPracticeType} from '../../modules/activity/pra
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType} from '../../modules/activity/workbook-values.ts';
+import {textbookPageFrom, textbookPageType, type TextbookBlockBody} from '../../modules/content/textbook-page.ts';
 import {
   WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
   type WorkspaceEntryKind,
@@ -16,6 +17,7 @@ import {
 import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {intakeTextOf, isMaterialIntakePair, materialIntakeReference, materialTextOf, relatedIntakeId, relatedMaterialId, textSlice} from './reading.ts';
+import {openWorkbookQuestionSources} from './workbook-diagnosis.ts';
 
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
@@ -61,6 +63,15 @@ function sourceText(fact: FactSnapshot) {
     }
   }
   return undefined;
+}
+
+function textbookText(body: TextbookBlockBody) {
+  switch (body.kind) {
+    case 'text': return body.text;
+    case 'formula': return body.latex;
+    case 'table': return body.rows.map(row => row.join(' | ')).join('\n');
+    default: return '';
+  }
 }
 
 function searchText(fact: FactSnapshot, content: SourceProjection['content']): string {
@@ -122,6 +133,12 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAc
       if (content.isWellFormed()) return {title: source.title, content};
     } else if (fact.type === intakeFactType) {
       return {title:intakeTextOf(fact).title, content:intakeTextOf(fact).extraction.text};
+    } else if (recipient === 'workspace' && fact.type === organizerNoteType) {
+      const note = organizerNote(fact.value);
+      return {title: note.title, content: note.markdown};
+    } else if (recipient === 'workspace' && fact.type === textbookPageType) {
+      const page = textbookPageFrom(fact);
+      return {kind: 'page', title: page.title, content: page.blocks.map(block => textbookText(block.body)).filter(Boolean).join('\n\n')};
     } else if (recipient === 'workspace' && fact.type === workbookPaperType) {
       const paper = workbookPaper(fact.value);
       return {title: paper.title, content: paper.questions.map(({prompt}, index) => `${index + 1}. ${prompt}`).join('\n\n')};
@@ -154,10 +171,13 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const reader = createCommandReadContext(tx, sourcePurpose(access));
   const seen = new Map<string, FactSnapshot>();
   const path = new Set<string>();
+  const questionSources: Parameters<SourceTrack>[] = [];
+  const checkedAttempts = new Set<string>();
   const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
-    (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType);
+    (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
+      (access.recipient === 'workspace' && reference?.fact.type === textbookPageType));
 
   async function visit(key: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.has(key) || path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(key)) return;
@@ -170,6 +190,12 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       for (const witness of entry.basis) {
         const source = await visit(witness.id);
         if (!source || source.ref.rev !== witness.rev || source.accessEpoch !== witness.epoch) return;
+        if (access.recipient === 'workspace' && (entry.kind === 'observation' || entry.kind === 'annotation') &&
+            source.type === workbookAttemptType && !checkedAttempts.has(witness.id)) {
+          const opened = await openWorkbookQuestionSources(tx, source, {maySend: accepts, track: (...proof) => questionSources.push(proof)});
+          if (!opened) return;
+          checkedAttempts.add(witness.id);
+        }
       }
       if (!entry.links.every(link => seen.has(link))) return;
       path.delete(key);
@@ -233,6 +259,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
       access.track?.(witness, isReferenced ? mode : undefined);
     }
+    for (const proof of questionSources) access.track?.(...proof);
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkspaceInputError) return;

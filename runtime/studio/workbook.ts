@@ -228,7 +228,7 @@ function sameDraft(paper: WorkbookPaper, draft: Omit<WorkbookPaper, 'savedAt'>):
 type FormalAssessmentView = Awaited<ReturnType<typeof readWorkbookAssessment>>;
 type WorkbookDetailWithAssessment = WorkbookDetail & {
   assessmentReleaseRef?: FormalAssessmentView['releaseRef'];
-  attempts: (WorkbookAttemptView & { formalAssessment?: FormalAssessmentView })[];
+  attempts: (WorkbookAttemptView & { rev: number; formalAssessment?: FormalAssessmentView })[];
 };
 
 export function openWorkbook(db: Db, activity: LoadedModule, {
@@ -261,7 +261,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const attempts: WorkbookDetailWithAssessment['attempts'] = [];
       for (const { id: attemptId, rev, attempt } of await allAttempts(tx, read)) {
         if (attempt.paperId !== paperId) continue;
-        const view = attemptView(attemptId, attempt, assessments.get(attemptId) ?? []);
+        const view = { ...attemptView(attemptId, attempt, assessments.get(attemptId) ?? []), rev };
         const release = attempt.paper.assessmentRelease;
         attempts.push(release
           ? { ...view, formalAssessment: await readWorkbookAssessment(tx, release, { id: attemptId, rev }) }

@@ -33,6 +33,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { carryRubricAssessments } from './learning-attempt-read.ts';
 import { sourceRefV1 } from '../../modules/activity/source-values.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
+import { parseTextbookPage, textbookPageType } from '../../modules/content/textbook-page.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
 import { resolveSource } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
@@ -62,6 +63,7 @@ const categories: readonly AccessCategory[] = [
   { id: 'practice', label: '练习', types: [ridingPracticeType] },
   { id: 'paper', label: '试卷', types: [workbookPaperType] },
   { id: 'attempt', label: '作答', types: [workbookAttemptType] },
+  { id: 'textbook', label: '个人教材', types: [textbookPageType] },
   { id: 'note', label: '笔记', types: [organizerNoteType] },
   { id: 'material', label: '材料', types: [materialType] },
   { id: 'record', label: '学习记录', types: [studyRecordType] },
@@ -351,11 +353,25 @@ function fixedQuestionPreview(fact: FactSnapshot): string | undefined {
   }
 }
 
+function textbookDisplay(value: unknown): Display {
+  const { title, blocks } = parseTextbookPage(value);
+  const text = blocks.flatMap(({ body }) => {
+    switch (body.kind) {
+      case 'text': return [body.text];
+      case 'formula': return [body.latex];
+      case 'table': return body.rows.map(row => row.join(' ｜ '));
+      default: return [];
+    }
+  }).join('\n\n');
+  return { title, text: cleanText(text), excerpt: summary(text), kind: 'page' };
+}
+
 export function displayOf(type: string, value: unknown): Display {
   try {
     if (type === ridingPracticeType) return practiceDisplay(value);
     if (type === workbookPaperType) return paperDisplay(value);
     if (type === workbookAttemptType) return attemptDisplay(value);
+    if (type === textbookPageType) return textbookDisplay(value);
     if (type === organizerNoteType) return noteDisplay(value);
     if (type === materialType) return materialDisplay(value);
     if (type === studyRecordType) return studyRecordDisplay(value);
@@ -568,9 +584,9 @@ export function saveWorkspaceAccessRoute(input: unknown) {
   return update;
 }
 
-export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
+export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: LoadedModule) {
   const handle = createCommandHandler(db, {
-    modules: [activity],
+    modules: [activity, content],
     hooks: createStudioCommandHooks({ afterFactsChanged: carryRubricAssessments }),
   });
 
@@ -775,7 +791,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
           learner: studioLearner,
           actor: 'learner',
           purpose,
-          type: setWorkspaceTeachingCommand,
+          type: row.type === textbookPageType ? 'content.setTextbookTeaching' : setWorkspaceTeachingCommand,
           id: commandId(stableId('workspace-teaching', itemId, String(expectedRev), String(enabled))),
           input: { id: itemId, expectedRev, enabled, ...(link ? { intakeId: link.id } : {}) } as Json,
         });

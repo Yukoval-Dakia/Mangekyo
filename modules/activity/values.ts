@@ -1,4 +1,5 @@
 import { factId } from '@mangekyo/kernel';
+import { isSourceFactId } from './source-values.ts';
 
 export function object(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('记录格式无效');
@@ -25,6 +26,22 @@ export function studyMcpGrants(input: unknown) {
     return {id, url, allowedTools: [...names].sort()};
   }).sort((a,b) => a.id.localeCompare(b.id));
 }
+export function studyCurrentObjectSelection(input: unknown) {
+  const { kind, id, rev } = object(input);
+  if ((kind !== 'attempt' && kind !== 'page') || !isSourceFactId(id) ||
+      typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 1 || rev > 2_147_483_647) {
+    throw new Error('当前学习对象须包含类型、ID 和版本。');
+  }
+  return { kind, id, rev };
+}
+export type StudyCurrentObjectSelection = ReturnType<typeof studyCurrentObjectSelection>;
+
+function studyCurrentObject(input: unknown) {
+  const selection = studyCurrentObjectSelection(input);
+  const basisDigest = field(object(input), 'basisDigest', 64);
+  if (!/^[0-9a-f]{64}$/.test(basisDigest)) throw new Error('当前学习对象的读取见证无效。');
+  return { ...selection, basisDigest };
+}
 export function studyTurn(input: unknown) {
   const value = object(input);
   const answer = value.answer === null ? null : field(value, 'answer');
@@ -36,6 +53,7 @@ export function studyTurn(input: unknown) {
     ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),
     ...(value.workspaceRevision === undefined ? {} : {workspaceRevision: field(value, 'workspaceRevision', 80)}),
     ...(value.attachment === undefined ? {} : { attachment: studyAttachment(value.attachment) }),
+    ...(value.currentObject === undefined ? {} : { currentObject: studyCurrentObject(value.currentObject) }),
     ...(value.providerId === undefined ? {} : {providerId: field(value, 'providerId', 100)}),
     ...(value.protocol === undefined ? {} : {protocol: field(value, 'protocol', 32)}),
     ...(value.mcpRevision === undefined ? {} : {mcpRevision: field(value, 'mcpRevision', 64)}),
