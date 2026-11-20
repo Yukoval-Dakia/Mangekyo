@@ -184,12 +184,32 @@ export function retentionSlice(input: RetentionInput): CanonicalEvidenceSliceV1 
     // revision and item. Scope only their same-item events to the forecast;
     // the canonical slice persisted in input keeps the real knowledge links.
     const localBucket = retentionBucketId(input);
-    const sameItem = new Set(input.observations.filter(o => comparableObservation(input, o) &&
-      BigInt(o.admittedAt) <= BigInt(input.observedThrough) && Date.parse(o.submittedAt) <= Date.parse(slice.as_of_at))
-      .map(o => o.submission.id + '/' + o.submission.rev));
-    if (!sameItem.size) return slice;
-    return { ...slice, events: slice.events.map(e => e.item_novelty === 'same' && sameItem.has(e.ref + '/' + e.rev) &&
-      !e.concept_ids.includes(localBucket) ? { ...e, concept_ids: [...e.concept_ids, localBucket] } : e) };
+    const scoped = new Map<string, RetentionObservation>();
+    for (const observation of input.observations) {
+      if (comparableObservation(input, observation) && BigInt(observation.admittedAt) <= BigInt(input.observedThrough) &&
+          Date.parse(observation.submittedAt) <= Date.parse(slice.as_of_at)) {
+        scoped.set(observation.submission.id + '/' + observation.submission.rev, observation);
+      }
+    }
+    if (!scoped.size) return slice;
+    // A whole-paper submission can have several scored items at the same revision.
+    // Without an item anchor the correct row cannot be recovered from that reference.
+    const counts = new Map<string, number>();
+    for (const event of slice.events) {
+      if (event.item_novelty !== 'same') continue;
+      const key = event.ref + '/' + event.rev;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return { ...slice, events: slice.events.map(event => {
+      const key = event.ref + '/' + event.rev;
+      const observation = scoped.get(key);
+      if (counts.get(key) !== 1 || !observation || event.item_novelty !== 'same' ||
+          event.outcome !== observation.result || Date.parse(event.occurred_at) !== Date.parse(observation.submittedAt) ||
+          (observation.exposure.kind === 'independent' ? 'independent' :
+            observation.exposure.kind === 'exposed' ? observation.exposure.level : undefined) !== event.help_level ||
+          event.concept_ids.includes(localBucket)) return event;
+      return { ...event, concept_ids: [...event.concept_ids, localBucket] };
+    }) };
   }
   const events = input.observations.flatMap<EvidenceEventV1>(observation => {
     const { exposure, dimensions = {} } = observation;
@@ -207,7 +227,7 @@ export function retentionSlice(input: RetentionInput): CanonicalEvidenceSliceV1 
   });
   return {
     clock_watermark: input.observedThrough, as_of_at: input.window.requestedAt,
-    events, constraints: { budget_min: 0, locks: [], deadlines: [] }, candidate_pool: [],
+    events, constraints: { budget_min: null, locks: [], deadlines: [] }, candidate_pool: [],
   };
 }
 

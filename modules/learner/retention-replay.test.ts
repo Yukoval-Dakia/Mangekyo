@@ -35,4 +35,6 @@ it('scopes only witnessed exact-item submissions to an unclassified target, pres
       admittedAt: tick, result: 'correct', submittedAt: now, exposure: { kind: 'independent' } }] };
   expect(retentionSlice(input).events.map(e => e.concept_ids)).toEqual([['frozen-item/p/2/q'], [], [], []]);
   expect(input.canonicalEvidence!.events.every(e => !e.concept_ids.length)).toBe(true);
+  const ambiguous = { ...canonicalEvidence, events: [event, { ...event, outcome: 'incorrect' as const }] };
+  expect(retentionSlice({ ...input, canonicalEvidence: ambiguous }).events.every(e => !e.concept_ids.length)).toBe(true);
 });
