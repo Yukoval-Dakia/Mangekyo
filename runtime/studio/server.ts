@@ -29,6 +29,7 @@ import { openWorkspaceAccess } from './workspace-access.ts';
 import { openResearch } from './research.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openRecallHttp } from './recall-http.ts';
+import { isRetentionSlot, openRetention } from './retention.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -62,6 +63,7 @@ const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
   : undefined;
 if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模块须导出 workbookAssessmentHost');
 const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
+const retention = openRetention(db);
 const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
 const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
   ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
@@ -79,7 +81,7 @@ async function openWeb() {
     onResearchFactsChanged: research.workbookChanged,
   });
   const student = { textbook, workbook, organizer: openOrganizer(db, activity), memory: openMemory(db, companion),
-    intake, workspace: openWorkspaceAccess(db, activity), research, recall };
+    intake, workspace: openWorkspaceAccess(db, activity), research, recall, retention };
   return serve(db, studio, openLibrary(db, activity), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -108,6 +110,7 @@ async function runWorker(storeId: string) {
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
+    else if (isRetentionSlot(work.slotType)) await retention.execute(ref, terminal);
     else if (terminal) await recordTerminalFailure(db, ref);
     else await teach(db, ref, readArtifactAssessmentWitness);
   }
