@@ -1,4 +1,4 @@
-import { confirmNotionDispatch, notionSendBasis, savedNotionWitnesses, teachingResultAllowed, type NotionRecipient } from './notion.ts';
+import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAllowed, type CheckNotionRead, type NotionRecipient } from './notion.ts';
 import { providerEndpoint } from '../../executors/teaching/provider.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { createHash } from 'node:crypto';
@@ -96,8 +96,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     inputs.set('retention:' + slot.derivationId, slot);
     for (const fact of facts) inputs.set(`retention-fact:${fact.id}:${fact.rev}:${fact.accessEpoch}:${fact.mode}`, fact);
   }
-  async function readFact(tx: ReadTransaction, id: string, mode: 'pinned' | 'following' = 'following') {
-    const fact = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });
+  function trackFact(id: string, fact: FactSnapshot, mode: 'pinned' | 'following' = 'following') {
     inputs.set(id, {
       kind: 'fact',
       id: fact.ref.id,
@@ -105,11 +104,15 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       accessEpoch: fact.accessEpoch,
       mode,
     });
+  }
+  async function readFact(tx: ReadTransaction, id: string, mode: 'pinned' | 'following' = 'following') {
+    const fact = await createCommandReadContext(tx, purpose).fact(factId(id), {mode:'following'});
+    trackFact(id, fact, mode);
     return fact.value;
   }
   const read = (id: string) => db.snapshot(scope, (tx) => readFact(tx, id));
 
-  async function readFeedback(tx: ReadTransaction, id: string) {
+  async function readFeedback(tx: ReadTransaction, id: string, check: CheckNotionRead) {
     const {
       rows: [row],
     } = await tx.query<{ id: string; value: DisplayTurn; manifest: unknown }>(
@@ -124,7 +127,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (!row) return;
     const prior = await createCommandReadContext(tx, purpose).fact(factId(id), {mode: 'following'});
     if (prior.type === 'activity.studyTurn' &&
-        await teachingResultAllowed(tx, studyTurn(prior.value), row.manifest, workspaceGrantChecker())) return row;
+        await teachingResultAllowed(tx, studyTurn(prior.value), row.manifest, workspaceGrantChecker(), check)) return row;
     return undefined;
   }
   function trackFeedback(id: string, replyId: string) {
@@ -361,15 +364,21 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }
       const learningMemoryDigest = learningMemory?.context ? learningMemory.receipt.digest : undefined;
       const inherited = new Map<string, WorkspaceWitness>();
-      let historyNotice = '';
-      const publicHistory = await db.snapshot(scope, async (tx) => {
+      // Only the revalidated projection may register evidence for this turn.
+      const history = await confirmNotionRead(db, learner, async (tx, check) => {
+        let historyNotice = '';
+        const priorBasis = new Map<string, WorkspaceWitness>();
+        const retain: (() => void)[] = [];
         const messages: CompanionMessage[] = [];
+        const reader = createCommandReadContext(tx, purpose);
         const coveredReplies = new Set<string>();
         let previousId = submission.parentId;
         let historyBytes = 0;
         const historyLimit = submission.workspaceRevision ? 32 : 3;
         for (let count = 0; previousId && count < historyLimit; count++) {
-          const previous = studyTurn(await readFact(tx, previousId));
+          const prior = await reader.fact(factId(previousId), {mode:'following'});
+          const previous = studyTurn(prior.value);
+          retain.push(() => trackFact(prior.ref.id, prior));
           if (previous.sessionId !== submission.sessionId || previous.caseId !== submission.caseId || !sameRoute(previous, settings) || !previous.answer) {
             throw new ChangedEvidence();
           }
@@ -383,7 +392,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             historyNotice = '本轮的工具授权已变化，旧工具回复已省略。';
             break;
           }
-          const reply = await readFeedback(tx, previousId);
+          const reply = await readFeedback(tx, previousId, check);
           if (!reply) {
             historyNotice = '旧回复的依据已变更，本轮从当前消息继续。';
             break;
@@ -417,34 +426,33 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               break;
             }
             const witnesses: WorkspaceWitness[] = [...response.workspaceBasis ?? [], ...notion];
-            if (new Set([...inherited.keys(), ...witnesses.map(w => `${w.id}:${w.rev}`)]).size > 48) {
+            if (new Set([...priorBasis.keys(), ...witnesses.map(w => `${w.id}:${w.rev}`)]).size > 48) {
               historyNotice = '较早的学习记录可按需重新检索，本轮从最近的对话继续。';
               break;
             }
             for (const slot of assessmentSlots) {
               const basis = await workspaceAssessmentBasis(tx, slot, maySend);
               if (!basis) throw new ChangedEvidence();
-              trackAssessment(basis);
+              retain.push(() => trackAssessment(basis));
             }
             for (const slot of retentionSlots) {
               const basis = await readRetentionBasis(tx,slot,{callerPurpose:purpose,maySend});
               if (!basis) throw new ChangedEvidence();
-              trackRetention(basis);
+              retain.push(() => trackRetention(basis));
             }
-            try { await notionSendBasis(tx,witnesses,maySend); }
+            try { await notionSendBasis(tx,witnesses,maySend,check); }
             catch { historyNotice = '选源或接收人授权已变化，本轮省略了旧回复。'; break; }
-            witnesses.forEach(trackNotion);
+            retain.push(() => witnesses.forEach(trackNotion));
             for (const witness of witnesses) {
               const w = 'image' in witness && witness.image === true ? {...witness,writeBasis:true as const} : witness;
               const key = `${w.id}:${w.rev}`;
-              const newer = inherited.get(key);
-              if (!newer || (w.writeBasis && !newer.writeBasis)) inherited.set(key, w);
+              const newer = priorBasis.get(key);
+              if (!newer || (w.writeBasis && !newer.writeBasis)) priorBasis.set(key, w);
             }
-            if (witnesses.length) protectWorkspaceDispatch = true;
           }
           // A reply can reenter history after an intervening turn omitted it.
           // Its witness is needed unless an admitted reply already tracks it.
-          if (!coveredReplies.has(reply.id)) trackFeedback(previousId, reply.id);
+          if (!coveredReplies.has(reply.id)) retain.push(() => trackFeedback(prior.ref.id, reply.id));
           for (const input of previousInputs) {
             if (input.kind === 'slot' && input.slotType === slotType && input.mode === 'following')
               coveredReplies.add(input.derivationId);
@@ -452,8 +460,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           messages.unshift({ role: 'user', content: previous.answer }, { role: 'assistant', content: response.message });
           previousId = previous.parentId;
         }
-        return messages;
+        return {messages, historyNotice, retain, priorBasis};
       });
+      const {messages: publicHistory, historyNotice} = history;
+      history.retain.forEach(keep => keep());
+      history.priorBasis.forEach((w, key) => inherited.set(key, w));
+      if (inherited.size) protectWorkspaceDispatch = true;
       await onProgress({ phase: 'thinking' });
       const { title, distanceKm, movingMinutes, stoppedMinutes } = ridingLesson;
       const attachment = origin.attachment;
@@ -556,8 +568,13 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       let followUp;
       if (submission.parentId && submission.answer) {
         const parent = submission.parentId;
-        const reply = await db.snapshot(scope, tx => readFeedback(tx, parent));
-        if (!reply) throw new ChangedEvidence();
+        const prior = await confirmNotionRead(db, learner, async (tx, check) => {
+          const reply = await readFeedback(tx, parent, check);
+          return reply && {reply, witnesses:await savedNotionWitnesses(tx, parseManifest(reply.manifest).inputs)};
+        });
+        if (!prior) throw new ChangedEvidence();
+        const {reply, witnesses} = prior;
+        witnesses.forEach(trackNotion);
         trackFeedback(parent, reply.id);
         const prev = reply.value;
         followUp = {

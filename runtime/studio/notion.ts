@@ -1,4 +1,4 @@
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { manifestFactInputs, revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import type { studyTurn } from '../../modules/activity/values.ts';
 import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -123,23 +123,7 @@ function notionHost(db: Db, scope = learnerScope) {
 
 type Basis = {id:string; rev:number; epoch:string; type:string};
 export async function savedNotionWitnesses(tx: ReadTransaction, inputs: Manifest['inputs']) {
-  const facts: Extract<Manifest['inputs'][number], {kind: 'fact'}>[] = [];
-  const seen = new Set<string>();
-  let pending = inputs;
-  while (pending.length) {
-    const slots = new Set<string>();
-    for (const input of pending) {
-      if (input.kind === 'fact') facts.push(input);
-      else if (input.kind === 'slot') slots.add(input.derivationId);
-      else for (const member of input.members) slots.add(member.derivationId);
-    }
-    const ids = [...slots].filter(id => !seen.has(id));
-    if (!ids.length) break;
-    ids.forEach(id => seen.add(id));
-    const {rows} = await tx.query<{manifest: unknown}>(
-      'SELECT manifest FROM derivations WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
-    pending = rows.flatMap(row => parseManifest(row.manifest).inputs);
-  }
+  const facts = await manifestFactInputs(tx, inputs);
   if (!facts.length) return [];
   const {rows} = await tx.query<{id:string; rev:number}>(`SELECT f.id,r.rev FROM facts f
     JOIN fact_revs r ON (r.learner_id,r.fact_id)=(f.learner_id,f.id)
@@ -153,20 +137,25 @@ async function notionPageAuthority(tx: ReadTransaction, source: ReturnType<typeo
   return {selection:(await selectionAt(tx,source.sourceSelectionId!))!, pageId:source.externalId!, watermark:await deletionWatermark(tx)};
 }
 
-export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<Basis>, recipient: NotionRecipient) {
+function notionPageKey({selection,pageId,watermark}: Awaited<ReturnType<typeof notionPageAuthority>>) {
+  return JSON.stringify([selection.id, selection.selectionEpoch, pageId, watermark]);
+}
+
+export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<Basis>, recipient: NotionRecipient, check?: CheckNotionRead) {
   const pages = [];
   for (const witness of witnesses) {
     if (witness.type !== captureSourceType) continue;
     const fact = await createAuthorizedFactReader(tx,'teaching',recipient).reopen({...witness,id:factId(witness.id),
       accessEpoch:witness.epoch as FactSnapshot['accessEpoch'], mode:'pinned'});
     if (!await checkStudioNotionFact(tx,fact,'teaching',recipient)) continue;
-    pages.push(await notionPageAuthority(tx, sourceEnvelope(fact.value)));
+    if (check) await check(fact);
+    else pages.push(await notionPageAuthority(tx, sourceEnvelope(fact.value)));
   }
   return pages;
 }
 
 export async function teachingResultAllowed(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
-  rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>) {
+  rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead) {
   try {
     const manifest = parseManifest(rawManifest);
     if (manifest.purpose !== teaching || !await grantCurrent(turn) ||
@@ -174,7 +163,7 @@ export async function teachingResultAllowed(tx: ReadTransaction, turn: ReturnTyp
     const recipient: NotionRecipient = () => true;
     if (turn.providerId && turn.protocol && turn.workspaceRevision)
       recipient.notionRecipientId = notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision);
-    await notionSendBasis(tx, await savedNotionWitnesses(tx, manifest.inputs), recipient);
+    await notionSendBasis(tx, await savedNotionWitnesses(tx, manifest.inputs), recipient, check);
     return true;
   } catch {
     return false;
@@ -184,40 +173,64 @@ export async function teachingResultAllowed(tx: ReadTransaction, turn: ReturnTyp
 export type CheckNotionRead = (fact: FactSnapshot) => Promise<void>;
 type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => Promise<T>;
 
-export async function confirmNotionRead<T>(db: Db, learner: LearnerId, read: Projection<T>, publish?: Projection<T, DbTransaction>) {
+// A scope lasts for one projection (including any recall it mounts). No remote
+// authority carries over to a later HTTP request, stream refresh, or model send.
+export function notionReadScope(db: Db, learner: LearnerId) {
   const {snapshot, locked, provider} = notionHost(db, {learner});
-  const pageFor = async (tx: ReadTransaction, fact: FactSnapshot) => {
+  const pages = new Map<string, boolean>();
+  const allowed = new Set<string>();
+
+  async function pageFor(tx: ReadTransaction, fact: FactSnapshot) {
     if (fact.type !== captureSourceType) return;
     const source = sourceEnvelope(fact.value);
     if (source.kind !== 'notion') return;
     const page = await notionPageAuthority(tx, source);
-    const key = JSON.stringify([fact.ref.id, fact.ref.rev, fact.accessEpoch, page.selection.id, page.selection.selectionEpoch, page.pageId, page.watermark]);
-    return {key, ...page};
-  };
-  const pages = new Map<string, NonNullable<Awaited<ReturnType<typeof pageFor>>>>();
-  const initial = await snapshot(tx => read(tx, async fact => {
-    const page = await pageFor(tx, fact);
-    if (page) pages.set(page.key, page);
-  }));
-  if (!pages.size && !publish) return initial;
-  const allowed = new Set<string>();
-  for (const {key, selection, pageId, watermark} of pages.values()) {
-    try {
-      await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId);
-      allowed.add(key);
-    } catch (error) {
-      if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
-    }
+    const key = notionPageKey(page);
+    return {...page, key, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
   }
-  return locked(tx => (publish ?? read)(tx, async fact => {
+
+  const check = (tx: ReadTransaction): CheckNotionRead => async fact => {
     const page = await pageFor(tx, fact);
-    if (page && !allowed.has(page.key)) throw new FactReadDeniedError('recipient', '未能确认教材的 Notion 来源。');
-  }));
+    if (page && !allowed.has(page.witness)) throw new FactReadDeniedError('recipient', '未能确认 Notion 来源。');
+  };
+
+  async function read<T>(project: Projection<T>): Promise<T>;
+  async function read<P, T>(project: Projection<P>, publish: Projection<T, DbTransaction>): Promise<T>;
+  async function read<P, T>(project: Projection<P>, publish?: Projection<T, DbTransaction>): Promise<P | T> {
+    const requested = new Map<string, NonNullable<Awaited<ReturnType<typeof pageFor>>>>();
+    const initial = await snapshot(tx => project(tx, async fact => {
+      const page = await pageFor(tx, fact);
+      if (page) requested.set(page.witness, page);
+    }));
+    if (!requested.size && !publish) return initial;
+    for (const {key, witness, selection, pageId, watermark} of requested.values()) {
+      if (!pages.has(key)) {
+        try {
+          await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId);
+          pages.set(key, true);
+        } catch (error) {
+          if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
+          pages.set(key, false);
+        }
+      }
+      if (pages.get(key)) allowed.add(witness);
+    }
+    return locked<P | T>(tx => publish ? publish(tx, check(tx)) : project(tx, check(tx)));
+  }
+
+  return {read, check};
+}
+
+export type NotionReadScope = ReturnType<typeof notionReadScope>;
+export function confirmNotionRead<T>(db: Db, learner: LearnerId, read: Projection<T>, publish?: Projection<T, DbTransaction>) {
+  const scope = notionReadScope(db, learner);
+  return publish ? scope.read(read, publish) : scope.read(read);
 }
 
 export async function confirmNotionDispatch(db: Db, pages: Awaited<ReturnType<typeof notionSendBasis>>) {
   const {provider} = notionHost(db);
-  for (const {selection,pageId,watermark} of pages) {
+  const unique = new Map(pages.map(page => [notionPageKey(page), page]));
+  for (const {selection,pageId,watermark} of unique.values()) {
     await provider(selection,watermark,notionConfirmPageAccess(selection.root,pageId),pageId);
   }
 }

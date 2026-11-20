@@ -1,4 +1,4 @@
-import { teachingResultAllowed } from './notion.ts';
+import { notionReadScope, teachingResultAllowed, type CheckNotionRead } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
@@ -99,7 +99,7 @@ type TurnView = {
   status: Status;
   error?: string;
 };
-async function history(tx: ReadTransaction, session: string): Promise<TurnView[]> {
+async function history(tx: ReadTransaction, session: string, check?: CheckNotionRead): Promise<TurnView[]> {
   const { rows } = await tx.query<{
     id: string;
     value: DisplayTurn | null;
@@ -128,7 +128,7 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
       });
     const submission = studyTurn(snapshot.value);
     let feedback = row.value;
-    if (feedback && !await teachingResultAllowed(tx, submission, row.manifest, grantCurrent)) feedback = null;
+    if (feedback && check && !await teachingResultAllowed(tx, submission, row.manifest, grantCurrent, check)) feedback = null;
     if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
       rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: [] };
     result.push({
@@ -221,27 +221,28 @@ async function recoverRelationReceipts(tx: ReadTransaction, turnIds: string[]) {
   })]));
 }
 
-async function readableTurnMounts(tx: ReadTransaction, session: string, timeline: readonly TurnView[]) {
+async function readableTurnMounts(tx: ReadTransaction, session: string, timeline: readonly TurnView[], check: CheckNotionRead) {
   const last = timeline.at(-1);
   const visible = timeline.filter(row => row.feedback || (row === last && row.status === 'pending'));
   const byTurn = new Map<string, Awaited<ReturnType<typeof turnArtifacts>>>();
-  for (const row of visible) byTurn.set(row.id, await turnArtifacts(tx, session, row.id));
+  for (const row of visible) byTurn.set(row.id, await turnArtifacts(tx, session, row.id, check));
   return byTurn;
 }
 
 export function sessionMountPermissions(db: Db, session: string) {
-  return db.snapshot({ learner: studioLearner }, async tx => {
-    const mounts = await readableTurnMounts(tx, session, await history(tx, session));
+  return notionReadScope(db, studioLearner).read(async (tx, check) => {
+    const mounts = await readableTurnMounts(tx, session, await history(tx, session, check), check);
     return Array.from(mounts.values()).flatMap(turn => turn.map(artifact => artifact.mountId));
   });
 }
 
 export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project']) {
-  const { turns, ...view } = await db.snapshot({ learner: studioLearner }, async tx => {
-    const timeline = await history(tx, session);
+  const notion = notionReadScope(db, studioLearner);
+  const { turns, ...view } = await notion.read(async (tx, check) => {
+    const timeline = await history(tx, session, check);
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
-    const mounts = await readableTurnMounts(tx, session, timeline);
+    const mounts = await readableTurnMounts(tx, session, timeline, check);
     const currentObject = last.submission.currentObject;
     const recovered = await recoverRelationReceipts(tx,
       timeline.filter(row => row.feedback?.action === 'reply_unavailable').map(row => row.id));
@@ -267,7 +268,7 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
     if (!row.feedback) continue;
     const { studyKit, ...feedback } = row.feedback;
     const recall = row.derivationId && studyKit
-      ? await projectRecall?.(session, row.id, row.derivationId, studyKit)
+      ? await projectRecall?.(session, row.id, row.derivationId, studyKit, notion)
       : undefined;
     projected.push({
       ...feedback, ...(writes && {writes}), turnId: row.id, artifacts,
