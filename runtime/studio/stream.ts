@@ -1,3 +1,4 @@
+import { teachingTurnAllowed } from './reading.ts';
 import type { ServerResponse } from 'node:http';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
@@ -158,7 +159,7 @@ export async function listenForSessionEvents(db: Db, pool: Pool): Promise<() => 
 
 async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
   return notion.read(async (tx, check) => {
-    const grantCurrent = workspaceGrantChecker();
+    const grantCurrent = workspaceGrantChecker(tx);
     const { rows: [row] } = await tx.query<{
       turnId: string;
       derivationId: string | null;
@@ -196,8 +197,11 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
       });
     const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
-    const authority = manifest ? await teachingResultAuthority(tx, submission, manifest, grantCurrent, check)
-      : await grantCurrent(submission) ? 'authorized' : 'withdrawn';
+    const allowed = await teachingTurnAllowed(tx, submission, grantCurrent);
+    if (!allowed && status === 'pending')
+      throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
+    const authority = !allowed ? 'withdrawn' : manifest
+      ? await teachingResultAuthority(tx, submission, manifest, grantCurrent, check) : 'authorized';
     if (authority !== 'authorized') row.draft = null;
     if (status === 'ready' && (authority !== 'authorized' || row.message === null)) {
       row.message = authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage;

@@ -18,6 +18,7 @@ import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../m
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { notionModelRecipient, purpose as teaching, stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { teachingTurnAllowed } from './reading.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { notionTeachingRecipients } from './workspace-access.ts';
 import { notionConnection } from './notion-transport.ts';
@@ -164,10 +165,11 @@ export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<B
 }
 
 export async function teachingResultAuthority(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
-  rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead) {
+  rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead,
+  origin?: ReturnType<typeof studyTurn>) {
   try {
     const manifest = parseManifest(rawManifest);
-    if (manifest.purpose !== teaching || !await grantCurrent(turn) ||
+    if (manifest.purpose !== teaching || !await teachingTurnAllowed(tx,turn,grantCurrent,origin) ||
         (await revalidateManifest(tx, manifest)).kind !== 'valid') return 'withdrawn';
     const recipient: NotionRecipient = () => true;
     if (turn.providerId && turn.protocol && turn.workspaceRevision)
