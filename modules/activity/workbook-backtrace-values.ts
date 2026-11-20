@@ -1,4 +1,4 @@
-import { factId, type BusWitness, type FactRef, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
+import { factId, type BusWitness, type FactRef, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { posttestIssuanceType, posttestSubmissionType, type posttestIssuance, type RetentionWindow } from './retention-posttest.ts';
 
 import { reopenControlledHelpBasis } from './help-exposure-values.ts';
@@ -56,6 +56,76 @@ export async function confirmWorkbookTraceBasis(read: Reader, tx: ActivityEviden
   const witnesses = workbookWitnessReader(read,tx,[...root,...candidate]).witnesses();
   return await reopenControlledHelpBasis(read,tx.learner,witnesses.filter(witness=>witness.type==='capture.source'))
     ? witnesses : null;
+}
+
+type ConceptLink = {
+  conceptId: string;
+  opened: readonly (readonly [FactSnapshot, ('pinned' | 'following' | undefined)?])[];
+};
+type ConceptProof = { witnesses: readonly BusWitness[]; remote: boolean };
+
+export function sharedWorkbookTraceConcepts(current: readonly ConceptLink[], prior: readonly ConceptLink[]) {
+  const group = (links: readonly ConceptLink[]) => {
+    const byId = new Map<string,ConceptLink[]>();
+    for (const link of links) {
+      const entries = byId.get(link.conceptId) ?? [];
+      entries.push(link);
+      byId.set(link.conceptId,entries);
+    }
+    return byId;
+  };
+  const left = group(current), right = group(prior);
+  return [...left.keys()].filter(id=>right.has(id)).sort().map(id=>({
+    id,current:left.get(id)!,prior:right.get(id)!,
+  }));
+}
+
+/** Evidence for one shared concept suffices. Prefer an entirely local proof and
+ * collect remote alternatives only for sides that need them. */
+export async function confirmWorkbookTraceConcepts(tx: ActivityEvidenceReadScope, local: Reader, check: Reader,
+  shared: ReturnType<typeof sharedWorkbookTraceConcepts>, isRemote: (fact: FactSnapshot) => boolean,
+  unavailable: (error: unknown) => boolean) {
+  async function allowed(links: readonly ConceptLink[]) {
+    const proofs: ConceptProof[] = [];
+    for (const {opened} of links) {
+      const witnesses = opened.map(([fact,mode])=>({...fact.ref,type:fact.type,accessEpoch:fact.accessEpoch,mode:mode ?? 'pinned' as const}));
+      try {
+        if (await reopenControlledHelpBasis(local,tx.learner,witnesses))
+          proofs.push({witnesses,remote:opened.some(([fact])=>isRemote(fact))});
+      } catch (error) {
+        if (!unavailable(error)) throw error;
+      }
+    }
+    return proofs;
+  }
+  const groups = [];
+  for (const {current,prior} of shared) {
+    const left = await allowed(current), right = await allowed(prior);
+    if (!left.length || !right.length) continue;
+    const localLeft = left.find(proof=>!proof.remote), localRight = right.find(proof=>!proof.remote);
+    if (localLeft && localRight) return [...localLeft.witnesses,...localRight.witnesses];
+    groups.push({left:localLeft ? [localLeft] : left,right:localRight ? [localRight] : right});
+  }
+  async function confirmed(proofs: readonly ConceptProof[]) {
+    let first: readonly BusWitness[] | undefined;
+    for (const {witnesses,remote} of proofs) {
+      try {
+        if (!remote || await reopenControlledHelpBasis(check,tx.learner,witnesses.filter(witness=>witness.type==='capture.source')))
+          first ??= witnesses;
+      } catch (error) {
+        if (!unavailable(error)) throw error;
+      }
+    }
+    return first;
+  }
+  let match: readonly BusWitness[] | undefined;
+  for (const {left,right} of groups) {
+    // Preflight visits all eligible alternatives so one unavailable page cannot
+    // prevent the same request from choosing another confirmed proof.
+    const a = await confirmed(left), b = await confirmed(right);
+    if (a && b) match ??= [...a,...b];
+  }
+  return match;
 }
 
 type TraceRoot = { target: {paper: Ref}; paper: WorkbookPaper };
