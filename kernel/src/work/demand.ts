@@ -10,7 +10,7 @@ export type WorkRef = {
   readonly generation: string;
 };
 
-export type OutboxPendingState = 'pending' | 'capability_pending';
+export type OutboxPendingState = 'pending' | 'capability_pending' | 'routed_pending';
 
 export type WorkRequest = {
   readonly slotType: string;
