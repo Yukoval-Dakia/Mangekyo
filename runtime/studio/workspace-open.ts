@@ -7,7 +7,8 @@ import {isSourceFactId, sourceRefV1, type SourceRefV1} from '../../modules/activ
 import {workbookAttempt, workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {practiceSubmission, ridingPracticeType} from '../../modules/activity/practice-values.ts';
 import {purpose} from './identity.ts';
-import {sourceQuestions, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
+import {sourceQuestions, textbookText, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
+import {textbookPageFrom, textbookPageType} from '../../modules/content/textbook-page.ts';
 import {readWorkbookDiagnosis} from './workbook-diagnosis.ts';
 import type {WorkspaceAssessmentBasis} from './workspace-read.ts';
 
@@ -20,7 +21,7 @@ export function learningToolError(code: ToolErrorCode, field: string, message: s
 }
 
 const searchNext = {tool:'search_workspace' as const, args:{}, why:'从当前可读结果选择引用。'};
-type Part = {kind:'whole' | 'assessment'} | {kind:'question'; index:number};
+type Part = {kind:'whole' | 'assessment'} | {kind:'question'; index:number} | {kind:'block'; blockId:string};
 type OpenLearningArgs = {refs: string[]; part: Part; lens: 'raw' | 'diagnose'};
 type OpenImageArgs = {refs: [string]; part: {kind:'image_crop'; crop?: ImageCrop}; lens: 'raw'};
 
@@ -62,11 +63,13 @@ export function parseOpenLearningArgs(args: Record<string, unknown>) {
   if (args.part === undefined) part = {kind:'whole'};
   else if (args.part === 'assessment') part = {kind:'assessment'};
   else {
-    const match = typeof args.part === 'string' && /^question:([1-9]\d?)$/.exec(args.part);
-    if (!match) return learningToolError('invalid_args','part','part 须为 question:<题号>、assessment 或 image_crop。',{
+    const question = typeof args.part === 'string' && /^question:([1-9]\d?)$/.exec(args.part);
+    const block = typeof args.part === 'string' && /^block:([A-Za-z0-9_.-]{1,128})$/.exec(args.part);
+    if (question) part = {kind:'question',index:Number(question[1])};
+    else if (block && block[1]) part = {kind:'block',blockId:block[1]};
+    else return learningToolError('invalid_args','part','part 须为 question:<题号>、block:<块标识>、assessment 或 image_crop。',{
       tool:'open_learning',args:{refs},why:'先打开可用范围，再选择题号。',
     });
-    part = {kind:'question',index:Number(match[1])};
   }
   return {refs:refs.map(ref => ref.trim()),part,lens} satisfies OpenLearningArgs;
 }
@@ -98,6 +101,15 @@ export async function unreadable(tx: ReadTransaction, id: string, known: boolean
 function projectOpenLearning(value: ReadResult, fact: FactSnapshot, part: Part): ReadResult | ReturnType<typeof learningToolError> {
   const {sourceRef, question, nextOffset, ...body} = value;
   if (!sourceRef) return value;
+  if (part.kind === 'block') {
+    const block = fact.type === textbookPageType && sourceRef.anchor.kind === 'whole'
+      ? textbookPageFrom(fact).blocks.find(block => block.id === part.blockId) : undefined;
+    if (!block) return learningToolError('not_found','part','未找到所选教材块。',{
+      tool:'open_learning',args:{refs:JSON.stringify(sourceRef)},why:'先核对当前版本的教材块标识。',
+    });
+    return {id:sourceRef.fact.id,rev:sourceRef.fact.rev,kind:'page',title:value.title,content:textbookText(block.body),
+      part,sourceRef:{...sourceRef,anchor:part}};
+  }
   if (part.kind === 'question') {
     const item = sourceRef.anchor.kind === 'whole' ? sourceQuestions(fact)[part.index - 1] : undefined;
     if (!item) return learningToolError('not_found','part','没有找到所选题项。',{

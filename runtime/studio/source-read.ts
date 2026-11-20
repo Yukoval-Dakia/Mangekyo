@@ -42,6 +42,7 @@ type SourceProjection = {
   kind?: WorkspaceEntryKind;
   tags?: readonly string[];
   links?: readonly string[];
+  blocks?: readonly {id:string; parentId:string | null; kind:TextbookBlockBody['kind']}[];
   question?: {prompt:string; answer?:string; rubric?:string};
 };
 
@@ -67,7 +68,7 @@ function sourceText(fact: FactSnapshot) {
   return undefined;
 }
 
-function textbookText(body: TextbookBlockBody) {
+export function textbookText(body: TextbookBlockBody) {
   switch (body.kind) {
     case 'text': return body.text;
     case 'formula': return body.latex;
@@ -115,6 +116,11 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAc
     if (anchor.kind === 'question') {
       const question = sourceQuestions(fact).find(item => item.id === anchor.itemId);
       if (question) return {title: displayOf(fact.type, fact.value).title, content: question.prompt};
+    } else if (anchor.kind === 'block') {
+      if (fact.type !== textbookPageType) return;
+      const page = textbookPageFrom(fact);
+      const block = page.blocks.find(block => block.id === anchor.blockId);
+      if (block) return {kind:'page',title:page.title,content:textbookText(block.body)};
     } else if (anchor.kind === 'answer-slot') {
       if (fact.type !== workbookAttemptType || anchor.slotId !== 'answer' || anchor.path?.length) return;
       const attempt = workbookAttempt(fact.value);
@@ -140,7 +146,8 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAc
       return {title: note.title, content: note.markdown};
     } else if (recipient === 'workspace' && fact.type === textbookPageType) {
       const page = textbookPageFrom(fact);
-      return {kind: 'page', title: page.title, content: page.blocks.map(block => textbookText(block.body)).filter(Boolean).join('\n\n')};
+      return {kind: 'page', title: page.title, content: page.blocks.map(block => textbookText(block.body)).filter(Boolean).join('\n\n'),
+        blocks: page.blocks.map(({id,parentId,body}) => ({id,parentId,kind:body.kind}))};
     } else if (recipient === 'workspace' && fact.type === workbookPaperType) {
       const paper = workbookPaper(fact.value);
       return {title: paper.title, content: paper.questions.map(({prompt}, index) => `${index + 1}. ${prompt}`).join('\n\n')};
@@ -179,7 +186,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
     (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
-      (access.recipient === 'workspace' && reference?.fact.type === textbookPageType));
+      (access.recipient === 'workspace' && fact.type === textbookPageType));
 
   async function visit(key: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.has(key) || path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(key)) return;

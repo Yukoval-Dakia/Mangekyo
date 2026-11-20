@@ -3,6 +3,7 @@ import type {FactSnapshot} from '@mangekyo/kernel';
 export type SourceAnchorV1 =
   | {readonly kind: 'whole'}
   | {readonly kind: 'question'; readonly itemId: string}
+  | {readonly kind: 'block'; readonly blockId: string}
   | {readonly kind: 'text'; readonly field: string; readonly start: number; readonly end: number}
   | {readonly kind: 'answer-slot'; readonly itemId: string; readonly slotId: string; readonly path?: readonly (string | number)[]};
 
@@ -54,6 +55,8 @@ export function sourceRefV1(input: unknown): SourceRefV1 | undefined {
   if (anchor.kind === 'whole') return {...header, anchor: {kind: 'whole'}};
   if (anchor.kind === 'question' && identifier(anchor.itemId))
     return {...header, anchor: {kind: 'question', itemId: anchor.itemId}};
+  if (anchor.kind === 'block' && identifier(anchor.blockId))
+    return {...header, anchor: {kind: 'block', blockId: anchor.blockId}};
   if (anchor.kind === 'text') {
     const {field, start, end} = anchor;
     if (identifier(field) && offset(start) && offset(end) && start <= end)

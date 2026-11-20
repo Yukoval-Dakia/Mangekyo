@@ -154,13 +154,14 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
     if (fact.type === workbookAttemptType) attempt = fact;
   }});
   if (!record) return workspaceSourceUnavailable;
-  const {sourceRef, title, tags, links} = record;
+  const {sourceRef, title, tags, links, blocks} = record;
   const original = record.content;
   const assessments = trackAssessment && attempt?.ref.id === sourceRef.fact.id && sourceRef.anchor.kind === 'whole'
     ? await readWorkspaceAttemptAssessments(tx, attempt, maySend, trackAssessment) : [];
   const {content, nextOffset} = typeof original === 'string'
     ? textSlice(original, offset) : {content: original, nextOffset: null};
   return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? workspaceRecordKind(sourceRef.fact.type),
-    title, content, tags, links, sourceRef, ...(record.question ? {question:record.question} : {}), ...(assessments.length ? {assessments} : {}),
+    title, content, tags, links, sourceRef, ...(blocks ? {blocks} : {}),
+    ...(record.question ? {question:record.question} : {}), ...(assessments.length ? {assessments} : {}),
     ...(nextOffset === null ? {} : {nextOffset})});
 }
