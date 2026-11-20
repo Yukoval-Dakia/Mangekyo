@@ -30,7 +30,8 @@ export function projectClassroomRadar(asOf: string, sources: ClassroomRadarSourc
   const end = now + 86_400_000;
   const weaknesses = new Map<string, number>();
   const crossing = new Set<string>();
-  for (const forecast of sources.forecasts ?? []) {
+  const measured = sources.forecasts?.filter(row => !row.bucket.kcId.startsWith('frozen-item/'));
+  for (const forecast of measured ?? []) {
     // A predicted future posttest cannot measure mastery at the reading clock.
     if (forecast.asOfAt !== asOf) continue;
     const { kcId } = forecast.bucket;
@@ -43,7 +44,7 @@ export function projectClassroomRadar(asOf: string, sources: ClassroomRadarSourc
   }
   const top = [...weaknesses].sort(([a, x], [b, y]) => x - y || (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, 3).map(([kcId, mastery]) => ({kcId, mastery}));
-  const aligned = sources.forecasts?.length && sources.forecasts.every(row => row.asOfAt === asOf);
+  const aligned = measured?.length && measured.every(row => row.asOfAt === asOf);
   return {
     weakTop3: aligned && top.length ? {kind: 'value' as const, value: top} : missing,
     forgetting24h: aligned ? count([...crossing]) : missing,
