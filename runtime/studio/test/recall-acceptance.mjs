@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -12,6 +15,14 @@ import { applyKernelSchema } from '../../../kernel/src/schema.ts';
 import { methodName, purpose, slotType, stableId, studioLearner } from '../identity.ts';
 import { openRecall, recallItemId } from '../recall.ts';
 
+const config = await mkdtemp(join(tmpdir(),'mangekyo-recall-settings-'));
+const baseUrl = 'http://127.0.0.1:1/v1';
+const model = 'auto/deepseek-v4.1-flash';
+const accountRevision = randomUUID();
+process.env.MANGEKYO_SETTINGS_FILE = join(config,'provider.json');
+await writeFile(process.env.MANGEKYO_SETTINGS_FILE,JSON.stringify({version:2,activeProviderId:'default',providers:[
+  {id:'default',baseUrl,model,protocol:'openai',apiKey:'',credentialRevision:accountRevision},
+]}));
 const connectionString = process.env.MANGEKYO_RECALL_LOCAL_PG;
 const schema = 'recall_' + randomBytes(6).toString('hex');
 const admin = connectionString && createPgDb(new pg.Pool({ connectionString }));
@@ -47,7 +58,7 @@ try {
       pages: null, error: null, warnings: [], truncated: false },
   } });
   await handle({ ...scope, id: turnId, actor: 'learner', type: 'activity.submitTurn', purpose, input: {
-    id: turnId, data: { sessionId: turnId, parentId: null, attachment, caseId: 'companion', answer: '备课', model: 'fixture', baseUrl: 'fixture' },
+    id: turnId, data: { sessionId: turnId, parentId: null, attachment, caseId: 'companion', answer: '备课', model, baseUrl, accountRevision },
   } });
   await db.tx(scope, tx => tx.withLearnerWrite(async tick => {
     const manifest = JSON.stringify({ version: 1, ...scope, purpose, gatherTick: tick, inputs: [
@@ -95,6 +106,7 @@ try {
   console.log(connectionString ? 'PostgreSQL' : 'PGlite', 'unknown → exposed');
 } finally {
   await db.close();
+  await rm(config,{recursive:true,force:true});
   if (admin) {
     await admin.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE');
     await admin.close();
