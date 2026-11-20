@@ -35,10 +35,11 @@ type ForecastScope = {
   paperEpoch: Tick;
   priorAttemptIds: FactId[];
   window: RetentionForecast['input']['window'];
+  sourceReconciliationKey?: string;
 };
 type ReconciliationScope = { forecastKey: string; forecastId: DerivationId; attemptId: FactId };
-type PosttestListItem = { forecastKey: string; title: string; through: string } &
-  ({ state: 'ready' } | { state: 'submitted'; reconciliationKey: string });
+type PosttestListItem = { forecastKey: string; title: string; through: string; scheduledAt?: string; sourceReconciliationKey?: string } &
+  ({ state: 'preparing' | 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string });
 type ReconciliationValue = Extract<Awaited<ReturnType<typeof reconciliation.derive>>, { kind: 'value' }>['value'];
 type SlotRow<T, S> = {
   scope_keys: S;
@@ -105,8 +106,18 @@ async function authorized<T>(run: () => Promise<T>) {
 
 function afterFreeze(observation: RetentionObservation, window: ForecastScope['window'], effectiveTick: Tick) {
   if (BigInt(observation.admittedAt) <= BigInt(effectiveTick) ||
-      observation.submittedAt < window.requestedAt || observation.submittedAt > window.through) {
+      observation.submittedAt < posttestOpensAt(window) || observation.submittedAt > window.through) {
     throw new RequestError(409, '这次交卷不在预测冻结后的观察窗口内。');
+  }
+}
+
+function posttestOpensAt(window: ForecastScope['window']) {
+  return window.scheduledAt ?? window.requestedAt;
+}
+
+function requireIndependentPosttest(observation: RetentionObservation) {
+  if (observation.exposure.kind !== 'independent' || observation.result === 'unknown') {
+    throw new RequestError(422, '需要有判分结果的独立受控后测，才能安排下一次后测。');
   }
 }
 
@@ -151,6 +162,16 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     }));
   }
 
+  async function enqueueForecast(
+    tx: DbTransaction, key: string, opened: Awaited<ReturnType<typeof openRetentionTarget>>,
+    plan: Pick<ForecastScope, 'priorAttemptIds' | 'window' | 'sourceReconciliationKey'>,
+  ) {
+    await enqueue(tx, forecastPolicy, key, {
+      target: opened.target, method, paperEpoch: opened.accessEpoch, ...plan,
+    });
+    return { key, state: 'pending' as const };
+  }
+
   async function freeze(paperId: string, input: Record<string, unknown>) {
     const { requestId, itemId, priorAttemptIds, through } = requestInput(() => {
       const { requestId, itemId, priorAttemptIds = [], through } = input;
@@ -177,10 +198,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
       const read = createCommandReadContext(tx, retentionPurpose);
       const opened = await openRetentionTarget(read, id, itemId);
       for (const attemptId of priorAttemptIds) await readWorkbookObservation(tx, read, opened, attemptId);
-      await enqueue(tx, forecastPolicy, key, {
-        target: opened.target, method, paperEpoch: opened.accessEpoch, priorAttemptIds, window: { requestedAt, through },
-      });
-      return { key, state: 'pending' as const };
+      return enqueueForecast(tx, key, opened, { priorAttemptIds, window: { requestedAt, through } });
     });
   }
 
@@ -200,28 +218,83 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     const frozen = await project(tx, key, row);
     if (frozen.state !== 'current') throw new RequestError(409, '预测当前没有可用的冻结版本。');
     const read = createCommandReadContext(tx, retentionPurpose);
-    const { target, window } = row.scope_keys;
+    const { target, window, sourceReconciliationKey } = row.scope_keys;
+    if (sourceReconciliationKey) await currentReconciliation(tx, sourceReconciliationKey);
     const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
     sameTarget(opened, row.scope_keys);
-    return { frozen, read, window, opened };
+    return { frozen, read, window, opened, sourceReconciliationKey };
+  }
+
+  async function currentReconciliation(tx: ReadTransaction, key: string) {
+    const source = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, key);
+    if (!source) throw new RequestError(404, '找不到原后测对账记录。');
+    const current = await project(tx, key, source);
+    if (current.state !== 'current') throw new RequestError(409, '原后测当前没有可用的对账记录。');
+    return source.scope_keys;
+  }
+
+  async function scheduleFollowup(reconciliationKey: string, input: Record<string, unknown>) {
+    const { requestId, scheduledAt, through } = requestInput(() => {
+      if (Object.keys(input).length !== 2) throw new Error();
+      const scheduledAt = deadline(input.scheduledAt);
+      return {
+        requestId: workbookRequestId(input.requestId), scheduledAt,
+        through: deadline(new Date(Date.parse(scheduledAt) + 24 * 60 * 60 * 1000).toISOString()),
+      };
+    });
+    const key = forecastSlot.key({ forecastId: stableId('retention-followup', reconciliationKey, requestId) });
+    return write(async tx => {
+      const existing = await findSlot<RetentionForecast, ForecastScope>(tx, forecastSlot.type, key);
+      if (existing) {
+        if (existing.scope_keys.window.scheduledAt !== scheduledAt) throw new RequestError(409, '后测安排请求标识已使用。');
+        const { state } = await project(tx, key, existing);
+        return { key, state };
+      }
+      const requestedAt = new Date().toISOString();
+      if (scheduledAt <= requestedAt) throw new RequestError(400, '后测安排时间须晚于当前。');
+      const { forecastKey, forecastId, attemptId } = await currentReconciliation(tx, reconciliationKey);
+      const { frozen, opened, read, window } = await currentForecast(tx, forecastKey);
+      if (!opened.sealed || frozen.derivationId !== forecastId || attemptId !== posttestAttemptFor(posttestIdFor(forecastId))) {
+        throw new RequestError(422, '只能从原受控后测的交卷安排下一次后测。');
+      }
+      const observation = await readWorkbookObservation(tx, read, opened, attemptId, forecastId);
+      afterFreeze(observation, window, frozen.effectiveTick);
+      requireIndependentPosttest(observation);
+      return enqueueForecast(tx, key, opened, {
+        priorAttemptIds: [attemptId], window: { requestedAt, scheduledAt, through }, sourceReconciliationKey: reconciliationKey,
+      });
+    });
   }
 
   async function listPosttests() {
     return db.snapshot(scope, async tx => {
-      const { rows } = await tx.query<{ slot_key: string }>(
-        `SELECT s.slot_key FROM slot_state s JOIN facts f
+      const { rows } = await tx.query<{ slot_key: string; scope_keys: ForecastScope; current_id: string | null }>(
+        `SELECT s.slot_key, s.scope_keys, s.current_id FROM slot_state s JOIN facts f
            ON f.learner_id=s.learner_id AND f.id=s.scope_keys->'target'->'paper'->>'id'
-         WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.current_id IS NOT NULL
+         WHERE s.learner_id=$1 AND s.slot_type=$2
+           AND (s.current_id IS NOT NULL OR (s.pending <> 'none' AND s.scope_keys ? 'sourceReconciliationKey'))
            AND f.type=$3 AND f.retracted_rev IS NULL
          ORDER BY s.changed_tick DESC, s.slot_key LIMIT 24`,
         [tx.learner, forecastSlot.type, retentionPaperType],
       );
       const now = new Date().toISOString();
       const items: PosttestListItem[] = [];
-      for (const { slot_key: forecastKey } of rows) {
+      for (const { slot_key: forecastKey, scope_keys: scheduled, current_id: currentId } of rows) {
         try {
-          const { frozen, opened, read, window } = await currentForecast(tx, forecastKey);
-          const entry = { forecastKey, title: opened.paper.title, through: window.through };
+          if (!currentId) {
+            const { target, sourceReconciliationKey, window: { scheduledAt, through } } = scheduled;
+            if (!sourceReconciliationKey || !scheduledAt || through <= now) continue;
+            await currentReconciliation(tx, sourceReconciliationKey);
+            const read = createCommandReadContext(tx, retentionPurpose);
+            const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
+            sameTarget(opened, scheduled);
+            items.push({ forecastKey, title: opened.paper.title, through, scheduledAt, sourceReconciliationKey, state: 'preparing' });
+            continue;
+          }
+          const { frozen, opened, read, window, sourceReconciliationKey } = await currentForecast(tx, forecastKey);
+          const { scheduledAt, through } = window;
+          const entry = { forecastKey, title: opened.paper.title, through, ...(scheduledAt ? { scheduledAt } : {}),
+            ...(sourceReconciliationKey ? { sourceReconciliationKey } : {}) };
           const attemptId = posttestAttemptFor(posttestIdFor(frozen.derivationId));
           try {
             const attempt = await read.fact(attemptId, { mode: 'following' });
@@ -229,7 +302,8 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
               items.push({ ...entry, state: 'submitted', reconciliationKey: reconciliationKeyFor(frozen.derivationId, attemptId) });
           } catch (error) {
             if (!(error instanceof FactNotFoundError)) throw error;
-            if (window.requestedAt <= now && now < window.through) items.push({ ...entry, state: 'ready' });
+            if (scheduledAt && now < scheduledAt) items.push({ ...entry, state: 'scheduled', scheduledAt });
+            else if (posttestOpensAt(window) <= now && now < through) items.push({ ...entry, state: 'ready' });
           }
         } catch (error) {
           if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof RequestError)) throw error;
@@ -271,7 +345,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
         forecastId: frozen.derivationId, forecastKey: factId(forecastKey), effectiveTick: frozen.effectiveTick,
         paper: opened.target.paper, paperEpoch: opened.accessEpoch, itemId: opened.target.itemId,
         gradingVersion: opened.target.gradingVersion, through: window.through,
-      }, opened.paper, window.requestedAt);
+      }, opened.paper, posttestOpensAt(window));
     });
   }
 
@@ -310,7 +384,11 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
           const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
           sameTarget(opened, slot.scope_keys);
           const observations = [];
-          for (const id of priorAttemptIds) observations.push(await readWorkbookObservation(tx, read, opened, id));
+          for (const id of priorAttemptIds) {
+            const observation = await readWorkbookObservation(tx, read, opened, id);
+            if (window.scheduledAt) requireIndependentPosttest(observation);
+            observations.push(observation);
+          }
           observations.sort((a, b) => BigInt(a.admittedAt) < BigInt(b.admittedAt) ? -1 : 1);
           return { target, window, observations, ...(slot.scope_keys.method ? { method: slot.scope_keys.method } : {}) };
         });
@@ -348,7 +426,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     }
   }
 
-  return { freeze, get, reconcile, execute, listPosttests,
+  return { freeze, scheduleFollowup, get, reconcile, execute, listPosttests,
     savePosttestPaper: (input: Record<string, unknown>) => write(tx => posttest.save(tx, input)), startPosttest, submitPosttest };
 }
 

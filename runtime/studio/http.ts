@@ -204,11 +204,14 @@ export function serve(
       const comparison = /^\/api\/retention\/comparisons\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path);
       if (comparison?.[1] && method === 'GET')
         return json(res, 200, await student.retentionComparison.get(comparison[1]));
-      const retention = /^\/api\/retention\/([0-9A-HJKMNP-TV-Z]{26})(\/reconcile)?$/.exec(path);
+      const retention = /^\/api\/retention\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(reconcile|followup))?$/.exec(path);
       if (retention?.[1] && !retention[2] && method === 'GET')
         return json(res, 200, await student.retention.get(retention[1]));
       if (retention?.[1] && retention[2] && method === 'POST') {
-        const result = await student.retention.reconcile(retention[1], await body(req));
+        const input = await body(req);
+        const result = retention[2] === 'followup'
+          ? await student.retention.scheduleFollowup(retention[1], input)
+          : await student.retention.reconcile(retention[1], input);
         return json(res, result.state === 'pending' ? 202 : 200, result);
       }
       const assessment = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/assessments$/.exec(path);

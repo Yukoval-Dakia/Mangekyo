@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { WorkbookQuestionView } from '../../../modules/activity/workbook-values';
 import type { reconcileRetention } from '../../../modules/learner/retention';
-import { api, ApiError } from './api';
+import { api, ApiError, requestId } from './api';
 import { ListLink, ReadState, useResource } from './workspace';
 import { ReconciliationResearch } from './research';
 import './workbook.css';
 
-type Entry = { forecastKey: string; title: string; through: string } & (
-  { state: 'ready' } | { state: 'submitted'; reconciliationKey: string }
+type Entry = { forecastKey: string; title: string; through: string; sourceReconciliationKey?: string } & (
+  { state: 'preparing' | 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string }
 );
 type Issue = { id: string; rev: number; item: WorkbookQuestionView };
 type Verdict = ReturnType<typeof reconcileRetention>;
@@ -19,7 +19,74 @@ const verdictLabels: Record<Verdict['status'], string> = {
 };
 const deadline = (through: string) => new Date(through).toLocaleString('zh-CN');
 
-function Reconciliation({ recordKey }: { recordKey: string }) {
+const posttestHref = (key: string) => '/today?posttest=' + encodeURIComponent(key);
+
+function plannedTime(entry: Extract<Entry, { scheduledAt: string }>) {
+  const time = deadline(entry.scheduledAt);
+  return entry.state === 'preparing' ? `${time} 开始，正在准备` : `${time} 开始`;
+}
+
+type FollowupContext = { entries: Entry[]; reload: () => void };
+
+function ScheduleFollowup({ recordKey, entries, reload }: { recordKey: string } & FollowupContext) {
+  const existing = entries.find(entry => entry.sourceReconciliationKey === recordKey);
+  const [localTime, setLocalTime] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState('');
+  const [scheduledTime, setScheduledTime] = useState('');
+  const intent = useRef<{ requestId: string; scheduledAt: string } | null>(null);
+  const sending = useRef(false);
+
+  async function schedule(event: FormEvent) {
+    event.preventDefault();
+    if (sending.current) return;
+    const time = new Date(localTime);
+    if (!Number.isFinite(time.getTime()) || time.getTime() <= Date.now()) {
+      setFailure('请选择将来的时间。');
+      return;
+    }
+    const scheduledAt = time.toISOString();
+    if (intent.current?.scheduledAt !== scheduledAt) intent.current = { requestId: requestId(), scheduledAt };
+    sending.current = true;
+    setBusy(true);
+    setFailure('');
+    try {
+      const result = await api<{ key: string; state: string }>('/retention/' + encodeURIComponent(recordKey) + '/followup', {
+        method: 'POST', body: intent.current,
+      });
+      if (result.state === 'stale' || result.state === 'blocked') {
+        setFailure('此次后测当前不可用，请返回今天查看。');
+      } else {
+        setScheduledTime(scheduledAt);
+      }
+      reload();
+    } catch (error) {
+      setFailure(error instanceof ApiError ? error.message : '暂时无法确认安排，请重试。');
+      reload();
+    } finally {
+      sending.current = false;
+      setBusy(false);
+    }
+  }
+
+  if (existing) {
+    const detail = existing.state === 'scheduled' || existing.state === 'preparing' ? '已安排 · ' + plannedTime(existing) :
+      existing.state === 'submitted' ? '已交卷' : '已到时间';
+    return <p role="status">下一次后测{detail}{' '}<a href={posttestHref(existing.forecastKey)}>查看后测</a></p>;
+  }
+  if (scheduledTime) return <p role="status">已收到后测安排 · {deadline(scheduledTime)}{' '}
+    <a href="/today">返回今天查看</a></p>;
+  return <form className="research-choice" onSubmit={schedule}>
+    <label className="field">下一次后测时间（当地时间）
+      <input required type="datetime-local" value={localTime} disabled={busy}
+        onChange={event => { setLocalTime(event.target.value); setFailure(''); }} />
+    </label>
+    {failure && <p role="alert">{failure}</p>}
+    <button className="tonal-button" disabled={busy || !localTime}>{busy ? '正在安排…' : '安排后测'}</button>
+  </form>;
+}
+
+function Reconciliation({ recordKey, entries, reload: reloadList }: { recordKey: string } & FollowupContext) {
   const record = useResource<RecordView>('/retention/' + encodeURIComponent(recordKey));
   const { data, error, reload } = record;
   useEffect(() => {
@@ -38,6 +105,8 @@ function Reconciliation({ recordKey }: { recordKey: string }) {
       <dt>帮助情况</dt><dd>{{ independent: '独立作答', exposed: '接触过帮助', unknown: '未知' }[observation.exposure.kind] ?? '未知'}</dd>
       <dt>预测对账</dt><dd>{verdictLabels[status] ?? '未知'}</dd>
     </dl>
+    {observation.exposure.kind === 'independent' && observation.result !== 'unknown' &&
+      <ScheduleFollowup recordKey={recordKey} entries={entries} reload={reloadList} />}
     {status === 'missed' && observation.result === 'incorrect' && observation.exposure.kind === 'independent' &&
       <ReconciliationResearch key={recordKey} recordKey={recordKey} />}
   </>;
@@ -88,7 +157,7 @@ function AnswerForm({ issue, path, submitted }: { issue: Issue; path: string; su
   </form>;
 }
 
-function OpenPosttest({ entry }: { entry: Entry }) {
+function OpenPosttest({ entry, entries, reload }: { entry: Entry } & FollowupContext) {
   const path = '/retention/' + encodeURIComponent(entry.forecastKey) + '/posttest';
   const [issue, setIssue] = useState<Issue>();
   const [receipt, setReceipt] = useState('');
@@ -105,7 +174,7 @@ function OpenPosttest({ entry }: { entry: Entry }) {
   const key = entry.state === 'submitted' ? entry.reconciliationKey : receipt;
   return <section className="workbook-attempt-panel">
     <div className="subhead"><h2>{entry.title}</h2><a href="/today">返回今天</a></div>
-    {key ? <><h3>后测对账</h3><Reconciliation key={key} recordKey={key} /></> : <>
+    {entry.state === 'scheduled' || entry.state === 'preparing' ? <p role="status">后测已安排 · {plannedTime(entry)}</p> : key ? <><h3>后测对账</h3><Reconciliation key={key} recordKey={key} entries={entries} reload={reload} /></> : <>
       <p className="muted">独立完成 · 截止 {deadline(entry.through)}</p>
       {failure ? <p role="alert">{failure} <a href={location.href}>重新读取</a></p> :
         issue ? <AnswerForm issue={issue} path={path} submitted={setReceipt} /> : <p role="status">正在打开题目…</p>}
@@ -120,12 +189,23 @@ export function RetentionPosttests({ selected }: { selected?: string }) {
     window.addEventListener('pageshow', restore);
     return () => window.removeEventListener('pageshow', restore);
   }, []);
+  useEffect(() => {
+    if (list.error || !list.data) return;
+    const now = Date.now();
+    const times = list.data.items.flatMap(entry => entry.state === 'scheduled' ? [Date.parse(entry.scheduledAt)] :
+      entry.state === 'preparing' ? [now + 1500] : []);
+    if (!times.length) return;
+    const delay = Math.min(...times) - now;
+    const timer = setTimeout(list.reload, Math.min(delay > 0 ? delay : 5000, 2147483647));
+    return () => clearTimeout(timer);
+  }, [list.data, list.error, list.reload]);
   if (list.error || !list.data) return <ReadState resource={list} />;
   if (selected !== undefined) {
     const entry = list.data.items.find(item => item.forecastKey === selected);
-    return entry ? <OpenPosttest entry={entry} /> : <p role="status">此次后测当前不可用。 <a href="/today">返回今天</a></p>;
+    return entry ? <OpenPosttest key={entry.forecastKey} entry={entry} entries={list.data.items} reload={list.reload} /> : <p role="status">此次后测当前不可用。 <a href="/today">返回今天</a></p>;
   }
   return <>{list.data.items.map(entry => <ListLink key={entry.forecastKey}
-    href={'/today?posttest=' + encodeURIComponent(entry.forecastKey)} title={entry.title} icon="practice"
-    detail={entry.state === 'submitted' ? '已交卷 · 查看后测对账' : '保持后测 · 截止 ' + deadline(entry.through)} />)}</>;
+    href={posttestHref(entry.forecastKey)} title={entry.title} icon="practice"
+    detail={entry.state === 'submitted' ? '已交卷 · 查看后测对账' : entry.state === 'scheduled' || entry.state === 'preparing'
+      ? '后测已安排 · ' + plannedTime(entry) : '保持后测 · 截止 ' + deadline(entry.through)} />)}</>;
 }

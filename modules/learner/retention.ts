@@ -24,7 +24,7 @@ export type RetentionObservation = {
 
 export type RetentionInput = {
   target: RetentionTarget;
-  window: { requestedAt: string; through: string };
+  window: { requestedAt: string; scheduledAt?: string; through: string };
   observedThrough: Tick;
   observations: readonly RetentionObservation[];
 };
@@ -59,7 +59,7 @@ const elapsedIndependentEvidence: RetentionMethod = {
   predict(input) {
     const evidence = input.observations.filter(item => item.exposure.kind === 'independent' && item.result !== 'unknown');
     if (!evidence.length) return { kind: 'unknown', reason: 'missing-independent-scored-evidence' };
-    const target = Date.parse(input.window.through);
+    const target = Date.parse(input.window.scheduledAt ?? input.window.through);
     // Compare a fixed prototype with the baseline before fitting any parameters.
     // A seven-day half-life shrinks the signed evidence as the target time moves away.
     const balance = evidence.reduce((total, item) => {
