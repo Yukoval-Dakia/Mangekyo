@@ -8,6 +8,7 @@ import { isSourceFactId, sourceReference } from '../../modules/activity/source-v
 import { workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { forecastType, reconciliationType, type RetentionForecast, type RetentionObservation, reconcileRetention } from '../../modules/learner/retention.ts';
 import { purpose } from './identity.ts';
+import { retentionHistoryValid } from './retention.ts';
 import { readLearningOverview } from './learning-overview.ts';
 import { textSlice } from './reading.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
@@ -58,6 +59,10 @@ async function validRetentionManifest(tx: ReadTransaction, row: Selection, calle
   if (manifest.purpose !== purpose || manifest.inputs.length > 64 ||
       (await revalidateManifest(tx, manifest)).kind !== 'valid' ||
       (callerPurpose !== purpose && (await revalidateManifest(tx, manifest, callerPurpose)).kind !== 'valid')) return;
+  if (row.value.kind !== 'value') return;
+  const value = row.value.value;
+  const parent = 'forecastId' in value ? value.forecastId : row.id;
+  if (!await retentionHistoryValid(tx, derivationId(parent), 'observation' in value ? value.observation : undefined)) return;
   return manifest;
 }
 
