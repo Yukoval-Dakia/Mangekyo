@@ -13,10 +13,12 @@ import {
 } from '../../../shared/presentation/index.ts';
 import { requestId } from '../api.ts';
 import { SceneFigure, CurveFigure, type Reading } from './graphics.tsx';
+import type { editorDrafts } from './editor-draft.ts';
 import { Asset, Audition, type ResolveAsset } from './media.tsx';
 import './artifact.css';
 
 export interface ArtifactViewProps {
+  drafts?: typeof editorDrafts | undefined;
   unavailable?: Record<string,string> | undefined;
   saved?: Pick<ArtifactAction,'answers'|'trace'>[] | undefined;
   view: unknown;
@@ -43,7 +45,7 @@ export function ArtifactView({
   mount,
   onAction,
   resolveAsset,
-  hostState, saved, unavailable,
+  hostState, saved, unavailable, drafts,
 }: ArtifactViewProps) {
   if (
     !mount ||
@@ -56,7 +58,7 @@ export function ArtifactView({
   return (
     <Revision
       key={mount.mountId}
-      unavailable={unavailable} saved={saved} view={view}
+      drafts={drafts} unavailable={unavailable} saved={saved} view={view}
       mount={mount}
       hostState={hostState}
       onAction={onAction}
@@ -70,8 +72,9 @@ function Revision({
   mount,
   hostState,
   onAction,
-  resolve, saved, unavailable,
+  resolve, saved, unavailable, drafts,
 }: {
+  drafts: ArtifactViewProps["drafts"];
   saved: ArtifactViewProps["saved"];
   unavailable: ArtifactViewProps["unavailable"];
   view: unknown;
@@ -96,10 +99,10 @@ function Revision({
     );
   return (
     <Editor
-      key={JSON.stringify([definition.id, definition.revision])}
+      key={JSON.stringify([definition.id, definition.revision, mount.stateRev])}
       mount={mount}
       hostState={hostState}
-      unavailable={unavailable} saved={saved} view={definition}
+      drafts={drafts} unavailable={unavailable} saved={saved} view={definition}
       onAction={onAction}
       resolve={resolve}
       alternative={result.ok ? undefined : definition.fallback}
@@ -120,8 +123,9 @@ function Editor({
   view,
   onAction,
   resolve,
-  alternative, saved, unavailable,
+  alternative, saved, unavailable, drafts,
 }: {
+  drafts: ArtifactViewProps["drafts"];
   saved: ArtifactViewProps["saved"];
   unavailable: ArtifactViewProps["unavailable"];
   mount: ArtifactMount;
@@ -143,14 +147,15 @@ function Editor({
     ),
   );
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const draft = drafts?.get(mount);
   const [answers, setAnswers] = useState<Record<string, Answer>>(() =>
-    Object.assign(Object.fromEntries(
+    draft?.answers ?? Object.assign(Object.fromEntries(
       nodes
         .filter((n) => n.kind === 'range' || n.kind === 'selection' || n.kind === 'note')
         .map((n) => [n.id, initial(n)]),
     ), ...(saved ?? []).map(entry => entry.answers)),
   );
-  const update = (id: string, value: Answer) => setAnswers((old) => ({ ...old, [id]: value }));
+  const latestAnswers = useRef(answers);
   const selected = (id: string) => {
     const a = answers[id];
     return a?.kind === 'selection' ? a.ids : [];
@@ -172,7 +177,7 @@ function Editor({
     }
     return {omitted,steps};
   });
-  const trace = useRef<ArtifactAction['trace']>(restoredTrace);
+  const trace = useRef<ArtifactAction['trace']>(draft?.trace ?? restoredTrace);
   function record(step: Interaction) {
     if (trace.current.steps.length === 128) {
       trace.current.steps.shift();
@@ -180,7 +185,13 @@ function Editor({
     }
     trace.current.steps.push(step);
   }
-  const pending = useRef(new Map<string, Interaction>());
+  const pending = useRef(draft?.pending ?? new Map<string, Interaction>());
+  function update(id: string, value: Answer) {
+    const next = { ...latestAnswers.current, [id]: value };
+    latestAnswers.current = next;
+    drafts?.set(mount, { answers: next, trace: trace.current, pending: pending.current });
+    setAnswers(next);
+  }
   function settle(id: string) {
     const step = pending.current.get(id);
     if (step) {
