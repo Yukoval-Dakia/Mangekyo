@@ -136,14 +136,11 @@ export function serve(
       };
       if (path === '/api/notion/settings' && method === 'GET') return json(res,200,await student.notion.settings());
       const notionAction = /^\/api\/notion\/selections\/(grant|revoke|sync)$/.exec(path)?.[1];
-      if (notionAction && method === 'POST') {
-        const input = await body(req);
-        const receipt = await student.notion.mutate(notionAction,input);
-        res.setHeader('X-Deletion-Watermark',submittedWatermark(input));
-        return json(res,200,receipt);
-      }
-      const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path)?.[1];
-      if (notionSource && method === 'GET') return await student.notion.read(notionSource,url.searchParams.get('view'), data => json(res,200,data));
+      const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})(\/purpose)?$/.exec(path);
+      if (method === 'POST' && (notionAction || notionSource?.[2]))
+        return offlineSubmission(200,input => student.notion.mutate(notionAction ?? 'purpose',input,notionSource?.[1]));
+      if (method === 'GET' && notionSource?.[1] && !notionSource[2])
+        return await student.notion.read(notionSource[1],url.searchParams.get('view'), data => json(res,200,data));
       if (path === '/api/workspace/access' && method === 'GET') {
         return json(res, 200, await student.workspace.list(url.searchParams));
       }

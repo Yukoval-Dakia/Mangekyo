@@ -1,4 +1,3 @@
-import { notionModelRecipient } from './notion-recipient.ts';
 import { notionSendBasis, savedNotionWitnesses } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -33,6 +32,7 @@ import {
   methodName,
   slotType,
   textbookUndoId,
+  notionModelRecipient,
 } from './identity.ts';
 
 import {turnArtifacts} from './presentation-store.ts';

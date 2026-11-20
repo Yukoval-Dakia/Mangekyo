@@ -31,7 +31,7 @@ import {
   workbookAttemptType,
   workbookPaperType,
 } from '../../modules/activity/workbook-values.ts';
-import { sourceId, stableId, studioLearner } from './identity.ts';
+import { notionModelRecipient, sourceId, stableId, studioLearner } from './identity.ts';
 import { materialIntakeLink } from './reading.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
@@ -390,24 +390,24 @@ export async function loadWorkspaceAccessRoutes(): Promise<Readonly<Record<strin
 }
 
 function providerViews(settings: ProviderSettings, stored: StoredAccess): WorkspaceProviderView[] {
-  return settings.providers.map((provider) => {
-    const route = stored.routes[provider.id];
-    const matches = Boolean(
-      route?.enabled &&
-      route.baseUrl === provider.baseUrl &&
-      route.protocol === provider.protocol,
-    );
+  return settings.providers.map(({id, label, model, baseUrl, protocol}) => {
+    const route = stored.routes[id];
+    const matches = Boolean(route?.enabled && route.baseUrl === baseUrl && route.protocol === protocol);
     return {
-      id: provider.id,
-      label: provider.label,
-      model: provider.model,
-      baseUrl: provider.baseUrl,
-      protocol: provider.protocol,
-      active: provider.id === settings.activeProviderId,
+      id, label, model, baseUrl, protocol,
+      active: id === settings.activeProviderId,
       authorized: matches,
       ...(route?.enabled && !matches ? { authorizationStale: true } : {}),
     };
   });
+}
+
+export async function notionTeachingRecipients() {
+  const [settings, stored] = await Promise.all([loadSettings(), readStored()]);
+  return providerViews(settings,stored).filter(view => view.authorized).map(p => ({
+    id:notionModelRecipient(p.id,p.baseUrl,p.protocol,p.model,stored.routes[p.id]!.revision),
+    purpose:'teaching', label:p.label + ' · ' + p.model + ' · ' + p.baseUrl,
+  }));
 }
 
 function saveWorkspaceAccessRoute(db: Db, input: unknown) {

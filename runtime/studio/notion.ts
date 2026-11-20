@@ -11,13 +11,13 @@ import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { notionReadPage, notionReadRows, notionConfirmPageAccess, NotionSourceUnavailable } from '../../modules/capture/notion-api.ts';
 import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, notionSelectionWitness, selectionChange, selectionGrant,
   readNotionSelection, type NotionSelection, type NotionReadOptions } from '../../modules/capture/notion-selection.ts';
-import { withSelectedNotionSources, notionPageObservationType, prepareNotionRefreshInput, prepareNotionIngest, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
+import { openSelectedNotionSource, notionSourceTarget, setNotionPurposeCommand, notionPageObservationType, prepareNotionRefreshInput, prepareNotionIngest, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
-import { notionTeachingRecipients } from './notion-recipient.ts';
+import { notionTeachingRecipients } from './workspace-access.ts';
 import { notionConnection } from './notion-transport.ts';
 
 const learnerScope = {learner: studioLearner};
@@ -42,13 +42,12 @@ async function checkDenial(tx: ReadTransaction, id: string, epoch: string, page?
 }
 
 export async function readStudioNotionSource(tx: ReadTransaction, sourceId: FactId, options: NotionReadOptions, access: Access) {
-  const source = await withSelectedNotionSources({
+  const source = await openSelectedNotionSource({
     learner: tx.learner, purpose: access.purpose, recipientId: access.recipientId,
     selectionRead: createCommandReadContext(tx, 'storage'),
     sourceRead: createAuthorizedFactReader(tx, access.purpose, access.maySend),
-  }).fact(sourceId, options);
-  const value = source.type === captureSourceType ? sourceEnvelope(source.value) : null;
-  if (value?.kind !== 'notion') throw new FactReadDeniedError('recipient','没有该 Notion 来源。');
+  },sourceId,options);
+  const value = sourceEnvelope(source.value);
   const current = (await selectionAt(tx, value.sourceSelectionId!))!;
   await checkDenial(tx, current.id, current.selectionEpoch, value.externalId!, value.sourceSelectionEpoch!);
   return source;
@@ -75,15 +74,12 @@ function transactionDb(db: Db, tx: DbTransaction): Db {
 }
 
 async function sources(tx: ReadTransaction, selection: NotionSelection, allGenerations = false) {
-  return (await tx.query<{id: FactId; rev: number; pageId:string; lastEditedTime:string}>(`SELECT f.id,r.rev,r.data->>'externalId' AS "pageId",
-    greatest(r.data->>'occurredAt',observation.at) AS "lastEditedTime"
-    FROM facts f JOIN fact_revs r ON (f.learner_id,f.id,f.current_rev)=(r.learner_id,r.fact_id,r.rev)
-    LEFT JOIN (SELECT m.learner_id,v.data->>'sourceId' AS source,v.data->>'selectionEpoch' AS epoch,v.data->>'lastEditedTime' AS at
-      FROM facts m JOIN fact_revs v ON (m.learner_id,m.id,m.current_rev)=(v.learner_id,v.fact_id,v.rev)
-      WHERE m.learner_id=$1 AND m.type=$6 AND m.retracted_rev IS NULL) observation
-      ON observation.source=f.id AND observation.epoch=r.data->>'sourceSelectionEpoch'
-    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'sourceSelectionId'=$3
-      AND ($5 OR r.data->>'sourceSelectionEpoch'=$4) AND r.data->>'kind'='notion'
+  return (await tx.query<{id: FactId; rev: number; pageId:string; lastEditedTime:string}>(`WITH current AS (
+    SELECT f.id,f.type,r.rev,r.data FROM facts f JOIN fact_revs r ON (f.learner_id,f.id,f.current_rev)=(r.learner_id,r.fact_id,r.rev)
+    WHERE f.learner_id=$1 AND f.type IN ($2,$6) AND f.retracted_rev IS NULL)
+    SELECT s.id,s.rev,s.data->>'externalId' AS "pageId",greatest(s.data->>'occurredAt',m.data->>'lastEditedTime') AS "lastEditedTime"
+    FROM current s LEFT JOIN current m ON m.type=$6 AND m.data->>'sourceId'=s.id AND m.data->>'selectionEpoch'=s.data->>'sourceSelectionEpoch'
+    WHERE s.type=$2 AND s.data->>'sourceSelectionId'=$3 AND ($5 OR s.data->>'sourceSelectionEpoch'=$4) AND s.data->>'kind'='notion'
     ORDER BY "lastEditedTime" DESC,"pageId" DESC`, [tx.learner, captureSourceType, selection.id, selection.selectionEpoch, allGenerations, notionPageObservationType])).rows;
 }
 
@@ -177,9 +173,10 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
         const {root, preset, recipients, selectionEpoch:epoch, active} = current;
         const visible = [];
         if (active) for (const source of await sources(tx, current, true)) {
-          try { await readStudioNotionSource(tx, source.id, {mode:'following'}, ownerAccess); }
-          catch { continue; }
-          visible.push({id:source.id, rev:source.rev});
+          try {
+            const fact = await readStudioNotionSource(tx,source.id,{mode:'following'},ownerAccess);
+            visible.push({id:source.id, rev:source.rev, accessEpoch:fact.accessEpoch, purpose:fact.purpose});
+          } catch { continue; }
         }
         selections.push({selectionId:id, epoch, active, root, preset, recipients, label:root.id, sources:visible});
       }
@@ -188,11 +185,30 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
   }
   const ownerAccess = {purpose:'storage', recipientId:studioLearner, maySend:(s:FactSnapshot) => s.ref.learner === studioLearner};
 
-  async function mutate(action: string, raw: Record<string, unknown>) {
+  async function mutate(action: string, raw: Record<string, unknown>, sourceId?: string) {
     const requestId = clientRequest(raw.requestId);
     if (raw.deletionWatermark === undefined) throw new RequestError(400, '需要设备原始删除水位。');
     const watermark = submittedWatermark(raw);
     const {requestId: _request, deletionWatermark: _watermark, ...fields} = raw;
+    if (action === 'purpose' && sourceId) {
+      const {expectedRev,accessEpoch,preset,...selectionFields} = fields;
+      const {selectionId,expectedEpoch,recipient} = parseSettings(() => selectionChange(selectionFields));
+      if (recipient || preset !== 'storage') throw new RequestError(400,'此操作只将该原件收窄为本人存储。');
+      const target = parseSettings(() => notionSourceTarget({id:sourceId,selectionId,expectedRev,accessEpoch}));
+      return locked(async tx => {
+        const read = () => openFollowing(tx,target.id,ownerAccess);
+        const saved = await record(tx,requestId,{action,target,preset,expectedEpoch,watermark},async () => {
+          const fact = await read();
+          if (sourceEnvelope(fact.value).sourceSelectionId !== selectionId || fact.ref.rev !== expectedRev || fact.accessEpoch !== accessEpoch) throw stale();
+          await handle(tx)({learner:tx.learner,actor:'learner',purpose:'storage',deletionWatermark:watermark,type:setNotionPurposeCommand,
+            id:commandId(stableId('notion-purpose',requestId)),input:{...target,preset}});
+          return (await read()).ref.rev.toString();
+        },async () => { await live(tx,selectionId,expectedEpoch,watermark); });
+        const fact = await read();
+        if (String(fact.ref.rev) !== saved || fact.purpose.length !== 1 || fact.purpose[0] !== 'storage') throw stale();
+        return {id:sourceId,rev:fact.ref.rev,accessEpoch:fact.accessEpoch,purpose:fact.purpose};
+      });
+    }
     const change = parseSettings(() => action === 'grant' ? selectionGrant(fields) : selectionChange(fields));
     const {selectionId,expectedEpoch} = change;
     if (action === 'sync') {
@@ -285,14 +301,15 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
     }));
   }
 
+  async function openFollowing(tx: ReadTransaction, id: FactId, access: Access) {
+    try { return await readStudioNotionSource(tx,id,{mode:'following'},access); }
+    catch { throw new RequestError(403,'这份 Notion 来源未获当前接收人授权。'); }
+  }
+
   async function read(id: string, view: string | null, send: (data: unknown) => void) {
     if (view !== null && view !== 'learning') throw new RequestError(400,'无效的读取用途。');
     const access = view ? {...ownerAccess, purpose:learningReader.purpose, recipientId:learningReader.id} : ownerAccess;
-    const sourceId = factId(id);
-    const open = async (tx: ReadTransaction) => {
-      try { return await readStudioNotionSource(tx, sourceId, {mode:'following'}, access); }
-      catch { throw new RequestError(403, '这份 Notion 来源未获当前接收人授权。'); }
-    };
+    const open = (tx: ReadTransaction) => openFollowing(tx,factId(id),access);
     const initial = await snapshot(async tx => {
       const fact = await open(tx);
       const source = sourceEnvelope(fact.value);
@@ -305,7 +322,7 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
       const fact = await open(tx);
       if (fact.ref.rev !== initial.fact.ref.rev || fact.accessEpoch !== initial.fact.accessEpoch) throw stale();
       const {unit} = sourceEnvelope(fact.value);
-      send({id, rev:fact.ref.rev, title:unit.title, blocks:unit.blocks.map(b => ({id:b.id,parentId:b.parentId,text:b.body.status === 'known' ? b.body.text : null}))});
+      send({id, rev:fact.ref.rev, accessEpoch:fact.accessEpoch, purpose:fact.purpose, title:unit.title, blocks:unit.blocks.map(b => ({id:b.id,parentId:b.parentId,text:b.body.status === 'known' ? b.body.text : null}))});
     });
   }
   return {settings, mutate, read};

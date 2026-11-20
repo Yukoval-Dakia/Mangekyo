@@ -1,5 +1,4 @@
 import { confirmNotionDispatch, notionSendBasis, savedNotionWitnesses, type NotionRecipient } from './notion.ts';
-import { notionModelRecipient } from './notion-recipient.ts';
 import { providerEndpoint } from '../../executors/teaching/provider.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { createHash } from 'node:crypto';
@@ -50,7 +49,7 @@ import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
-import { methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
+import { notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
 class UncertainEffect extends Error {
   constructor(requestId: string | null) {
