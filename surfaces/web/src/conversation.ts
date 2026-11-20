@@ -3,6 +3,7 @@ import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionP
 
 import type { CurrentObject } from "./current-record";
 import {selectedRoute, type Route, type McpGrant} from './model-route';
+import { useMountPermissions } from "./presentation/mount-permissions";
 import { authorizeMounts, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 
 type Operation = {currentObject?: CurrentObject | undefined} & (
@@ -27,6 +28,18 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     sessionRef.current = value;
     renderSession(value);
   }
+  const permissions = useMountPermissions(sessionId, active, (watchedSession, removed) => {
+    const latest = sessionRef.current;
+    if (!latest || latest.id !== watchedSession) return;
+    const withdrawn = new Set([...latest.withdrawn, ...removed]);
+    setSession({ ...latest, withdrawn, mounts: latest.mounts.filter(m => !withdrawn.has(m.mountId)) });
+  });
+  // Reads, receipts and turn events supply content. Only the current session
+  // permission stream can make that content visible, including after completion.
+  const visibleSession = session && {
+    ...session,
+    mounts: session.mounts.filter(m => session.id === sessionId && permissions?.has(m.mountId)),
+  };
   function applySnapshot(sent: ArtifactSnapshotV1, input: unknown) {
     const latest = sessionRef.current;
     if (!latest?.mounts.some(m => m.sessionId === sent.sessionId && m.turnId === sent.turnId && m.mountId === sent.mountId)) return;
@@ -49,7 +62,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   const [reconnecting, setReconnecting] = useState(false);
 
   const readAssessment = useRef<(() => Promise<void>) | undefined>(undefined);
-  const queuedSubmissions = JSON.stringify(session?.mounts.flatMap(m => m.assessment?.state === 'queued'
+  const queuedSubmissions = JSON.stringify(visibleSession?.mounts.flatMap(m => m.assessment?.state === 'queued'
     ? [[m.turnId, m.mountId, m.assessment.submissionRef.id, m.assessment.submissionRef.rev]] : []) ?? []);
 
   useEffect(() => {
@@ -330,7 +343,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
 
   return {
     sessionId,
-    session,
+    session: visibleSession,
     applySnapshot,
     draft: draft?.text ?? "",
     outdatedDraft: Boolean(draft?.text.trim() && draft.parentId !== session?.currentTurnId),
