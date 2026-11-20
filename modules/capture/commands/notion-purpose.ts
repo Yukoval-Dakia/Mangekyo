@@ -14,8 +14,9 @@ export default defineCommand({
   },
   async write(ctx, target) {
     const { current, source } = await readNotionSourceTarget(ctx, target);
-    await checkNotionAdmission(ctx, target.id, source, target.purpose);
-    if (current.purpose.length === target.purpose.length && target.purpose.every(use => current.purpose.includes(use))) return [];
+    const narrowing = target.purpose.every(use => current.purpose.includes(use));
+    if (narrowing && current.purpose.length === target.purpose.length) return [];
+    if (!narrowing) await checkNotionAdmission(ctx, target.id, source, target.purpose);
     return [{ kind: 'set_purpose', id: current.ref.id, expectedRev: current.ref.rev, purpose: target.purpose }];
   },
 });

@@ -276,13 +276,11 @@ export function notionRevisionDiff(previous: SourceEnvelope, next: SourceEnvelop
   return diffNotionBlocks(blocks(previous), blocks(next));
 }
 
-export class UnchangedNotionSourceError extends Error {
-  readonly code = 'notion_source_unchanged';
-  constructor() { super('Notion 原件内容未变化。'); }
-}
+export type { NotionRefreshInput, NotionRefreshTarget, NotionObservation } from './notion-observation.ts';
+export { prepareNotionRefreshInput, notionPageObservationId, notionPageObservationType, UnchangedNotionSourceError } from './notion-observation.ts';
 
-/** The worker may skip dispatch after checking access and identity under the learner lock.
- * A timestamp-only upstream edit advances the sync cursor without copying the page again.
+/** Compare content only.
+ * Timestamp-only observations must still be committed using prepareNotionRefreshInput.
  */
 export function notionRefreshHasChanges(previous: SourceEnvelope, next: SourceEnvelope) {
   const diff = notionRevisionDiff(previous, next);
