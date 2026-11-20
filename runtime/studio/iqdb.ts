@@ -4,6 +4,7 @@ import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { FactId } from '../../kernel/src/declarations/ids.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
+import { validateBankItem } from '../../modules/activity/question-assessment.ts';
 import { workbookRequestId } from '../../modules/activity/workbook-values.ts';
 import { assetType, checkQuestionTeachingSources, questionAsset, questionPrompt } from '../../modules/content/asset.ts';
 import { fields, list, pageId, record, revision, text } from '../../modules/content/parse.ts';
@@ -50,6 +51,11 @@ function parsePaper(row: Record<string, unknown>) {
   throw new Error('请选择提案或固定题版。');
 }
 
+function recordedReferences(receipt: string) {
+  const value: unknown = JSON.parse(receipt);
+  return list(Array.isArray(value) ? value : record(value).questionRefs).map(questionRef);
+}
+
 function validated<Result>(parse: () => Result) {
   try { return parse(); }
   catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '题库请求无效。'); }
@@ -74,9 +80,15 @@ async function inspectQuestion(tx: ReadTransaction, id: FactId, pinned?: Questio
         const ref = { learner: tx.learner, type: questionVerificationType, key: questionVerificationKey(version) };
         const { outcome } = await read.slot<QuestionVerification>(ref, { mode: 'following' });
         reviewed = outcome.kind === 'value' && outcome.value.status === 'needs-review';
-        if (!reviewed) { await openQuestionForRelease(read, id, use); status = 'release_ready'; }
+        if (outcome.kind === 'value' && outcome.value.status === 'ready') {
+          const { contract } = await openQuestionForRelease(read, id, use);
+          reviewed = true;
+          try { validateBankItem(contract.items[0]!, contract.releaseRef); status = 'release_ready'; }
+          catch { status = 'restricted'; }
+        }
       } catch (error) {
-        if (!(error instanceof FactNotFoundError)) throw error;
+        if (!(error instanceof FactNotFoundError) &&
+            !(error instanceof Error && error.message === '这版题目需要当前有效的独立验收。')) throw error;
       }
     }
     return { public: { id, rev: fact.ref.rev, title: asset.title, prompt: questionPrompt(asset), status }, version, reviewed };
@@ -112,7 +124,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         const questionRefs = input.questionRefs.length ? input.questionRefs : (await listQuestions(tx))
           .filter(question => [input.need, ...input.coverage].some(term => mentions(question, term)))
           .slice(0, 20).map(({ id, rev }) => ({ id, rev }));
-        return JSON.stringify(questionRefs);
+        return JSON.stringify({ ...input, questionRefs });
       }, tx => assertDeletionWatermark(tx, watermark)).catch(error => {
         if (error instanceof Error && error.message === 'Workspace read receipt does not match the request')
           throw new RequestError(409, '这个请求标识已经用于另一份提案。');
@@ -121,7 +133,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       return db.tx(scope, async tx => {
         await lockLearner(tx, tx.learner);
         await assertDeletionWatermark(tx, watermark);
-        const requested = list(JSON.parse(saved)).map(questionRef);
+        const requested = recordedReferences(saved);
         const selected: NonNullable<Awaited<ReturnType<typeof inspectQuestion>>>[] = [];
         for (const ref of requested) {
           const opened = await inspectQuestion(tx, ref.id, ref.rev);
@@ -155,7 +167,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
              AND step_key='plan' AND label=$3 AND state='done'`, [tx.learner, input.proposalId, proposalLabel],
           );
           if (!saved) throw new RequestError(404, '找不到这份题库提案。');
-          refs = list(JSON.parse(saved.result)).map(questionRef);
+          refs = recordedReferences(saved.result);
         }
         if (!refs.length) throw blocked();
         return issueBank(tx, { requestId: input.requestId, questionRefs: refs, deletionWatermark: watermark });
