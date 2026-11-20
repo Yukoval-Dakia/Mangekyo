@@ -5,7 +5,10 @@ import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/typ
 import { derivationId, factId, learnerId, type DerivationId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { GatherContext, GatherInput, Json, JsonObject, Outcome, ReadContext, Waiting } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { retentionPaperType, posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
+import {
+  insideFrozenPosttestWindow, posttestOpensAt, retentionPaperType, posttestSubmissionType,
+  retentionDeadline as deadline, retentionFreezeRequest,
+} from '../../modules/activity/retention-posttest.ts';
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
@@ -98,12 +101,6 @@ function recordId(value: unknown) {
   return factId(value);
 }
 
-function deadline(value: unknown) {
-  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) ||
-      new Date(value).toISOString() !== value) throw new Error('需要 UTC 截止时间。');
-  return value;
-}
-
 async function authorized<T>(run: () => Promise<T>) {
   try { return await run(); }
   catch (error) {
@@ -114,14 +111,9 @@ async function authorized<T>(run: () => Promise<T>) {
 }
 
 function afterFreeze(observation: RetentionObservation, window: ForecastScope['window'], effectiveTick: Tick) {
-  if (BigInt(observation.admittedAt) <= BigInt(effectiveTick) ||
-      observation.submittedAt < posttestOpensAt(window) || observation.submittedAt > window.through) {
+  if (!insideFrozenPosttestWindow(observation, window, effectiveTick)) {
     throw new RequestError(409, '这次交卷不在预测冻结后的观察窗口内。');
   }
-}
-
-function posttestOpensAt(window: ForecastScope['window']) {
-  return window.scheduledAt ?? window.requestedAt;
 }
 
 function requireIndependentPosttest(observation: RetentionObservation) {
@@ -170,14 +162,14 @@ function gatherInSnapshot(
 }
 
 const legacyRetentionMethod = 'last-independent-result@1';
-const pythonHost = createPythonDeriverHost();
+let defaultHost: PythonDeriverHost | undefined;
 
 export async function evaluateStudioRetention(method: NonNullable<ReturnType<typeof readAnyRetentionMethod>>,
-  input: RetentionForecast['input'], host: PythonDeriverHost = pythonHost) {
+  input: RetentionForecast['input'], host?: PythonDeriverHost) {
   return evaluateFrozenRetention(method, input, async (slice, version) => {
     const selected = readAnyRetentionMethod(version);
     if (!selected || !('deriver' in selected)) throw new Error('未登记的 Python 保持力方法。');
-    const response = await host.derive(selected.deriver, slice);
+    const response = await (host ?? (defaultHost ??= createPythonDeriverHost())).derive(selected.deriver, slice);
     if (response.kind === 'failed') throw new Error(response.reason);
     if (response.outcome.kind !== 'value') throw new Error('Python 保持力方法未返回计算结果。');
     return response.outcome.value as CognitionResult;
@@ -204,7 +196,7 @@ function readAtWatermark(tx: ReadTransaction, tracked: ReadContext, cutoff: Tick
 }
 
 export function openRetention(db: Db, activity: LoadedModule, method = defaultRetentionMethod,
-  host: PythonDeriverHost = pythonHost) {
+  host?: PythonDeriverHost) {
   const configured = readAnyRetentionMethod(method);
   if (!configured) throw new Error('保持方法配置无效：' + method);
   const supportsVariant = 'deriver' in configured;
@@ -220,7 +212,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   async function enqueueForecast(
     tx: DbTransaction, key: string, opened: Awaited<ReturnType<typeof openRetentionTarget>>,
     plan: Pick<ForecastScope, 'priorAttemptIds' | 'window' | 'sourceReconciliationKey'>,
-    condition = opened.target.condition,
+    condition: RetentionTarget['condition'] = opened.target.condition,
   ) {
     await enqueue(tx, forecastPolicy, key, {
       target: { ...opened.target, condition }, method, paperEpoch: opened.accessEpoch,
@@ -230,15 +222,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   }
 
   async function freeze(paperId: string, input: Record<string, unknown>) {
-    const { requestId, itemId, priorAttemptIds, through, condition } = requestInput(() => {
-      const { requestId, itemId, priorAttemptIds = [], through, condition = 'same-item' } = input;
-      if (typeof itemId !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(itemId) ||
-          (condition !== 'same-item' && condition !== 'variant') ||
-          !Array.isArray(priorAttemptIds) || priorAttemptIds.length > 10 ||
-          new Set(priorAttemptIds).size !== priorAttemptIds.length) throw new Error();
-      return { requestId: workbookRequestId(requestId), itemId, priorAttemptIds: priorAttemptIds.map(recordId).sort(),
-        through: deadline(through), condition: condition === 'variant' ? 'variant' as const : 'same-item' as const };
-    });
+    const { requestId, itemId, priorAttemptIds, through, condition } = requestInput(() => retentionFreezeRequest(input));
     const id = factId(paperId);
     const key = forecastSlot.key({ forecastId: stableId('retention-forecast', id, requestId) });
     return write(async tx => {

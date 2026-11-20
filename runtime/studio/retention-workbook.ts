@@ -2,21 +2,24 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type DerivationId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactRef, ReadContext } from '../../kernel/src/declarations/types.ts';
-import { projectHelpExposure, type AdmittedHelpEvent, type HelpExposureEvidence } from '../../modules/activity/help-exposure.ts';
+import { projectHelpExposure } from '../../modules/activity/help-exposure.ts';
 import { helpAppliesTo, type HelpTarget } from '../../modules/activity/help-exposure-values.ts';
-import { posttestIssuanceType, posttestSubmissionType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import {
-  sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookGradingVersion,
-  workbookPaper, workbookPaperType, workbookRubricGradingVersion,
-  type WorkbookAttempt,
+  matchesControlledSubmission, posttestSubmissionType, retentionPaperType, retentionTeachingPurpose,
+  workbookRetentionTarget, workbookVariantItem,
+} from '../../modules/activity/retention-posttest.ts';
+import {
+  sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
+  type WorkbookAttempt, type WorkbookSourceQuestionRef,
 } from '../../modules/activity/workbook-values.ts';
 import type { RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
 import { readPosttestIssuance, type PosttestFactReader } from './retention-posttest.ts';
+import { activityHelpProcess, controlledWorkbookHelp } from '../../modules/activity/evidence-slice.ts';
+import { readEarlierControlledPosttests } from '../../modules/activity/evidence-read.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { RequestError } from './sessions.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
 import { knowledgeEdgeType, workspaceEntryType } from '../../modules/content/knowledge-edge.ts';
-import type { WorkbookSourceQuestionRef } from '../../modules/activity/workbook-values.ts';
 import { resolveSource, type SourceTrack } from './source-read.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 
@@ -50,14 +53,7 @@ export async function openRetentionTarget(tx: ReadTransaction, read: PosttestFac
     if (resolved.content !== question.prompt) throw new RequestError(422, '来源题面与冻结题项不匹配。');
   }
   if (paper.materialId) await trackSource(tx, read, paper.materialId);
-  const target: RetentionTarget = {
-    activity: 'frozen-workbook-item',
-    paper: { id: paperId, rev: source.ref.rev },
-    itemId,
-    condition: 'same-item',
-    gradingVersion: paper.questions.some(item => item.kind === 'rubric')
-      ? workbookRubricGradingVersion : workbookGradingVersion,
-  };
+  const target = workbookRetentionTarget(paper, { id: paperId, rev: source.ref.rev }, itemId);
   return { target, paper, question, source, accessEpoch: source.accessEpoch, sealed: source.type === retentionPaperType };
 }
 
@@ -111,13 +107,7 @@ export async function openControlledSubmission(
   const issued = await readPosttestIssuance(tx, read, factId(attempt.paperId));
   const release = issued.issuance;
   const root = opened ?? await openRetentionTarget(tx, read, release.paper.id, release.itemId);
-  const { target } = root;
-  if (!root.sealed || release.paper.id !== target.paper.id || release.paper.rev !== target.paper.rev ||
-      release.paperEpoch !== root.accessEpoch || release.itemId !== target.itemId ||
-      release.gradingVersion !== target.gradingVersion || attempt.gradingVersion !== target.gradingVersion ||
-      !sameWorkbookJson(attempt.paper, root.paper) || BigInt(issued.tick) >= BigInt(admittedAt) ||
-      attempt.submittedAt < release.startedAt || attempt.submittedAt > release.through ||
-      (expectedForecast !== undefined && release.forecastId !== expectedForecast)) {
+  if (!matchesControlledSubmission(attempt, admittedAt, issued, root, expectedForecast)) {
     throw new RequestError(422, '后测交卷与原预测或发放不匹配。');
   }
   return { issued, source: root.source };
@@ -143,7 +133,7 @@ export async function readWorkbookEvidence(
   if (!birth || !birth.unchanged || birth.submittedAt !== attempt.submittedAt || controlled !== opened.sealed) {
     throw new RequestError(422, '交卷和冻结卷面的题项或判分条件不一致。');
   }
-  let process: ReturnType<typeof readProcess>;
+  let process: ReturnType<typeof activityHelpProcess>;
   if (controlled) {
     const { issued } = await openControlledSubmission(tx, read, attempt, birth.tick, opened, expectedForecast);
     process = await readControlledExposure(tx, read, target, issued.tick, submission.ref, birth.tick);
@@ -179,42 +169,17 @@ export async function readComparableWorkbookEvidence(
     return { evidence, opened: target, novelty: 'same' as const };
   }
   const candidates = await readItemEdges(tx, read, target.question.sourceQuestionRef, cutoff, ['variant_of']);
-  const matches = attempt.paper.questions.flatMap(item => candidates.flatMap(edge => {
-    const other = edge.from.fact.id === target.question.sourceQuestionRef?.id ? edge.to.fact : edge.from.fact;
-    return item.sourceQuestionRef?.id === other.id && item.sourceQuestionRef.rev === other.rev &&
-      edge.variant?.spoilsNext === 'none' ? [{ item, edge }] : [];
-  }));
-  const match = matches[0];
-  if (matches.length !== 1 || !match) throw new RequestError(422, '交卷与预测题项缺少可核对的无剧透变式关系。');
-  const opened = await openRetentionTarget(tx, read, paperId, match.item.id);
+  const match = workbookVariantItem(attempt.paper, target.question.sourceQuestionRef, candidates);
+  if (!match) throw new RequestError(422, '交卷与预测题项缺少可核对的无剧透变式关系。');
+  const opened = await openRetentionTarget(tx, read, paperId, match.id);
   const evidence = await readWorkbookEvidence(tx, read, opened, id);
   return { evidence, opened, novelty: 'isomorphic' as const };
-}
-
-function readProcess(observed: HelpExposureEvidence, events: readonly AdmittedHelpEvent[]) {
-  const evidence = events.filter(({ ref }) => observed.evidenceRefs.some(use => use.id === ref.id && use.rev === ref.rev));
-  const helpLevel = observed.kind === 'unexposed' ? 'independent' as const
-    : observed.kind === 'unknown' ? 'unknown' as const
-    : evidence.some(({ value }) => value.kind === 'displayed' && value.step.kind === 'solution')
-      ? 'solution_seen' as const : 'hinted' as const;
-  return { exposure: retentionExposure(observed), helpLevel };
 }
 
 async function readControlledExposure(
   tx: ReadTransaction, read: ReadContext, target: RetentionTarget, started: Tick, ref: FactRef, cutoff: Tick,
 ) {
-  // Include earlier issuances of the same frozen source, where a solution could have been released.
-  // Withdrawal of a help record cannot restore complete coverage.
-  const { rows: releases } = await tx.query<{ id: string; competing_submission: boolean }>(
-    `SELECT i.fact_id AS id, EXISTS (
-       SELECT 1 FROM fact_revs r JOIN facts f ON f.learner_id=r.learner_id AND f.id=r.fact_id
-       WHERE r.learner_id=i.learner_id AND r.rev=1 AND r.data->>'paperId'=i.fact_id AND f.type=$4
-         AND r.tick>$5::bigint AND r.tick<$6::bigint
-     ) AS competing_submission
-     FROM fact_revs i JOIN facts f ON f.learner_id=i.learner_id AND f.id=i.fact_id
-     WHERE i.learner_id=$1 AND i.rev=1 AND f.type=$2 AND i.data->'paper'->>'id'=$3 AND i.tick<$6::bigint`,
-    [tx.learner, posttestIssuanceType, target.paper.id, posttestSubmissionType, started, cutoff],
-  );
+  const releases = await readEarlierControlledPosttests(tx, target.paper.id, started, cutoff);
   const visible = [];
   for (const row of releases) {
     try {
@@ -235,15 +200,8 @@ async function readControlledExposure(
     await trackSource(tx, read, sourceReference(content, { kind: 'whole' }));
     return true;
   });
-  // Another attempt of this item can supply correctness feedback during this sitting.
-  // A release without a display witness vetoes independence without claiming the learner saw it.
-  const complete = ref.rev === 1 && !omitted && !releases.some(release => release.competing_submission)
-    && visible.length === releases.length
-    && events.every(({ value }) => value.kind === 'displayed' && mounts.some(mount => helpAppliesTo(value, mount)));
-  const results = mounts.map(target => projectHelpExposure({ submission: { ref, target, cutoff }, events,
-    coverage: complete ? { submission: ref, target, through: cutoff } : null }));
-  const evidenceRefs = results.flatMap(result => result.evidenceRefs).sort((a, b) => a.id.localeCompare(b.id));
-  return readProcess(evidenceRefs.length ? { kind: 'exposed', evidenceRefs } : results[0]!, events);
+  return controlledWorkbookHelp(ref, cutoff, mounts, events, omitted || visible.length !== releases.length,
+    releases.some(release => release.competing_submission));
 }
 
 async function readExposure(
@@ -266,13 +224,7 @@ async function readExposure(
     return true;
   });
   // The ordinary workbook host has no complete observation of pre-submission help.
-  return readProcess(projectHelpExposure({ submission: { ref, target: mount, cutoff }, events, coverage: null }), events);
+  return activityHelpProcess(projectHelpExposure({ submission: { ref, target: mount, cutoff }, events, coverage: null }), events);
 }
 
-export function retentionExposure(observed: HelpExposureEvidence): RetentionObservation['exposure'] {
-  if (observed.kind === 'unexposed') return { kind: 'independent' };
-  if (observed.kind === 'exposed') return {
-    kind: 'exposed', refs: observed.evidenceRefs.map(({ id, rev }) => ({ id, rev })),
-  };
-  return { kind: 'unknown', reason: observed.reason };
-}
+export { retentionExposure } from '../../modules/activity/evidence-slice.ts';

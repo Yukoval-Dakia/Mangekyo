@@ -138,7 +138,7 @@ export async function readMissedPosttest(tx: ReadTransaction, key: string, resul
     ? forecast.value.value.estimate : undefined;
   const predictedCorrect = estimate?.kind === 'categorical' ? estimate.expected === 'correct'
     : estimate?.kind === 'probabilistic' ? estimate.probability >= 0.5 : false;
-  if (!predictedCorrect || !await validRetentionManifest(tx, forecast!)) return;
+  if (!forecast || !predictedCorrect || !await validRetentionManifest(tx, forecast)) return;
   const { rowCount } = await tx.query(
     'SELECT 1 FROM facts WHERE learner_id=$1 AND id=$2 AND type=$3 AND retracted_rev IS NULL',
     [tx.learner, observation.submission.id, posttestSubmission],

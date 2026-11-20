@@ -10,6 +10,7 @@ import {
   forecastType, readAnyRetentionMethod, reconcileRetention, reconciliationType, type RetentionForecast,
 } from '../../modules/learner/retention.ts';
 import reconciliation from '../../modules/learner/derivers/retention-reconciliation.ts';
+import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { retentionPurpose } from './retention-workbook.ts';
 import { evaluateStudioRetention } from './retention.ts';
@@ -76,7 +77,7 @@ function metrics(statuses: readonly Verdict[]) {
   };
 }
 
-export function openRetentionComparison(db: Db) {
+export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) {
   async function get(key: string) {
     return db.snapshot(scope, async tx => {
       const job = await readPlan(tx, key);
@@ -144,7 +145,7 @@ export function openRetentionComparison(db: Db) {
       const { manifest, method, pairs } = frozen;
       const cases = [];
       for (const { pair, recorded, outcome } of pairs) {
-        const alternate = await evaluateStudioRetention(method, recorded.input);
+        const alternate = await evaluateStudioRetention(method, recorded.input, pythonHost);
         cases.push({
           ...pair, forecastWatermark: recorded.input.observedThrough, observationWatermark: outcome.observedThrough,
           exposure: outcome.observation.exposure.kind, observed: outcome.observation.result,
