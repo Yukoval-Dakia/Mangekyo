@@ -9,14 +9,13 @@ import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { isSourceFactId, sourceReference } from '../../modules/activity/source-values.ts';
 import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { memoryAssertion, memoryAssertionType, type MemoryLink } from '../../modules/companion/memory-assertion.ts';
-import { memoryReviewDeriverVersion, reviewMemoryEvidence } from '../../modules/companion/memory-review.ts';
 import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory-claims.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import { learnerPreferenceType, type PreferenceScope } from '../../modules/learner/preference-values.ts';
 import {
   extractedUnderstanding, isExtractedUnderstanding, reviewUnderstanding, understandingPresentation, understandingProjection,
 } from '../../modules/companion/understanding.ts';
-import { claimRecallValue, hypothesisStatus, recallClaimEvidence } from '../../modules/companion/belief.ts';
+import { claimRecallValue, hypothesisStatus, recallClaimEvidence, workbookRecallValue } from '../../modules/companion/belief.ts';
 import { openObjectiveCitations } from './belief-evidence.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
@@ -225,7 +224,6 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       continue;
     }
     if (isExtractedUnderstanding(fact.value)) continue;
-    const understanding = understandingProjection(fact)!;
     const memory = memoryAssertion(fact.value);
     const { validFrom, validUntil, conditions = [] } = memory.scope;
     if ((validFrom && validFrom > at) || (validUntil && validUntil <= at) ||
@@ -245,26 +243,8 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
        JOIN unnest($2::text[], $3::int[]) chosen(id,rev) ON (source.fact_id,source.rev)=(chosen.id,chosen.rev)
        WHERE source.learner_id=$1`, [tx.learner, originals.map(item => item.fact.ref.id), originals.map(item => item.fact.ref.rev)],
     );
-    const evidence = originals.flatMap((item, i) => {
-      const origin = provenance.find(row => row.fact_id === item.fact.ref.id);
-      if (origin?.author !== 'learner') return [];
-      return [{ eventId: item.fact.ref.id, assertionId: id, scope: memory.scope,
-        witness: { factId: item.fact.ref.id, revision: item.fact.ref.rev, accessEpoch: item.fact.accessEpoch,
-          sourceVersion: `${workbookAttemptType}/${item.gradingVersion}`, authorRole: 'learner' as const },
-        occurredAt: item.submittedAt, recordedAt: 'unknown', help: { exposed: 'unknown' as const, order: 'unknown' as const },
-        direction: memory.evidence[i]!.direction }];
-    });
-    if (evidence.length !== originals.length) continue;
-    const review = reviewMemoryEvidence({ requestId: id, assertion: { id, text: memory.text, scope: memory.scope }, evidence });
-    if (review.kind !== 'value') continue;
-    const { assertion, outcome, findings, nextEvidence } = review.value;
-    const value = {id, rev: fact.ref.rev, kind: understanding.kind, ttl: understanding.ttl, sticky: understanding.sticky,
-      evidence_refs: understanding.evidence_refs, method: memoryReviewDeriverVersion, assertion, outcome, findings, nextEvidence: [...nextEvidence],
-      sources: review.value.sources.map(source => {
-        const item = originals.find(item => item.fact.ref.id === source.eventId)!;
-        return { ...source, recordedTick: provenance.find(row => row.fact_id === source.eventId)!.tick,
-          sourceRef: item.ref, content: item.content };
-      }) };
+    const value = workbookRecallValue(fact, memory, originals, provenance);
+    if (!value) continue;
     add('memory', { value, sent: [witness(fact), ...originals.map(item => item.witness)], basis: link.basis,
       ...(validUntil ? { expiresAt: validUntil } : {}) });
   }

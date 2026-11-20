@@ -3,9 +3,8 @@ import { createHash } from 'node:crypto';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
 import { currentMemory, memoryId } from './memory.ts';
 import { memoryScopeForObject, readMemoryGateway } from './memory-gateway.ts';
-import { areMemoryClaimsCurrent } from './memory-claims.ts';
+import { teachingMemoryBasis } from './memory-claims.ts';
 import { isMemoryConflict, openTurnMemory } from './turn-memory.ts';
-import { claimType } from '../../modules/companion/claim.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -15,7 +14,6 @@ import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { derivationId, factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import {
   failWork,
   finishWork,
@@ -63,7 +61,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const job = await readWork(db, ref);
   if (!job) return;
   if (job.slotType !== slotType || job.deriver !== methodName) throw new Error('Unknown teaching method');
-  const learner = learnerId(ref.learner);
+  const learner = learnerId(ref.learner), {slotKey} = job;
   const scope = { learner };
   const inputs = new Map<string, ManifestInput>();
   const assessments = new Map<string, WorkspaceAssessmentBasis>();
@@ -74,7 +72,6 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   let learningMemory: Awaited<ReturnType<typeof readMemoryGateway>>;
   let expandedMemory: typeof learningMemory;
   const memoryPackets: NonNullable<typeof learningMemory>[] = [];
-  const memoryHeads = new Set<string>();
   let memoryTurn: string | undefined;
   let authorizeWorkspaceRecipient: (() => Promise<void>) | undefined;
   const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
@@ -120,17 +117,22 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
        WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
       [learner, slotType, id],
     );
-    if (row && (await revalidateManifest(tx, parseManifest(row.manifest))).kind === 'valid') return row;
+    if (!row) return;
+    const manifest = parseManifest(row.manifest);
+    const memoryBasis = await teachingMemoryBasis(tx, manifest, id);
+    if (memoryBasis) return {...row, manifest, memoryBasis};
     return undefined;
   }
-  function trackFeedback(id: string, replyId: string) {
-    inputs.set('feedback:' + id, { kind: 'slot', slotType, slotKey: id, derivationId: derivationId(replyId), mode: 'following' });
+  function trackFeedback(id: string, reply: NonNullable<Awaited<ReturnType<typeof readFeedback>>>) {
+    inputs.set('feedback:' + id, {kind: 'slot', slotType, slotKey: id, derivationId: derivationId(reply.id), mode: 'following'});
+    for (const input of reply.manifest.inputs)
+      if (input.kind === 'fact' && reply.memoryBasis.has(input.id)) inputs.set(`feedback-basis:${input.id}:${input.rev}:${input.accessEpoch}:${input.mode}`, input);
+    if (reply.memoryBasis.size) protectWorkspaceDispatch = true;
   }
   async function validInputs(tx: ReadTransaction) {
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
-    const now = new Date().toISOString();
-    if (memoryPackets.some(item => item.receipt.expiresAt && item.receipt.expiresAt <= now) ||
-        !await areMemoryClaimsCurrent(tx, [...memoryHeads], memoryTurn)) throw new ChangedEvidence();
+    if (memoryPackets.some(item => item.receipt.expiresAt && item.receipt.expiresAt <= new Date().toISOString()))
+      throw new ChangedEvidence();
     if (currentObject || assessments.size || retention.size) {
       if (!authorizeWorkspaceRecipient) throw new ChangedEvidence();
       await authorizeWorkspaceRecipient();
@@ -152,7 +154,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       gatherTick: clock?.tick,
       inputs: [...inputs.values()],
     });
-    if ((await revalidateManifest(tx, manifest)).kind !== 'valid') throw new ChangedEvidence();
+    if (!await teachingMemoryBasis(tx, manifest, slotKey)) throw new ChangedEvidence();
     return manifest;
   }
   const settle = (feedback: DisplayTurn, optedIn: boolean) => finishWork(db, ref, async (tx, tick) => {
@@ -325,10 +327,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         } };
       function trackMemory(packet: NonNullable<typeof learningMemory>) {
         memoryPackets.push(packet);
-        for (const entry of packet.receipt.basis) {
+        for (const entry of packet.receipt.basis)
           inputs.set('learning-memory:' + entry.id + ':' + entry.rev, workspaceInput(entry));
-          if (entry.type === claimType) memoryHeads.add(entry.id);
-        }
       }
       if (submission.caseId === 'companion' && submission.workspaceRevision && !grants.length) {
         const { rows: [prior] } = await db.query<{ has_sample: boolean; has_memory: boolean }>(
@@ -396,7 +396,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             historyNotice = '记忆范围或依据已变更，本轮从当前学习记录继续。';
             break;
           }
-          const previousInputs = parseManifest(manifest).inputs;
+          const previousInputs = manifest.inputs;
           const assessmentSlots = previousInputs.filter((input): input is AssessmentSlot =>
             input.kind === 'slot' && isWorkspaceAssessmentSlot(input.slotType));
           const retentionSlots = previousInputs.filter((input): input is RadarSlot =>
@@ -431,7 +431,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           }
           // A reply can reenter history after an intervening turn omitted it.
           // Its witness is needed unless an admitted reply already tracks it.
-          if (!coveredReplies.has(reply.id)) trackFeedback(previousId, reply.id);
+          if (!coveredReplies.has(reply.id)) trackFeedback(previousId, reply);
           for (const input of previousInputs) {
             if (input.kind === 'slot' && input.slotType === slotType && input.mode === 'following')
               coveredReplies.add(input.derivationId);
@@ -555,7 +555,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         const parent = submission.parentId;
         const reply = await db.snapshot(scope, tx => readFeedback(tx, parent));
         if (!reply) throw new ChangedEvidence();
-        trackFeedback(parent, reply.id);
+        trackFeedback(parent, reply);
         const prev = reply.value;
         followUp = {
           previous: {

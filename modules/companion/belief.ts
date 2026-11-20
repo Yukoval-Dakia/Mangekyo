@@ -1,6 +1,8 @@
-import type { FactId, FactSnapshot, ToolError } from '@mangekyo/kernel';
+import type { FactId, FactSnapshot, Json, ToolError } from '@mangekyo/kernel';
+import { memoryReviewDeriverVersion, reviewMemoryEvidence } from './memory-review.ts';
+import type { memoryAssertion } from './memory-assertion.ts';
 import { activityEvidence } from './activity-evidence.ts';
-import { claimEvidence, claimExpiry, claimId, claimInput, claimRecord, ClaimInputError, claimText, claimValue, requirePreservedObjectScope, structuredClaim, type ClaimRef } from './claim.ts';
+import { claimEvidence, claimExpiry, claimId, claimInput, claimType, claimRecord, ClaimInputError, claimText, claimValue, requirePreservedObjectScope, structuredClaim, type ClaimRef } from './claim.ts';
 import { citationExcerpt, extractedUnderstanding, reviewUnderstanding, understandingPresentation, opensCitation, understandingCitation, understandingProjection, type ActivityCitation, type ExtractedUnderstanding } from './understanding.ts';
 
 export const saveBeliefCommand = 'companion.saveBelief';
@@ -159,13 +161,6 @@ export function checkedHypothesis(value: unknown, text: unknown) {
   return data;
 }
 
-export function checkedDirective(value: unknown, kind: unknown) {
-  const data = structuredClaim(value);
-  if (data.authority !== 'directive' || data.action === 'forget' || (kind !== undefined && kind !== data.category))
-    throw new ClaimInputError('请选择同类、仍生效的主权规则。');
-  return data;
-}
-
 export function claimRecallValue(fact: FactSnapshot, claim: ReturnType<typeof claimValue>, tick: string,
   excerpt: string, explicit: boolean) {
   const legacy = claim.version === 0;
@@ -204,4 +199,66 @@ export function recallClaimEvidence(claim: ReturnType<typeof claimValue>) {
   const legacy = claim.version === 0;
   return legacy ? {legacy, evidence: claim.source, excerpt: claim.quote, start: 0} :
     {legacy, evidence: claim.evidence_refs[0], excerpt: claim.evidence_refs[0]?.excerpt, start: claim.evidence_refs[0]?.start ?? 0};
+}
+
+export function workbookRecallValue(fact: FactSnapshot, memory: ReturnType<typeof memoryAssertion>, originals: readonly {
+  fact: FactSnapshot; ref: Json; content: Json; submittedAt: string; gradingVersion: string;
+}[], provenance: readonly {fact_id: string; author: string; tick: string}[]) {
+  const {id} = fact.ref;
+  const understanding = understandingProjection(fact)!;
+  const evidence = originals.flatMap((item, i) => {
+    const origin = provenance.find(row => row.fact_id === item.fact.ref.id);
+    if (origin?.author !== 'learner') return [];
+    return [{ eventId: item.fact.ref.id, assertionId: id, scope: memory.scope,
+      witness: { factId: item.fact.ref.id, revision: item.fact.ref.rev, accessEpoch: item.fact.accessEpoch,
+        sourceVersion: `${item.fact.type}/${item.gradingVersion}`, authorRole: 'learner' as const },
+      occurredAt: item.submittedAt, recordedAt: 'unknown', help: { exposed: 'unknown' as const, order: 'unknown' as const },
+      direction: memory.evidence[i]!.direction }];
+  });
+  if (evidence.length !== originals.length) return;
+  const review = reviewMemoryEvidence({ requestId: id, assertion: { id, text: memory.text, scope: memory.scope }, evidence });
+  if (review.kind !== 'value') return;
+  const { assertion, outcome, findings, nextEvidence } = review.value;
+  return {id, rev: fact.ref.rev, kind: understanding.kind, ttl: understanding.ttl, sticky: understanding.sticky,
+    evidence_refs: understanding.evidence_refs, method: memoryReviewDeriverVersion, assertion, outcome, findings, nextEvidence: [...nextEvidence],
+    sources: review.value.sources.map(source => {
+      const item = originals.find(item => item.fact.ref.id === source.eventId)!;
+      return { ...source, recordedTick: provenance.find(row => row.fact_id === source.eventId)!.tick,
+        sourceRef: item.ref, content: item.content };
+    }) };
+}
+
+export function turnMemoryAction(name: string, args: Record<string, unknown>, explicit: boolean, count: number) {
+  if (name !== (explicit ? 'save_belief' : 'save_memory')) throw new ClaimInputError('本轮未开放该保存工具。');
+  const {action, category} = args;
+  if (action !== 'remember' && action !== 'update' && action !== 'forget') throw new ClaimInputError('记忆操作无效。');
+  if (explicit && category !== 'directive' && category !== 'hypothesis')
+    throw new ClaimInputError('category 须为 directive 或 hypothesis。');
+  if (count >= 12) throw new ClaimInputError('每轮最多保存 12 项 Belief。');
+  if (!explicit || category !== 'hypothesis') {
+    beliefFields(args, ['text', 'scope', 'valid_until', 'quote_excerpt', 'supersedes',
+      ...(explicit ? ['kind', 'goal', 'intent_key', 'reopen_condition'] : [])]);
+  }
+  return {action, hypothesis: explicit && category === 'hypothesis'};
+}
+
+export function memoryRetrieveQuery(args: Record<string, unknown>) {
+  if (Object.keys(args).some(key => key !== 'query')) throw new ClaimInputError('检索只接受可选的原文字词。');
+  return args.query === undefined ? undefined : claimText(args.query, 120).trim();
+}
+
+export function directiveTarget<Witness extends {id: string; type: string}>(args: Record<string, unknown>,
+  candidates: ReadonlyMap<string, Witness>, staged: ReadonlySet<string>) {
+  if (args.supersedes === undefined) {
+    if (args.action !== 'remember') throw new ClaimInputError('先用 retrieve_memory 确定一条旧记忆。');
+    return;
+  }
+  const target = candidates.get(claimId(args.supersedes));
+  if (!target || target.type !== claimType || staged.has(target.id) || args.action === 'remember')
+    throw new ClaimInputError('使用本轮检索到且尚未变更的记忆。');
+  return target;
+}
+
+export function pendingMemoryReply(action: string) {
+  return JSON.stringify({ok:true, status:'pending', action, message:'已记录本轮拟保存的操作。以本轮结束时的回执为准。'});
 }

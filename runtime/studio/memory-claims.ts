@@ -1,7 +1,11 @@
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
+import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { memoryReceipt, saveBeliefCommand } from '../../modules/companion/belief.ts';
+import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { claimType, claimValue, ClaimInputError, matchesClaimEvidence, type ClaimRef } from '../../modules/companion/claim.ts';
+import { applyClaimCommand, claimType, claimValue, ClaimInputError, matchesClaimEvidence, type ClaimRef } from '../../modules/companion/claim.ts';
 import { purpose, stableId } from './identity.ts';
 
 export const claimUndoToken = (command: string, id: string) => stableId('memory-undo-token', command, id);
@@ -42,6 +46,38 @@ export async function areMemoryClaimsCurrent(tx: ReadTransaction, ids: readonly 
     WHERE f.learner_id=$1 AND f.type=$2 AND ($6::boolean OR f.retracted_rev IS NULL) AND f.id=ANY($4::text[])
       AND NOT EXISTS (${activeSuccessor('$5::text')})`, [tx.learner, type, ownTurn ?? null, ids, ignoreEntry ?? null, allowRetracted]);
   return rowCount === ids.length;
+}
+
+export async function teachingMemoryBasis(tx: ReadTransaction, manifest: Manifest, turn: string) {
+  if ((await revalidateManifest(tx, manifest)).kind !== 'valid') return;
+  const ids = manifest.inputs.flatMap(input => input.kind === 'fact' ? [input.id] : []);
+  const {rows} = await tx.query<{id: string; superseded: boolean}>(`SELECT f.id, EXISTS (${activeSuccessor()}) AS superseded
+    FROM facts f WHERE f.learner_id=$1 AND f.type=ANY($2::text[]) AND f.id=ANY($4::text[])`,
+  [tx.learner, [claimType, memoryAssertionType], turn, ids]);
+  return rows.some(row => row.superseded) ? undefined : new Set(rows.map(row => row.id));
+}
+
+export const turnMemoryKey = (turn: string, belief: boolean) => stableId(belief ? 'turn-belief-command' : 'turn-memory-command', turn);
+
+export async function recoverTurnMemoryReceipts(tx: ReadTransaction, turns: string[]) {
+  if (!turns.length) return new Map<string, ReturnType<typeof memoryReceipt>[]>();
+  const keys = turns.flatMap(turn => [false, true].map(mode => ({turn, key: turnMemoryKey(turn, mode),
+    type: mode ? saveBeliefCommand : applyClaimCommand})));
+  const {rows} = await tx.query<{turn: string; command: string; id: string; rev: number; action: Parameters<typeof memoryReceipt>[2]}>(`
+    SELECT k.turn,c.id AS command,r.fact_id AS id,r.rev,CASE WHEN f.type=$3 THEN r.data->>'action'
+      WHEN r.data#>>'{belief,forgotten}'='true' THEN 'forget'
+      WHEN r.data#>>'{belief,supersedes,id}' IS NOT NULL THEN 'correct' ELSE 'remember' END AS action
+    FROM jsonb_to_recordset($2::jsonb) AS k(turn text,key text,type text)
+    JOIN commands c ON c.learner_id=$1 AND c.id=k.key AND c.type=k.type AND c.state='done'
+    JOIN fact_revs r ON r.learner_id=c.learner_id AND r.command_id=c.id AND r.rev=1 AND r.author='companion'
+    JOIN facts f ON f.learner_id=r.learner_id AND f.id=r.fact_id
+    WHERE c.input->>'actor'='companion' AND c.input->>'purpose'=$5
+      AND (c.type<>$6 OR c.input#>>'{input,turn}'=k.turn)
+      AND ((f.type=$3 AND r.data->>'version'='1' AND r.data#>>'{evidence_refs,0,id}'=k.turn)
+        OR (f.type=$4 AND c.type=$6 AND r.data->>'version'='2' AND r.data#>>'{belief,turn}'=k.turn))
+    ORDER BY k.turn,c.id,r.tick,r.fact_id`, [tx.learner, JSON.stringify(keys), claimType, memoryAssertionType, purpose, saveBeliefCommand]);
+  return new Map([...Map.groupBy(rows, row => row.turn)].map(([turn, group]) => [turn,
+    group.map(({id, rev, action, command}) => ({...memoryReceipt(id, rev, action, claimUndoToken(command, id)), title: '记忆回执'}))]));
 }
 
 export async function openClaimFact(tx: ReadTransaction, id: ClaimRef['id'], callerPurpose = purpose) {

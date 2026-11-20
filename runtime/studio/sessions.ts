@@ -7,7 +7,6 @@ import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { factId, commandId } from '../../kernel/src/declarations/ids.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { first45Answer, first45Histories, first45Question } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
@@ -20,7 +19,7 @@ import type { RecallHttp } from './recall-http.ts';
 import { loadSettings } from './settings.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
-import { areMemoryClaimsCurrent } from './memory-claims.ts';
+import { areMemoryClaimsCurrent, recoverTurnMemoryReceipts, teachingMemoryBasis } from './memory-claims.ts';
 import { currentObjectAlias, readCurrentLearningObject } from './current-learning-object.ts';
 import {
   stableId,
@@ -78,7 +77,6 @@ export type DisplayTurn = {
   writes?: WorkspaceWriteReceipt[];
   workspaceBasis?: WorkspaceWitness[];
   learningMemoryDigest?: string;
-  memoryCommand?: string;
   memoryManagement?: true;
   foregroundDigest?: ForegroundDigest;
   action: string;
@@ -96,6 +94,8 @@ export const turnResearchAccess = (fact: FactSnapshot) => ({
   allowed: fact.purpose.includes(turnResearchPurpose), rev: fact.ref.rev, accessEpoch: fact.accessEpoch,
 });
 export const unavailableReplyMessage = '本轮已完成，依据已变更，旧回复已隐藏。';
+const unavailableReply = (model: string): DisplayTurn => ({action: 'reply_unavailable', model,
+  rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: []});
 type TurnView = {
   id: string;
   submission: ReturnType<typeof studyTurn>;
@@ -145,9 +145,8 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
     const submission = studyTurn(snapshot.value);
     let feedback = row.value;
     if (feedback && (!await grantCurrent(submission) ||
-      (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid')) feedback = null;
-    if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
-      rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: [] };
+      !await teachingMemoryBasis(tx, parseManifest(row.manifest), row.id))) feedback = null;
+    if (!feedback && row.settled) feedback = unavailableReply(submission.model);
     result.push({
       id: row.id,
       submission,
@@ -245,8 +244,9 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
     const last = timeline.at(-1);
     if (!last) throw new RequestError(404, '这次学习会话不存在。');
     const currentObject = last.submission.currentObject;
-    const recovered = await recoverRevokedReceipts(tx,
-      timeline.filter(row => row.feedback?.action === 'reply_unavailable').map(row => row.id));
+    const recoveryIds = timeline.filter(row => !row.feedback || row.feedback.action === 'reply_unavailable').map(row => row.id);
+    const recovered = await recoverRevokedReceipts(tx, recoveryIds);
+    const memory = await recoverTurnMemoryReceipts(tx, recoveryIds.filter(id => !recovered.get(id)?.some(write => write.memory)));
     return {
       id: session,
       caseId: last.submission.caseId,
@@ -258,17 +258,16 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
       ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
       ...(last.error ? { error: last.error } : {}),
       ...(last.status === 'pending' ? { artifacts: await turnArtifacts(tx, session, last.id) } : {}),
-      turns: await Promise.all(timeline.filter(row => row.feedback).map(async row => {
-        const writes = row.feedback?.writes ?? recovered.get(row.id);
-        return { row, writes: writes?.length ? await projectWrites(tx, writes) : undefined,
-          artifacts: await turnArtifacts(tx, session, row.id) };
+      turns: await Promise.all(timeline.filter(row => row.feedback || memory.has(row.id)).map(async row => {
+        const writes = row.feedback?.writes ?? [...(recovered.get(row.id) ?? []), ...(memory.get(row.id) ?? [])];
+        return {row, feedback: row.feedback ?? unavailableReply(row.submission.model),
+          writes: writes.length ? await projectWrites(tx, writes) : undefined, artifacts: await turnArtifacts(tx, session, row.id)};
       })),
     };
   });
   const projected = [];
-  for (const { row, artifacts, writes } of turns) {
-    if (!row.feedback) continue;
-    const { studyKit, ...feedback } = row.feedback;
+  for (const {row, feedback: value, artifacts, writes} of turns) {
+    const {studyKit, ...feedback} = value;
     const recall = row.derivationId && studyKit
       ? await projectRecall?.(session, row.id, row.derivationId, studyKit)
       : undefined;

@@ -125,6 +125,14 @@ export function editableTurnClaim(input: unknown) {
   return claim;
 }
 
+export function editableTurnDirective(value: unknown, kind: unknown) {
+  const data = structuredClaim(value);
+  if (data.sticky) throw new ClaimInputError('请在「我 → 记忆」确认更正或撤回这条规则。');
+  if (data.authority !== 'directive' || data.action === 'forget' || (kind !== undefined && kind !== data.category))
+    throw new ClaimInputError('请选择同类、仍生效的主权规则。');
+  return data;
+}
+
 export function requirePreservedObjectScope(previous: ClaimScope, next: ClaimScope) {
   if (previous.kind !== 'object') return;
   if (next.kind !== 'object' || next.object !== previous.object || next.basis.length !== previous.basis.length ||
@@ -181,12 +189,8 @@ export async function writeTurnClaims(ctx: CommandContext, entries: ReturnType<t
     if (data.supersedes) {
       const target = await readClaimPredecessor(ctx, data.supersedes);
       if (!allowsTeaching(target)) throw new ClaimInputError('目标记忆不允许教学用途。');
-      const previous = directive ? structuredClaim(target.value) : editableTurnClaim(target.value);
-      if (previous.action === 'forget' || (directive && previous.authority !== 'directive') ||
-          (directive && previous.category !== data.category))
-        throw new ClaimInputError('更正须沿用同类生效中的主权规则。');
-      if (previous.authority && data.authority !== previous.authority)
-        throw new ClaimInputError('更正须保留学习者主权规则。');
+      const previous = directive ? editableTurnDirective(target.value, data.category) : editableTurnClaim(target.value);
+      if (previous.action === 'forget') throw new ClaimInputError('目标记忆已忘掉。');
       requirePreservedObjectScope(previous.scope, data.scope);
     }
     if (data.scope.kind === 'object') for (const ref of data.scope.basis) {
