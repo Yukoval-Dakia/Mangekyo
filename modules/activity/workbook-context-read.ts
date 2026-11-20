@@ -2,7 +2,29 @@ import type { FactId, FactSnapshot, ReadContext, Revision } from '@mangekyo/kern
 import { readActivitySubmissionBirth, type ActivityEvidenceReadScope } from './evidence-read.ts';
 import { sameHelpRef, type HelpRef } from './help-exposure-values.ts';
 import { recordWorkbookPresentationCommand, workbookPresentation, workbookPresentationType } from './workbook-presentation.ts';
+import { verifyWorkspaceEntryBasis, workspaceEntry, workspaceEntryType } from './workspace-values.ts';
 import { sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from './workbook-values.ts';
+
+type ReadFact = (...args: Parameters<ReadContext['fact']>) => Promise<FactSnapshot>;
+
+/** Reuse exact fact reads within a single discovery transaction and authorization scope. */
+export function memoWorkbookFacts(read: ReadFact): Pick<ReadContext,'fact'> {
+  const facts = new Map<string,Promise<FactSnapshot>>();
+  return {fact<Value>(id: FactId, options: Parameters<ReadFact>[1]) {
+    const key = JSON.stringify([id,options.mode,options.mode === 'pinned' ? options.rev : null]);
+    const result = facts.get(key) ?? read(id,options);
+    facts.set(key,result);
+    return result as Promise<FactSnapshot<Value>>;
+  }};
+}
+
+export function withWorkbookWorkspaceBasis(read: Pick<ReadContext,'fact'>) {
+  return memoWorkbookFacts(async (id,options) => {
+    const fact = await read.fact(id,options);
+    if (fact.type === workspaceEntryType) await verifyWorkspaceEntryBasis(read,id,workspaceEntry(fact.value).basis);
+    return fact;
+  });
+}
 
 export type BoundWorkbookMount = {paper: HelpRef; attemptRef?: HelpRef; epoch: string; attemptEpoch?: string; issuance?: HelpRef};
 

@@ -57,8 +57,9 @@ export async function readStudioNotionSource(tx: ReadTransaction, sourceId: Fact
 
 export type NotionRecipient = ((fact: FactSnapshot) => boolean) & {notionRecipientId?: string};
 
-export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnapshot, purpose: string, recipient: NotionRecipient | 'learner') {
+export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnapshot, purpose: string, recipient: NotionRecipient | 'learner', reopen?: (fact: FactSnapshot) => Promise<FactSnapshot>) {
   if (fact.type !== captureSourceType || sourceEnvelope(fact.value).kind !== 'notion') return;
+  if (reopen) return reopen(fact);
   try {
     return await readStudioNotionSource(tx, fact.ref.id, {mode:'pinned', rev:fact.ref.rev},
       recipient === 'learner' ? {purpose,recipientId:tx.learner,maySend:() => true} : {purpose,recipientId:recipient.notionRecipientId ?? '',maySend:recipient});
@@ -187,6 +188,8 @@ export class NotionReadUnconfirmed extends FactReadDeniedError {
   constructor() { super('recipient', '暂时无法确认 Notion 来源。'); }
 }
 
+export class NotionReadUnchecked extends NotionReadUnconfirmed {}
+
 export type CheckNotionRead = (fact: FactSnapshot) => Promise<void>;
 type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => Promise<T>;
 
@@ -211,6 +214,7 @@ export function notionReadScope(db: Db, learner: LearnerId, signal?: AbortSignal
     const page = await pageFor(tx, fact);
     if (!page) return;
     const authority = witnesses.get(page.witness);
+    if (authority === undefined) throw new NotionReadUnchecked();
     if (authority === 'withdrawn') throw new FactReadDeniedError('recipient', '未能确认 Notion 来源。');
     if (authority !== 'authorized') throw new NotionReadUnconfirmed();
   };

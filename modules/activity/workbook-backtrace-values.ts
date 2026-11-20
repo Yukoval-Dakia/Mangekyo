@@ -1,6 +1,7 @@
 import { factId, type BusWitness, type FactRef, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { posttestIssuanceType, posttestSubmissionType, type posttestIssuance, type RetentionWindow } from './retention-posttest.ts';
 
+import { reopenControlledHelpBasis } from './help-exposure-values.ts';
 import { readActivitySubmissionBirth, type ActivityEvidenceReadScope } from './evidence-read.ts';
 import { sameWorkbookJson, workbookAttempt, workbookAttemptType, type WorkbookPaper } from './workbook-values.ts';
 
@@ -48,6 +49,13 @@ export function workbookWitnessReader(read: Reader, tx: ActivityEvidenceReadScop
     async range() { throw new WorkbookTraceReadError(); },
   };
   return { read: traced, witnesses: () => [...witnesses.values()] };
+}
+
+export async function confirmWorkbookTraceBasis(read: Reader, tx: ActivityEvidenceReadScope,
+  root: readonly BusWitness[], candidate: readonly BusWitness[]) {
+  const witnesses = workbookWitnessReader(read,tx,[...root,...candidate]).witnesses();
+  return await reopenControlledHelpBasis(read,tx.learner,witnesses.filter(witness=>witness.type==='capture.source'))
+    ? witnesses : null;
 }
 
 type TraceRoot = { target: {paper: Ref}; paper: WorkbookPaper };

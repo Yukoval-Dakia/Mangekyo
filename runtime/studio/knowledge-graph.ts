@@ -2,6 +2,7 @@ import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } fr
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
   KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeUseKey,
@@ -30,8 +31,17 @@ export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeE
   const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
   const sources = new Map<string, WorkspaceSource>();
   const opened: Parameters<SourceTrack>[] = [];
+  const external: SourceRefV1[] = [];
   for (const use of edge.sourceUses) {
     const snapshot = await reader.reopen({ ...use, mode: 'pinned' });
+    if (access.readNotionWitness && snapshot.type === captureSourceType && sourceEnvelope(snapshot.value).kind === 'notion') {
+      const authorized = await access.readNotionWitness(snapshot);
+      if (authorized.ref.id !== use.id || authorized.ref.rev !== use.rev || authorized.accessEpoch !== use.accessEpoch)
+        throw new KnowledgeEdgeBasisError('Notion 关系依据已变化。');
+      opened.push([authorized,'pinned']);
+      external.push(sourceReference(authorized,whole));
+      continue;
+    }
     const source = await resolveSource(tx, sourceReference(snapshot, whole), {
       ...access, track: (...witness) => opened.push(witness),
     });
@@ -43,7 +53,7 @@ export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeE
   if (!from || !to || from.sourceRef.fact.type !== workspaceEntryType || to.sourceRef.fact.type !== workspaceEntryType ||
       from.kind !== edge.from.kind || to.kind !== edge.to.kind)
     throw new KnowledgeEdgeBasisError('概念或题目端点类型不符。');
-  return {from, to, sources: [...sources.values()].map(source => source.sourceRef), opened};
+  return {from, to, sources: [...[...sources.values()].map(source => source.sourceRef), ...external], opened};
 }
 
 function graphReadUnavailable(error: unknown) {

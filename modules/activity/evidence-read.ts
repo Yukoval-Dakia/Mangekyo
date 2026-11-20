@@ -128,15 +128,16 @@ export function throughTick(tick: Tick) {
 /** These queries identify candidates or check a watermark. The caller still opens each witness. */
 export async function workbookLinkCandidates(
   tx: ActivityEvidenceReadScope, type: string, source: WorkbookSourceQuestionRef, through: Tick,
-  kinds: readonly ('targets_concept' | 'variant_of')[],
+  kinds: readonly ('targets_concept' | 'variant_of')[], eligibility?: 'unspoiled-variant',
 ) {
   const { rows } = await tx.query<{ id: FactId }>(
     `SELECT f.id FROM facts f JOIN fact_revs r
        ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
      WHERE f.learner_id=$1 AND f.type=$2 AND r.tick<=$3 AND r.data->>'kind'=ANY($4::text[])
+       AND ($6::text IS NULL OR r.data#>>'{variant,spoilsNext}'='none')
        AND (r.data->'from'->'sourceUse' @> $5::jsonb OR
             (r.data->>'kind'='variant_of' AND r.data->'to'->'sourceUse' @> $5::jsonb))
-     ORDER BY f.id`, [tx.learner, type, through, kinds, JSON.stringify(source)]);
+     ORDER BY f.id`, [tx.learner, type, through, kinds, JSON.stringify(source), eligibility ?? null]);
   return rows;
 }
 
