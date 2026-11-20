@@ -17,14 +17,16 @@ const { createStudioCommandHooks } = await load('runtime/studio/command-hooks.ts
 const { stableId } = await load('runtime/studio/identity.ts');
 
 const connectionString = process.env.MANGEKYO_CAPTURE_ACCEPTANCE_URL;
-if (!connectionString) throw new Error('MANGEKYO_CAPTURE_ACCEPTANCE_URL is required');
+
 const schema = 'capture_accept_' + randomUUID().replaceAll('-', '');
-const admin = new Pool({ connectionString });
-const db = createPgDb(new Pool({ connectionString }), { schema });
+const admin = connectionString ? new Pool({ connectionString }) : null;
+const { createPgliteDb } = await load('kernel/src/db/pglite.ts');
+const db = admin ? createPgDb(new Pool({ connectionString }), { schema })
+  : createPgliteDb(new (require('@electric-sql/pglite').PGlite)());
 const learner = stableId('capture-acceptance-learner');
 
 try {
-  await admin.query('CREATE SCHEMA ' + schema);
+  await admin?.query('CREATE SCHEMA ' + schema);
   await applyKernelSchema(db);
   await db.query('INSERT INTO learners(id) VALUES ($1)', [learner]);
   const modules = await Promise.all(['capture', 'content', 'activity'].map(name =>
@@ -37,8 +39,8 @@ try {
   await run({ db, learner, stableId, load, send, assert });
 } finally {
   await db.close();
-  await admin.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE');
-  await admin.end();
+  await admin?.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE');
+  await admin?.end();
 }
 
 async function run({db,learner,stableId,load,send,assert}) {
@@ -55,13 +57,15 @@ async function run({db,learner,stableId,load,send,assert}) {
     unit:{kind:'capture',title:'跨页验证',blocks},
   });
   const base = stableId('capture-pg-fixture');
+  const passage = '跨页共享材料🙂。'.repeat(120);
   const unknowable = block('unknown',{layer:'handwriting',status:'unknown',itemId:'q2',slotId:'slot1',candidates:['0.5','0.8']});
   const blocks = [
-    block('shared',{layer:'material',status:'known',text:'跨页共享材料。'.repeat(120)}),
+    block('shared',{layer:'material',status:'known',text:passage}),
     block('prompt1',{layer:'prompt',status:'known',text:'请答第 1 题。',itemId:'q1'}),
     block('prompt2',{layer:'prompt',status:'known',text:'问题第 2 题。'.repeat(100),itemId:'q2'}),
     block('answer',{layer:'reference-answer',status:'known',text:'hidden reference answer'}),
     block('rubric',{layer:'rubric',status:'known',text:'hidden scores'}),
+    block('red', { layer: 'correction', status: 'known', text: 'hidden correction' }),
     unknowable,
   ];
   const targetCapture = id => ({ id, purpose: ['storage', 'teaching'], envelope: envelope('photo', 'f') });
@@ -95,12 +99,18 @@ async function run({db,learner,stableId,load,send,assert}) {
   });
   assert.equal(wire.kind,'done');
   const outcome=settleLayeredExtraction(sealed.plan.data,[{request:effect,state:'done',result:wire.result}]);
+  const forged = block('unknown', { ...unknowable.body, status: 'known', text: '猜测', author: 'learner', sticky: true });
+  assert.equal(settleLayeredExtraction(sealed.plan.data, [{request:effect,state:'done',result:{version:effect.stepKey,blocks:[forged]}}]).kind, 'unknown');
   const submitted=await submitCandidate(db,work,policy,sealed.id,outcome,{onSlotChanged:()=>{}});
   assert.equal(submitted.kind,'effective');
   assert.equal((await read(learnerId)).ref.rev,1);
   assert.equal(mergeLayeredSource(await read(learnerId),outcome).source.unit.blocks.length,blocks.length);
-  const fixed=await send('capture.correctExtraction',{target:{id:learnerId,rev:1},blockId:'unknown',anchor:unknowable,text:'0.5'});
-  assert.equal(fixed.wrote[0].rev,2);
+  const clarify = { target: { id: learnerId, rev: 1 }, blockId: 'unknown', anchor: unknowable };
+  const asked = await send('capture.clarifyExtraction', clarify);
+  assert.equal(asked.wrote[0].rev, 2);
+  assert.equal((await send('capture.clarifyExtraction', { ...clarify, target: { id: learnerId, rev: 2 } })).wrote.length, 0);
+  const fixed=await send('capture.correctExtraction',{target:{id:learnerId,rev:2},blockId:'unknown',anchor:unknowable,text:'0.5'});
+  assert.equal(fixed.wrote[0].rev,3);
   const current=await gatherSnapshot(db,scope,async ctx=>({kind:'input',effects:[],data:
     (await ctx.read.slot({learner,type:layeredExtractionSlot,key:learnerId},{mode:'following'})).outcome,
   }));
@@ -126,7 +136,24 @@ async function run({db,learner,stableId,load,send,assert}) {
   const projected = await reads('storage',ctx=>projectIssuedPaper(ctx,paperIssuance(issuanceFact.value)));
   assert.equal(projected.issuanceId,issuanceId);
   assert.ok(projected.pages.length>2);
+  assert.equal(projected.pages.flatMap(page=>page.pieces).filter(piece=>piece.blockId==='shared').map(piece=>piece.text).join(''),passage);
+  await assert.rejects(reads('storage',ctx=>projectIssuedPaper(ctx,{...issue,epoch:'999'})), /用途已变更/);
   assert.doesNotMatch(JSON.stringify(projected),/hidden|blobRef|crop_ref|sha256/);
+
+  const questionId = stableId('textbook example'), pageId = stableId('textbook print');
+  const written = await send('content.saveQuestion', { id: questionId, asset: {
+    kind:'question', title:'应用题', promptBlockId:'statement', blocks:[
+      {id:'statement',parentId:null,body:{kind:'text',text:'2 + 3 = ?'}},
+      {id:'solution',parentId:null,body:{kind:'text',text:'hidden solution'}},
+    ],
+  } });
+  await send('content.createTextbookPage', { id:pageId, clientEditSeq:1, page:{title:'教材应用题',blocks:[
+    {id:'exposition',parentId:null,body:{kind:'text',text:'hidden commentary'}},
+    {id:'question',parentId:null,body:{kind:'reference',role:'question',presentation:'embed',
+      target:{fact:written.wrote[0],type:'content.asset',anchor:{kind:'whole'}}}},
+  ]} });
+  const textbook = await reads('storage',ctx=>projectIssuedPaper(ctx,{source:{id:pageId,rev:1},epoch:'0',layout:issue.layout}));
+  assert.deepEqual(textbook.pages.flatMap(page=>page.pieces), [{blockId:'question.statement',itemId:'question',text:'2 + 3 = ?'}]);
 
   const questionPages = projected.pages.filter(page=>page.pieces.some(piece=>piece.itemId==='q2')).map(page=>page.number);
   assert.ok(questionPages.length>1);
