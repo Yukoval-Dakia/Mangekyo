@@ -189,6 +189,24 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(await graph('search_workspace',{kind:'attempt',query:'海风',since:'2000-01-01'},11)).toMatchObject({results:[{id:attempt.id,occurredAt:expect.any(String)}]});
     expect(await graph('search_workspace',{kind:'question',exposureFilter:'unexposed'},12)).toMatchObject({results:[],unappliedFilters:[{reason:'coverage_unknown'}]});
     expect(await graph('search_workspace',{...filters,edgeKinds:['prereq_of']},14)).toMatchObject({results:[],edges:[]});
+
+    const witness: WorkspaceWitness[] = [];
+    const batchHost = openWorkspaceTools({db,turn:stableId('batch opens'),prior:[],authorize:async () => {},track:item => witness.push(item),maySend:() => true});
+    const batch = JSON.parse(await batchHost.execute('open_learning',{
+      refs:[JSON.stringify(ref),originalQuestion.id,JSON.stringify(chain.edges[1].sourceRef),stableId('missing object')],
+    },20));
+    expect(batch).toMatchObject({ok:false,code:'partial_success',items:[
+      {id:first.page.id,rev:1,content:'计时'}, {id:originalQuestion.id,content:'骑行全程的平均速度是多少？'},
+      {kind:'variant_of'}, {ok:false,code:'not_found',next:{tool:'search_workspace'}},
+    ]});
+    expect(JSON.stringify(batch)).not.toContain('答案检索隔离词');
+    const part = JSON.parse(await batchHost.execute('open_learning',{refs:privatePaper.id,part:'question:2'},21)).items[0];
+    expect(part).toMatchObject({content:'解释全程速度。',sourceRef:{anchor:{kind:'question'}}});
+    expect(JSON.parse(await batchHost.execute('open_learning',{refs:JSON.stringify(part.sourceRef)},22)).items[0].content).toBe(part.content);
+    const revokedHost = openWorkspaceTools({db,turn:stableId('batch revoked'),prior:witness,authorize:async () => {},track() {},
+      maySend:fact => fact.ref.id !== originalQuestion.id});
+    const mixed = JSON.parse(await revokedHost.execute('open_learning',{refs:[originalQuestion.id,variant.id]},24));
+    expect(mixed.items).toMatchObject([{ok:false,code:'access_revoked'},{id:variant.id}]);
     const indexed = {learner:studioLearner,id:variant.id,rev:1,accessEpoch:'0',type:'activity.workspaceEntry'};
     await db.snapshot({learner:studioLearner}, async tx => {
       const query = {query:'与表面词完全不同',kind:'question',tags:['运动']};
