@@ -10,6 +10,7 @@ export interface TeachingCase {
 export type ProviderProtocol = "openai" | "anthropic";
 
 export interface ProviderProfileSummary {
+  accountRevision?: string;
   id: string;
   label: string;
   baseUrl: string;
@@ -29,6 +30,7 @@ export interface McpServerSummary {
 }
 
 export interface Settings {
+  accountRevision?: string;
   routes?: Partial<Record<"companion"|"preparation"|"diagnostic"|"assessment", string>>;
   baseUrl: string;
   model: string;
