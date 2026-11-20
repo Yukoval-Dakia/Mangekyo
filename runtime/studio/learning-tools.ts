@@ -48,6 +48,7 @@ export function openLearningTools(options: {
   authorize(tx: ReadTransaction): Promise<void>; authorizeRemote(): Promise<boolean>;
   track(witness: WorkspaceWitness): void;
   readContext(intent: MemoryIntent, step: number, expand?: RegionPage, query?: string): Promise<ContextBundle | undefined>;
+  onDelivered: NonNullable<LearningTools['onDelivered']>;
   draftBasis(): DraftWitness[];
   saveBelief(args: Record<string,unknown>, step: number): Promise<string>;
 }): LearningTools {
@@ -70,6 +71,7 @@ export function openLearningTools(options: {
     return true;
   });
   return {
+    onDelivered: options.onDelivered,
     definitions:{
       search_learning:renamed('search_learning'),open_learning:renamed('open_learning'),
       read_context:tool('read_context','读取已授权学习上下文，intent 支持 radar、tutoring、conversation、planning、execution、history。从返回的 omitted.expand 可打开更多本轮已授权内容。当前只读当前视点。' +

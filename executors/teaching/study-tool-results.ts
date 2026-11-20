@@ -52,7 +52,8 @@ export function studyToolResults() {
       }));
       const metadata = artifacts.length ? {artifacts} : {};
       if (Buffer.byteLength(output) <= 2048) {
-        return {content: artifacts.length ? withReferences(output, metadata) : output};
+        return {content: artifacts.length ? withReferences(output, metadata) : output,
+          ...(tool === 'read_context' && {delivery:{step, output, start:0, end:output.length}})};
       }
       const handle = store(tool === 'run_calculation' ? 'calc' : 'res', step, output);
       const {data, warnings} = JSON.parse(output);
@@ -80,7 +81,7 @@ export function studyToolResults() {
       const preview = JSON.stringify({archived:true, handle, start});
       return {content:JSON.stringify({handle, start, text:value.slice(start, end), ...(end < value.length && {
         next: {tool:openToolResult.function.name, args:{handle, start:end}},
-      })}), preview};
+      })}), preview, delivery:{step:entry.step, output:value, start, end}};
     },
     pythonInputs(input: unknown) {
       if (!Array.isArray(input) || input.length > 8 || input.some(handle => typeof handle !== 'string'))

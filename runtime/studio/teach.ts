@@ -685,12 +685,13 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             throw error;
           }
         },
+        onDelivered:turnMemory.onDelivered,
         saveBelief:(args,step) => turnMemory.execute('save_belief',args,step),
         async readContext(intent,step,expand,query) {
           const packet = await readMemoryGateway({...memoryRequest,intent,maxBytes:expand ? 16_384 : 8192,beliefTools:true,
             ...(expand ? {expand} : {}), ...(query ? {query} : {}),owner:{kind:'session',id:slotKey,step:'context-v1:'+String(step)}});
           if (!packet) return;
-          if (intent === 'management') turnMemory.rememberRetrieved(packet);
+          if (intent === 'management') turnMemory.offerManagement(step,packet);
           packet.receipt.basis.forEach(keepLearningBasis);
           trackMemory(packet);
           return packet.bundle;

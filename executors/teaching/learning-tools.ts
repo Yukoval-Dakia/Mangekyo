@@ -19,6 +19,8 @@ type Definitions<T extends string> = {[K in T]: ToolDefinition & {function: {nam
 
 export type LearningError = ToolError & {field?: string; valid_fields?: readonly string[]};
 export type LearningResult = LearningError | {ok: true; data: unknown; warnings?: readonly LearningError[]};
+// Off-wire provenance for a complete inline response or a range expanded from its handle.
+export type DeliveredToolRange = {step: number; output: string; start: number; end: number};
 export type ResultHandle = {step: number; value: string; mediaType?: 'image/png'};
 
 function toolMessage(message: string) {
@@ -52,6 +54,7 @@ export type LearningTools = {
   }>;
   /** Recheck the producing steps when a handle is used in another call. */
   authorizeHandles(steps: readonly number[], consumerStep: number): Promise<LearningError | {ok: true}>;
+  onDelivered?(range: DeliveredToolRange): void;
   writes(): readonly WorkspaceWriteReceipt[];
 };
 

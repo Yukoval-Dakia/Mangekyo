@@ -6,6 +6,7 @@ import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
 import { loadMcpTools, invokeMcpTool, remoteToolDefinition } from './mcp-tools.ts';
 import { findTools, studyToolDiscovery } from './study-tool-discovery.ts';
+import type {DeliveredToolRange} from './learning-tools.ts';
 import {projectChatImages, projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
 import {openToolResult, studyToolResults} from './study-tool-results.ts';
 import { memoryToolDefinitions, workspaceDefinitions, type ReceiveStudyImage, type StudyImage, type WorkspaceTools } from './workspace-tools.ts';
@@ -120,6 +121,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const tools = options.tools && createStudyTools(options.tools);
   const results = studyToolResults();
   const previews = new WeakMap<ToolResultMessage, string>();
+  const deliveries = new WeakMap<ToolResultMessage, DeliveredToolRange>();
   const workspace = options.tools?.workspace;
   const { model, reasoningEffort } = profileFor(options.provider);
   const learning = options.learningTools && createLearningTurn(options.learningTools, results, options.runEffect, model);
@@ -184,6 +186,16 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
     const reply: ModelReply = JSON.parse(raw);
     checkProviderOutcome(reply);
     if (reply.reportedModel) verifyTeachingModel(reply.reportedModel, options.provider.apiKey, model);
+    // Projected previews are new messages. Only acknowledge the original text after the
+    // provider accepted this request, before executing any of its returned tool calls.
+    if (options.learningTools?.onDelivered) for (const message of context) {
+      if (message.role !== 'tool') continue;
+      const range = deliveries.get(message);
+      if (range) {
+        options.learningTools.onDelivered(range);
+        deliveries.delete(message);
+      }
+    }
     if (!reply.calls) {
       if (!reply.message?.trim() && (options.learningTools?.writes() ?? workspace?.writes())?.length)
         return {message:'已完成的写入见下方回执。模型没有返回本轮的文字说明。',
@@ -316,9 +328,10 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + output.slice(0, 600) : summarise(call, args, output);
       return {...result, summary, ...(image && {image})};
     };
-    function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string; image?: StudyImage}) {
+    function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string; image?: StudyImage; delivery?: DeliveredToolRange}) {
       trace.push(result.summary);
       const message: ToolResultMessage = {role: 'tool', tool_call_id: call.id, content: result.content, ...(result.image && {image:result.image})};
+      if (result.delivery) deliveries.set(message, result.delivery);
       if (result.preview) previews.set(message, result.preview);
       messages.push(message);
     }

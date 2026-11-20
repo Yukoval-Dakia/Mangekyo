@@ -1,4 +1,5 @@
 import { openHypothesisObject } from './hypothesis-object.ts';
+import type {DeliveredToolRange} from '../../executors/teaching/learning-tools.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
@@ -50,6 +51,41 @@ export function openTurnMemory(options: {
     opened = true;
     for (const ref of packet.receipt.sent) {
       if (ref.type === claimType || ref.type === memoryAssertionType) candidates.set(ref.id, ref);
+    }
+  }
+  const managementReads = new Map<number, {packet: Packet; ranges: [number, number][]}>();
+  function offerManagement(step: number, packet: Packet) {
+    opened = true;
+    managementReads.set(step, {packet, ranges: []});
+  }
+  function onDelivered({step, output, start, end}: DeliveredToolRange) {
+    const read = managementReads.get(step);
+    const claims = read?.packet.bundle.data.claims;
+    if (!read || !claims?.length) return;
+    // Claims are the sole region in a management response. Locate its serialized array
+    // inside the executor envelope; offsets use the same string units as handle paging.
+    const key = '"claims":';
+    const offset = output.indexOf(key + JSON.stringify(claims));
+    if (offset < 0) return;
+    read.ranges.push([start,end]);
+    read.ranges.sort((a,b) => a[0] - b[0]);
+    const covered: [number, number][] = [];
+    for (const range of read.ranges) {
+      const last = covered.at(-1);
+      if (last && range[0] <= last[1]) last[1] = Math.max(last[1],range[1]);
+      else covered.push(range);
+    }
+    read.ranges = covered;
+    let position = offset + key.length + 1;
+    for (const item of claims) {
+      const limit = position + JSON.stringify(item).length;
+      if (item && typeof item === 'object' && 'id' in item && 'rev' in item &&
+          covered.some(([from,to]) => from <= position && limit <= to)) {
+        const ref = read.packet.receipt.sent.find(ref => (ref.type === claimType || ref.type === memoryAssertionType) &&
+          ref.id === item.id && ref.rev === item.rev);
+        if (ref) candidates.set(ref.id,ref);
+      }
+      position = limit + 1;
     }
   }
   async function stageHypothesis(args: Record<string, unknown>, step: number) {
@@ -153,7 +189,7 @@ export function openTurnMemory(options: {
     });
   }
   const hasPending = () => pending.length > 0 || assertions.length > 0;
-  return {execute, commit, hasPending, rememberRetrieved, used: () => hasPending() || opened};
+  return {execute, commit, hasPending, offerManagement, onDelivered, used: () => hasPending() || opened};
 }
 
 export function isMemoryConflict(error: unknown) {
