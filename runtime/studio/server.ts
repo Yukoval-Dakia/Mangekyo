@@ -8,6 +8,7 @@ import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { acknowledgeStartedWork, readWork, relayPending } from '../../kernel/src/work/index.ts';
 import { startWork } from '../../executors/temporal/src/index.ts';
 import { createWorkWorker } from '../../executors/temporal/src/worker.ts';
+import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { openStudio } from './sessions.ts';
 import { recordTerminalFailure, teach } from './teach.ts';
 import { sourceBuildId } from './build.ts';
@@ -73,8 +74,9 @@ const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
   : undefined;
 if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模块须导出 workbookAssessmentHost');
 const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
-const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD);
-const retentionComparison = openRetentionComparison(db);
+const pythonHost = createPythonDeriverHost();
+const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
+const retentionComparison = openRetentionComparison(db, pythonHost);
 const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
 const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
   ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
@@ -110,7 +112,10 @@ if (mode === 'web') {
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
 } else {
-  await runWorker(storeId);
+  await runWorker(storeId).catch(async error => {
+    await pythonHost.close();
+    throw error;
+  });
 }
 
 async function runWorker(storeId: string) {
@@ -190,6 +195,7 @@ async function runWorker(storeId: string) {
     server?.close();
     if (worker.getState() === 'RUNNING') worker.shutdown();
     await Promise.allSettled([running, relaying]);
+    await pythonHost.close();
     await workerConnection.close();
     await connection.close();
     await db.close();

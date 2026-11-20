@@ -88,19 +88,21 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
     let score: PythonAttemptRow['formal_score'];
     if (controlled) {
       const birth = await readActivitySubmissionBirth(tx, opened.fact.ref, posttestSubmissionType);
-      if (!birth || birth.submittedAt !== attempt.submittedAt) {
+      if (!birth || !birth.unchanged || birth.submittedAt !== attempt.submittedAt) {
         issues.push({index, code:'unknown'});
         continue;
       }
       try {
-        const { issued, source } = await openControlledSubmission(tx, read, attempt, birth.tick);
+        const { source } = await openControlledSubmission(tx, { async fact(id, options) {
+          const fact = await read.fact(id, options);
+          sources.track(fact, options.mode);
+          return fact;
+        } }, attempt, birth.tick);
         paperId = source.ref.id;
         if (scope.paperId && paperId !== scope.paperId) {
           issues.push({index, code:'not_found'});
           continue;
         }
-        sources.track(issued.fact, 'following');
-        sources.track(source, 'following');
       } catch (error) {
         if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof RequestError)) throw error;
         issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});

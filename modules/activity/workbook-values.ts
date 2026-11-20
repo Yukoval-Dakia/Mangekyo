@@ -207,6 +207,7 @@ export type WorkbookSummary = {
 
 export type WorkbookAttemptView = {
   id: string;
+  rev?: Revision;
   requestId: string;
   submittedAt: string;
   gradingVersion: string;
@@ -255,6 +256,7 @@ export type WorkbookAssessmentRequest = {
 
 export type WorkbookDetail = {
   id: string;
+  revision?: Revision;
   title: string;
   savedAt: string;
   source: WorkbookSourceView | null;

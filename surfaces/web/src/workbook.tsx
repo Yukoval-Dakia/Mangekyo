@@ -15,6 +15,7 @@ import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
 import { observePaperTime } from './workbook-duration';
+import { useWorkbookPresentation } from './workbook-presentation';
 import './workbook.css';
 
 export type WorkbookProps = {
@@ -867,10 +868,17 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         .map((feedback) => feedback.questionId)
     : [];
   const showForm = Boolean(draft);
+  const revision = view?.id === paperId ? view.revision : undefined;
+  const feedback = (activeAttempt?.feedback ?? []).filter(item => view?.questions.some(q => q.id === item.questionId));
+  const questions = useWorkbookPresentation(paperId, revision, [
+    ...(showForm ? visibleQuestions.map(q => q.id) : []), ...feedback.map(item => item.questionId),
+  ]);
+  const solutions = useWorkbookPresentation(paperId, revision, questions.allowed
+    ? feedback.filter(item => item.expected && item.expected.kind !== 'rubric').map(item => item.questionId) : [], activeAttempt);
 
   const form = useRef<HTMLFormElement>(null);
   const clock = useRef<ReturnType<typeof observePaperTime> | null>(null);
-  const timingId = view && draft && !attempts.some((attempt) => attempt.requestId === draft.requestId)
+  const timingId = questions.allowed && view && draft && !attempts.some((attempt) => attempt.requestId === draft.requestId)
     ? draft.requestId : null;
   useEffect(() => {
     if (!timingId || !form.current) return;
@@ -1004,8 +1012,12 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   }
   if (!view) return <p className="muted" role="status">正在读取试卷…</p>;
 
+  if (!questions.allowed) return <p role="status">{questions.error ?? '正在确认试卷展示许可…'}
+    {questions.error && <button onClick={questions.retry}>重试</button>}</p>;
+
   return (
     <>
+      {questions.error && <p role="alert">{questions.error} <button onClick={questions.retry}>重试</button></p>}
       <a className="back-link" href="/papers">‹ 返回试卷</a>
       <PageTitle
         title={view.title}
@@ -1136,9 +1148,13 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
               </div>
             </div>
             <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} />
+            {solutions.error && <p role="alert">{solutions.error} <button onClick={solutions.retry}>重试</button></p>}
             {activeAttempt.feedback.map((feedback) => {
               const question = view.questions.find((item) => item.id === feedback.questionId);
               if (!question) return null;
+              if (feedback.expected && feedback.expected.kind !== 'rubric' && !solutions.allowed) {
+                return <p key={question.id} className="workbook-feedback-question">{question.prompt}</p>;
+              }
               return (
                 <div key={feedback.questionId}>
                   <FeedbackItem

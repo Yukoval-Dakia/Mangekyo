@@ -8,6 +8,7 @@ import {
   closedPosttest, issuePosttestCommand, posttestIssuance, posttestIssuanceType, posttestSubmissionType,
   retentionPaper, retentionPaperType, retentionTeachingPurpose,
 } from '../../modules/activity/retention-posttest.ts';
+import { readPosttestIssuanceBirth } from '../../modules/activity/evidence-read.ts';
 import {
   gradeWorkbook, sameWorkbookJson, saveWorkbookPaperCommand, submitWorkbookAttemptCommand, workbookAttempt,
   workbookDraft, workbookQuestionView, workbookRequestId, type WorkbookPaper,
@@ -34,13 +35,7 @@ export async function readPosttestIssuance(tx: ReadTransaction, read: PosttestFa
   const fact = await read.fact(id, { mode: 'following' });
   if (fact.type !== posttestIssuanceType || fact.ref.rev !== 1) throw new RequestError(422, '需要原始后测发放记录。');
   const issuance = posttestIssuance(fact.value);
-  const { rows: [birth] } = await tx.query<{ tick: Tick }>(
-    `SELECT r.tick::text FROM fact_revs r
-     JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
-     WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.kind='value' AND r.author='learner'
-       AND c.type=$3 AND c.state='done' AND r.data=c.input->'input'->'data'`,
-    [tx.learner, id, issuePosttestCommand],
-  );
+  const birth = await readPosttestIssuanceBirth(tx, id);
   if (!birth || BigInt(birth.tick) <= BigInt(issuance.effectiveTick)) throw new RequestError(422, '后测缺少预测生效后的发放回执。');
   return { fact, issuance, tick: birth.tick };
 }

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { api, deletedSubmission, submissionId } from './api';
 import { PageTitle, ReadState, useResource } from './workspace';
 import { Message } from './message';
+import { useWorkbookPresentation } from './workbook-presentation';
 
 export type ReviewEntry = {
   paperId: string; title: string; questionId: string; prompt: string;
@@ -55,14 +56,18 @@ export function Mistakes() {
   </>;
 }
 
-type Sheet = { title: string; questions: { id: string; prompt: string; unit?: string | null }[] };
+type Sheet = { revision?: number; title: string; questions: { id: string; prompt: string; unit?: string | null }[] };
 export function PrintPaper({ id }: { id: string }) {
   const sheet = useResource<Sheet>('/papers/'+id+'/print');
+  const paper = sheet.error ? undefined : sheet.data;
+  const display = useWorkbookPresentation(id, paper?.revision, paper?.questions.map(question => question.id) ?? []);
   return <section className="print-paper">
     <div className="study-actions print-controls"><a href={'/papers/'+id}>返回原卷</a>
-      <button className="primary-button" disabled={!sheet.data} onClick={() => window.print()}>打印或存为 PDF</button></div>
+      <button className="primary-button" disabled={!paper || !display.allowed} onClick={() => window.print()}>打印或存为 PDF</button></div>
     <ReadState resource={sheet} />
-    {sheet.data && <><h1>{sheet.data.title}</h1><p>姓名 __________________　日期 __________________</p>
-      <ol>{sheet.data.questions.map(q => <li key={q.id}><Message text={q.prompt} />{q.unit && <small>单位：{q.unit}</small>}<div className="answer-lines" /></li>)}</ol></>}
+    {display.error && <p role="alert">{display.error} <button onClick={display.retry}>重试</button></p>}
+    {paper && !display.allowed && !display.error && <p role="status">正在确认打印卷展示许可…</p>}
+    {paper && display.allowed && <><h1>{paper.title}</h1><p>姓名 __________________　日期 __________________</p>
+      <ol>{paper.questions.map(q => <li key={q.id}><Message text={q.prompt} />{q.unit && <small>单位：{q.unit}</small>}<div className="answer-lines" /></li>)}</ol></>}
   </section>;
 }

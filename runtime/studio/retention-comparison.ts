@@ -7,11 +7,13 @@ import { parseManifest, type Manifest, type ManifestInput } from '../../kernel/s
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { failWork, finishWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import {
-  evaluateRetention, forecastType, readRetentionMethod, reconcileRetention, reconciliationType, type RetentionForecast,
+  forecastType, readAnyRetentionMethod, reconcileRetention, reconciliationType, type RetentionForecast,
 } from '../../modules/learner/retention.ts';
 import reconciliation from '../../modules/learner/derivers/retention-reconciliation.ts';
+import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { retentionPurpose } from './retention-workbook.ts';
+import { evaluateStudioRetention, retentionHistoryValid } from './retention.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
 export const retentionComparisonWork = 'studio.retentionComparisonWork';
@@ -60,6 +62,15 @@ async function value<T>(tx: ReadTransaction, id: DerivationId) {
   return row.value.value;
 }
 
+async function validPlan(tx: ReadTransaction, plan: Plan, manifest = parseManifest(plan.manifest)) {
+  if ((await revalidateManifest(tx, manifest, retentionPurpose)).kind !== 'valid') return false;
+  for (const pair of plan.pairs) {
+    const { observation } = await value<Reconciliation>(tx, pair.reconciliationId);
+    if (!await retentionHistoryValid(tx, pair.forecastId, observation)) return false;
+  }
+  return true;
+}
+
 type Verdict = Reconciliation['status'];
 
 function metrics(statuses: readonly Verdict[]) {
@@ -75,12 +86,12 @@ function metrics(statuses: readonly Verdict[]) {
   };
 }
 
-export function openRetentionComparison(db: Db) {
+export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) {
   async function get(key: string) {
     return db.snapshot(scope, async tx => {
       const job = await readPlan(tx, key);
       if (!job) throw new RequestError(404, '找不到保持方法对照。');
-      if ((await revalidateManifest(tx, parseManifest(job.plan.manifest), retentionPurpose)).kind !== 'valid')
+      if (!await validPlan(tx, job.plan))
         return { key, state: 'stale' as const };
       if (job.state === 'blocked') return { key, state: 'blocked' as const };
       if (job.state !== 'satisfied') return { key, state: 'pending' as const };
@@ -96,7 +107,7 @@ export function openRetentionComparison(db: Db) {
     get,
     async start(input: Record<string, unknown>) {
       const { method, reconciliationKeys } = input;
-      if (typeof method !== 'string' || !readRetentionMethod(method) ||
+      if (typeof method !== 'string' || !readAnyRetentionMethod(method) ||
           !Array.isArray(reconciliationKeys) || !reconciliationKeys.length || reconciliationKeys.length > 32 ||
           reconciliationKeys.some(key => typeof key !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(key)) ||
           new Set(reconciliationKeys).size !== reconciliationKeys.length)
@@ -115,7 +126,7 @@ export function openRetentionComparison(db: Db) {
         await tx.withLearnerWrite(async tick => {
           const manifest = parseManifest({ version: 1, learner: tx.learner, purpose: retentionPurpose,
             gatherTick: tick, inputs: pairs.flatMap(frozenInputs) });
-          if ((await revalidateManifest(tx, manifest)).kind !== 'valid') throw new RequestError(409, '保持对账的依据已变化。');
+          if (!await validPlan(tx, {method, pairs, manifest})) throw new RequestError(409, '保持对账的依据已变化。');
           // The scheduling row has no current or evidence eligibility. Shadow output is stored separately.
           await tx.insert('slot_state', { learner_id: tx.learner, slot_type: retentionComparisonWork, slot_key: key,
             scope_keys: canonicalJsonString({ method, pairs, manifest }), changed_tick: tick });
@@ -126,29 +137,37 @@ export function openRetentionComparison(db: Db) {
     },
     async execute(ref: WorkRef, key: string, terminal: boolean) {
       if (terminal) return failWork(db, ref);
-      return finishWork(db, ref, async tx => {
+      const frozen = await db.snapshot(scope, async tx => {
         const job = await readPlan(tx, key);
         if (!job) throw new Error('Retention comparison plan missing');
         const manifest = parseManifest(job.plan.manifest);
-        if ((await revalidateManifest(tx, manifest)).kind !== 'valid') return;
-        const method = readRetentionMethod(job.plan.method);
+        if (!await validPlan(tx, job.plan, manifest)) return;
+        const method = readAnyRetentionMethod(job.plan.method);
         if (!method) throw new Error('Retention comparison method missing');
-        const cases = [];
-        for (const pair of job.plan.pairs) {
-          const recorded = await value<RetentionForecast>(tx, pair.forecastId);
-          const outcome = await value<Reconciliation>(tx, pair.reconciliationId);
-          const alternate = evaluateRetention(method, recorded.input);
-          cases.push({
-            ...pair, forecastWatermark: recorded.input.observedThrough, observationWatermark: outcome.observedThrough,
-            exposure: outcome.observation.exposure.kind, observed: outcome.observation.result,
-            recorded: { method: recorded.method, estimate: recorded.estimate, status: outcome.status },
-            shadow: { estimate: alternate.estimate, status: reconcileRetention(alternate, outcome.observation).status },
-          });
-        }
-        const report = {
-          kind: 'prospective-replay', method: { id: method.id, version: method.version }, cases,
-          recorded: metrics(cases.map(row => row.recorded.status)), shadow: metrics(cases.map(row => row.shadow.status)),
-        };
+        const pairs = await Promise.all(job.plan.pairs.map(async pair => ({
+          pair, recorded: await value<RetentionForecast>(tx, pair.forecastId),
+          outcome: await value<Reconciliation>(tx, pair.reconciliationId),
+        })));
+        return { manifest, method, pairs, plan: job.plan };
+      });
+      if (!frozen) return finishWork(db, ref);
+      const { manifest, method, pairs } = frozen;
+      const cases = [];
+      for (const { pair, recorded, outcome } of pairs) {
+        const alternate = await evaluateStudioRetention(method, recorded.input, pythonHost);
+        cases.push({
+          ...pair, forecastWatermark: recorded.input.observedThrough, observationWatermark: outcome.observedThrough,
+          exposure: outcome.observation.exposure.kind, observed: outcome.observation.result,
+          recorded: { method: recorded.method, estimate: recorded.estimate, status: outcome.status },
+          shadow: { estimate: alternate.estimate, status: reconcileRetention(alternate, outcome.observation).status },
+        });
+      }
+      const report = {
+        kind: 'prospective-replay', method: { id: method.id, version: method.version }, cases,
+        recorded: metrics(cases.map(row => row.recorded.status)), shadow: metrics(cases.map(row => row.shadow.status)),
+      };
+      return finishWork(db, ref, async tx => {
+        if (!await validPlan(tx, frozen.plan, manifest)) return;
         await tx.insert('derivations', {
           learner_id: tx.learner, id: derivationId(key), slot_type: retentionComparisonType, slot_key: key,
           deriver: comparisonDeriver, scope_keys: '{}', value: canonicalJsonString(report), manifest: canonicalJsonString(manifest),

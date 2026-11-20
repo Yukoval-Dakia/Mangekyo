@@ -8,6 +8,7 @@
   },
   "exports": {
     ".": "./module.ts",
-    "./facts/understanding": "./understanding.ts"
+    "./facts/understanding": "./understanding.ts",
+    "./facts/cognition": "./cognition.ts"
   }
 }
