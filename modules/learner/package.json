@@ -1,1 +1,13 @@
-{"name":"@mangekyo/module-learner","version":"0.0.0","private":true,"type":"module","dependencies":{"@mangekyo/kernel":"workspace:*"}}
+{
+  "name": "@mangekyo/module-learner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mangekyo/kernel": "workspace:*"
+  },
+  "exports": {
+    ".": "./module.ts",
+    "./facts/understanding": "./understanding.ts"
+  }
+}

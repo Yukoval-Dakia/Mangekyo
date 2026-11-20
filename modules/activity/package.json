@@ -8,5 +8,9 @@
     "@mangekyo/module-capture": "workspace:*",
     "@mangekyo/module-content": "workspace:*",
     "@mangekyo/module-plan": "workspace:*"
+  },
+  "exports": {
+    ".": "./module.ts",
+    "./facts/*": "./facts/*.ts"
   }
 }

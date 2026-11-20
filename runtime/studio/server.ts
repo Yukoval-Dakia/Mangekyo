@@ -58,7 +58,12 @@ const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/
 const capture = await loadModuleDirectory(fileURLToPath(new URL('../../modules/capture', import.meta.url)));
 const content = await loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
 const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
-const research = openResearch(db, activity, companion);
+const understandingModule = process.env.MANGEKYO_UNDERSTANDING_MODULE;
+const understandingTransport = understandingModule
+  ? (await import(pathToFileURL(understandingModule).href)).understandingTransport
+  : undefined;
+if (understandingModule && !understandingTransport) throw new Error('宿主模块须导出 understandingTransport');
+const research = openResearch(db, activity, companion, undefined, undefined, understandingTransport);
 const intake = openIntake(db, capture, content);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
@@ -81,7 +86,7 @@ async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());
   const studio = await openStudio(db, activity, { projectRecall: recall.project });
   const plan = await loadModuleDirectory(fileURLToPath(new URL('../../modules/plan', import.meta.url)));
-  const textbook = openTextbook(db, content, createStudioCommandHooks());
+  const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
     assessment: workbookAssessment,
     onResearchFactsChanged: research.workbookChanged,

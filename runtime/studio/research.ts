@@ -30,6 +30,9 @@ import {
 import {
   prepareResearchTriage, reviewDedupKey, reviewGoal, selectResearchTodo, type ResearchTriageTransport,
 } from './research-triage-host.ts';
+import { discoverUnderstandingTodos, eligibleExtraction, openUnderstandingExtraction, type UnderstandingTransport } from './research-understanding.ts';
+import { activityEvidenceTypes, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';
+import { extractorProfile } from '../../modules/companion/understanding.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
 const scope = { learner: studioLearner };
@@ -113,7 +116,12 @@ async function updateSettings<T>(action: () => Promise<T>) {
 }
 
 export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule,
-  agent?: ResearchAgent, triageTransport?: ResearchTriageTransport) {
+  agent?: ResearchAgent, triageTransport?: ResearchTriageTransport, understandingTransport?: UnderstandingTransport) {
+  const extract = openUnderstandingExtraction(db, companion, understandingTransport);
+  const settingsCurrent = async (tx: ReadTransaction, revision: number) => {
+    const current = await settings(tx);
+    return current?.enabled === true && current.revision === revision;
+  };
   const generate = agent ?? deterministicReview;
   const hooks: CommandHooks = { async onFactsChanged(tx, tick, changes) {
     for (const change of changes) {
@@ -164,6 +172,12 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     await enqueueWork(tx, tick, wake);
   };
 
+  const activityChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
+    if (extract && changes.some(change => change.factType !== turnEvidenceType &&
+        activityEvidenceTypes.includes(change.factType) && change.kind !== 'retract') &&
+        (await settings(tx))?.enabled) await enqueueWork(tx, tick, wake);
+  };
+
   const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => {
     const scan = await db.tx(scope, async tx => {
       await lockLearner(tx, tx.learner);
@@ -171,12 +185,22 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' } as const;
       signal.throwIfAborted();
       const now = Date.now();
-      const eligible = async (spec: TodoSpec) => (await eligibleBasis(tx, spec)) !== null;
+      const eligible = async (spec: TodoSpec) => (await (extract && spec.workerProfile === extractorProfile
+        ? eligibleExtraction(tx, spec) : eligibleBasis(tx, spec))) !== null;
       const due = await checkTodoTriggers(tx, now, eligible);
       if (due.advanced) return { status: 'advanced' } as const;
       const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
       const watermark = await newResearchWatermark(tx);
       if (!watermark) return waiting;
+      if (extract) {
+        const todos = await discoverUnderstandingTodos(tx, watermark.reviewed, current.revision, now);
+        if (todos.length) {
+          await tx.withLearnerWrite(async tick => {
+            for (const spec of todos) await emitTodo(tx, tick, spec, now, eligible);
+          });
+          return { status: 'advanced' } as const;
+        }
+      }
       const prepared = await prepareResearchTriage(tx, watermark.reviewed, current.revision, now, eligible);
       if (!prepared) {
         await saveFactWatermark(tx, watermark.observed);
@@ -251,6 +275,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       return result.source;
     },
     workbookChanged,
+    activityChanged,
     advance,
     async reconcile() {
       await db.tx(scope, async tx => {
@@ -284,6 +309,11 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       }
       if (work.slotType !== todoSlot) return false;
       const todoId = factId(work.slotKey);
+      if (!terminal && work.deriver === extractorProfile) {
+        if (extract) await extract(ref, todoId, settingsCurrent);
+        else await cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
+        return true;
+      }
       if (terminal) {
         await failWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'failed'));
         return true;

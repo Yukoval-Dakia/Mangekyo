@@ -12,7 +12,7 @@ import {
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
-import { areMemoryClaimsCurrent, openClaimEvidence, openClaimFact } from './memory-claims.ts';
+import { areMemoryClaimsCurrent, claimUndoToken, openClaimEvidence, openClaimFact } from './memory-claims.ts';
 import { readMemoryGateway } from './memory-gateway.ts';
 
 type Packet = NonNullable<Awaited<ReturnType<typeof readMemoryGateway>>>;
@@ -20,7 +20,6 @@ type Entry = {id: string; data: ReturnType<typeof structuredClaim>};
 const loadCompanion = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
 let companion: ReturnType<typeof loadCompanion> | undefined;
 
-export const claimUndoToken = (command: string, id: string) => stableId('memory-undo-token', command, id);
 export const memoryWriteReceipt = (entry: Entry, rev: number, command: string): WorkspaceWriteReceipt => ({
   id: entry.id, rev, title: entry.data.action === 'forget' ? '已忘掉记忆' :
     entry.data.action === 'correct' ? '已更新记忆' : '已记住',

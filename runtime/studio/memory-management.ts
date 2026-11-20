@@ -4,17 +4,21 @@ import type { Db } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
 import {
-  applyClaimCommand, claimId, claimRef, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
+  applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
 } from '../../modules/companion/claim.ts';
+import { manageMemoryAssertionCommand, memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
+import { extractedUnderstanding, reviewUnderstanding, understandingPresentation } from '../../modules/companion/understanding.ts';
+import { openUnderstandingCitations } from './research-understanding.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
-import { areMemoryClaimsCurrent, claimWitness, currentMemoryClaims, openClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
+import { areMemoryClaimsCurrent, claimUndoToken, claimWitness, currentMemoryClaims, openClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-import { claimUndoToken, isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
+import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
 
 export function openMemoryManagement(db: Db, activity: LoadedModule, companion: LoadedModule) {
   const learner = studioLearner;
   const scope = {learner};
+  const manageAssertion = createCommandHandler(db, {modules: [companion], hooks: createStudioCommandHooks()});
   async function translate<T>(run: () => Promise<T>) {
     try { return await run(); } catch (error) {
       if (isMemoryConflict(error) || error instanceof Error && error.message.startsWith('Fact revision conflict:'))
@@ -43,7 +47,23 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
           items.push({ref, recordedTick: tick, state: claim?.version === 1 && claim.action === 'forget' ? 'forgotten' : 'current',
             claim: claim ?? null, evidenceState: source ? 'current' : evidence ? 'unavailable' : 'unknown'});
         }
-        return {items, next: rows.length > 50 ? rows[49]!.id : null};
+        const {rows: extracted} = await tx.query<{id: string}>(`SELECT f.id FROM facts f JOIN fact_revs r
+          ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+          WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'version'='2'
+          ORDER BY f.changed_tick DESC,f.id LIMIT 50`, [learner, memoryAssertionType]);
+        const understandings = [];
+        for (const {id} of extracted) {
+          const fact = await openClaimFact(tx, factId(id), 'storage');
+          if (!fact) continue;
+          const data = extractedUnderstanding(fact.value);
+          const sources = await openUnderstandingCitations(tx, data.evidence_refs, 'storage');
+          const evidenceState = sources.length === data.evidence_refs.length ? 'current' : 'unavailable';
+          understandings.push({ref: claimWitness(fact), evidenceState,
+            understanding: evidenceState === 'current'
+              ? {...data, kind: understandingPresentation(data, sources), review: reviewUnderstanding(fact.ref.id, data, sources)}
+              : {...data, text: null, scope: null, evidence_refs: []}});
+        }
+        return {items, understandings, next: rows.length > 50 ? rows[49]!.id : null};
       });
     },
 
@@ -51,6 +71,18 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       const request = clientRequest(input.requestId);
       let entry;
       try {
+        const {rowCount: extracted} = await db.query(`SELECT 1 FROM facts f JOIN fact_revs b
+          ON (b.learner_id,b.fact_id,b.rev)=(f.learner_id,f.id,1)
+          WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3 AND b.data->>'version'='2'`, [learner, claimId(id), memoryAssertionType]);
+        if (extracted) {
+          if (input.action !== 'correct' && input.action !== 'forget') throw new ClaimInputError('记忆操作无效。');
+          const {rev, accessEpoch} = claimRef({id, rev: input.rev, accessEpoch: input.accessEpoch});
+          const receipt = await translate(() => manageAssertion({learner, actor: 'learner', purpose: 'storage',
+            type: manageMemoryAssertionCommand, id: commandId(stableId('learner-understanding-command', id, request)),
+            input: input.action === 'forget' ? {id, action: 'forget-extracted', rev, accessEpoch}
+              : {id, action: 'correct-extracted', rev, accessEpoch, text: claimText(input.text, 600)}}));
+          return {status: input.action === 'forget' ? 'withdrawn' : 'corrected', ref: receipt.wrote[0]};
+        }
         if (input.action !== 'correct' && input.action !== 'forget') throw new ClaimInputError('记忆操作无效。');
         const {rev, accessEpoch} = input;
         const supersedes = claimRef({id, rev, accessEpoch});
@@ -75,6 +107,15 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
     async undo(id: string, input: Record<string, unknown>) {
       if (typeof input.undo_token !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(input.undo_token))
         throw new RequestError(400, '撤回凭据无效。');
+      const {rows: [extracted]} = await db.query(
+        `SELECT 1 FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1
+          AND data->>'version'='2' AND data->>'undo_token'=$3`, [learner, id, input.undo_token]);
+      if (extracted) {
+        const receipt = await translate(() => manageAssertion({learner, actor: 'learner', purpose: 'storage',
+          type: manageMemoryAssertionCommand, id: commandId(stableId('undo-memory-command', input.undo_token as string)),
+          input: {id, action: 'undo-extracted', token: input.undo_token as string}}));
+        return {status: 'withdrawn', ref: receipt.wrote[0]};
+      }
       const {rows: [born]} = await db.query<{command_id: string}>(`
         SELECT r.command_id FROM facts f JOIN fact_revs r ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
         JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)

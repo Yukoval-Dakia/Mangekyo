@@ -24,7 +24,7 @@ const trigger = z.discriminatedUnion('kind', [
 const todoSpec = z.object({
   dedupKey: z.string().regex(/^[A-Za-z0-9:_-]{1,200}$/),
   trigger,
-  workerProfile: z.enum(['heavy_tutor_prep', 'deep_analyst', 'question_author', 'deterministic_compute']),
+  workerProfile: z.enum(['heavy_tutor_prep', 'deep_analyst', 'question_author', 'deterministic_compute', 'personalized_extractor']),
   goal: z.string().min(1).max(240),
   refs: z.array(source).max(20),
   sourceFactRev: source,
