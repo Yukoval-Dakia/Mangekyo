@@ -4,12 +4,12 @@ import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {intakeFactType, type IntakeOriginal} from '../../modules/capture/intake-values.ts';
 import {materialType} from '../../modules/activity/library-values.ts';
-import type {SourceRefV1} from '../../modules/activity/source-values.ts';
+import {parseLearningReference, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {openIntakeObjects} from './intake-objects.ts';
 import {intakeTextOf} from './reading.ts';
 import {resolveSource, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
-import {parseLearningReference, unreadable} from './workspace-open.ts';
+import {unreadable} from './workspace-open.ts';
 
 export type IntakeImage = {
   sourceRef: SourceRefV1;

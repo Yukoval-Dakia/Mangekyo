@@ -11,13 +11,13 @@ import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
 import type {PreparedPythonAttempts} from '../../executors/teaching/study-agent.ts';
-import {openLearningLimit, parseOpenLearningArgs, workspaceDefinitions, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
+import {openLearningLimit, parseOpenLearningArgs, validateWorkspaceToolArgs, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
-import {openLearningBatch, parseLearningReference} from './workspace-open.ts';
+import {openLearningBatch} from './workspace-open.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
-import {sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
+import {parseLearningReference, sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/plan/goal-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
@@ -414,13 +414,8 @@ export function openWorkspaceTools(options: {
       if (args.sentenceBreaks !== undefined && 'state' in result && result.state === 'done') publishedFormalArtifact = true;
       return JSON.stringify(result);
     }
-    const tool = workspaceDefinitions.find(tool => tool.function.name === name);
-    if (!tool) return JSON.stringify(learningToolError('tool_unavailable',undefined,'请从本轮提供的工作区工具中选择。'));
-    const fields = tool.function.parameters.properties;
-    const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
-    if (unknown) return JSON.stringify({...learningToolError('invalid_args',unknown.slice(0,60),'发现工具定义之外的字段。',{
-          tool:name,args:Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(fields,key))),why:'仅传工具支持的字段。',
-        }),valid_fields:Object.keys(fields)});
+    const invalid = validateWorkspaceToolArgs(name, args);
+    if (invalid) return JSON.stringify(invalid);
     if (name === 'record_observation') return recordObservation(args,step);
     if (name === 'save_page') return JSON.stringify(await savePage(args,step));
     if (name === 'save_relation') return JSON.stringify(await saveRelation(args,step));

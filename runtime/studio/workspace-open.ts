@@ -4,9 +4,10 @@ import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
-import {isSourceFactId, sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
-import {workbookAttempt, workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
-import {practiceSubmission, ridingPracticeType} from '../../modules/activity/practice-values.ts';
+import {parseLearningReference, type SourceRefV1} from '../../modules/activity/source-values.ts';
+import {openedQuestionText} from '../../modules/activity/workspace-projection.ts';
+import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
+import {ridingPracticeType} from '../../modules/activity/practice-values.ts';
 import {purpose} from './identity.ts';
 import {sourceQuestions, textbookText, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {textbookPageFrom, textbookPageType} from '../../modules/content/textbook-page.ts';
@@ -62,23 +63,9 @@ function projectOpenLearning(value: ReadResult, fact: FactSnapshot, part: OpenLe
   }
   if (sourceRef.anchor.kind === 'whole' && (question || fact.type === workbookPaperType ||
       fact.type === workbookAttemptType || fact.type === ridingPracticeType)) {
-    const questions = sourceQuestions(fact);
-    const originalAnswers = fact.type === workbookAttemptType ? workbookAttempt(fact.value).answers : undefined;
-    const practiceFeedback = fact.type === ridingPracticeType ? practiceSubmission(fact.value).feedback : undefined;
-    const content = questions.map((item,index) => {
-      const prompt = questions.length > 1 ? `${index + 1}. ${item.prompt}` : item.prompt;
-      if (!originalAnswers && !practiceFeedback) return prompt;
-      return prompt + '\n我的作答：' + String(originalAnswers?.[item.id] ?? practiceFeedback?.[index]?.answer ?? '未作答');
-    }).join('\n\n');
-    return {...body, sourceRef, content};
+    return {...body, sourceRef, content:openedQuestionText(fact)};
   }
   return {...body, sourceRef, ...(nextOffset !== undefined ? {nextOffset} : {})};
-}
-
-export function parseLearningReference(input: string) {
-  if (isSourceFactId(input)) return input;
-  try { return sourceRefV1(JSON.parse(input)); }
-  catch { return undefined; }
 }
 
 export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningArgs, access: {

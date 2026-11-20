@@ -144,6 +144,17 @@ export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObserv
   page?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
   relation?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
 };
+export function validateWorkspaceToolArgs(name: string, args: Record<string, unknown>) {
+  const tool = workspaceDefinitions.find(tool => tool.function.name === name);
+  if (!tool) return learningToolError('tool_unavailable',undefined,'请从本轮提供的工作区工具中选择。');
+  const fields = tool.function.parameters.properties;
+  const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
+  if (!unknown) return undefined;
+  return {...learningToolError('invalid_args',unknown.slice(0,60),'发现工具定义之外的字段。',{
+    tool:name,args:Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(fields,key))),why:'仅传工具支持的字段。',
+  }),valid_fields:Object.keys(fields)};
+}
+
 export type WorkspaceTools = {
   presentationTool?: (typeof workspaceDefinitions)[number];
   writes: () => readonly WorkspaceWriteReceipt[];
