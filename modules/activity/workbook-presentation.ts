@@ -32,6 +32,21 @@ function parsePresentation(value: unknown) {
       ...(row.attemptRef === undefined ? {} : {attemptRef:helpRef(row.attemptRef)}) };
 }
 
+export function workbookReadingMount(query: URLSearchParams) {
+  const version = (key: string) => {
+    const [raw,...extra] = query.getAll(key);
+    const rev = Number(raw);
+    if (!raw || extra.length || !/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(rev) || rev > 2147483647)
+      throw new WorkbookPresentationError('帮助版本无效。');
+    return rev;
+  };
+  const paperRev = version('paperRev');
+  if (!query.has('attemptId') && !query.has('attemptRev')) return {paperRev};
+  const [id,...extra] = query.getAll('attemptId');
+  if (!id || extra.length) throw new WorkbookPresentationError('作答标识无效。');
+  return {paperRev,attemptRef:helpRef({id,rev:version('attemptRev')})};
+}
+
 export function workbookReadingContext(value: unknown) {
   const {paperRev, itemId, ref, phase, permit, displayRef, attemptRef} = object(value);
   if (typeof paperRev !== 'number' || !Number.isInteger(paperRev) || paperRev < 1 || paperRev > 2147483647 ||

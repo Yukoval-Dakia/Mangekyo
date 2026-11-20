@@ -21,7 +21,7 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { failWork, readWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
-import { workbookGradingVersion, workbookRequestId } from '../../modules/activity/workbook-values.ts';
+import { sameWorkbookJson, workbookGradingVersion, workbookRequestId } from '../../modules/activity/workbook-values.ts';
 import forecast from '../../modules/learner/derivers/retention-forecast.ts';
 import reconciliation from '../../modules/learner/derivers/retention-reconciliation.ts';
 import forecastSlot from '../../modules/learner/slots/forecast.ts';
@@ -62,7 +62,21 @@ export async function retentionHistoryValid(tx: ReadTransaction, id: DerivationI
   const { input } = row.forecast;
   if (!await validatesWorkbookHistory(tx, input.target, observation?.admittedAt ?? row.effective_tick, posttestIdFor(id),
     observation?.exposure.kind === 'independent')) return false;
-  return verifyFrozenWorkbookClaims(tx, row, createCommandReadContext(tx, retentionPurpose), parseManifest(row.manifest).inputs,
+  const read = createCommandReadContext(tx, retentionPurpose);
+  const unavailable = (error: unknown) => error instanceof RequestError ||
+    error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+  if (observation?.exposure.kind === 'exposed') {
+    try {
+      const opened = await openRetentionTarget(tx,read,input.target.paper.id,input.target.itemId);
+      const actual = await readWorkbookObservation(tx,read,opened,observation.submission.id,id);
+      if (actual.submission.rev !== observation.submission.rev || actual.admittedAt !== observation.admittedAt ||
+          actual.exposure.kind !== 'exposed' || !sameWorkbookJson(actual.exposure.refs,observation.exposure.refs)) return false;
+    } catch (error) {
+      if (unavailable(error)) return false;
+      throw error;
+    }
+  }
+  return verifyFrozenWorkbookClaims(tx, row, read, parseManifest(row.manifest).inputs,
     async (read, cutoff) => {
       const target = await openRetentionTarget(tx, read, input.target.paper.id, input.target.itemId);
       if (target.target.paper.rev !== input.target.paper.rev || target.target.gradingVersion !== input.target.gradingVersion) return;
@@ -72,7 +86,7 @@ export async function retentionHistoryValid(tx: ReadTransaction, id: DerivationI
           readAnyRetentionMethod, posttestIdFor, posttestAttemptFor);
         return valid ? found : undefined;
       };
-    }, error => error instanceof RequestError || error instanceof FactReadDeniedError || error instanceof FactNotFoundError);
+    }, unavailable);
 }
 
 async function project<T extends RetentionForecast | ReconciliationValue>(tx: ReadTransaction, key: string, row: SlotRow<T, unknown>) {
