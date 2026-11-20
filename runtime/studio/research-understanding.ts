@@ -119,7 +119,7 @@ export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: 
       WHERE f.learner_id=$1 AND f.type=ANY($4::text[]) AND f.retracted_rev IS NULL
         AND f.purpose && ARRAY[$5,'all'] AND (f.type<>$7 OR
           (done.id IS NOT NULL AND r.data->'allowBackgroundUnderstanding'='true'::jsonb AND $5=ANY(f.purpose)))
-        AND NOT EXISTS (SELECT 1 FROM working_todos t WHERE t.learner_id=f.learner_id
+        AND NOT EXISTS (SELECT 1 FROM work t WHERE t.family='todo' AND t.learner_id=f.learner_id
           AND t.dedup_key='understanding:'||f.id||':'||CASE WHEN f.type=$7 THEN 1 ELSE f.current_rev END)
     ) SELECT id FROM eligible WHERE seen>$6::bigint ORDER BY eligible.seen,id`,
     [tx.learner, slotType, methodName, activityEvidenceTypes, researchPurpose, reviewed, turnEvidenceType]);
@@ -256,7 +256,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
             !await settingsCurrent(tx, todo.spec.settingsRevision) || !await eligibleExtraction(tx, todo.spec) ||
             (await openUnderstandingCitations(tx, citations)).length !== citations.length ||
             await learnerGovernedSince(tx, source.born, source.ref.id) ||
-            !await completeTodo(tx, tick, current, entries[0]!.id)) throw new ClaimInputError('抽取工作已失效。');
+            !await completeTodo(tx, tick, ref, current, entries[0]!.id)) throw new ClaimInputError('抽取工作已失效。');
       }}});
       await handle({...scope, id: command, type: publishUnderstandingCommand, actor: 'companion',
         purpose: researchPurpose, input: {entries}});

@@ -187,7 +187,7 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     await db.query('DROP TABLE work_outbox');
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
-    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
+    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }]);
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -199,9 +199,9 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (7)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (8)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 7');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 8');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
   });
 
@@ -229,7 +229,13 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(await sweep(8)).toMatchObject({ advanced: true });
     expect((await inspect(next.id))?.state).toBe('pending');
     const dispatched = (await inspect(root.id))!;
-    await db.tx({ learner }, tx => tx.withLearnerWrite(tick => completeTodo(tx, tick, dispatched, source.id)));
+    const ref = { learner, workId: root.id, generation: '1' };
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+      expect(await completeTodo(tx, tick, { ...ref, generation: '2' }, dispatched, source.id)).toBe(false);
+      expect(await completeTodo(tx, tick, { ...ref, learner: newUlid() }, dispatched, source.id)).toBe(false);
+      expect(await completeTodo(tx, tick, ref, { ...dispatched, learner: newUlid() }, source.id)).toBe(false);
+      expect(await completeTodo(tx, tick, ref, dispatched, source.id)).toBe(true);
+    }));
     expect(await edit(next, { kind: 'update', patch: { expiresAtMs: 60 } })).toBe(true);
     expect(await sweep(8)).toMatchObject({ advanced: true });
     expect(await inspect(next.id)).toMatchObject({ state: 'dispatched', chainId: root.id, hopCount: 1 });
@@ -243,6 +249,61 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(await db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
       updateOrCancelTodo(tx, tick, tail.id, tail.revision, { kind: 'cancel' }, 8, eligible)))).toBe(true);
     expect((await inspect(tail.id))?.state).toBe('cancelled');
+  });
+
+  it('keeps v6 SQL on the same work row while old pinned workers drain', async () => {
+    await applyKernelSchema(db);
+    const id = newUlid();
+    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const spec: TodoInput = { dedupKey: 'legacy', goal: 'Review', trigger: { kind: 'immediate' },
+      workerProfile: 'deterministic_compute', budgetCap: 0, refs: [], sourceFactRev: source,
+      autonomyTier: 1, settingsRevision: 1, expiresAtMs: 50 };
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+      await tx.insert('working_todos', { learner_id: learner, todo_id: id, dedup_key: spec.dedupKey,
+        spec: JSON.stringify(spec), state: 'pending', chain_id: id, hop_count: 0, registered_tick: tick });
+      await tx.query("UPDATE working_todos SET state='dispatched',revision=revision+1 WHERE todo_id=$1 AND revision=1", [id]);
+      // V6 requestWork reuses a ready generation with matching tick and worker.
+      const current = (await tx.query("SELECT FROM work WHERE learner_id=$1 AND slot_key=$2 AND state='ready' AND requested_tick=$3 AND deriver=$4",
+        [learner, id, tick, spec.workerProfile])).rowCount;
+      expect(current).toBe(1);
+    }));
+    const [row] = (await db.query<{ intent_id: string }>('SELECT intent_id FROM work_outbox')).rows;
+    const ref = await acknowledgeStartedWork(db, row!.intent_id);
+    expect(ref).toBeTruthy();
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async () => {
+      await tx.query("UPDATE work SET state='blocked' WHERE learner_id=$1 AND id=$2 AND generation=$3",
+        [learner, ref!.workId, ref!.generation]);
+    }));
+    expect((await db.query("SELECT state,revision FROM working_todos WHERE todo_id=$1", [id])).rows)
+      .toEqual([{ state: 'failed', revision: 3 }]);
+    expect((await db.query("SELECT relkind FROM pg_class WHERE oid='working_todos'::regclass")).rows)
+      .toEqual([{ relkind: 'v' }]);
+  });
+
+  it('prioritizes admitted todos and fences cancellation after a durable start', async () => {
+    await applyKernelSchema(db);
+    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const emit = (dedupKey: string, priority: 0 | 1, budgetCap: number) =>
+      db.tx({ learner }, tx => tx.withLearnerWrite(tick => emitTodo(tx, tick, {
+        dedupKey, priority, budgetCap, goal: 'Review', trigger: { kind: 'immediate' },
+        workerProfile: 'deterministic_compute', refs: [], sourceFactRev: source, autonomyTier: 1,
+        settingsRevision: 1, expiresAtMs: 50,
+      }, 1, async spec => spec.budgetCap === 0)));
+    const maintenance = (await emit('warm', 1, 0))!;
+    const foreground = (await emit('hot', 0, 0))!;
+    expect((await emit('over-budget', 1, 5))?.state).toBe('cancelled');
+    const starts: string[] = [];
+    await relayPending(db, async (ref, intent) => {
+      expect(await acknowledgeStartedWork(db, intent)).toEqual(ref);
+      starts.push(ref.workId);
+    });
+    expect(starts).toEqual([foreground.id, maintenance.id]);
+    const cancel = await db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
+      updateOrCancelTodo(tx, tick, foreground.id, foreground.revision, { kind: 'cancel' }, 2, async () => true)));
+    expect(cancel).toBe(true);
+    expect(await db.tx({ learner }, tx => tx.withLearnerWrite(tick => completeTodo(tx, tick, { learner, workId: foreground.id, generation: '1' }, foreground, source.id)))).toBe(false);
+    expect(await relayPending(db, async () => {})).toBe(0);
+    expect((await db.query("SELECT count(*)::int AS count FROM work_outbox")).rows).toEqual([{ count: 2 }]);
   });
 
   it('registers transactionally, retries the same handoff and fences late and competing completions', async () => {
