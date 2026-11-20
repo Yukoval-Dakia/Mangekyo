@@ -1,7 +1,7 @@
 import { factId, type FactId, type Json, type JsonObject, type Revision } from '@mangekyo/kernel';
 
 import type {
-  AssessmentAnswerValue, AssessmentInputAddress, AssessmentRelease, AssessmentRevisionRef,
+  AssessmentAnswerValue, AssessmentCriterion, AssessmentInputAddress, AssessmentRelease, AssessmentRevisionRef,
 } from '@mangekyo/module-content/facts/assessment';
 export {
   assessmentPublicationInput, assessmentRelease,
@@ -259,4 +259,28 @@ export function readAssessmentScore(value: unknown, release: AssessmentRelease, 
     }
   }
   return maximum > 0 ? { earned, maximum } : null;
+}
+
+export type FormalAssessmentValue = {
+  result: AssessmentResult;
+  score: ReturnType<typeof readAssessmentScore>;
+  criteria: (Pick<AssessmentCriterion, 'criterionId' | 'evaluator' | 'source' | 'maximum'> & { itemId: string })[];
+  receipts: { itemId: string; criterionId: string; effectId: string; routeId: string; reportedModel?: string; quote?: string }[];
+};
+
+export function settledAssessmentState({result: {outcomes}}: FormalAssessmentValue) {
+  return outcomes.some(({ state }) => state === 'failed') ? 'failed'
+    : outcomes.some(({ state }) => state === 'blocked') ? 'blocked'
+    : outcomes.every(({ state }) => state === 'scored' || state === 'qualitative') ? 'complete' : 'incomplete';
+}
+
+export function formalAssessmentValue(
+  release: AssessmentRelease,
+  submission: AssessmentSubmission,
+  result: AssessmentResult,
+  receipts: FormalAssessmentValue['receipts'],
+): FormalAssessmentValue {
+  const criteria = release.items.flatMap(({ itemId, criteria }) =>
+    criteria.map(({ criterionId, evaluator, source, maximum }) => ({ itemId, criterionId, evaluator, source, maximum })));
+  return { result, score: readAssessmentScore(result, release, submission), criteria, receipts };
 }

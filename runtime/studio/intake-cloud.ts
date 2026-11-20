@@ -1,4 +1,4 @@
-import type { readMineru, submitMineru, MineruMediaType } from '@mangekyo/executor-document-extraction/mineru';
+import { mineruSupports, type readMineru, type submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
@@ -11,7 +11,8 @@ import {
   intakeDocument,
   intakeFactType,
   intakePurpose,
-  intakeTextLimit,
+  failedMineruExtraction,
+  completeMineruExtraction,
   materialType,
   type IntakeExtraction,
 } from '../../modules/capture/intake-values.ts';
@@ -22,10 +23,6 @@ const cloudIntakeDeriver = 'activity.mineruExtraction';
 export const cloudIntakeRoute = { deriver: cloudIntakeDeriver };
 
 export type MineruClient = { submit: typeof submitMineru; read: typeof readMineru };
-
-export function mineruSupports(mediaType: string): mediaType is MineruMediaType {
-  return mediaType === 'application/pdf' || mediaType === 'image/png' || mediaType === 'image/jpeg';
-}
 
 export function mineruToken() {
   return process.env.MANGEKYO_MINERU_TOKEN?.trim() || undefined;
@@ -53,28 +50,6 @@ async function cloudInput(tx: ReadTransaction, intakeId: string) {
 }
 
 export type CloudIntakeInput = NonNullable<Awaited<ReturnType<typeof cloudInput>>>;
-
-function failure(error: string): IntakeExtraction {
-  const message = error.replaceAll(String.fromCharCode(0), '').trim().slice(0, 1_000).toWellFormed();
-  return {
-    status: 'failed', method: 'mineru', error: message || 'MinerU 识别失败。',
-    text: '', characterCount: 0, pages: null, warnings: [], truncated: false,
-  };
-}
-
-function completed(text: string, pages: number | null): IntakeExtraction {
-  if (!text.trim() || !text.isWellFormed() || text.includes('\u0000'))
-    return failure('MinerU 没有返回可用正文。');
-  const truncated = text.length > intakeTextLimit;
-  const content = truncated ? text.slice(0, intakeTextLimit).toWellFormed() : text;
-  if (!content.trim()) return failure('MinerU 没有返回可用正文。');
-  return {
-    status: truncated ? 'partial' : 'ok', method: 'mineru', text: content,
-    pages: pages !== null && Number.isSafeInteger(pages) && pages >= 0 && pages <= 1_000 ? pages : null, error: null,
-    warnings: truncated ? ['识别正文超过保存上限，已保留前 200 万字。'] : [],
-    truncated, characterCount: content.length,
-  };
-}
 
 class StoppedCloudIntake extends Error {}
 
@@ -123,13 +98,13 @@ export function openCloudIntakeWork(db: Db, intake: {
         await finishWork(db, ref);
       };
       if (terminalFailure || !token) {
-        await publish(failure(terminalFailure
+        await publish(failedMineruExtraction(terminalFailure
           ? 'MinerU 未能在规定时间内完成识别。原件可继续查看或手动更正。'
           : 'MinerU 服务尚未配置，原件已保留。'));
         return;
       }
       const configurationChanged = () => mineruToken() !== token;
-      const finishConfigurationChange = () => publish(failure('MinerU 服务配置已变更，原件已保留。'));
+      const finishConfigurationChange = () => publish(failedMineruExtraction('MinerU 服务配置已变更，原件已保留。'));
       let stoppedBeforeUpload = false;
       const beforeUpload = async () => {
         try {
@@ -165,17 +140,17 @@ export function openCloudIntakeWork(db: Db, intake: {
       await db.snapshot(scope, authorize);
       if (configurationChanged()) return finishConfigurationChange();
       if (submission.kind === 'unverified')
-        return publish(failure('旧上传记录缺少核对删除范围的依据，已停止轮询和重传。'));
+        return publish(failedMineruExtraction('旧上传记录缺少核对删除范围的依据，已停止轮询和重传。'));
       if (submission.kind === 'unknown') {
-        await publish(failure('无法确认 MinerU 是否收到原件，已停止自动重传。你可以查看原件或手动更正。'));
+        await publish(failedMineruExtraction('无法确认 MinerU 是否收到原件，已停止自动重传。你可以查看原件或手动更正。'));
         return;
       }
       if (submission.result === null) {
-        await publish(failure('本地原件无法读取，未发送给 MinerU。'));
+        await publish(failedMineruExtraction('本地原件无法读取，未发送给 MinerU。'));
         return;
       }
       if (submission.result === false) {
-        await publish(failure('任务已中止，未向 MinerU 发送原件。'));
+        await publish(failedMineruExtraction('任务已中止，未向 MinerU 发送原件。'));
         return;
       }
       if (typeof submission.result !== 'string') throw new Error('Invalid OCR submission receipt');
@@ -192,10 +167,10 @@ export function openCloudIntakeWork(db: Db, intake: {
         await db.snapshot(scope, authorize);
         if (configurationChanged()) return finishConfigurationChange();
         if (result.state === 'done') {
-          await publish(completed(result.text, result.pages));
+          await publish(completeMineruExtraction(result.text, result.pages));
           return;
         }
-        await publish(failure(result.message));
+        await publish(failedMineruExtraction(result.message));
         return;
       }
     } catch (error) {

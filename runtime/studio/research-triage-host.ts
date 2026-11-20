@@ -15,7 +15,7 @@ import { textSlice } from './reading.ts';
 import { readResearchForeground } from './research-foreground.ts';
 import { activeRetentionReview, readWorksheetById, researchReader, retentionReviewAnchor, whenAvailable, worksheetId } from './research-sources.ts';
 import {
-  allowedTriageIds, parseTriageResponse, triagePromptBlock, TriageResponseError, type TriageSnapshot,
+  parseTriageResponse, triagePromptBlock, TriageResponseError, type TriageSnapshot,
 } from './research-triage/index.ts';
 
 export const reviewGoal = '为一份正式错题作答准备复习单';
@@ -253,7 +253,7 @@ export async function selectResearchTodo(prepared: NonNullable<Awaited<ReturnTyp
     // The shared parser owns the envelope. The installed template is a single pre-bound action
     // whose shape and source must match exactly before reducing it to the shared noop shape.
     const parsed = parseTriageResponse(selected ? JSON.stringify({ ...envelope, actions: [noop] }) : raw,
-      snapshot, allowedTriageIds(snapshot));
+      snapshot);
     if (selected && parsed.matchedSkill === null && parsed.memoTable.length === 0 && parsed.nextRecheckHint === null) {
       return intent;
     }
