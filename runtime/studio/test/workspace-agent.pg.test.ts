@@ -19,6 +19,7 @@ import type {LearningOverviewFact} from '../../../modules/activity/workspace-val
 import {workspaceQuery} from '../workspace-read.ts';
 import {openTextbook} from '../textbook.ts';
 import {readCurrentLearningObject} from '../current-learning-object.ts';
+import {openRelationReview} from '../workspace-relation.ts';
 
 const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 it.skipIf(!connectionString)('reopens authorized workspace versions and searches directed knowledge links in PostgreSQL', async () => {
@@ -339,6 +340,27 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(await graph('search_workspace',{...filters,hops:2},13)).toMatchObject({results:[],edges:[]});
     await db.snapshot({learner:learnerId(stableId('other learner'))}, async tx =>
       expect(await workspaceQuery(tx,filters,{recipient:'learner'})).toBeUndefined());
+
+    const relation = turn('save relation');
+    const review = openRelationReview(db,content);
+    const draft = {kind:'contrasts_with',from:concept.id,to:compound.id,scope:'适用条件'};
+    const query = new URLSearchParams({conceptId:concept.id,direction:'outbound',edgeKinds:draft.kind});
+    await relation('search_workspace',{kind:'concept',query:'分段运动'},1);
+    expect(await relation('save_relation',draft,2)).toMatchObject({code:'evidence_not_opened',next:{tool:'open_learning'}});
+    const endpoints = await relation('open_learning',{refs:[concept.id,compound.id]},3);
+    const from = endpoints.items[0].sourceRef;
+    expect(await relation('save_relation',{...draft,from:JSON.stringify({...from,fact:{...from.fact,rev:2}})},4))
+      .toMatchObject({code:'version_conflict',field:'from',next:{tool:'open_learning'}});
+    const proposal = await relation('save_relation',{...draft,from:JSON.stringify(from)},5);
+    expect(proposal).toMatchObject({ok:true,status:'proposed'});
+    expect(await access.list(query)).toMatchObject({edges:[]});
+    const accepted = await review.accept(proposal.proposalId);
+    expect(await review.accept(proposal.proposalId)).toEqual(accepted);
+    expect(await access.list(query)).toMatchObject({edges:[{
+      id:accepted.ref.fact.id,kind:draft.kind,from,to:endpoints.items[1].sourceRef,
+    }]});
+    await access.setTeaching(compound.id,{enabled:false,expectedRev:1});
+    expect(await relation('save_relation',draft,6)).toMatchObject({code:'access_revoked',next:{tool:'search_workspace'}});
   } finally {
     await db.close(); await admin.query('DROP SCHEMA '+schema+' CASCADE'); await admin.close();
   }

@@ -15,6 +15,7 @@ import {
   type openStudio,
 } from './sessions.ts';
 import { TextbookConflictError, type openTextbook } from './textbook.ts';
+import type { openRelationReview } from './workspace-relation.ts';
 import { studioLearner } from './identity.ts';
 import type { openLibrary } from './library.ts';
 import type { openPractice } from './practice.ts';
@@ -88,6 +89,7 @@ export function serve(
   practice: ReturnType<typeof openPractice>,
   student: {
     textbook: ReturnType<typeof openTextbook>;
+    relationReview: ReturnType<typeof openRelationReview>;
     workbook: ReturnType<typeof openWorkbook>;
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
@@ -137,6 +139,16 @@ export function serve(
       const observationUndo = /^\/api\/workspace\/observations\/([0-9A-HJKMNP-TV-Z]{26})\/undo$/.exec(path);
       if (observationUndo?.[1] && method === 'POST')
         return json(res, 200, await student.workspace.undoObservation(observationUndo[1],await body(req)));
+      const relationProposal = /^\/api\/workspace\/relations\/proposals\/([0-9A-HJKMNP-TV-Z]{26})$/.exec(path)?.[1];
+      if (relationProposal && method === 'GET')
+        return json(res, 200, await student.relationReview.proposal(relationProposal));
+      if (relationProposal && method === 'POST') {
+        if ((await body(req)).decision !== 'accept') throw new RequestError(400, '请指定采纳此提议。');
+        return json(res, 200, await student.relationReview.accept(relationProposal));
+      }
+      const relationUndo = /^\/api\/workspace\/relations\/([0-9A-HJKMNP-TV-Z]{26})\/undo$/.exec(path)?.[1];
+      if (relationUndo && method === 'POST')
+        return json(res, 200, await student.relationReview.undo(relationUndo,await body(req)));
       const accessProvider = /^\/api\/workspace\/access\/providers\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})$/.exec(path);
       if (accessProvider?.[1] && method === 'PUT') {
         return json(res, 200, await student.workspace.setProvider(accessProvider[1], await body(req)));

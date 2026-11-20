@@ -54,7 +54,14 @@ export const workspaceDefinitions = [
       anchor:text,content:{anyOf:[text,textbookBlockBody]},
     }}},
   }),
-  tool('save_workspace', '兼容旧工作区条目。个人教材使用 save_page。新建旧条目给 kind、title、body；修改给 id 和变动字段。出题时 body 只写题面，解答放 answer，评分放 rubric。links 填来源 id，关系按起点、终点排列。', {
+  tool('save_relation', '保存知识图谱有向边，from 指向 to。先用 open_learning 打开两个端点（概念或题目）及补充来源的整份记录，传本轮打开的 id 或 sourceRef JSON。普通推断返回待本人采纳的 proposed。只有本轮打开且与此边一致的既存核验证明才可传入 verification 并直接保存。', {
+    kind:{...text, description:'图谱边类型。例：prereq_of（先修到后继）、contrasts_with（易混对照）、targets_concept（题到考查概念）、variant_of（变式）。'},
+    from:text, to:text, scope:{...text,maxLength:1000}, sources:{...strings,maxItems:openLearningLimit-2},
+    verification:text,
+    variant:{type:'object',required:['familyId','preserved','changed','spoilsNext'],additionalProperties:false,
+      properties:{familyId:text,preserved:strings,changed:strings,spoilsNext:{type:'string',enum:['unknown','none','former','latter']}}},
+  }, ['kind','from','to','scope']),
+  tool('save_workspace', '兼容旧工作区条目。个人教材使用 save_page，有向图谱使用 save_relation。新建旧条目给 kind、title、body；修改给 id 和变动字段。出题时 body 只写题面，解答放 answer，评分放 rubric。links 填来源 id，旧关系条目按起点、终点排列。', {
     kind: {type: 'string', enum: workspaceKinds}, title: text, body: text, tags: strings, links: strings,
     answer: text, rubric: text, id: {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$', description:'仅更新时用已有 id；创建时省略。'}, rev: integer,
   }),

@@ -84,6 +84,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'open_learning': return '打开学习对象 · ' + String(Array.isArray(args.refs) ? args.refs.length : 1) + ' 项\n' + output.slice(0, 900);
     case 'record_observation': return '记录学情观察 · ' + String(args.title ?? '').slice(0, 160);
     case 'save_page': return '提交教材块变更';
+    case 'save_relation': return '提交有向知识边\n' + output.slice(0,700);
     case 'retrieve_memory': return '查找已获准的记忆';
     case 'save_memory': return '登记本轮记忆操作';
     case 'mount_artifact': return '挂载交互作品 · ' + output.slice(0, 360);
@@ -194,6 +195,9 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
           content: JSON.stringify(name === 'save_page'
             ? {ok:false, code:'invalid_args', field:'args', message:'请传教材保存的 JSON 对象。',
               next:{tool:'save_page',args:{},why:'新建填 title 与 content 或 blocks；修改填 ref 与 patch。'}}
+            : name === 'save_relation'
+            ? {ok:false, code:'invalid_args', field:'args', message:'请传知识边的 JSON 对象。',
+              next:{tool:'save_relation',args:{},why:'填写 kind、from、to 与 scope。'}}
             : name === 'open_learning'
             ? {ok:false, code:'invalid_args', field:'args', message:'请传包含 refs 的 JSON 对象。'}
             : {error: name + ' 需要一个 JSON 对象，请将字段直接放在对象里。'}),

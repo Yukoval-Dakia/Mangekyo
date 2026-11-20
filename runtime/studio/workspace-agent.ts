@@ -15,7 +15,7 @@ import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {learningToolError, openLearningBatch, parseLearningReference, parseOpenLearningArgs} from './workspace-open.ts';
 import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
-import {sourceRefV1} from '../../modules/activity/source-values.ts';
+import {sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/plan/goal-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
@@ -33,6 +33,7 @@ import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import {textbookPageType} from '../../modules/content/textbook-page.ts';
 import {openWorkspaceTextbook} from './workspace-textbook.ts';
+import {openWorkspaceRelation, type OpenedRelationSource} from './workspace-relation.ts';
 
 const presentationTool = {type:'function',function:{name:'mount_artifact',
   description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+presentationCatalog.bindings,
@@ -71,6 +72,15 @@ export function openWorkspaceTools(options: {
   const receipts = new Map<string,WorkspaceWriteReceipt>();
   const pageSources = new Map<string, WorkspaceWitness>();
   const pageOpened = new Map<string, WorkspaceWitness>();
+  const relationOpened = new Map<string, OpenedRelationSource>();
+  const rememberRelationOpen = (ref:SourceRefV1, witness:WorkspaceWitness) => {
+    if (ref.anchor.kind !== 'whole') return;
+    const key = `${witness.id}:${witness.rev}`;
+    relationOpened.delete(key);
+    relationOpened.set(key,{ref,witness});
+  };
+  const saveRelation = openWorkspaceRelation({db,turn,opened:relationOpened,
+    authorize:options.authorize,maySend:options.maySend});
   const rememberPageSource = (w: WorkspaceWitness) => pageSources.set(`${w.id}:${w.rev}`,w);
   const rememberPageOpen = (w:WorkspaceWitness) => pageOpened.set(`${w.id}:${w.rev}`,w);
   for (const w of [...(options.pageBasis ?? []), ...options.prior]) rememberPageSource(w);
@@ -94,6 +104,7 @@ export function openWorkspaceTools(options: {
       rememberPageSource(witness);
     }
     rememberPageOpen(root);
+    rememberRelationOpen(view.sourceRef,root);
     sources.set(id, root);
     if (root.type === workspaceEntryType) retainForWrites(root);
     opened.set(id, {id, workspace: true, title: view.title, text: view.content});
@@ -256,7 +267,10 @@ export function openWorkspaceTools(options: {
         const ref = sourceRefV1(item.sourceRef);
         if (ref && item.ok !== false && item.part?.kind !== 'image_crop') {
           const witness = witnesses.find(w => w.id === ref.fact.id && w.rev === ref.fact.rev && w.type === ref.fact.type);
-          if (witness) rememberPageOpen(witness);
+          if (witness) {
+            rememberPageOpen(witness);
+            if (item.part?.kind !== 'assessment') rememberRelationOpen(ref,witness);
+          }
         }
         if (ref && typeof item.content === 'string' && item.content.length && workspaceAttemptTypes.includes(ref.fact.type) &&
             (ref.anchor.kind === 'whole' || ref.anchor.kind === 'answer-slot')) {
@@ -388,13 +402,14 @@ export function openWorkspaceTools(options: {
     if (!tool) return JSON.stringify({error:'请从本轮提供的工作区工具中选择。'});
     const fields = tool.function.parameters.properties;
     const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
-    if (unknown) return JSON.stringify(name === 'open_learning' || name === 'record_observation' || name === 'save_page'
+    if (unknown) return JSON.stringify(name === 'open_learning' || name === 'record_observation' || name === 'save_page' || name === 'save_relation'
       ? learningToolError('invalid_args',unknown.slice(0,60),`可用字段为 ${Object.keys(fields).join('、')}。`,{
           tool:name,args:Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(fields,key))),why:'仅传工具支持的字段。',
         })
       : {error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
     if (name === 'record_observation') return recordObservation(args,step);
     if (name === 'save_page') return JSON.stringify(await savePage(args,step));
+    if (name === 'save_relation') return JSON.stringify(await saveRelation(args,step));
     return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead, receiveImage);
   }
   return {

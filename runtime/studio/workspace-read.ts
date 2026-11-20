@@ -4,14 +4,14 @@ import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from
 import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
 import {isSourceFactId, sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
-import {knowledgeEdgeKinds, knowledgeEdgeType} from '../../modules/content/knowledge-edge.ts';
+import {knowledgeEdgeEvidenceType, knowledgeEdgeKinds, knowledgeEdgeType} from '../../modules/content/knowledge-edge.ts';
 import {resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {readTeachingAttemptAssessments} from './learning-attempt-read.ts';
 import {textSlice} from './reading.ts';
 import {readLearningOverview} from './learning-overview.ts';
-import {openKnowledgeEdge, readKnowledgeGraph} from './knowledge-graph.ts';
+import {openKnowledgeEdge, openKnowledgeEdgeEvidence, readKnowledgeGraph} from './knowledge-graph.ts';
 import {
   parseWorkspaceSearch, queryStrings, searchWorkspaceRecords, unappliedWorkspaceFilters, WorkspaceSearchError,
   workspaceRecordKind, workspaceResult, type WorkspaceCandidateChannel,
@@ -153,7 +153,11 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
     track(fact, mode);
     if (fact.type === workbookAttemptType) attempt = fact;
   }});
-  if (!record) return workspaceSourceUnavailable;
+  if (!record) {
+    const proof = (typeof reference === 'string' || reference.fact.type === knowledgeEdgeEvidenceType)
+      && await openKnowledgeEdgeEvidence(tx,reference,{recipient:'workspace',maySend,track});
+    return proof ? JSON.stringify(proof) : workspaceSourceUnavailable;
+  }
   const {sourceRef, title, tags, links, blocks} = record;
   const original = record.content;
   const assessments = trackAssessment && attempt?.ref.id === sourceRef.fact.id && sourceRef.anchor.kind === 'whole'

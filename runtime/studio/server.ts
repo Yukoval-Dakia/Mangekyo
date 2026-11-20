@@ -27,6 +27,7 @@ import { openMemoryManagement } from './memory-management.ts';
 import { openPractice } from './practice.ts';
 import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
+import { openRelationReview } from './workspace-relation.ts';
 import { openResearch } from './research.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openRecallHttp } from './recall-http.ts';
@@ -85,7 +86,8 @@ async function openWeb() {
     assessment: workbookAssessment,
     onResearchFactsChanged: research.workbookChanged,
   });
-  const student = { textbook, workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
+  const student = { textbook, relationReview:openRelationReview(db,content),
+    workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan), research, recall, retention, retentionComparison };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
