@@ -1,4 +1,4 @@
-import { notionSendBasis, savedNotionWitnesses } from './notion.ts';
+import { teachingResultAllowed } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
@@ -6,8 +6,6 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { factId, commandId } from '../../kernel/src/declarations/ids.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { first45Answer, first45Histories, first45Question } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
@@ -130,13 +128,7 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
       });
     const submission = studyTurn(snapshot.value);
     let feedback = row.value;
-    if (feedback && submission.workspaceRevision) {
-      const recipient = notionModelRecipient(submission.providerId ?? 'default',submission.baseUrl,submission.protocol ?? 'openai',submission.model,submission.workspaceRevision);
-      try { await notionSendBasis(tx,await savedNotionWitnesses(tx,parseManifest(row.manifest).inputs),Object.assign(() => true,{notionRecipientId:recipient})); }
-      catch { feedback = null; }
-    }
-    if (feedback && (!await grantCurrent(submission) ||
-      (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid')) feedback = null;
+    if (feedback && !await teachingResultAllowed(tx, submission, row.manifest, grantCurrent)) feedback = null;
     if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
       rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: [] };
     result.push({

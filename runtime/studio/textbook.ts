@@ -1,5 +1,11 @@
+import {
+  accessPurpose, checkBodyReference, creationPurposes, pageView, textbookWriteReceipt as writeReceipt, TextbookReferenceScopeError,
+  type TextbookCreateInput, type TextbookGetInput, type TextbookOpenBlockInput, type TextbookPageView,
+  type TextbookReadInput, type TextbookReviseInput, type TextbookSummary, type TextbookWriteReceipt,
+} from '../../modules/content/textbook-view.ts';
+import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { sourceReference } from '../../modules/activity/source-values.ts';
-import { checkStudioNotionFact } from './notion.ts';
+import { checkStudioNotionFact, confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { resolveSource } from './source-read.ts';
 import { createCommandHandler, readCommandProposals, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import {
@@ -18,17 +24,15 @@ import type {
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { organizerNote, organizerNoteType } from '../../modules/activity/organizer-values.ts';
+import { organizerNote, organizerNoteType, projectLegacyTextbookNote as legacyView } from '../../modules/activity/organizer-values.ts';
 import { editSequence, key, pageId, revision } from '../../modules/content/parse.ts';
 import { parseTextbookRevision, previewTextbookRevision, selectTextbookEdits, type TextbookRevision } from '../../modules/content/textbook-edits.ts';
 import {
   checkTextbookBasis,
   openTextbookBlock,
-  openTextbookReference,
   parseTextbookPage,
   textbookPageFrom,
   textbookPageType,
-  type TextbookBlockBody,
 } from '../../modules/content/textbook-page.ts';
 import { purpose as teaching, stableId, textbookUndoId } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
@@ -37,83 +41,6 @@ import { createTextbookCommand as createCommand, reviseTextbookCommand as revise
 
 const storage = 'storage';
 const decisionId = (proposalId: string) => commandId(stableId('textbook-proposal-decision', proposalId));
-
-export type TextbookReadInput = {
-  readonly learner: unknown;
-  readonly purpose?: unknown;
-};
-
-export type TextbookGetInput = TextbookReadInput & {
-  readonly id: unknown;
-  readonly rev?: unknown;
-};
-
-export type TextbookOpenBlockInput = TextbookGetInput & {
-  readonly blockId: unknown;
-  readonly mode?: unknown;
-};
-
-export type TextbookCreateInput = TextbookReadInput & {
-  readonly requestId: unknown;
-  readonly id?: unknown;
-  readonly clientEditSeq: unknown;
-  readonly page: unknown;
-};
-
-export type TextbookReviseInput = TextbookReadInput & {
-  readonly requestId: unknown;
-  readonly id: unknown;
-  readonly expectedRev: unknown;
-  readonly clientEditSeq: unknown;
-  readonly edits: unknown;
-};
-
-type ReferenceWitness = Awaited<ReturnType<typeof openTextbookReference>> & {
-  readonly blockId: string;
-};
-
-export type TextbookPageView = {
-  readonly kind: 'textbook';
-  readonly id: string;
-  readonly rev: number;
-  readonly learner: LearnerId;
-  readonly accessEpoch: string;
-  readonly purpose: readonly string[];
-  readonly title: string;
-  readonly blocks: ReturnType<typeof textbookPageFrom>['blocks'];
-  readonly references: readonly ReferenceWitness[];
-};
-
-export type LegacyNoteView = {
-  readonly kind: 'legacyNote';
-  readonly readOnly: true;
-  readonly owner: typeof organizerNoteType;
-  readonly id: string;
-  readonly rev: number;
-  readonly learner: LearnerId;
-  readonly accessEpoch: string;
-  readonly purpose: readonly string[];
-  readonly title: string;
-  readonly markdown: string;
-  readonly source: ReturnType<typeof organizerNote>['source'];
-};
-
-export type TextbookSummary = {
-  readonly kind: 'textbook' | 'legacyNote';
-  readonly id: string;
-  readonly rev: number;
-  readonly title: string;
-  readonly purpose: readonly string[];
-  readonly readOnly: boolean;
-};
-
-export type TextbookWriteReceipt = CommandReceipt & {
-  readonly requestId: string;
-  readonly clientEditSeq: number;
-  readonly id: string;
-  readonly expectedRev: number | null;
-  readonly rev: number;
-};
 
 export class TextbookConflictError extends RequestError {
   constructor(
@@ -153,27 +80,10 @@ function scopedLearner(value: unknown): LearnerId {
   try { return learnerId(value); } catch { return invalid('学习者标识无效。'); }
 }
 
-function accessPurpose(value: unknown): string {
-  if (value === undefined) return storage;
-  if (typeof value !== 'string' || !value.trim()) return invalid('读取用途无效。');
-  return value;
-}
-
-function creationPurposes(value: unknown): { readonly access: string; readonly fact: readonly string[] } {
-  if (value === undefined || typeof value === 'string') {
-    const access = accessPurpose(value);
-    return { access, fact: [access] };
-  }
-  if (!Array.isArray(value) || !value.length || value.some(entry => typeof entry !== 'string' || !entry)
-    || new Set(value).size !== value.length) {
-    return invalid('教材用途无效。');
-  }
-  return { access: value[0] as string, fact: [...value] as string[] };
-}
-
 function translateRead(error: unknown): never {
   if (error instanceof RequestError) throw error;
   if (error instanceof FactNotFoundError) throw new RequestError(404, '找不到这份教材或笔记。');
+  if (error instanceof TextbookReferenceScopeError) throw new RequestError(403, error.message);
   if (error instanceof FactReadDeniedError) throw new RequestError(403, '当前用途不能读取这份内容或其引用。');
   throw error;
 }
@@ -202,41 +112,18 @@ function translateWrite(error: unknown): never {
   throw error;
 }
 
-async function checkBodyReference(read: ReadContext, learner: LearnerId, blockId: string, body: TextbookBlockBody) {
-  const reference = body.kind === 'image' ? body.source : body.kind === 'reference' ? body.target : null;
-  if (!reference) return null;
-  if (reference.fact.learner !== learner) throw new RequestError(403, '不能读取其他学习者的引用。');
-  const witness = await openTextbookReference(read, reference);
-  return { blockId, ...witness };
-}
-
-async function pageView(read: ReadContext, fact: FactSnapshot): Promise<TextbookPageView> {
-  const page = textbookPageFrom(fact);
-  const references: ReferenceWitness[] = [];
-  for (const block of page.blocks) {
-    const witness = await checkBodyReference(read, fact.ref.learner, block.id, block.body);
-    if (witness) references.push(witness);
-  }
-  return { kind: 'textbook', ...fact.ref, accessEpoch: fact.accessEpoch, purpose: fact.purpose, ...page, references };
-}
-
-function legacyView(fact: FactSnapshot): LegacyNoteView {
-  return {
-    kind: 'legacyNote', readOnly: true, owner: organizerNoteType,
-    ...fact.ref, accessEpoch: fact.accessEpoch, purpose: fact.purpose, ...organizerNote(fact.value),
-  };
-}
-
-async function readFact(tx: ReadTransaction, purpose: string, id: string, rev?: unknown) {
+async function readFact(tx: ReadTransaction, check: CheckNotionRead, purpose: string, id: string, rev?: unknown) {
   const read = createCommandReadContext(tx,purpose);
   const fact = await read.fact(pageId(id),rev === undefined ? {mode:'following'} : {mode:'pinned',rev:revision(rev)});
   await checkStudioNotionFact(tx,fact,storage,'learner');
+  const sources: FactSnapshot[] = [fact];
   if (fact.type === textbookPageType) {
     const page = textbookPageFrom(fact);
     if ((page.basis?.length || page.blocks.some(({body}) => body.kind === 'reference' || body.kind === 'image')) &&
-        !await resolveSource(tx,sourceReference(fact,{kind:'whole'}),{recipient:'learner'}))
+        !await resolveSource(tx,sourceReference(fact,{kind:'whole'}),{recipient:'learner',track: source => sources.push(source)}))
       throw new FactReadDeniedError('recipient','教材的来源已不可用。');
   }
+  for (const source of sources) await check(source);
   return fact;
 }
 
@@ -244,18 +131,18 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
   const handle = createCommandHandler(db, { modules: [contentModule], hooks });
   type Proposal = Awaited<ReturnType<typeof readCommandProposals>>[number];
 
-  async function previewProposal(tx: ReadTransaction, input: unknown) {
+  async function previewProposal(tx: ReadTransaction, check: CheckNotionRead, input: unknown) {
     const edit = parseTextbookRevision(input);
     const read = {fact:(...[id, options]: Parameters<ReadContext['fact']>) =>
-      readFact(tx,teaching,id,options.mode === 'pinned' ? options.rev : undefined)};
-    const pinned = await readFact(tx,teaching,edit.id,edit.expectedRev);
+      readFact(tx,check,teaching,id,options.mode === 'pinned' ? options.rev : undefined)};
+    const pinned = await readFact(tx,check,teaching,edit.id,edit.expectedRev);
     await checkTextbookBasis(read,[...textbookPageFrom(pinned).basis ?? [], ...edit.basis ?? []]);
     return previewTextbookRevision({learner:tx.learner,read},edit);
   }
 
-  async function proposalView(tx: ReadTransaction, proposal: Proposal) {
-    const {base,items} = await previewProposal(tx,proposal.input);
-    const current = await readFact(tx,storage,base.id);
+  async function proposalView(tx: ReadTransaction, check: CheckNotionRead, proposal: Proposal) {
+    const {base,items} = await previewProposal(tx,check,proposal.input);
+    const current = await readFact(tx,check,storage,base.id);
     const decision = await readRecordedCommand(tx,decisionId(proposal.id));
     const output = (decision?.receipt as CommandReceipt | undefined)?.output;
     const blockIds = output && typeof output === 'object' && 'selection' in output && Array.isArray(output.selection)
@@ -267,11 +154,11 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       result:written ? {id:written.id,rev:written.rev,undo_token:decisionId(proposal.id)} : null};
   }
 
-  async function get(input: TextbookGetInput): Promise<TextbookPageView | LegacyNoteView> {
+  async function get(input: TextbookGetInput): Promise<TextbookPageView | ReturnType<typeof legacyView>> {
     const learner = scopedLearner(input.learner);
-    const purpose = accessPurpose(input.purpose);
-    return db.snapshot({ learner }, async tx => {
-      const fact = await readFact(tx, purpose, pageId(input.id), input.rev);
+    const purpose = parseInput(() => accessPurpose(input.purpose));
+    return confirmNotionRead(db, learner, async (tx, check) => {
+      const fact = await readFact(tx,check, purpose, pageId(input.id), input.rev);
       if (fact.type === textbookPageType) return pageView(createCommandReadContext(tx, purpose), fact);
       if (fact.type === organizerNoteType) return legacyView(fact);
       throw new RequestError(404, '这份内容不是个人教材或旧笔记。');
@@ -300,25 +187,16 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
     return row && { ...row, input: typeof row.input === 'string' ? JSON.parse(row.input) : row.input };
   }
 
-  function writeReceipt(receipt: CommandReceipt, requestId: string, edit: {
-    readonly id: string; readonly clientEditSeq: number; readonly expectedRev: number | null;
-  }): TextbookWriteReceipt {
-    const written = receipt.wrote.find(ref => ref.id === edit.id);
-    if (!written) throw new Error('Textbook command receipt has no page write');
-    return { ...receipt, requestId, clientEditSeq: edit.clientEditSeq, id: edit.id,
-      expectedRev: edit.expectedRev, rev: written.rev };
-  }
-
   return {
     async proposals(input: TextbookGetInput) {
       const learner = scopedLearner(input.learner);
       const id = parseInput(() => pageId(input.id));
-      return db.snapshot({learner},async tx => {
-        textbookPageFrom(await readFact(tx,storage,id));
+      return confirmNotionRead(db, learner, async (tx, check) => {
+        textbookPageFrom(await readFact(tx,check,storage,id));
         const proposals = [];
         for (const proposal of await readCommandProposals(tx,reviseCommand,{id})) {
           try {
-            const {proposalId,status,base} = await proposalView(tx,proposal);
+            const {proposalId,status,base} = await proposalView(tx,check,proposal);
             proposals.push({proposalId,status,base});
           } catch (error) {
             if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
@@ -332,30 +210,30 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
       const learner = scopedLearner(input.learner);
       const id = parseInput(() => pageId(input.id));
       const proposalKey = commandId(proposalId);
-      if (selection) {
-        const {blockIds} = selection;
-        if (!Array.isArray(blockIds) || blockIds.length > 24) invalid('请选择教材块。');
-        const selected = parseInput(() => blockIds.map(key).sort());
-        if (new Set(selected).size !== selected.length) invalid('请勿重复选择教材块。');
-        await db.snapshot({learner},async tx => {
-          const [proposal] = await readCommandProposals(tx,reviseCommand,{id},proposalKey);
-          if (!proposal) throw new RequestError(404, '找不到教材提议。');
-        });
-        await handle.decideProposal({learner, purpose:storage, type:reviseCommand, id:decisionId(proposalKey),
-          proposalId:proposalKey, selection:selected}, async (tx, proposedInput) => {
-          const edit = parseTextbookRevision(proposedInput);
-          if (edit.id !== id) throw new RequestError(404, '找不到教材提议。');
-          const preview = await previewProposal(tx,proposedInput);
-          if (!selected.length) return null;
-          if ((await readFact(tx,storage,id)).ref.rev !== edit.expectedRev)
-            throw new RequestError(409, '教材已更新。');
-          return parseInput(() => selectTextbookEdits(preview,selected));
-        }).catch(translateWrite);
-      }
-      return db.snapshot({learner},async tx => {
+      const read = async (tx: ReadTransaction, check: CheckNotionRead) => {
         const [proposal] = await readCommandProposals(tx,reviseCommand,{id},proposalKey);
         if (!proposal) throw new RequestError(404, '找不到教材提议。');
-        return proposalView(tx,proposal);
+        return proposalView(tx,check,proposal);
+      };
+      if (!selection) return confirmNotionRead(db, learner, read).catch(translateWrite);
+      const {blockIds} = selection;
+      if (!Array.isArray(blockIds) || blockIds.length > 24) invalid('请选择教材块。');
+      const selected = parseInput(() => blockIds.map(key).sort());
+      if (new Set(selected).size !== selected.length) invalid('请勿重复选择教材块。');
+      return confirmNotionRead(db, learner, read, async (tx, check) => {
+        await read(tx, check);
+        const decide = createCommandHandler(withinLearnerTransaction(db, tx), {modules:[contentModule], hooks});
+        await decide.decideProposal({learner, purpose:storage, type:reviseCommand, id:decisionId(proposalKey),
+          proposalId:proposalKey, selection:selected}, async (inner, proposedInput) => {
+          const edit = parseTextbookRevision(proposedInput);
+          if (edit.id !== id) throw new RequestError(404, '找不到教材提议。');
+          const preview = await previewProposal(inner,check,proposedInput);
+          if (!selected.length) return null;
+          if ((await readFact(inner,check,storage,id)).ref.rev !== edit.expectedRev)
+            throw new RequestError(409, '教材已更新。');
+          return parseInput(() => selectTextbookEdits(preview,selected));
+        });
+        return read(tx, check);
       }).catch(translateWrite);
     },
     async undo(input: TextbookGetInput, token: unknown) {
@@ -384,8 +262,8 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
 
     async list(input: TextbookReadInput) {
       const learner = scopedLearner(input.learner);
-      const purpose = accessPurpose(input.purpose);
-      return db.snapshot({ learner }, async tx => {
+      const purpose = parseInput(() => accessPurpose(input.purpose));
+      return confirmNotionRead(db, learner, async (tx, check) => {
         const { rows } = await tx.query<{ id: string; type: string }>(
           `SELECT id,type FROM facts
            WHERE learner_id=$1 AND type=ANY($2::text[]) AND retracted_rev IS NULL
@@ -396,7 +274,7 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
         const legacyNotes: TextbookSummary[] = [];
         for (const row of rows) {
           try {
-            const fact = await readFact(tx, purpose, row.id);
+            const fact = await readFact(tx,check, purpose, row.id);
             const view = fact.type === textbookPageType
               ? { title: textbookPageFrom(fact).title, kind: 'textbook' as const, readOnly: false }
               : { title: organizerNote(fact.value).title, kind: 'legacyNote' as const, readOnly: true };
@@ -414,15 +292,15 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
 
     async openBlock(input: TextbookOpenBlockInput) {
       const learner = scopedLearner(input.learner);
-      const purpose = accessPurpose(input.purpose);
-      return db.snapshot({ learner }, async tx => {
+      const purpose = parseInput(() => accessPurpose(input.purpose));
+      return confirmNotionRead(db, learner, async (tx, check) => {
         const read = createCommandReadContext(tx, purpose);
-        const base = await readFact(tx, purpose, pageId(input.id), input.rev);
+        const base = await readFact(tx,check, purpose, pageId(input.id), input.rev);
         if (base.type !== textbookPageType) throw new RequestError(404, '旧笔记没有教材块。');
         const mode = input.mode ?? 'pinned';
         if (mode !== 'pinned' && mode !== 'following') invalid('教材块定位方式无效。');
         const opened = await openTextbookBlock(read, base.ref, key(input.blockId), mode);
-        await readFact(tx,purpose,opened.ref.id,opened.ref.rev);
+        await readFact(tx,check,purpose,opened.ref.id,opened.ref.rev);
         const source = await checkBodyReference(read, learner, opened.block.id, opened.block.body);
         return { kind: 'textbookBlock' as const, ...opened, source };
       }).catch(translateRead);
@@ -431,7 +309,7 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
     async create(input: TextbookCreateInput): Promise<TextbookWriteReceipt> {
       const learner = scopedLearner(input.learner);
       const requestId = clientRequest(input.requestId);
-      const purposes = creationPurposes(input.purpose);
+      const purposes = parseInput(() => creationPurposes(input.purpose));
       const page = parseInput(() => parseTextbookPage(input.page));
       const id = input.id === undefined
         ? factId(stableId('textbook-page', learner, requestId, canonicalJsonString(page as Json)))
@@ -453,7 +331,7 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
         id: input.id, expectedRev: input.expectedRev, clientEditSeq: input.clientEditSeq, edits: input.edits,
       }));
       const key = commandId(stableId('textbook-command', learner, reviseCommand, requestId));
-      const purpose = accessPurpose(input.purpose);
+      const purpose = parseInput(() => accessPurpose(input.purpose));
       const prior = await priorEdit(learner, originalEdit, purpose);
       if (prior && prior.id !== key) {
         if (canonicalJsonString(prior.input.input) === canonicalJsonString(originalEdit)) {

@@ -1,4 +1,4 @@
-import { confirmNotionDispatch, notionSendBasis, savedNotionWitnesses, type NotionRecipient } from './notion.ts';
+import { confirmNotionDispatch, notionSendBasis, savedNotionWitnesses, teachingResultAllowed, type NotionRecipient } from './notion.ts';
 import { providerEndpoint } from '../../executors/teaching/provider.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { createHash } from 'node:crypto';
@@ -41,7 +41,7 @@ import {
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
 import { caseId, type DisplayTurn } from './sessions.ts';
 import { turnTask } from './model-routes.ts';
-import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
+import { workspaceGrantChecker, sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
 import {readCurrentLearningObject, type OpenedCurrentLearningObject} from './current-learning-object.ts';
@@ -121,7 +121,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
            AND ((e.result #>> '{}')::jsonb->>'pythonAttemptsProjection') IS DISTINCT FROM '1')`,
       [learner, slotType, id],
     );
-    if (row && (await revalidateManifest(tx, parseManifest(row.manifest))).kind === 'valid') return row;
+    if (!row) return;
+    const prior = await createCommandReadContext(tx, purpose).fact(factId(id), {mode: 'following'});
+    if (prior.type === 'activity.studyTurn' &&
+        await teachingResultAllowed(tx, studyTurn(prior.value), row.manifest, workspaceGrantChecker())) return row;
     return undefined;
   }
   function trackFeedback(id: string, replyId: string) {
@@ -407,12 +410,13 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             input.kind === 'slot' && isWorkspaceAssessmentSlot(input.slotType));
           const retentionSlots = previousInputs.filter((input): input is RadarSlot =>
             input.kind === 'slot' && isRadarRetentionSlot(input.slotType));
-          if (response.workspaceBasis?.length || assessmentSlots.length || retentionSlots.length) {
+          const notion = await savedNotionWitnesses(tx, previousInputs);
+          if (response.workspaceBasis?.length || assessmentSlots.length || retentionSlots.length || notion.length) {
             if (!submission.workspaceRevision || previous.workspaceRevision !== submission.workspaceRevision) {
               historyNotice = '工作区授权已变更，本轮省略了使用旧授权的对话。';
               break;
             }
-            const witnesses: WorkspaceWitness[] = [...response.workspaceBasis ?? [], ...await savedNotionWitnesses(tx,previousInputs)];
+            const witnesses: WorkspaceWitness[] = [...response.workspaceBasis ?? [], ...notion];
             if (new Set([...inherited.keys(), ...witnesses.map(w => `${w.id}:${w.rev}`)]).size > 48) {
               historyNotice = '较早的学习记录可按需重新检索，本轮从最近的对话继续。';
               break;

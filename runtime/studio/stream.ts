@@ -1,8 +1,8 @@
 import type { ServerResponse } from 'node:http';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
-import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
+import { teachingResultAllowed } from './notion.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import type { Pool, PoolClient } from 'pg';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -196,8 +196,8 @@ async function readSessionEvent(db: Db, sessionId: string) {
       });
     const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
-    const invalid = !await grantCurrent(submission) ||
-      (manifest && (await revalidateManifest(tx, parseManifest(manifest))).kind !== 'valid');
+    const invalid = manifest ? !await teachingResultAllowed(tx, submission, manifest, grantCurrent)
+      : !await grantCurrent(submission);
     if (invalid && status === 'pending') {
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     }

@@ -11,8 +11,8 @@ import { factId, commandId, type Revision } from '../../kernel/src/declarations/
 import type { CommandReceipt } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 
-import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { type Manifest } from '../../kernel/src/derivations/manifest.ts';
+import { teachingResultAllowed } from './notion.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { assessmentRelease, assessmentSubmission, type AssessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
@@ -143,8 +143,7 @@ async function projectMount(
   const turn = await reader.fact(data.turnId, { mode: 'following' });
   const submission = studyTurn(turn.value);
   if (
-    submission.sessionId !== sessionId || !(await grantCurrent(submission)) ||
-    (await revalidateManifest(tx, parseManifest(data.manifest))).kind !== 'valid'
+    submission.sessionId !== sessionId || !await teachingResultAllowed(tx, submission, data.manifest, grantCurrent)
   )
     throw new MountUnavailable('作品的依据已变更。');
   const {

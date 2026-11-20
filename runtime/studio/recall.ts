@@ -6,7 +6,7 @@ import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/typ
 import { commandId, derivationId, factId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { CommandReceipt, FactRef, Json } from '../../kernel/src/declarations/types.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { teachingResultAllowed } from './notion.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { helpExposure, helpExposureRequest, helpExposureType, sameHelpRef, sameHelpTarget, type HelpRef } from '../../modules/activity/help-exposure-values.ts';
@@ -107,10 +107,9 @@ async function readSource(tx: ReadTransaction, mount: Mount, requireCurrent: boo
   const turn = await createCommandReadContext(tx, purpose).fact(mount.turnId, { mode: 'following' });
   const manifest = parseManifest(row.manifest);
   if (turn.type !== 'activity.studyTurn' || manifest.purpose !== purpose ||
-      !await workspaceGrantChecker()(studyTurn(turn.value)) ||
       !manifest.inputs.some(entry => entry.kind === 'fact' && entry.id === turn.ref.id &&
         entry.rev === turn.ref.rev && entry.accessEpoch === turn.accessEpoch) ||
-      (await revalidateManifest(tx, manifest, purpose)).kind !== 'valid') {
+      !await teachingResultAllowed(tx, studyTurn(turn.value), manifest, workspaceGrantChecker())) {
     throw new RecallRequestError(409, '回忆题的教学依据已变化。');
   }
   return { turn, feedback: row.value };

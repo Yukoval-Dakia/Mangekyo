@@ -1,9 +1,11 @@
-import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
+import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import type { studyTurn } from '../../modules/activity/values.ts';
+import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createAuthorizedFactReader, createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId, type FactId, type LearnerId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { assertDeletionWatermark, deletionWatermark, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -14,7 +16,7 @@ import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelect
 import { openSelectedNotionSource, notionSourceTarget, setNotionPurposeCommand, notionPageObservationType, prepareNotionRefreshInput, prepareNotionIngest, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { notionModelRecipient, purpose as teaching, stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { notionTeachingRecipients } from './workspace-access.ts';
@@ -81,10 +83,10 @@ function parseSettings<T>(read: () => T) {
   try { return read(); } catch { throw new RequestError(400, 'Notion 选源格式无效。'); }
 }
 
-function notionHost(db: Db) {
+function notionHost(db: Db, scope = learnerScope) {
   const connection = notionConnection();
-  const snapshot = <T>(read: (tx: ReadTransaction) => Promise<T>) => db.snapshot(learnerScope, read);
-  const locked = <T>(action: (tx: DbTransaction) => Promise<T>) => db.tx(learnerScope, async tx => {
+  const snapshot = <T>(read: (tx: ReadTransaction) => Promise<T>) => db.snapshot(scope, read);
+  const locked = <T>(action: (tx: DbTransaction) => Promise<T>) => db.tx(scope, async tx => {
     await lockLearner(tx, tx.learner);
     return action(tx);
   });
@@ -121,11 +123,34 @@ function notionHost(db: Db) {
 
 type Basis = {id:string; rev:number; epoch:string; type:string};
 export async function savedNotionWitnesses(tx: ReadTransaction, inputs: Manifest['inputs']) {
-  const facts = inputs.filter(input => input.kind === 'fact');
-  const {rows} = await tx.query<{id:string}>(`SELECT id FROM facts WHERE learner_id=$1 AND type=$2 AND id=ANY($3)`,
+  const facts: Extract<Manifest['inputs'][number], {kind: 'fact'}>[] = [];
+  const seen = new Set<string>();
+  let pending = inputs;
+  while (pending.length) {
+    const slots = new Set<string>();
+    for (const input of pending) {
+      if (input.kind === 'fact') facts.push(input);
+      else if (input.kind === 'slot') slots.add(input.derivationId);
+      else for (const member of input.members) slots.add(member.derivationId);
+    }
+    const ids = [...slots].filter(id => !seen.has(id));
+    if (!ids.length) break;
+    ids.forEach(id => seen.add(id));
+    const {rows} = await tx.query<{manifest: unknown}>(
+      'SELECT manifest FROM derivations WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
+    pending = rows.flatMap(row => parseManifest(row.manifest).inputs);
+  }
+  if (!facts.length) return [];
+  const {rows} = await tx.query<{id:string; rev:number}>(`SELECT f.id,r.rev FROM facts f
+    JOIN fact_revs r ON (r.learner_id,r.fact_id)=(f.learner_id,f.id)
+    WHERE f.learner_id=$1 AND f.type=$2 AND f.id=ANY($3) AND r.data->>'kind'='notion'`,
     [tx.learner,captureSourceType,facts.map(input => input.id)]);
-  const ids = new Set(rows.map(r => r.id));
-  return facts.filter(f => ids.has(f.id)).map(f => ({id:f.id,rev:f.rev,epoch:f.accessEpoch,type:captureSourceType}));
+  const ids = new Set(rows.map(r => r.id + ':' + r.rev));
+  return facts.filter(f => ids.has(f.id + ':' + f.rev)).map(f => ({id:f.id,rev:f.rev,epoch:f.accessEpoch,type:captureSourceType}));
+}
+
+async function notionPageAuthority(tx: ReadTransaction, source: ReturnType<typeof sourceEnvelope>) {
+  return {selection:(await selectionAt(tx,source.sourceSelectionId!))!, pageId:source.externalId!, watermark:await deletionWatermark(tx)};
 }
 
 export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<Basis>, recipient: NotionRecipient) {
@@ -135,11 +160,59 @@ export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<B
     const fact = await createAuthorizedFactReader(tx,'teaching',recipient).reopen({...witness,id:factId(witness.id),
       accessEpoch:witness.epoch as FactSnapshot['accessEpoch'], mode:'pinned'});
     if (!await checkStudioNotionFact(tx,fact,'teaching',recipient)) continue;
-    const value = sourceEnvelope(fact.value);
-    const selection = (await selectionAt(tx,value.sourceSelectionId!))!;
-    pages.push({selection,pageId:value.externalId!,watermark:await deletionWatermark(tx)});
+    pages.push(await notionPageAuthority(tx, sourceEnvelope(fact.value)));
   }
   return pages;
+}
+
+export async function teachingResultAllowed(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
+  rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>) {
+  try {
+    const manifest = parseManifest(rawManifest);
+    if (manifest.purpose !== teaching || !await grantCurrent(turn) ||
+        (await revalidateManifest(tx, manifest)).kind !== 'valid') return false;
+    const recipient: NotionRecipient = () => true;
+    if (turn.providerId && turn.protocol && turn.workspaceRevision)
+      recipient.notionRecipientId = notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision);
+    await notionSendBasis(tx, await savedNotionWitnesses(tx, manifest.inputs), recipient);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type CheckNotionRead = (fact: FactSnapshot) => Promise<void>;
+type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => Promise<T>;
+
+export async function confirmNotionRead<T>(db: Db, learner: LearnerId, read: Projection<T>, publish?: Projection<T, DbTransaction>) {
+  const {snapshot, locked, provider} = notionHost(db, {learner});
+  const pageFor = async (tx: ReadTransaction, fact: FactSnapshot) => {
+    if (fact.type !== captureSourceType) return;
+    const source = sourceEnvelope(fact.value);
+    if (source.kind !== 'notion') return;
+    const page = await notionPageAuthority(tx, source);
+    const key = JSON.stringify([fact.ref.id, fact.ref.rev, fact.accessEpoch, page.selection.id, page.selection.selectionEpoch, page.pageId, page.watermark]);
+    return {key, ...page};
+  };
+  const pages = new Map<string, NonNullable<Awaited<ReturnType<typeof pageFor>>>>();
+  const initial = await snapshot(tx => read(tx, async fact => {
+    const page = await pageFor(tx, fact);
+    if (page) pages.set(page.key, page);
+  }));
+  if (!pages.size && !publish) return initial;
+  const allowed = new Set<string>();
+  for (const {key, selection, pageId, watermark} of pages.values()) {
+    try {
+      await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId);
+      allowed.add(key);
+    } catch (error) {
+      if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
+    }
+  }
+  return locked(tx => (publish ?? read)(tx, async fact => {
+    const page = await pageFor(tx, fact);
+    if (page && !allowed.has(page.key)) throw new FactReadDeniedError('recipient', '未能确认教材的 Notion 来源。');
+  }));
 }
 
 export async function confirmNotionDispatch(db: Db, pages: Awaited<ReturnType<typeof notionSendBasis>>) {
