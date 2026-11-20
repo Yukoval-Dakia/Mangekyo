@@ -11,7 +11,8 @@ import {WorkspaceLibrary, WorkspaceRecord} from './workspace-records';
 import { Workbook } from './workbook';
 import { Organizer } from './organizer';
 import { Intake } from './intake';
-import { Mistakes, PrintPaper } from './review';
+import { Mistakes } from './review';
+import { QuestionBank } from './iqdb';
 import {
   ReadState,
   Today,
@@ -29,6 +30,7 @@ import './styles.css';
 import './shell.css';
 import './learning.css';
 
+const PrintPaper = lazy(() => import('./print-paper'));
 const StudioTextbooks = lazy(() => import('./textbook/StudioTextbooks'));
 
 const destinations: { path: string; text: string; icon: IconName }[] = [
@@ -51,9 +53,10 @@ function App() {
   const [textbookVersion, setTextbookVersion] = useState(0);
   const [notice, setNotice] = useState('');
   const opener = useRef<HTMLElement | null>(null);
-  const library = useResource<Workspace>('/workspace');
-  const chats = useResource<ChatLink[]>('/conversations');
-  const settings = useResource<Settings>('/settings');
+  const catalogOnly = path === '/materials' && new URLSearchParams(location.search).get('view') === 'iqdb';
+  const library = useResource<Workspace>('/workspace', !catalogOnly);
+  const chats = useResource<ChatLink[]>('/conversations', !catalogOnly);
+  const settings = useResource<Settings>('/settings', !catalogOnly);
   useEffect(() => {
     document.title = section + ' · Mangekyō';
   }, [section]);
@@ -104,6 +107,7 @@ function App() {
       <p role="status">正在打开对话…</p>
     );
   else if (path === '/today') content = <Today library={library} chats={chats} />;
+  else if (catalogOnly) content = <QuestionBank />;
   else if (path === '/materials') content = <Materials library={library} capture={() => open('material')} />;
   else if (path === '/materials/workspace') content = <WorkspaceLibrary />;
   else if (path.startsWith('/materials/records/')) content = <WorkspaceRecord id={path.split('/')[3]!} />;
@@ -114,7 +118,6 @@ function App() {
   );
   else if (path === '/intake') content = <Intake />;
   else if (path === '/review') content = <Mistakes />;
-  else if (/^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/print$/.test(path)) content = <PrintPaper id={path.split('/')[2]!} />;
   else if (path === '/papers' || path.startsWith('/papers/')) {
     const id = path.slice('/papers/'.length);
     content = id === 'new' && !library.data ? <ReadState resource={library} /> : <>
@@ -207,7 +210,12 @@ function App() {
   );
 }
 const root = document.getElementById('root');
-if (root) createRoot(root).render(<App />);
+if (root) {
+  const paper = /^\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/print$/.exec(location.pathname);
+  createRoot(root).render(paper?.[1]
+    ? <Suspense fallback={<p role="status">正在打开打印卷…</p>}><PrintPaper id={paper[1]} /></Suspense>
+    : <App />);
+}
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator)
   void navigator.serviceWorker.register('/offline-shell.js').catch(() => {});

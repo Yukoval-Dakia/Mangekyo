@@ -1,0 +1,17 @@
+.clean-workbook { max-width: 52rem; margin-inline: auto; overflow-wrap: anywhere; }
+.clean-workbook section { margin-block: 2rem; }
+.clean-workbook h2 { font-size: 1.1rem; break-after: avoid; }
+.clean-workbook h2 small { font-size: .85rem; font-weight: normal; }
+.clean-workbook img { max-width: 100%; height: auto; }
+@media print {
+  .clean-workbook { page: workbook; font-size: 11pt; line-height: 1.55; }
+  .clean-workbook .formatted-reply pre { white-space: pre-wrap; }
+  .clean-workbook .formatted-reply pre,
+  .clean-workbook .formatted-reply .katex-display { overflow: visible; }
+  .clean-workbook section { break-inside: auto; }
+  .clean-workbook .answer-lines { break-inside: avoid; }
+  @page workbook {
+    margin: 18mm;
+    @bottom-center { content: counter(page) " / " counter(pages); font-size: 9pt; }
+  }
+}

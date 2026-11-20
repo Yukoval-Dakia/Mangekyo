@@ -1,9 +1,11 @@
+import { BankAttachment, BankFeedback, BankFields, BankOrigin, bankSubmission } from './bank-question';
+import { fixedLink } from './concept-reading';
 import { useDraftWatermark } from './draft-watermark';
 import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
-  WorkbookDetail,
+  WorkbookDetail as LegacyDetail,
   WorkbookQuestionView,
   WorkbookRubricAssessmentView,
   WorkbookSummary,
@@ -17,6 +19,12 @@ import { AttemptResearch } from './research';
 import { observePaperTime } from './workbook-duration';
 import { useWorkbookPresentation } from './workbook-presentation';
 import './workbook.css';
+
+type WorkbookDetail = Omit<LegacyDetail, 'attempts'> & {
+  attempts: (LegacyDetail['attempts'][number] & {
+    formalAssessment?: {state: string; score: {earned: number; maximum: number} | null; reason?: string};
+  })[];
+};
 
 export type WorkbookProps = {
   modelSettings: Resource<Settings>;
@@ -56,6 +64,7 @@ function ListPage() {
         <a className="primary-button" href="/papers/new">
           新建试卷
         </a>
+        <a className="tonal-button" href="/materials?view=iqdb">从智能题库选题</a>
         <a className="tonal-button" href="/materials/workspace?kind=question">同伴存入的题目</a>
       </div>
       <ReadState resource={papers} />
@@ -115,7 +124,9 @@ type EditorQuestion = (NumericEditor | ExactEditor | RubricEditor) & {
 
 function QuestionSource({ source }: { source: WorkbookSourceQuestionRef }) {
   return <p className="workbook-source-note">
-    引用原题第 {source.rev} 版 · <a href={'/materials/records/' + encodeURIComponent(source.id)}>查看当前记录</a>
+    <a href={fixedLink({v: 1, fact: {...source, type: 'activity.workspaceEntry'}, anchor: {kind: 'question', itemId: 'question'}})}>
+      查看引用的第 {source.rev} 版题面
+    </a> · <a href={'/materials/records/' + encodeURIComponent(source.id)}>查看当前记录</a>
     <br /><small>{source.id}</small>
   </p>;
 }
@@ -725,11 +736,13 @@ function FeedbackItem({
         <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>
         <span className="workbook-feedback-question">{question.prompt}</span>
       </header>
-      {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
+      {question.kind === 'bank' ? <BankOrigin source={question.sourceQuestionRef}/> :
+        question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
       {feedback.result === 'self-check' && (
         <SelfCheckMarks paperId={paperId} attemptId={attemptId} questionId={feedback.questionId} />
       )}
-      {feedback.answer !== null && (
+      {question.kind === 'bank' && feedback.answer !== null && <BankFeedback question={question} answer={String(feedback.answer)}/>}
+      {question.kind !== 'bank' && feedback.answer !== null && (
         <p className="workbook-answer">
           你的作答：<code>{String(feedback.answer)}</code>
         </p>
@@ -858,7 +871,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   const wrongQuestionIds = activeAttempt
     ? activeAttempt.feedback
         .filter((feedback) =>
-          feedback.result === 'incorrect' ||
+          feedback.result === 'incorrect' || feedback.result === 'partial' ||
           (activeAttempt.assessments ?? []).some(
             (assessment) =>
               assessment.questionId === feedback.questionId &&
@@ -925,7 +938,12 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     const answers: Record<string, string | null> = {};
     for (const question of visibleQuestions) {
       const value = draft.answers[question.id]?.trim();
-      answers[question.id] = value ? value : null;
+      try {
+        answers[question.id] = question.kind === 'bank' ? bankSubmission(question, value ?? '') : value || null;
+      } catch (failure) {
+        setError(failure instanceof Error ? failure.message : '请核对本题作答。');
+        return;
+      }
     }
     if (!Object.values(answers).some((value) => value !== null)) {
       setError('请至少作答一题再交卷。');
@@ -1056,12 +1074,15 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                         ? '数值题'
                         : question.kind === 'exact'
                           ? '精确题'
-                          : '评分标准题'}
+                          : question.kind === 'bank' ? '题库题' : '评分标准题'}
                     </span>
                   </header>
-                  {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
+                  {question.kind === 'bank' ? <BankOrigin source={question.sourceQuestionRef}/> :
+        question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
                   <p className="workbook-answer-prompt">{question.prompt}</p>
-                  {question.kind === 'numeric' ? (
+                  {question.kind === 'bank' && <BankAttachment question={question} paperId={paperId}/>}
+                  {question.kind === 'bank' ? <BankFields question={question} raw={draft?.answers[question.id] ?? ''}
+                    disabled={answerDisabled} change={value => changeAnswer(question.id, value)}/> : question.kind === 'numeric' ? (
                     <label className="field">
                       <span>{question.unit ? `${question.unit}（数字）` : '数字答案'}</span>
                       <input
@@ -1129,6 +1150,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
             <div className="workbook-review-head" ref={feedbackHeading} tabIndex={-1}>
               <div>
                 <h2>本次反馈</h2>
+                {activeAttempt.formalAssessment?.score && <p>整卷得分 {activeAttempt.formalAssessment.score.earned} / {activeAttempt.formalAssessment.score.maximum}</p>}
+                {activeAttempt.formalAssessment?.state === 'queued' && <button className="text-button" onClick={() => setReload(n => n + 1)}>刷新批改进度</button>}
+                {activeAttempt.formalAssessment?.reason && <p role="status">{activeAttempt.formalAssessment.reason}</p>}
                 <p className="muted">
                   {dateLabel(activeAttempt.submittedAt)} · {activeAttempt.total ? '自动核对答对 ' + activeAttempt.correctCount + ' / ' + activeAttempt.total : '查看各题反馈'}
                   {'effectiveDurationMs' in activeAttempt && typeof activeAttempt.effectiveDurationMs === 'number' && (

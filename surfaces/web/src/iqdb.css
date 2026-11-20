@@ -1,0 +1,10 @@
+.iqdb-compose fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.iqdb-compose details, .iqdb-compose button { margin-top: 1rem; }
+.iqdb-compose input[type="number"] { max-width: 8rem; }
+.iqdb-proposal { margin-top: 1.25rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+.iqdb-list { margin-block: 1.5rem; }
+.iqdb-list li > h3 { margin-block: 0 .3rem; }
+.iqdb-list li > details { margin-block: .75rem; }
+.iqdb-list summary { cursor: pointer; }
+.iqdb-list input[type="checkbox"] { accent-color: var(--primary); }
+.iqdb-pending { margin-block: 1rem; }

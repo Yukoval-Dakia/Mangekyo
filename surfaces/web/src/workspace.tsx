@@ -15,11 +15,16 @@ export type Workspace = { materials: Material[]; goal: string | null };
 export type ChatLink = { id: string; title: string; caseId: string };
 export type Resource<T> = { data: T | undefined; error: boolean; reload: () => void };
 
-export function useResource<T>(path: string): Resource<T> & {replace: (value: T) => void} {
+export function useResource<T>(path: string, enabled = true): Resource<T> & {replace: (value: T) => void} {
   const [data, setData] = useState<T>();
   const [error, setError] = useState(false);
   const [version, setVersion] = useState(0);
   useEffect(() => {
+    if (!enabled) {
+      setData(undefined);
+      setError(false);
+      return;
+    }
     const controller = new AbortController();
     setError(false);
     api<T>(path, { signal: controller.signal })
@@ -30,17 +35,22 @@ export function useResource<T>(path: string): Resource<T> & {replace: (value: T)
         if (!controller.signal.aborted) setError(true);
       });
     return () => controller.abort();
-  }, [path, version]);
+  }, [path, version, enabled]);
   useEffect(() => {
-    if (path !== '/workspace') return;
+    if (!enabled || path !== '/workspace') return;
     const refresh = () => {setData(undefined);setVersion(n => n + 1);};
     const stored = (e:StorageEvent) => {if (e.key === latestKey) refresh();};
     window.addEventListener(latestKey,refresh);
     window.addEventListener('storage',stored);
     return () => {window.removeEventListener(latestKey,refresh);window.removeEventListener('storage',stored);};
-  },[path]);
-  return { data, error, reload: () => setVersion((n) => n + 1),
-    replace(value) { setData(value); setError(false); setVersion(n => n + 1); } };
+  },[path, enabled]);
+  return { data: enabled ? data : undefined, error: enabled && error, reload: () => setVersion((n) => n + 1),
+    replace(value) {
+      if (!enabled) return;
+      setData(value);
+      setError(false);
+      setVersion(n => n + 1);
+    } };
 }
 
 export function ReadState({ resource }: { resource: Resource<unknown> }) {
@@ -247,7 +257,7 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
   return (
     <>
       <PageTitle title="材料"><a className="tonal-button" href="/intake"><Icon name="plus" /> 导入文件</a></PageTitle>
-      <div className="study-actions library-actions"><a href="/textbooks">个人教材</a><a href="/papers">我的题库</a><a href="/notes">学习笔记</a><a href="/materials/workspace">同伴工作区</a><button className="text-button" onClick={capture}>交入文字</button></div>
+      <div className="study-actions library-actions"><a href="/textbooks">个人教材</a><a href="/materials?view=iqdb">智能题库（IQDB）</a><a href="/papers">我的试卷</a><a href="/notes">学习笔记</a><a href="/materials/workspace">同伴工作区</a><button className="text-button" onClick={capture}>交入文字</button></div>
       {pendingErasures().map(id => <a key={id} href={materialPath(id)}>查看待核对的原件删除请求 · {id.slice(-6)}</a>)}
       <div className="library-controls">
         <label className="search-box">
