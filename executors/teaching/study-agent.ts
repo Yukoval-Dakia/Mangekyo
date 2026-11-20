@@ -3,15 +3,15 @@ import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
 import { loadMcpTools, invokeMcpTool, remoteToolDefinition } from './mcp-tools.ts';
 import { findTools, studyToolDiscovery } from './study-tool-discovery.ts';
-import {projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
+import {projectChatImages, projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
 import {openToolResult, studyToolResults} from './study-tool-results.ts';
-import { workspaceDefinitions, type WorkspaceTools } from './workspace-tools.ts';
+import { workspaceDefinitions, type ReceiveStudyImage, type StudyImage, type WorkspaceTools } from './workspace-tools.ts';
 import { createStudyTools, pythonAttemptsLimit, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
-import { checkProviderOutcome, providerEndpoint, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
+import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 
 type StudyWorkspaceTools = WorkspaceTools & {
-  executeRead?: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>) => Promise<string>;
+  executeRead?: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>, receiveImage?: ReceiveStudyImage) => Promise<string>;
   preparePythonAttempts?: (args: Record<string, unknown>, step: number) => Promise<PreparedPythonAttempts>;
 };
 export type PreparedPythonAttempts = Extract<PythonAttemptsRead, {ok:false}> | (Extract<PythonAttemptsRead, {ok:true}> & {
@@ -105,7 +105,8 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const workspace = options.tools?.workspace;
   const maxToolCalls = workspace ? 12 : defaultToolBudget;
   const stride = workspace ? 16 : 8;
-  const allowParallelCalls = workspace?.executeRead && options.provider.protocol !== 'anthropic';
+  const anthropic = providerProtocol(options.provider) === 'anthropic';
+  const allowParallelCalls = workspace?.executeRead && !anthropic;
   const pinnedQuery = options.tools?.publicSearchQuery?.trim();
   const { model, reasoningEffort } = profileFor(options.provider);
   const remotes = await loadMcpTools(options.tools?.mcpServers ?? [], model, options.runEffect, connections);
@@ -126,8 +127,9 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   for (let round = 0; round <= maxToolCalls; round++) {
     const definitions = discovery ? [...coreDefinitions, ...discovery.takeDefinitions()] : coreDefinitions;
     const available = trace.length < maxToolCalls && definitions.length > 0;
+    const context = definitions.length ? projectWorkspaceContext(messages, previews) : messages;
     const body = JSON.stringify({ model, ...(reasoningEffort === 'default' ? {} : {reasoning_effort: reasoningEffort}), stream: true, max_completion_tokens: options.maxCompletionTokens ?? 4096,
-      messages: definitions.length ? projectWorkspaceContext(messages, previews) : messages,
+      messages: anthropic ? context : projectChatImages(context),
       ...(available ? { tools: definitions, ...(allowParallelCalls ? {} : { parallel_tool_calls: false }) } : {}) });
     const index = round * stride;
     const raw = await options.runEffect({ index, provider: endpoint, model, requestDigest: hash(JSON.stringify({endpoint, body})),
@@ -211,13 +213,16 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         : tools.execute(name, args, python?.inputs, attempts?.rows);
       // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
       let output: string;
+      let image: StudyImage | undefined;
       const before = name === 'python' ? tools.snapshotFiles() : {};
       if (name === memoryRegionTool.function.name && options.openMemoryRegion) {
         output = await options.openMemoryRegion(args, step);
       } else if (workspaceTool) {
+        const receiveImage: ReceiveStudyImage | undefined = name === 'open_learning'
+          ? value => { image = value; } : undefined;
         output = workspace.executeRead
-          ? await workspace.executeRead(name, args, step, priorRead ?? Promise.resolve())
-          : await workspace.execute(name, args, step);
+          ? await workspace.executeRead(name, args, step, priorRead ?? Promise.resolve(), receiveImage)
+          : await workspace.execute(name, args, step, receiveImage);
       } else if (name === 'read_file' || name === 'write_file') {
         output = await execute();
       } else {
@@ -241,11 +246,11 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const result = results.publish(name, step, output, files);
       const summary = name === memoryRegionTool.function.name ? '展开记忆区域' : remote
         ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + output.slice(0, 600) : summarise(call, args, output);
-      return {...result, summary};
+      return {...result, summary, ...(image && {image})};
     };
-    function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string}) {
+    function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string; image?: StudyImage}) {
       trace.push(result.summary);
-      const message: ToolResultMessage = {role: 'tool', tool_call_id: call.id, content: result.content};
+      const message: ToolResultMessage = {role: 'tool', tool_call_id: call.id, content: result.content, ...(result.image && {image:result.image})};
       if (result.preview) previews.set(message, result.preview);
       messages.push(message);
     }

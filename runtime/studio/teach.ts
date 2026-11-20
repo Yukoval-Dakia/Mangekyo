@@ -397,7 +397,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               if (!basis) throw new ChangedEvidence();
               trackRetention(basis);
             }
-            for (const w of witnesses) if (!inherited.has(w.id)) inherited.set(w.id, w);
+            for (const witness of witnesses) {
+              const w = 'image' in witness && witness.image === true ? {...witness,writeBasis:true as const} : witness;
+              const newer = inherited.get(w.id);
+              if (!newer || (w.writeBasis && !newer.writeBasis)) inherited.set(w.id, w);
+            }
             if (witnesses.length) protectWorkspaceDispatch = true;
           }
           // A reply can reenter history after an intervening turn omitted it.

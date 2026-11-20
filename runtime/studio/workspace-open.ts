@@ -1,4 +1,4 @@
-import {openLearningLimit} from '../../executors/teaching/workspace-tools.ts';
+import {imageCropEdgeLimit, openLearningLimit, type ImageCrop} from '../../executors/teaching/workspace-tools.ts';
 import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
@@ -11,7 +11,7 @@ import {sourceQuestions, type SourceTrack, type WorkspaceSourceRecipient} from '
 import {readWorkbookDiagnosis} from './workbook-diagnosis.ts';
 import type {WorkspaceAssessmentBasis} from './workspace-read.ts';
 
-type ToolErrorCode = 'not_found' | 'access_revoked' | 'basis_stale' | 'invalid_args' | 'partial_success' | 'evidence_not_opened';
+type ToolErrorCode = 'not_found' | 'access_revoked' | 'basis_stale' | 'invalid_args' | 'partial_success' | 'evidence_not_opened' | 'image_unavailable';
 
 export function learningToolError(code: ToolErrorCode, field: string, message: string, next?: {
   tool: 'open_learning' | 'search_workspace' | 'record_observation'; args: Record<string, unknown>; why: string;
@@ -22,6 +22,16 @@ export function learningToolError(code: ToolErrorCode, field: string, message: s
 const searchNext = {tool:'search_workspace' as const, args:{}, why:'从当前可读结果选择引用。'};
 type Part = {kind:'whole' | 'assessment'} | {kind:'question'; index:number};
 type OpenLearningArgs = {refs: string[]; part: Part; lens: 'raw' | 'diagnose'};
+type OpenImageArgs = {refs: [string]; part: {kind:'image_crop'; crop?: ImageCrop}; lens: 'raw'};
+
+function imageCrop(value: unknown): ImageCrop | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 4) return;
+  const {left, top, width, height} = value as Record<string, unknown>;
+  if (typeof left !== 'number' || typeof top !== 'number' || !Number.isSafeInteger(left) || !Number.isSafeInteger(top) || left < 0 || top < 0 ||
+      typeof width !== 'number' || typeof height !== 'number' || !Number.isInteger(width) || !Number.isInteger(height) ||
+      width < 1 || height < 1 || width > imageCropEdgeLimit || height > imageCropEdgeLimit) return;
+  return {left,top,width,height};
+}
 
 export function parseOpenLearningArgs(args: Record<string, unknown>) {
   const refs = typeof args.refs === 'string' ? [args.refs] : args.refs;
@@ -40,12 +50,20 @@ export function parseOpenLearningArgs(args: Record<string, unknown>) {
       tool:'open_learning',args:{refs,lens},why:'一次打开题面与作答依据。',
     });
   }
+  if (args.part === 'image_crop') {
+    if (refs.length !== 1) return learningToolError('invalid_args','refs','原图裁剪每次只接受一个交入材料引用。');
+    const crop = imageCrop(args.crop);
+    if (args.crop !== undefined && !crop) return learningToolError('invalid_args','crop',
+      `crop 须包含非负整数 left、top 和 1–${imageCropEdgeLimit} 的整数 width、height。`);
+    return {refs:[refs[0].trim()],part:{kind:'image_crop',...(crop ? {crop} : {})},lens:'raw'} satisfies OpenImageArgs;
+  }
+  if (args.crop !== undefined) return learningToolError('invalid_args','crop','crop 仅可用于 part: image_crop。');
   let part: Part;
   if (args.part === undefined) part = {kind:'whole'};
   else if (args.part === 'assessment') part = {kind:'assessment'};
   else {
     const match = typeof args.part === 'string' && /^question:([1-9]\d?)$/.exec(args.part);
-    if (!match) return learningToolError('invalid_args','part','part 须为 question:<题号> 或 assessment。',{
+    if (!match) return learningToolError('invalid_args','part','part 须为 question:<题号>、assessment 或 image_crop。',{
       tool:'open_learning',args:{refs},why:'先打开可用范围，再选择题号。',
     });
     part = {kind:'question',index:Number(match[1])};
@@ -64,7 +82,7 @@ type ReadResult = {
   error?: unknown;
 } & Record<string, unknown>;
 
-async function unreadable(tx: ReadTransaction, id: string, known: boolean, maySend: WorkspaceSourceRecipient) {
+export async function unreadable(tx: ReadTransaction, id: string, known: boolean, maySend: WorkspaceSourceRecipient) {
   if (!known) return learningToolError('not_found','refs','未能定位可打开的学习对象。',searchNext);
   try {
     const current = await createCommandReadContext(tx,purpose).fact(factId(id),{mode:'following'});

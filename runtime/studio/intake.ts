@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -92,6 +92,25 @@ function materialBase() {
 
 function digest(bytes: Buffer) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** Read the immutable original identified by an authorized intake fact. */
+export async function readIntakeOriginalBytes(materialId: string, expected: Pick<IntakeOriginal, 'size' | 'sha256'>) {
+  if (!Number.isSafeInteger(expected.size) || expected.size < 1 || expected.size > intakeFileLimit)
+    throw new Error('Invalid intake original size');
+  const base = materialBase()(materialId);
+  if (!(await lstat(base)).isDirectory()) throw new Error('Invalid intake directory');
+  const file = await open(join(base, 'original'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size !== expected.size) throw new Error('Intake original changed');
+    const bytes = Buffer.alloc(expected.size);
+    if ((await file.read(bytes, 0, bytes.length, 0)).bytesRead !== bytes.length || digest(bytes) !== expected.sha256)
+      throw new Error('Intake original changed');
+    return bytes;
+  } finally {
+    await file.close();
+  }
 }
 
 function asciiFilename(name: string) {

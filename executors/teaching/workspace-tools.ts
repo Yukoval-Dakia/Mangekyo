@@ -10,15 +10,23 @@ function tool(name: string, description: string, properties: Record<string, unkn
 }
 export const workspaceKinds = ['question', 'page', 'concept', 'relation', 'observation', 'annotation'] as const;
 export const openLearningLimit = 8;
+export const imageCropEdgeLimit = 512;
+export type ImageCrop = {left: number; top: number; width: number; height: number};
+export type StudyImage = {mediaType: 'image/png'; data: string};
+export type ReceiveStudyImage = (image: StudyImage) => void;
 export const workspaceDefinitions = [
   tool('read_learner_radar', '读取当前获准的冻结保持预测和对账、目标、未完成任务、先修查询入口及可用卷面。缺证时保留未知。', {
     scope: {type:'object', additionalProperties:false, properties:{subject_id:text, kc_ids:{...strings, maxItems:8}}},
     horizon_hours: {type:'integer', minimum:1, maximum:168, description:'只看观察窗口在未来指定小时内截止的保持记录。'},
   }),
-  tool('open_learning', '打开 1–8 个已获准的学习对象。refs 可传 id、sourceRef JSON 字符串或这些引用的数组。已交卷作答用 lens: diagnose 一次读取冻结题面、原答、已获准评估与帮助曝光。原文可用 part: question:<题号> 或 assessment。', {
+  tool('open_learning', '打开 1–8 个已获准的学习对象。refs 可传 id、sourceRef JSON 字符串或这些引用的数组。已交卷作答用 lens: diagnose 读取题面、原答、评估和帮助曝光。part 支持 question:<题号>、assessment，或从单个交入材料读 PNG/JPEG 原图的 image_crop。省略 crop 时先查原图尺寸。', {
     refs: {anyOf: [text, {type: 'array', minItems: 1, maxItems: openLearningLimit, items: text}]},
     part: text,
     lens: {type:'string', enum:['raw','diagnose']},
+    crop: {type:'object', additionalProperties:false, required:['left','top','width','height'],
+      description:'仅用于 image_crop。以原件编码像素左上角为 (0,0)，按右下开区间选区，坐标不应用 EXIF 旋转。',
+      properties:{left:{type:'integer', minimum:0}, top:{type:'integer', minimum:0},
+        width:{...integer, maximum:imageCropEdgeLimit}, height:{...integer, maximum:imageCropEdgeLimit}}},
   }, ['refs']),
   tool('search_workspace', '找学习记录、题或笔记。用 conceptId 查有向知识边，用 sourceRef 重开版本。', {
     query: text, kind: {enum: ['attempt','paper','material','note','goal','task', ...workspaceKinds], type: 'string'},
@@ -45,5 +53,5 @@ export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObserv
 export type WorkspaceTools = {
   presentationTool?: (typeof workspaceDefinitions)[number];
   writes: () => readonly WorkspaceWriteReceipt[];
-  execute: (name: string, args: Record<string, unknown>, step: number) => Promise<string>;
+  execute: (name: string, args: Record<string, unknown>, step: number, receiveImage?: ReceiveStudyImage) => Promise<string>;
 };
