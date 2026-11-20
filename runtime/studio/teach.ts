@@ -79,7 +79,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const memoryPackets: NonNullable<typeof learningMemory>[] = [];
   const memoryHeads = new Set<string>();
   let memoryTurn: string | undefined;
-  let checkAttachmentAccount: (() => Promise<boolean>) | undefined;
+  let checkTurnAccount: (() => Promise<boolean>) | undefined;
   let attachmentOrigin: ReturnType<typeof studyTurn> | undefined;
   let authorizeWorkspaceRecipient: (() => Promise<void>) | undefined;
   const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
@@ -129,7 +129,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     inputs.set('feedback:' + id, { kind: 'slot', slotType, slotKey: id, derivationId: derivationId(replyId), mode: 'following' });
   }
   async function validInputs(tx: ReadTransaction) {
-    if (attachmentOrigin && (!await checkAttachmentAccount?.() || !await attachmentCurrent(tx, attachmentOrigin)))
+    if ((checkTurnAccount && !await checkTurnAccount()) || (attachmentOrigin && !await attachmentCurrent(tx, attachmentOrigin)))
       throw new ChangedEvidence();
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
     const now = new Date().toISOString();
@@ -196,7 +196,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   });
   try {
     const submission = studyTurn(await read(job.slotKey));
-    if ((job.deriver === jitMethodName) !== (submission.jitContextVersion === 1))
+    if ((submission.jitContextVersion && job.deriver !== jitMethodName) || (job.deriver === jitMethodName && !submission.accountRevision))
       throw new ChangedEvidence();
     if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
     const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
@@ -205,10 +205,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       if (!origin.accountRevision || submission.accountRevision !== origin.accountRevision)
         throw new TeachingError('provider_configuration', '请重新选择材料并确认发送账户。');
       attachmentOrigin = origin;
-      checkAttachmentAccount = async () => sameRoute(origin,await loadSettings(task));
       if (!await db.snapshot(scope, tx => attachmentCurrent(tx, origin))) throw new ChangedEvidence();
     }
     const settings = await loadSettings(task);
+    if (submission.accountRevision) checkTurnAccount = async () => sameRoute(submission,await loadSettings(task));
     if (!sameRoute(submission, settings))
       throw new TeachingError('provider_configuration', '本轮绑定的模型配置已变更，请切回原配置或新建对话。');
     const checkWorkspaceRoute = async (current = settings) => {

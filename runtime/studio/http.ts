@@ -33,7 +33,7 @@ import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
-import { saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
+import { freezeProviderAccount, saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
 
 import {actOnArtifact} from './presentation-store.ts';
 
@@ -303,7 +303,7 @@ export function serve(
       if (path === '/api/practice/riding' && method === 'POST')
         return await offlineSubmission(200,input => practice.submit(input));
       if (path === '/api/settings' && method === 'GET')
-        return json(res, 200, publicSettings(await loadSettings()));
+        return json(res, 200, publicSettings((await db.tx({learner:studioLearner},tx => freezeProviderAccount(tx))).settings));
       if (path === '/api/settings/mcp-tools' && method === 'POST') {
         const input = await body(req);
         if (typeof input.id !== 'string' || typeof input.url !== 'string' ||
@@ -378,6 +378,7 @@ export function serve(
         console.error('studio request failed', error instanceof Error ? error.name : 'error');
       json(res, expected ? error.status : 500, {
         error: expected ? error.message : '服务未能完成请求。',
+        ...(error instanceof RequestError && error.responseCode ? {code:error.responseCode} : {}),
       });
     }
   });

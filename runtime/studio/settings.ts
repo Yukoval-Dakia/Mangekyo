@@ -294,6 +294,7 @@ export function publicSettings(settings: ProviderSettings) {
     protocol: settings.protocol,
     reasoningEffort: settings.reasoningEffort,
     activeProviderId: settings.activeProviderId,
+    accountRevision: providerAccount(settings)?.accountRevision,
     providers: settings.providers.map((provider) => ({
       id: provider.id,
       label: provider.label,
@@ -301,6 +302,7 @@ export function publicSettings(settings: ProviderSettings) {
       protocol: provider.protocol,
       model: provider.model,
       reasoningEffort: provider.reasoningEffort,
+      accountRevision: provider.credentialRevision,
       hasKey: Boolean(provider.apiKey),
     })),
     mcpServers: settings.mcpServers.map((server) => ({
@@ -481,7 +483,7 @@ export function providerAccount(settings: ProviderSettings): ProviderAccount | u
 export async function freezeProviderAccount(tx: DbTransaction, task?: ModelTask) {
   await lockLearner(tx, tx.learner);
   let settings = await loadSettings(task);
-  if (!providerAccount(settings)) {
+  if (settings.providers.some(provider => !provider.credentialRevision)) {
     await saveSettings({});
     settings = await loadSettings(task);
   }

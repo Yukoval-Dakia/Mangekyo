@@ -18,7 +18,7 @@ import {
 } from '../../modules/activity/recall-values.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { gradeWorkbook, workbookRequestId, type WorkbookQuestion } from '../../modules/activity/workbook-values.ts';
-import { readMaterialText } from './reading.ts';
+import { attachmentCurrent, attachmentSources } from './reading.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { purpose, slotType, stableId, studioLearner } from './identity.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
@@ -104,34 +104,20 @@ async function readSource(tx: ReadTransaction, mount: Mount, requireCurrent: boo
        )))`, [tx.learner, slotType, mount.turnId, mount.derivationId, requireCurrent],
   );
   if (!row) throw new RecallRequestError(404, '此回合没有可用的回忆题版本。');
-  const turn = await createCommandReadContext(tx, purpose).fact(mount.turnId, { mode: 'following' });
+  const read = createCommandReadContext(tx,purpose);
+  const turn = await read.fact(mount.turnId,{mode:'following'});
+  const submission = studyTurn(turn.value);
+  const origin = submission.parentId ? studyTurn((await read.fact(submission.sessionId,{mode:'following'})).value) : submission;
+  const grantCurrent = workspaceGrantChecker();
   const manifest = parseManifest(row.manifest);
   if (turn.type !== 'activity.studyTurn' || manifest.purpose !== purpose ||
-      !await workspaceGrantChecker()(studyTurn(turn.value)) ||
+      !await grantCurrent(submission) || !await grantCurrent(origin) || !await attachmentCurrent(tx,origin) ||
       !manifest.inputs.some(entry => entry.kind === 'fact' && entry.id === turn.ref.id &&
         entry.rev === turn.ref.rev && entry.accessEpoch === turn.accessEpoch) ||
       (await revalidateManifest(tx, manifest, purpose)).kind !== 'valid') {
     throw new RecallRequestError(409, '回忆题的教学依据已变化。');
   }
-  return { turn, feedback: row.value };
-}
-
-async function sealMaterials(tx: ReadTransaction, attachment: ReturnType<typeof studyTurn>['attachment']) {
-  if (!attachment) return [];
-  // Legacy teaching turns captured an excerpt, outside the derivation manifest.
-  // Pin the original and, for an intake, the actual extracted text revision.
-  const source = await readMaterialText(tx, attachment.id);
-  if (!source || source.title !== attachment.title || !source.text.includes(attachment.text)) {
-    throw new RecallRequestError(409, '本轮选段已无法对应到授权原文。');
-  }
-  const read = createCommandReadContext(tx, storagePurpose);
-  const material = await read.fact(attachment.id, { mode: 'following' });
-  const textFact = source.sourceRef.textFact;
-  const facts = [material];
-  if (textFact) {
-    facts.push(await read.fact(factId(textFact.id), { mode: 'pinned', rev: textFact.rev as Revision }));
-  }
-  return facts.map(({ ref: { id, rev }, accessEpoch }) => ({ ref: { id, rev }, accessEpoch }));
+  return { turn, feedback: row.value, attachment: origin.attachment };
 }
 
 async function readIssuance(tx: ReadTransaction, mount: Mount, ref: HelpRef, value: unknown) {
@@ -231,13 +217,15 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
           const { item } = await readIssuance(tx, mount, ref, existing.value);
           return view(mount, ref, item);
         }
-        const { turn, feedback } = await readSource(tx, mount, true);
+        const { turn, feedback, attachment } = await readSource(tx, mount, true);
         const kit = studyKit(feedback && typeof feedback === 'object' && 'studyKit' in feedback ? feedback.studyKit : null);
         if (!kit) throw new RecallRequestError(404, '此回合没有可用的回忆题。');
+        const materials = attachment ? await attachmentSources(tx,attachment) : undefined;
+        if (attachment && !materials) throw new RecallRequestError(409,'本轮选段已无法对应到授权原文。');
         const data = {
           turn: { id: turn.ref.id, rev: turn.ref.rev },
           version: mount.derivationId,
-          materials: await sealMaterials(tx, studyTurn(turn.value).attachment),
+          materials: materials?.witnesses ?? [],
           items: kit.questions.map((item, index) => ({ ...item, itemId: recallItemId(mount.turnId, mount.derivationId, index) })),
         };
         const item = itemFor(data, mount);

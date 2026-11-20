@@ -6,7 +6,7 @@ import { createPgDb } from '../../kernel/src/db/pg.ts';
 import { applyKernelSchema, workerStorage } from '../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { acknowledgeStartedWork, readWork, relayPending } from '../../kernel/src/work/index.ts';
-import { startWork } from '../../executors/temporal/src/index.ts';
+import { capabilityTaskQueue, startWork } from '../../executors/temporal/src/index.ts';
 import { createWorkWorker } from '../../executors/temporal/src/worker.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { openStudio } from './sessions.ts';
@@ -129,7 +129,7 @@ if (mode === 'web') {
 async function runWorker(storeId: string) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
-  const jitQueue = queue + '-jit-v1';
+  const jitQueue = capabilityTaskQueue(queue,'jit-v1');
   const jitLane = {deriver:jitMethodName};
   async function execute(id: string, terminal = false, jit = false) {
     const ref = jit ? await acknowledgeStartedWork(db,id,jitLane) ?? await acknowledgeStartedWork(db,id,'capability_pending')
@@ -157,7 +157,7 @@ async function runWorker(storeId: string) {
   const connection = await Connection.connect({ address: workerConfig.address });
   const client = new Client({ connection, namespace: workerConfig.namespace });
   const workers = [await createWorkWorker(execute, workerConfig)];
-  if (jitCounters.length) workers.push(await createWorkWorker(id => execute(id,false,true), {
+  workers.push(await createWorkWorker(id => execute(id,false,true), {
     ...workerConfig, taskQueue:jitQueue, deploymentName:jitQueue,
     onTerminalFailure:id => execute(id,true,true),
   }));
@@ -171,7 +171,7 @@ async function runWorker(storeId: string) {
   if (process.env.MANGEKYO_ACTIVATE_LOCAL_BUILD === '1') {
     if (!/^(localhost|127\.0\.0\.1):\d+$/.test(workerConfig.address))
       throw new Error('自动激活构建仅限本机开发服务');
-    for (const deploymentName of jitCounters.length ? [queue,jitQueue] : [queue]) {
+    for (const deploymentName of [queue,jitQueue]) {
       for (let attempt = 0; ; attempt++) {
         try {
           await client.workflowService.setWorkerDeploymentCurrentVersion({
@@ -192,12 +192,10 @@ async function runWorker(storeId: string) {
         await relayPending(db, async (ref, id) => {
           if (!(await research.relayWake(client, queue, ref, id))) await startWork(client, id, { taskQueue: queue });
         });
-        if (jitCounters.length) {
-          const startJit = async (_: unknown,id: string) => { await startWork(client,id,{taskQueue:jitQueue}); };
-          await relayPending(db,startJit,jitLane);
-          // Drain the trial v9 JIT lane using its unchanged queue.
-          await relayPending(db,startJit,'capability_pending');
-        }
+        const startJit = async (_: unknown,id: string) => { await startWork(client,id,{taskQueue:jitQueue}); };
+        await relayPending(db,startJit,jitLane);
+        // Drain the trial v9 JIT lane using its unchanged queue.
+        await relayPending(db,startJit,'capability_pending');
         failed = false;
       } catch {
         if (!failed) console.error('执行交接暂时不可用，待办已保留。');

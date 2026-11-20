@@ -15,7 +15,7 @@ import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn
 import { attachmentCurrent, attachmentSources } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import type { RecallHttp } from './recall-http.ts';
-import { checkProviderAccount, freezeProviderAccount, loadSettings, providerAccount } from './settings.ts';
+import { checkProviderAccount, loadSettings, providerAccount } from './settings.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
 import { areMemoryClaimsCurrent } from './memory-claims.ts';
@@ -39,11 +39,16 @@ import {turnArtifacts} from './presentation-store.ts';
 
 export class RequestError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, readonly responseCode?: string) {
     super(message);
     this.status = status;
   }
 }
+const confirmAccount = () => new RequestError(409, '请重新选择材料或开始新对话，并确认当前模型账户。',
+  'provider_account_confirmation_required');
+const requestedAccount = (route:unknown) => route && typeof route === 'object' && 'accountRevision' in route
+  ? route.accountRevision : undefined;
+
 export const cases = [
   {
     id: 'independent',
@@ -130,7 +135,8 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
         throw error;
       });
     let submission = studyTurn(snapshot.value);
-    if (!submission.parentId) materialAvailable = await attachmentCurrent(tx, submission);
+    if (!submission.parentId && submission.attachment)
+      materialAvailable = await attachmentCurrent(tx,submission) && await grantCurrent(submission);
     if (!materialAvailable) {
       const {attachment: _attachment, ...visible} = submission;
       submission = visible;
@@ -298,16 +304,16 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
           if (change.factType !== 'activity.studyTurn' || change.kind !== 'create') continue;
           const { id } = change.ref;
           const submission = studyTurn((await createCommandReadContext(tx,purpose).fact(id,{mode:'following'})).value);
-          if (submission.accountRevision) {
-            const origin = submission.parentId ? studyTurn((await createCommandReadContext(tx,purpose)
+          const origin = submission.parentId && submission.accountRevision ? studyTurn((await createCommandReadContext(tx,purpose)
               .fact(submission.sessionId,{mode:'following'})).value) : submission;
+          if (submission.accountRevision) {
             const settings = await checkProviderAccount(tx,{providerId:submission.providerId ?? 'default',accountRevision:submission.accountRevision},
               turnTask(submission.caseId,origin.attachment?.mode === 'prepare'));
             if (!settings || !sameRoute(submission,settings) ||
                 (submission.workspaceRevision && await workspaceRouteRevision(settings) !== submission.workspaceRevision))
-              throw new RequestError(409, '模型账户或工作区授权已变化，请重新确认。');
+              throw confirmAccount();
           }
-          if (submission.attachment && !await attachmentCurrent(tx, submission))
+          if (origin.attachment && !await attachmentCurrent(tx, origin))
             throw new RequestError(409, '选段的原件或版本已经变化，请重新打开原文。');
           await tx.insert('slot_state', {
             learner_id: tx.learner,
@@ -316,8 +322,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
             scope_keys: '{}',
             changed_tick: tick,
           });
-          const jit = submission.jitContextVersion === 1;
-          await requestWork(tx,tick,{slotType,slotKey:id,deriver:jit ? jitMethodName : methodName},jit ? 'routed_pending' : 'pending');
+          const guarded = Boolean(submission.accountRevision || submission.jitContextVersion || origin.attachment);
+          await requestWork(tx,tick,{slotType,slotKey:id,deriver:guarded ? jitMethodName : methodName},guarded ? 'routed_pending' : 'pending');
         }
       },
     }),
@@ -352,22 +358,27 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     const attachmentBasis = attachment && await db.snapshot({learner:studioLearner}, tx => attachmentSources(tx, attachment));
     if (attachment && !attachmentBasis) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
     const task = turnTask(selected, (origin?.attachment ?? attachment)?.mode === 'prepare');
-    const settings = attachment ? (await db.tx({learner:studioLearner},tx => freezeProviderAccount(tx,task))).settings
-      : await loadSettings(task);
-    if (!routeMatchesInput(requestedRoute, settings)) throw new RequestError(409, '模型配置已更改，请重新确认。');
+    const settings = await loadSettings(task);
     if (grants?.length) {
       if (selected !== 'companion' && selected !== 'riding') throw new RequestError(400, '此活动未开放 MCP 工具。');
       try { resolveMcpGrants(grants, settings); }
       catch { throw new RequestError(409, 'MCP 设置已变化，请重新选择本轮工具。'); }
     }
-    if (origin && !sameRoute(origin, settings))
-      throw new RequestError(422, '这次对话已绑定原模型配置，请切回该配置或新建对话。');
     const workspaceRevision = selected === 'companion' && !origin?.attachment && !attachment
       ? await workspaceRouteRevision(settings) : undefined;
     const account = providerAccount(settings);
     const jitCounter = enableJit && account && !parent && workspaceRevision && !grants?.length ? studioJitCounter(jitCounters, settings) : undefined;
     const accountRevision = attachment || jitCounter ? account?.accountRevision : origin?.accountRevision;
-    if (origin?.attachment && !accountRevision) throw new RequestError(409, '请重新选择材料并确认发送账户。');
+    const protectedTurn = origin?.attachment || origin?.jitContextVersion || attachment || jitCounter || accountRevision;
+    const supplied = requestedAccount(requestedRoute);
+    if (protectedTurn || supplied !== undefined) {
+      if (!account || supplied !== account.accountRevision || (protectedTurn && origin && !accountRevision) ||
+          !routeMatchesInput(requestedRoute,settings) || (origin && !sameRoute(origin,settings))) throw confirmAccount();
+    } else if (!routeMatchesInput(requestedRoute,settings)) {
+      throw new RequestError(409, '模型配置已更改，请重新确认。');
+    } else if (origin && !sameRoute(origin,settings)) {
+      throw new RequestError(422, '这次对话已绑定原模型配置，请切回该配置或新建对话。');
+    }
     let boundObject;
     if (currentObject) {
       if (selected !== 'companion' || origin?.attachment || attachment)
@@ -422,6 +433,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     );
     if (!row) return null;
     const existing = studyTurn(row.data);
+    if (existing.accountRevision && requestedAccount(requestedRoute) !== existing.accountRevision) throw confirmAccount();
     if (
       existing.sessionId !== session ||
       existing.answer !== answer ||
