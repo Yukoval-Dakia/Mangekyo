@@ -38,6 +38,7 @@ import {
 } from '../../executors/teaching/index.ts';
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
 import { caseId, type DisplayTurn } from './sessions.ts';
+import { jitWitnessesCurrent, prepareFirstTurnJit, studioJitCounter, type StudioJitCounter } from './first-turn-jit.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
@@ -56,7 +57,8 @@ class UncertainEffect extends Error {
 }
 class ChangedEvidence extends Error {}
 
-export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness) {
+export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness,
+  jitCounters: readonly StudioJitCounter[] = []) {
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
@@ -68,6 +70,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const retention = new Map<string, RetentionBasis>();
   let protectWorkspaceDispatch = false;
   let currentObject: OpenedCurrentLearningObject | undefined;
+  let jit: Awaited<ReturnType<typeof prepareFirstTurnJit>>;
   let liveMemoryRevision: number | undefined;
   let learningMemory: Awaited<ReturnType<typeof readMemoryGateway>>;
   let expandedMemory: typeof learningMemory;
@@ -126,6 +129,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     const now = new Date().toISOString();
     if (memoryPackets.some(item => item.receipt.expiresAt && item.receipt.expiresAt <= now) ||
         !await areMemoryClaimsCurrent(tx, [...memoryHeads], memoryTurn)) throw new ChangedEvidence();
+    if (jit) {
+      if (!authorizeWorkspaceRecipient) throw new ChangedEvidence();
+      await authorizeWorkspaceRecipient();
+      if (!await jitWitnessesCurrent(tx, jit.basis, maySend)) throw new ChangedEvidence();
+    }
     if (currentObject || assessments.size || retention.size) {
       if (!authorizeWorkspaceRecipient) throw new ChangedEvidence();
       await authorizeWorkspaceRecipient();
@@ -232,6 +240,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         await validInputs(tx);
         const current = await loadSettings(task);
         if (!sameRoute(submission, current)) throw new ChangedEvidence();
+        if (step.jitContext) {
+          const counter = studioJitCounter(jitCounters, current);
+          if (!jit || counter?.id !== submission.jitCounterId || counter?.endpoint !== step.provider ||
+              counter?.model !== step.model) throw new ChangedEvidence();
+        }
         if (!step.provider.startsWith('tool:') && current.apiKey !== settings.apiKey) throw new ChangedEvidence();
         if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new ChangedEvidence();
         if (grants.length) checkMcpAccess(current);
@@ -255,7 +268,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         }
       };
       const mcp = step.provider.startsWith('tool:mcp:');
-      const needsFreshEvidence = Boolean(protectWorkspaceDispatch || assessments.size || retention.size || memorySend);
+      const needsFreshEvidence = Boolean(jit || protectWorkspaceDispatch || assessments.size || retention.size || memorySend);
       const sendsMcpContext = grants.length > 0 && !step.provider.startsWith('tool:');
       const effect = await runEffect(
         db,
@@ -266,6 +279,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           stepKey: String(step.index),
           label: step.provider.startsWith('tool:') ? step.provider : 'teaching-model',
           input: { digest: step.requestDigest, provider: step.provider, model: step.model,
+            ...(step.jitContext && jit ? {jitBasis: jit.receipt} : {}),
             ...(memorySend ? { memoryBasis: memoryPackets.flatMap(packet => packet.receipt.basis) } : {}),
             ...(assessments.size ? {assessmentBasis: [...assessments.values()]} : {}),
             ...(retention.size ? {retentionBasis: [...retention.values()]} : {}) },
@@ -273,7 +287,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         async (requestId) => {
           try {
             // A resumed MCP call may authenticate and negotiate before sending tool arguments.
-            const reply = await (mcp ? invoke(requestId, dispatch) :
+            const reply = await (mcp || step.jitContext ? invoke(requestId, dispatch) :
               needsFreshEvidence || sendsMcpContext ? dispatch(() => invoke(requestId)) : invoke(requestId));
             return memorySend ? { reply, sent: { ...memorySend, requestId } } : reply;
           } catch (error) {
@@ -297,12 +311,31 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const answer = submission.answer;
       if (!answer) throw new TeachingError('invalid_input', '请输入有效的学习问题。');
       const selection = submission.currentObject;
-      if (selection) {
+      if (submission.jitContextVersion === 1) {
+        const counter = studioJitCounter(jitCounters, settings);
+        if (!counter || counter.id !== submission.jitCounterId || submission.caseId !== 'companion' ||
+            submission.parentId || submission.attachment || !submission.workspaceRevision || grants.length)
+          throw new TeachingError('provider_configuration', '本轮首轮教学资料的计数配置已变更。');
+        jit = await prepareFirstTurnJit(db, learner, job.slotKey, submission, settings, counter, {
+          maySend,
+          async authorize(tx) {
+            if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
+            await validInputs(tx);
+            await authorizeWorkspace();
+          },
+        });
+        if (!jit) throw new ChangedEvidence();
+        currentObject = jit.current;
+        for (const basis of jit.basis) {
+          const input = workspaceInput(basis);
+          inputs.set('jit:' + canonicalJsonString(input), input);
+        }
+      } else if (selection) {
         await authorizeWorkspace();
         currentObject = await db.snapshot(scope, tx => readCurrentLearningObject(tx, selection, maySend));
         if (!currentObject || currentObject.basisDigest !== selection.basisDigest) throw new ChangedEvidence();
       }
-      const preference = submission.caseId === 'companion' ? await db.snapshot(scope, async tx => {
+      const preference = submission.caseId === 'companion' && !jit ? await db.snapshot(scope, async tx => {
         const value = await currentMemory(tx);
         if (!value.text || value.endpoint !== settings.baseUrl || value.providerId !== settings.activeProviderId || value.protocol !== settings.protocol) return;
         await readFact(tx, memoryId, 'pinned');
@@ -323,7 +356,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           if (entry.type === claimType) memoryHeads.add(entry.id);
         }
       }
-      if (submission.caseId === 'companion' && submission.workspaceRevision && !grants.length) {
+      if (submission.caseId === 'companion' && submission.workspaceRevision && !grants.length && !jit) {
         const { rows: [prior] } = await db.query<{ has_sample: boolean; has_memory: boolean }>(
           `SELECT bool_or(label='teaching-model') AS has_sample, bool_or(label='local:learning-memory') AS has_memory
            FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2`, [learner, job.slotKey],
@@ -446,6 +479,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         pageBasis: [
           ...(turnInput?.kind === 'fact' ? [{id:turnInput.id,rev:turnInput.rev,epoch:turnInput.accessEpoch,type:'activity.studyTurn'}] : []),
           ...(learningMemory?.receipt.basis ?? []),
+          ...(jit?.basis ?? []),
         ],
         track(w, checkAtDispatch) {
           inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
@@ -459,7 +493,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           await checkWorkspaceRoute();
         },
       }) : undefined;
-      const turnMemory = memoryTurn && learningMemory && turnInput?.kind === 'fact' ? openTurnMemory({
+      const turnMemory = memoryTurn && (learningMemory || jit) && turnInput?.kind === 'fact' ? openTurnMemory({
         db, turn: memoryTurn, answer, source: turnInput, ...(currentObject ? {currentObject} : {}),
         authorize: memoryRequest.authorize,
         async retrieve(query, step) {
@@ -479,7 +513,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             await onProgress(progress);
         },
         ...(historyNotice ? {historyNotice} : {}),
-        ...(currentObject ? {currentLearningObject: JSON.stringify(currentObject.view)} : {}),
+        ...(jit ? {jitContext: jit.context} : currentObject ? {currentLearningObject: JSON.stringify(currentObject.view)} : {}),
         ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
         ...(turnMemory ? {memoryTools: turnMemory.execute} : {}),
         ...(learningMemory?.bundle.omitted.some(item => item.reason === 'budget') ? {

@@ -20,6 +20,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
 import { areMemoryClaimsCurrent } from './memory-claims.ts';
 import { currentObjectAlias, readCurrentLearningObject } from './current-learning-object.ts';
+import { studioJitCounter, type StudioJitCounter } from './first-turn-jit.ts';
 import {
   stableId,
   sourceId,
@@ -263,7 +264,9 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
   }
   return { ...view, turns: projected };
 }
-export async function openStudio(db: Db, activity: LoadedModule, { projectRecall }: { projectRecall?: RecallHttp['project'] } = {}) {
+export async function openStudio(db: Db, activity: LoadedModule, {projectRecall, jitCounters = []}: {
+  projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[];
+} = {}) {
   const handle = createCommandHandler(db, {
     modules: [activity],
     hooks: createStudioCommandHooks({
@@ -321,6 +324,7 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
       throw new RequestError(422, '这次对话已绑定原模型配置，请切回该配置或新建对话。');
     const workspaceRevision = selected === 'companion' && !origin?.attachment && !attachment
       ? await workspaceRouteRevision(settings) : undefined;
+    const jitCounter = !parent && workspaceRevision && !grants?.length ? studioJitCounter(jitCounters, settings) : undefined;
     let boundObject;
     if (currentObject) {
       if (selected !== 'companion' || origin?.attachment || attachment)
@@ -337,6 +341,7 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
       answer,
       ...(attachment ? { attachment } : {}),
       ...(boundObject ? {currentObject: boundObject} : {}),
+      ...(jitCounter ? {jitContextVersion: 1, jitCounterId: jitCounter.id} : {}),
       ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),
       ...(workspaceRevision ? {workspaceRevision, ...(!grants?.length && {memoryVersion: 1})} : {}),
       model: settings.model, reasoningEffort: settings.reasoningEffort,

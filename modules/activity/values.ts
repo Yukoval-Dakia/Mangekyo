@@ -45,12 +45,15 @@ function studyCurrentObject(input: unknown) {
 export function studyTurn(input: unknown) {
   const value = object(input);
   const answer = value.answer === null ? null : field(value, 'answer');
+  if (value.jitContextVersion !== undefined && value.jitContextVersion !== 1)
+    throw new Error('首轮教学资料版本无效。');
   return {
     sessionId: factId(field(value, 'sessionId')),
     caseId: field(value, 'caseId', 120),
     parentId: value.parentId === null ? null : factId(field(value, 'parentId')),
     answer,
     ...(value.memoryVersion === 1 ? {memoryVersion: 1 as const} : {}),
+    ...(value.jitContextVersion === 1 ? {jitContextVersion: 1 as const, jitCounterId: field(value, 'jitCounterId', 100)} : {}),
     ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),
     ...(value.workspaceRevision === undefined ? {} : {workspaceRevision: field(value, 'workspaceRevision', 80)}),
     ...(value.attachment === undefined ? {} : { attachment: studyAttachment(value.attachment) }),
