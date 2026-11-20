@@ -174,6 +174,18 @@ async function run({db,learner,stableId,load,send,assert}) {
   await assert.rejects(reads('storage',ctx=>projectIssuedPaper(ctx,textbook)), /未授权教学用途/);
   await assert.rejects(send('capture.issuePaper',textbook), /未授权教学用途/);
 
+  const legacyId = stableId('legacy-workspace-question'), workbookId = stableId('legacy-workbook');
+  const prompt = '2 + 3 = ?';
+  await send('activity.saveWorkspaceEntry', { id: legacyId, entry: { kind: 'question', title: '旧题', body: prompt, answer: '5' }, basis: [] });
+  await send('activity.saveWorkbookPaper', { id: workbookId, data: { title: '旧卷', savedAt: at, materialId: null,
+    questions: [{ id: 'q1', kind: 'numeric', prompt, sourceQuestionRef: { id: legacyId, rev: 1 },
+      answer: 5, tolerance: 0, unit: null, explanation: null }],
+  } });
+  const legacy = { ...issue, epoch: '0', source: { id: workbookId, rev: 1 } };
+  assert.equal((await send('capture.issuePaper', legacy)).wrote.length, 1);
+  await send('activity.setWorkspaceTeaching', { id: legacyId, expectedRev: 1, enabled: false });
+  await assert.rejects(reads('storage', ctx => projectIssuedPaper(ctx, legacy)), /教学用途/);
+
   const questionPages = projected.pages.filter(page=>page.pieces.some(piece=>piece.itemId==='q2')).map(page=>page.number);
   assert.ok(questionPages.length>1);
   const runId = await defaultPaperRunId(issuanceId);
