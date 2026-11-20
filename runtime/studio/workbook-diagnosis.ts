@@ -14,7 +14,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { purpose } from './identity.ts';
-import { readActivityHelpEvents, readWorkbookSubmissionBirth } from './learning-attempt-read.ts';
+import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorkspaceAttemptAssessments, type WorkspaceAssessmentBasis } from './workspace-read.ts';
@@ -81,8 +81,8 @@ export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference
 
 export async function openWorkbookQuestionSources(tx: ReadTransaction, submission: FactSnapshot, access: Access) {
   const attempt = workbookAttempt(submission.value);
-  const birth = await readWorkbookSubmissionBirth(tx, submission.ref.id);
-  if (!birth || birth.condition !== null || birth.submitted_at !== attempt.submittedAt) return;
+  const birth = await readActivitySubmissionBirth(tx, submission.ref, workbookAttemptType);
+  if (!birth || birth.submittedAt !== attempt.submittedAt) return;
   try {
     const paper = await openFrozenPaper(tx, attempt, birth.tick, access);
     if (!paper) return;

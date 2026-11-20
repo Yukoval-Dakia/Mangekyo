@@ -4,14 +4,14 @@ import { factId, type DerivationId, type FactId, type Revision, type Tick } from
 import type { FactRef, ReadContext } from '../../kernel/src/declarations/types.ts';
 import { projectHelpExposure, type HelpExposureEvidence } from '../../modules/activity/help-exposure.ts';
 import { helpAppliesTo, type HelpTarget } from '../../modules/activity/help-exposure-values.ts';
-import { closedPosttest, posttestIssuanceType, posttestSubmissionType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
+import { posttestIssuanceType, posttestSubmissionType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookGradingVersion,
   workbookPaper, workbookPaperType, workbookRubricGradingVersion,
 } from '../../modules/activity/workbook-values.ts';
 import type { RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
-import { readActivityHelpEvents, readWorkbookSubmissionBirth } from './learning-attempt-read.ts';
+import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { RequestError } from './sessions.ts';
 
 export const retentionPurpose = retentionTeachingPurpose;
@@ -45,8 +45,8 @@ export async function readWorkbookObservation(
   const controlled = submission.type === posttestSubmissionType;
   if (!controlled && submission.type !== workbookAttemptType) throw new RequestError(422, '需要正式交卷记录。');
   const attempt = workbookAttempt(submission.value);
-  const birth = await readWorkbookSubmissionBirth(tx, id);
-  if (!birth || birth.submitted_at !== attempt.submittedAt || controlled !== opened.sealed ||
+  const birth = await readActivitySubmissionBirth(tx, submission.ref, submission.type);
+  if (!birth || birth.submittedAt !== attempt.submittedAt || controlled !== opened.sealed ||
       attempt.gradingVersion !== target.gradingVersion || !sameWorkbookJson(attempt.paper, paper)) {
     throw new RequestError(422, '交卷和冻结卷面的题项或判分条件不一致。');
   }
@@ -55,7 +55,7 @@ export async function readWorkbookObservation(
   if (controlled) {
     const issued = await readPosttestIssuance(tx, read, factId(attempt.paperId));
     const release = issued.issuance;
-    if (birth.condition !== closedPosttest || release.paper.id !== target.paper.id || release.paper.rev !== target.paper.rev ||
+    if (release.paper.id !== target.paper.id || release.paper.rev !== target.paper.rev ||
         release.paperEpoch !== opened.accessEpoch || release.itemId !== target.itemId || release.gradingVersion !== target.gradingVersion ||
         BigInt(issued.tick) >= BigInt(birth.tick) || attempt.submittedAt < release.startedAt || attempt.submittedAt > release.through ||
         (expectedForecast !== undefined && release.forecastId !== expectedForecast)) {

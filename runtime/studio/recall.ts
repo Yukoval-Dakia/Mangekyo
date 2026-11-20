@@ -21,7 +21,7 @@ import { gradeWorkbook, workbookRequestId, type WorkbookQuestion } from '../../m
 import { readMaterialText } from './reading.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { purpose, slotType, stableId, studioLearner } from './identity.ts';
-import { readActivityHelpEvents } from './learning-attempt-read.ts';
+import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 
 export type RecallMount = { turnId: string; derivationId: string; itemId: string };
 type DisplayWitness = { mount: RecallMount; revealId: string };
@@ -165,13 +165,10 @@ function writtenRef(receipt: CommandReceipt) {
 }
 
 async function resultFor(tx: ReadTransaction, submission: Submission, ref: FactRef, item: Item) {
-  const { rows: [rev] } = await tx.query<{ tick: Tick }>(
-    `SELECT tick::text FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=$3`,
-    [tx.learner, ref.id, ref.rev],
-  );
-  if (!rev) throw new Error('Missing Recall submission revision');
+  const admission = await readActivitySubmissionBirth(tx, ref, recallSubmissionType);
+  if (!admission) throw new RecallRequestError(409, '回忆题交答尚未确认。');
   const target = recallTarget(submission.issuance, submission.itemId);
-  const cutoff = rev.tick;
+  const cutoff = admission.tick;
   const { events, omitted } = await readActivityHelpEvents(tx, createCommandReadContext(tx, storagePurpose), {
     activities: [target.activityId], cutoff, mode: 'pinned', issuance: submission.issuance,
   });

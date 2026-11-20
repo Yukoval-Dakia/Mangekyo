@@ -9,6 +9,8 @@ import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import type { AdmittedHelpEvent } from '../../modules/activity/help-exposure.ts';
 import { helpExposure, helpExposureType, recordHelpExposureCommand, type HelpPresentation, type HelpRef } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
+import { recallSubmissionType, submitRecallCommand } from '../../modules/activity/recall-values.ts';
+import { closedPosttest, posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
 import {
   sameWorkbookJson,
   submitWorkbookAttemptCommand,
@@ -28,16 +30,27 @@ type AssessmentRow = { id: string; slot_key: string; value: unknown; manifest: u
 type ArchivedAssessment = AssessmentRow & { original_id: string | null };
 const rubricPropagation = createPropagationHooks([]);
 
-export async function readWorkbookSubmissionBirth(tx: ReadTransaction, id: FactId) {
-  const { rows: [birth] } = await tx.query<{ tick: Tick; submitted_at: string; condition: string | null }>(
+const submissionCommands = {
+  [workbookAttemptType]: submitWorkbookAttemptCommand,
+  [posttestSubmissionType]: submitWorkbookAttemptCommand,
+  [recallSubmissionType]: submitRecallCommand,
+} as const;
+
+export async function readActivitySubmissionBirth(
+  tx: ReadTransaction, ref: FactRef, type: keyof typeof submissionCommands,
+) {
+  if (ref.learner !== tx.learner) return;
+  const { rows: [birth] } = await tx.query<{ tick: Tick; submitted_at: string | null; condition: string | null }>(
     `SELECT r.tick::text AS tick, c.input->'input'->'data'->>'submittedAt' AS submitted_at,
        c.input->'input'->>'condition' AS condition
-     FROM fact_revs r JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
+     FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+     JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
      WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.kind='value' AND r.author='learner'
-       AND c.type=$3 AND c.state='done'`,
-    [tx.learner, id, submitWorkbookAttemptCommand],
+       AND f.type=$3 AND c.type=$4 AND c.state='done'`,
+    [tx.learner, ref.id, type, submissionCommands[type]],
   );
-  return birth;
+  const condition = type === posttestSubmissionType ? closedPosttest : null;
+  return birth?.condition === condition ? {tick: birth.tick, submittedAt: birth.submitted_at} : undefined;
 }
 
 export async function readActivityHelpEvents(
