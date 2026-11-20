@@ -69,10 +69,11 @@ export function ReadingDrawer({ items }: { items: ReadingItem[] }) {
   </>;
 }
 
-export function QuestionContext({ itemId, readingContext, source, previous, historical = false }: {
+export function QuestionContext({ itemId, readingContext, source, previous, historical = false, referencesAllowed = true }: {
   itemId: string;
   readingContext?: ReadingContextEntry[] | undefined;
   historical?: boolean;
+  referencesAllowed?: boolean;
   source?: WorkbookSourceQuestionRef | undefined;
   previous?: ReactNode;
 }) {
@@ -89,12 +90,13 @@ export function QuestionContext({ itemId, readingContext, source, previous, hist
         presentation={presentation} itemId={itemId} entry={entry} onUnavailable={unavailable} /> });
     }
   }
-  if (source) {
+  // A later solution permit adds references without remounting an open question capsule.
+  const scope = JSON.stringify([itemId, presentation?.paper.id, presentation?.paper.rev, presentation?.permit,
+    presentation?.attempt?.id, presentation?.attempt?.rev, items.map(item => item.id), source?.id, source?.rev]);
+  if (referencesAllowed && source) {
     items.push({ id: [source.id, source.rev].join('/'), label: '原题 · 第 ' + source.rev + ' 版',
       content: <SourcePreview source={source} /> });
   }
-  if (previous) items.push({ id: 'answer', label: '回看这次作答', content: previous });
-  const scope = JSON.stringify([itemId, presentation?.paper.id, presentation?.paper.rev, presentation?.permit,
-    presentation?.attempt?.id, presentation?.attempt?.rev, items.map(item => item.id)]);
+  if (referencesAllowed && previous) items.push({ id: 'answer', label: '回看这次作答', content: previous });
   return <ReadingDrawer key={scope} items={items} />;
 }

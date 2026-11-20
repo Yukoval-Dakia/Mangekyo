@@ -706,6 +706,7 @@ function FeedbackItem({
   attemptId,
   question,
   feedback,
+  showFeedback,
   assessments,
   onAssess,
   allowSearch,
@@ -715,6 +716,7 @@ function FeedbackItem({
   paperId: string;
   attemptId: string;
   question: WorkbookQuestionView;
+  showFeedback: boolean;
   feedback: WorkbookDetail['attempts'][number]['feedback'][number];
   assessments: WorkbookRubricAssessmentView[];
   onAssess: (questionId: string, query?: string) => void;
@@ -724,7 +726,7 @@ function FeedbackItem({
 }) {
   const [query, setQuery] = useState('');
   const assessment = assessments.at(-1);
-  const shownResult = assessment?.verdict ?? feedback.result;
+  const shownResult = showFeedback ? assessment?.verdict ?? feedback.result : undefined;
   const className = shownResult === 'correct'
     ? 'workbook-result-correct'
     : shownResult === 'incorrect'
@@ -733,11 +735,12 @@ function FeedbackItem({
   return (
     <article className={`workbook-feedback-item ${className}`}>
       <header className="workbook-feedback-head">
-        <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>
+        {showFeedback && <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>}
         <span className="workbook-feedback-question">{question.prompt}</span>
       </header>
       <QuestionContext itemId={question.id} historical readingContext={question.readingContext} source={question.sourceQuestionRef}
-        previous={feedback.answer !== null && <p>我的作答 · {String(feedback.answer)}</p>} />
+        referencesAllowed={showFeedback} previous={feedback.answer !== null && <p>我的作答 · {String(feedback.answer)}</p>} />
+      {showFeedback && <>
       {feedback.result === 'self-check' && (
         <SelfCheckMarks paperId={paperId} attemptId={attemptId} questionId={feedback.questionId} />
       )}
@@ -791,6 +794,7 @@ function FeedbackItem({
           </button>
         </section>
       )}
+      </>}
     </article>
   );
 }
@@ -1182,9 +1186,6 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
             {reviewAllowed && feedback.map((feedback) => {
               const question = reviewQuestions.find((item) => item.id === feedback.questionId);
               if (!question) return null;
-              if (feedback.expected && feedback.expected.kind !== 'rubric' && !solutions.allowed) {
-                return <p key={question.id} className="workbook-feedback-question">{question.prompt}</p>;
-              }
               return (
                 <div key={feedback.questionId}>
                   <FeedbackItem
@@ -1192,6 +1193,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     attemptId={activeAttempt.id}
                     question={question}
                     feedback={feedback}
+                    showFeedback={!feedback.expected || feedback.expected.kind === 'rubric' || solutions.allowed}
                     assessments={(activeAttempt.assessments ?? []).filter(
                       (assessment) => assessment.questionId === feedback.questionId,
                     )}

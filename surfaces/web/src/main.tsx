@@ -51,9 +51,12 @@ function App() {
   const [textbookVersion, setTextbookVersion] = useState(0);
   const [notice, setNotice] = useState('');
   const opener = useRef<HTMLElement | null>(null);
-  const library = useResource<Workspace>('/workspace');
-  const chats = useResource<ChatLink[]>('/conversations');
-  const settings = useResource<Settings>('/settings');
+  const posttest = path === '/today' ? new URLSearchParams(location.search).get('posttest') : null;
+  const paperDetail = /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
+  const needsOverview = posttest === null && !paperDetail;
+  const library = useResource<Workspace>(needsOverview ? '/workspace' : null);
+  const chats = useResource<ChatLink[]>(needsOverview ? '/conversations' : null);
+  const settings = useResource<Settings>(posttest === null ? '/settings' : null);
   useEffect(() => {
     document.title = section + ' · Mangekyō';
   }, [section]);
