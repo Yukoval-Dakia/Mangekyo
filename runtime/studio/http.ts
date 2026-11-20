@@ -214,6 +214,7 @@ export function serve(
       const reading = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/reading$/.exec(path);
       if (reading?.[1] && method === 'GET') return json(res, 200, await library.reading(reading[1]));
       if (await handleIntakeRequest(student.intake, req, res, path, method)) return;
+      if (method === 'GET' && path === '/api/capture/papers') return json(res, 200, await student.capturePapers.list());
       const paperOperation = path.slice('/api/capture/papers/'.length);
       if (method === 'POST' && path.startsWith('/api/capture/papers/') &&
           (paperOperation === 'issue' || paperOperation === 'collect' || paperOperation === 'reprint')) {

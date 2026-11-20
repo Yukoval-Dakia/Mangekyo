@@ -9,11 +9,14 @@ import type { DerivationSnapshot, FactSnapshot, Json, Outcome, ReadContext, Slot
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
+import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { layeredExtractionDeriver, layeredExtractionSlot, type LayeredExtractionValue } from '../../modules/capture/extraction.ts';
 import {
   bindPaperCommandRead, collectPaperInput, collectPaperWrites, defaultPaperRunId, paperIssuance, paperIssuanceId,
-  paperIssuanceType, paperRun, paperRunType, projectIssuedPaper, type PaperExtractionReader,
+  paperIssuanceType, paperRun, paperRunType, projectIssuedPaper, projectNewPaper, type PaperExtractionReader, type PaperIssuance,
 } from '../../modules/capture/paper.ts';
+import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
+import { assetType, textbookPageType } from '../../modules/content/asset.ts';
 import { questionVerificationKey, questionVerificationType, type QuestionVerification } from '../../modules/content/question-state.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
@@ -21,6 +24,10 @@ import { RequestError } from './sessions.ts';
 const purpose = 'storage';
 const scope = { learner: studioLearner };
 const conflict = '卷面、题目发放状态或回收依据已变化。';
+const printKinds = new Map<string, 'workbook' | 'question' | 'textbook'>([
+  [workbookPaperType, 'workbook'], [assetType, 'question'], [textbookPageType, 'textbook'],
+]);
+const previewLayout = { lines: 60, columns: 80 };
 
 async function openSlot<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string, pinnedId?: string) {
   const { rows: [row] } = await tx.query<{ id: string; value: Outcome<Value>; manifest: unknown; gather_tick: string }>(
@@ -66,6 +73,8 @@ function bindRead(tx: ReadTransaction, base: ReadContext, use: string) {
   return bindPaperCommandRead(base, { readExtraction, readQuestionSlot });
 }
 
+const learnerRead = (tx: ReadTransaction) => bindRead(tx, createCommandReadContext(tx, purpose), purpose);
+
 async function readIssuedPaper(read: ReadContext, id: FactId, fact: FactSnapshot) {
   if (fact.type !== paperIssuanceType) throw new RequestError(404, '找不到已发行纸卷。');
   const issue = paperIssuance(fact.value);
@@ -88,12 +97,72 @@ async function paperRequest<T>(work: () => Promise<T>) {
   }
 }
 
+async function ifAvailable<T>(work: () => Promise<T>) {
+  try { return await paperRequest(work); }
+  catch (error) {
+    if (error instanceof RequestError && (error.status === 404 || error.status === 409)) return undefined;
+    throw error;
+  }
+}
+
+async function printCandidate(tx: ReadTransaction, read: ReadContext, fact: FactSnapshot,
+  kind: 'workbook' | 'question' | 'textbook' | 'photo' | 'pdf') {
+  const { id, rev } = fact.ref;
+  const definition = { source: { id, rev }, epoch: fact.accessEpoch, layout: previewLayout };
+  const project = async ({ layout, ...ref }: PaperIssuance) => {
+    const { title } = await projectNewPaper(read, { layout, ...ref });
+    return { kind, title, ...ref };
+  };
+  if (kind === 'photo' || kind === 'pdf') {
+    const layered = await ifAvailable(async () => {
+      const { snapshot } = await openSlot<LayeredExtractionValue>(tx,
+        { learner: tx.learner, type: layeredExtractionSlot, key: id }, layeredExtractionDeriver, purpose);
+      const { basis } = snapshot.outcome.value;
+      const extraction = { derivationId: snapshot.id, sourceRev: basis.target.rev, modelMethod: basis.modelMethod };
+      return project({ ...definition, extraction });
+    });
+    if (layered) return layered;
+  }
+  return project(definition);
+}
+
+async function listPapers(tx: ReadTransaction) {
+  const read = learnerRead(tx);
+  const { rows } = await tx.query<{ id: FactId }>(
+    `SELECT id FROM facts WHERE learner_id=$1 AND type=ANY($2::text[]) AND retracted_rev IS NULL
+     ORDER BY created_tick DESC,id`, [tx.learner, [paperIssuanceType, captureSourceType, ...printKinds.keys()]]);
+  const sources: Awaited<ReturnType<typeof printCandidate>>[] = [];
+  const issued: { issuanceId: FactId; title: string; pageCount: number }[] = [];
+  const returns: { title: string; source: { id: FactId; rev: number }; originals: { index: number; name: string }[] }[] = [];
+  for (const { id } of rows) {
+    const fact = await ifAvailable(() => read.fact(id, { mode: 'following' }));
+    if (!fact) continue;
+    if (fact.type === paperIssuanceType) {
+      const paper = await ifAvailable(() => readIssuedPaper(read, id, fact));
+      if (paper) issued.push({ issuanceId: paper.issuanceId, title: paper.title, pageCount: paper.pages.length });
+    } else {
+      const captured = fact.type === captureSourceType ? await ifAvailable(async () => sourceEnvelope(fact.value)) : undefined;
+      if (captured?.kind === 'paper-return') {
+        returns.push({ title: captured.unit.title, source: { id, rev: fact.ref.rev },
+          originals: captured.originals.map(({ name }, index) => ({ name, index })) });
+      } else {
+        const kind = captured?.kind === 'photo' || captured?.kind === 'pdf' ? captured.kind : printKinds.get(fact.type);
+        if (kind) {
+          const candidate = await ifAvailable(() => printCandidate(tx, read, fact, kind));
+          if (candidate) sources.push(candidate);
+        }
+      }
+    }
+  }
+  return { sources, returns, issued };
+}
+
 export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandHooks) {
   async function write<T>(run: (read: ReadContext,
     command: (type: string, data: Json) => Promise<void>) => Promise<T>) {
     return paperRequest(() => db.tx(scope, async tx => {
       await lockLearner(tx, tx.learner);
-      const read = bindRead(tx, createCommandReadContext(tx, purpose), purpose);
+      const read = learnerRead(tx);
       const handle = createCommandHandler({ ...db, query: tx.query, tx: async (inner, execute) => {
         if (inner.learner !== tx.learner) throw new RequestError(409, conflict);
         return execute(tx);
@@ -107,6 +176,7 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
   }
 
   return {
+    list: () => db.snapshot(scope, listPapers),
     async issue(body: Record<string, unknown>) {
       const issue = input(() => paperIssuance(body));
       const id = await paperIssuanceId(issue);
@@ -143,7 +213,7 @@ export function openCapturePapers(db: Db, capture: LoadedModule, hooks: CommandH
         return factId(body.issuanceId);
       });
       return paperRequest(() => db.snapshot(scope, async tx => {
-        const read = bindRead(tx, createCommandReadContext(tx, purpose), purpose);
+        const read = learnerRead(tx);
         return readIssuedPaper(read, id, await read.fact(id, { mode: 'following' }));
       }));
     },
