@@ -1,4 +1,4 @@
-import { factId, type FactId, type Revision } from '@mangekyo/kernel';
+import { derivationId, factId, type DerivationId, type FactId, type Revision } from '@mangekyo/kernel';
 import { object, studyCurrentObjectSelection } from './values.ts';
 
 export const classroomType = 'activity.classroom';
@@ -10,7 +10,7 @@ export type Classroom = {
   topic: string; minutes: number; sessionId: FactId;
   status: 'active' | 'finished' | 'archived';
   steps: Step[];
-  plans: FactId[];
+  plans: {turnId: FactId; derivationId: DerivationId}[];
   lastTurnId: FactId;
   pending?: {turnId: FactId; kind: 'start' | 'adjust'};
 };
@@ -30,6 +30,40 @@ export function classroomStart(raw: Record<string, unknown>) {
     throw new Error('当前学习对象须包含类型、ID 和版本。');
   return {topic: boundedText(topic, 300), minutes,
     ...(currentObject === undefined ? {} : {currentObject: studyCurrentObjectSelection(currentObject)})};
+}
+
+function idField(value: unknown) {
+  if (typeof value !== 'string') throw new Error('课堂引用无效。');
+  return factId(value);
+}
+
+export function classroomFact(input: unknown): Classroom {
+  const raw = object(input);
+  const {status} = raw;
+  if (status !== 'active' && status !== 'finished' && status !== 'archived')
+    throw new Error('课堂状态无效。');
+  if (!Array.isArray(raw.plans) || !Array.isArray(raw.steps)) throw new Error('课堂编排无效。');
+  const steps = raw.steps.map((entry): Step => {
+    const {id,title,status,turnId} = object(entry);
+    if (status !== 'pending' && status !== 'active' && status !== 'presented' && status !== 'skipped')
+      throw new Error('课堂步骤状态无效。');
+    if ((status === 'active' || status === 'presented') && turnId === undefined)
+      throw new Error('缺少课堂步骤回合。');
+    return {id:boundedText(id,32),title:boundedText(title,180),status,
+      ...(turnId === undefined ? {} : {turnId:idField(turnId)})};
+  });
+  const plans = raw.plans.map(entry => {
+    const plan = object(entry);
+    if (typeof plan.derivationId !== 'string') throw new Error('缺少课堂编排见证。');
+    return {turnId:idField(plan.turnId),derivationId:derivationId(plan.derivationId)};
+  });
+  const pending = raw.pending === undefined ? undefined : object(raw.pending);
+  const {topic,minutes} = classroomStart(raw);
+  const state: Classroom = {topic,minutes,status,steps,plans,sessionId:idField(raw.sessionId),lastTurnId:idField(raw.lastTurnId)};
+  if (!pending) return state;
+  if (status !== 'active' || (pending.kind !== 'start' && pending.kind !== 'adjust'))
+    throw new Error('课堂编排状态无效。');
+  return {...state,pending:{turnId:idField(pending.turnId),kind:pending.kind}};
 }
 
 export function classroomRoute(raw: unknown) {
@@ -63,7 +97,7 @@ export function seedClassroom(start: ReturnType<typeof classroomStart>, sessionI
     pending:{turnId:sessionId,kind:'start'}};
 }
 
-export function classroomPlan(state: Classroom, titles: readonly string[]): Classroom {
+export function classroomPlan(state: Classroom, titles: readonly string[], derivationId: DerivationId): Classroom {
   const {pending, ...base} = state;
   if (!pending) return state;
   const frozen = state.steps.filter(step => step.status !== 'pending');
@@ -73,7 +107,7 @@ export function classroomPlan(state: Classroom, titles: readonly string[]): Clas
       ? {id,title,status:'active',turnId:pending.turnId}
       : {id,title,status:'pending'};
   });
-  return {...base, steps:[...frozen,...steps], plans:[...base.plans,pending.turnId]};
+  return {...base, steps:[...frozen,...steps], plans:[...base.plans,{turnId:pending.turnId,derivationId}]};
 }
 
 export function activeClassroomStep(state: Classroom) {
