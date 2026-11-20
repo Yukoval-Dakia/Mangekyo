@@ -83,6 +83,7 @@ export function ClassroomRoom({id}: {id: string}) {
   return <>
     <a className="back-link" href="/classroom">‹ 学习课堂</a>
     {rechecking ? <p role="status">正在核对课堂读取权限…</p> : <PageTitle title={room.topic} meta={states[room.status] + ' · ' + room.minutes + ' 分钟 · 第 ' + room.rev + ' 版'} />}
+    {!rechecking && <a className="tonal-button" href={'/classroom/' + encodeURIComponent(room.id) + '/print'}>打开打印版</a>}
     <ClassroomLesson key={room.sessionId + ':' + room.rev} room={room} visible={!rechecking} />
     {!rechecking && <>
     {room.generation === 'pending' && <p role="status">正在编排课堂…</p>}
