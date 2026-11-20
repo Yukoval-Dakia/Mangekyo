@@ -29,6 +29,7 @@ it('keeps real preference and claim values stable and reads remembered, correcte
   const claim = {version: 1, action: 'remember', category: 'state', origin: 'turn', scope: {kind: 'general'},
     evidence_refs: [{...ref(2), start: 0, excerpt: '今天累'}], supersedes: null, text: '今天累', valid_until: at(8)};
   const original = fact(12, 'companion.claim', claim);
+  expect(projectBelief(original, understandingProjection(original)!, {...revisionTime, validTo: at(6)})?.value.validTo).toBe(at(6));
   const old = projectBelief(original, understandingProjection(original)!,
     {...revisionTime, supersededAt: at(4)})!.value;
   if (old.category !== 'directive') throw new Error('缺少临时状态');
@@ -100,6 +101,7 @@ it('narrows legacy all-purpose preferences when the learner removes teaching', a
   const snapshot = {...fact(10, 'learner.preference', {text: '先画图'}), purpose: ['all']};
   const context = {learner, read: {fact: vi.fn().mockResolvedValue(snapshot), slot: vi.fn(), range: vi.fn()}};
   const input = preferenceTeaching.schema.parse({id: snapshot.ref.id, expectedRev: 1, enabled: false});
+  expect(await preferenceTeaching.write(context, {...input, enabled: true}, undefined)).toEqual([]);
   expect(await preferenceTeaching.write(context, input, undefined)).toEqual([
     {kind: 'set_purpose', id: snapshot.ref.id, expectedRev: input.expectedRev, purpose: ['storage']},
   ]);

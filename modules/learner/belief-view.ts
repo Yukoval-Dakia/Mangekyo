@@ -124,13 +124,14 @@ type OwnerUnderstanding = {
 export function projectBelief<Value extends OwnerUnderstanding>(
   fact: Pick<FactSnapshot, 'type' | 'ref' | 'accessEpoch'>,
   value: Value,
-  time: Omit<BeliefTime, 'validTo'>,
+  time: Omit<BeliefTime, 'validTo'> & Partial<Pick<BeliefTime, 'validTo'>>,
 ): {ref: Witness; value: Directive<Value['scope'], Value['evidence_refs'][number] | Witness>
   | Hypothesis<Value['scope'], Value['evidence_refs'][number]>} | undefined {
   const family = memoryFamily(fact.type);
   if ((family !== 'directive' && family !== 'hypothesis') || value.text === null) return;
   const ref = {id: fact.ref.id, rev: fact.ref.rev, accessEpoch: fact.accessEpoch};
-  const common = {...time, validTo: value.ttl, text: value.text, scope: value.scope, sticky: value.sticky};
+  const validUntil = [time.validTo, value.ttl].filter((at): at is string => at != null).map(instant).sort()[0] ?? null;
+  const common = {...time, validTo: validUntil, text: value.text, scope: value.scope, sticky: value.sticky};
   const [first, ...rest] = value.evidence_refs;
   if (family === 'hypothesis') {
     if (first === undefined) return;
@@ -143,7 +144,7 @@ export function projectBelief<Value extends OwnerUnderstanding>(
     return {ref, value: {...directive, kind: 'refusal', refusal: refusalBoundary(value.refusal)}};
   if (value.kind === 'state') {
     if (value.ttl === null) throw new Error('短期状态需要失效时间。');
-    return {ref, value: {...directive, kind: 'state', validTo: value.ttl}};
+    return {ref, value: {...directive, kind: 'state', validTo: validUntil ?? value.ttl}};
   }
   if (value.kind === 'preference' || value.kind === 'claim')
     return {ref, value: {...directive, kind: value.kind === 'preference' ? 'preference' : 'statement'}};
