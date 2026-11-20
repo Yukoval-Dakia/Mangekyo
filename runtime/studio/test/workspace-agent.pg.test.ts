@@ -15,6 +15,7 @@ import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organ
 import {learningOverviewPurpose, readLearningOverview} from '../learning-overview.ts';
 import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
 import {workspaceQuery} from '../workspace-read.ts';
+import {openTextbook} from '../textbook.ts';
 
 const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 it.skipIf(!connectionString)('reopens authorized workspace versions and searches directed knowledge links in PostgreSQL', async () => {
@@ -64,7 +65,22 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     expect(hidden.content).toBeUndefined();
 
     const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity',import.meta.url)));
-    const access = openWorkspaceAccess(db, activity); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
+    const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
+    const access = openWorkspaceAccess(db, activity, content); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
+    const textbook = openTextbook(db, content, {async onFactsChanged() {}});
+    const teachingPage = await textbook.create({learner:studioLearner, requestId:'textbook-teaching', clientEditSeq:0,
+      page:{title:'我的教材', blocks:[{id:'intro', parentId:null, body:{kind:'text',text:'比对分段计时'}}]}});
+    expect(await access.list(new URLSearchParams({category:'textbook'}))).toMatchObject({items:[{
+      id:teachingPage.id, title:'我的教材', teaching:false, purposes:['storage'], excerpt:'比对分段计时',
+    }]});
+    const pageInput = {learner:studioLearner, id:teachingPage.id, purpose:'teaching'};
+    await expect(textbook.get(pageInput)).rejects.toMatchObject({status:403});
+    expect(await access.setTeaching(teachingPage.id,{enabled:true,expectedRev:1})).toMatchObject({rev:2,teaching:true});
+    expect(await textbook.get(pageInput)).toMatchObject({rev:2,accessEpoch:'1'});
+    await expect(textbook.get({...pageInput,rev:1})).rejects.toMatchObject({status:403});
+    await access.setTeaching(teachingPage.id,{enabled:false,expectedRev:2});
+    await expect(textbook.get({...pageInput,rev:2})).rejects.toMatchObject({status:403});
+    expect(await textbook.get({...pageInput,purpose:'storage'})).toMatchObject({rev:3,accessEpoch:'2',title:'我的教材'});
     const overview = (callerPurpose = learningOverviewPurpose, maySend: (fact: LearningOverviewFact) => boolean = () => true) =>
       db.snapshot({learner: studioLearner}, tx => readLearningOverview(tx, {callerPurpose, maySend}));
     const library = openLibrary(db, activity), organizer = openOrganizer(db, activity);
@@ -185,7 +201,6 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
       kind, scope:'运动学', from:{kind:kind === 'prereq_of' ? 'concept' : 'question', sourceUse:use(from.id)}, to:{kind:targetKind, sourceUse:use(to.id)},
       sourceUses:[use(from.id), use(to.id)],
     });
-    const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
     const handle = createCommandHandler(db, {modules:[content], hooks:{async onFactsChanged() {}}});
     const write = (type:string, key:string, actor:'learner'|'companion', edge:ReturnType<typeof claim>, proof = {}) =>
       handle({learner:studioLearner, id:commandId(stableId(key)), actor, purpose:'teaching', type:'content.'+type,
