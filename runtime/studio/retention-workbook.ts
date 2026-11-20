@@ -3,6 +3,7 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import { workbookEvidenceReader } from '../../modules/activity/workbook-evidence-reader.ts';
 import type { SourceRefV1 } from '../../modules/activity/source-values.ts';
+import type { RetentionObservation } from '../../modules/learner/retention.ts';
 import { knowledgeEdgeType, workspaceEntryType } from '../../modules/content/knowledge-edge.ts';
 import { readPosttestIssuance, type PosttestFactReader } from './retention-posttest.ts';
 import { RequestError } from './sessions.ts';
@@ -23,10 +24,7 @@ async function trackSource(tx: ReadTransaction, read: PosttestFactReader, refere
   return source;
 }
 
-export const {
-  openRetentionTarget, openControlledSubmission, readWorkbookObservation, readWorkbookEvidence,
-  readComparableWorkbookEvidence, readItemDimensions,
-} = workbookEvidenceReader<ReadTransaction>({
+const evidence = workbookEvidenceReader<ReadTransaction>({
   trackSource,
   openEdge: (tx,id) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:retentionPurpose,maySend:() => true}),
   readPosttestIssuance,
@@ -37,5 +35,10 @@ export const {
   edgeType: knowledgeEdgeType,
   questionType: workspaceEntryType,
 });
+
+export const { openRetentionTarget, openControlledSubmission, readWorkbookEvidence,
+  readComparableWorkbookEvidence, readItemDimensions } = evidence;
+export const readWorkbookObservation: (...args: Parameters<typeof evidence.readWorkbookObservation>) =>
+  Promise<RetentionObservation> = evidence.readWorkbookObservation;
 
 export { retentionExposure } from '../../modules/activity/evidence-slice.ts';
