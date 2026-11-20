@@ -4,7 +4,6 @@ import {
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
-import { projectHelpExposure } from '../../modules/activity/help-exposure.ts';
 import { helpAppliesTo } from '../../modules/activity/help-exposure-values.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
@@ -12,6 +11,7 @@ import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
   type WorkbookAttempt,
 } from '../../modules/activity/workbook-values.ts';
+import { workbookDiagnosisView } from '../../modules/activity/workbook-views.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { purpose } from './identity.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
@@ -127,30 +127,10 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
       access.track(fact, 'following');
       return true;
     });
-    const assessments = new Map((access.trackAssessment
-      ? await readWorkspaceAttemptAssessments(tx, submission, access.maySend, access.trackAssessment) : [])
-      .map(({ questionId, verdict, score }) => [questionId, { verdict, ...(score ? { score } : {}) }]));
+    const assessments = access.trackAssessment
+      ? await readWorkspaceAttemptAssessments(tx, submission, access.maySend, access.trackAssessment) : [];
     const formalAssessment = attempt.paper.assessmentRelease ? await readReleasedAssessment(tx, attempt, submission, access) : undefined;
-    const questions = attempt.paper.questions.map((question, index) => {
-      const { id, prompt, kind } = question;
-      const observed = projectHelpExposure({ submission: { ref, target: targets[index]!, cutoff: birth.tick },
-        events, coverage: null });
-      const { result } = attempt.feedback[index]!;
-      const assessment = assessments.get(id) ?? { verdict: result };
-      return { id, prompt, answer: attempt.answers[id], kind, assessment,
-        ...(kind === 'numeric' ? { unit: question.unit } : {}),
-        independence: observed.kind === 'exposed' ? 'exposed' : 'unknown',
-        help_exposure: observed.kind === 'exposed'
-          ? { state: 'exposed', evidenceRefs: observed.evidenceRefs.map(({ id, rev }) => ({ id, rev })) }
-          : { state: 'unknown', reason: observed.kind === 'unknown' ? observed.reason : 'incomplete-observation' } };
-    });
-    return { id: source.id, rev: source.rev, title: source.title, kind: 'attempt', lens: 'diagnose',
-      sourceRef: source.sourceRef, frozenPaper: paper, questions, ...(formalAssessment ? { formalAssessment } : {}),
-      image_crop: unavailable,
-      effective_duration_ms: attempt.effectiveDurationMs === undefined ? unavailable
-        : { state: 'observed', value: attempt.effectiveDurationMs, source: 'browser-focus-v1' },
-      concept_history: unavailable,
-      mastery: unavailable, retention: unavailable };
+    return workbookDiagnosisView(source, attempt, paper, { ref, cutoff: birth.tick, targets, events }, assessments, formalAssessment);
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
     throw error;

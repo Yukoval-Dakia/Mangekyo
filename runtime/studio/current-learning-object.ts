@@ -6,6 +6,7 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { organizerNoteType } from '../../modules/activity/organizer-values.ts';
 import { sourceReference } from '../../modules/activity/source-values.ts';
 import type { StudyCurrentObjectSelection } from '../../modules/activity/values.ts';
+import { workbookAnswerText } from '../../modules/activity/workspace-projection.ts';
 import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { workspaceEntry, workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
@@ -44,8 +45,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
       if (!opened) return;
       const {paper, answers} = opened.attempt;
       title = opened.source.title;
-      original = paper.questions.map(({id, prompt}, index) =>
-        `${index + 1}. ${prompt}\n我的作答：${answers[id] ?? '未作答'}`).join('\n\n');
+      original = workbookAnswerText(opened.attempt, true);
       if (paper.questions.length === 1) answerSlot = paper.questions[0]?.id;
       hasAnswer = Object.values(answers).some(answer => typeof answer === 'number' || Boolean(answer?.trim()));
     } else {

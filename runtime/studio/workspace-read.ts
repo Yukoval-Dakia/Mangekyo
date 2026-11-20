@@ -5,19 +5,19 @@ import {createBusScope} from '../../kernel/src/bus.ts';
 import type {Revision} from '../../kernel/src/declarations/ids.ts';
 import {FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
-import {isSourceFactId, sourceRefV1} from '../../modules/activity/source-values.ts';
+import {isSourceFactId, parseLearningReference, sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
 import {knowledgeEdgeEvidenceType, knowledgeEdgeKinds, knowledgeEdgeType} from '../../modules/content/knowledge-edge.ts';
 import {resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {readTeachingAttemptAssessments} from './learning-attempt-read.ts';
-import {textSlice} from './reading.ts';
+import {workspaceReadRecord} from '../../modules/activity/workspace-source-projection.ts';
 import {readLearningOverview} from './learning-overview.ts';
 import {openKnowledgeEdge, openKnowledgeEdgeEvidence, readKnowledgeGraph} from './knowledge-graph.ts';
 import {
   parseWorkspaceSearch, queryStrings, searchWorkspaceRecords, unappliedWorkspaceFilters, WorkspaceSearchError,
-  workspaceRecordKind, workspaceResult, type WorkspaceCandidateChannel,
+  workspaceResult, type WorkspaceCandidateChannel,
 } from './workspace-search.ts';
 
 type Arguments = Record<string, unknown>;
@@ -85,17 +85,6 @@ export async function readWorkspaceAttemptAssessments(tx: ReadTransaction, attem
   return assessments;
 }
 
-function referenceFromId(input: unknown) {
-  if (isSourceFactId(input)) return input;
-  let value = input;
-  if (typeof input === 'string') {
-    if (!input.trimStart().startsWith('{')) return;
-    try { value = JSON.parse(input); }
-    catch { return; }
-  }
-  return sourceRefV1(value);
-}
-
 export async function workspaceQuery(tx: ReadTransaction, args: Arguments, access: SourceAccess, semantic?: WorkspaceCandidateChannel) {
   try {
     const fields = ['query', 'kind', 'kinds', 'tags', 'since', 'exposureFilter', 'related', 'cursor',
@@ -155,7 +144,7 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
       goal, tasks, prerequisites:{tool:'search_workspace', args:{hops:2, direction:'inbound', edgeKinds:['prereq_of']},
         required:['conceptId']}, note:'观察关联具体作答。按 id 打开依据，未观察到的能力保留未知。'});
   }
-  const reference = referenceFromId(args.id);
+  const reference = typeof args.id === 'string' ? parseLearningReference(args.id) : sourceRefV1(args.id);
   if (!reference) return JSON.stringify(learningToolError('invalid_args','id','使用记录 id 或 sourceRef。学情概览使用 learner。'));
   const offset = args.offset ?? 0;
   if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0)
@@ -176,14 +165,8 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
       && await openKnowledgeEdgeEvidence(tx,reference,{recipient:'workspace',maySend,track});
     return proof ? JSON.stringify(proof) : workspaceSourceUnavailable;
   }
-  const {sourceRef, title, tags, links, blocks} = record;
-  const original = record.content;
+  const {sourceRef} = record;
   const assessments = trackAssessment && attempt?.ref.id === sourceRef.fact.id && sourceRef.anchor.kind === 'whole'
     ? await readWorkspaceAttemptAssessments(tx, attempt, maySend, trackAssessment) : [];
-  const {content, nextOffset} = typeof original === 'string'
-    ? textSlice(original, offset) : {content: original, nextOffset: null};
-  return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? workspaceRecordKind(sourceRef.fact.type),
-    title, content, tags, links, sourceRef, ...(blocks ? {blocks} : {}),
-    ...(record.question ? {question:record.question} : {}), ...(assessments.length ? {assessments} : {}),
-    ...(nextOffset === null ? {} : {nextOffset})});
+  return JSON.stringify(workspaceReadRecord(record, offset, assessments));
 }

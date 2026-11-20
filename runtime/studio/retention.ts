@@ -7,7 +7,7 @@ import type { GatherContext, GatherInput, Json, JsonObject, ReadContext, Waiting
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
   insideFrozenPosttestWindow, matchesCurrentPosttest, posttestOpensAt, posttestSubmissionType,
-  retentionDeadline as deadline, retentionFreezeRequest,
+  retentionFollowupRequest, retentionFreezeRequest,
 } from '../../modules/activity/retention-posttest.ts';
 import {
   findWorkbookRetentionSlot as findSlot, workbookEvidenceWatermark as evidenceWatermark, listWorkbookPosttestSlots,
@@ -21,7 +21,7 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { failWork, readWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
-import { sameWorkbookJson, workbookGradingVersion, workbookRequestId } from '../../modules/activity/workbook-values.ts';
+import { sameWorkbookJson, workbookGradingVersion } from '../../modules/activity/workbook-values.ts';
 import forecast from '../../modules/learner/derivers/retention-forecast.ts';
 import reconciliation from '../../modules/learner/derivers/retention-reconciliation.ts';
 import forecastSlot from '../../modules/learner/slots/forecast.ts';
@@ -30,6 +30,7 @@ import {
   defaultRetentionMethod, evaluateFrozenRetention, readAnyRetentionMethod,
   type RetentionForecast, type RetentionObservation, type RetentionTarget,
 } from '../../modules/learner/retention.ts';
+import { againstFrozenTarget } from '../../modules/learner/retention-view.ts';
 import { createPythonDeriverHost, type PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import type { CognitionResult } from '../../executors/python-deriver/schema.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -154,14 +155,6 @@ function sameTarget(actual: Awaited<ReturnType<typeof openRetentionTarget>>, exp
       actual.accessEpoch !== expected.paperEpoch) {
     throw new RequestError(409, forecastUnavailable);
   }
-}
-
-function againstFrozenTarget(observation: RetentionObservation, target: RetentionTarget): RetentionObservation {
-  return {
-    ...observation,
-    ...(target.condition === 'same-item' ? {} : { novelty: target.condition }),
-    ...(target.dimensions ? { dimensions: target.dimensions } : {}),
-  };
 }
 
 function reconciliationKeyFor(forecast: DerivationId, attempt: FactId) {
@@ -289,14 +282,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   }
 
   async function scheduleFollowup(reconciliationKey: string, input: Record<string, unknown>) {
-    const { requestId, scheduledAt, through } = requestInput(() => {
-      if (Object.keys(input).length !== 2) throw new Error();
-      const scheduledAt = deadline(input.scheduledAt);
-      return {
-        requestId: workbookRequestId(input.requestId), scheduledAt,
-        through: deadline(new Date(Date.parse(scheduledAt) + 24 * 60 * 60 * 1000).toISOString()),
-      };
-    });
+    const { requestId, scheduledAt, through } = requestInput(() => retentionFollowupRequest(input));
     const key = forecastSlot.key({ forecastId: stableId('retention-followup', reconciliationKey, requestId) });
     return write(async tx => {
       const existing = await findSlot<RetentionForecast, ForecastScope>(tx, forecastSlot.type, key);
