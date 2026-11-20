@@ -5,6 +5,7 @@ import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/typ
 import { derivationId, factId, learnerId, type DerivationId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { GatherContext, GatherInput, Json, JsonObject, Outcome, Waiting } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
+import { retentionPaperType, posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -18,7 +19,7 @@ import forecastSlot from '../../modules/learner/slots/forecast.ts';
 import reconciliationSlot from '../../modules/learner/slots/reconciliation.ts';
 import type { RetentionForecast, RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
 import { stableId, studioLearner } from './identity.ts';
-import { posttestWriter, readPosttestIssuance } from './retention-posttest.ts';
+import { posttestAttemptFor, posttestIdFor, posttestWriter, readPosttestIssuance } from './retention-posttest.ts';
 import { openRetentionTarget, readWorkbookObservation, retentionPurpose } from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
 
@@ -35,6 +36,8 @@ type ForecastScope = {
   window: RetentionForecast['input']['window'];
 };
 type ReconciliationScope = { forecastKey: string; forecastId: DerivationId; attemptId: FactId };
+type PosttestListItem = { forecastKey: string; title: string; through: string } &
+  ({ state: 'ready' } | { state: 'submitted'; reconciliationKey: string });
 type ReconciliationValue = Extract<Awaited<ReturnType<typeof reconciliation.derive>>, { kind: 'value' }>['value'];
 type SlotRow<T, S> = {
   scope_keys: S;
@@ -123,6 +126,10 @@ function sameTarget(actual: Awaited<ReturnType<typeof openRetentionTarget>>, exp
   }
 }
 
+function reconciliationKeyFor(forecast: DerivationId, attempt: FactId) {
+  return reconciliationSlot.key({ reconciliationId: stableId('retention-reconcile', forecast, attempt) });
+}
+
 function gatherInSnapshot(
   db: Db, learner: typeof studioLearner,
   gather: (tx: ReadTransaction, ctx: GatherContext) => GatherInput<Json> | Waiting | Promise<GatherInput<Json> | Waiting>,
@@ -185,7 +192,7 @@ export function openRetention(db: Db, activity: LoadedModule) {
     });
   }
 
-  async function currentForecast(tx: DbTransaction, key: string) {
+  async function currentForecast(tx: ReadTransaction, key: string) {
     const row = await findSlot<RetentionForecast, ForecastScope>(tx, forecastSlot.type, key);
     if (!row) throw new RequestError(404, '找不到保持预测。');
     const frozen = await project(tx, key, row);
@@ -197,11 +204,44 @@ export function openRetention(db: Db, activity: LoadedModule) {
     return { frozen, read, window, opened };
   }
 
+  async function listPosttests() {
+    return db.snapshot(scope, async tx => {
+      const { rows } = await tx.query<{ slot_key: string }>(
+        `SELECT s.slot_key FROM slot_state s JOIN facts f
+           ON f.learner_id=s.learner_id AND f.id=s.scope_keys->'target'->'paper'->>'id'
+         WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.current_id IS NOT NULL
+           AND f.type=$3 AND f.retracted_rev IS NULL
+         ORDER BY s.changed_tick DESC, s.slot_key LIMIT 24`,
+        [tx.learner, forecastSlot.type, retentionPaperType],
+      );
+      const now = new Date().toISOString();
+      const items: PosttestListItem[] = [];
+      for (const { slot_key: forecastKey } of rows) {
+        try {
+          const { frozen, opened, read, window } = await currentForecast(tx, forecastKey);
+          const entry = { forecastKey, title: opened.paper.title, through: window.through };
+          const attemptId = posttestAttemptFor(posttestIdFor(frozen.derivationId));
+          try {
+            const attempt = await read.fact(attemptId, { mode: 'following' });
+            if (attempt.type === posttestSubmissionType)
+              items.push({ ...entry, state: 'submitted', reconciliationKey: reconciliationKeyFor(frozen.derivationId, attemptId) });
+          } catch (error) {
+            if (!(error instanceof FactNotFoundError)) throw error;
+            if (window.requestedAt <= now && now < window.through) items.push({ ...entry, state: 'ready' });
+          }
+        } catch (error) {
+          if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof RequestError)) throw error;
+        }
+      }
+      return { items };
+    });
+  }
+
   async function reconcileAttempt(tx: DbTransaction, current: Awaited<ReturnType<typeof currentForecast>>, attemptId: FactId) {
     const { frozen, read, window, opened } = current;
     const observation = await readWorkbookObservation(tx, read, opened, attemptId, frozen.derivationId);
     afterFreeze(observation, window, frozen.effectiveTick);
-    const key = reconciliationSlot.key({ reconciliationId: stableId('retention-reconcile', frozen.derivationId, attemptId) });
+    const key = reconciliationKeyFor(frozen.derivationId, attemptId);
     const existing = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, key);
     if (existing) {
       const latest = await project(tx, key, existing);
@@ -237,7 +277,7 @@ export function openRetention(db: Db, activity: LoadedModule) {
     return write(async tx => {
       const current = await currentForecast(tx, forecastKey);
       const { frozen, opened, read } = current;
-      if (!opened.sealed || posttestId !== stableId('retention-posttest', frozen.derivationId)) {
+      if (!opened.sealed || posttestId !== posttestIdFor(frozen.derivationId)) {
         throw new RequestError(404, '后测不属于该预测。');
       }
       const { issuance } = await readPosttestIssuance(tx, read, factId(posttestId));
@@ -306,7 +346,7 @@ export function openRetention(db: Db, activity: LoadedModule) {
     }
   }
 
-  return { freeze, get, reconcile, execute,
+  return { freeze, get, reconcile, execute, listPosttests,
     savePosttestPaper: (input: Record<string, unknown>) => write(tx => posttest.save(tx, input)), startPosttest, submitPosttest };
 }
 
