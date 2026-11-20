@@ -1,6 +1,7 @@
 import { defineCommand } from '@mangekyo/kernel';
 import { storagePurpose } from '../library-values.ts';
 import { creation } from '../values.ts';
+import { readFrozenWorkbookBank } from '../workbook-bank.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
 } from '../workbook-values.ts';
@@ -25,6 +26,7 @@ export default defineCommand({
     const shown = await ctx.read.fact(data.paper.id, { mode: 'pinned', rev: data.paper.rev });
     if (shown.type !== workbookPaperType) throw new WorkbookPresentationError('需要已送达的普通试卷。');
     const paper = workbookPaper(shown.value);
+    await readFrozenWorkbookBank(ctx.read, paper);
     if (!data.items.every(id => paper.questions.some(question => question.id === id))) {
       throw new WorkbookPresentationError('呈现题项与卷面不匹配。');
     }
@@ -34,7 +36,7 @@ export default defineCommand({
       const attempt = workbookAttempt(submission.value);
       if (attempt.paperId !== shown.ref.id || !sameWorkbookJson(attempt.paper, paper) ||
           !data.items.every(id => attempt.feedback.some(item => item.questionId === id &&
-            item.result !== 'unanswered' && item.expected.kind !== 'rubric'))) {
+            item.result !== 'unanswered' && item.expected !== null && item.expected.kind !== 'rubric'))) {
         throw new WorkbookPresentationError('参考答案与实际反馈不匹配。');
       }
     }

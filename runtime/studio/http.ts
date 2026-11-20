@@ -138,10 +138,10 @@ export function serve(
         return json(res, 200, await student.iqdb.questions());
       }
       if (path === '/api/iqdb/proposals' && method === 'POST') {
-        return json(res, 201, await student.iqdb.proposals(await body(req)));
+        return await offlineSubmission(201,(input,watermark) => student.iqdb.proposals(input,watermark));
       }
       if (path === '/api/iqdb/papers' && method === 'POST') {
-        return json(res, 201, await student.iqdb.papers(await body(req)));
+        return await offlineSubmission(201,(input,watermark) => student.iqdb.papers(input,watermark));
       }
       if (path === '/api/workspace/access' && method === 'GET') {
         return json(res, 200, await student.workspace.list(url.searchParams));

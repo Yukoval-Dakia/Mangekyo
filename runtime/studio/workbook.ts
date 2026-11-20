@@ -1,4 +1,4 @@
-import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
+import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import type { ReviewEntry } from './review.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -34,6 +34,7 @@ import {
   workbookAttempt,
   workbookAttemptRequest,
   workbookAttemptType,
+  workbookBankReference,
   workbookAssessmentRequest,
   workbookAssessmentResult,
   workbookDraft,
@@ -233,6 +234,14 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   const commands = { modules: [activity], hooks };
   const handle = createCommandHandler(db, commands);
 
+  function inTransaction(tx: DbTransaction) {
+    return { ...db, query: tx.query, tx: async <Result>(scope: { learner: typeof tx.learner },
+      run: (tx: DbTransaction) => Promise<Result>) => {
+      if (scope.learner !== tx.learner) throw new Error('试卷事务的学习者不匹配。');
+      return run(tx);
+    } };
+  }
+
   async function saveBank(tx: DbTransaction, input: unknown) {
     if (!isJson(input) || input === null || Array.isArray(input) || typeof input !== 'object')
       throw new RequestError(400, '题库组卷格式无效。');
@@ -243,23 +252,28 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     catch (error) { invalid(error, '题库请求标识无效。'); }
     const paperId = factId(stableId('workbook-paper', request));
     const key = commandId(stableId('save-workbook-paper', paperId));
+    const deletionWatermark = submittedWatermark(input);
+    await assertUnburned(tx, 'fact', [paperId, ...(typeof materialId === 'string' ? [materialId] : [])]);
     const recorded = await readRecordedCommand(tx, key);
     const previous = (recorded?.input as { input?: { savedAt?: string } } | undefined)?.input;
     const bankDraft = { title, questions, materialId: materialId ?? null };
     if (!isJson(bankDraft)) throw new RequestError(400, '题库组卷格式无效。');
-    const bound = createCommandHandler({ ...db, query: tx.query, tx: async (scope, run) => {
-      if (scope.learner !== tx.learner) throw new Error('试卷事务的学习者不匹配。');
-      return run(tx);
-    } }, { ...commands, bindCommandRead: (inner, _, base) => ({ ...base, slot: readCurrentQuestionVerification(inner) }) });
+    const bound = createCommandHandler(inTransaction(tx),
+      { ...commands, bindCommandRead: (inner, _, base) => ({ ...base, slot: readCurrentQuestionVerification(inner) }) });
     try {
+      if (Array.isArray(questions)) await assertUnburned(tx, 'fact', questions.flatMap(question => {
+        const ref = workbookBankReference(question);
+        return ref ? [ref.id] : [];
+      }));
       const receipt = await bound({ learner: tx.learner, actor: 'learner', purpose: storagePurpose,
-        id: key, type: saveWorkbookPaperCommand,
+        id: key, type: saveWorkbookPaperCommand, deletionWatermark,
         input: { id: paperId, bankDraft, savedAt: previous?.savedAt ?? new Date().toISOString() } });
       if (receipt.state !== 'done' || !receipt.wrote.some(ref => ref.id === paperId))
         throw new RequestError(409, '试卷发放未完成。');
       await readPaper(tx, paperId);
       return { id: paperId };
     } catch (error) {
+      if (error instanceof LifecycleError) throw error;
       if (error instanceof WorkbookSourceMismatch ||
           (error instanceof Error && error.message === 'Command ID already used with a different command identity'))
         throw new RequestError(409, '题版、来源、独立核验或请求标识已变化。');
@@ -299,8 +313,8 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   }
 
   return {
-    issueBank: (tx: DbTransaction, input: { requestId: string; questionRefs: readonly { id: FactId; rev: Revision }[] }) =>
-      saveBank(tx, { requestId: input.requestId, title: '题库练习',
+    issueBank: (tx: DbTransaction, input: { requestId: string; questionRefs: readonly { id: FactId; rev: Revision }[]; deletionWatermark?: string }) =>
+      saveBank(tx, { requestId: input.requestId, title: '题库练习', deletionWatermark: input.deletionWatermark ?? '0',
         questions: input.questionRefs.map(sourceQuestionRef => ({ sourceQuestionRef })) } satisfies Json),
     async list(): Promise<WorkbookSummary[]> {
       return db.snapshot({ learner: studioLearner }, async (tx) => {
@@ -364,8 +378,17 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         const data = workbookPresentation(input);
         if (data.paper.id !== id) throw new WorkbookPresentationError('呈现卷面不匹配。');
         const key = commandId(stableId(recordWorkbookPresentationCommand, JSON.stringify(data)));
-        await handle({ learner: studioLearner, actor: 'learner', purpose: storagePurpose,
-          id: key, type: recordWorkbookPresentationCommand, input: { id: key, data } });
+        await db.tx({ learner: studioLearner }, async tx => {
+          await lockLearner(tx, tx.learner);
+          const read = createCommandReadContext(tx, storagePurpose);
+          const shown = await read.fact(data.paper.id, { mode: 'pinned', rev: data.paper.rev });
+          if (shown.type !== workbookPaperType) throw new WorkbookPresentationError('需要已送达的普通试卷。');
+          await readFrozenWorkbookBank(read, workbookPaper(shown.value));
+          await createCommandHandler(inTransaction(tx), commands)({
+            learner: tx.learner, actor: 'learner', purpose: storagePurpose,
+            id: key, type: recordWorkbookPresentationCommand, input: { id: key, data },
+          });
+        });
         if (data.phase === 'permit') return { permit: key };
       } catch (error) {
         if (error instanceof WorkbookPresentationError) throw new RequestError(400, error.message);

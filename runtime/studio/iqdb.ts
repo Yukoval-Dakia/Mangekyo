@@ -1,5 +1,6 @@
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { FactId } from '../../kernel/src/declarations/ids.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
@@ -19,7 +20,7 @@ function questionRef(input: unknown) {
 }
 
 type QuestionRef = ReturnType<typeof questionRef>;
-export type IssueBank = (tx: DbTransaction, input: { requestId: string; questionRefs: readonly QuestionRef[] }) => Promise<{ id: FactId }>;
+export type IssueBank = (tx: DbTransaction, input: { requestId: string; questionRefs: readonly QuestionRef[]; deletionWatermark: string }) => Promise<{ id: FactId }>;
 const scope = { learner: studioLearner };
 const use = 'practice';
 const proposalLabel = 'iqdb-proposal';
@@ -103,7 +104,7 @@ async function listQuestions(tx: ReadTransaction) {
 export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank) {
   return {
     questions: () => db.snapshot(scope, async tx => ({ questions: await listQuestions(tx) })),
-    async proposals(raw: Record<string, unknown>) {
+    async proposals({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
       const input = validated(() => parseProposal(raw));
       const proposalId = stableId(proposalLabel, input.requestId);
       const saved = await recordLocalRead(db, { ...scope, ownerKind: 'session', ownerId: proposalId,
@@ -112,13 +113,14 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           .filter(question => [input.need, ...input.coverage].some(term => mentions(question, term)))
           .slice(0, 20).map(({ id, rev }) => ({ id, rev }));
         return JSON.stringify(questionRefs);
-      }, async () => {}).catch(error => {
+      }, tx => assertDeletionWatermark(tx, watermark)).catch(error => {
         if (error instanceof Error && error.message === 'Workspace read receipt does not match the request')
           throw new RequestError(409, '这个请求标识已经用于另一份提案。');
         throw error;
       });
       return db.tx(scope, async tx => {
         await lockLearner(tx, tx.learner);
+        await assertDeletionWatermark(tx, watermark);
         const requested = list(JSON.parse(saved)).map(questionRef);
         const selected: NonNullable<Awaited<ReturnType<typeof inspectQuestion>>>[] = [];
         for (const ref of requested) {
@@ -140,10 +142,11 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           gaps: [...new Set(gaps)], next: issue ? 'issue' : 'review_questions' };
       });
     },
-    async papers(raw: Record<string, unknown>) {
+    async papers({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
       const input = validated(() => parsePaper(raw));
       return db.tx(scope, async tx => {
         await lockLearner(tx, tx.learner);
+        await assertDeletionWatermark(tx, watermark);
         let refs;
         if (input.sourceRef) refs = [input.sourceRef];
         else {
@@ -155,7 +158,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
           refs = list(JSON.parse(saved.result)).map(questionRef);
         }
         if (!refs.length) throw blocked();
-        return issueBank(tx, { requestId: input.requestId, questionRefs: refs });
+        return issueBank(tx, { requestId: input.requestId, questionRefs: refs, deletionWatermark: watermark });
       });
     },
   };

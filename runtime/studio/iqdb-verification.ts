@@ -30,16 +30,17 @@ export function readCurrentQuestionVerification(tx: ReadTransaction): ReadContex
   return async <Value>(slot: Parameters<ReadContext['slot']>[0], { mode }: Parameters<ReadContext['slot']>[1]) => {
     if (mode !== 'following' || slot.type !== questionVerificationType || slot.learner !== tx.learner)
       throw new FactNotFoundError('核验槽不可用。');
-    const { rows: [current] } = await tx.query<{ id: string; value: Outcome<Value>; manifest: unknown }>(
-      `SELECT d.id,d.value,d.manifest FROM slot_state s JOIN derivations d
+    const { rows: [current] } = await tx.query<{ id: string; value: Outcome<Value>; manifest: unknown; gather_tick: string }>(
+      `SELECT d.id,d.value,d.manifest,d.gather_tick::text FROM slot_state s JOIN derivations d
        ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.current_id)
        WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3 AND s.last_error IS NULL
          AND d.deriver=$4 AND d.lifecycle='effective' AND d.freshness='current' AND NOT d.is_shadow
-         AND d.selection_ended_tick IS NULL AND d.invalidated_tick IS NULL AND d.effective_tick IS NOT NULL`,
+         AND d.selection_ended_tick IS NULL AND d.invalidated_tick IS NULL AND d.effective_tick>=d.gather_tick`,
       [tx.learner, slot.type, slot.key, policy.deriver],
     );
     const manifest = current && parseManifest(current.manifest);
-    if (!current || manifest?.purpose !== purpose || (await revalidateManifest(tx, manifest)).kind !== 'valid')
+    if (!current || manifest?.purpose !== purpose || manifest.gatherTick !== current.gather_tick ||
+        (await revalidateManifest(tx, manifest)).kind !== 'valid')
       throw new FactNotFoundError('需要当前有效的独立核验。');
     return { id: derivationId(current.id), slot, outcome: current.value };
   };
@@ -97,7 +98,7 @@ export async function executeQuestionVerification(db: Db, ref: WorkRef, host?: Q
       const reply = await result;
       if (!reply) throw new Error('核验接收方未给出确定回执。');
       return questionVerificationEffectResult(invocationId, reply.value);
-    }, authorize);
+    }, authorize, { manifest: sealed.manifest, work: ref });
     receipts.push(receipt.kind === 'done'
       ? { ownerId: sealed.id, request, state: 'done', result: receipt.result }
       : { ownerId: sealed.id, request, state: 'unknown' });
