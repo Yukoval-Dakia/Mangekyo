@@ -407,6 +407,11 @@ async function storedPaperIssuance(read: ReadContext, id: ReturnType<typeof fact
   return checkedPaperIssuance(fact, id);
 }
 
+/** Evaluate a new release even when the same source and layout were issued before. */
+export function projectNewPaper(read: ReadContext, issuance: PaperIssuance) {
+  return projectPaper(read, issuance, 'current');
+}
+
 export async function projectIssuedPaper(read: ReadContext, issuance: PaperIssuance, readExtraction?: PaperExtractionReader) {
   const stored = await storedPaperIssuance(read, await paperIssuanceId(issuance));
   return stored ? projectPaper(read, stored, 'pinned', readExtraction) : projectPaper(read, issuance, 'current', readExtraction);
