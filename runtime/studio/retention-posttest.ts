@@ -2,7 +2,7 @@ import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
-import type { Json, ReadContext } from '../../kernel/src/declarations/types.ts';
+import type { FactSnapshot, Json, ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
   closedPosttest, issuePosttestCommand, posttestIssuance, posttestIssuanceType, posttestSubmissionType,
@@ -17,6 +17,7 @@ import { stableId } from './identity.ts';
 import { RequestError } from './sessions.ts';
 
 type Issuance = ReturnType<typeof posttestIssuance>;
+export type PosttestFactReader = { fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot> };
 
 export const posttestIdFor = (forecast: string) => factId(stableId('retention-posttest', forecast));
 export const posttestAttemptFor = (issuance: string) => factId(stableId('retention-posttest-attempt', issuance));
@@ -29,7 +30,7 @@ async function optionalFact(read: ReadContext, id: FactId) {
   }
 }
 
-export async function readPosttestIssuance(tx: ReadTransaction, read: ReadContext, id: FactId) {
+export async function readPosttestIssuance(tx: ReadTransaction, read: PosttestFactReader, id: FactId) {
   const fact = await read.fact(id, { mode: 'following' });
   if (fact.type !== posttestIssuanceType || fact.ref.rev !== 1) throw new RequestError(422, '需要原始后测发放记录。');
   const issuance = posttestIssuance(fact.value);
@@ -41,7 +42,7 @@ export async function readPosttestIssuance(tx: ReadTransaction, read: ReadContex
     [tx.learner, id, issuePosttestCommand],
   );
   if (!birth || BigInt(birth.tick) <= BigInt(issuance.effectiveTick)) throw new RequestError(422, '后测缺少预测生效后的发放回执。');
-  return { ref: fact.ref, issuance, tick: birth.tick };
+  return { fact, issuance, tick: birth.tick };
 }
 
 export function posttestWriter(db: Db, activity: LoadedModule) {
@@ -89,7 +90,7 @@ export function posttestWriter(db: Db, activity: LoadedModule) {
         if (startedAt < notBefore || startedAt >= data.through) throw new RequestError(409, '当前时间不在保持预测的观察窗口内。');
         await write(tx, issuePosttestCommand, id, { ...data, startedAt, condition: closedPosttest });
       }
-      const { ref, issuance, tick } = await readPosttestIssuance(tx, read, id);
+      const { fact: { ref }, issuance, tick } = await readPosttestIssuance(tx, read, id);
       return {
         id: ref.id, rev: ref.rev, issuedAtTick: tick, forecastId: data.forecastId, startedAt: issuance.startedAt,
         through: issuance.through, item: workbookQuestionView(paper.questions[0]!),

@@ -2,9 +2,13 @@ import {pythonAttemptsLimit, type PythonAttemptRow, type PythonAttemptsRead} fro
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
+import {posttestSubmissionType, retentionPaperType} from '../../modules/activity/retention-posttest.ts';
 import {isSourceFactId} from '../../modules/activity/source-values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {purpose} from './identity.ts';
+import {readActivitySubmissionBirth} from './learning-attempt-read.ts';
+import {openControlledSubmission} from './retention-workbook.ts';
+import {RequestError} from './sessions.ts';
 import type {SourceTrack, WorkspaceSourceRecipient} from './source-read.ts';
 import {openWorkbookQuestionSources, readReleasedAssessment} from './workbook-diagnosis.ts';
 
@@ -37,11 +41,11 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
     `请传 1–${pythonAttemptsLimit} 个不重复的作答 refs（{id, rev?}）。只统计一份卷时可传 paper_id。`};
 
   const read = createAuthorizedFactReader(tx, purpose, access.maySend);
-  async function open(id: string, type: string) {
+  async function open(id: string, types: readonly string[]) {
     const denied = access.known(id) ? 'access_revoked' : 'not_found';
     try {
       const fact = await read.fact(factId(id), {mode: 'following'});
-      if (fact.type !== type) return {code: 'not_found'} as const;
+      if (!types.includes(fact.type)) return {code: 'not_found'} as const;
       return {fact} as const;
     } catch (error) {
       if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return {code: denied} as const;
@@ -50,14 +54,14 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
   }
 
   if (scope.paperId) {
-    const paper = await open(scope.paperId, workbookPaperType);
+    const paper = await open(scope.paperId, [workbookPaperType, retentionPaperType]);
     if ('code' in paper) return {ok:false, code:paper.code, field:'paper_id', message:'请使用当前可读的试卷。'};
   }
 
   const rows: PythonAttemptRow[] = [];
   const issues: Extract<PythonAttemptsRead, {ok:true}>['issues'] = [];
   for (const [index, ref] of scope.attempts.entries()) {
-    const opened = await open(ref.id, workbookAttemptType);
+    const opened = await open(ref.id, [workbookAttemptType, posttestSubmissionType]);
     if ('code' in opened) {
       issues.push({index, code: opened.code});
       continue;
@@ -69,7 +73,8 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
       issues.push({index, code:'unknown'});
       continue;
     }
-    if (scope.paperId && attempt.paperId !== scope.paperId) {
+    const controlled = opened.fact.type === posttestSubmissionType;
+    if (!controlled && scope.paperId && attempt.paperId !== scope.paperId) {
       issues.push({index, code:'not_found'});
       continue;
     }
@@ -79,19 +84,45 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
     }
     const collected: Parameters<SourceTrack>[] = [];
     const sources = {maySend: access.maySend, track: (...fact: Parameters<SourceTrack>) => collected.push(fact)};
-    if (!await openWorkbookQuestionSources(tx, opened.fact, sources)) {
+    let paperId = attempt.paperId;
+    let score: PythonAttemptRow['formal_score'];
+    if (controlled) {
+      const birth = await readActivitySubmissionBirth(tx, opened.fact.ref, posttestSubmissionType);
+      if (!birth || birth.submittedAt !== attempt.submittedAt) {
+        issues.push({index, code:'unknown'});
+        continue;
+      }
+      try {
+        const { issued, source } = await openControlledSubmission(tx, read, attempt, birth.tick);
+        paperId = source.ref.id;
+        if (scope.paperId && paperId !== scope.paperId) {
+          issues.push({index, code:'not_found'});
+          continue;
+        }
+        sources.track(issued.fact, 'following');
+        sources.track(source, 'following');
+      } catch (error) {
+        if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof RequestError)) throw error;
+        issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});
+        continue;
+      }
+    } else if (await openWorkbookQuestionSources(tx, opened.fact, sources)) {
+      const formal = await readReleasedAssessment(tx, attempt, opened.fact, sources);
+      if (formal.state === 'complete' && formal.score) {
+        score = {earned:formal.score.earned, maximum:formal.score.maximum};
+      }
+    } else {
       issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});
       continue;
     }
-    const formal = await readReleasedAssessment(tx, attempt, opened.fact, sources);
-    const score = formal.state === 'complete' ? formal.score : null;
     for (const fact of collected) access.track(...fact);
     access.track(opened.fact, 'following');
     rows.push({
-      id:ref.id, paper_id:attempt.paperId, submitted_at:attempt.submittedAt,
+      id:ref.id, paper_id:paperId, submitted_at:attempt.submittedAt,
+      ...(controlled ? {activity_kind:'controlled_posttest'} : {}),
       results:attempt.feedback.map(({questionId, result}) => ({question_id:questionId, result})),
       ...(attempt.effectiveDurationMs === undefined ? {} : {effective_duration_ms:attempt.effectiveDurationMs}),
-      ...(score ? {formal_score:{earned:score.earned, maximum:score.maximum}} : {}),
+      ...(score ? {formal_score:score} : {}),
     });
   }
   if (!rows.length) return {ok:false, code:issues[0]!.code, field:'refs', message:'本次选择没有可用于计算的作答。', issues};

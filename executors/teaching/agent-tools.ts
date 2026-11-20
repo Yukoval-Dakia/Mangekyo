@@ -24,6 +24,7 @@ export const pythonAttemptsLimit = 8;
 export type PythonAttemptRow = {
   id: string;
   paper_id?: string;
+  activity_kind?: 'controlled_posttest';
   submitted_at: string;
   effective_duration_ms?: number;
   formal_score?: {earned: number; maximum: number};
