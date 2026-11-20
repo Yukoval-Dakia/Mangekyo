@@ -5,7 +5,8 @@ import {
   workspaceEntry,
   workspaceEntryType,
 } from '../workspace-values.ts';
-import { creation } from '../values.ts';
+import { closedPosttest, retentionPaper, retentionPaperType, retentionTeachingPurpose } from '../retention-posttest.ts';
+import { creation, object } from '../values.ts';
 import {
   saveWorkbookPaperCommand,
   workbookAssessmentPurpose,
@@ -35,8 +36,11 @@ function matchesWorkspaceQuestion(
 export default defineCommand({
   type: saveWorkbookPaperCommand,
   destructive: false,
-  schema: creation(workbookPaper),
-  write: async (ctx, { id, data }) => {
+  schema: { parse(input: unknown) {
+    const sealed = object(input).condition === closedPosttest;
+    return { ...creation(sealed ? retentionPaper : workbookPaper).parse(input), sealed };
+  } },
+  write: async (ctx, { id, data, sealed }) => {
     if (data.materialId !== null) {
       const source = await ctx.read.fact(factId(data.materialId), { mode: 'following' });
       textMaterial(source.value);
@@ -54,8 +58,9 @@ export default defineCommand({
     }
     return [
       {
-        kind: 'create', id, factType: workbookPaperType, data,
-        purpose: data.assessmentRelease ? [storagePurpose, workbookAssessmentPurpose] : [storagePurpose],
+        kind: 'create', id, factType: sealed ? retentionPaperType : workbookPaperType, data,
+        purpose: sealed ? [storagePurpose, retentionTeachingPurpose]
+          : data.assessmentRelease ? [storagePurpose, workbookAssessmentPurpose] : [storagePurpose],
       },
     ];
   },

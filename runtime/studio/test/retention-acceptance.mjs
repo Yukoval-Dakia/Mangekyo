@@ -46,6 +46,8 @@ await grant(paper.id, 1);
 await grant(prior.id, 1);
 const { key } = await api(path + '/retention', flags, 'POST', 202);
 const frozen = await current(key);
+assert.match((await api('workspace/access/records/' + paper.id)).text, /答案：12/);
+await api('retention/' + key + '/posttest', {}, 'POST', 422);
 assert.equal(frozen.value.estimate.kind, 'unknown');
 assert.deepEqual(frozen.value.method, { id: 'last-independent-result', version: '1' });
 assert.equal(frozen.value.input.observations[0].exposure.kind, 'unknown');
@@ -69,4 +71,44 @@ for (const staleKey of [key, reconciliationKey]) {
   assert.equal(stale.state, 'stale');
   assert.ok(!('value' in stale) && !('basis' in stale));
 }
-console.log(JSON.stringify({ frozen, reconciled, revoked: 'forecast and reconciliation stale' }, null, 2));
+const sealed = await api('retention/papers', {
+  requestId: randomUUID(), title: '受控冻结卷', materialId: null,
+  questions: [{ kind: 'exact', prompt: '七组各三枚，一共有几枚？', answers: ['21'], explanation: '乘法参考说明' }],
+}, 'POST', 201);
+await api('workspace/access/records/' + sealed.id, undefined, 'GET', 404);
+await api('papers/' + sealed.id + '/attempts', { requestId: randomUUID(), answers: { [sealed.itemId]: '21' } }, 'POST', 404);
+
+async function controlled(priorAttemptIds, answer, verdict, during) {
+  const { key } = await api('papers/' + sealed.id + '/retention', {
+    ...flags, requestId: randomUUID(), itemId: sealed.itemId, priorAttemptIds,
+  }, 'POST', 202);
+  const forecast = await current(key);
+  const startPath = `retention/${key}/posttest`;
+  const issued = await api(startPath, {});
+  assert.equal(issued.forecastId, forecast.derivationId);
+  assert.ok(BigInt(issued.issuedAtTick) > BigInt(forecast.effectiveTick));
+  assert.deepEqual(await api(startPath, {}), issued);
+  assert.doesNotMatch(JSON.stringify(issued.item), /答案|21|expected|参考说明/);
+  const submitPath = `${startPath}/${issued.id}/submission`;
+  await api(submitPath, { answer, coverage: 'complete' }, 'POST', 400);
+  const concurrent = await during?.();
+  const { attemptId, reconciliation } = await api(submitPath, { answer });
+  const result = await current(reconciliation.key);
+  assert.deepEqual(result.value.observation.exposure, concurrent
+    ? { kind: 'unknown', reason: 'incomplete-observation' } : { kind: 'independent' });
+  assert.equal(result.value.forecastId, forecast.derivationId);
+  assert.equal(result.value.status, verdict);
+  assert.ok(BigInt(result.value.observation.admittedAt) > BigInt(issued.issuedAtTick));
+  assert.equal((await api(submitPath, { answer })).attemptId, attemptId);
+  await api(submitPath, { answer: '99' }, 'POST', 409);
+  assert.deepEqual(await api('retention/' + key), forecast);
+  return { forecast, issued, attemptId, result, concurrent };
+}
+
+const pretest = await controlled([], '21', 'observed');
+const posttest = await controlled([pretest.attemptId], '20', 'missed');
+assert.equal(posttest.forecast.value.estimate.expected, 'correct');
+assert.equal(posttest.result.value.observation.result, 'incorrect');
+await api('workspace/access/records/' + posttest.attemptId, undefined, 'GET', 404);
+const overlap = await controlled([], '21', 'awaiting-independent', () => controlled([], '20', 'observed'));
+console.log(JSON.stringify({ frozen, reconciled, revoked: 'forecast and reconciliation stale', pretest, posttest, overlap }, null, 2));

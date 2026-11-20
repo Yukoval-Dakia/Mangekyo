@@ -174,6 +174,15 @@ export function serve(
       if (await handleIntakeRequest(student.intake, req, res, path, method)) return;
       if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());
       if (path === '/api/papers' && method === 'POST') return json(res, 201, await student.workbook.save(await body(req)));
+      if (path === '/api/retention/papers' && method === 'POST') {
+        return json(res, 201, await student.retention.savePosttestPaper(await body(req)));
+      }
+      const posttest = /^\/api\/retention\/([0-9A-HJKMNP-TV-Z]{26})\/posttest(?:\/([0-9A-HJKMNP-TV-Z]{26})\/submission)?$/.exec(path);
+      if (posttest?.[1] && method === 'POST') {
+        return posttest[2]
+          ? json(res, 200, await student.retention.submitPosttest(posttest[1], posttest[2], await body(req)))
+          : json(res, 200, await student.retention.startPosttest(posttest[1], await body(req)));
+      }
       const freeze = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/retention$/.exec(path);
       if (freeze?.[1] && method === 'POST') {
         const result = await student.retention.freeze(freeze[1], await body(req));
