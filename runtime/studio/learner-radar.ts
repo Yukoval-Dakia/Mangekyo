@@ -56,7 +56,9 @@ async function validRetentionManifest(tx: ReadTransaction, row: Selection, calle
   let manifest;
   try { manifest = parseManifest(row.manifest); }
   catch { return; }
-  if (manifest.purpose !== purpose || manifest.inputs.length > 64 ||
+  // Old gathers may repeat an issuance for multiple observations. Keep all distinct modes and revisions.
+  manifest = { ...manifest, inputs: [...new Map(manifest.inputs.map(input => [JSON.stringify(input), input])).values()] };
+  if (manifest.purpose !== purpose ||
       (await revalidateManifest(tx, manifest)).kind !== 'valid' ||
       (callerPurpose !== purpose && (await revalidateManifest(tx, manifest, callerPurpose)).kind !== 'valid')) return;
   if (row.value.kind !== 'value') return;
