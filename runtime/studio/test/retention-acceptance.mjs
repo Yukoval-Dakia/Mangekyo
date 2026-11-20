@@ -142,13 +142,16 @@ const schedule = { requestId: randomUUID(), scheduledAt: new Date(Date.now() + 6
 await api(`retention/${overlap.result.key}/followup`, schedule, 'POST', 422);
 const followupPath = `retention/${pretest.result.key}/followup`;
 const { key: followupKey } = await api(followupPath, schedule, 'POST', 202);
+const followupEntry = async () => (await api('retention/posttests')).items.find(item => item.forecastKey === followupKey);
+const accepted = await followupEntry();
+assert.ok(accepted.state === 'preparing' || accepted.state === 'scheduled');
+assert.equal(accepted.sourceReconciliationKey, pretest.result.key);
 const followup = await current(followupKey);
 assert.deepEqual(await api(followupPath, schedule), { key: followupKey, state: 'current' });
 assert.deepEqual(followup.value.input.target, pretest.forecast.value.input.target);
 assert.deepEqual(followup.value.input.observations, [pretest.result.value.observation]);
 assert.equal(followup.value.input.window.scheduledAt, schedule.scheduledAt);
 assert.equal(followup.value.estimate.expected, 'correct');
-const followupEntry = async () => (await api('retention/posttests')).items.find(item => item.forecastKey === followupKey);
 const before = await followupEntry();
 assert.equal(before.state, 'scheduled');
 assert.equal(before.scheduledAt, schedule.scheduledAt);

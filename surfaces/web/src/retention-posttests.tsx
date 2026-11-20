@@ -7,7 +7,7 @@ import { ReconciliationResearch } from './research';
 import './workbook.css';
 
 type Entry = { forecastKey: string; title: string; through: string; sourceReconciliationKey?: string } & (
-  { state: 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string }
+  { state: 'preparing' | 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string }
 );
 type Issue = { id: string; rev: number; item: WorkbookQuestionView };
 type Verdict = ReturnType<typeof reconcileRetention>;
@@ -20,6 +20,11 @@ const verdictLabels: Record<Verdict['status'], string> = {
 const deadline = (through: string) => new Date(through).toLocaleString('zh-CN');
 
 const posttestHref = (key: string) => '/today?posttest=' + encodeURIComponent(key);
+
+function plannedTime(entry: Extract<Entry, { scheduledAt: string }>) {
+  const time = deadline(entry.scheduledAt);
+  return entry.state === 'preparing' ? `${time} 开始，正在准备` : `${time} 开始`;
+}
 
 type FollowupContext = { entries: Entry[]; reload: () => void };
 
@@ -65,7 +70,7 @@ function ScheduleFollowup({ recordKey, entries, reload }: { recordKey: string } 
   }
 
   if (existing) {
-    const detail = existing.state === 'scheduled' ? '已安排 · ' + deadline(existing.scheduledAt) :
+    const detail = existing.state === 'scheduled' || existing.state === 'preparing' ? '已安排 · ' + plannedTime(existing) :
       existing.state === 'submitted' ? '已交卷' : '已到时间';
     return <p role="status">下一次后测{detail}{' '}<a href={posttestHref(existing.forecastKey)}>查看后测</a></p>;
   }
@@ -169,7 +174,7 @@ function OpenPosttest({ entry, entries, reload }: { entry: Entry } & FollowupCon
   const key = entry.state === 'submitted' ? entry.reconciliationKey : receipt;
   return <section className="workbook-attempt-panel">
     <div className="subhead"><h2>{entry.title}</h2><a href="/today">返回今天</a></div>
-    {entry.state === 'scheduled' ? <p role="status">后测已安排 · {deadline(entry.scheduledAt)} 开始</p> : key ? <><h3>后测对账</h3><Reconciliation key={key} recordKey={key} entries={entries} reload={reload} /></> : <>
+    {entry.state === 'scheduled' || entry.state === 'preparing' ? <p role="status">后测已安排 · {plannedTime(entry)}</p> : key ? <><h3>后测对账</h3><Reconciliation key={key} recordKey={key} entries={entries} reload={reload} /></> : <>
       <p className="muted">独立完成 · 截止 {deadline(entry.through)}</p>
       {failure ? <p role="alert">{failure} <a href={location.href}>重新读取</a></p> :
         issue ? <AnswerForm issue={issue} path={path} submitted={setReceipt} /> : <p role="status">正在打开题目…</p>}
@@ -186,9 +191,11 @@ export function RetentionPosttests({ selected }: { selected?: string }) {
   }, []);
   useEffect(() => {
     if (list.error || !list.data) return;
-    const times = list.data.items.flatMap(entry => entry.state === 'scheduled' ? [Date.parse(entry.scheduledAt)] : []);
+    const now = Date.now();
+    const times = list.data.items.flatMap(entry => entry.state === 'scheduled' ? [Date.parse(entry.scheduledAt)] :
+      entry.state === 'preparing' ? [now + 1500] : []);
     if (!times.length) return;
-    const delay = Math.min(...times) - Date.now();
+    const delay = Math.min(...times) - now;
     const timer = setTimeout(list.reload, Math.min(delay > 0 ? delay : 5000, 2147483647));
     return () => clearTimeout(timer);
   }, [list.data, list.error, list.reload]);
@@ -199,5 +206,6 @@ export function RetentionPosttests({ selected }: { selected?: string }) {
   }
   return <>{list.data.items.map(entry => <ListLink key={entry.forecastKey}
     href={posttestHref(entry.forecastKey)} title={entry.title} icon="practice"
-    detail={entry.state === 'submitted' ? '已交卷 · 查看后测对账' : entry.state === 'scheduled' ? '后测已安排 · ' + deadline(entry.scheduledAt) : '保持后测 · 截止 ' + deadline(entry.through)} />)}</>;
+    detail={entry.state === 'submitted' ? '已交卷 · 查看后测对账' : entry.state === 'scheduled' || entry.state === 'preparing'
+      ? '后测已安排 · ' + plannedTime(entry) : '保持后测 · 截止 ' + deadline(entry.through)} />)}</>;
 }

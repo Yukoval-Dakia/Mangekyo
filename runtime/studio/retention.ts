@@ -39,7 +39,7 @@ type ForecastScope = {
 };
 type ReconciliationScope = { forecastKey: string; forecastId: DerivationId; attemptId: FactId };
 type PosttestListItem = { forecastKey: string; title: string; through: string; scheduledAt?: string; sourceReconciliationKey?: string } &
-  ({ state: 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string });
+  ({ state: 'preparing' | 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string });
 type ReconciliationValue = Extract<Awaited<ReturnType<typeof reconciliation.derive>>, { kind: 'value' }>['value'];
 type SlotRow<T, S> = {
   scope_keys: S;
@@ -219,6 +219,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     if (frozen.state !== 'current') throw new RequestError(409, '预测当前没有可用的冻结版本。');
     const read = createCommandReadContext(tx, retentionPurpose);
     const { target, window, sourceReconciliationKey } = row.scope_keys;
+    if (sourceReconciliationKey) await currentReconciliation(tx, sourceReconciliationKey);
     const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
     sameTarget(opened, row.scope_keys);
     return { frozen, read, window, opened, sourceReconciliationKey };
@@ -267,20 +268,30 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
 
   async function listPosttests() {
     return db.snapshot(scope, async tx => {
-      const { rows } = await tx.query<{ slot_key: string }>(
-        `SELECT s.slot_key FROM slot_state s JOIN facts f
+      const { rows } = await tx.query<{ slot_key: string; scope_keys: ForecastScope; current_id: string | null }>(
+        `SELECT s.slot_key, s.scope_keys, s.current_id FROM slot_state s JOIN facts f
            ON f.learner_id=s.learner_id AND f.id=s.scope_keys->'target'->'paper'->>'id'
-         WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.current_id IS NOT NULL
+         WHERE s.learner_id=$1 AND s.slot_type=$2
+           AND (s.current_id IS NOT NULL OR (s.pending <> 'none' AND s.scope_keys ? 'sourceReconciliationKey'))
            AND f.type=$3 AND f.retracted_rev IS NULL
          ORDER BY s.changed_tick DESC, s.slot_key LIMIT 24`,
         [tx.learner, forecastSlot.type, retentionPaperType],
       );
       const now = new Date().toISOString();
       const items: PosttestListItem[] = [];
-      for (const { slot_key: forecastKey } of rows) {
+      for (const { slot_key: forecastKey, scope_keys: scheduled, current_id: currentId } of rows) {
         try {
+          if (!currentId) {
+            const { target, sourceReconciliationKey, window: { scheduledAt, through } } = scheduled;
+            if (!sourceReconciliationKey || !scheduledAt || through <= now) continue;
+            await currentReconciliation(tx, sourceReconciliationKey);
+            const read = createCommandReadContext(tx, retentionPurpose);
+            const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
+            sameTarget(opened, scheduled);
+            items.push({ forecastKey, title: opened.paper.title, through, scheduledAt, sourceReconciliationKey, state: 'preparing' });
+            continue;
+          }
           const { frozen, opened, read, window, sourceReconciliationKey } = await currentForecast(tx, forecastKey);
-          if (sourceReconciliationKey) await currentReconciliation(tx, sourceReconciliationKey);
           const { scheduledAt, through } = window;
           const entry = { forecastKey, title: opened.paper.title, through, ...(scheduledAt ? { scheduledAt } : {}),
             ...(sourceReconciliationKey ? { sourceReconciliationKey } : {}) };
