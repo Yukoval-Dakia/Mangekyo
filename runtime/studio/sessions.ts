@@ -301,7 +301,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
             changed_tick: tick,
           });
           const jit = submission.jitContextVersion === 1;
-          await requestWork(tx,tick,{slotType,slotKey:id,deriver:jit ? jitMethodName : methodName},jit ? 'capability_pending' : 'pending');
+          await requestWork(tx,tick,{slotType,slotKey:id,deriver:jit ? jitMethodName : methodName},jit ? 'routed_pending' : 'pending');
         }
       },
     }),

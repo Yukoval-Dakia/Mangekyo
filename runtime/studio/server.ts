@@ -130,8 +130,10 @@ async function runWorker(storeId: string) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
   const jitQueue = queue + '-jit-v1';
+  const jitLane = {deriver:jitMethodName};
   async function execute(id: string, terminal = false, jit = false) {
-    const ref = await acknowledgeStartedWork(db,id,jit ? 'capability_pending' : 'pending');
+    const ref = jit ? await acknowledgeStartedWork(db,id,jitLane) ?? await acknowledgeStartedWork(db,id,'capability_pending')
+      : await acknowledgeStartedWork(db,id);
     if (!ref || (!jit && await research.execute(ref, terminal))) return;
     const work = await readWork(db, ref);
     if (!work || jit !== (work.deriver === jitMethodName)) return;
@@ -190,7 +192,12 @@ async function runWorker(storeId: string) {
         await relayPending(db, async (ref, id) => {
           if (!(await research.relayWake(client, queue, ref, id))) await startWork(client, id, { taskQueue: queue });
         });
-        if (jitCounters.length) await relayPending(db,async (_,id) => { await startWork(client,id,{taskQueue:jitQueue}); },'capability_pending');
+        if (jitCounters.length) {
+          const startJit = async (_: unknown,id: string) => { await startWork(client,id,{taskQueue:jitQueue}); };
+          await relayPending(db,startJit,jitLane);
+          // Drain the trial v9 JIT lane using its unchanged queue.
+          await relayPending(db,startJit,'capability_pending');
+        }
         failed = false;
       } catch {
         if (!failed) console.error('执行交接暂时不可用，待办已保留。');
