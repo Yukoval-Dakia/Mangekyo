@@ -43,8 +43,14 @@ async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpos
   if (!fact) return null;
   const {rows: [provenance]} = await tx.query<{ author: string; born: Tick }>(`
     SELECT last.author,f.created_tick::text AS born
-    FROM facts f JOIN fact_revs last ON (last.learner_id,last.fact_id,last.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.id=$2`, [tx.learner, id]);
+    FROM facts f JOIN LATERAL (
+      SELECT r.author FROM fact_revs r LEFT JOIN fact_revs previous
+        ON (previous.learner_id,previous.fact_id,previous.rev)=(r.learner_id,r.fact_id,r.rev-1)
+      WHERE (r.learner_id,r.fact_id)=(f.learner_id,f.id)
+        AND (r.rev=f.current_rev AND f.type<>$3 OR f.type=$3 AND (r.rev=1 OR r.data IS DISTINCT FROM previous.data))
+      ORDER BY r.rev DESC LIMIT 1
+    ) last ON true
+    WHERE f.learner_id=$1 AND f.id=$2`, [tx.learner, id, textbookPageType]);
   if (provenance?.author !== 'learner') return null;
   const ref = claimWitness(fact);
   const basis: WorkspaceWitness[] = [{id: ref.id, rev: ref.rev, epoch: ref.accessEpoch, type: fact.type, mode:'following'}];

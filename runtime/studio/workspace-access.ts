@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import {
   createCommandReadContext,
   FactNotFoundError,
@@ -587,10 +588,13 @@ function saveWorkspaceAccessRoute(db: Db, input: unknown) {
 }
 
 export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: LoadedModule,
-  capture: LoadedModule, plan: LoadedModule) {
+  capture: LoadedModule, plan: LoadedModule, onResearchChanged?: CommandHooks['onFactsChanged']) {
   const handle = createCommandHandler(db, {
     modules: [activity, content, capture, plan],
-    hooks: createStudioCommandHooks({ afterFactsChanged: carryRubricAssessments }),
+    hooks: createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
+      await carryRubricAssessments(tx, tick, changes);
+      await onResearchChanged?.(tx, tick, changes);
+    } }),
     crossModuleWrites: {
       [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType, goalType, organizerTaskType] },
     },
@@ -768,6 +772,8 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
       const itemId = requireFactId(id);
       const value = object(input);
       if (!value || typeof value.enabled !== 'boolean') throw new RequestError(400, '开放设置无效。');
+      const use = value.purpose === undefined ? 'teaching' : value.purpose;
+      if (use !== 'teaching' && use !== 'background-research') throw new RequestError(400, '记录用途无效。');
       if (typeof value.expectedRev !== 'number' || !Number.isSafeInteger(value.expectedRev) ||
           value.expectedRev < 1) {
         throw new RequestError(400, '记录版本无效。');
@@ -776,21 +782,24 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
       const enabled = value.enabled;
       const {row, link} = await db.snapshot({ learner: studioLearner }, async tx => {
         const row = await currentRow(tx, itemId);
-        return {row, link: row?.type === materialType ? await materialIntakeLink(tx, itemId) : undefined};
+        return {row, link: use === 'teaching' && row?.type === materialType ? await materialIntakeLink(tx, itemId) : undefined};
       });
       if (!row || !allowedTypes.has(row.type) ||
         (row.type === studyRecordType && syntheticStudyRecords.has(row.id))) {
         throw new RequestError(404, '找不到这条学习记录。');
       }
+      if (use === 'background-research' && row.type !== textbookPageType)
+        throw new RequestError(400, '此入口仅支持个人教材的后台用途。');
       if (row.current_rev !== expectedRev) {
         throw new RequestError(409, '这条记录已在别处更新。请刷新后再试。');
       }
       if (link && !link.matches) throw new RequestError(409, '材料与交入记录不匹配。');
       const purposes = purposesOf(row.purpose);
       if (purposes.includes('all')) throw new RequestError(409, '这条记录已设置为全部用途。');
-      if (purposes.includes('teaching') === enabled && (!link || link.purpose.includes('teaching') === enabled)) {
-        return { id: row.id, rev: row.current_rev, teaching: enabled, changed: false };
-      }
+      const flags = use === 'teaching' ? {teaching: enabled} :
+        {teaching: purposes.includes('teaching'), research: enabled};
+      if (purposes.includes(use) === enabled && (!link || link.purpose.includes(use) === enabled))
+        return { id: row.id, rev: row.current_rev, ...flags, changed: false };
       const purpose = purposes[0];
       if (!purpose) throw new RequestError(409, '这条记录当前没有可用的读取用途。');
       try {
@@ -798,14 +807,16 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
           learner: studioLearner,
           actor: 'learner',
           purpose,
-          type: row.type === textbookPageType ? 'content.setTextbookTeaching' : setWorkspaceTeachingCommand,
-          id: commandId(stableId('workspace-teaching', itemId, String(expectedRev), String(enabled))),
+          type: row.type === textbookPageType
+            ? use === 'teaching' ? 'content.setTextbookTeaching' : 'content.setTextbookResearch'
+            : setWorkspaceTeachingCommand,
+          id: commandId(stableId('workspace-' + use, itemId, String(expectedRev), String(enabled))),
           input: { id: itemId, expectedRev, enabled, ...(link ? { intakeId: link.id } : {}) } as Json,
         });
         const ref = receipt.wrote.find((written) => written.id === row.id);
         const paired = link && receipt.wrote.some(written => written.id === link.id);
         if (!ref && !paired) throw new RequestError(500, '这次设置没有返回记录。');
-        return { id: row.id, rev: ref?.rev ?? row.current_rev, teaching: enabled, changed: true };
+        return { id: row.id, rev: ref?.rev ?? row.current_rev, ...flags, changed: true };
       } catch (error) {
         throw translate(error);
       }
