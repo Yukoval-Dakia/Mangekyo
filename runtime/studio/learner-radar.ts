@@ -6,7 +6,8 @@ import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { isSourceFactId, sourceReference } from '../../modules/activity/source-values.ts';
 import { workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
-import { forecastType, reconciliationType, type RetentionForecast, type RetentionObservation, reconcileRetention } from '../../modules/learner/retention.ts';
+import { forecastType, reconciliationType, type RetentionForecast } from '../../modules/learner/retention.ts';
+import { projectRetentionRead, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
 import { purpose } from './identity.ts';
 import { retentionHistoryValid } from './retention.ts';
 import { readLearningOverview } from './learning-overview.ts';
@@ -18,10 +19,9 @@ export type RadarSlot = Extract<ManifestInput, { kind: 'slot' }>;
 type FactInput = Extract<ManifestInput, { kind: 'fact' }>;
 export type RetentionBasis = { slot: RadarSlot; facts: FactInput[] };
 type Access = { callerPurpose: string; maySend: WorkspaceSourceRecipient };
-type Reconciliation = ReturnType<typeof reconcileRetention> & { forecastId: string; observedThrough: Tick };
 type Selection = {
   id: string; slot_type: string; slot_key: string; deriver: string;
-  effective_tick: Tick; value: Outcome<RetentionForecast | Reconciliation>; manifest: unknown;
+  effective_tick: Tick; value: Outcome<RetentionForecast | RetentionReconciliation>; manifest: unknown;
 };
 
 // The controlled posttest publisher uses the same retention result contract.
@@ -147,55 +147,19 @@ export async function readMissedPosttest(tx: ReadTransaction, key: string, resul
   return rowCount ? derivationId(row.id) : undefined;
 }
 
-function projectRetention(selected: SelectionRead) {
-  const { row, facts, forecast } = selected;
-  if (row.value.kind !== 'value') return;
-  const { method, estimate, input } = forecast.value;
-  const value = row.value.value;
-  const { itemId, paper } = input.target;
-  const matches = (ref: RetentionObservation['submission'], types: string[]) => facts.find(({ fact }) =>
-    fact.ref.id === ref.id && fact.ref.rev === ref.rev && types.includes(fact.type))?.fact;
+function projectRetention({ row, facts, forecast }: SelectionRead) {
   const href = `/api/retention/${row.slot_key}`;
-  const source = matches(paper, [workbookPaperType, retentionPaper]);
-  if (!source) return;
-  const observation = 'observation' in value ? value.observation : undefined;
-  const refs = [...input.observations.map(item => item.submission), ...(observation ? [observation.submission] : [])];
-  if (refs.some(ref => !matches(ref, [workbookAttemptType, posttestSubmission]))) return;
-  // Keep the tool result small. The frozen result URL and the dispatch witness retain the full basis.
-  const sources = new Set([source]);
-  const forecastBasis = estimate.kind === 'categorical' ? estimate.basis : input.observations.at(-1)?.submission;
-  for (const ref of [forecastBasis, observation?.submission]) {
-    if (!ref) continue;
-    const fact = matches(ref, [workbookAttemptType, posttestSubmission]);
-    if (!fact) return;
-    sources.add(fact);
-  }
-  const evidence = [...sources].map(fact => {
-    const ref = { id: fact.ref.id, rev: fact.ref.rev, type: fact.type };
-    if (fact.type === workbookPaperType || fact.type === workbookAttemptType) {
+  return projectRetentionRead({ id: row.id, key: row.slot_key, effectiveTick: row.effective_tick, value: row.value },
+    { id: forecast.row.id, value: forecast.value }, {
+      papers: facts.filter(({ fact }) => fact.type === workbookPaperType || fact.type === retentionPaper).map(({ fact }) => fact),
+      submissions: facts.filter(({ fact }) => fact.type === workbookAttemptType || fact.type === posttestSubmission).map(({ fact }) => fact),
+    }, href, (fact, itemId) => {
+      const ref = { id: fact.ref.id, rev: fact.ref.rev, type: fact.type };
+      if (fact.type !== workbookPaperType && fact.type !== workbookAttemptType) return { ...ref, href };
       const anchor = fact.type === workbookPaperType ? { kind: 'question', itemId } as const
         : { kind: 'answer-slot', itemId, slotId: 'answer' } as const;
       return { ...ref, open: { tool: 'open_learning', args: { refs: JSON.stringify(sourceReference(fact, anchor)) } } };
-    }
-    return { ...ref, href };
-  });
-  const common = { id: row.id, key: row.slot_key, state: 'current' as const, effectiveTick: row.effective_tick,
-    method: { id: method.id, version: method.version }, itemId,
-    window: { requestedAt: input.window.requestedAt, through: input.window.through }, evidence, href };
-  if ('status' in value && observation) return { ...common, kind: 'reconciliation' as const,
-    forecastId: forecast.row.id, status: value.status,
-    observation: { result: observation.result, exposure: observation.exposure.kind } };
-  if ('estimate' in value) {
-    if (estimate.kind === 'probabilistic') {
-      return { ...common, kind: 'forecast' as const,
-        estimate: { kind: 'probabilistic' as const, probability: estimate.probability,
-          interval: estimate.interval, uncertainty: estimate.uncertainty } };
-    }
-    return { ...common, kind: 'forecast' as const,
-      estimate: estimate.kind === 'unknown' ? { kind: 'unknown' as const, reason: estimate.reason }
-        : { kind: 'categorical' as const, expected: estimate.expected } };
-  }
-  return undefined;
+    });
 }
 
 export async function readRetentionRadar(tx: ReadTransaction, access: Access, options: {
