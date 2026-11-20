@@ -135,3 +135,10 @@ export async function verifiedSource(
   const value = textMaterial(material.value);
   return { id: materialId, title: value.title };
 }
+
+export function projectLegacyTextbookNote(fact: FactSnapshot) {
+  return {
+    kind: 'legacyNote' as const, readOnly: true as const, owner: organizerNoteType,
+    ...fact.ref, accessEpoch: fact.accessEpoch, purpose: fact.purpose, ...organizerNote(fact.value),
+  };
+}

@@ -15,3 +15,7 @@ export const slotType = 'activity.teachingFeedback';
 export const methodName = 'activity/evidence-tutor';
 export const confirmedTeachingMethod = 'activity/evidence-tutor-confirmed-v1';
 export const purpose = 'teaching';
+
+export function notionModelRecipient(id: string, endpoint: string, protocol: string, model: string, revision: string) {
+  return 'studio:model:' + stableId(id, endpoint, protocol, model, revision);
+}

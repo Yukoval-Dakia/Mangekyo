@@ -6,8 +6,8 @@ import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { materialType, storagePurpose, textMaterial } from '../../modules/activity/library-values.ts';
 import { intakeDocument, intakeFactType } from '../../modules/capture/intake-values.ts';
 import { isSourceFactId, sourceReference, type SourceAnchorV1 } from '../../modules/activity/source-values.ts';
-import type { studyTurn, studyAttachment } from '../../modules/activity/values.ts';
-import { stableId } from './identity.ts';
+import { studyTurn, type studyAttachment } from '../../modules/activity/values.ts';
+import { purpose, stableId } from './identity.ts';
 
 export async function readMaterialText(tx: ReadTransaction, id: string) {
   if (!isSourceFactId(id)) return null;
@@ -71,6 +71,18 @@ export function materialTextOf(fact: FactSnapshot) {
 export function intakeTextOf(fact: FactSnapshot) {
   const document = intakeDocument(fact.value);
   return {field: 'text', ...document, text: document.extraction.text};
+}
+
+export async function teachingOrigin(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>) {
+  if (!turn.parentId) return turn;
+  return studyTurn((await createCommandReadContext(tx,purpose).fact(turn.sessionId,{mode:'following'})).value);
+}
+
+export async function teachingTurnAllowed(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
+  grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, origin?: ReturnType<typeof studyTurn>) {
+  if (!await grantCurrent(turn)) return false;
+  origin ??= await teachingOrigin(tx,turn);
+  return (origin === turn || await grantCurrent(origin)) && await attachmentCurrent(tx,origin);
 }
 
 export function relatedIntakeId(materialId: FactId) {

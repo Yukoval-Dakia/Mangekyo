@@ -1,3 +1,4 @@
+import { mountQuery, type PartialMountPermissions } from './presentation/mount-coverage.ts';
 import { bindDeletionWatermark, guardedPath, recordNewSubmission, synchronizeDeletion, verifyGenerationReceipt } from './deletion-watermark';
 export interface TeachingCase {
   id: string;
@@ -108,7 +109,7 @@ export interface Turn {
   reportedModel?: string;
 }
 
-export interface Session {
+export interface Session extends PartialMountPermissions {
   currentObject?: import("./current-record").BoundObject;
   artifacts?: unknown;
   attachment?: StudyAttachment;
@@ -121,15 +122,15 @@ export interface Session {
   currentTurnId?: string | null;
 }
 
-export type SessionEvent = {
+export type SessionEvent = PartialMountPermissions & {
   authorizedMountIds?: string[];
   session: Pick<Session, "id" | "caseId" | "status" | "currentTurnId" | "pendingAnswer">;
   phase?: "queued" | "thinking" | "reading" | "checking" | "replying";
   message?: string;
 };
 
-export function sessionEvents(id: string) {
-  return new EventSource(`/api${sessionPath(id)}/events`);
+export function sessionEvents(id: string, known: string[]) {
+  return new EventSource(mountQuery(`/api${sessionPath(id)}/events`, known));
 }
 
 export class ApiError extends Error {
