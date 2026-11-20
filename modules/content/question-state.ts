@@ -7,7 +7,7 @@ import { parseSaveQuestion } from './question-authoring.ts';
 export const questionStateType = 'content.questionState';
 export const questionMetaType = 'overlay.question_meta';
 export const questionVerificationType = 'content.questionVerification';
-export const questionVerificationMethodVersion = '2';
+export const questionVerificationMethodVersion = '3';
 export const questionMetaDraftType = 'content.questionMetaDraft';
 export const questionKey = ({ id, rev }: { id: string; rev: number }) => `${id}:${rev}`;
 export const questionVerificationKey = (input: { id: string; rev: number; recheck?: number }) =>

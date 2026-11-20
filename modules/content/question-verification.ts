@@ -7,6 +7,7 @@ import {
   type AssetReference, type Block, type BlockBody, type QuestionAsset,
 } from './asset.ts';
 import { pageId, record, revision } from './parse.ts';
+import { publicAnswerControls } from './question-controls.ts';
 import {
   evaluateQuestionVerification, questionVerificationMethodVersion, questionVerificationReview,
   type QuestionVerification, type QuestionVerificationBasis, type VerificationReceipt,
@@ -52,7 +53,7 @@ export async function gather(
     kind: 'input', data: { ...data, blockedReason: reason }, effects: [],
   });
   if (!asset.response_schema || !asset.assessment_contract) return blocked('题目缺少完整作答与评分契约。');
-  if (asset.blocks.some(block => needsUnsupportedProjection(block.body))) {
+  if (asset.blocks.some(block => block.body.kind !== 'interaction' && needsUnsupportedProjection(block.body))) {
     return blocked('题目含未能安全投影的交互、图像或嵌套题。');
   }
   const sharedMaterials = [];
@@ -63,9 +64,17 @@ export async function gather(
     sharedMaterials.push(material);
   }
   const contract = freezeQuestionAssessment(asset, { id, rev });
+  const slots = contract.items[0]!.slots;
+  const controls = [];
+  for (const { body } of asset.blocks) {
+    if (body.kind !== 'interaction') continue;
+    const projection = publicAnswerControls(body.view, questionPrompt(asset), slots);
+    if (!projection || controls.length) return blocked('交互块无法投影为明确的公开作答选项。');
+    controls.push(projection);
+  }
   // These inputs remain local until the host reapplies purpose, recipient and
   // spoiler checks to the current witnesses before dispatch or ledger replay.
-  const publicInput = { prompt: questionPrompt(asset), response_schema: contract.items[0]!.slots,
+  const publicInput = { prompt: questionPrompt(asset), response_schema: slots, controls,
     sharedMaterials, ref: { id, rev }, verification: data,
   };
   const effects: EffectRequest[] = steps.map(step => ({
