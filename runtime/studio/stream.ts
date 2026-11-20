@@ -1,3 +1,4 @@
+import { attachmentCurrent } from './reading.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
@@ -196,7 +197,10 @@ async function readSessionEvent(db: Db, sessionId: string) {
       });
     const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
-    const invalid = !await grantCurrent(submission) ||
+    const origin = submission.parentId
+      ? studyTurn((await createCommandReadContext(tx,purpose).fact(submission.sessionId,{mode:'following'})).value)
+      : submission;
+    const invalid = !await attachmentCurrent(tx, origin) || !await grantCurrent(submission) ||
       (manifest && (await revalidateManifest(tx, parseManifest(manifest))).kind !== 'valid');
     if (invalid && status === 'pending') {
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');

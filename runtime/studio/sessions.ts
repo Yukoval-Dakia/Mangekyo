@@ -12,7 +12,7 @@ import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, routeMatchesInput, mcpRevision } from './harness.ts';
 import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, type StudyCurrentObjectSelection } from '../../modules/activity/values.ts';
-import { readMaterialText } from './reading.ts';
+import { attachmentCurrent, attachmentSources } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { loadSettings } from './settings.ts';
@@ -119,6 +119,7 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
   );
   const result: TurnView[] = [];
   const grantCurrent = workspaceGrantChecker();
+  let materialAvailable = true;
   for (const row of rows) {
     const snapshot = await createCommandReadContext(tx, purpose).fact(factId(row.id), { mode: 'following' })
       .catch((error: unknown) => {
@@ -127,9 +128,14 @@ async function history(tx: ReadTransaction, session: string): Promise<TurnView[]
         }
         throw error;
       });
-    const submission = studyTurn(snapshot.value);
+    let submission = studyTurn(snapshot.value);
+    if (!submission.parentId) materialAvailable = await attachmentCurrent(tx, submission);
+    if (!materialAvailable) {
+      const {attachment: _attachment, ...visible} = submission;
+      submission = visible;
+    }
     let feedback = row.value;
-    if (feedback && (!await grantCurrent(submission) ||
+    if (feedback && (!materialAvailable || !await grantCurrent(submission) ||
       (await revalidateManifest(tx, parseManifest(row.manifest))).kind !== 'valid')) feedback = null;
     if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
       rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: [] };
@@ -274,6 +280,9 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
         for (const change of changes) {
           if (change.factType !== 'activity.studyTurn' || change.kind !== 'create') continue;
           const { id } = change.ref;
+          const submission = studyTurn((await createCommandReadContext(tx,purpose).fact(id,{mode:'following'})).value);
+          if (submission.attachment && !await attachmentCurrent(tx, submission))
+            throw new RequestError(409, '选段的原件或版本已经变化，请重新打开原文。');
           await tx.insert('slot_state', {
             learner_id: tx.learner,
             slot_type: slotType,
@@ -313,6 +322,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     const id = parent ? nextTurn(session, parent) : firstTurn(req);
     const origin = parent ? await db.snapshot({learner: studioLearner}, async tx =>
       studyTurn((await createCommandReadContext(tx, purpose).fact(factId(session), {mode: 'following'})).value)) : undefined;
+    const attachmentBasis = attachment && await db.snapshot({learner:studioLearner}, tx => attachmentSources(tx, attachment));
+    if (attachment && !attachmentBasis) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
     const settings = await loadSettings(turnTask(selected, (origin?.attachment ?? attachment)?.mode === 'prepare'));
     if (!routeMatchesInput(requestedRoute, settings)) throw new RequestError(409, '模型配置已更改，请重新确认。');
     if (grants?.length) {
@@ -339,7 +350,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       sessionId: session,
       parentId: parent,
       answer,
-      ...(attachment ? { attachment } : {}),
+      ...(attachmentBasis ? {attachment, attachmentBasis:attachmentBasis.digest} : {}),
       ...(boundObject ? {currentObject: boundObject} : {}),
       ...(jitCounter ? {jitContextVersion: 1, jitCounterId: jitCounter.id} : {}),
       ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),
@@ -427,14 +438,6 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       const session = firstTurn(requestId);
       const prior = await replay(requestId, session, selected, null, firstAnswer, attachment, grants, requestedRoute, currentObject);
       if (prior) return prior;
-      if (attachment) {
-        const chosen = attachment;
-        const found = await db.snapshot({ learner: studioLearner }, async tx => {
-          const original = await readMaterialText(tx, chosen.id);
-          return original && chosen.title === original.title && original.text.includes(chosen.text);
-        });
-        if (!found) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
-      }
       try {
         return await submit(selected, session, null, firstAnswer, requestId, attachment, grants, requestedRoute, currentObject);
       } catch (error) {

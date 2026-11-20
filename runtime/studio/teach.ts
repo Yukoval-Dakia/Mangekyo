@@ -1,3 +1,4 @@
+import { attachmentCurrent } from './reading.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { createHash } from 'node:crypto';
@@ -78,6 +79,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const memoryPackets: NonNullable<typeof learningMemory>[] = [];
   const memoryHeads = new Set<string>();
   let memoryTurn: string | undefined;
+  let attachmentOrigin: ReturnType<typeof studyTurn> | undefined;
   let authorizeWorkspaceRecipient: (() => Promise<void>) | undefined;
   const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
   function trackAssessment(basis: WorkspaceAssessmentBasis) {
@@ -126,6 +128,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     inputs.set('feedback:' + id, { kind: 'slot', slotType, slotKey: id, derivationId: derivationId(replyId), mode: 'following' });
   }
   async function validInputs(tx: ReadTransaction) {
+    if (attachmentOrigin && !await attachmentCurrent(tx, attachmentOrigin)) throw new ChangedEvidence();
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
     const now = new Date().toISOString();
     if (memoryPackets.some(item => item.receipt.expiresAt && item.receipt.expiresAt <= now) ||
@@ -193,6 +196,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     const submission = studyTurn(await read(job.slotKey));
     if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
     const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
+    if (origin.attachment) {
+      attachmentOrigin = origin;
+      if (!await db.snapshot(scope, tx => attachmentCurrent(tx, origin))) throw new ChangedEvidence();
+    }
     const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
     const settings = await loadSettings(task);
     if (!sameRoute(submission, settings))
