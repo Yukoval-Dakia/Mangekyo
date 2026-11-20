@@ -730,9 +730,11 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
             if (fact.ref.id === ref.fact.id && fact.ref.rev === ref.fact.rev) root = fact;
           } });
           if (!source) return;
-          if (ref.anchor.kind === 'answer-slot') return { ...source, content: null };
+          const {id, rev, sourceRef, title} = source;
+          if (ref.anchor.kind === 'answer-slot') return {id, rev, sourceRef, title, content: null};
+          if (ref.anchor.kind === 'question') return {id, rev, sourceRef, title, content: source.content};
           const prompt = root && ref.anchor.kind === 'whole' ? fixedQuestionPreview(root) : undefined;
-          return prompt === undefined ? source : { ...source, content: prompt };
+          return prompt === undefined ? source : {id, rev, sourceRef, title, content: prompt};
         });
         if (!record) throw new RequestError(404, '找不到可读取的版本。');
         return record;

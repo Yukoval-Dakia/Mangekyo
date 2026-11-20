@@ -296,8 +296,13 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const chain = await graph('search_workspace', {...filters,hops:2}, 6);
     expect(chain).toMatchObject({results:[{id:originalQuestion.id,hop:1}, {id:variant.id,hop:2,occurredAt:null,tags:['运动'],exposure:'unknown'}],
       edges:[{kind:'targets_concept',traversal:'reverse'}, {kind:'variant_of',traversal:'reverse',author:'companion',variant:{spoilsNext:'former'}}]});
-    const variantRef = new URLSearchParams({ref:JSON.stringify(chain.results[1].sourceRef),view:'preview'});
-    expect(await access.record(variant.id,variantRef)).toMatchObject({rev:1,content:'请计算这两段路程的往返平均速度并说明分母。'});
+    for (const anchor of [{kind:'whole'}, {kind:'question', itemId:'question'}]) {
+      const sourceRef = {...chain.results[1].sourceRef, anchor};
+      const params = new URLSearchParams({ref:JSON.stringify(sourceRef), view:'preview'});
+      expect(await access.record(variant.id, params)).toEqual({
+        id:variant.id, rev:1, title:'往返变式', sourceRef, content:'请计算这两段路程的往返平均速度并说明分母。',
+      });
+    }
     expect(await graph('read_workspace',{id:JSON.stringify(chain.edges[1].sourceRef)},7)).toMatchObject({from:{fact:{id:variant.id,rev:1}},to:{fact:{id:originalQuestion.id,rev:1}}});
     const lookup = new URLSearchParams({conceptId:concept.id,hops:'2',kinds:'question'});
     expect(await access.list(lookup)).toMatchObject({items:[{id:originalQuestion.id},{id:variant.id}]});
