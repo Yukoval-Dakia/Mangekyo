@@ -143,8 +143,10 @@ export function serve(
       if (relationProposal && method === 'GET')
         return json(res, 200, await student.relationReview.proposal(relationProposal));
       if (relationProposal && method === 'POST') {
-        if ((await body(req)).decision !== 'accept') throw new RequestError(400, '请指定采纳此提议。');
-        return json(res, 200, await student.relationReview.accept(relationProposal));
+        const {decision} = await body(req);
+        if (decision === 'accept') return json(res, 200, await student.relationReview.accept(relationProposal));
+        if (decision === 'reject') return json(res, 200, await student.relationReview.reject(relationProposal));
+        throw new RequestError(400, '请选择采纳或拒绝此提议。');
       }
       const relationUndo = /^\/api\/workspace\/relations\/([0-9A-HJKMNP-TV-Z]{26})\/undo$/.exec(path)?.[1];
       if (relationUndo && method === 'POST')

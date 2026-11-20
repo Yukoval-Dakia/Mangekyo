@@ -86,6 +86,7 @@ type SavedObservation = { status: 'saved'; text: string; undo_token: string };
 export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObservation;
   memory?: {status: 'saved'; action: 'remember' | 'correct' | 'forget'; undo_token: string};
   page?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
+  relation?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
 };
 export type WorkspaceTools = {
   presentationTool?: (typeof workspaceDefinitions)[number];

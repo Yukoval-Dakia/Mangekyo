@@ -168,14 +168,16 @@ export function recentConversations(db: Db) {
   });
 }
 type WriteState = {status: 'changed'} | {status: 'withdrawn'};
-export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page'> & {
+export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page' | 'relation'> & {
   observation?: NonNullable<WorkspaceWriteReceipt['observation']> | WriteState;
   memory?: NonNullable<WorkspaceWriteReceipt['memory']> | WriteState;
   page?: NonNullable<WorkspaceWriteReceipt['page']> | WriteState | {status:'reverted'};
+  relation?: NonNullable<WorkspaceWriteReceipt['relation']> | WriteState;
 };
 
 async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[]): Promise<WorkspaceWriteView[]> {
-  const ids = writes.filter(write => write.observation || write.memory || write.page?.status === 'saved').map(write => write.id);
+  const ids = writes.filter(write => write.observation || write.memory ||
+    write.page?.status === 'saved' || write.relation?.status === 'saved').map(write => write.id);
   if (!ids.length) return writes;
   const {rows} = await tx.query<{id: string; current_rev: number; retracted_rev: number | null}>(
     'SELECT id,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
@@ -186,6 +188,10 @@ async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[
       if (fact && fact.retracted_rev === null && fact.current_rev === write.rev) return write;
       const undone = await readRecordedCommand(tx,textbookUndoId(write.page.undo_token));
       return {...write,page:{status:undone?.state === 'done' ? write.rev === 1 ? 'withdrawn' : 'reverted' : 'changed'}};
+    }
+    if (write.relation?.status === 'saved') {
+      if (fact && fact.retracted_rev === null && fact.current_rev === write.rev) return write;
+      return {...write,relation:{status:fact?.retracted_rev ? 'withdrawn' : 'changed'}};
     }
     if (!write.observation && !write.memory) return write;
     if (fact && fact.retracted_rev === null && fact.current_rev === write.rev &&
