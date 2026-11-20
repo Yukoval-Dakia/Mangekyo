@@ -37,7 +37,7 @@ const presentationTool = {type:'function',function:{name:'mount_artifact',
     view:presentationCatalog.schema,predictionPrompt:{type:'string',maxLength:160},
     sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:{type:'string'}}}
   }}}};
-export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode};
+export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode; image?: true};
 type Seen = {id: string; title: string; text: string; workspace: true};
 const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
 let declarations: ReturnType<typeof activity> | undefined;
@@ -59,6 +59,7 @@ export function openWorkspaceTools(options: {
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));
   const overviewBasis = new Map<string, WorkspaceWitness>();
+  const imageBasis = new Map(options.prior.filter(w => w.image).map(w => [`${w.id}:${w.rev}`,w]));
   const opened = new Map<string, Seen>();
   const openedAnswers = new Map<string, WorkspaceWitness>();
   const produced = new Map<string, number>();
@@ -181,7 +182,10 @@ export function openWorkspaceTools(options: {
       const result = await cropIntakeImage(intakeImage);
       value = result.value;
       text = JSON.stringify(value);
-      if (result.image) receiveImage?.(result.image);
+      if (result.image) {
+        receiveImage?.(result.image);
+        for (const w of witnesses) imageBasis.set(`${w.id}:${w.rev}`,{...w,image:true});
+      }
       if (value.ok) for (const witness of witnesses) overviewBasis.set(witness.id,witness);
     }
     if (pythonAttempts) {
@@ -263,8 +267,8 @@ export function openWorkspaceTools(options: {
     const basisById = new Map<string,{id:string;rev:number;epoch:string}>(previousBasis.map(w => [w.id,w]));
     for (const w of witnesses.values()) if (w.id !== id && !basisById.has(w.id))
       basisById.set(w.id,{id:w.id,rev:w.rev,epoch:w.epoch});
-    // Preloaded context can inform a write even when the tool only names the original answer.
-    for (const {id: sourceId, rev, epoch} of currentObject?.basis ?? []) {
+    // Preloaded context and images can inform a write even when it only names the original answer.
+    for (const {id: sourceId, rev, epoch} of [...(currentObject?.basis ?? []), ...imageBasis.values()]) {
       if (sourceId === id) continue;
       const previous = basisById.get(sourceId);
       if (previous && (previous.rev !== rev || previous.epoch !== epoch))
@@ -362,7 +366,11 @@ export function openWorkspaceTools(options: {
     publishedFormalArtifact: () => publishedFormalArtifact,
     reads: () => [...opened.values()],
     writes: () => [...receipts.values()],
-    basis: () => [...new Map([...sources, ...overviewBasis]).values()],
+    basis() {
+      const basis = new Map([...sources, ...overviewBasis]);
+      for (const witness of imageBasis.values()) basis.set(witness.id,witness);
+      return [...basis.values()];
+    },
   };
 }
 export function workspaceInput(w: WorkspaceWitness) {

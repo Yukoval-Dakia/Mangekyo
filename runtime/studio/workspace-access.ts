@@ -11,6 +11,7 @@ import {
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction, SqlValue } from '../../kernel/src/db/types.ts';
+import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { goalType, materialType, studyGoal, textMaterial } from '../../modules/activity/library-values.ts';
 import { organizerNote, organizerNoteType, organizerTask, organizerTaskType } from '../../modules/activity/organizer-values.ts';
@@ -549,9 +550,9 @@ function providerViews(settings: ProviderSettings, stored: StoredAccess): Worksp
   });
 }
 
-let updating: Promise<unknown> = Promise.resolve();
-export function saveWorkspaceAccessRoute(input: unknown) {
-  const update = updating.then(async () => {
+function saveWorkspaceAccessRoute(db: Db, input: unknown) {
+  return db.tx({ learner: studioLearner }, async tx => {
+    await lockLearner(tx, studioLearner);
     const value = object(input);
     if (!value || typeof value.enabled !== 'boolean') throw new RequestError(400, '授权设置无效。');
     if (typeof value.id !== 'string' || !providerIdentifier.test(value.id)) {
@@ -580,8 +581,6 @@ export function saveWorkspaceAccessRoute(input: unknown) {
     await writeStored(stored);
     return { providers: providerViews(settings, stored) };
   });
-  updating = update.catch(() => {});
-  return update;
 }
 
 export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: LoadedModule) {
@@ -809,7 +808,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
     async setProvider(id: string, input: unknown) {
       if (!providerIdentifier.test(id)) throw new RequestError(400, '模型配置无效。');
       const value = object(input);
-      return saveWorkspaceAccessRoute({ ...(value ?? {}), id });
+      return saveWorkspaceAccessRoute(db, { ...(value ?? {}), id });
     },
   };
 }
