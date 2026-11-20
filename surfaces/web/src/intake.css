@@ -84,6 +84,9 @@
   background: #fff;
   border: 1px solid #dce4da;
 }
+.intake-research {
+  margin-block: 16px;
+}
 .intake-original-head {
   display: flex;
   align-items: center;

@@ -2,16 +2,27 @@ import { factId, type FactId } from '@mangekyo/kernel';
 import materialFact from '@mangekyo/module-content/facts/material';
 
 export const intakePurpose = 'storage';
+export const intakeResearchPurpose = 'background-research';
 export const materialType = materialFact.type;
 export const captureMaterial = 'activity.captureTextMaterial';
 export const intakeFactType = 'activity.intakeDocument';
 export const captureIntakeCommand = 'activity.captureIntake';
 export const correctIntakeCommand = 'activity.correctIntakeText';
+export const setIntakeResearchCommand = 'capture.setIntakeResearch';
 export const completeCloudIntakeCommand = 'activity.completeCloudIntake';
 
 export const materialTextLimit = 4000;
 export const intakeTextLimit = 2_000_000;
 export const intakeFileLimit = 25 * 1024 * 1024;
+
+export class IntakeResearchConflict extends Error {}
+
+export function intakeResearchPermission(input: unknown) {
+  const { materialId, intakeId, expectedRev, enabled } = object(input);
+  if (typeof expectedRev !== 'number' || !Number.isSafeInteger(expectedRev) || expectedRev < 1 || typeof enabled !== 'boolean')
+    throw new Error('原件版本或后台用途无效。');
+  return { materialId: factId(String(materialId)), intakeId: factId(String(intakeId)), expectedRev, enabled };
+}
 
 export const intakeMediaTypes = [
   'application/pdf',

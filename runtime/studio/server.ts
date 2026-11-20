@@ -64,7 +64,7 @@ const understandingTransport = understandingModule
   : undefined;
 if (understandingModule && !understandingTransport) throw new Error('宿主模块须导出 understandingTransport');
 const research = openResearch(db, activity, companion, undefined, undefined, understandingTransport);
-const intake = openIntake(db, capture, content);
+const intake = openIntake(db, capture, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
 const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
