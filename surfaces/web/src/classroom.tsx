@@ -87,6 +87,7 @@ export function ClassroomRoom({id}: {id: string}) {
     <ClassroomLesson key={room.sessionId + ':' + room.rev} room={room} visible={!rechecking} />
     {!rechecking && <>
     {room.generation === 'pending' && <p role="status">正在编排课堂…</p>}
+    {room.status === 'active' && room.adjustmentFailed && <p role="status">这次调整没有完成。可以继续原步骤，或重新调整后续步骤。</p>}
     <fieldset className="classroom-controls" disabled={busy || !!pending || room.generation === 'pending'}>
       {room.status === 'active' && <>
         {room.activeStepId && <>

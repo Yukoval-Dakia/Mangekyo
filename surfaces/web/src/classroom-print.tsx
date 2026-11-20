@@ -1,26 +1,27 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { api, sessionPath, type Session } from './api';
+import type { Session } from './api';
 import { roomApi, roomPath, type Classroom } from './classroom-contract';
 import { Message } from './message';
 import { readSession, type MountedSession } from './presentation/session-artifacts';
 import { TurnArtifacts } from './presentation/TurnArtifact';
 
 type Sheet = { room: Classroom; history: MountedSession };
-function sheet(id: string, room: Classroom, session: Session): Sheet {
+type PrintSnapshot = { classroom: Classroom; session: Session };
+function sheet(id: string, {classroom: room, session}: PrintSnapshot): Sheet {
   if (room.id !== id || !room.sessionId || room.sessionId !== session.id) throw new Error();
   return {room, history: readSession(session)};
 }
 
 // Browser-initiated printing cannot await a Promise in beforeprint. Make the
-// final reads there, and render no course data if either authority is unavailable.
-function current<T>(path: string): T {
+// authorized snapshot read synchronously before Chrome captures the page.
+function printableNow(path: string): PrintSnapshot {
   const request = new XMLHttpRequest();
-  request.open('GET', '/api' + path, false);
+  request.open('GET', path, false);
   request.setRequestHeader('Cache-Control', 'no-cache');
   request.send();
   if (request.status !== 200) throw new Error();
-  return JSON.parse(request.responseText) as T;
+  return JSON.parse(request.responseText) as PrintSnapshot;
 }
 
 const stepStatus = {pending: '待学', active: '当前步骤', presented: '已呈现', skipped: '已跳过'};
@@ -46,7 +47,7 @@ export function ClassroomPrint({id, preview}: {id: string; preview: boolean}) {
   const [paper, setPaper] = useState<Sheet>();
   const [error, setError] = useState(false);
   const [version, setVersion] = useState(0);
-  const sessionId = useRef<string | undefined>(undefined);
+  const path = '/api' + roomApi(id) + '/print';
   const generation = useRef(0);
 
   useEffect(() => {
@@ -58,13 +59,10 @@ export function ClassroomPrint({id, preview}: {id: string; preview: boolean}) {
       const seq = ++generation.current;
       if (document.hidden) {setScreen(undefined);return;}
       try {
-        const options = {signal: controller.signal};
-        const first = await api<Classroom>(roomApi(id), options);
-        const history = await api<Session>(sessionPath(first.sessionId), options);
-        const latest = await api<Classroom>(roomApi(id), options);
+        const response = await fetch(path, {signal: controller.signal, cache: 'no-store'});
+        if (!response.ok) throw new Error();
+        const next = sheet(id, await response.json());
         if (controller.signal.aborted || seq !== generation.current) return;
-        const next = sheet(id, latest, history);
-        sessionId.current = next.room.sessionId;
         setScreen(next);
         setError(false);
       } catch {
@@ -82,17 +80,14 @@ export function ClassroomPrint({id, preview}: {id: string; preview: boolean}) {
     window.addEventListener('pageshow', reopen);
     document.addEventListener('visibilitychange', reopen);
     return () => {controller.abort(); clearTimeout(timer); window.removeEventListener('pageshow', reopen); document.removeEventListener('visibilitychange', reopen);};
-  }, [id, preview, version]);
+  }, [id, path, preview, version]);
 
   useLayoutEffect(() => {
     function prepare() {
       ++generation.current;
       let next: Sheet | undefined;
       try {
-        const session = sessionId.current ?? current<Classroom>(roomApi(id)).sessionId;
-        const history = current<Session>(sessionPath(session));
-        next = sheet(id, current<Classroom>(roomApi(id)), history);
-        sessionId.current = session;
+        next = sheet(id, printableNow(path));
       } catch { /* The printable layer starts empty and never falls back to preview data. */ }
       flushSync(() => {setPaper(next); setScreen(next); setError(!next);});
     }
@@ -103,7 +98,7 @@ export function ClassroomPrint({id, preview}: {id: string; preview: boolean}) {
     window.addEventListener('beforeprint', prepare);
     window.addEventListener('afterprint', finish);
     return () => {window.removeEventListener('beforeprint', prepare); window.removeEventListener('afterprint', finish);};
-  }, [id]);
+  }, [id, path]);
 
   return <>
     {preview && <section className="classroom-screen">

@@ -14,6 +14,7 @@ export interface Classroom {
   minutes: number;
   status: 'active' | 'finished' | 'archived';
   generation?: 'pending' | 'ready' | 'failed';
+  adjustmentFailed?: true;
   sessionId: string;
   steps: ClassroomStep[];
   activeStepId: string | null;
