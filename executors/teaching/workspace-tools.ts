@@ -144,6 +144,41 @@ export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObserv
   page?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
   relation?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
 };
+export function presentationTool(schema: object, bindings: string) {
+  return {type:'function',function:{name:'mount_artifact',
+    description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+bindings,
+    parameters:{type:'object',required:['view'],additionalProperties:false,properties:{
+      view:schema,predictionPrompt:{...text,maxLength:160},
+      sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:text}},
+    }}}};
+}
+
+export function workspaceWriteResult(
+  state: string, command: string, written: { id: string; rev: number } | undefined, observation: boolean,
+) {
+  if (!written) return {state, command};
+  const {id, rev} = written;
+  if (!observation) return {state, id, rev};
+  return {ok:true, status:'saved', kind:'inferred', ref:{id, rev}, undo_token:command};
+}
+
+export function workspaceStoredReceipt(
+  { id, rev }: { id: string; rev: number }, entry: Record<string, unknown>, command: string, observation: boolean,
+): WorkspaceWriteReceipt {
+  return {id, rev, title:String(entry.title),
+    ...(observation ? {observation:{status:'saved',text:String(entry.body),undo_token:command}} : {})};
+}
+
+export function observationToolInput(args: Record<string, unknown>, isReference: (value: string) => boolean) {
+  const {title, text, evidence_refs: refs} = args;
+  if (typeof title !== 'string' || !title.trim() || typeof text !== 'string' || !text.trim())
+    return learningToolError('invalid_args','text','请填写标题和作为推断的观察正文。');
+  if (!Array.isArray(refs) || !refs.length || refs.length > openLearningLimit ||
+      !refs.every(ref => typeof ref === 'string' && ref.length <= 4096 && isReference(ref)))
+    return learningToolError('invalid_args','evidence_refs','请提供 1–8 个原答引用。');
+  return {title, text, refs: refs as string[]};
+}
+
 export function validateWorkspaceToolArgs(name: string, args: Record<string, unknown>) {
   const tool = workspaceDefinitions.find(tool => tool.function.name === name);
   if (!tool) return learningToolError('tool_unavailable',undefined,'请从本轮提供的工作区工具中选择。');

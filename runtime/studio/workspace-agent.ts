@@ -11,7 +11,7 @@ import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
 import type {PreparedPythonAttempts} from '../../executors/teaching/study-agent.ts';
-import {openLearningLimit, parseOpenLearningArgs, validateWorkspaceToolArgs, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
+import {observationToolInput, parseOpenLearningArgs, presentationTool, validateWorkspaceToolArgs, workspaceStoredReceipt, workspaceWriteResult, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {openLearningBatch} from './workspace-open.ts';
@@ -37,12 +37,7 @@ import {textbookPageType} from '../../modules/content/textbook-page.ts';
 import {openWorkspaceTextbook} from './workspace-textbook.ts';
 import {openWorkspaceRelation, type OpenedRelationSource} from './workspace-relation.ts';
 
-const presentationTool = {type:'function',function:{name:'mount_artifact',
-  description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+presentationCatalog.bindings,
-  parameters:{type:'object',required:['view'],additionalProperties:false,properties:{
-    view:presentationCatalog.schema,predictionPrompt:{type:'string',maxLength:160},
-    sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:{type:'string'}}}
-  }}}};
+const artifactTool = presentationTool(presentationCatalog.schema, presentationCatalog.bindings);
 export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode; writeBasis?: true; jitBasis?: true};
 type Seen = {id: string; title: string; text: string; workspace: true};
 const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
@@ -360,12 +355,9 @@ export function openWorkspaceTools(options: {
       const written = receipt.wrote[0];
       if (written) {
         produced.set(written.id, written.rev);
-        receipts.set(written.id, {id:written.id, rev:written.rev, title:String(entry.title),
-          ...(observation ? {observation:{status:'saved',text:String(entry.body),undo_token:key}} : {})});
+        receipts.set(written.id, workspaceStoredReceipt(written, entry, key, Boolean(observation)));
       }
-      if (written && observation) return JSON.stringify({ok:true, status:'saved', kind:'inferred',
-        ref:{id:written.id,rev:written.rev}, undo_token:key});
-      return JSON.stringify(written ? {state: receipt.state, id: written.id, rev: written.rev} : {state: receipt.state, command: key});
+      return JSON.stringify(workspaceWriteResult(receipt.state, key, written, Boolean(observation)));
     } catch (error) {
       if (error instanceof TeachingError) throw error;
       // Return domain validation feedback to the model; never return SQL/transport details.
@@ -383,14 +375,11 @@ export function openWorkspaceTools(options: {
     }
   }
   async function recordObservation(args: Record<string, unknown>, step: number) {
-    const {title, text, evidence_refs: refs} = args;
-    if (typeof title !== 'string' || !title.trim() || typeof text !== 'string' || !text.trim())
-      return JSON.stringify(learningToolError('invalid_args','text','请填写标题和作为推断的观察正文。'));
-    if (!Array.isArray(refs) || !refs.length || refs.length > openLearningLimit ||
-        !refs.every(ref => typeof ref === 'string' && ref.length <= 4096 && parseLearningReference(ref)))
-      return JSON.stringify(learningToolError('invalid_args','evidence_refs','请提供 1–8 个原答引用。'));
+    const input = observationToolInput(args, value => Boolean(parseLearningReference(value)));
+    if ('ok' in input) return JSON.stringify(input);
+    const {title, text, refs} = input;
     const evidence = new Map<string, WorkspaceWitness>();
-    for (const input of refs as string[]) {
+    for (const input of refs) {
       const ref = parseLearningReference(input)!;
       const id = typeof ref === 'string' ? ref : ref.fact.id;
       const witness = openedAnswers.get(id);
@@ -422,7 +411,7 @@ export function openWorkspaceTools(options: {
     return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead, receiveImage);
   }
   return {
-    ...(options.presentationManifest ? {presentationTool} : {}),
+    ...(options.presentationManifest ? {presentationTool:artifactTool} : {}),
     execute: (name: string, args: Record<string, unknown>, step: number, receiveImage?: ReceiveStudyImage) =>
       execute(name, args, step, undefined, receiveImage),
     async preparePythonAttempts(args: Record<string, unknown>, step: number): Promise<PreparedPythonAttempts> {
