@@ -9,10 +9,10 @@ import {practiceSubmission, ridingPracticeType} from '../../modules/activity/pra
 import {purpose} from './identity.ts';
 import {sourceQuestions, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 
-type ToolErrorCode = 'not_found' | 'access_revoked' | 'basis_stale' | 'invalid_args' | 'partial_success';
+type ToolErrorCode = 'not_found' | 'access_revoked' | 'basis_stale' | 'invalid_args' | 'partial_success' | 'evidence_not_opened';
 
 export function learningToolError(code: ToolErrorCode, field: string, message: string, next?: {
-  tool: 'open_learning' | 'search_workspace'; args: Record<string, unknown>; why: string;
+  tool: 'open_learning' | 'search_workspace' | 'record_observation'; args: Record<string, unknown>; why: string;
 }) {
   return {ok:false as const, code, field, message, ...(next && {next})};
 }
@@ -92,7 +92,7 @@ function projectOpenLearning(value: ReadResult, fact: FactSnapshot, part: Part):
   return {...body, sourceRef, ...(nextOffset !== undefined ? {nextOffset} : {})};
 }
 
-function parsedReference(input: string) {
+export function parseLearningReference(input: string) {
   if (isSourceFactId(input)) return input;
   try { return sourceRefV1(JSON.parse(input)); }
   catch { return undefined; }
@@ -105,7 +105,7 @@ export async function openLearningBatch(tx: ReadTransaction, args: {refs: string
 }, read: (id: string, track: SourceTrack) => Promise<string>) {
   const items = [];
   for (const input of args.refs) {
-    const ref = parsedReference(input);
+    const ref = parseLearningReference(input);
     if (!ref) {
       items.push(learningToolError('invalid_args','refs','请使用 id 或 sourceRef。',searchNext));
       continue;

@@ -130,6 +130,15 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const result = await edit('read_workspace',{id:JSON.stringify(answer)},7);
     expect(result).toMatchObject({sourceRef:answer,content:'实测东北风'});
     expect(JSON.stringify(result)).not.toContain('参考答案独有字样');
+    const observe = turn('narrow observation');
+    const evidence = {title:'风向观察',text:'这次按方位描述了风向。',evidence_refs:[JSON.stringify(answer)]};
+    expect(await observe('record_observation',evidence,1)).toMatchObject({ok:false,code:'evidence_not_opened',next:{tool:'open_learning'}});
+    await observe('open_learning',{refs:JSON.stringify(answer)},2);
+    const written = await observe('record_observation',evidence,3);
+    expect(written).toMatchObject({ok:true,kind:'inferred',ref:{rev:1},undo_token:expect.any(String)});
+    const withdrawn = await access.undoObservation(written.ref.id,{undo_token:written.undo_token});
+    expect(withdrawn).toMatchObject({status:'withdrawn',ref:{id:written.ref.id,rev:2}});
+    expect(await access.undoObservation(written.ref.id,{undo_token:written.undo_token})).toEqual(withdrawn);
     const privatePaper = await workbook.save({requestId:'search-preview',title:'检索速度卷',questions:[
       {kind:'exact',prompt:'写出速度单位。',answers:['内部答案标记']},
       {kind:'rubric',prompt:'解释全程速度。',rubric:'内部评分规则标记'},

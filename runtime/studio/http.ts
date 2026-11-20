@@ -130,6 +130,9 @@ export function serve(
       if (accessRecord?.[1] && method === 'PUT') {
         return json(res, 200, await student.workspace.setTeaching(accessRecord[1], await body(req)));
       }
+      const observationUndo = /^\/api\/workspace\/observations\/([0-9A-HJKMNP-TV-Z]{26})\/undo$/.exec(path);
+      if (observationUndo?.[1] && method === 'POST')
+        return json(res, 200, await student.workspace.undoObservation(observationUndo[1],await body(req)));
       const accessProvider = /^\/api\/workspace\/access\/providers\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})$/.exec(path);
       if (accessProvider?.[1] && method === 'PUT') {
         return json(res, 200, await student.workspace.setProvider(accessProvider[1], await body(req)));
