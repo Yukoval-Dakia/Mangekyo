@@ -4,7 +4,7 @@ import {
   readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, workbookItemHistory,
   workbookLinkCandidates, workbookWitnessesBy, type ActivityEvidenceReadScope,
 } from './evidence-read.ts';
-import { helpAppliesTo, type HelpTarget } from './help-exposure-values.ts';
+import { helpAppliesTo, type HelpPresentation, type HelpTarget } from './help-exposure-values.ts';
 import { projectHelpExposure } from './help-exposure.ts';
 import { sourceReference, type SourceRefV1 } from './source-values.ts';
 import {
@@ -19,9 +19,10 @@ import {
 type FactReader = {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>};
 type Edge = Parameters<typeof workbookVariantItem>[2][number];
 export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
-  trackSource, openEdge, readPosttestIssuance, createRead, unavailable, unavailableRelease, reject, edgeType, questionType,
+  trackSource, reopenCapsule, openEdge, readPosttestIssuance, createRead, unavailable, unavailableRelease, reject, edgeType, questionType,
 }: {
   trackSource(tx: Tx, read: FactReader, ref: string | SourceRefV1): Promise<{content: unknown}>;
+  reopenCapsule(tx: Tx, read: FactReader, basis: NonNullable<HelpPresentation['controlledBasis']>): Promise<void>;
   openEdge(tx: Tx, id: FactId): Promise<{
     value: Edge; opened: readonly (readonly [FactSnapshot, ('pinned' | 'following' | undefined)?])[];
   } | undefined>;
@@ -182,9 +183,12 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     const { events, omitted } = await readActivityHelpEvents(tx, read, {
       activities: mounts.map(mount => mount.activityId), cutoff, mode: 'pinned', includeOpens: true,
     }, async (_, presentation) => {
-      const { id, rev } = presentation.content;
-      const content = await read.fact(id, { mode: 'pinned', rev });
-      await trackSource(tx, read, sourceReference(content, { kind: 'whole' }));
+      if (presentation.controlledBasis) await reopenCapsule(tx, read, presentation.controlledBasis);
+      else {
+        const { id, rev } = presentation.content;
+        const content = await read.fact(id, { mode: 'pinned', rev });
+        await trackSource(tx, read, sourceReference(content, { kind: 'whole' }));
+      }
       return true;
     }, unavailable);
     return controlledWorkbookHelp(ref, cutoff, mounts, events, omitted || visible.length !== releases.length,

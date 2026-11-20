@@ -1,4 +1,4 @@
-import { commandId, factId, type FactId, type Revision } from '@mangekyo/kernel';
+import { commandId, factId, learnerId, type BusWitness, type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { storagePurpose } from './library-values.ts';
 
 export const helpExposureType = 'activity.helpExposure';
@@ -23,6 +23,7 @@ export type HelpPresentation = {
   readonly alsoAppliesTo: readonly HelpItem[];
   readonly content: HelpRef;
   readonly step: HelpStep;
+  readonly controlledBasis?: readonly BusWitness[];
 };
 
 type HelpAnswer = { readonly submission: HelpRef; readonly target: HelpTarget };
@@ -101,6 +102,33 @@ function answer(input: unknown): HelpAnswer {
   return { submission: ref(value.submission), target: target(value.target) };
 }
 
+function controlledBasis(input: unknown): readonly BusWitness[] {
+  if (!Array.isArray(input) || !input.length || input.length > 512) throw new Error('受控帮助见证无效。');
+  return input.map(value => {
+    const row = record(value);
+    const { id, rev } = ref({ id: row.id, rev: row.rev });
+    const { mode, accessEpoch } = row;
+    if ((mode !== 'following' && mode !== 'pinned') || typeof accessEpoch !== 'string' || !/^\d+$/.test(accessEpoch))
+      throw new Error('受控帮助见证无效。');
+    return { id, rev, mode, learner:learnerId(textId(row.learner)), type:textId(row.type), accessEpoch:accessEpoch as Tick };
+  });
+}
+
+export async function reopenControlledHelpBasis(read: {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>},
+  learner: BusWitness['learner'], basis: readonly BusWitness[], teachingPurpose?: string) {
+  for (const { id, rev, mode, type, accessEpoch, learner: owner } of basis) {
+    if (owner !== learner) return false;
+    const witness = await read.fact(id, mode === 'following' ? { mode } : { mode, rev });
+    if (witness.type !== type || witness.ref.learner !== owner || witness.ref.rev !== rev || witness.accessEpoch !== accessEpoch)
+      return false;
+    if (teachingPurpose) {
+      const permits = (fact: FactSnapshot) => fact.purpose.includes(teachingPurpose) || fact.purpose.includes('all');
+      if (!permits(witness) || (mode === 'pinned' && !permits(await read.fact(id,{mode:'following'})))) return false;
+    }
+  }
+  return true;
+}
+
 export function helpExposure(input: unknown): HelpExposureEvent {
   const value = record(input);
   const { kind } = value;
@@ -109,14 +137,17 @@ export function helpExposure(input: unknown): HelpExposureEvent {
     case 'offered':
     case 'opened':
     case 'displayed':
-      allowFields(value, ['kind', 'mount', 'alsoAppliesTo', 'content', 'step']);
+      allowFields(value, ['kind', 'mount', 'alsoAppliesTo', 'content', 'step', 'controlledBasis']);
       if (!Array.isArray(value.alsoAppliesTo)) throw new Error('帮助作用范围须为题项列表。');
+      if (value.controlledBasis !== undefined && kind !== 'opened' && kind !== 'displayed')
+        throw new Error('受控帮助只记录实际打开和显示。');
       return {
         kind,
         mount: target(value.mount),
         alsoAppliesTo: value.alsoAppliesTo.map(item),
         content: ref(value.content),
         step: step(value.step),
+        ...(value.controlledBasis === undefined ? {} : { controlledBasis: controlledBasis(value.controlledBasis) }),
       };
     case 'used':
       allowFields(value, ['kind', 'display', 'operation', 'target']);

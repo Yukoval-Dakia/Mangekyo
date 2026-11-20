@@ -3,17 +3,18 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, factId, learnerId, type DerivationId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
-import type { GatherContext, GatherInput, Json, JsonObject, Outcome, ReadContext, Waiting } from '../../kernel/src/declarations/types.ts';
+import type { GatherContext, GatherInput, Json, JsonObject, ReadContext, Waiting } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  insideFrozenPosttestWindow, posttestOpensAt, retentionPaperType, posttestSubmissionType,
+  insideFrozenPosttestWindow, matchesCurrentPosttest, posttestOpensAt, posttestSubmissionType,
   retentionDeadline as deadline, retentionFreezeRequest,
 } from '../../modules/activity/retention-posttest.ts';
 import {
-  recordedWorkbookForecast, validWorkbookMethod, verifiesOriginalSitting, verifyFrozenWorkbookClaims,
+  findWorkbookRetentionSlot as findSlot, workbookEvidenceWatermark as evidenceWatermark, listWorkbookPosttestSlots,
+  type SlotRow, type PosttestListItem, recordedWorkbookForecast, validWorkbookMethod, verifiesOriginalSitting, verifyFrozenWorkbookClaims,
 } from '../../modules/activity/retention-history.ts';
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
-import { throughTick, validatesWorkbookHistory, workbookWitnessesBy } from '../../modules/activity/evidence-read.ts';
+import { throughTick, validatesWorkbookHistory, workbookWitnessesBy, workbookReadAtWatermark } from '../../modules/activity/evidence-read.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -54,32 +55,7 @@ type ForecastScope = {
   sourceReconciliationKey?: string;
 };
 type ReconciliationScope = { forecastKey: string; forecastId: DerivationId; attemptId: FactId };
-type PosttestListItem = { forecastKey: string; title: string; through: string; scheduledAt?: string; sourceReconciliationKey?: string } &
-  ({ state: 'preparing' | 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string });
 type ReconciliationValue = Extract<Awaited<ReturnType<typeof reconciliation.derive>>, { kind: 'value' }>['value'];
-type SlotRow<T, S> = {
-  scope_keys: S;
-  pending: string;
-  last_id: string | null;
-  last_error: { reason: string } | null;
-  current_id: string | null;
-  effective_tick: Tick | null;
-  value: Outcome<T> | null;
-  manifest: unknown;
-};
-
-async function findSlot<T, S>(tx: ReadTransaction, type: string, key: string) {
-  const { rows: [row] } = await tx.query<SlotRow<T, S>>(
-    `SELECT s.scope_keys, s.pending, s.last_id, s.last_error, d.id AS current_id, d.value, d.manifest, d.effective_tick::text
-     FROM slot_state s LEFT JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
-       AND d.slot_type=s.slot_type AND d.slot_key=s.slot_key
-       AND d.lifecycle='effective' AND d.invalidated_tick IS NULL AND NOT d.is_shadow
-     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
-    [tx.learner, type, key],
-  );
-  return row;
-}
-
 export async function retentionHistoryValid(tx: ReadTransaction, id: DerivationId, observation?: RetentionObservation) {
   const row = await recordedWorkbookForecast(tx, forecastSlot.type, id);
   if (!row || !validWorkbookMethod(row.forecast, readAnyRetentionMethod)) return false;
@@ -202,27 +178,10 @@ export async function evaluateStudioRetention(method: NonNullable<ReturnType<typ
   });
 }
 
-async function evidenceWatermark(tx: ReadTransaction) {
-  const { rows: [row] } = await tx.query<{ clock: Tick }>('SELECT clock::text FROM learners WHERE id=$1', [tx.learner]);
-  if (!row) throw new Error('学习者证据水位缺失。');
-  return row.clock;
-}
-
 async function requireFreshVariant(tx: ReadTransaction, target: RetentionTarget, cutoff: Tick, issuance?: FactId) {
   if (!await validatesWorkbookHistory(tx, target, throughTick(cutoff), issuance)) {
     throw new RequestError(409, '当前不能按新变式发放或记录此题。');
   }
-}
-
-function readAtWatermark(tx: ReadTransaction, tracked: ReadContext, cutoff: Tick): ReadContext {
-  const base = createCommandReadContext(tx, retentionPurpose);
-  return { ...tracked, async fact(id, options) {
-    const snapshot = await base.fact(id, options);
-    if (!await workbookWitnessesBy(tx, [snapshot.ref], cutoff)) {
-      throw new FactReadDeniedError('changed', '预测发起时该修订还不可见。');
-    }
-    return tracked.fact(id, options);
-  } };
 }
 
 export function openRetention(db: Db, activity: LoadedModule, method = defaultRetentionMethod,
@@ -350,16 +309,8 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
 
   async function listPosttests(selected: string | null = null) {
     return db.snapshot(scope, async tx => {
-      const readRows = (forecastKey: string | null, parentReconciliation: string | null) =>
-        tx.query<{ slot_key: string; scope_keys: ForecastScope; current_id: string | null }>(
-          `SELECT s.slot_key, s.scope_keys, s.current_id FROM slot_state s JOIN facts f
-             ON f.learner_id=s.learner_id AND f.id=s.scope_keys->'target'->'paper'->>'id'
-           WHERE s.learner_id=$1 AND s.slot_type=$2 AND f.type=$3 AND f.retracted_rev IS NULL
-             AND (s.current_id IS NOT NULL OR (s.pending <> 'none' AND s.scope_keys ? 'sourceReconciliationKey'))
-             AND (($4::text IS NULL AND $5::text IS NULL) OR s.slot_key=$4 OR s.scope_keys->>'sourceReconciliationKey'=$5)
-           ORDER BY s.changed_tick DESC, s.slot_key LIMIT 24`,
-          [tx.learner, forecastSlot.type, retentionPaperType, forecastKey, parentReconciliation],
-        );
+      const readRows = (forecastKey: string | null, parent: string | null) =>
+        listWorkbookPosttestSlots<ForecastScope>(tx,forecastSlot.type,forecastKey,parent);
       const initial = await readRows(selected, null);
       const rows = [...initial.rows];
       const now = new Date().toISOString();
@@ -444,15 +395,28 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     });
   }
 
+  async function currentPosttest(tx: ReadTransaction, id: FactId, expectedKey?: string) {
+    const { fact, issuance } = await readPosttestIssuance(tx, createCommandReadContext(tx,retentionPurpose), id);
+    if (expectedKey !== undefined && issuance.forecastKey !== expectedKey) throw new RequestError(404,'后测不属于该预测。');
+    const current = await currentForecast(tx,issuance.forecastKey);
+    if (id !== posttestIdFor(current.frozen.derivationId) || !matchesCurrentPosttest(issuance,current))
+      throw new RequestError(409,forecastUnavailable);
+    await requireFreshVariant(tx,current.frozen.value.input.target,await evidenceWatermark(tx),id);
+    return { current, issuance, fact };
+  }
+
+  async function activePosttest(tx: ReadTransaction, id: FactId) {
+    const { current, issuance, fact } = await currentPosttest(tx,id);
+    const now = new Date().toISOString();
+    if (now < issuance.startedAt || now >= issuance.through) throw new RequestError(403,'后测发放已不在观察窗口内。');
+    return { paper:current.opened.paper,
+      mount:{paper:issuance.paper,epoch:issuance.paperEpoch,issuance:{id,rev:fact.ref.rev}} };
+  }
+
   async function submitPosttest(forecastKey: string, posttestId: string, input: Record<string, unknown>) {
     return write(async tx => {
-      const current = await currentForecast(tx, forecastKey);
-      const { frozen, opened, read } = current;
-      if (!opened.sealed || posttestId !== posttestIdFor(frozen.derivationId)) {
-        throw new RequestError(404, '后测不属于该预测。');
-      }
-      const { issuance } = await readPosttestIssuance(tx, read, factId(posttestId));
-      await requireFreshVariant(tx, frozen.value.input.target, await evidenceWatermark(tx), factId(posttestId));
+      const { current, issuance } = await currentPosttest(tx,factId(posttestId),forecastKey);
+      const { opened } = current;
       const attemptId = await posttest.submit(tx, factId(posttestId), issuance, opened.paper, input);
       const result = await reconcileAttempt(tx, current, attemptId);
       return { attemptId, reconciliation: { key: result.key, state: result.state } };
@@ -478,7 +442,8 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
           if (!slot) throw new Error('Forecast work is missing slot scope');
           const { target, window, priorAttemptIds, evidenceThrough } = slot.scope_keys;
           const cutoff = evidenceThrough ?? ctx.snapshotTick;
-          const read = readAtWatermark(tx, ctx.read, cutoff);
+          const read = workbookReadAtWatermark(tx,createCommandReadContext(tx,retentionPurpose),ctx.read,cutoff,
+            () => new FactReadDeniedError('changed','预测发起时该修订还不可见。'));
           const opened = await openRetentionTarget(tx, read, target.paper.id, target.itemId);
           sameTarget(opened, slot.scope_keys);
           await requireFreshVariant(tx, target, ctx.snapshotTick);
@@ -551,7 +516,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     }
   }
 
-  return { freeze, scheduleFollowup, get, reconcile, execute, listPosttests,
+  return { activePosttest, freeze, scheduleFollowup, get, reconcile, execute, listPosttests,
     savePosttestPaper: (input: Record<string, unknown>) => write(tx => posttest.save(tx, input)), startPosttest, submitPosttest };
 }
 

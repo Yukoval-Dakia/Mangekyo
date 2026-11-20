@@ -3,7 +3,7 @@ import {
   type ReadContext, type Revision, type Tick,
 } from '@mangekyo/kernel';
 import { validatesWorkbookHistory, workbookWitnessesBy, type ActivityEvidenceReadScope, type WorkbookHistoryTarget } from './evidence-read.ts';
-import { insideFrozenPosttestWindow, posttestOpensAt, type posttestIssuance, type RetentionWindow } from './retention-posttest.ts';
+import { insideFrozenPosttestWindow, posttestOpensAt, retentionPaperType, type posttestIssuance, type RetentionWindow } from './retention-posttest.ts';
 import type { ActivityEvidenceObservation, activityHelpProcess } from './evidence-slice.ts';
 
 type Observation = {
@@ -133,4 +133,49 @@ export async function verifyFrozenWorkbookClaims(
     if (error instanceof FrozenWorkbookWitnessUnavailable || unavailable(error)) return false;
     throw error;
   }
+}
+
+export type PosttestListItem = { forecastKey: string; title: string; through: string; scheduledAt?: string; sourceReconciliationKey?: string } &
+  ({ state: 'preparing' | 'scheduled'; scheduledAt: string } | { state: 'ready' } | { state: 'submitted'; reconciliationKey: string });
+
+export type SlotRow<T, S> = {
+  scope_keys: S;
+  pending: string;
+  last_id: string | null;
+  last_error: { reason: string } | null;
+  current_id: string | null;
+  effective_tick: Tick | null;
+  value: Outcome<T> | null;
+  manifest: unknown;
+};
+
+export async function findWorkbookRetentionSlot<T, S>(tx: ActivityEvidenceReadScope, type: string, key: string) {
+  const { rows: [row] } = await tx.query<SlotRow<T, S>>(
+    `SELECT s.scope_keys, s.pending, s.last_id, s.last_error, d.id AS current_id, d.value, d.manifest, d.effective_tick::text
+     FROM slot_state s LEFT JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
+       AND d.slot_type=s.slot_type AND d.slot_key=s.slot_key
+       AND d.lifecycle='effective' AND d.invalidated_tick IS NULL AND NOT d.is_shadow
+     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
+    [tx.learner, type, key],
+  );
+  return row;
+}
+
+export async function workbookEvidenceWatermark(tx: ActivityEvidenceReadScope) {
+  const { rows: [row] } = await tx.query<{ clock: Tick }>('SELECT clock::text FROM learners WHERE id=$1', [tx.learner]);
+  if (!row) throw new Error('学习者证据水位缺失。');
+  return row.clock;
+}
+
+export function listWorkbookPosttestSlots<Scope>(tx: ActivityEvidenceReadScope, slotType: string,
+  forecastKey: string | null, parentReconciliation: string | null) {
+  return tx.query<{ slot_key: string; scope_keys: Scope; current_id: string | null }>(
+    `SELECT s.slot_key, s.scope_keys, s.current_id FROM slot_state s JOIN facts f
+       ON f.learner_id=s.learner_id AND f.id=s.scope_keys->'target'->'paper'->>'id'
+     WHERE s.learner_id=$1 AND s.slot_type=$2 AND f.type=$3 AND f.retracted_rev IS NULL
+       AND (s.current_id IS NOT NULL OR (s.pending <> 'none' AND s.scope_keys ? 'sourceReconciliationKey'))
+       AND (($4::text IS NULL AND $5::text IS NULL) OR s.slot_key=$4 OR s.scope_keys->>'sourceReconciliationKey'=$5)
+     ORDER BY s.changed_tick DESC, s.slot_key LIMIT 24`,
+    [tx.learner, slotType, retentionPaperType, forecastKey, parentReconciliation],
+  );
 }

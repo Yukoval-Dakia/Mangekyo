@@ -94,7 +94,7 @@ async function openWeb() {
   const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
     assessment: workbookAssessment,
-    context: {backtrace:workbookBacktrace},
+    context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
     onResearchFactsChanged: research.workbookChanged,
   });
   const student = { textbook, relationReview:openRelationReview(db,content),
