@@ -413,7 +413,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const workspace = submission.workspaceRevision ? openWorkspaceTools({
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()],
         maySend,
-        track(w) { inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w)); },
+        track(w, checkAtDispatch) {
+          inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
+          if (checkAtDispatch) protectWorkspaceDispatch = true;
+        },
         trackAssessment, trackRetention, trackDiagnosis() { protectWorkspaceDispatch = true; },
         async authorize(tx) {
           if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
