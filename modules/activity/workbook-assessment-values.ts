@@ -21,7 +21,8 @@ export function checkWorkbookPublication(paper: WorkbookPaper, evidence?: ReadVe
   // Bank questions already carry their own verified publication at issuance.
   const items = release.items.filter(item =>
     !paper.questions.some(question => question.id === item.itemId && question.kind === 'bank'));
-  if (items.length) return checkAssessmentPublication({ ...release, items }, [workbookTextEvaluator], evidence ?? (() => null));
+  if (!items.length) return;
+  return checkAssessmentPublication({ ...release, items }, [workbookTextEvaluator], evidence ?? (() => null));
 }
 
 export type WorkbookEvaluation = {
