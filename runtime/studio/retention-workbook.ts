@@ -1,4 +1,4 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type DerivationId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactRef, ReadContext } from '../../kernel/src/declarations/types.ts';
@@ -6,11 +6,12 @@ import { projectHelpExposure, type AdmittedHelpEvent, type HelpExposureEvidence 
 import { helpAppliesTo, helpExposure, helpExposureType, recordHelpExposureCommand, type HelpTarget } from '../../modules/activity/help-exposure-values.ts';
 import { closedPosttest, posttestIssuanceType, posttestSubmissionType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import {
-  sameWorkbookJson, submitWorkbookAttemptCommand, workbookAttempt, workbookAttemptType, workbookGradingVersion,
+  sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookGradingVersion,
   workbookPaper, workbookPaperType, workbookRubricGradingVersion,
 } from '../../modules/activity/workbook-values.ts';
 import type { RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
+import { readWorkbookHelpDisplays, readWorkbookSubmissionBirth } from './learning-attempt-read.ts';
 import { RequestError } from './sessions.ts';
 
 export const retentionPurpose = retentionTeachingPurpose;
@@ -44,14 +45,7 @@ export async function readWorkbookObservation(
   const controlled = submission.type === posttestSubmissionType;
   if (!controlled && submission.type !== workbookAttemptType) throw new RequestError(422, '需要正式交卷记录。');
   const attempt = workbookAttempt(submission.value);
-  const { rows: [birth] } = await tx.query<{ tick: Tick; submitted_at: string; condition: string | null }>(
-    `SELECT r.tick::text AS tick, c.input->'input'->'data'->>'submittedAt' AS submitted_at,
-       c.input->'input'->>'condition' AS condition
-     FROM fact_revs r JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
-     WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.kind='value' AND r.author='learner'
-       AND c.type=$3 AND c.state='done'`,
-    [tx.learner, id, submitWorkbookAttemptCommand],
-  );
+  const birth = await readWorkbookSubmissionBirth(tx, id);
   if (!birth || birth.submitted_at !== attempt.submittedAt || controlled !== opened.sealed ||
       attempt.gradingVersion !== target.gradingVersion || !sameWorkbookJson(attempt.paper, paper)) {
     throw new RequestError(422, '交卷和冻结卷面的题项或判分条件不一致。');
@@ -139,32 +133,11 @@ async function readExposure(
     activityId: target.paper.id, issuance: { id: target.paper.id, rev: 1 as Revision },
     item: { itemId: target.itemId },
   };
-  const { rows } = await tx.query<{ id: string; tick: Tick }>(
-    `SELECT f.id, r.tick::text FROM facts f
-     JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=1
-     JOIN fact_revs visible ON visible.learner_id=f.learner_id AND visible.fact_id=f.id AND visible.rev=f.current_rev
-     JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
-     WHERE f.learner_id=$1 AND f.type=$2 AND c.type=$3 AND c.state='done' AND r.tick<$4::bigint
-       AND f.retracted_rev IS NULL AND f.purpose && ARRAY[$6,'all']::text[]
-       AND visible.purpose && ARRAY[$6,'all']::text[]
-       AND visible.data->>'kind'='displayed' AND visible.data->'mount'->>'activityId'=$5`,
-    [tx.learner, helpExposureType, recordHelpExposureCommand, cutoff, target.paper.id, retentionPurpose],
-  );
-  const check = createCommandReadContext(tx, retentionPurpose);
-  const events: AdmittedHelpEvent[] = [];
-  for (const row of rows) {
-    const id = factId(row.id);
-    try {
-      const fact = await check.fact(id, { mode: 'following' });
-      const displayed = helpExposure(fact.value);
-      if (displayed.kind === 'displayed' && helpAppliesTo(displayed, mount)) {
-        const recorded = await read.fact(id, { mode: 'following' });
-        events.push({ ref: recorded.ref, value: displayed, admittedAt: row.tick });
-      }
-    } catch (error) {
-      if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError)) throw error;
-    }
-  }
+  const events = await readWorkbookHelpDisplays(tx, retentionPurpose, target.paper.id, cutoff, async (fact, value) => {
+    if (!helpAppliesTo(value, mount)) return false;
+    await read.fact(fact.ref.id, { mode: 'following' });
+    return true;
+  });
   // The ordinary workbook host has no complete observation of pre-submission help.
   return retentionExposure(projectHelpExposure({ submission: { ref, target: mount, cutoff }, events, coverage: null }));
 }

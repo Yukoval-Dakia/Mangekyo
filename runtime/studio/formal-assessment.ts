@@ -20,7 +20,7 @@ export type AssessmentScope = {
   submissionEpoch: string;
 };
 
-function slotKey(type: string, release: AssessmentRevisionRef, submission: AssessmentRevisionRef) {
+export function formalAssessmentSlotKey(type: string, release: AssessmentRevisionRef, submission: AssessmentRevisionRef) {
   return stableId(type, release.id, String(release.rev), submission.id, String(submission.rev));
 }
 
@@ -33,7 +33,7 @@ export async function registerFormalAssessment(
     releaseEpoch: release.accessEpoch, submissionEpoch: submission.accessEpoch,
   };
   const type = policy.slot.type;
-  const key = slotKey(type, scope.releaseRef, scope.submissionRef);
+  const key = formalAssessmentSlotKey(type, scope.releaseRef, scope.submissionRef);
   const inserted = await tx.query(
     `INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys, changed_tick)
      VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
@@ -60,7 +60,7 @@ export async function readFormalAssessment(
      LEFT JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
        AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
-    [tx.learner, type, slotKey(type, releaseRef, submissionRef)],
+    [tx.learner, type, formalAssessmentSlotKey(type, releaseRef, submissionRef)],
   );
   const refs = { releaseRef, submissionRef };
   if (slot?.value?.kind === 'value' && slot.current_id) {

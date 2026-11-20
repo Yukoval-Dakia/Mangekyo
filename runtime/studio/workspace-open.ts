@@ -8,6 +8,8 @@ import {workbookAttempt, workbookAttemptType, workbookPaperType} from '../../mod
 import {practiceSubmission, ridingPracticeType} from '../../modules/activity/practice-values.ts';
 import {purpose} from './identity.ts';
 import {sourceQuestions, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
+import {readWorkbookDiagnosis} from './workbook-diagnosis.ts';
+import type {WorkspaceAssessmentBasis} from './workspace-read.ts';
 
 type ToolErrorCode = 'not_found' | 'access_revoked' | 'basis_stale' | 'invalid_args' | 'partial_success' | 'evidence_not_opened';
 
@@ -19,12 +21,24 @@ export function learningToolError(code: ToolErrorCode, field: string, message: s
 
 const searchNext = {tool:'search_workspace' as const, args:{}, why:'从当前可读结果选择引用。'};
 type Part = {kind:'whole' | 'assessment'} | {kind:'question'; index:number};
+type OpenLearningArgs = {refs: string[]; part: Part; lens: 'raw' | 'diagnose'};
 
 export function parseOpenLearningArgs(args: Record<string, unknown>) {
   const refs = typeof args.refs === 'string' ? [args.refs] : args.refs;
   if (!Array.isArray(refs) || !refs.length || refs.length > openLearningLimit ||
       !refs.every(ref => typeof ref === 'string' && ref.trim() && ref.length <= 4096)) {
     return learningToolError('invalid_args','refs',`refs 须为 1–${openLearningLimit} 个可打开的引用。`,searchNext);
+  }
+  const lens = args.lens === undefined ? 'raw' : args.lens;
+  if (lens !== 'raw' && lens !== 'diagnose') {
+    return learningToolError('invalid_args','lens','lens 须为 raw 或 diagnose。',{
+      tool:'open_learning',args:{refs},why:'打开原记录。',
+    });
+  }
+  if (lens === 'diagnose' && args.part !== undefined) {
+    return learningToolError('invalid_args','part','diagnose 读取整份已交卷作答。',{
+      tool:'open_learning',args:{refs,lens},why:'一次打开题面与作答依据。',
+    });
   }
   let part: Part;
   if (args.part === undefined) part = {kind:'whole'};
@@ -36,7 +50,7 @@ export function parseOpenLearningArgs(args: Record<string, unknown>) {
     });
     part = {kind:'question',index:Number(match[1])};
   }
-  return {refs:refs.map(ref => ref.trim()),part};
+  return {refs:refs.map(ref => ref.trim()),part,lens} satisfies OpenLearningArgs;
 }
 
 type ReadResult = {
@@ -98,10 +112,11 @@ export function parseLearningReference(input: string) {
   catch { return undefined; }
 }
 
-export async function openLearningBatch(tx: ReadTransaction, args: {refs: string[]; part: Part}, access: {
+export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningArgs, access: {
   known: (id: string) => boolean;
   maySend: WorkspaceSourceRecipient;
   track: SourceTrack;
+  trackAssessment?: ((basis: WorkspaceAssessmentBasis) => void) | undefined;
 }, read: (id: string, track: SourceTrack) => Promise<string>) {
   const items = [];
   for (const input of args.refs) {
@@ -112,7 +127,19 @@ export async function openLearningBatch(tx: ReadTransaction, args: {refs: string
     }
     const id = typeof ref === 'string' ? ref : ref.fact.id;
     const witnesses: Parameters<SourceTrack>[] = [];
-    const value = JSON.parse(await read(input,(...witness) => witnesses.push(witness))) as ReadResult;
+    const track: SourceTrack = (...witness) => { witnesses.push(witness); };
+    if (args.lens === 'diagnose') {
+      const diagnosis = await readWorkbookDiagnosis(tx, ref, {
+        maySend: access.maySend, track, ...(access.trackAssessment ? { trackAssessment: access.trackAssessment } : {}),
+      });
+      if (diagnosis) {
+        for (const witness of witnesses) access.track(...witness);
+        items.push({ok:true as const,...diagnosis});
+      } else items.push(learningToolError(access.known(id) ? 'basis_stale' : 'not_found','refs',
+        '没有可用于诊断的已交卷作答及获准题源。'));
+      continue;
+    }
+    const value = JSON.parse(await read(input,track)) as ReadResult;
     if (value.error || !value.sourceRef) {
       items.push(await unreadable(tx,id,access.known(id),access.maySend));
       continue;

@@ -45,6 +45,7 @@ export function openWorkspaceTools(options: {
   track: (input: WorkspaceWitness) => void;
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
   trackRetention?: (basis: RetentionBasis) => void;
+  trackDiagnosis?: () => void;
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
@@ -74,7 +75,7 @@ export function openWorkspaceTools(options: {
       if (name === 'open_learning') {
         const parsed = parseOpenLearningArgs(args);
         text = JSON.stringify('ok' in parsed ? parsed : await openLearningBatch(tx,parsed,{
-          known:id => sources.has(id), maySend:options.maySend, track,
+          known:id => sources.has(id), maySend:options.maySend, track, trackAssessment,
         }, (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
           parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
       } else if (name === 'read_workspace') {
@@ -133,6 +134,10 @@ export function openWorkspaceTools(options: {
       return workspaceSourceUnavailable;
     }
     const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
+    if (name === 'open_learning' && args.lens === 'diagnose' && values.some(item => item.lens === 'diagnose')) {
+      options.trackDiagnosis?.();
+      for (const witness of witnesses) overviewBasis.set(witness.id, witness);
+    }
     const direct = new Set<string>([value.id,args.related,
       ...values.flatMap(item => [item.id, item.related, ...[...(item.results ?? []), ...(item.observations ?? []),
         ...(item.recentAttempts ?? [])].map(result => result.id)])].filter(id => typeof id === 'string'));

@@ -1,14 +1,17 @@
 import type { FactChange } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { derivationId, type DerivationId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { derivationId, type DerivationId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactRef, FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type Manifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import type { AdmittedHelpEvent } from '../../modules/activity/help-exposure.ts';
+import { helpExposure, helpExposureType, recordHelpExposureCommand, type HelpPresentation } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import {
   sameWorkbookJson,
+  submitWorkbookAttemptCommand,
   workbookAttempt,
   workbookAttemptType,
   workbookPaperType,
@@ -24,6 +27,49 @@ import { purpose as teachingPurpose, stableId } from './identity.ts';
 type AssessmentRow = { id: string; slot_key: string; value: unknown; manifest: unknown };
 type ArchivedAssessment = AssessmentRow & { original_id: string | null };
 const rubricPropagation = createPropagationHooks([]);
+
+export async function readWorkbookSubmissionBirth(tx: ReadTransaction, id: FactId) {
+  const { rows: [birth] } = await tx.query<{ tick: Tick; submitted_at: string; condition: string | null }>(
+    `SELECT r.tick::text AS tick, c.input->'input'->'data'->>'submittedAt' AS submitted_at,
+       c.input->'input'->>'condition' AS condition
+     FROM fact_revs r JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
+     WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.kind='value' AND r.author='learner'
+       AND c.type=$3 AND c.state='done'`,
+    [tx.learner, id, submitWorkbookAttemptCommand],
+  );
+  return birth;
+}
+
+export async function readWorkbookHelpDisplays(
+  tx: ReadTransaction, purpose: string, paper: FactId, cutoff: Tick,
+  accept: (fact: FactSnapshot, display: HelpPresentation) => Promise<boolean>,
+): Promise<AdmittedHelpEvent[]> {
+  const { rows } = await tx.query<{ id: FactId; tick: Tick }>(
+    `SELECT f.id, r.tick::text FROM facts f
+     JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=1
+     JOIN fact_revs visible ON visible.learner_id=f.learner_id AND visible.fact_id=f.id AND visible.rev=f.current_rev
+     JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
+     WHERE f.learner_id=$1 AND f.type=$2 AND c.type=$3 AND c.state='done' AND r.tick<$4::bigint
+       AND f.retracted_rev IS NULL AND f.purpose && ARRAY[$6,'all']::text[]
+       AND visible.purpose && ARRAY[$6,'all']::text[]
+       AND visible.data=r.data AND visible.data->>'kind'='displayed' AND visible.data->'mount'->>'activityId'=$5`,
+    [tx.learner, helpExposureType, recordHelpExposureCommand, cutoff, paper, purpose],
+  );
+  const read = createCommandReadContext(tx, purpose);
+  const events: AdmittedHelpEvent[] = [];
+  for (const row of rows) {
+    try {
+      const fact = await read.fact(row.id, { mode: 'following' });
+      const display = helpExposure(fact.value);
+      if (display.kind === 'displayed' && await accept(fact, display)) {
+        events.push({ ref: fact.ref, value: display, admittedAt: row.tick });
+      }
+    } catch (error) {
+      if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError)) throw error;
+    }
+  }
+  return events;
+}
 
 const currentAssessmentsSql = `SELECT d.id, d.slot_key, d.value, d.manifest, d.scope_keys->>'originalAssessmentId' AS original_id
        FROM derivations d JOIN slot_state s
