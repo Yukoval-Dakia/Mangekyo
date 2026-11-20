@@ -1,6 +1,6 @@
 import { factId, type CommandContext, type FactSnapshot, type LearnerId, type Revision } from '@mangekyo/kernel';
 import { captureSourceType, sourceEnvelope, type SourceEnvelope } from './source.ts';
-import type { NotionRoot } from './notion-api.ts';
+import { NotionSourceUnavailable, type NotionRoot } from './notion-api.ts';
 import { diffNotionBlocks } from './notion-diff.ts';
 import { notionId, notionRecord, notionSelectionId, notionSourceId, notionSourceProjection, notionTimestamp } from './notion-values.ts';
 
@@ -29,6 +29,105 @@ export type NotionSelection = {
 };
 
 export type NotionRecipient = 'learner' | 'workspace';
+
+export type NotionSelectionWitness = {
+  readonly learner: LearnerId;
+  readonly selectionId: string;
+  readonly selectionEpoch: string;
+};
+
+// Use the witness captured before the provider call. The host applies this
+// signal only within that still-current generation, before any further reads
+// or sends, and invalidates retained reads and bounded handles in its scope.
+export function notionSourceInvalidation(error: unknown, witness: NotionSelectionWitness) {
+  if (!(error instanceof NotionSourceUnavailable) || !error.invalidated) return null;
+  return { selection: witness, target: error.invalidated };
+}
+
+export type NotionBoundedUse = {
+  readonly preset: 'turn-only' | 'temporary';
+  readonly selection: NotionSelectionWitness & { readonly root: NotionRoot };
+  readonly pageId: string;
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly authorizationEpoch: string;
+  readonly recipient:
+    | { readonly purpose: 'turn-answer'; readonly id: string }
+    | { readonly purpose: 'turn-tool'; readonly id: string };
+  readonly authorizedAt: string;
+  readonly expiresAt: string;
+};
+
+const maximumTemporaryWindow = 24 * 60 * 60 * 1_000;
+const generation = /^(?:0|[1-9][0-9]*)$/;
+
+// Resolve 'current' through the host's live authorization for this action,
+// actual recipient, provider retention policy, open turn and selected page.
+// A closed turn, unavailable grant or unknown provider policy yields null.
+export function notionBoundedUseAllowed(expected: NotionBoundedUse, current: NotionBoundedUse | null, now: string): boolean {
+  if (!current || (expected.preset !== 'turn-only' && expected.preset !== 'temporary') ||
+      (expected.recipient.purpose !== 'turn-answer' && expected.recipient.purpose !== 'turn-tool') ||
+      (expected.selection.root.kind !== 'page' && expected.selection.root.kind !== 'data-source') ||
+      !expected.recipient.id || !expected.conversationId || !expected.turnId ||
+      !generation.test(expected.selection.selectionEpoch) || !generation.test(expected.authorizationEpoch)) return false;
+  const rootId = notionId(expected.selection.root.id);
+  const pageId = notionId(expected.pageId);
+  const authorized = Date.parse(notionTimestamp(expected.authorizedAt));
+  const expires = Date.parse(notionTimestamp(expected.expiresAt));
+  const checked = Date.parse(notionTimestamp(now));
+  return checked >= authorized && checked < expires &&
+    (expected.preset !== 'temporary' || expires - authorized <= maximumTemporaryWindow) &&
+    (expected.selection.root.kind === 'data-source' || rootId === pageId) &&
+    expected.preset === current.preset && expected.selection.learner === current.selection.learner &&
+    notionSelectionId(expected.selection.selectionId) === current.selection.selectionId &&
+    expected.selection.root.kind === current.selection.root.kind && rootId === notionId(current.selection.root.id) &&
+    expected.selection.selectionEpoch === current.selection.selectionEpoch && pageId === notionId(current.pageId) &&
+    expected.conversationId === current.conversationId && expected.turnId === current.turnId &&
+    expected.authorizationEpoch === current.authorizationEpoch &&
+    expected.recipient.purpose === current.recipient.purpose && expected.recipient.id === current.recipient.id &&
+    authorized === Date.parse(notionTimestamp(current.authorizedAt)) && expires === Date.parse(notionTimestamp(current.expiresAt));
+}
+
+export type NotionBoundedSnapshot = {
+  readonly use: NotionBoundedUse;
+  readonly projection: {
+    readonly title: string;
+    readonly blocks: readonly { readonly id: string; readonly parentId: string | null; readonly text: string }[];
+  };
+};
+
+// Page must come from the complete, authorized Notion page read for this
+// dispatch. Use the check again at the actual egress boundary after recovery.
+export async function prepareNotionBoundedSnapshot(
+  use: NotionBoundedUse, current: NotionBoundedUse | null, page: unknown, now: string,
+): Promise<NotionBoundedSnapshot> {
+  const witness = structuredClone(use);
+  if (!notionBoundedUseAllowed(witness, current, now)) throw new Error('Notion 本轮授权无效。');
+  const { externalId, unit } = await notionSourceProjection(page);
+  if (externalId !== notionId(witness.pageId)) throw new Error('Notion 本轮页面授权不匹配。');
+  return { use: witness, projection: { title: unit.title, blocks: unit.blocks.map(({ id, parentId, body }) => ({
+    id, parentId, text: body.text,
+  })) } };
+}
+
+export function openNotionBoundedSnapshot(snapshot: NotionBoundedSnapshot, current: NotionBoundedUse | null, now: string) {
+  if (!notionBoundedUseAllowed(snapshot.use, current, now)) throw new Error('Notion 本轮授权无效。');
+  return snapshot.projection;
+}
+
+export type NotionBoundedHandle = { readonly id: string };
+export type NotionBoundedEnd = 'completed' | 'cancelled' | 'expired' | 'source-revoked' | 'turn-revoked';
+
+// Implemented by the shared lifecycle host. Handles are random, content-free
+// references. Recovery for temporary use requires an independent encryption key
+// and an immutable expiry. On close, block use first, then destroy the key and
+// online copies. Only turn-only permits the separate learner-visible transcript
+// in the original conversation, outside future context and retrieval.
+export type NotionBoundedLifecycle = {
+  seal(snapshot: NotionBoundedSnapshot): Promise<NotionBoundedHandle>;
+  open(handle: NotionBoundedHandle, current: NotionBoundedUse, now: string): Promise<NotionBoundedSnapshot['projection']>;
+  close(handle: NotionBoundedHandle, reason: NotionBoundedEnd): Promise<void>;
+};
 
 export function notionRecipientAllowed(selection: NotionSelection, purpose: string, recipient: NotionRecipient) {
   if (selection.preset !== 'storage' && selection.preset !== 'learning') return false;

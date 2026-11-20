@@ -12,18 +12,26 @@ export type NotionReadRequest =
   | { readonly method: 'POST'; readonly path: `/v1/data_sources/${string}/query`; readonly body: Json };
 export type NotionReadResponse = { readonly status: number; readonly body: unknown };
 
-export class NotionSourceUnavailable extends Error {}
+export type NotionInvalidatedSource = { readonly kind: 'selection' } | { readonly kind: 'page'; readonly pageId: string };
+
+export class NotionSourceUnavailable extends Error {
+  constructor(message: string, readonly invalidated?: NotionInvalidatedSource) {
+    super(message);
+  }
+}
 export class NotionSourceChanged extends Error {}
 
-function response({ status, body }: NotionReadResponse, sourceBoundary: boolean) {
-  if (sourceBoundary && (status === 401 || status === 403 || status === 404)) {
-    throw new NotionSourceUnavailable('Notion 来源已不可用。');
+function response({ status, body }: NotionReadResponse, sourceBoundary?: NotionInvalidatedSource) {
+  const invalidated = status === 401 ? { kind: 'selection' } as const
+    : status === 403 || status === 404 ? sourceBoundary : undefined;
+  if (invalidated) {
+    throw new NotionSourceUnavailable('Notion 来源已不可用。', invalidated);
   }
   if (status !== 200) throw new Error(`Notion 读取失败（HTTP ${status}）。`);
   return notionRecord(body);
 }
 
-function pagination(value: NotionReadResponse, seen: Set<string>, sourceBoundary: boolean) {
+function pagination(value: NotionReadResponse, seen: Set<string>, sourceBoundary?: NotionInvalidatedSource) {
   const { object, results, has_more, next_cursor, request_status } = response(value, sourceBoundary);
   if (request_status !== undefined && notionRecord(request_status).type === 'incomplete') {
     throw new Error('Notion 查询结果不完整。');
@@ -49,21 +57,28 @@ function richText(value: unknown): string {
   }).join('');
 }
 
-function pageMetadata(value: unknown, root: NotionRoot) {
+function pageMetadata(value: unknown, root: NotionRoot, expectedId?: string) {
   const page = notionRecord(value);
   const pageId = notionId(page.id);
   if (page.object !== 'page') throw new Error('Notion 响应不是页面。');
+  if (expectedId !== undefined && pageId !== expectedId) throw new Error('Notion 页面响应标识不匹配。');
   if (page.in_trash === true || page.is_archived === true || page.archived === true ||
-      (root.kind === 'page' && pageId !== root.id)) throw new NotionSourceUnavailable('Notion 页面不在获准来源内。');
+      (root.kind === 'page' && pageId !== root.id)) {
+    throw new NotionSourceUnavailable('Notion 页面不在获准来源内。', pageBoundary(root, pageId));
+  }
   if (root.kind === 'data-source') {
     const parent = notionRecord(page.parent);
     if (parent.type !== 'data_source_id' || notionId(parent.data_source_id) !== root.id) {
-      throw new NotionSourceUnavailable('Notion 数据行已移出获准来源。');
+      throw new NotionSourceUnavailable('Notion 数据行已移出获准来源。', { kind: 'page', pageId });
     }
   }
   const properties = Object.entries(notionRecord(page.properties)).map(([name, property]) => ({ name, value: notionRecord(property) }));
   const title = richText(properties.find(({ value }) => value.type === 'title')?.value.title);
   return { pageId, lastEditedTime: notionTimestamp(page.last_edited_time), title, properties };
+}
+
+function pageBoundary(root: NotionRoot, pageId: string): NotionInvalidatedSource {
+  return root.kind === 'page' ? { kind: 'selection' } : { kind: 'page', pageId };
 }
 
 export function* notionReadRows(root: Extract<NotionRoot, { kind: 'data-source' }>, since?: NotionCursor):
@@ -83,7 +98,7 @@ export function* notionReadRows(root: Extract<NotionRoot, { kind: 'data-source' 
           last_edited_time: { on_or_after: notionTimestamp(since.lastEditedTime) } } }),
       },
     };
-    const page = pagination(reply, cursors, true);
+    const page = pagination(reply, cursors, { kind: 'selection' });
     for (const result of page.results) {
       const { pageId, lastEditedTime } = pageMetadata(result, selected);
       const previous = rows.get(pageId);
@@ -135,7 +150,7 @@ function* notionReadChildren(pageId: string, parentId: string | null, seenBlocks
   do {
     const query: string = cursor === null ? 'page_size=100' : `page_size=100&start_cursor=${encodeURIComponent(cursor)}`;
     const reply = yield { method: 'GET', path: `/v1/blocks/${parentId ?? pageId}/children?${query}` };
-    const page = pagination(reply, cursors, false);
+    const page = pagination(reply, cursors);
     for (const entry of page.results) {
       const block = notionRecord(entry);
       const id = notionId(block.id);
@@ -195,12 +210,12 @@ export async function* notionReadPage(root: NotionRoot, requestedPage: string):
   const pageId = notionId(requestedPage);
   if (selected.kind === 'page' && selected.id !== pageId) throw new NotionSourceUnavailable('Notion 页面不在获准来源内。');
   const get = { method: 'GET', path: `/v1/pages/${pageId}` } as const;
-  const first = pageMetadata(response(yield get, true), selected);
-  if (first.pageId !== pageId) throw new Error('Notion 页面响应标识不匹配。');
+  const boundary = pageBoundary(selected, pageId);
+  const first = pageMetadata(response(yield get, boundary), selected, pageId);
   const blocks: ProjectedBlock[] = [];
   yield* notionReadChildren(pageId, null, new Set(), blocks);
-  const last = pageMetadata(response(yield get, true), selected);
-  if (last.pageId !== pageId || first.lastEditedTime !== last.lastEditedTime || first.title !== last.title) {
+  const last = pageMetadata(response(yield get, boundary), selected, pageId);
+  if (first.lastEditedTime !== last.lastEditedTime || first.title !== last.title) {
     throw new NotionSourceChanged('拉取期间 Notion 页面有更新，请重试。');
   }
   const properties = selected.kind === 'data-source' ? await notionRowProperties(last) : [];
