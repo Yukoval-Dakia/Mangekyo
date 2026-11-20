@@ -14,7 +14,7 @@ const searchTool = {
 
 afterEach(() => Promise.all(closeServers.splice(0).map(close => close())));
 
-async function protocolServer(failCall = false) {
+async function protocolServer({failCall = false, stateless = false} = {}) {
   const requests: {method?: string; rpc?: string}[] = [];
   const server = createServer(async (request, response) => {
     if (request.method === 'DELETE') {
@@ -26,7 +26,7 @@ async function protocolServer(failCall = false) {
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const message = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     requests.push({method: request.method ?? 'UNKNOWN', rpc: message.method});
-    response.setHeader('mcp-session-id', 'session-test');
+    if (!stateless) response.setHeader('mcp-session-id', 'session-test');
     const result = (value: unknown) => JSON.stringify({jsonrpc: '2.0', id: message.id, result: value});
     switch (message.method) {
       case 'initialize':
@@ -81,6 +81,28 @@ it('stops a recovered stateful turn before a new external tool request', async (
   await expect(result).rejects.toThrow('有状态 MCP 会话已中断');
 });
 
+it.each([false, true])('rechecks authorization after a recovered stateless MCP handshake (revoked: %s)', async revoked => {
+  const remote = await protocolServer({stateless:true});
+  const server = mcpServer('library', remote.url, ['search']);
+  const name = 'mcp_search_' + createHash('sha256').update(JSON.stringify(['library','search'])).digest('hex').slice(0,12);
+  const result = runStudyAgent([{role:'user',content:'继续'}], {provider:{baseUrl:'https://unused.invalid'}, tools:{mcpServers:[server]},
+    async runEffect(step, invoke) {
+      if (step.index === 20_000) return JSON.stringify({stateful:false, tools:[searchTool]});
+      if (step.index === 0) return JSON.stringify({reportedModel:'group/auto-deepseek-v4-1-flash', calls:[
+        {id:'resumed',type:'function',function:{name,arguments:'{"query":"冻结预测证据"}'}},
+      ]});
+      if (step.index === 8) return JSON.stringify({message:'完成'});
+      return invoke('new-tool-request', async send => {
+        if (revoked && remote.requests.some(request => request.rpc === 'notifications/initialized')) throw new Error('evidence_scope');
+        return send();
+      });
+    }});
+  if (revoked) await expect(result).rejects.toThrow('evidence_scope');
+  else expect((await result).message).toBe('完成');
+  expect(remote.requests.filter(request => request.rpc === 'initialize')).toHaveLength(1);
+  expect(remote.requests.filter(request => request.rpc === 'tools/call')).toHaveLength(revoked ? 0 : 1);
+});
+
 it('keeps one remote session across discovery and consecutive tools in the same turn', async () => {
   const remote = await protocolServer();
   const server = mcpServer('library', remote.url, ['search']);
@@ -98,7 +120,7 @@ it('keeps one remote session across discovery and consecutive tools in the same 
 });
 
 it('rejects disallowed tools before network access and never repeats a failed tool call', async () => {
-  const server = await protocolServer(true);
+  const server = await protocolServer({failCall:true});
   const serverConfig = mcpServer('write-once', server.url, ['write']);
 
   await expect(callMcpTool(serverConfig, 'delete', {})).rejects.toThrow('not allowed');

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { callMcpTool, discoverMcpTools, type McpServer, type McpTurnConnections } from './mcp-client.ts';
-import type { TeachingDependencies } from './index.ts';
+import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { TeachingError } from './provider.ts';
 
 type ToolSchema = Awaited<ReturnType<typeof discoverMcpTools>>[number];
@@ -13,9 +13,9 @@ export async function loadMcpTools(servers: readonly McpServer[], model: string,
     const {id, url, allowedTools} = server;
     // Discovery changes over time. Replay must offer the same schema to the model.
     const requestDigest = createHash('sha256').update(JSON.stringify([id, url, allowedTools])).digest('hex');
-    const readCatalog = (index: number) => runEffect({index, provider: 'tool:mcp:' + id, model, requestDigest}, async () => {
+    const readCatalog = (index: number) => runEffect({index, provider: 'tool:mcp:' + id, model, requestDigest}, async (_, dispatch) => {
       try {
-        const tools = await discoverMcpTools(server, connections);
+        const tools = await discoverMcpTools(server, connections, dispatch);
         return JSON.stringify({tools, stateful: connections.hasStatefulSession(server)});
       } catch {
         return 'null';
@@ -44,6 +44,6 @@ export async function loadMcpTools(servers: readonly McpServer[], model: string,
   return catalog;
 }
 
-export function invokeMcpTool(remote: RemoteTool, args: Record<string, unknown>, connections: McpTurnConnections) {
-  return callMcpTool(remote.server, remote.tool.name, args, connections);
+export function invokeMcpTool(remote: RemoteTool, args: Record<string, unknown>, connections: McpTurnConnections, dispatch?: TeachingDispatch) {
+  return callMcpTool(remote.server, remote.tool.name, args, connections, dispatch);
 }

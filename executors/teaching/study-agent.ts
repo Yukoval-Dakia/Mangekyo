@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { TeachingDependencies } from './index.ts';
+import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
 import { loadMcpTools, invokeMcpTool } from './mcp-tools.ts';
 import {projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
@@ -165,7 +165,7 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
       }
       const python = name === 'python' && args.inputs !== undefined ? results.pythonInputs(args.inputs) : undefined;
       if (python?.error) return {content: python.error, summary: 'Python 验算 · 输入不可用'};
-      const execute = () => remote ? invokeMcpTool(remote, args, connections)
+      const execute = (dispatch?: TeachingDispatch) => remote ? invokeMcpTool(remote, args, connections, dispatch)
         : tools.execute(name, args, python?.inputs);
       // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
       const step = index + position + 1;
@@ -181,10 +181,10 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
         output = await execute();
       } else {
         const raw = await options.runEffect({ index: step, model, provider: remote ? 'tool:mcp:' + remote.server.id : 'tool:' + name,
-          requestDigest: hash(JSON.stringify({name, args, messages})) }, async () => {
+          requestDigest: hash(JSON.stringify({name, args, messages})) }, async (_, dispatch) => {
           if (remote?.stateful && !connections.hasStatefulSession(remote.server))
             return JSON.stringify({lostSession: true});
-          const output = await execute();
+          const output = await execute(dispatch);
           return JSON.stringify({output, ...(name === 'python' ? {files: tools.snapshotFiles()} : {})});
         });
         const saved = JSON.parse(raw);

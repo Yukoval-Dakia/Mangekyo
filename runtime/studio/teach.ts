@@ -30,6 +30,7 @@ import {
   TeachingError,
   type CompanionMessage,
   type TeachingDependencies,
+  type TeachingDispatch,
   type TeachingResponse,
 } from '../../executors/teaching/index.ts';
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
@@ -234,6 +235,24 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         if (submission.workspaceRevision) await checkWorkspaceRoute(current);
       };
       let dispatchDenied: ChangedEvidence | TeachingError | undefined;
+      const dispatch: TeachingDispatch = async send => {
+        try {
+          // The lock protects validation and starting the send, never the response wait.
+          const { response } = await db.tx(scope, async tx => {
+            await lockLearner(tx, learner);
+            await authorize(tx);
+            const response = send();
+            void response.catch(() => {});
+            return { response };
+          });
+          return response;
+        } catch (error) {
+          if (error instanceof ChangedEvidence || error instanceof TeachingError) dispatchDenied = error;
+          throw error;
+        }
+      };
+      const mcp = step.provider.startsWith('tool:mcp:');
+      const needsFreshEvidence = Boolean(assessments.size || retention.size || memorySend);
       const effect = await runEffect(
         db,
         {
@@ -248,23 +267,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             ...(retention.size ? {retentionBasis: [...retention.values()]} : {}) },
         },
         async (requestId) => {
-          let pending: Promise<string> | undefined;
-          if (assessments.size || retention.size || memorySend) {
-            try {
-              // Start the reserved transport under a fresh authorization lock. The reply is awaited outside it.
-              await db.tx(scope, async tx => {
-                await lockLearner(tx, learner);
-                await authorize(tx);
-                pending = invoke(requestId);
-                void pending.catch(() => {});
-              });
-            } catch (error) {
-              if (error instanceof ChangedEvidence || error instanceof TeachingError) dispatchDenied = error;
-              throw error;
-            }
-          }
           try {
-            const reply = await (pending ?? invoke(requestId));
+            // A resumed MCP call may authenticate and negotiate before sending tool arguments.
+            const reply = await (mcp ? invoke(requestId, dispatch) :
+              needsFreshEvidence ? dispatch(() => invoke(requestId)) : invoke(requestId));
             return memorySend ? { reply, sent: { ...memorySend, requestId } } : reply;
           } catch (error) {
             console.warn('模型调用未能确认', requestId, error instanceof TeachingError ? error.code : 'transport_error');
@@ -274,7 +280,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         authorize,
       );
       if (dispatchDenied) throw dispatchDenied;
-      if (assessments.size || retention.size || memorySend) await db.snapshot(scope, validInputs);
+      if (needsFreshEvidence) await db.snapshot(scope, validInputs);
       if (effect.kind === 'unknown') throw new UncertainEffect(effect.providerEffectId);
       if (memorySend && effect.result && typeof effect.result === 'object' && !Array.isArray(effect.result) &&
           'reply' in effect.result && typeof effect.result.reply === 'string') return effect.result.reply;
