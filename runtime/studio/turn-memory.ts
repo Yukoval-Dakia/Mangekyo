@@ -7,12 +7,12 @@ import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import {
-  applyClaimCommand, claimEvidence, claimExpiry, claimId, claimType, ClaimInputError, claimText, editableTurnClaim,
-  requirePreservedObjectScope, structuredClaim,
+  applyClaimCommand, claimEvidence, claimId, claimType, ClaimInputError, claimText, editableTurnClaim,
+  claimRef, structuredClaim,
 } from '../../modules/companion/claim.ts';
-import { beliefFields, beliefInput, beliefToolFailure, directiveDetails, hypothesisRequest, quoteFromTurn, saveBeliefCommand } from '../../modules/companion/belief.ts';
+import { beliefFields, beliefInput, beliefReceiptAction, memoryReceipt, beliefToolFailure, checkedDirective, checkedHypothesis, hypothesisRequest, quoteFromTurn, saveBeliefCommand, turnClaimData, turnHypothesisData, validateDirectiveScope } from '../../modules/companion/belief.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
-import { extractedUnderstanding, type ActivityCitation } from '../../modules/companion/understanding.ts';
+import type { ActivityCitation } from '../../modules/companion/understanding.ts';
 import { hypothesisIsHead, openObjectiveCitations } from './belief-evidence.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
@@ -24,14 +24,13 @@ import { readMemoryGateway } from './memory-gateway.ts';
 type Packet = NonNullable<Awaited<ReturnType<typeof readMemoryGateway>>>;
 type Entry = {id: string; data: ReturnType<typeof structuredClaim>};
 type AssertionEntry = ReturnType<typeof beliefInput>['assertions'][number];
+const targetRef = (target: Packet['receipt']['basis'][number] | undefined) =>
+  target ? claimRef({id: target.id, rev: target.rev, accessEpoch: target.epoch}) : null;
 const loadCompanion = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
 let companion: ReturnType<typeof loadCompanion> | undefined;
 
-export const memoryWriteReceipt = (entry: {id: string; data: Pick<Entry['data'], 'action'>}, rev: number, command: string): WorkspaceWriteReceipt => ({
-  id: entry.id, rev, title: entry.data.action === 'forget' ? '已忘掉记忆' :
-    entry.data.action === 'correct' ? '已更新记忆' : '已记住',
-  memory: {status: 'saved', action: entry.data.action, undo_token: claimUndoToken(command, entry.id)},
-});
+export const memoryWriteReceipt = (entry: {id: string; data: Pick<Entry['data'], 'action'>}, rev: number, command: string): WorkspaceWriteReceipt =>
+  memoryReceipt(entry.id, rev, entry.data.action, claimUndoToken(command, entry.id));
 
 export function openTurnMemory(options: {
   db: Db; answer: string; turn: string; source: {rev: number; accessEpoch: string}; currentObject?: OpenedCurrentLearningObject;
@@ -47,7 +46,7 @@ export function openTurnMemory(options: {
   const targets = new Set<string>();
   let opened = false;
   async function stageHypothesis(args: Record<string, unknown>, step: number) {
-    const {action, text, supersedes, scope, quote_excerpt} = args;
+    const {action, text, supersedes, quote_excerpt} = args;
     const belief = options.belief!;
     const refs = hypothesisRequest(args, currentObject?.root.id, belief.opened);
     const target = action === 'remember' ? undefined : candidates.get(claimId(supersedes));
@@ -63,20 +62,13 @@ export function openTurnMemory(options: {
       if (fact?.type !== memoryAssertionType || fact.ref.rev !== target.rev || fact.accessEpoch !== target.epoch ||
           !await hypothesisIsHead(tx, target.id, turn))
         throw new ClaimInputError('假设版本已变更。');
-      const value = extractedUnderstanding(fact.value);
-      if (!value.belief || value.belief.forgotten || value.sticky || (text !== undefined && text !== value.text))
-        throw new ClaimInputError('核验只能追加证据，原假设文字保持不变。');
-      return value;
+      return checkedHypothesis(fact.value, text);
     });
     const id = claimId(stableId('turn-memory-entry', turn, String(step)));
-    const data = extractedUnderstanding({version: 2, kind: 'observation', ttl: null, sticky: false,
-      text: previous?.text ?? text,
-      scope: previous?.scope ?? (scope === 'general' ? {kind: 'general'} : {kind: 'object', object: currentObject!.root.id}),
-      evidence_refs: [...(previous?.evidence_refs ?? []), ...refs],
-      undo_token: claimUndoToken(stableId('turn-belief-command', turn), id),
-      belief: {turn, forgotten: !!quote, supersedes: target ? {id: target.id, rev: target.rev, accessEpoch: target.epoch} : null},
-    });
-    assertions.push({id, data: {...data, belief: data.belief!}, quote});
+    const data = turnHypothesisData(args, {turn, refs, ...(currentObject && {object: currentObject.root.id}),
+      ...(previous && {previous}), supersedes: targetRef(target),
+      undoToken: claimUndoToken(stableId('turn-belief-command', turn), id)});
+    assertions.push({id, data, quote});
     if (target) hypothesisTargets.add(target.id);
   }
   const pendingReply = (action: string) => JSON.stringify({ok: true, status: 'pending', action, message: '已记录本轮拟保存的操作。以本轮结束时的回执为准。'});
@@ -94,7 +86,7 @@ export function openTurnMemory(options: {
       const explicit = name === 'save_belief';
       if (explicit !== Boolean(options.belief) || (!explicit && name !== 'save_memory'))
         throw new ClaimInputError('本轮未开放该保存工具。');
-      const {action, category, valid_until: expiry} = args;
+      const {action, category} = args;
       if (action !== 'remember' && action !== 'update' && action !== 'forget') throw new ClaimInputError('记忆操作无效。');
       if (explicit && category !== 'directive' && category !== 'hypothesis')
         throw new ClaimInputError('category 须为 directive 或 hypothesis。');
@@ -110,36 +102,18 @@ export function openTurnMemory(options: {
       const target = args.supersedes === undefined ? undefined : candidates.get(claimId(args.supersedes));
       if (args.supersedes !== undefined && (!target || target.type !== claimType || targets.has(target.id) || action === 'remember'))
         throw new ClaimInputError('使用本轮检索到且尚未变更的记忆。');
-      if (args.scope !== undefined && !['general', 'current_object', 'unknown'].some(scope => scope === args.scope))
-        throw new ClaimInputError('范围可为明确通用、当前对象或未知。');
-      if (args.scope === 'current_object' && !currentObject)
-        throw new ClaimInputError('本轮未绑定学习对象，不能使用当前对象范围。');
+      validateDirectiveScope(args.scope, !!currentObject);
       const previous = target ? await db.snapshot({learner: studioLearner}, async tx => {
         await options.authorize(tx);
         const fact = await openClaimFact(tx, claimId(target.id));
         if (!fact || fact.ref.rev !== target.rev || fact.accessEpoch !== target.epoch)
           throw new ClaimInputError('目标记忆已变化。');
-        if (!explicit) return editableTurnClaim(fact.value);
-        const value = structuredClaim(fact.value);
-        if (value.authority !== 'directive' || value.action === 'forget' || (args.kind !== undefined && args.kind !== value.category))
-          throw new ClaimInputError('请选择同类、仍生效的主权规则。');
-        return value;
+        return explicit ? checkedDirective(fact.value, args.kind) : editableTurnClaim(fact.value);
       }) : undefined;
-      const usePrevious = previous && (args.scope === undefined ||
-        (args.scope === 'current_object' && previous.scope.kind === 'object' && previous.scope.object === currentObject?.root.id));
-      const scopeInput = usePrevious ? previous.scope
-        : args.scope === 'general' || args.scope === 'unknown' ? {kind: args.scope}
-        : currentObject ? {kind: 'object', object: currentObject.root.id,
-          basis: currentObject.basis.map(({id, rev, epoch}) => ({id, rev, accessEpoch: epoch}))} : {kind: 'unknown'};
-      const valid_until = action === 'forget' ? null : expiry === undefined && previous ? previous.valid_until : claimExpiry(expiry);
-      if (valid_until && valid_until <= new Date().toISOString()) throw new ClaimInputError('有效期须晚于当前时刻。');
-      const entry = {id: factId(stableId('turn-memory-entry', turn, String(step))), data: structuredClaim({
-        action: action === 'update' ? 'correct' : action, ...directiveDetails(args, explicit, excerpt, previous),
-        origin: 'turn', scope: scopeInput, valid_until,
-        evidence_refs: [{id: turn, ...source, excerpt, start}],
-        supersedes: target ? {id: target.id, rev: target.rev, accessEpoch: target.epoch} : null,
-      })};
-      if (previous) requirePreservedObjectScope(previous.scope, entry.data.scope);
+      const data = turnClaimData(args, {explicit, now: new Date().toISOString(),
+        ...(currentObject && {object: {id: currentObject.root.id, basis: currentObject.basis}}),
+        ...(previous && {previous}), quote: {id: turn, ...source, excerpt, start}, supersedes: targetRef(target)});
+      const entry = {id: factId(stableId('turn-memory-entry', turn, String(step))), data};
       pending.push(entry);
       if (target) targets.add(target.id);
       return pendingReply(action);
@@ -155,8 +129,7 @@ export function openTurnMemory(options: {
         await options.authorize(tx);
         if (!await areMemoryClaimsCurrent(tx, [...targets], turn)) throw new ClaimInputError('目标记忆已变化。');
         for (const {id, data, quote} of assertions) {
-          if (data.belief.supersedes && !await hypothesisIsHead(tx, data.belief.supersedes.id, undefined,
-            id))
+          if (data.belief.supersedes && !await hypothesisIsHead(tx, data.belief.supersedes.id, undefined, id))
             throw new ClaimInputError('目标假设已变化。');
           if (quote && !await openClaimEvidence(tx, quote, quote.excerpt, quote.start))
             throw new ClaimInputError('撤回原话不可用。');
@@ -175,8 +148,7 @@ export function openTurnMemory(options: {
         input: {turn, directives: pending, hypotheses: assertions}}
       : {id: commandId(stableId('turn-memory-command', turn)), type: applyClaimCommand, input: {entries: pending}};
     const receipt = await handle({learner: studioLearner, actor: 'companion', purpose, ...operation});
-    const entries = [...pending, ...assertions.map(({id, data}) => ({id,
-      data: {action: data.belief.forgotten ? 'forget' as const : data.belief.supersedes ? 'correct' as const : 'remember' as const}}))];
+    const entries = [...pending, ...assertions.map(({id, data}) => ({id, data: {action: beliefReceiptAction(data)}}))];
     return entries.flatMap(entry => {
       const written = receipt.wrote.find(ref => ref.id === entry.id);
       return written ? [memoryWriteReceipt(entry, written.rev, receipt.commandId)] : [];

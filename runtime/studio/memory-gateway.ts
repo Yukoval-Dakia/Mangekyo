@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { recallPacket, recallRegions, type MemoryIntent, type MemoryRegion, type RegionPage,
+  type RecallItem, type RecallRegions, type SentWitness } from '../../modules/companion/recall-packet.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
+import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { isSourceFactId, sourceReference } from '../../modules/activity/source-values.ts';
@@ -14,7 +16,7 @@ import { learnerPreferenceType, type PreferenceScope } from '../../modules/learn
 import {
   extractedUnderstanding, isExtractedUnderstanding, reviewUnderstanding, understandingPresentation, understandingProjection,
 } from '../../modules/companion/understanding.ts';
-import { hypothesisStatus } from '../../modules/companion/belief.ts';
+import { claimRecallValue, hypothesisStatus, recallClaimEvidence } from '../../modules/companion/belief.ts';
 import { openObjectiveCitations } from './belief-evidence.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
@@ -26,24 +28,7 @@ import type { WorkspaceWitness } from './workspace-agent.ts';
 type AnswerLocation = { id: string; itemId: string };
 export type MemoryScope = { preference: PreferenceScope; links: readonly MemoryLink[];
   conditions?: readonly string[]; attempt?: AnswerLocation; experienceTurn?: string };
-export type MemoryIntent = 'tutoring' | 'planning' | 'execution' | 'history' | 'management';
-const regionsByIntent = {
-  tutoring: ['current_answer', 'preferences', 'claims', 'memory', 'course_knowledge', 'learner_model', 'verified_playbooks'],
-  planning: ['goal', 'scheduled_tasks', 'preferences', 'claims', 'learner_model', 'todo', 'inventory'],
-  execution: ['current_answer', 'todo', 'chronicle', 'verified_playbooks', 'experience'],
-  management: ['claims'],
-  history: ['current_answer', 'claims', 'memory', 'chronicle'],
-} as const;
-type MemoryRegion = typeof regionsByIntent[MemoryIntent][number];
-type RegionPage = { region: MemoryRegion; start: number; basisDigest: string };
-type Omission = { region: MemoryRegion; reason: 'unknown' | 'basis_stale' } |
-  { region: MemoryRegion; reason: 'budget'; expand: RegionPage };
-export type ContextBundle = { intent: MemoryIntent; data: Partial<Record<MemoryRegion, Json[]>>; omitted: Omission[] };
-type SentWitness = WorkspaceWitness & { fragment?: { itemId: string; slotId: 'answer'; end?: number } |
-  { field: 'answer'; start: number; end: number } };
-type RegionItem = { value: Json; sent: SentWitness[]; basis?: WorkspaceWitness[]; expiresAt?: string };
-type Regions = Map<MemoryRegion, RegionItem[]>;
-
+type RegionItem = RecallItem<WorkspaceWitness>;
 export function memoryScopeForObject(current: OpenedCurrentLearningObject | undefined): MemoryScope {
   if (!current) return {preference: {}, links: [], conditions: []};
   const {root, view} = current;
@@ -53,47 +38,9 @@ export function memoryScopeForObject(current: OpenedCurrentLearningObject | unde
 
 const witness = (fact: FactSnapshot): WorkspaceWitness => ({ id: fact.ref.id, rev: fact.ref.rev,
   epoch: fact.accessEpoch, type: fact.type, mode: 'following' });
-const digest = (text: string) => createHash('sha256').update(text).digest('hex');
-
-function regionPage(region: MemoryRegion, start: number, candidates: readonly RegionItem[]): RegionPage {
-  const basisDigest = digest(JSON.stringify(candidates.map(item => [item.sent, item.basis ?? []])));
-  return { region, start, basisDigest };
-}
-
-function packBundle(intent: MemoryIntent, regions: readonly MemoryRegion[], results: Regions, maxBytes: number, page?: RegionPage) {
-  const bundle: ContextBundle = { intent, data: {}, omitted: [] };
-  const selected: RegionItem[] = [];
-  if (page && regionPage(page.region, page.start, results.get(page.region) ?? []).basisDigest !== page.basisDigest) {
-    bundle.omitted.push({ region: page.region, reason: 'basis_stale' });
-    return { bundle, selected };
-  }
-  for (const region of regions) {
-    const candidates = results.get(region) ?? [];
-    const start = page?.start ?? 0;
-    if (start >= candidates.length) bundle.omitted.push({ region, reason: 'unknown' });
-    else bundle.omitted.push({ region, reason: 'budget', expand: regionPage(region, start, candidates) });
-  }
-  for (const region of regions) {
-    const candidates = results.get(region) ?? [];
-    const items: Json[] = [];
-    for (let index = page?.start ?? 0; index < candidates.length; index++) {
-      const entry = candidates[index]!;
-      const rest = bundle.omitted.filter(item => item.region !== region);
-      if (index + 1 < candidates.length) rest.push({ region, reason: 'budget', expand: regionPage(region, index + 1, candidates) });
-      const data = { ...bundle.data, [region]: [...items, entry.value] };
-      if (Buffer.byteLength(JSON.stringify({ ...bundle, data, omitted: rest })) > maxBytes) break;
-      items.push(entry.value);
-      bundle.data = data;
-      bundle.omitted = rest;
-      selected.push(entry);
-    }
-  }
-  return { bundle, selected };
-}
-
 async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: WorkspaceSourceRecipient, at: string,
   requested: readonly MemoryRegion[], options: {ownTurn?: string; management?: boolean; query?: string; beliefTools?: boolean}) {
-  const results: Regions = new Map();
+  const results: RecallRegions<WorkspaceWitness> = new Map();
   function add(region: MemoryRegion, entry: RegionItem) {
     const items = results.get(region) ?? [];
     items.push(entry);
@@ -143,11 +90,8 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       const fact = await open(row.id);
       const claim = fact && readClaimValue(fact.value);
       if (!fact || !claim) continue;
-      const understanding = understandingProjection(fact)!;
+      const {evidence, excerpt, start} = recallClaimEvidence(claim);
       const legacy = claim.version === 0;
-      const evidence = legacy ? claim.source : claim.evidence_refs[0];
-      const excerpt = legacy ? claim.quote : claim.evidence_refs[0]?.excerpt;
-      const start = legacy ? 0 : claim.evidence_refs[0]?.start ?? 0;
       if (!evidence || !excerpt) continue;
       const source = await openClaimEvidence(tx, evidence, excerpt, start, legacy);
       if (!source || !maySend(source)) continue;
@@ -163,13 +107,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
         }
         if (scopeBasis.length !== claim.scope.basis.length) continue;
       }
-      add(region, {value: {id: row.id, rev: fact.ref.rev, text: legacy ? null : claim.text,
-        ...(!legacy && claim.authority && {authority: claim.authority, ...(options.beliefTools && {category: claim.authority}), ...(claim.refusal && {refusal: claim.refusal})}),
-        quote_excerpt: excerpt, kind: legacy ? 'legacy' : claim.category,
-        scope: legacy ? {kind: 'unknown'} : claim.scope.kind === 'object'
-          ? {kind: 'object', id: claim.scope.object} : claim.scope,
-        valid_until: legacy ? null : claim.valid_until, recordedTick: row.tick, ttl: understanding.ttl, sticky: understanding.sticky,
-        evidence_refs: understanding.evidence_refs},
+      add(region, {value: claimRecallValue(fact, claim, row.tick, excerpt, !!options.beliefTools),
       sent: [witness(fact), {...witness(source), fragment: {field: 'answer', start, end: start + excerpt.length}}],
       basis: scopeBasis, ...(!legacy && claim.valid_until ? {expiresAt: claim.valid_until} : {})});
     }
@@ -225,7 +163,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     const projection = await resolveSource(tx, ref, { recipient: 'workspace', maySend }, 'following');
     if (!projection || projection.content === null || projection.content === '') return;
     const content = typeof projection.content === 'string' ? textSlice(projection.content, 0, 600).content : projection.content;
-    const sourceWitness: SentWitness = { ...witness(fact), fragment: { itemId: source.itemId, slotId: 'answer',
+    const sourceWitness: SentWitness<WorkspaceWitness> = { ...witness(fact), fragment: { itemId: source.itemId, slotId: 'answer',
       ...(typeof content === 'string' ? { end: content.length } : {}) } };
     return { fact, ref, content, submittedAt, gradingVersion, witness: sourceWitness };
   }
@@ -339,25 +277,12 @@ export async function readMemoryGateway(options: {
   authorize: (tx: ReadTransaction) => Promise<void>; ownTurn?: string; query?: string; beliefTools?: boolean;
 }) {
   const { db, owner, scope, intent, maxBytes, expand, maySend, authorize, ownTurn, query } = options;
-  if (!Number.isInteger(maxBytes) || maxBytes < 1024 || maxBytes > 16_384) throw new Error('记忆预算须在 1–16 KiB。');
-  const available: readonly MemoryRegion[] = regionsByIntent[intent];
-  if (expand && (!available.includes(expand.region) || !Number.isSafeInteger(expand.start) || expand.start < 0 ||
-      !/^[a-f0-9]{64}$/.test(expand.basisDigest)))
-    throw new Error('记忆展开位置无效。');
-  const regions = expand ? [expand.region] : available;
+  const regions = recallRegions(intent, maxBytes, expand);
   const collect = async (tx: ReadTransaction) => {
     const results = await collectRecall(tx, scope, maySend, new Date().toISOString(), regions, {management: intent === 'management',
       ...(options.beliefTools ? {beliefTools:true} : {}),
       ...(ownTurn ? {ownTurn} : {}), ...(query ? {query} : {})});
-    const { bundle, selected } = packBundle(intent, regions, results, maxBytes, expand);
-    const context = JSON.stringify(bundle);
-    const sent = selected.flatMap(item => item.sent);
-    const witnesses = (items: readonly RegionItem[]) => [...new Map(items.flatMap(item =>
-      [...(item.basis ?? []), ...item.sent].map(ref => [`${ref.id}:${ref.rev}`, ref] as const))).values()];
-    const opened = witnesses([...results.values()].flat());
-    const basis = witnesses(selected);
-    const expiresAt = selected.flatMap(item => item.expiresAt ? [item.expiresAt] : []).sort()[0] ?? null;
-    return { bundle, context, receipt: { digest: digest(context), opened, basis, sent, expiresAt } };
+    return recallPacket(intent, regions, results, maxBytes, text => createHash('sha256').update(text).digest('hex'), expand);
   };
   let recall: Awaited<ReturnType<typeof collect>> | undefined;
   const receipt = await recordLocalRead(db, { learner: studioLearner, ownerKind: owner.kind, ownerId: owner.id,

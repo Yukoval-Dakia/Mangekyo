@@ -7,10 +7,10 @@ import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-va
 import {
   applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
 } from '../../modules/companion/claim.ts';
-import { hypothesisStatus, saveBeliefCommand, undoHypothesisCommand } from '../../modules/companion/belief.ts';
+import { managedUnderstanding, saveBeliefCommand, undoHypothesisCommand } from '../../modules/companion/belief.ts';
 import { hypothesisIsHead, openObjectiveCitations } from './belief-evidence.ts';
 import { manageMemoryAssertionCommand, memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
-import { citationExcerpt, extractedUnderstanding, reviewUnderstanding, understandingPresentation } from '../../modules/companion/understanding.ts';
+import { extractedUnderstanding } from '../../modules/companion/understanding.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
@@ -74,16 +74,7 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
           const sources = data.belief
             ? await openObjectiveCitations(tx, data.evidence_refs, purpose, () => true)
             : await openUnderstandingCitations(tx, data.evidence_refs, 'storage');
-          const evidenceState = sources.length === data.evidence_refs.length ? 'current' : 'unavailable';
-          understandings.push({ref: claimWitness(fact), evidenceState,
-            ...(data.evidence_refs.some(ref => ref.span) ? {status: data.sticky ? 'learner-corrected' : 'tentative'} : {}),
-            understanding: evidenceState === 'current'
-              && !data.belief?.forgotten
-              ? {...data, kind: understandingPresentation(data, sources), ...(data.belief ? {category: 'hypothesis',
-                  status: hypothesisStatus(data)} : {}),
-                review: reviewUnderstanding(fact.ref.id, data, sources),
-                evidence_refs: data.evidence_refs.map((ref, index) => ({...ref, excerpt: citationExcerpt(sources[index]!, ref)}))}
-              : {...data, text: null, scope: null, evidence_refs: []}});
+          understandings.push({ref: claimWitness(fact), ...managedUnderstanding(fact.ref.id, data, sources)});
         }
         return {items, understandings, next: rows.length > 50 ? rows[49]!.id : null};
       });
