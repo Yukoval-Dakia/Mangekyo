@@ -190,7 +190,7 @@ type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => P
 
 // A scope lasts for one projection (including any recall it mounts). No remote
 // authority carries over to a later HTTP request, stream refresh, or model send.
-export function notionReadScope(db: Db, learner: LearnerId) {
+export function notionReadScope(db: Db, learner: LearnerId, signal?: AbortSignal) {
   const {snapshot, locked, provider} = notionHost(db, {learner});
   type Authority = 'authorized' | 'withdrawn' | 'unconfirmed';
   const pages = new Map<string, Authority>();
@@ -223,6 +223,7 @@ export function notionReadScope(db: Db, learner: LearnerId) {
     }));
     if (!requested.size && !publish) return initial;
     for (const {key, witness, selection, pageId, watermark} of requested.values()) {
+      signal?.throwIfAborted();
       if (!pages.has(key)) {
         try {
           await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId);
@@ -234,7 +235,10 @@ export function notionReadScope(db: Db, learner: LearnerId) {
       }
       witnesses.set(witness, pages.get(key)!);
     }
-    return locked<P | T>(tx => publish ? publish(tx, check(tx)) : project(tx, check(tx)));
+    return locked<P | T>(tx => {
+      signal?.throwIfAborted();
+      return publish ? publish(tx, check(tx)) : project(tx, check(tx));
+    });
   }
 
   return {read, check};

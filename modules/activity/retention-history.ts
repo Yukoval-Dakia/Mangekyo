@@ -4,6 +4,8 @@ import {
 } from '@mangekyo/kernel';
 import { validatesWorkbookHistory, workbookWitnessesBy, type ActivityEvidenceReadScope, type WorkbookHistoryTarget } from './evidence-read.ts';
 import { insideFrozenPosttestWindow, posttestOpensAt, retentionPaperType, type posttestIssuance, type RetentionWindow } from './retention-posttest.ts';
+import type { HelpRef } from './help-exposure-values.ts';
+import { sameWorkbookJson } from './workbook-values.ts';
 import type { ActivityEvidenceObservation, activityHelpProcess } from './evidence-slice.ts';
 
 type Observation = {
@@ -11,7 +13,7 @@ type Observation = {
   admittedAt: Tick;
   submittedAt: string;
   result: ActivityEvidenceObservation['result'];
-  exposure: { kind: 'independent' | 'exposed' | 'unknown' };
+  exposure: { kind: 'independent' | 'unknown' } | {kind:'exposed'; refs: readonly HelpRef[]};
   novelty?: 'same-item' | 'variant' | 'fresh-context';
 };
 type FrozenInput = {
@@ -90,9 +92,9 @@ async function claimsMatch(
   cutoff: Tick,
   open: () => Promise<ReopenWorkbook | undefined>,
 ) {
-  const observations = input.observations.filter(row => row.exposure.kind === 'independent' || row.novelty === 'variant');
+  const observations = input.observations.filter(row => row.exposure.kind !== 'unknown' || row.novelty === 'variant');
   // Cross-item evidence is stored in the canonical slice, outside the legacy observations list.
-  const events = input.canonicalEvidence?.events.filter(row => row.help_level === 'independent' || row.item_novelty === 'isomorphic') ?? [];
+  const events = input.canonicalEvidence?.events ?? [];
   if (!observations.length && !events.length) return true;
   if (BigInt(cutoff) > BigInt(input.observedThrough)) return false;
   const reopen = await open();
@@ -110,6 +112,8 @@ async function claimsMatch(
     return claim.submission.rev === observation.submission.rev && claim.admittedAt === observation.admittedAt &&
       claim.submittedAt === observation.submittedAt && claim.result === observation.result &&
       claim.exposure.kind === observation.exposure.kind &&
+      (claim.exposure.kind !== 'exposed' ||
+        (observation.exposure.kind === 'exposed' && sameWorkbookJson(claim.exposure.refs,observation.exposure.refs))) &&
       (claim.novelty ?? 'same-item') === (novelty === 'same' ? 'same-item' : 'variant');
   }) && events.every(claim => {
     const { evidence, novelty } = comparable.get(claim.ref)!;
