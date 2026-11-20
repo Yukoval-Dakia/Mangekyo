@@ -3,7 +3,7 @@ import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
+import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
@@ -19,6 +19,7 @@ import { workbookReadingContext } from '../../modules/activity/workbook-presenta
 import { sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, workbookQuestionView, type WorkbookQuestion } from '../../modules/activity/workbook-values.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { workbookWitnessReader } from '../../modules/activity/workbook-backtrace-values.ts';
+import { notionReadScope, type CheckNotionRead } from './notion.ts';
 import type { openRetention } from './retention.ts';
 import { selectedWorkbookRead, retentionPurpose, workbookNotionAccess } from './retention-workbook.ts';
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
@@ -47,11 +48,11 @@ export const historicalWorkbookMount = (tx: ReadTransaction, id: FactId, fact: F
 export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: CommandHooks, authority: WorkbookContextAuthority) {
   const key = randomBytes(32);
   const sign = (...scope: unknown[]) => createHmac('sha256', key).update(canonicalJsonString(scope)).digest('base64url');
-  async function discover(tx: ReadTransaction, mount: BoundMount, item: WorkbookQuestion, requested?: string) {
+  async function discover(tx: ReadTransaction, mount: BoundMount, item: WorkbookQuestion, check: CheckNotionRead, requested?: string) {
     if (!item.sourceQuestionRef) return { handles: [] };
     const question = helpRef(item.sourceQuestionRef);
     const use = mount.issuance ? retentionPurpose : purpose;
-    const selected = selectedWorkbookRead(tx,use,createCommandReadContext(tx,use));
+    const selected = selectedWorkbookRead(tx,use,createCommandReadContext(tx,use),check);
     const read: Reader = {
       async fact<Value>(id: FactId, options: Parameters<Reader['fact']>[1]) {
         const fact = await selected.fact(id,options);
@@ -109,26 +110,25 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
     return {handles,card:{...card,basis:proof.witnesses()}};
   }
 
-  const questions = (tx: ReadTransaction, items: readonly WorkbookQuestion[], mount?: BoundMount | null) =>
+  const questions = (tx: ReadTransaction, items: readonly WorkbookQuestion[], mount: BoundMount | null, check: CheckNotionRead) =>
     Promise.all(items.map(async item => {
-      const handles = mount ? (await discover(tx,mount,item)).handles : [];
+      const handles = mount ? (await discover(tx,mount,item,check)).handles : [];
       return {...workbookQuestionView(item), ...(handles.length ? {readingContext:handles} : {})};
     }));
 
   return {questions,
-    async issued(tx: ReadTransaction, id: FactId) {
+    async issued(tx: ReadTransaction, id: FactId, check: CheckNotionRead) {
       const bound = await authority.activePosttest?.(tx,id);
       if (!bound) throw denied();
       const {mount,paper} = bound;
       return {id,revision:mount.paper.rev,title:paper.title,savedAt:paper.savedAt,source:null,attempts:[],
-        questions:await questions(tx,paper.questions,mount)};
+        questions:await questions(tx,paper.questions,mount,check)};
     },
     async event(id: FactId, input: Record<string, unknown>) {
-      let event;
+      let event: ReturnType<typeof workbookReadingContext>;
       try { event = workbookReadingContext(input); }
       catch { throw new RequestError(400, '帮助请求格式无效。'); }
-      try { return await db.tx(scope, async tx => {
-        await lockLearner(tx,tx.learner);
+      const prepare = async (tx: ReadTransaction, check: CheckNotionRead) => {
         const read = createCommandReadContext(tx,purpose);
         const surface = await read.fact(id,{mode:'following'});
         let mount: BoundMount | null = null;
@@ -151,7 +151,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
         const item = paper?.questions.find(question=>question.id===event.itemId);
         if (!mount || !item || mount.paper.rev !== event.paperRev) throw denied();
         if (event.phase === 'opened' && !await verifyWorkbookQuestionPermit(tx,read,event.permit,mount,item.id)) throw denied();
-        const {card} = await discover(tx,mount,item,event.ref);
+        const {card} = await discover(tx,mount,item,check,event.ref);
         if (!card) throw denied();
         const witness = mount.issuance ? canonicalJsonString(card.basis) : '';
         const openingId = factId(stableId('paper-capsule-open',event.ref,witness));
@@ -164,10 +164,15 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
           const opened = await read.fact(openingId,pinned);
           if (opened.type !== helpExposureType || !sameWorkbookJson(opened.value,{...presentation,kind:'opened'})) throw denied();
         }
+        return {openingId, displayRef, presentation, card, purpose:mount.issuance ? retentionPurpose : purpose};
+      };
+      try { return await notionReadScope(db,studioLearner).read(prepare, async (tx,check) => {
+        const prepared = await prepare(tx,check);
+        const {openingId, displayRef, presentation, card} = prepared;
         const handle = createCommandHandler(withinLearnerTransaction(db,tx),{modules:[activity],hooks});
         const eventId = event.phase === 'opened' ? openingId : factId(stableId('paper-capsule-display',openingId));
         const receipt = await handle({...scope,actor:'learner',...helpExposureRequest(eventId,{...presentation,kind:event.phase}),
-          purpose:mount.issuance ? retentionPurpose : purpose});
+          purpose:prepared.purpose});
         if (receipt.state !== 'done' || receipt.wrote[0]?.id !== eventId) throw denied();
         return event.phase === 'opened' ? {kind:card.kind,text:card.text,displayRef} : {recorded:true};
       }); } catch (error) {

@@ -2,7 +2,9 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import { reopenControlledHelpBasis } from '../../modules/activity/help-exposure-values.ts';
-import { withSelectedNotionSources, type SelectedNotionAccess } from '../../modules/capture/notion-source.ts';
+import type { SelectedNotionAccess } from '../../modules/capture/notion-source.ts';
+import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
+import { readStudioNotionSource, type CheckNotionRead } from './notion.ts';
 import { workbookEvidenceReader } from '../../modules/activity/workbook-evidence-reader.ts';
 import type { SourceRefV1 } from '../../modules/activity/source-values.ts';
 import { knowledgeEdgeType, workspaceEntryType } from '../../modules/content/knowledge-edge.ts';
@@ -17,14 +19,18 @@ export function workbookNotionAccess(tx: ReadTransaction, purpose: string) {
   return purpose === retentionPurpose ? {purpose:'learning',recipientId:'studio:learning-reader'} : {purpose,recipientId:tx.learner};
 }
 
-export function selectedWorkbookRead(tx: ReadTransaction, purpose: string, sourceRead: SelectedNotionAccess['sourceRead']) {
-  const read = withSelectedNotionSources({sourceRead, selectionRead:createCommandReadContext(tx,'storage'),
-    learner:tx.learner, ...workbookNotionAccess(tx,purpose)});
-  return {async fact(...args: Parameters<typeof read.fact>) {
-    try { return await read.fact(...args); }
-    catch (error) {
-      if (error instanceof Error && error.message === 'Notion 选源不可用。')
-        throw new FactReadDeniedError('recipient','本卷未授权此 Notion 选源。');
+export function selectedWorkbookRead(tx: ReadTransaction, purpose: string, sourceRead: SelectedNotionAccess['sourceRead'], check?: CheckNotionRead) {
+  const access = {...workbookNotionAccess(tx,purpose), maySend: (fact: {ref: {learner: string}}) => fact.ref.learner === tx.learner};
+  return {async fact(...args: Parameters<typeof sourceRead.fact>) {
+    const fact = await sourceRead.fact(...args);
+    if (fact.type !== captureSourceType || sourceEnvelope(fact.value).kind !== 'notion') return fact;
+    try {
+      const authorized = await readStudioNotionSource(tx, ...args, access);
+      await check?.(authorized);
+      return authorized;
+    } catch (error) {
+      if ((error instanceof RequestError && error.status === 403) || (error instanceof Error && error.message === 'Notion 选源不可用。'))
+        throw new FactReadDeniedError('recipient','本卷未获准读取此 Notion 页。');
       throw error;
     }
   }};

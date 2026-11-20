@@ -1,3 +1,4 @@
+import { notionReadScope } from './notion.ts';
 import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { attemptView, projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
@@ -209,9 +210,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
 
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
     const paperId = factIdOf(id, '找不到这份试卷。');
-    return db.snapshot({ learner: studioLearner }, async (tx) => {
+    return notionReadScope(db,studioLearner).read(async (tx,check) => {
       if (await factType(tx,paperId) === posttestIssuanceType) {
-        try { return await capsules.issued(tx,paperId); }
+        try { return await capsules.issued(tx,paperId,check); }
         catch (error) { mapReadFailure(error,'找不到已发放的后测。','后测当前不可读取。'); }
       }
       const { paper, revision, epoch } = await readPaperSnapshot(tx, paperId);
@@ -224,7 +225,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       for (const { id: attemptId, rev, attempt, fact } of await allAttempts(tx, read)) {
         if (attempt.paperId !== paperId) continue;
         const mount = await historicalWorkbookMount(tx,paperId,fact,read);
-        const questions = mount ? await capsules.questions(tx,attempt.paper.questions,mount) : [];
+        const questions = mount ? await capsules.questions(tx,attempt.paper.questions,mount,check) : [];
         const view = { ...attemptView(attemptId, attempt, assessments.get(attemptId) ?? []), rev, questions,
           ...(mount ? {paperRev:mount.paper.rev} : {}) };
         const release = attempt.paper.assessmentRelease;
@@ -238,7 +239,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         title: paper.title,
         savedAt: paper.savedAt,
         source,
-        questions: await capsules.questions(tx,paper.questions,{paper:{id:paperId,rev:revision},epoch}),
+        questions: await capsules.questions(tx,paper.questions,{paper:{id:paperId,rev:revision},epoch},check),
         ...(paper.assessmentRelease ? { assessmentReleaseRef: paper.assessmentRelease.releaseRef } : {}),
         attempts,
       };
