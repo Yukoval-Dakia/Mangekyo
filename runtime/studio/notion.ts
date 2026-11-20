@@ -1,6 +1,6 @@
 import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createAuthorizedFactReader, createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
@@ -65,14 +65,6 @@ export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnaps
   }
 }
 
-function transactionDb(db: Db, tx: DbTransaction): Db {
-  const nested: Db['tx'] = async (scope, run) => {
-    if (scope.learner !== tx.learner) throw new Error('Notion command learner mismatch');
-    return run(tx);
-  };
-  return {...db, query: tx.query, snapshot: nested, tx: nested};
-}
-
 async function sources(tx: ReadTransaction, selection: NotionSelection, allGenerations = false) {
   return (await tx.query<{id: FactId; rev: number; pageId:string; lastEditedTime:string}>(`WITH current AS (
     SELECT f.id,f.type,r.rev,r.data FROM facts f JOIN fact_revs r ON (f.learner_id,f.id,f.current_rev)=(r.learner_id,r.fact_id,r.rev)
@@ -114,7 +106,7 @@ function notionHost(db: Db) {
         const key = error.invalidated.kind === 'selection' ? 'root' : error.invalidated.pageId;
         await locked(async tx => {
           await live(tx, id, epoch, watermark);
-          await recordLocalRead(transactionDb(db, tx), {learner:tx.learner, ownerKind:'session',
+          await recordLocalRead(withinLearnerTransaction(db, tx), {learner:tx.learner, ownerKind:'session',
             ownerId:denialOwner(id, epoch), stepKey:key, label:'notion-access-denial', input:{}}, async () => 'denied', async () => {});
         });
         throw new RequestError(403, 'Notion 已撤回该来源的访问。');
@@ -159,7 +151,7 @@ export async function confirmNotionDispatch(db: Db, pages: Awaited<ReturnType<ty
 
 export function openStudioNotion(db: Db, capture: LoadedModule) {
   const {connection, snapshot, locked, live, provider} = notionHost(db);
-  const handle = (tx: DbTransaction) => createCommandHandler(transactionDb(db, tx), {modules:[capture], hooks:createStudioCommandHooks()});
+  const handle = (tx: DbTransaction) => createCommandHandler(withinLearnerTransaction(db, tx), {modules:[capture], hooks:createStudioCommandHooks()});
 
   async function settings() {
     return snapshot(async tx => {
@@ -241,7 +233,7 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
 
   async function record(tx: DbTransaction, requestId: string, input: Json, save: () => Promise<string>, authorize: () => Promise<void>) {
     try {
-      return await recordLocalRead(transactionDb(db,tx), {learner:tx.learner, ownerKind:'session',
+      return await recordLocalRead(withinLearnerTransaction(db,tx), {learner:tx.learner, ownerKind:'session',
         ownerId:stableId('notion-request',requestId), stepKey:'result', label:'notion-request', input}, save, authorize);
     } catch (error) {
       if (error instanceof Error && error.message === 'Workspace read receipt does not match the request') throw stale();
