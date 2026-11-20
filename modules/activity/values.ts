@@ -74,6 +74,8 @@ export function studyAttachment(input: unknown) {
     mode: value.mode as 'ask' | 'prepare',
   };
 }
+export const studyRecordType = 'activity.studyRecord';
+
 export function studyRecord(input: unknown) {
   const value = object(input);
   return { title: field(value, 'title', 240), text: field(value, 'text') };
