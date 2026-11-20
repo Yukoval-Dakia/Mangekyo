@@ -11,7 +11,7 @@ import {practiceSubmission, ridingPracticeType} from '../../modules/activity/pra
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType} from '../../modules/activity/workbook-values.ts';
-import {textbookPageFrom, textbookPageType, type TextbookBlockBody} from '../../modules/content/textbook-page.ts';
+import {openTextbookReference, textbookBodyReference, textbookPageFrom, textbookPageType, type TextbookBlockBody} from '../../modules/content/textbook-page.ts';
 import {
   WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
   type WorkspaceEntryKind,
@@ -147,7 +147,7 @@ function project(fact: FactSnapshot, anchor: SourceAnchorV1, recipient: SourceAc
     } else if (recipient === 'workspace' && fact.type === textbookPageType) {
       const page = textbookPageFrom(fact);
       return {kind: 'page', title: page.title, content: page.blocks.map(block => textbookText(block.body)).filter(Boolean).join('\n\n'),
-        blocks: page.blocks.map(({id,parentId,body}) => ({id,parentId,kind:body.kind}))};
+        ...(page.tags ? {tags:page.tags} : {}), blocks:page.blocks.map(({id,parentId,body}) => ({id,parentId,kind:body.kind}))};
     } else if (recipient === 'workspace' && fact.type === workbookPaperType) {
       const paper = workbookPaper(fact.value);
       return {title: paper.title, content: paper.questions.map(({prompt}, index) => `${index + 1}. ${prompt}`).join('\n\n')};
@@ -179,7 +179,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const anchor: SourceAnchorV1 = reference?.anchor ?? {kind: 'whole'};
   const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const reader = createAuthorizedFactReader(tx, sourcePurpose(access), accepts);
-  const seen = new Map<string, FactSnapshot>();
+  const seen = new Map<string, {fact:FactSnapshot; pinned:boolean}>();
   const path = new Set<string>();
   const questionSources: Parameters<SourceTrack>[] = [];
   const checkedAttempts = new Set<string>();
@@ -188,14 +188,20 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
       (access.recipient === 'workspace' && fact.type === textbookPageType));
 
-  async function visit(key: string, revision?: Revision): Promise<FactSnapshot | undefined> {
-    if (path.has(key) || path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(key)) return;
-    if (seen.has(key)) return seen.get(key);
-    const fact = await reader.fact(factId(key), revision === undefined ? {mode: 'following'} : {mode: 'pinned', rev: revision});
-    if (key === id && !rootType(fact)) return;
+  async function visit(sourceId: string, revision?: Revision): Promise<FactSnapshot | undefined> {
+    if (path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(sourceId)) return;
+    const fact = await reader.fact(factId(sourceId), revision === undefined ? {mode: 'following'} : {mode: 'pinned', rev: revision});
+    const key = `${sourceId}:${fact.ref.rev}`;
+    if (path.has(key)) return;
+    const visited = seen.get(key);
+    if (visited) {
+      if (revision === undefined) visited.pinned = false;
+      return visited.fact;
+    }
+    if (sourceId === id && !path.size && !rootType(fact)) return;
+    path.add(key);
     if (fact.type === workspaceEntryType) {
       const entry = workspaceEntry(fact.value);
-      path.add(key);
       for (const witness of entry.basis) {
         const source = await visit(witness.id);
         if (!source || source.ref.rev !== witness.rev || source.accessEpoch !== witness.epoch) return;
@@ -206,10 +212,23 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
           checkedAttempts.add(witness.id);
         }
       }
-      if (!entry.links.every(link => seen.has(link))) return;
-      path.delete(key);
+      const sources = new Set([...seen.values()].map(w => w.fact.ref.id));
+      if (!entry.links.every(link => sources.has(factId(link)))) return;
+    } else if (fact.type === textbookPageType && access.recipient === 'workspace') {
+      const page = textbookPageFrom(fact);
+      for (const source of page.basis ?? []) {
+        const opened = await visit(source.id, source.rev);
+        if (!opened || opened.type !== source.type || opened.accessEpoch !== source.epoch) return;
+      }
+      for (const block of page.blocks) {
+        const reference = textbookBodyReference(block.body);
+        if (!reference) continue;
+        if (reference.fact.learner !== tx.learner || !await visit(reference.fact.id, reference.fact.rev)) return;
+        await openTextbookReference(reader, reference);
+      }
     }
-    seen.set(key, fact);
+    path.delete(key);
+    seen.set(key, {fact, pinned: revision !== undefined});
     return fact;
   }
   try {
@@ -256,7 +275,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
           ? await reader.fact(documentId, {mode: 'pinned', rev: documentRevision})
           : currentDocument;
       if (!isMaterialIntakePair(material.ref.id, document)) return;
-      seen.set(documentId, document);
+      seen.set(`${documentId}:${document.ref.rev}`, {fact:document,pinned:mode === 'pinned' && documentRevision !== undefined});
       linkedMaterial = material;
       body = document;
     }
@@ -264,9 +283,9 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       ? {...anchor, end:Math.min(anchor.end, intakeTextOf(body).text.length)} : anchor;
     const projection = project(body, projectionAnchor, access.recipient);
     if (!projection) return;
-    for (const witness of seen.values()) {
+    for (const {fact:witness, pinned} of seen.values()) {
       const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
-      access.track?.(witness, isReferenced ? mode : undefined);
+      access.track?.(witness, witness.type === textbookPageType || pinned ? 'pinned' : isReferenced ? mode : undefined);
     }
     for (const proof of questionSources) access.track?.(...proof);
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};

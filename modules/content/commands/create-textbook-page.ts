@@ -1,6 +1,6 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
 import { editSequence, fields, list, pageId, record, text } from '../parse.ts';
-import { parseTextbookPage, textbookPageType, verifyTextbookBodyReference } from '../textbook-page.ts';
+import { checkTextbookBasis, parseTextbookPage, requireTextbookBodyBasis, textbookPageType, verifyTextbookBodyReference } from '../textbook-page.ts';
 
 export default defineCommand({
   type: 'content.createTextbookPage',
@@ -17,7 +17,11 @@ export default defineCommand({
     },
   },
   write: async (ctx, input): Promise<readonly FactWrite[]> => {
-    for (const block of input.page.blocks) await verifyTextbookBodyReference(ctx, block.body);
+    if (input.page.basis) await checkTextbookBasis(ctx.read, input.page.basis);
+    for (const block of input.page.blocks) {
+      if (input.page.basis) requireTextbookBodyBasis(block.body, input.page.basis);
+      await verifyTextbookBodyReference(ctx, block.body);
+    }
     return [{ kind: 'create', id: input.id, factType: textbookPageType, data: input.page, purpose: input.purpose }];
   },
 });

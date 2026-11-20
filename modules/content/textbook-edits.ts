@@ -2,12 +2,19 @@ import type { CommandContext, FactId, FactWrite, Revision } from '@mangekyo/kern
 import { editSequence, fields, key, list, optionalKey, pageId, record, revision, text } from './parse.ts';
 import {
   checkTextbookTree,
+  checkTextbookBasis,
   locateTextbookBlock,
+  mergeTextbookBasis,
+  parseTextbookBasis,
   parseTextbookBlockBody,
+  parseTextbookPage,
+  requireTextbookBodyBasis,
   textbookPageFrom,
   verifyTextbookBodyReference,
   type TextbookBlock,
   type TextbookBlockBody,
+  type TextbookBasis,
+  type TextbookReadContext,
 } from './textbook-page.ts';
 
 type BlockPlacement = { readonly parentId: string | null; readonly beforeId: string | null };
@@ -26,6 +33,7 @@ export type TextbookRevision = {
   readonly expectedRev: Revision;
   readonly clientEditSeq: number;
   readonly edits: readonly TextbookEdit[];
+  readonly basis?: readonly TextbookBasis[];
 };
 
 function parseEdit(input: unknown): TextbookEdit {
@@ -61,7 +69,7 @@ function parseEdit(input: unknown): TextbookEdit {
 
 export function parseTextbookRevision(input: unknown): TextbookRevision {
   const value = record(input);
-  fields(value, 'id', 'expectedRev', 'clientEditSeq', 'edits');
+  fields(value, 'id', 'expectedRev', 'clientEditSeq', 'edits', 'basis');
   const edits = list(value.edits).map(parseEdit);
   if (!edits.length) throw new Error('教材修订必须包含编辑。');
   if (new Set(edits.map(edit => edit.blockId)).size !== edits.length) {
@@ -72,7 +80,44 @@ export function parseTextbookRevision(input: unknown): TextbookRevision {
     expectedRev: revision(value.expectedRev),
     clientEditSeq: editSequence(value.clientEditSeq),
     edits,
+    ...(value.basis === undefined ? {} : {basis:parseTextbookBasis(value.basis)}),
   };
+}
+
+export function parseSavePage(input: Record<string, unknown>) {
+  if (input.ref === undefined) {
+    fields(input, 'title', 'content', 'blocks', 'tags', 'links');
+    if ((input.content === undefined) === (input.blocks === undefined)) throw new Error('新建时请选正文或结构块。');
+    const blocks = input.blocks ?? [{id:'intro', parentId:null, body:{kind:'text', text:input.content}}];
+    if (!Array.isArray(blocks) || !blocks.length || blocks.length > 64) throw new Error('请提供 1–64 个教材块。');
+    return {kind:'create' as const, page:parseTextbookPage({title:input.title, blocks,
+      ...(input.tags === undefined ? {} : {tags:input.tags})})};
+  }
+  fields(input, 'ref', 'expected_rev', 'patch', 'links');
+  const patch = list(input.patch);
+  if (!patch.length || patch.length > 24) throw new Error('每次修改请提供 1–24 项局部差异。');
+  const body = (content: unknown) => typeof content === 'string' ? {kind:'text', text:content} : content;
+  const edits = patch.map(item => {
+    const value = record(item);
+    const target = key(value.target);
+    switch (value.op) {
+      case 'replace_block':
+        fields(value, 'op', 'target', 'content');
+        return parseEdit({kind:'rewrite', blockId:target, body:body(value.content)});
+      case 'insert_after':
+        fields(value, 'op', 'target', 'block_id', 'content');
+        return parseEdit({kind:'insert_after', blockId:value.block_id, afterId:target, body:body(value.content)});
+      case 'replace_anchor':
+        fields(value, 'op', 'target', 'anchor', 'content');
+        return parseEdit({kind:'replace_anchor', blockId:target, anchor:value.anchor, replacement:value.content});
+      case 'delete_block':
+        fields(value, 'op', 'target');
+        return parseEdit({kind:'delete_block', blockId:target});
+      default: throw new Error('教材 patch 操作无效。');
+    }
+  });
+  return {kind:'patch' as const, ref:text(input.ref, '页引用'),
+    expectedRev:input.expected_rev === undefined ? undefined : revision(input.expected_rev), edits};
 }
 
 function applyEdit(blocks: readonly TextbookBlock[], edit: TextbookEdit): readonly TextbookBlock[] {
@@ -125,12 +170,17 @@ export async function writeTextbookRevision(
   const current = await ctx.read.fact(input.id, { mode: 'following' });
   if (current.ref.rev !== input.expectedRev) throw new Error(`Fact revision conflict: ${input.id}`);
   const page = textbookPageFrom(current);
+  const basis = input.basis && mergeTextbookBasis(page.basis, input.basis);
+  if (basis && kind === 'revise') await checkTextbookBasis(ctx.read, basis);
   let blocks = page.blocks;
   for (const edit of input.edits) {
     blocks = applyEdit(blocks, edit);
-    if ('body' in edit) await verifyTextbookBodyReference(ctx, edit.body);
+    if ('body' in edit) {
+      if (basis) requireTextbookBodyBasis(edit.body, basis);
+      await verifyTextbookBodyReference(ctx, edit.body);
+    }
   }
-  return [{ kind, id: input.id, expectedRev: input.expectedRev, data: { ...page, blocks } }];
+  return [{ kind, id: input.id, expectedRev: input.expectedRev, data: { ...page, blocks, ...(basis ? {basis} : {}) } }];
 }
 
 type EditReview = {
@@ -145,25 +195,26 @@ type EditReview = {
   | { readonly state: 'invalid'; readonly reason: string }
 );
 
-export async function previewTextbookRevision(ctx: CommandContext, input: unknown) {
+export async function previewTextbookRevision(ctx: TextbookReadContext, input: unknown) {
   const revision = parseTextbookRevision(input);
   const snapshot = await ctx.read.fact(revision.id, { mode: 'pinned', rev: revision.expectedRev });
   const page = textbookPageFrom(snapshot);
-  let blocks = page.blocks;
+  const basis = revision.basis && mergeTextbookBasis(page.basis, revision.basis);
   const items: EditReview[] = [];
   for (const edit of revision.edits) {
     const before = locateTextbookBlock(page.blocks, edit.blockId);
     try {
-      const next = applyEdit(blocks, edit);
+      const next = applyEdit(page.blocks, edit);
+      if (basis && 'body' in edit) requireTextbookBodyBasis(edit.body, basis);
       const source = 'body' in edit ? await verifyTextbookBodyReference(ctx, edit.body) : null;
       items.push({ edit, before, state: 'ready', after: locateTextbookBlock(next, edit.blockId), source });
-      blocks = next;
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       items.push({ edit, before, state: 'invalid', reason: error.message });
     }
   }
-  return { base: snapshot.ref, accessEpoch: snapshot.accessEpoch, clientEditSeq: revision.clientEditSeq, items };
+  return { base: snapshot.ref, accessEpoch: snapshot.accessEpoch, clientEditSeq: revision.clientEditSeq, items,
+    ...(revision.basis ? {basis: revision.basis} : {}) };
 }
 
 export function selectTextbookEdits(
@@ -180,5 +231,6 @@ export function selectTextbookEdits(
     expectedRev: preview.base.rev,
     clientEditSeq: preview.clientEditSeq,
     edits: items.map(item => item.edit),
+    ...(preview.basis ? {basis:preview.basis} : {}),
   };
 }

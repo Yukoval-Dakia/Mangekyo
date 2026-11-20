@@ -31,6 +31,8 @@ import type {Manifest} from '../../kernel/src/derivations/manifest.ts';
 import {mountArtifact} from './presentation-store.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
+import {textbookPageType} from '../../modules/content/textbook-page.ts';
+import {openWorkspaceTextbook} from './workspace-textbook.ts';
 
 const presentationTool = {type:'function',function:{name:'mount_artifact',
   description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+presentationCatalog.bindings,
@@ -54,6 +56,7 @@ export function openWorkspaceTools(options: {
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
+  pageBasis?: readonly WorkspaceWitness[];
   currentObject?: OpenedCurrentLearningObject | undefined;
 }) {
   const {db, turn, currentObject} = options;
@@ -66,10 +69,28 @@ export function openWorkspaceTools(options: {
   const openedAnswers = new Map<string, WorkspaceWitness>();
   const produced = new Map<string, number>();
   const receipts = new Map<string,WorkspaceWriteReceipt>();
+  const pageSources = new Map<string, WorkspaceWitness>();
+  const pageOpened = new Map<string, WorkspaceWitness>();
+  const rememberPageSource = (w: WorkspaceWitness) => pageSources.set(`${w.id}:${w.rev}`,w);
+  const rememberPageOpen = (w:WorkspaceWitness) => pageOpened.set(`${w.id}:${w.rev}`,w);
+  for (const w of [...(options.pageBasis ?? []), ...options.prior]) rememberPageSource(w);
+  const savePage = openWorkspaceTextbook({
+    db, turn, authorize:options.authorize, maySend:options.maySend, opened:pageOpened,
+    basis:() => [...pageSources.values()],
+    ...(currentObject?.root.type === textbookPageType ? {currentPage:currentObject.root} : {}),
+    saved(receipt,witness) {
+      receipts.set(receipt.page?.status === 'saved' ? receipt.page.undo_token : receipt.page!.proposalId,receipt);
+      if (witness) rememberPageOpen(witness);
+    },
+  });
   if (currentObject) {
     const {view, root, basis, openedAnswer} = currentObject;
     const {id} = root;
-    for (const witness of basis) options.track(witness, true);
+    for (const witness of basis) {
+      options.track(witness, true);
+      rememberPageSource(witness);
+    }
+    rememberPageOpen(root);
     sources.set(id, root);
     if (root.type === workspaceEntryType) retainForWrites(root);
     opened.set(id, {id, workspace: true, title: view.title, text: view.content});
@@ -160,7 +181,8 @@ export function openWorkspaceTools(options: {
         const actual = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend:options.maySend});
         if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
       }
-      for (const witness of witnesses) options.track(witness, pythonAttempts || derivedSource || intakeImage ? true : undefined);
+      const directOpen = name === 'open_learning' || (name === 'read_workspace' && value.sourceRef);
+      for (const witness of witnesses) options.track(witness, pythonAttempts || derivedSource || intakeImage || directOpen ? true : undefined);
       for (const basis of trackedBasis) options.trackAssessment?.(basis);
       for (const basis of retentionBasis) options.trackRetention?.(basis);
       await options.authorize(tx);
@@ -184,7 +206,11 @@ export function openWorkspaceTools(options: {
       text = JSON.stringify(value);
       if (result.image) {
         receiveImage?.(result.image);
-        for (const w of witnesses) retainForWrites(w);
+        for (const w of witnesses) {
+          retainForWrites(w);
+          rememberPageSource(w);
+          rememberPageOpen(w);
+        }
       }
       if (value.ok) for (const witness of witnesses) overviewBasis.set(witness.id,witness);
     }
@@ -219,6 +245,13 @@ export function openWorkspaceTools(options: {
       if (typeof item?.id === 'string' && witnesses.some(w => w.id === item.id)) {
         opened.set(item.id, {id:item.id, workspace:true, title:String(item.title ?? item.kind ?? '学习记录'), text:String(item.content ?? JSON.stringify(item)).slice(0,3000)});
         const ref = sourceRefV1(item.sourceRef);
+        if (ref && item.ok !== false && item.part?.kind !== 'image_crop') {
+          const witness = witnesses.find(w => w.id === ref.fact.id && w.rev === ref.fact.rev && w.type === ref.fact.type);
+          if (witness) {
+            rememberPageOpen(witness);
+            for (const source of witnesses) rememberPageSource(source);
+          }
+        }
         if (ref && typeof item.content === 'string' && item.content.length && workspaceAttemptTypes.includes(ref.fact.type) &&
             (ref.anchor.kind === 'whole' || ref.anchor.kind === 'answer-slot')) {
           const witness = witnesses.find(w => w.id === ref.fact.id && w.rev === ref.fact.rev && w.type === ref.fact.type);
@@ -349,12 +382,13 @@ export function openWorkspaceTools(options: {
     if (!tool) return JSON.stringify({error:'请从本轮提供的工作区工具中选择。'});
     const fields = tool.function.parameters.properties;
     const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
-    if (unknown) return JSON.stringify(name === 'open_learning' || name === 'record_observation'
+    if (unknown) return JSON.stringify(name === 'open_learning' || name === 'record_observation' || name === 'save_page'
       ? learningToolError('invalid_args',unknown.slice(0,60),`可用字段为 ${Object.keys(fields).join('、')}。`,{
           tool:name,args:Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(fields,key))),why:'仅传工具支持的字段。',
         })
       : {error:`${name} 不支持字段 ${unknown.slice(0,60)}。可用字段为 ${Object.keys(fields).join('、')}。`});
     if (name === 'record_observation') return recordObservation(args,step);
+    if (name === 'save_page') return JSON.stringify(await savePage(args,step));
     return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead, receiveImage);
   }
   return {
@@ -381,5 +415,5 @@ export function openWorkspaceTools(options: {
 }
 export function workspaceInput(w: WorkspaceWitness) {
   return {kind: 'fact' as const, id: factId(w.id), rev: w.rev as Revision, accessEpoch: w.epoch as Tick,
-    mode: w.mode ?? (w.type === 'activity.workspaceEntry' ? 'pinned' : 'following')};
+    mode: w.mode ?? (w.type === 'activity.workspaceEntry' || w.type === textbookPageType ? 'pinned' : 'following')};
 }

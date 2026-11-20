@@ -14,6 +14,10 @@ export const imageCropEdgeLimit = 512;
 export type ImageCrop = {left: number; top: number; width: number; height: number};
 export type StudyImage = {mediaType: 'image/png'; data: string};
 export type ReceiveStudyImage = (image: StudyImage) => void;
+const textbookBlockBody = {type:'object', required:['kind'], properties:{
+  kind:{type:'string',enum:['text','list','table','formula','image','reference','related']}, text, latex:text, order:text,
+  rows:{type:'array',items:strings}, source:{type:'object'}, alt:text, role:text, target:{anyOf:[text,{type:'object'}]}, allOf:{type:'array',items:{type:'object'}},
+}, additionalProperties:false};
 export const workspaceDefinitions = [
   tool('read_learner_radar', '读取当前获准的冻结保持预测和对账、目标、未完成任务、先修查询入口及可用卷面。缺证时保留未知。', {
     scope: {type:'object', additionalProperties:false, properties:{subject_id:text, kc_ids:{...strings, maxItems:8}}},
@@ -41,7 +45,16 @@ export const workspaceDefinitions = [
   tool('record_observation', '从本轮已打开的原答记录一条可撤回的推断。evidence_refs 使用读回的引用或记录 id。', {
     title: text, text, evidence_refs: {...strings, minItems: 1, maxItems: openLearningLimit},
   }, ['title','text','evidence_refs']),
-  tool('save_workspace', '新建给 kind、title、body；修改给 id 和变动字段。教材或方法笔记用 page。出题时 body 只写题面，解答放 answer，评分放 rubric。links 填来源 id，关系按起点、终点排列。', {
+  tool('save_page', '新建教材传 title 与 content 或 blocks。修改先用 open_learning 打开教材页或指定块，再传 ref（页 id、sourceRef JSON 或 current_page）、expected_rev 与 patch。target 是块 id；insert_after 另传新 block_id；replace_anchor 传恰好出现一次的原文 anchor 与替换 content。links 使用本轮实际打开的来源 id。本人编辑过的页返回可选差异，尚未应用。', {
+    title:text, content:text, tags:strings, links:{...strings,maxItems:openLearningLimit}, ref:text, expected_rev:integer,
+    blocks:{type:'array',minItems:1,maxItems:64,items:{type:'object',required:['id','parentId','body'],additionalProperties:false,
+      properties:{id:text,parentId:{type:['string','null']},body:textbookBlockBody}}},
+    patch:{type:'array',minItems:1,maxItems:24,items:{type:'object',required:['op','target'],additionalProperties:false,properties:{
+      op:{type:'string',enum:['replace_block','insert_after','replace_anchor','delete_block']},target:text,block_id:text,
+      anchor:text,content:{anyOf:[text,textbookBlockBody]},
+    }}},
+  }),
+  tool('save_workspace', '兼容旧工作区条目。个人教材使用 save_page。新建旧条目给 kind、title、body；修改给 id 和变动字段。出题时 body 只写题面，解答放 answer，评分放 rubric。links 填来源 id，关系按起点、终点排列。', {
     kind: {type: 'string', enum: workspaceKinds}, title: text, body: text, tags: strings, links: strings,
     answer: text, rubric: text, id: {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$', description:'仅更新时用已有 id；创建时省略。'}, rev: integer,
   }),
@@ -65,6 +78,7 @@ type SavedObservation = { status: 'saved'; text: string; undo_token: string };
 
 export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObservation;
   memory?: {status: 'saved'; action: 'remember' | 'correct' | 'forget'; undo_token: string};
+  page?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
 };
 export type WorkspaceTools = {
   presentationTool?: (typeof workspaceDefinitions)[number];

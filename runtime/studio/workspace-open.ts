@@ -12,10 +12,10 @@ import {textbookPageFrom, textbookPageType} from '../../modules/content/textbook
 import {readWorkbookDiagnosis} from './workbook-diagnosis.ts';
 import type {WorkspaceAssessmentBasis} from './workspace-read.ts';
 
-type ToolErrorCode = 'not_found' | 'access_revoked' | 'basis_stale' | 'invalid_args' | 'partial_success' | 'evidence_not_opened' | 'image_unavailable';
+type ToolErrorCode = 'not_found' | 'access_revoked' | 'basis_stale' | 'version_conflict' | 'invalid_args' | 'partial_success' | 'evidence_not_opened' | 'image_unavailable';
 
 export function learningToolError(code: ToolErrorCode, field: string, message: string, next?: {
-  tool: 'open_learning' | 'search_workspace' | 'record_observation'; args: Record<string, unknown>; why: string;
+  tool: 'open_learning' | 'search_workspace' | 'record_observation' | 'save_page'; args: Record<string, unknown>; why: string;
 }) {
   return {ok:false as const, code, field, message, ...(next && {next})};
 }

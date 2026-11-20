@@ -83,6 +83,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'read_learner_radar': return '读取学情雷达';
     case 'open_learning': return '打开学习对象 · ' + String(Array.isArray(args.refs) ? args.refs.length : 1) + ' 项\n' + output.slice(0, 900);
     case 'record_observation': return '记录学情观察 · ' + String(args.title ?? '').slice(0, 160);
+    case 'save_page': return '提交教材块变更';
     case 'retrieve_memory': return '查找已获准的记忆';
     case 'save_memory': return '登记本轮记忆操作';
     case 'mount_artifact': return '挂载交互作品 · ' + output.slice(0, 360);
@@ -190,7 +191,10 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const workspaceTool = workspace && nativeTools.some(tool => tool.function.name === name);
       if ((remote || workspaceTool) && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
         return {
-          content: JSON.stringify(name === 'open_learning'
+          content: JSON.stringify(name === 'save_page'
+            ? {ok:false, code:'invalid_args', field:'args', message:'请传教材保存的 JSON 对象。',
+              next:{tool:'save_page',args:{},why:'新建填 title 与 content 或 blocks；修改填 ref 与 patch。'}}
+            : name === 'open_learning'
             ? {ok:false, code:'invalid_args', field:'args', message:'请传包含 refs 的 JSON 对象。'}
             : {error: name + ' 需要一个 JSON 对象，请将字段直接放在对象里。'}),
           summary: '参数错误 · ' + name,
