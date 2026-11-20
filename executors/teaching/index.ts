@@ -219,7 +219,8 @@ export async function runCompanionTurn(
       ...(material ? [{ role: 'user' as const, content: '本次学习使用的材料：\n' + material }] : []),
       ...publicHistory,
       { role: 'user', content: question },
-  ], prepare && dependencies.tools ? {...dependencies, maxCompletionTokens: 8192} : dependencies, !prepare);
+  ], prepare ? {...dependencies, ...(dependencies.tools ? {maxCompletionTokens: 8192} : {})}
+    : {...dependencies, discoverTools: true}, !prepare);
   if (!prepare) return result;
   let kit = studyKit(parseJson(result.message));
   if (!kit && dependencies.tools) {

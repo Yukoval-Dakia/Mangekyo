@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
-import { loadMcpTools, invokeMcpTool } from './mcp-tools.ts';
+import { loadMcpTools, invokeMcpTool, remoteToolDefinition } from './mcp-tools.ts';
+import { findTools, studyToolDiscovery } from './study-tool-discovery.ts';
 import {projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
 import {openToolResult, studyToolResults} from './study-tool-results.ts';
 import { workspaceDefinitions, type WorkspaceTools } from './workspace-tools.ts';
@@ -20,6 +21,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   maxCompletionTokens?: 4096 | 8192;
   tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
 };
+type StudyRunOptions = StudyAgentOptions & { discoverTools?: boolean };
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 type ToolMessage = { role: 'assistant'; tool_calls: FunctionCall[]; providerTurn?: ProviderTurn; content: null } | ToolResultMessage;
 
@@ -68,7 +70,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
 }
 
 /** A turn owns its scratch files. External effects use the same durable journal as model calls. */
-export async function runStudyAgent(initial: Message[], options: StudyAgentOptions, streamReply = false) {
+export async function runStudyAgent(initial: Message[], options: StudyRunOptions, streamReply = false) {
   const connections = new McpTurnConnections();
   try {
     return await runStudyRounds(initial, options, streamReply, connections);
@@ -77,7 +79,7 @@ export async function runStudyAgent(initial: Message[], options: StudyAgentOptio
   }
 }
 
-async function runStudyRounds(initial: Message[], options: StudyAgentOptions, streamReply: boolean, connections: McpTurnConnections) {
+async function runStudyRounds(initial: Message[], options: StudyRunOptions, streamReply: boolean, connections: McpTurnConnections) {
   const tools = options.tools && createStudyTools(options.tools);
   const results = studyToolResults();
   const previews = new WeakMap<ToolResultMessage, string>();
@@ -88,6 +90,7 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
   const pinnedQuery = options.tools?.publicSearchQuery?.trim();
   const { model, reasoningEffort } = profileFor(options.provider);
   const remotes = await loadMcpTools(options.tools?.mcpServers ?? [], model, options.runEffect, connections);
+  const discovery = tools && options.discoverTools ? studyToolDiscovery(remotes) : undefined;
   const builtins = tools?.names.map(name => {
     const tool = definition(name);
     if (name === 'exa_search' && pinnedQuery) tool.function.description += ' 本轮只会检索学生指定的公开主题：' + pinnedQuery;
@@ -96,13 +99,13 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
   const nativeTools = workspace
     ? [...workspaceDefinitions, ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
     : [];
-  const definitions = [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []), ...Array.from(remotes, ([name, {tool}]) => ({
-    type: 'function', function: {name, description: tool.description, parameters: tool.inputSchema},
-  }))];
+  const coreDefinitions = [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []),
+    ...(discovery ? [findTools] : Array.from(remotes, ([name, remote]) => remoteToolDefinition(name, remote)))];
   const messages: (Message | ToolMessage)[] = [...initial];
   const trace: string[] = [];
   const endpoint = providerEndpoint(options.provider);
   for (let round = 0; round <= maxToolCalls; round++) {
+    const definitions = discovery ? [...coreDefinitions, ...discovery.takeDefinitions()] : coreDefinitions;
     const available = trace.length < maxToolCalls && definitions.length > 0;
     const body = JSON.stringify({ model, ...(reasoningEffort === 'default' ? {} : {reasoning_effort: reasoningEffort}), stream: true, max_completion_tokens: options.maxCompletionTokens ?? 4096,
       messages: definitions.length ? projectWorkspaceContext(messages, previews) : messages,
@@ -145,12 +148,17 @@ async function runStudyRounds(initial: Message[], options: StudyAgentOptions, st
     messages.push({ role: 'assistant', tool_calls: calls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {}), content: null });
     const executeCall = async (call: FunctionCall, position: number, priorRead?: Promise<unknown>) => {
       const name = call.function.name;
-      if (!definitions.some(tool => tool.function.name === name))
+      if (!definitions.some(tool => tool.function.name === name)) {
+        if (discovery) return {content: JSON.stringify({ok: false, code: 'tool_unavailable',
+          message: '当前请求未开放此工具。可先查找获准的工具或使用当前工具继续。',
+          next: {tool: findTools.function.name, args: {query: name}}}), summary: '工具不可用'};
         throw new TeachingError('evidence_scope', '模型请求了本轮未开放的工具。');
+      }
       await options.onProgress?.({phase: name === 'python' ? 'checking' : 'reading'});
       let parsed: unknown;
       try { parsed = JSON.parse(call.function.arguments); } catch { /* Send an actionable tool response. */ }
       const args = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
+      if (discovery && name === findTools.function.name) return discovery.find(args.query);
       if (name === openToolResult.function.name) return {...results.open(args), summary: '读取工具结果'};
       if (name === 'exa_search' && pinnedQuery) args.query = pinnedQuery;
       const remote = remotes.get(name);
