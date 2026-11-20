@@ -1,6 +1,6 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
 import { editSequence, fields, list, pageId, record, text } from '../parse.ts';
-import { checkTextbookBasis, parseTextbookPage, requireTextbookBodyBasis, textbookPageType, verifyTextbookBodyReference } from '../textbook-page.ts';
+import { checkTextbookBasis, parseTextbookPage, requireTextbookBodyBasis, textbookPageFrom, textbookPageType, verifyTextbookBodyReference } from '../textbook-page.ts';
 
 export default defineCommand({
   type: 'content.createTextbookPage',
@@ -17,6 +17,13 @@ export default defineCommand({
     },
   },
   write: async (ctx, input): Promise<readonly FactWrite[]> => {
+    if (input.page.archived || input.page.retiredBlockIds || input.page.movedBlocks || input.page.mergedFrom) {
+      throw new Error('教材归档或移动记录必须由现有页生成。');
+    }
+    if (input.page.parentPageId) {
+      const parent = textbookPageFrom(await ctx.read.fact(input.page.parentPageId, { mode: 'following' }));
+      if (parent.archived) throw new Error('教材父页已归档。');
+    }
     if (input.page.basis) await checkTextbookBasis(ctx.read, input.page.basis);
     for (const block of input.page.blocks) {
       if (input.page.basis) requireTextbookBodyBasis(block.body, input.page.basis);
