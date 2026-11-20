@@ -172,7 +172,7 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
          UNION ALL SELECT 1 FROM work WHERE family='todo' AND learner_id = $1 AND dedup_key = $3
           AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5
          UNION ALL SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$6 AND label=$7
-          AND step_key=$3 AND (state='started' OR consumed_tick IS NOT NULL OR
+          AND step_key=$3 AND ((state='started' AND result IS NULL) OR consumed_tick IS NOT NULL OR
             NOT effect_may_settle(learner_id, owner_id, started_tick, input_basis)) LIMIT 1`,
         [tx.learner, worksheetId(id, fact.ref.rev, fact.accessEpoch), dedupKey,
           JSON.stringify(sourceFactRev), String(settingsRevision), settingsId ?? null, scoutEffectLabel],

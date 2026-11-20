@@ -146,6 +146,25 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect(await usage()).toEqual({ held: 180n, settled: 30n });
   });
 
+  it('replays a durable paid decision when publishing its effect state fails', async () => {
+    const request = { learner, ownerKind: 'session', ownerId: newUlid(), label: 'priced-test', stepKey: 'scout', input: {} } as const;
+    const pricing = { route: 'one', limitUsdMicros: 85, reserveUsdMicros: 60, actualUsdMicros: () => 25 };
+    const response = { decision: 'review' };
+    const send = vi.fn(async () => response);
+    await db.query(`CREATE FUNCTION stop_effect_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'publication interrupted'; END $$`);
+    await db.query(`CREATE TRIGGER stop_effect_publication BEFORE UPDATE OF state ON effects
+        FOR EACH ROW EXECUTE FUNCTION stop_effect_publication()`);
+    await expect(runEffect(db, request, send, undefined, undefined, pricing)).rejects.toThrow('publication interrupted');
+    expect((await db.query('SELECT state,result,actual_usd_micros FROM effects WHERE learner_id=$1', [learner])).rows)
+      .toEqual([{ state: 'started', result: response, actual_usd_micros: '25' }]);
+    await db.query('DROP TRIGGER stop_effect_publication ON effects');
+    expect(await runEffect(db, request, send, undefined, undefined, pricing)).toEqual({ kind: 'done', result: response });
+    expect(await runEffect(db, request, send, undefined, undefined, pricing)).toEqual({ kind: 'done', result: response });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await db.snapshot({ learner }, effectBudgetUsage)).toEqual({ held: 0n, settled: 25n });
+  });
+
   it.each([false, true])('settles only the amount after erasure (receipt compacted: %s)', async compacted => {
     const root = factId(newUlid());
     const request = { learner, ownerKind: 'session', ownerId: compacted ? root : newUlid(),
@@ -443,7 +462,7 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     await db.query('DROP TABLE work_outbox');
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
-    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }]);
+    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }]);
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -455,8 +474,8 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (13)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (14)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 13');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 14');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
   }, { initialize: legacyWorkSchema }));

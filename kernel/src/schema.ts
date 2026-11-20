@@ -263,6 +263,11 @@ const migrations = [
     await installErasureFence(tx, true);
     await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=12');
   },
+  async (tx: DbQuery) => {
+    await tx.query(`ALTER TABLE effects ADD CHECK (state <> 'started' OR result IS NULL OR reserved_usd_micros IS NOT NULL)`);
+    // Workers must be able to publish a paid response staged before their predecessor stopped.
+    await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=13');
+  },
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */

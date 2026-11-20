@@ -22,9 +22,12 @@ export type EffectResult =
   | { readonly kind: 'done'; readonly result: Json }
   | { readonly kind: 'unknown'; readonly providerEffectId: string | null; readonly inFlight?: true };
 
+type EffectIdentity = readonly [string, EffectRequest['ownerKind'], string, string, string];
+
 type EffectRow = {
   input_digest: string;
   basis_current: boolean;
+  has_result: boolean;
   legacy: boolean;
   provider_effect_id: string | null;
   budget_route: string | null;
@@ -60,6 +63,26 @@ export async function effectBudgetUsage(tx: ReadTransaction) {
   return { settled: BigInt(row!.settled), held: BigInt(row!.held) };
 }
 
+/** The response is already durable. Publication may be retried without access to the transport. */
+async function publishPricedReceipt(tx: DbTransaction, identity: EffectIdentity, providerEffectId: string | null): Promise<EffectResult> {
+  await lockLearner(tx, tx.learner);
+  const { rows: [receipt] } = await tx.query<{ state: 'started' | 'done'; result: unknown }>(
+    `SELECT state,result FROM effects
+     WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5
+       AND provider_effect_id=$6 AND state IN ('started','done') AND result IS NOT NULL
+       AND reserved_usd_micros IS NOT NULL AND effect_may_settle(learner_id, owner_id, started_tick, input_basis)`,
+    [...identity, providerEffectId],
+  );
+  if (!receipt) return { kind: 'unknown', providerEffectId };
+  const result = json.parse(receipt.result);
+  if (receipt.state === 'started') await tx.withLearnerWrite(tick => tx.query(
+    `UPDATE effects SET state = 'done', ended_tick = $6
+     WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5`,
+    [...identity, tick],
+  ));
+  return { kind: 'done', result };
+}
+
 /** A supplied authorization check runs under the learner lock for reservation and replay. */
 export async function runEffect(
   db: Db,
@@ -73,7 +96,7 @@ export async function runEffect(
 ): Promise<EffectResult> {
   const { ownerKind, ownerId, stepKey, label, input } = request;
   const learner = learnerId(request.learner);
-  const identity = [learner, ownerKind, ownerId, stepKey, label] as const;
+  const identity: EffectIdentity = [learner, ownerKind, ownerId, stepKey, label];
   const digest = createHash('sha256').update(canonicalJsonString(input)).digest('hex');
   if (budget && (!Number.isSafeInteger(budget.reserveUsdMicros) || budget.reserveUsdMicros <= 0 ||
       !Number.isSafeInteger(budget.limitUsdMicros) || budget.limitUsdMicros <= 0 || !budget.route))
@@ -84,7 +107,7 @@ export async function runEffect(
     await authorize?.(tx);
     const { rows: [prior] } = await tx.query<EffectRow>(
       `SELECT input_digest, provider_effect_id, state, result, budget_route, reserved_usd_micros::text,
-              input_basis IS NULL AS legacy,
+              input_basis IS NULL AS legacy, result IS NOT NULL AS has_result,
               effect_may_settle(learner_id, owner_id, started_tick, input_basis) AS basis_current FROM effects
        WHERE learner_id = $1 AND owner_kind = $2 AND owner_id = $3 AND step_key = $4 AND label = $5`,
       identity,
@@ -93,6 +116,8 @@ export async function runEffect(
       if (prior.input_digest !== digest || prior.budget_route !== (budget?.route ?? null) ||
           prior.reserved_usd_micros !== (budget ? String(budget.reserveUsdMicros) : null))
         throw new EffectIdentityMismatch('Effect identity already used with different input');
+      if (budget && prior.state === 'started' && prior.has_result)
+        return publishPricedReceipt(tx, identity, prior.provider_effect_id);
       if (prior.state === 'done') {
         if (!prior.basis_current && prior.legacy)
           throw new LifecycleError(409, '旧发送凭据缺少跨删除水位的输入依据。', 'legacy_effect_basis_missing');
@@ -158,16 +183,29 @@ export async function runEffect(
     outcome = { kind: 'unknown', providerEffectId: reservation.providerEffectId };
   }
 
-  // Commit the receipt before touching any business result or validating its payload basis.
-  if (budget && actual !== null) await db.tx({ learner }, tx => tx.withLearnerWrite(async () => {
-    const keys = [learner, reservation.providerEffectId, reservation.tick, actual] as const;
-    const live = await tx.query(`UPDATE effects SET actual_usd_micros=$4
-      WHERE learner_id=$1 AND provider_effect_id=$2 AND started_tick=$3
-        AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, keys);
-    if (!live.rowCount) await tx.query(`UPDATE erased_effect_receipts SET actual_usd_micros=$4
-      WHERE learner_id=$1 AND provider_effect_id=$2 AND started_tick=$3
-        AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, keys);
-  }));
+  if (budget && encoded !== null) {
+    // Persist the validated decision and known amount together before publishing the receipt.
+    // The accounting-only path is allowed even when the decision can no longer be stored.
+    const saved = await db.tx({ learner }, tx => tx.withLearnerWrite(async () => {
+      if (actual !== null) {
+        const keys = [learner, reservation.providerEffectId, reservation.tick, actual] as const;
+        const live = await tx.query(`UPDATE effects SET actual_usd_micros=$4
+          WHERE learner_id=$1 AND provider_effect_id=$2 AND started_tick=$3
+            AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, keys);
+        if (!live.rowCount) await tx.query(`UPDATE erased_effect_receipts SET actual_usd_micros=$4
+          WHERE learner_id=$1 AND provider_effect_id=$2 AND started_tick=$3
+            AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, keys);
+      }
+      const receipt = await tx.query(`UPDATE effects SET result=$6
+        WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5
+          AND state='started' AND started_tick=$7 AND result IS NULL
+          AND effect_may_settle(learner_id, owner_id, started_tick, input_basis)`,
+      [...identity, encoded, reservation.tick]);
+      return receipt.rowCount === 1;
+    }));
+    if (!saved) return { kind: 'unknown', providerEffectId: reservation.providerEffectId };
+    return db.tx({ learner }, tx => publishPricedReceipt(tx, identity, reservation.providerEffectId));
+  }
 
   return db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
     if (!budget) {
