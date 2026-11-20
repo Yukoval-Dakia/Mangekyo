@@ -54,6 +54,7 @@ import {
   type WorkbookSourceView,
   type WorkbookSummary,
 } from '../../modules/activity/workbook-values.ts';
+import { recordWorkbookPresentationCommand, workbookPresentation, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
@@ -108,17 +109,21 @@ function mapReadFailure(error: unknown, missing: string, denied: string): never 
   throw error;
 }
 
-async function readPaper(tx: ReadTransaction, id: FactId): Promise<WorkbookPaper> {
+async function readPaperSnapshot(tx: ReadTransaction, id: FactId) {
   if (await factType(tx, id) !== workbookPaperType) {
     throw new RequestError(404, '找不到这份试卷。');
   }
   try {
     const fact = await createCommandReadContext(tx, storagePurpose)
       .fact(factId(id), { mode: 'following' });
-    return workbookPaper(fact.value);
+    return { paper: workbookPaper(fact.value), revision: fact.ref.rev };
   } catch (error) {
     mapReadFailure(error, '找不到这份试卷。', '这份试卷当前不可读取。');
   }
+}
+
+async function readPaper(tx: ReadTransaction, id: FactId) {
+  return (await readPaperSnapshot(tx, id)).paper;
 }
 
 async function readPaperOrNull(tx: ReadTransaction, id: FactId): Promise<WorkbookPaper | null> {
@@ -253,7 +258,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
     const paperId = factIdOf(id, '找不到这份试卷。');
     return db.snapshot({ learner: studioLearner }, async (tx) => {
-      const paper = await readPaper(tx, paperId);
+      const { paper, revision } = await readPaperSnapshot(tx, paperId);
       const read = createCommandReadContext(tx, storagePurpose);
       const source = paper.materialId === null
         ? null
@@ -270,6 +275,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       }
       return {
         id: paperId,
+        revision,
         title: paper.title,
         savedAt: paper.savedAt,
         source,
@@ -334,9 +340,22 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     get,
     async sheet(id: string) {
       return db.snapshot({ learner: studioLearner }, async tx => {
-        const paper = await readPaper(tx, factIdOf(id, '找不到这份试卷。'));
-        return { title: paper.title, questions: workbookQuestionsView(paper) };
+        const { paper, revision } = await readPaperSnapshot(tx, factIdOf(id, '找不到这份试卷。'));
+        return { revision, title: paper.title, questions: workbookQuestionsView(paper) };
       });
+    },
+    async recordPresentation(id: string, input: unknown) {
+      try {
+        const data = workbookPresentation(input);
+        if (data.paper.id !== id) throw new WorkbookPresentationError('呈现卷面不匹配。');
+        const key = commandId(stableId(recordWorkbookPresentationCommand, JSON.stringify(data)));
+        await handle({ learner: studioLearner, actor: 'learner', purpose: storagePurpose,
+          id: key, type: recordWorkbookPresentationCommand, input: { id: key, data } });
+      } catch (error) {
+        if (error instanceof WorkbookPresentationError) throw new RequestError(400, error.message);
+        mapReadFailure(error, '找不到呈现的试卷。', '这份试卷当前不可读取。');
+      }
+      return { recorded: true };
     },
     async review(): Promise<ReviewEntry[]> {
       return db.snapshot({ learner: studioLearner }, async tx => {

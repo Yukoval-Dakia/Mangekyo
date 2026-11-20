@@ -247,10 +247,12 @@ export function serve(
       if (assessment?.[1] && assessment[2] && method === 'POST') {
         return json(res, 200, await student.workbook.assess(assessment[1], assessment[2], await body(req)));
       }
-      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print))?$/.exec(path);
+      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print|presentation))?$/.exec(path);
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));
       if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return json(res, 200, await student.workbook.submit(paper[1], await body(req)));
+      if (paper?.[1] && method === 'POST' && paper[2] === 'presentation')
+        return json(res, 200, await student.workbook.recordPresentation(paper[1], await body(req)));
       if (path === '/api/review' && method === 'GET') {
         const [mine, riding] = await Promise.all([student.workbook.review(), practice.read()]);
         return json(res, 200, [...mine, ...ridingReview(riding)]);

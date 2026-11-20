@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { api, requestId } from './api';
 import { PageTitle, ReadState, useResource } from './workspace';
 import { Message } from './message';
+import { useWorkbookPresentation } from './workbook-presentation';
 
 export type ReviewEntry = {
   paperId: string; title: string; questionId: string; prompt: string;
@@ -48,9 +49,10 @@ export function Mistakes() {
   </>;
 }
 
-type Sheet = { title: string; questions: { id: string; prompt: string; unit?: string | null }[] };
+type Sheet = { revision?: number; title: string; questions: { id: string; prompt: string; unit?: string | null }[] };
 export function PrintPaper({ id }: { id: string }) {
   const sheet = useResource<Sheet>('/papers/'+id+'/print');
+  useWorkbookPresentation(id, sheet.data?.revision, sheet.data?.questions.map(question => question.id) ?? []);
   return <section className="print-paper">
     <div className="study-actions print-controls"><a href={'/papers/'+id}>返回原卷</a>
       <button className="primary-button" disabled={!sheet.data} onClick={() => window.print()}>打印或存为 PDF</button></div>

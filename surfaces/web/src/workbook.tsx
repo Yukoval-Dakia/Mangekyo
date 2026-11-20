@@ -13,6 +13,7 @@ import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
 import { observePaperTime } from './workbook-duration';
+import { useWorkbookPresentation } from './workbook-presentation';
 import './workbook.css';
 
 export type WorkbookProps = {
@@ -864,6 +865,10 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         .map((feedback) => feedback.questionId)
     : [];
   const showForm = Boolean(draft) || attempts.length === 0;
+  useWorkbookPresentation(paperId, view?.revision, showForm ? visibleQuestions.map(({ id }) => id) : []);
+  useWorkbookPresentation(paperId, view?.revision, activeAttempt?.rev
+    ? activeAttempt.feedback.filter(item => item.expected && item.expected.kind !== 'rubric').map(item => item.questionId)
+    : [], activeAttempt?.rev ? { id: activeAttempt.id, rev: activeAttempt.rev } : undefined);
 
   const form = useRef<HTMLFormElement>(null);
   const clock = useRef<ReturnType<typeof observePaperTime> | null>(null);

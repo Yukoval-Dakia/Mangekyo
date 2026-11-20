@@ -6,6 +6,7 @@ import {
 import { recallSubmissionType, submitRecallCommand } from './recall-values.ts';
 import { closedPosttest, issuePosttestCommand, posttestIssuanceType, posttestSubmissionType, retentionPaperType } from './retention-posttest.ts';
 import { submitWorkbookAttemptCommand, workbookAttemptType, workbookPaperType } from './workbook-values.ts';
+import { recordWorkbookPresentationCommand, workbookPresentationType } from './workbook-presentation.ts';
 
 export type ActivityEvidenceReadScope = {
   learner: LearnerId;
@@ -107,6 +108,17 @@ export async function readEarlierControlledPosttests(
   return rows;
 }
 
+export async function readPosttestIssuanceBirth(tx: ActivityEvidenceReadScope, id: FactId) {
+  const { rows: [birth] } = await tx.query<{ tick: Tick }>(
+    `SELECT r.tick::text FROM fact_revs r
+     JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
+     WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.kind='value' AND r.author='learner'
+       AND c.type=$3 AND c.state='done' AND r.data=c.input->'input'->'data'`,
+    [tx.learner, id, issuePosttestCommand],
+  );
+  return birth;
+}
+
 export type WorkbookHistoryTarget = { paper: HelpRef; itemId: string };
 
 export function throughTick(tick: Tick) {
@@ -166,14 +178,23 @@ export async function workbookItemHistory(
         AND r.data->>'kind' IN ('opened','displayed')
         AND (r.data->'mount'->'item'->>'itemId'=m.item_id OR EXISTS (
           SELECT 1 FROM jsonb_array_elements(r.data->'alsoAppliesTo') h WHERE h->>'itemId'=m.item_id))
+    ), presented AS (
+      SELECT m.paper_id,r.data->>'kind' AS kind FROM fact_revs r
+        JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+        JOIN matches m ON (m.mount_id,m.mount_rev::text)=(r.data->'paper'->>'id',r.data->'paper'->>'rev')
+      WHERE r.learner_id=$1 AND f.type=$15 AND c.type=$16 AND r.author='learner' AND r.rev=1
+        AND r.tick<(SELECT tick FROM fence) AND (r.data->'items') ? m.item_id
     )
     SELECT EXISTS (SELECT 1 FROM matches WHERE controlled) OR EXISTS (SELECT 1 FROM attempted)
-        OR EXISTS (SELECT 1 FROM helped) AS seen,
+        OR EXISTS (SELECT 1 FROM helped) OR EXISTS (SELECT 1 FROM presented) AS seen,
       EXISTS (SELECT 1 FROM attempted WHERE paper_id<>$2 AND feedback) OR
-        EXISTS (SELECT 1 FROM helped WHERE paper_id<>$2) AS cross_help`,
+        EXISTS (SELECT 1 FROM helped WHERE paper_id<>$2) OR
+        EXISTS (SELECT 1 FROM presented WHERE paper_id<>$2 AND kind='solution') AS cross_help`,
     [tx.learner, target.paper.id, target.paper.rev, target.itemId, before, ownIssuance ?? null,
       [workbookPaperType, retentionPaperType], posttestIssuanceType, issuePosttestCommand, submitWorkbookAttemptCommand,
-      [workbookAttemptType, posttestSubmissionType], helpExposureType, recordHelpExposureCommand, posttestSubmissionType],
+      [workbookAttemptType, posttestSubmissionType], helpExposureType, recordHelpExposureCommand, posttestSubmissionType,
+      workbookPresentationType, recordWorkbookPresentationCommand],
   );
   if (!row) throw new Error('Missing workbook item safety result');
   return row;
