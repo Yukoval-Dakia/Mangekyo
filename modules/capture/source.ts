@@ -4,6 +4,7 @@ import { captureObject as object, captureText as text, sha256 } from './parse.ts
 
 export const captureSourceType = 'capture.source';
 export const captureSourceCommand = 'capture.ingest';
+export const confirmSourceCommand = 'capture.confirmSource';
 export const sourceKinds = ['photo', 'pdf', 'text', 'document', 'url', 'voice', 'notion', 'paper-return'] as const;
 export const blockLayers = ['source', 'material', 'prompt', 'handwriting', 'correction', 'annotation', 'reference-answer', 'rubric'] as const;
 
@@ -177,6 +178,19 @@ export function createSourceWrite(id: string, envelope: unknown, purpose: readon
   if (data.unit.blocks.some(({ body: block }) => block.status === 'unknown' ? block.clarification === 'asked' : block.sticky))
     throw new Error('创建原件不能声明已澄清或手改。');
   return { kind: 'create' as const, id: factId(id), factType: captureSourceType, data, purpose };
+}
+
+export function sourceInputWrite(input: unknown, confirmed: boolean) {
+  const row = object(input);
+  const purpose = row.purpose;
+  if (purpose !== undefined && !Array.isArray(purpose)) throw new Error('原件用途无效。');
+  const write = createSourceWrite(text(row.id, '原件标识', 26), row.envelope,
+    purpose?.map(value => text(value, '原件用途', 100)));
+  const needsConfirmation = write.data.kind === 'voice' || (write.data.kind === 'url' && write.data.urlReadConfirmed === true);
+  if (needsConfirmation !== confirmed) {
+    throw new Error(needsConfirmation ? '请由学习者确认转写或读取链接后保存。' : '本次交入无需确认，请直接保存原件。');
+  }
+  return write;
 }
 
 export function reviseSourceWrite(current: FactSnapshot, expectedRev: number, envelope: unknown) {

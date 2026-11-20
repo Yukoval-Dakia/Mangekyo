@@ -66,7 +66,9 @@ it('validates effect receipts and keeps unknown and learner corrections through 
   const spoof = block('answer', { status: 'known', text: '猜测', sticky: true, author: 'learner' });
   expect(visualExtractionResult(source, [{ request, state: 'done', result: { version: request.stepKey, blocks: [spoof] } }]).kind).toBe('unknown');
   const voice = voiceTranscriptionRequest('ephemeral-audio');
-  expect(voiceTranscriptionResult([{ request: voice, state: 'done', result: { version: voice.stepKey, transcript: '待我确认' } }])).toEqual({
+  const receipt = { request: voice, state: 'done' as const, result: { version: voice.stepKey, transcript: '待我确认' } };
+  expect(voiceTranscriptionResult(voiceTranscriptionRequest('other-recording'), [receipt]).kind).toBe('unknown');
+  expect(voiceTranscriptionResult(voice, [receipt])).toEqual({
     kind: 'value', value: '待我确认',
   });
 
@@ -109,20 +111,6 @@ it('freezes a clean cross-page print and keeps missing pages unsubmitted', async
   const submitted = sheet.pages.filter(page => page.pieces.some(piece => piece.itemId === 'q1')).map(page => page.number);
   expect(paperReturnCoverage(sheet.pages, submitted.slice(0, -1))).toEqual([{ itemId: 'q1', status: 'unsubmitted' }]);
   expect(paperReturnCoverage(sheet.pages, submitted)).toEqual([{ itemId: 'q1', status: 'pages-received' }]);
-});
-
-it('machine extraction proposes a non-sticky revision and leaves the original locator intact', async () => {
-  const source = envelope();
-  const candidate = applyExtraction.schema.parse({
-    target: { id, rev: 1 },
-    blocks: [block('answer', { status: 'known', text: '0.5' })],
-  });
-  expect(applyExtraction.destructive).toBe(false);
-  const writes = await applyExtraction.write(readSource(source, 1), candidate, undefined);
-  expect(writes).toMatchObject([{ kind: 'revise', expectedRev: 1, data: {
-    originals: source.originals,
-    unit: { blocks: [{ body: { status: 'known', text: '0.5' } }] },
-  } }]);
 });
 
 it('uses a frozen question for a textbook print and omits unclassified textbook prose', async () => {

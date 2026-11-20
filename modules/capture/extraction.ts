@@ -148,8 +148,10 @@ export function voiceTranscriptionRequest(audioRef: string): EffectRequest {
   };
 }
 
-export function voiceTranscriptionResult(receipts: readonly EffectReceipt[]): Outcome<string> {
+export function voiceTranscriptionResult(request: EffectRequest, receipts: readonly EffectReceipt[]): Outcome<string> {
   try {
+    if (!receipts[0] || !sameJson(receipts[0].request, request))
+      return { kind: 'unknown', reason: '转写回执与当前录音不匹配。' };
     const result = effectResult(receipts, voiceTranscriptionVersion, voiceTranscriptionEffect);
     return result ? { kind: 'value', value: captureText(result.transcript, '待确认转写', 2_000_000) }
       : { kind: 'unknown', reason: '录音转写未完成。' };

@@ -111,8 +111,13 @@ async function run({db,learner,stableId,load,send,assert}) {
   console.log(JSON.stringify({checked:'capture slot pg',manifest:gathered.manifest.inputs,modelMethod:effect.input.modelMethod,
     derivation:sealed.id,sourceRev:fixed.wrote[0].rev,stickyDifferences:live.differences.length}));
 
-  await send('capture.ingest',{id:base,purpose:['storage','teaching'],envelope:envelope('photo','a',blocks)});
+  const draft = targetCapture(base);
+  await send('capture.ingest', draft, { actor: 'companion' });
+  await send('capture.applyExtraction', { target: { id: base, rev: 1 }, blocks }, { actor: 'companion' });
   const snapshot = await read(base);
+  assert.deepEqual(snapshot.value.originals, draft.envelope.originals);
+  assert.equal(snapshot.ref.rev, 2);
+  assert.equal(snapshot.value.unit.blocks.length, blocks.length);
   const issue = {source:{id:base,rev:snapshot.ref.rev},epoch:snapshot.accessEpoch,layout:{lines:10,columns:16}};
   const issued = await send('capture.issuePaper',issue);
   const issuanceId = issued.wrote[0].id;
