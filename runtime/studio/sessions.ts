@@ -1,3 +1,4 @@
+import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
@@ -293,6 +294,29 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
   }
   return { ...view, turns: projected };
 }
+async function retireUnboundTurns(db: Db) {
+  await db.tx({learner:studioLearner}, async tx => {
+    await lockLearner(tx,tx.learner);
+    const {rows} = await tx.query<{id:string}>(`
+      SELECT w.slot_key AS id FROM work w
+      JOIN facts f ON (f.learner_id,f.id)=(w.learner_id,w.slot_key) AND f.type='activity.studyTurn'
+      JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+      JOIN facts origin ON (origin.learner_id,origin.id)=(f.learner_id,r.data->>'sessionId')
+      JOIN fact_revs root ON (root.learner_id,root.fact_id,root.rev)=(origin.learner_id,origin.id,origin.current_rev)
+      WHERE w.learner_id=$1 AND w.slot_type=$2 AND w.state='ready' AND r.data->>'accountRevision' IS NULL
+        AND (r.data->>'jitContextVersion'='1' OR root.data ? 'attachment')`, [tx.learner,slotType]);
+    const ids=rows.map(row=>row.id);
+    if (!ids.length) return;
+    await tx.withLearnerWrite(async tick => {
+      await tx.query(`UPDATE work SET state='blocked',execution_ref=NULL WHERE learner_id=$1 AND slot_type=$2
+        AND slot_key=ANY($3::text[]) AND state='ready'`, [tx.learner,slotType,ids]);
+      await tx.query(`UPDATE slot_state SET pending='none',changed_tick=$4,last_error=$5
+        WHERE learner_id=$1 AND slot_type=$2 AND slot_key=ANY($3::text[])`,
+      [tx.learner,slotType,ids,tick,JSON.stringify({status:'failed',message:confirmAccount().message})]);
+    });
+  });
+}
+
 export async function openStudio(db: Db, activity: LoadedModule, {projectRecall, jitCounters = [], enableJit = false}: {
   projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[]; enableJit?: boolean;
 } = {}) {
@@ -329,6 +353,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     }),
   });
   await db.query('INSERT INTO learners(id) VALUES($1) ON CONFLICT DO NOTHING', [studioLearner]);
+  await retireUnboundTurns(db);
   for (const studyCase of cases)
     for (const evidence of first45Histories[studyCase.id]) {
       const id = sourceId(studyCase.id, evidence.id);
