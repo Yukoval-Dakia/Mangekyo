@@ -9,7 +9,7 @@ import { assertDeletionWatermark, deletionWatermark, LifecycleError } from '../.
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { notionReadPage, notionReadRows, notionConfirmPageAccess, NotionSourceUnavailable } from '../../modules/capture/notion-api.ts';
-import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, notionSelectionWitness, resumeNotionSelectionCursor, selectionChange, selectionGrant,
+import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, notionSelectionWitness, selectionChange, selectionGrant,
   readNotionSelection, type NotionSelection, type NotionReadOptions } from '../../modules/capture/notion-selection.ts';
 import { withSelectedNotionSources, notionPageObservationType, prepareNotionRefreshInput, prepareNotionIngest, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
@@ -33,9 +33,11 @@ const selectionAt = (tx: ReadTransaction, id: string) => readNotionSelection(cre
 type Access = {purpose: string; recipientId: string; maySend: (fact: FactSnapshot) => boolean};
 const denialOwner = (id: string, epoch: string) => stableId('notion-access-denial', id, epoch);
 
-async function checkDenial(tx: ReadTransaction, id: string, epoch: string, page?: string) {
+async function checkDenial(tx: ReadTransaction, id: string, epoch: string, page?: string, since = epoch) {
+  const owners = [];
+  for (let generation = Number(since); generation <= Number(epoch); generation++) owners.push(denialOwner(id,String(generation)));
   const {rowCount} = await tx.query(`SELECT FROM effects WHERE learner_id=$1 AND owner_kind='session'
-    AND owner_id=$2 AND label='notion-access-denial' AND step_key=ANY($3)`, [tx.learner, denialOwner(id, epoch), ['root', ...(page ? [page] : [])]]);
+    AND owner_id=ANY($2) AND label='notion-access-denial' AND step_key=ANY($3)`, [tx.learner, owners, ['root', ...(page ? [page] : [])]]);
   if (rowCount) throw new RequestError(403, 'Notion 已撤回该来源的访问。请重新确认选源。');
 }
 
@@ -47,10 +49,8 @@ export async function readStudioNotionSource(tx: ReadTransaction, sourceId: Fact
   }).fact(sourceId, options);
   const value = source.type === captureSourceType ? sourceEnvelope(source.value) : null;
   if (value?.kind !== 'notion') throw new FactReadDeniedError('recipient','没有该 Notion 来源。');
-  await checkDenial(tx, value.sourceSelectionId!, value.sourceSelectionEpoch!, value.externalId!);
-  const current = await selectionAt(tx, value.sourceSelectionId!);
-  if (current && current.selectionEpoch !== value.sourceSelectionEpoch)
-    await checkDenial(tx, value.sourceSelectionId!, current.selectionEpoch, value.externalId!);
+  const current = (await selectionAt(tx, value.sourceSelectionId!))!;
+  await checkDenial(tx, current.id, current.selectionEpoch, value.externalId!, value.sourceSelectionEpoch!);
   return source;
 }
 
@@ -163,8 +163,7 @@ export async function confirmNotionDispatch(db: Db, pages: Awaited<ReturnType<ty
 
 export function openStudioNotion(db: Db, capture: LoadedModule) {
   const {connection, snapshot, locked, live, provider} = notionHost(db);
-  const hooks = createStudioCommandHooks();
-  const handle = (tx: DbTransaction) => createCommandHandler(transactionDb(db, tx), {modules:[capture], hooks});
+  const handle = (tx: DbTransaction) => createCommandHandler(transactionDb(db, tx), {modules:[capture], hooks:createStudioCommandHooks()});
 
   async function settings() {
     return snapshot(async tx => {
@@ -254,9 +253,8 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
     });
     const {root} = selection;
     const dispatch = notionSelectionWitness(selection);
-    const cursor = before[0] && {...dispatch, position:before[0]};
     const rows = root.kind === 'page' ? [{pageId:root.id, lastEditedTime:null}]
-      : await provider(selection,watermark,notionReadRows(root, resumeNotionSelectionCursor(selection,cursor ?? null)));
+      : await provider(selection,watermark,notionReadRows(root, before[0]));
     const prepared: Awaited<ReturnType<typeof prepareNotionIngest>>[] = [];
     for (const {pageId, lastEditedTime} of rows) {
       if (deniedPages.has(pageId)) continue;

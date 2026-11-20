@@ -1,4 +1,5 @@
 import { sourceReference } from '../../modules/activity/source-values.ts';
+import { checkStudioNotionFact } from './notion.ts';
 import { resolveSource } from './source-read.ts';
 import { createCommandHandler, readCommandProposals, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import {
@@ -229,6 +230,7 @@ function legacyView(fact: FactSnapshot): LegacyNoteView {
 async function readFact(tx: ReadTransaction, purpose: string, id: string, rev?: unknown) {
   const read = createCommandReadContext(tx,purpose);
   const fact = await read.fact(pageId(id),rev === undefined ? {mode:'following'} : {mode:'pinned',rev:revision(rev)});
+  await checkStudioNotionFact(tx,fact,storage,'learner');
   if (fact.type === textbookPageType) {
     const page = textbookPageFrom(fact);
     if ((page.basis?.length || page.blocks.some(({body}) => body.kind === 'reference' || body.kind === 'image')) &&
@@ -244,10 +246,10 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
 
   async function previewProposal(tx: ReadTransaction, input: unknown) {
     const edit = parseTextbookRevision(input);
-    const read = createCommandReadContext(tx, teaching);
-    const pinned = await read.fact(edit.id,{mode:'pinned',rev:edit.expectedRev});
-    await checkTextbookBasis(read, textbookPageFrom(pinned).basis ?? []);
-    await checkTextbookBasis(read, edit.basis ?? []);
+    const read = {fact:(...[id, options]: Parameters<ReadContext['fact']>) =>
+      readFact(tx,teaching,id,options.mode === 'pinned' ? options.rev : undefined)};
+    const pinned = await readFact(tx,teaching,edit.id,edit.expectedRev);
+    await checkTextbookBasis(read,[...textbookPageFrom(pinned).basis ?? [], ...edit.basis ?? []]);
     return previewTextbookRevision({learner:tx.learner,read},edit);
   }
 
