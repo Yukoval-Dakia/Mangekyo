@@ -16,7 +16,7 @@ export type ActivityEvidenceObservation = {
 export function activityEvidenceSlice(
   watermark: Tick,
   asOf: string,
-  deadline: CanonicalEvidenceSliceV1['constraints']['deadlines'][number],
+  deadline: CanonicalEvidenceSliceV1['constraints']['deadlines'][number] | undefined,
   observations: readonly ActivityEvidenceObservation[],
 ): CanonicalEvidenceSliceV1 {
   const events: EvidenceEventV1[] = [];
@@ -38,7 +38,7 @@ export function activityEvidenceSlice(
   events.sort((a, b) => a.occurred_at.localeCompare(b.occurred_at) || a.ref.localeCompare(b.ref));
   return {
     clock_watermark: watermark, as_of_at: asOf, events, omissions,
-    constraints: { budget_min: null, locks: [], deadlines: [deadline] }, candidate_pool: [],
+    constraints: { budget_min: null, locks: [], deadlines: deadline ? [deadline] : [] }, candidate_pool: [],
   };
 }
 

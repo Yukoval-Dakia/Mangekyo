@@ -37,7 +37,7 @@ import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
-import { confirmedTeachingMethod } from './identity.ts';
+import { confirmedTeachingMethod, learningToolsMethod } from './identity.ts';
 import type { StudioJitCounter } from './first-turn-jit.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -136,7 +136,7 @@ async function runWorker(storeId: string) {
   async function executeDefault(ref: WorkRef, terminal: boolean) {
     if (await research.execute(ref, terminal)) return;
     const work = await readWork(db, ref);
-    if (!work || work.deriver === confirmedTeachingMethod) return;
+    if (!work || [confirmedTeachingMethod,learningToolsMethod].includes(work.deriver)) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
@@ -152,16 +152,19 @@ async function runWorker(storeId: string) {
   };
   const connection = await Connection.connect({ address: workerConfig.address });
   const client = new Client({ connection, namespace: workerConfig.namespace });
-  const confirmedRoute = { deriver: confirmedTeachingMethod };
-  async function executeGuarded(ref: WorkRef, terminal: boolean) {
-    const work = await readWork(db, ref);
-    if (work?.deriver !== confirmedTeachingMethod) return;
-    if (terminal) await recordTerminalFailure(db, ref);
-    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters, research.turnCompleted);
-  }
+  const protectedMethods = [
+    {deriver:confirmedTeachingMethod, lane:'teaching-confirmed-v1'},
+    {deriver:learningToolsMethod, lane:'learning-tools-v1'},
+  ];
   const lanes = [
     { queue, route: undefined, run: executeDefault },
-    { queue: capabilityTaskQueue(queue, 'teaching-confirmed-v1'), route: confirmedRoute, run: executeGuarded },
+    ...protectedMethods.map(({deriver,lane}) => ({queue:capabilityTaskQueue(queue,lane),route:{deriver},
+      async run(ref: WorkRef, terminal: boolean) {
+        if ((await readWork(db,ref))?.deriver !== deriver) return;
+        if (terminal) await recordTerminalFailure(db,ref);
+        else await teach(db,ref,readArtifactAssessmentWitness,jitCounters,research.turnCompleted);
+      },
+    })),
     ...(mineruToken() ? [{ queue: capabilityTaskQueue(queue, 'ocr-v1'), route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
   ];
   const workers = await Promise.all(lanes.map(lane => {

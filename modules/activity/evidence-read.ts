@@ -69,7 +69,7 @@ export async function readActivitySubmissionBirth(
 }
 
 export async function readActivityHelpEvents(
-  tx: ActivityEvidenceReadScope, read: ReadContext, query: {
+  tx: ActivityEvidenceReadScope, read: {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>}, query: {
     activities: readonly FactId[];
     cutoff: Tick;
     mode: 'pinned' | 'following';

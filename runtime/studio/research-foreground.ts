@@ -6,7 +6,7 @@ import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
-import { confirmedTeachingMethod, methodName, purpose, slotType } from './identity.ts';
+import { confirmedTeachingMethod, learningToolsMethod, methodName, purpose, slotType } from './identity.ts';
 import { researchReader, whenAvailable } from './research-sources.ts';
 
 const acceptedForeground = `FROM slot_state s JOIN derivations d
@@ -18,7 +18,7 @@ const acceptedForeground = `FROM slot_state s JOIN derivations d
     AND t.type='activity.studyTurn' AND $4=ANY(t.purpose) AND t.retracted_rev IS NULL`;
 const foregroundLimit = 4;
 
-export const companionTeachingMethods = [methodName, confirmedTeachingMethod];
+export const companionTeachingMethods = [methodName, confirmedTeachingMethod, learningToolsMethod];
 
 export const completedCompanionTurns = `SELECT s.slot_key AS id, d.effective_tick
   FROM slot_state s JOIN derivations d

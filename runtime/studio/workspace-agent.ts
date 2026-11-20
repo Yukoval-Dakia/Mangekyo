@@ -59,6 +59,7 @@ export function openWorkspaceTools(options: {
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
+  learningBasis?(): readonly WorkspaceWitness[];
   pageBasis?: readonly WorkspaceWitness[];
   jitBasis?: readonly WorkspaceWitness[];
   currentObject?: OpenedCurrentLearningObject | undefined;
@@ -85,7 +86,7 @@ export function openWorkspaceTools(options: {
     relationOpened.set(key,{ref,witness});
   };
   const saveRelation = openWorkspaceRelation({db,turn,opened:relationOpened,
-    authorize:options.authorize,maySend:options.maySend, modelBasis:jitBasis,
+    authorize:options.authorize,maySend:options.maySend, modelBasis:() => [...jitBasis,...(options.learningBasis?.() ?? [])],
     saved(key, receipt) { receipts.set(key, receipt); },
   });
   const rememberPageSource = (w: WorkspaceWitness) => pageSources.set(`${w.id}:${w.rev}`,w);
@@ -94,6 +95,7 @@ export function openWorkspaceTools(options: {
   const savePage = openWorkspaceTextbook({
     db, turn, authorize:options.authorize, maySend:options.maySend, opened:pageOpened,
     basis() {
+      for (const witness of options.learningBasis?.() ?? []) rememberPageSource(witness);
       for (const witness of pageSources.values()) options.track(witness,true);
       return [...pageSources.values()];
     },
@@ -467,12 +469,14 @@ export function openWorkspaceTools(options: {
       const opened = beliefEvidence.get(`${id}:${anchor}`);
       return opened?.rev === rev && opened.accessEpoch === accessEpoch && excerpt !== undefined && opened.excerpt.includes(excerpt);
     },
+    knows:(id: string) => sources.has(id),
     publishedFormalArtifact: () => publishedFormalArtifact,
     reads: () => [...opened.values()],
     writes: () => [...receipts.values()],
     basis() {
       const ordinary = new Map([...sources, ...overviewBasis]);
       const basis = new Map([...ordinary.values()].map(w => [`${w.id}:${w.rev}`, w]));
+      for (const w of options.learningBasis?.() ?? []) basis.set(`${w.id}:${w.rev}`,w);
       for (const [key, witness] of writeBasis) basis.set(key, witness);
       for (const witness of jitBasis) basis.set(`${witness.id}:${witness.rev}`,{...witness,writeBasis:true,jitBasis:true});
       return [...basis.values()];

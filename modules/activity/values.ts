@@ -64,6 +64,7 @@ export function studyTurn(input: unknown) {
     answer,
     ...(optedIn === true ? {allowBackgroundUnderstanding: true as const} : {}),
     ...(value.classroom === undefined ? {} : {classroom: classroomTurn(value.classroom)}),
+    ...(value.learningToolsVersion === 1 ? {learningToolsVersion:1 as const} : {}),
     ...(value.memoryVersion === 1 ? {memoryVersion: 1 as const} : {}),
     ...(value.jitContextVersion === 1 ? {jitContextVersion: 1 as const, jitCounterId: field(value, 'jitCounterId', 100)} : {}),
     ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),

@@ -35,7 +35,7 @@ import {
   requestCommand,
   purpose,
   methodName,
-  confirmedTeachingMethod,
+  confirmedTeachingMethod, learningToolsMethod,
   slotType,
   textbookUndoId,
   notionModelRecipient,
@@ -406,7 +406,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
             changed_tick: tick,
           });
           const guarded = requiresAccountConfirmation(submission) || requiresAccountConfirmation(origin);
-          await requestWork(tx,tick,{slotType,slotKey:id,deriver:guarded ? confirmedTeachingMethod : methodName},guarded ? 'routed_pending' : 'pending');
+          const deriver = submission.learningToolsVersion ? learningToolsMethod : guarded ? confirmedTeachingMethod : methodName;
+          await requestWork(tx,tick,{slotType,slotKey:id,deriver},guarded ? 'routed_pending' : 'pending');
         }
       },
   });
@@ -455,9 +456,11 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       ? await workspaceRouteRevision(settings) : undefined;
     const account = providerAccount(settings);
     const jitCounter = enableJit && account && !parent && workspaceRevision && !grants?.length ? studioJitCounter(jitCounters, settings) : undefined;
-    const accountRevision = attachment || jitCounter ? account?.accountRevision : origin?.accountRevision;
-    const protectedTurn = origin?.attachment || origin?.jitContextVersion || attachment || jitCounter || accountRevision;
     const supplied = requestedAccount(requestedRoute);
+    const learningToolsVersion = workspaceRevision && account && supplied === account.accountRevision && !jitCounter &&
+      !grants?.length && (!origin || origin.learningToolsVersion === 1) ? 1 : undefined;
+    const accountRevision = attachment || jitCounter || learningToolsVersion ? account?.accountRevision : origin?.accountRevision;
+    const protectedTurn = origin?.attachment || origin?.jitContextVersion || attachment || jitCounter || accountRevision;
     if (protectedTurn || supplied !== undefined) {
       if (!account || supplied !== account.accountRevision || (protectedTurn && origin && !origin.accountConfirmation) ||
           !routeMatchesInput(requestedRoute,settings) || (origin && !sameRoute(origin,settings))) throw confirmAccount();
@@ -484,6 +487,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       ...(allowBackgroundUnderstanding ? {allowBackgroundUnderstanding: true} : {}),
       ...(attachmentBasis ? {attachment, attachmentBasis:attachmentBasis.digest} : {}),
       ...(boundObject ? {currentObject: boundObject} : {}),
+      ...(learningToolsVersion ? {learningToolsVersion} : {}),
       ...(jitCounter ? {jitContextVersion: 1, jitCounterId: jitCounter.id} : {}),
       ...(accountRevision ? {accountRevision,accountConfirmation:1} : {}),
       ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),

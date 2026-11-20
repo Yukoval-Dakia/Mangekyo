@@ -1,6 +1,7 @@
 import { classroomModelPrompt, type ClassroomModelEvidence } from '../../executors/teaching/classroom-evidence.ts';
 import { classroomReply } from '../../modules/activity/classroom.ts';
 import { readClassroomMountEvidence } from './presentation-store.ts';
+import { openLearningTools } from './learning-tools.ts';
 import { attachmentCurrent } from './reading.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
@@ -15,7 +16,7 @@ import { isMemoryConflict, openTurnMemory } from './turn-memory.ts';
 import { turnClaimWitness } from '../../modules/companion/claim.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -55,7 +56,7 @@ import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { checkProviderAccount, loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
-import { confirmedTeachingMethod, notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
+import { confirmedTeachingMethod, learningToolsMethod, notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
 class UncertainEffect extends Error {
   constructor(requestId: string | null) {
@@ -70,7 +71,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
-  if (job.slotType !== slotType || (job.deriver !== methodName && job.deriver !== confirmedTeachingMethod)) throw new Error('Unknown teaching method');
+  if (job.slotType !== slotType || ![methodName,confirmedTeachingMethod,learningToolsMethod].includes(job.deriver)) throw new Error('Unknown teaching method');
   const learner = learnerId(ref.learner), {slotKey} = job;
   const scope = { learner };
   const inputs = new Map<string, ManifestInput>();
@@ -229,7 +230,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     const original = submission.parentId ? await priorTurn(submission.sessionId) : {data: submission, teaching: true};
     const origin = original.data;
     const guarded = requiresAccountConfirmation(origin) || requiresAccountConfirmation(submission);
-    if (guarded !== (job.deriver === confirmedTeachingMethod) ||
+    const learningV1 = submission.learningToolsVersion === 1;
+    if (learningV1 !== (job.deriver === learningToolsMethod) || (learningV1 && !guarded) ||
+        guarded !== (job.deriver !== methodName) ||
         (guarded && (!origin.accountConfirmation || !submission.accountConfirmation))) throw new ChangedEvidence();
     const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
     if (origin.attachment) {
@@ -294,7 +297,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const authorize = async (tx: ReadTransaction, current?: typeof settings) => {
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
         await validInputs(tx);
-        if (selected.length && (step.provider !== providerEndpoint(settings) || step.model !== settings.model ||
+        const localCalculation = learningV1 && step.provider === 'tool:run_calculation';
+        if (selected.length && ((!localCalculation && step.provider !== providerEndpoint(settings)) ||
+            step.model !== settings.model ||
             JSON.stringify(selected) !== JSON.stringify(await notionSendBasis(tx,notionWitnesses.values(),maySend)))) throw new ChangedEvidence();
         current ??= await loadSettings(task);
         if (!sameRoute(submission, current)) throw new ChangedEvidence();
@@ -455,6 +460,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           await validInputs(tx);
           await authorizeWorkspace();
         } };
+      const learningReadBasis = new Map<string,WorkspaceWitness>();
+      const keepLearningBasis = (w:WorkspaceWitness) => learningReadBasis.set(w.id + ':' + w.rev,w);
       function trackMemory(packet: NonNullable<typeof learningMemory>) {
         memoryPackets.push(packet);
         for (const entry of packet.receipt.basis) {
@@ -602,7 +609,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const turnInput = inputs.get(job.slotKey);
       // The original provider request digest includes the tool schema and system prompt.
       // Persist the choice before the first sample so a retried turn keeps the same catalog.
-      const beliefTools = Boolean(memoryTurn && learningMemory && turnInput?.kind === 'fact' &&
+      const beliefTools = learningV1 || Boolean(memoryTurn && learningMemory && turnInput?.kind === 'fact' &&
         await recordLocalRead(db, {learner, ownerKind: 'session', ownerId: job.slotKey, stepKey: 'belief-tools',
           label: 'local:tool-contract', input: {tool: 'save_belief'}}, async tx => {
           const {rowCount} = await tx.query(`SELECT 1 FROM effects
@@ -610,27 +617,29 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           [learner, job.slotKey]);
           return rowCount ? 'legacy' : 'belief';
         }, memoryRequest.authorize) === 'belief');
+      function trackWorkspace(w: WorkspaceWitness, checkAtDispatch?: true) {
+        trackNotion(w);
+        inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
+        if (checkAtDispatch) protectWorkspaceDispatch = true;
+      }
+      async function authorizeLearning(tx: ReadTransaction) {
+        if (!await readReadyWork(tx,ref)) throw new ChangedEvidence();
+        await validInputs(tx);
+        if (!sameRoute(submission,await loadSettings(task))) throw new ChangedEvidence();
+        if (submission.workspaceRevision) await checkWorkspaceRoute();
+      }
       const workspace = (classroom ? classroom.mode !== 'adjust' : submission.workspaceRevision) ? openWorkspaceTools({
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()], currentObject,
         maySend, beliefTools,
         ...(jit ? {jitBasis:jit.basis} : {}),
+        ...(learningV1 ? {learningBasis: () => [...learningReadBasis.values()]} : {}),
         pageBasis: [
           ...(turnInput?.kind === 'fact' ? [{id:turnInput.id,rev:turnInput.rev,epoch:turnInput.accessEpoch,type:'activity.studyTurn'}] : []),
           ...(learningMemory?.receipt.basis ?? []),
           ...(jit?.basis ?? []),
         ],
-        track(w, checkAtDispatch) {
-          trackNotion(w);
-          inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
-          if (checkAtDispatch) protectWorkspaceDispatch = true;
-        },
-        trackAssessment, trackRetention, trackDiagnosis() { protectWorkspaceDispatch = true; },
-        async authorize(tx) {
-          if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
-          await validInputs(tx);
-          if (!sameRoute(submission, await loadSettings(task))) throw new ChangedEvidence();
-          if (submission.workspaceRevision) await checkWorkspaceRoute();
-        },
+        track:trackWorkspace, trackAssessment, trackRetention, trackDiagnosis() { protectWorkspaceDispatch = true; },
+        authorize:authorizeLearning,
       }) : undefined;
       // Claim commands only bind the learner quote and optional object scope.
       // They cannot preserve the independent sources included in a JIT frame.
@@ -647,8 +656,40 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           return packet;
         },
       }) : undefined;
+      if (learningV1 && (!workspace || !turnMemory)) throw new ChangedEvidence();
+      const toolsV1 = learningV1 && workspace && turnMemory ? openLearningTools({db,turn:slotKey,workspace,maySend,
+        authorize:authorizeLearning,track(w) {
+          keepLearningBasis(w);
+          trackWorkspace(w,true);
+        },
+        draftBasis:() => [...inputs.values()].flatMap(w => w.kind === 'fact'
+          ? [{id:w.id,rev:w.rev,epoch:w.accessEpoch}] : []),
+        async authorizeRemote() {
+          try {
+            return await confirmNotionRead(db,learner,async (tx,check) => {
+              await authorizeLearning(tx);
+              await notionSendBasis(tx,notionWitnesses.values(),maySend,check);
+              return true;
+            });
+          } catch (error) {
+            if (error instanceof ChangedEvidence || error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
+                error instanceof TeachingError || error instanceof LifecycleError) return false;
+            throw error;
+          }
+        },
+        saveBelief:(args,step) => turnMemory.execute('save_belief',args,step),
+        async readContext(intent,step,expand) {
+          const packet = await readMemoryGateway({...memoryRequest,intent,maxBytes:expand ? 16_384 : 8192,beliefTools:true,
+            ...(expand ? {expand} : {}),owner:{kind:'session',id:slotKey,step:'context-v1:'+String(step)}});
+          if (!packet) return;
+          packet.receipt.basis.forEach(keepLearningBasis);
+          trackMemory(packet);
+          return packet.bundle;
+        },
+      }) : undefined;
       const result = await runCompanionTurn(answer, publicHistory, material, {
         provider: settings, runEffect: runModelEffect,
+        ...(toolsV1 ? {learningTools:toolsV1} : {}),
         async onProgress(progress) {
           // The generated tool call included private answers. The host owns the public
           // confirmation once a formal artifact has been mounted.
