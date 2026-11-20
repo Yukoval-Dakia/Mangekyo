@@ -27,8 +27,8 @@
 | 动作 | 命令输入 |
 | --- | --- |
 | 合并 | `{ action: 'merge', id, expectedRev, into, targetRev }`。源身份及别名沿 `merged_into` 跟随目标。 |
-| 拆分 | `{ action: 'split', id, expectedRev, reason, purpose?, children, reattachments? }`。`children` 采用既有实体创建命令的 `{ id, entity, resolution }`。用途由外层声明，缺省为 `storage`。 |
-| 拆分内重挂一条关系 | `{ edge: { id, rev, accessEpoch }, childId, evidence: [{ id, rev, accessEpoch }] }`。逐条指定同批新子概念和细分依据，支持题目考查边和作答关联边。首版关系可重挂。已有修订的关系保留供单独审查。 |
+| 拆分 | `{ action: 'split', id, expectedRev, reason, purpose?, children, reattachments? }`。`children` 须与原实体同类（概念、方法或母题），采用既有实体创建命令的 `{ id, entity, resolution }`。用途由外层声明，缺省为 `storage`。 |
+| 拆分内重挂一条关系 | `{ edge: { id, rev, accessEpoch }, childId, evidence: [{ id, rev, accessEpoch }] }`。逐条指定同批新子概念和细分依据，支持题目考查、母题归属、题目或作答关联。首版关系可重挂。已有修订的关系保留供单独审查。 |
 
 拆分产生的 `part_of` 边从子概念指向原粗概念，可用 `splitConceptHierarchyEdgeId(childId, parentId)` 定位。未指定重挂的边仍引用原概念。重挂为同一边身份追加修订，保留旧边的来源并附上细分依据。旧核验若存在，仅作为来源保留。借助 `@mangekyo/module-content/knowledge-edge` 的 `openKnowledgeEdgeRevision(ctx, id, { mode: 'following' })` 重开当前边，或以 `{ mode: 'pinned', rev }` 重开历史边。两种读法都复验来源权限和访问代次。跟随查询可继续用 `walkKnowledgeEdges` 解析实体重定向。
 

@@ -40,8 +40,8 @@ export function parseGraphEvolution(input: unknown) {
   });
   const childIds = new Set(children.map(child => child.id));
   if (children.length < 2 || children.length > 16 || childIds.has(id) || childIds.size !== children.length ||
-      children.some(child => child.entity.kind !== 'concept')) {
-    throw new Error('拆分需要 2–16 个独立的新子概念身份。');
+      children.some(child => child.entity.kind !== children[0]?.entity.kind)) {
+    throw new Error('拆分需要 2–16 个同类的新实体身份。');
   }
   const names = children.flatMap(({ entity }) => [entity.canonicalName, ...entity.aliases].map(normalizeKnowledgeName));
   if (new Set(names).size !== names.length) throw new Error('子概念之间的规范名称和别名不能重复。');
@@ -80,13 +80,13 @@ function readForPurposes(read: ReadContext, purposes: readonly string[]): ReadCo
   };
 }
 
-async function splitKnowledgeConcept(ctx: CommandContext, input: Extract<GraphEvolution, { action: 'split' }>) {
+async function splitKnowledgeEntity(ctx: CommandContext, input: Extract<GraphEvolution, { action: 'split' }>) {
   const { id, expectedRev, purpose, children, reattachments, reason } = input;
   const purposes = purpose === 'teaching' ? ['storage', 'teaching'] : ['storage'];
   const access = { ...ctx, read: readForPurposes(ctx.read, purposes) };
   const { snapshot, entity, redirects } = await openKnowledgeEntity(access.read, id);
   if (redirects.length || snapshot.ref.rev !== expectedRev) throw new Error(`Fact revision conflict: ${id}`);
-  if (entity.kind !== 'concept') throw new Error('仅能拆分知识概念。');
+  if (children.some(child => child.entity.kind !== entity.kind)) throw new Error('子实体须与原实体同类。');
 
   const parent = witness(snapshot);
   const writes: FactWrite[] = [];
@@ -99,7 +99,7 @@ async function splitKnowledgeConcept(ctx: CommandContext, input: Extract<GraphEv
       kind: 'create', id: await splitConceptHierarchyEdgeId(child.id, id),
       factType: knowledgeEdgeType, purpose: purposes,
       data: parseKnowledgeEdge({
-        kind: 'part_of', from: { kind: 'concept', sourceUse: childUse }, to: { kind: 'concept', sourceUse: parent },
+        kind: 'part_of', from: { kind: entity.kind, sourceUse: childUse }, to: { kind: entity.kind, sourceUse: parent },
         sourceUses: [...sources, childUse], scope: reason,
       }),
     });
@@ -117,9 +117,10 @@ async function splitKnowledgeConcept(ctx: CommandContext, input: Extract<GraphEv
     }
     const edgeAccess = { ...ctx, read: readForPurposes(ctx.read, current.purpose) };
     const { edge: previous } = await openKnowledgeEdgeRevision(edgeAccess, item.edge.id, { mode: 'following' });
-    if (previous.to.kind !== 'concept' || previous.to.sourceUse.id !== id || previous.to.blockId !== undefined ||
-        (previous.kind !== 'targets_concept' && !(previous.kind === 'related_to' && previous.from.kind === 'work'))) {
-      throw new Error('只可重挂指向该父概念的整概念题目考查或作答关联。');
+    const assignment = previous.kind === 'targets_concept' || previous.kind === 'instance_of' ||
+      (previous.kind === 'related_to' && (previous.from.kind === 'work' || previous.from.kind === 'question'));
+    if (!assignment || previous.to.kind !== entity.kind || previous.to.sourceUse.id !== id || previous.to.blockId !== undefined) {
+      throw new Error('只可重挂指向原实体的整项题目或作答归属。');
     }
     if (item.evidence.some(use => use.id === id || use.id === item.edge.id)) {
       throw new Error('细分依据需要具体来源。');
@@ -130,7 +131,7 @@ async function splitKnowledgeConcept(ctx: CommandContext, input: Extract<GraphEv
     writes.push({
       kind: 'correct', id: current.ref.id, expectedRev: current.ref.rev,
       data: parseKnowledgeEdge({
-        ...claim, to: { kind: 'concept', sourceUse: childUse },
+        ...claim, to: { kind: entity.kind, sourceUse: childUse },
         sourceUses: uniqueUses([...previous.sourceUses, ...(verification ? [verification] : []), ...item.evidence, childUse]),
       }),
     });
@@ -140,5 +141,5 @@ async function splitKnowledgeConcept(ctx: CommandContext, input: Extract<GraphEv
 
 export async function evolveGraph(ctx: CommandContext, input: GraphEvolution): Promise<readonly FactWrite[]> {
   if (input.action === 'merge') return mergeKnowledgeEntity(ctx, input);
-  return splitKnowledgeConcept(ctx, input);
+  return splitKnowledgeEntity(ctx, input);
 }

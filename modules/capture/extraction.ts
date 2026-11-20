@@ -292,23 +292,30 @@ export function clarificationRegions(fact: FactSnapshot, outcome: Outcome<Layere
 
 function questionBlocks(blocks: readonly Block[], itemId: string) {
   const publicBlocks = new Map<string, { block: Block; owner: string | undefined }>();
-  const context = new Set<string>([itemId]);
+  const ancestors = new Set<string>();
+  const itemIds = new Set<string>();
   for (const block of blocks) {
     const { id, parentId, body } = block;
     if (body.layer !== 'material' && body.layer !== 'prompt') continue;
     const parent = parentId === null ? undefined : publicBlocks.get(parentId);
     if (parentId !== null && !parent) continue;
-    publicBlocks.set(id, { block, owner: body.itemId ?? parent?.owner });
-    if (body.layer !== 'prompt' || body.itemId !== itemId) continue;
+    const owner = body.itemId ?? parent?.owner;
+    publicBlocks.set(id, { block, owner });
+    if (body.layer !== 'prompt' || !owner) continue;
+    itemIds.add(owner);
+    if (owner !== itemId) continue;
     let ancestor = parent;
-    while (ancestor) {
-      if (ancestor.owner) context.add(ancestor.owner);
-      const next = ancestor.block.parentId;
-      ancestor = next === null ? undefined : publicBlocks.get(next);
+    while (ancestor && !ancestors.has(ancestor.block.id)) {
+      ancestors.add(ancestor.block.id);
+      ancestor = ancestor.block.parentId === null ? undefined : publicBlocks.get(ancestor.block.parentId);
     }
   }
-  return Array.from(publicBlocks.values()).flatMap(({ block, owner }) =>
-    owner === undefined || context.has(owner) ? [block] : []);
+  return Array.from(publicBlocks.values()).flatMap(({ block, owner }) => {
+    if (owner === itemId || ancestors.has(block.id)) return [block];
+    // A single-item paper may supply its passage as a separate top-level material.
+    if (itemIds.size === 1 && !owner && block.body.layer === 'material') return [block];
+    return [];
+  });
 }
 
 function firstAnswerBlocks(blocks: readonly Block[], itemId: string) {
