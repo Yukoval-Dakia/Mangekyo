@@ -39,6 +39,13 @@ import { saveLearnerSettings, publicSettings, loadSettings } from './settings.ts
 
 import {actOnArtifact} from './presentation-store.ts';
 
+function knownMountIds(query: URLSearchParams) {
+  const ids = query.getAll('knownMountIds');
+  if (ids.length > 64 || ids.some(id => !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)))
+    throw new RequestError(400, '作品已见标识无效或过多。');
+  return new Set(ids);
+}
+
 async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   if (req.headers['content-type']?.split(';')[0] !== 'application/json')
     throw new RequestError(415, '需要 JSON 请求。');
@@ -355,7 +362,7 @@ export function serve(
       const actionPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/artifact-actions$/.exec(path);
       if (actionPath?.[1] && method === 'POST') return json(res,200,await actOnArtifact(db,actionPath[1],await body(req)));
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
-      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], url.searchParams.get('watchMounts') === '1', res, student.recall.project);
+      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], url.searchParams.get('watchMounts') === '1', res, student.recall.project, knownMountIds(url.searchParams));
       const recall = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/recall\/(state|reveal|display|submit)$/.exec(path);
       if (recall?.[1] && recall[2] === 'state' && method === 'GET') {
         return json(res, 200, await student.recall.readState(recall[1], url.searchParams));
@@ -371,7 +378,7 @@ export function serve(
         return json(res, 200, await student.recall.submit(recall[1], input));
       }
       const match = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})(\/answers)?$/.exec(path);
-      if (match?.[1] && !match[2] && method === 'GET') return json(res, 200, await getSession(db, match[1], student.recall.project));
+      if (match?.[1] && !match[2] && method === 'GET') return json(res, 200, await getSession(db, match[1], student.recall.project, knownMountIds(url.searchParams)));
       if (match?.[1] && match[2] && method === 'POST') {
         const input = await body(req);
         return json(

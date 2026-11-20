@@ -12,13 +12,15 @@ import type { CommandReceipt } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 
 import { type Manifest } from '../../kernel/src/derivations/manifest.ts';
-import { notionReadScope, teachingResultAllowed, type CheckNotionRead } from './notion.ts';
+import { NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { assessmentRelease, assessmentSubmission, type AssessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import {
   validateArtifact,
+  exerciseView,
+  savedArtifactCheckpoints,
   operationLocks,
   type Artifact,
   type ArtifactAction,
@@ -121,6 +123,7 @@ async function readMount(tx: ReadTransaction, sessionId: string, mountId: string
   try {
     return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(), check);
   } catch (error) {
+    if (error instanceof NotionReadUnconfirmed) throw new RequestError(503, '暂时无法核对作品来源，请重试。');
     if (unavailableMount(error)) throw conflict(error instanceof MountUnavailable ? error.message : '作品或依据已不可读。');
     throw error;
   }
@@ -136,10 +139,7 @@ async function projectMount(
   if (data.sessionId !== sessionId) throw new MountUnavailable('作品不属于本次对话。');
   const turn = await reader.fact(data.turnId, { mode: 'following' });
   const submission = studyTurn(turn.value);
-  if (
-    submission.sessionId !== sessionId || !await teachingResultAllowed(tx, submission, data.manifest, grantCurrent, check)
-  )
-    throw new MountUnavailable('作品的依据已变更。');
+  if (submission.sessionId !== sessionId) throw new MountUnavailable('作品不属于本次对话。');
   const {
     rows: [work],
   } = await tx.query<{ failed: boolean }>(
@@ -150,6 +150,9 @@ async function projectMount(
   if (!work || work.failed) throw new MountUnavailable('此回合已停止。');
   const result = validateArtifact(data.view);
   if (!result.ok) throw new MountUnavailable('无法读取这个作品版本。');
+  const authority = await teachingResultAuthority(tx, submission, data.manifest, grantCurrent, check);
+  if (authority === 'unconfirmed') throw new NotionReadUnconfirmed();
+  if (authority === 'withdrawn') throw new MountUnavailable('作品的依据已变更。');
   const events = await tx.query<{ id: string; receipt: CommandReceipt | null }>(
     `SELECT f.id,c.receipt FROM facts f JOIN fact_revs r ON
     r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev LEFT JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
@@ -164,41 +167,7 @@ async function projectMount(
   }
   const prediction = history.find((e) => e.prediction);
   const predicting = Boolean(data.predictionPrompt && !prediction);
-  const full = result.view;
-  const view: Artifact = predicting
-    ? {
-        version: 1,
-        id: full.id,
-        revision: full.revision,
-        title: '先写下你的预测',
-        fallback: data.predictionPrompt!,
-        sections: [
-          {
-            id: 'prediction',
-            title: '观察之前',
-            layout: 'stack',
-            nodes: [
-              { kind: 'note', id: 'estimate', label: data.predictionPrompt! },
-              {
-                kind: 'action',
-                id: 'record-prediction',
-                label: '保存预测',
-                intent: 'saveDraft',
-                inputs: ['estimate'],
-              },
-            ],
-          },
-        ],
-      }
-    : {
-        ...full,
-        sections: full.sections.map((section) => ({
-          ...section,
-          nodes: section.nodes.map((n) =>
-            n.kind === 'asset' ? { kind: 'text' as const, id: n.id, text: n.label + '（媒体尚未授权）' } : n,
-          ),
-        })),
-      };
+  const view = exerciseView(result.view, predicting ? data.predictionPrompt : null);
   const stateRev = history.length;
   const base = {
     learnerId: tx.learner,
@@ -254,22 +223,6 @@ async function projectMount(
   };
   const projected = projectArtifactSnapshot(mount, grant);
   if (!projected.ok) throw new MountUnavailable(projected.code);
-  // For each input return its most recent checkpoint. Full action records stay in activity.
-  const covered = new Set<string>();
-  const saved = [];
-  for (const event of history.toReversed()) {
-    if (event.prediction) continue;
-    const answers = Object.fromEntries(
-      Object.entries(event.action.answers).filter(([id]) => !covered.has(id)),
-    );
-    if (Object.keys(answers).length === 0) continue;
-    for (const id of Object.keys(answers)) covered.add(id);
-    const { omitted, steps } = event.action.trace;
-    saved.unshift({
-      answers,
-      trace: { omitted, steps: steps.filter((step) => Object.hasOwn(answers, step.nodeId)) },
-    });
-  }
   const latest = history.at(-1);
   const snapshot = {
     ...projected.snapshot,
@@ -282,7 +235,7 @@ async function projectMount(
     ...(release && submissionEvent ? {
       assessment: await readArtifactAssessment(tx, release.releaseRef, { id: factId(submissionEvent.id), rev: 1 as Revision }),
     } : {}),
-    saved,
+    saved: savedArtifactCheckpoints(history),
     commandId: latest?.receipt?.commandId ?? null,
   };
   return { mount, grant, history, snapshot, release, source };
@@ -297,14 +250,23 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
   );
   const grantCurrent = workspaceGrantChecker();
   const snapshots = [];
+  const unconfirmed: string[] = [];
   for (const { id } of rows.rows) {
     try {
       snapshots.push((await projectMount(tx, session, id, grantCurrent, check)).snapshot);
     } catch (error) {
-      if (!unavailableMount(error)) throw error;
+      if (error instanceof NotionReadUnconfirmed) unconfirmed.push(id);
+      else if (!unavailableMount(error)) throw error;
     }
   }
-  return snapshots;
+  return {snapshots, unconfirmed};
+}
+
+export function mountPermissionFields(unconfirmed: readonly string[], known: ReadonlySet<string>) {
+  return unconfirmed.length ? {
+    mountPermissionsPartial: true as const,
+    unconfirmedMountIds: unconfirmed.filter(id => known.has(id)),
+  } : {};
 }
 
 // Exploration also records a structured handoff, using its original slot contract.

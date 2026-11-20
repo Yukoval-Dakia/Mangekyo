@@ -1,4 +1,4 @@
-import { notionReadScope, teachingResultAllowed, type CheckNotionRead } from './notion.ts';
+import { notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
@@ -33,7 +33,7 @@ import {
   notionModelRecipient,
 } from './identity.ts';
 
-import {turnArtifacts} from './presentation-store.ts';
+import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
 
 export class RequestError extends Error {
   readonly status: number;
@@ -90,6 +90,7 @@ export type DisplayTurn = {
   answer?: string;
 };
 type Status = 'pending' | 'ready' | 'failed' | 'unknown';
+export const unconfirmedReplyMessage = '暂时无法核对本轮依据，旧回复已隐藏。';
 export const unavailableReplyMessage = '本轮已完成，依据已变更，旧回复已隐藏。';
 type TurnView = {
   id: string;
@@ -127,10 +128,10 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
         throw error;
       });
     const submission = studyTurn(snapshot.value);
-    let feedback = row.value;
-    if (feedback && check && !await teachingResultAllowed(tx, submission, row.manifest, grantCurrent, check)) feedback = null;
+    const authority = row.value && check && await teachingResultAuthority(tx, submission, row.manifest, grantCurrent, check);
+    let feedback = !authority || authority === 'authorized' ? row.value : null;
     if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
-      rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: [] };
+      rationale: '', message: authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage, reads: [], evidenceIds: [] };
     result.push({
       id: row.id,
       submission,
@@ -232,11 +233,15 @@ async function readableTurnMounts(tx: ReadTransaction, session: string, timeline
 export function sessionMountPermissions(db: Db, session: string) {
   return notionReadScope(db, studioLearner).read(async (tx, check) => {
     const mounts = await readableTurnMounts(tx, session, await history(tx, session, check), check);
-    return Array.from(mounts.values()).flatMap(turn => turn.map(artifact => artifact.mountId));
+    const turns = [...mounts.values()];
+    return {
+      authorizedMountIds: turns.flatMap(turn => turn.snapshots.map(artifact => artifact.mountId)),
+      unconfirmed: turns.flatMap(turn => turn.unconfirmed),
+    };
   });
 }
 
-export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project']) {
+export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project'], knownMounts: ReadonlySet<string> = new Set()) {
   const notion = notionReadScope(db, studioLearner);
   const { turns, ...view } = await notion.read(async (tx, check) => {
     const timeline = await history(tx, session, check);
@@ -255,11 +260,12 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
       status: last.status,
       ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
       ...(last.error ? { error: last.error } : {}),
-      ...(last.status === 'pending' ? { artifacts: mounts.get(last.id) ?? [] } : {}),
+      ...(last.status === 'pending' ? { artifacts: mounts.get(last.id)?.snapshots ?? [] } : {}),
+      ...mountPermissionFields([...mounts.values()].flatMap(turn => turn.unconfirmed), knownMounts),
       turns: await Promise.all(timeline.filter(row => row.feedback).map(async row => {
         const writes = row.feedback?.writes ?? recovered.get(row.id);
         return { row, writes: writes?.length ? await projectWrites(tx, writes) : undefined,
-          artifacts: mounts.get(row.id) ?? [] };
+          artifacts: mounts.get(row.id)?.snapshots ?? [] };
       })),
     };
   });
