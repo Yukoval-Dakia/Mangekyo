@@ -3,6 +3,7 @@ import type { WorkbookQuestionView } from '../../../modules/activity/workbook-va
 import type { reconcileRetention } from '../../../modules/learner/retention';
 import { api, ApiError } from './api';
 import { ListLink, ReadState, useResource } from './workspace';
+import { ReconciliationResearch } from './research';
 import './workbook.css';
 
 type Entry = { forecastKey: string; title: string; through: string } & (
@@ -31,11 +32,15 @@ function Reconciliation({ recordKey }: { recordKey: string }) {
   if (data.state === 'pending') return <p role="status">已交卷，正在等待对账结果…</p>;
   if (data.state !== 'current') return <p role="status">已交卷，当前没有可读的对账结果。 <a href={location.href}>重新读取</a></p>;
   const { status, observation } = data.value;
-  return <dl>
-    <dt>作答结果</dt><dd>{{ correct: '答对', incorrect: '答错', unknown: '未知' }[observation.result] ?? '未知'}</dd>
-    <dt>帮助情况</dt><dd>{{ independent: '独立作答', exposed: '接触过帮助', unknown: '未知' }[observation.exposure.kind] ?? '未知'}</dd>
-    <dt>预测对账</dt><dd>{verdictLabels[status] ?? '未知'}</dd>
-  </dl>;
+  return <>
+    <dl id="posttest-result" tabIndex={-1}>
+      <dt>作答结果</dt><dd>{{ correct: '答对', incorrect: '答错', unknown: '未知' }[observation.result] ?? '未知'}</dd>
+      <dt>帮助情况</dt><dd>{{ independent: '独立作答', exposed: '接触过帮助', unknown: '未知' }[observation.exposure.kind] ?? '未知'}</dd>
+      <dt>预测对账</dt><dd>{verdictLabels[status] ?? '未知'}</dd>
+    </dl>
+    {status === 'missed' && observation.result === 'incorrect' && observation.exposure.kind === 'independent' &&
+      <ReconciliationResearch key={recordKey} recordKey={recordKey} />}
+  </>;
 }
 
 function AnswerForm({ issue, path, submitted }: { issue: Issue; path: string; submitted: (key: string) => void }) {
@@ -100,7 +105,7 @@ function OpenPosttest({ entry }: { entry: Entry }) {
   const key = entry.state === 'submitted' ? entry.reconciliationKey : receipt;
   return <section className="workbook-attempt-panel">
     <div className="subhead"><h2>{entry.title}</h2><a href="/today">返回今天</a></div>
-    {key ? <><h3>后测对账</h3><Reconciliation recordKey={key} /></> : <>
+    {key ? <><h3>后测对账</h3><Reconciliation key={key} recordKey={key} /></> : <>
       <p className="muted">独立完成 · 截止 {deadline(entry.through)}</p>
       {failure ? <p role="alert">{failure} <a href={location.href}>重新读取</a></p> :
         issue ? <AnswerForm issue={issue} path={path} submitted={setReceipt} /> : <p role="status">正在打开题目…</p>}

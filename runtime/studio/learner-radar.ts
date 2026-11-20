@@ -38,21 +38,21 @@ export function isRadarRetentionSlot(type: string) {
   return type === forecastType || type === reconciliationType;
 }
 
-async function currentSelections(tx: ReadTransaction, type: string, id?: string) {
+async function currentSelections(tx: ReadTransaction, type: string, id?: string, key?: string) {
   const { rows } = await tx.query<Selection>(
     `SELECT d.id, d.slot_type, d.slot_key, d.deriver, d.effective_tick::text, d.value, d.manifest
      FROM slot_state s JOIN derivations d
        ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.current_id)
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND ($3::text IS NULL OR d.id=$3)
+       AND ($5::text IS NULL OR d.slot_key=$5)
        AND d.lifecycle='effective' AND d.selection_ended_tick IS NULL AND d.invalidated_tick IS NULL
        AND NOT d.is_shadow AND d.effective_tick >= d.gather_tick AND d.value->>'kind'='value'
-     ORDER BY d.effective_tick DESC, d.id LIMIT $4`, [tx.learner, type, id ?? null, id ? 1 : candidateLimit],
+     ORDER BY d.effective_tick DESC, d.id LIMIT $4`, [tx.learner, type, id ?? null, id || key ? 1 : candidateLimit, key ?? null],
   );
   return rows;
 }
 
-async function readSelection(tx: ReadTransaction, row: Selection, access: Access) {
-  if (row.value.kind !== 'value') return;
+async function validRetentionManifest(tx: ReadTransaction, row: Selection, callerPurpose = purpose) {
   const owner = row.slot_type === forecastType ? 'learner/retention-forecast@' : 'learner/retention-reconciliation@';
   if (!row.deriver.startsWith(owner)) return;
   let manifest;
@@ -60,7 +60,14 @@ async function readSelection(tx: ReadTransaction, row: Selection, access: Access
   catch { return; }
   if (manifest.purpose !== purpose || manifest.inputs.length > 64 ||
       (await revalidateManifest(tx, manifest)).kind !== 'valid' ||
-      (access.callerPurpose !== purpose && (await revalidateManifest(tx, manifest, access.callerPurpose)).kind !== 'valid')) return;
+      (callerPurpose !== purpose && (await revalidateManifest(tx, manifest, callerPurpose)).kind !== 'valid')) return;
+  return manifest;
+}
+
+async function readSelection(tx: ReadTransaction, row: Selection, access: Access) {
+  if (row.value.kind !== 'value') return;
+  const manifest = await validRetentionManifest(tx, row, access.callerPurpose);
+  if (!manifest) return;
   const reader = createCommandReadContext(tx, access.callerPurpose);
   const facts: { input: FactInput; fact: FactSnapshot }[] = [];
   let forecast: { row: Selection; value: RetentionForecast } | undefined;
@@ -112,6 +119,29 @@ export async function readRetentionBasis(tx: ReadTransaction, slot: RadarSlot, a
   if (!row || row.slot_key !== slot.slotKey) return;
   const selected = await readSelection(tx, row, access);
   return selected && projectRetention(selected) ? basisOf(selected) : undefined;
+}
+
+// Revalidate the research grant's provenance without opening the exercise or answer.
+export async function readMissedPosttest(tx: ReadTransaction, key: string, resultId?: string) {
+  const [row] = await currentSelections(tx, reconciliationType, resultId, key);
+  if (row?.value.kind !== 'value' || !('observation' in row.value.value)) return;
+  const { status, observation, forecastId } = row.value.value;
+  if (status !== 'missed' || observation.result !== 'incorrect' || observation.exposure.kind !== 'independent') return;
+  const manifest = await validRetentionManifest(tx, row);
+  if (!manifest) return;
+  const parent = manifest.inputs.find(input => input.kind === 'slot' &&
+    input.slotType === forecastType && input.mode === 'following' && input.derivationId === forecastId);
+  if (parent?.kind !== 'slot' || !manifest.inputs.some(input => input.kind === 'fact' &&
+      input.id === observation.submission.id && input.rev === observation.submission.rev)) return;
+  const [forecast] = await currentSelections(tx, forecastType, parent.derivationId, parent.slotKey);
+  if (forecast?.value.kind !== 'value' || !('estimate' in forecast.value.value) ||
+      forecast.value.value.estimate.kind !== 'categorical' || forecast.value.value.estimate.expected !== 'correct' ||
+      !await validRetentionManifest(tx, forecast)) return;
+  const { rowCount } = await tx.query(
+    'SELECT 1 FROM facts WHERE learner_id=$1 AND id=$2 AND type=$3 AND retracted_rev IS NULL',
+    [tx.learner, observation.submission.id, posttestSubmission],
+  );
+  return rowCount ? derivationId(row.id) : undefined;
 }
 
 function projectRetention(selected: SelectionRead) {

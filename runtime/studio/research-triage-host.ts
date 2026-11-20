@@ -7,13 +7,13 @@ import { goalType } from '../../modules/activity/library-values.ts';
 import { organizerTaskType } from '../../modules/activity/organizer-values.ts';
 import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import {
-  researchPurpose, researchSettingsType, researchWorksheetType,
+  researchPurpose, researchSettingsType, researchWorksheetType, retentionReviewPermissionType,
 } from '../../modules/companion/research.ts';
 import { readLearningOverview } from './learning-overview.ts';
 import { readRetentionRadar } from './learner-radar.ts';
 import { textSlice } from './reading.ts';
 import { readResearchForeground } from './research-foreground.ts';
-import { readWorksheetById, researchReader, whenAvailable, worksheetId } from './research-sources.ts';
+import { activeRetentionReview, readWorksheetById, researchReader, retentionReviewAnchor, whenAvailable, worksheetId } from './research-sources.ts';
 import {
   allowedTriageIds, parseTriageResponse, triagePromptBlock, TriageResponseError, type TriageSnapshot,
 } from './research-triage/index.ts';
@@ -42,12 +42,12 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
   const { rows } = await tx.query<{ id: string; type: string; rank: number }>(
     `SELECT id, type, rank::int FROM (
        SELECT id, type, changed_tick, row_number() OVER (PARTITION BY type ORDER BY changed_tick DESC, id) AS rank
-       FROM facts WHERE learner_id = $1 AND type IN ($3, $4, $5, $6, $7)
+       FROM facts WHERE learner_id = $1 AND type IN ($3, $4, $5, $6, $7, $10)
         AND (CASE WHEN type = $5 THEN created_tick ELSE changed_tick END) > $2::bigint
         AND $8 = ANY(purpose) AND retracted_rev IS NULL
      ) changed WHERE rank <= $9 ORDER BY changed_tick, id`,
     [tx.learner, reviewed, researchSettingsType, workbookAttemptType, researchWorksheetType,
-      goalType, organizerTaskType, researchPurpose, detailLimit + 1],
+      goalType, organizerTaskType, researchPurpose, detailLimit + 1, retentionReviewPermissionType],
   );
   const events: Record<string, Json> = {};
   const read = researchReader(tx);
@@ -78,11 +78,13 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
     } else {
       discovery = true;
       if (row.type === researchSettingsType) add('research_enabled', { paid_budget: 0 });
-      else add('authorized_attempt_changed', { submitted_at: workbookAttempt(fact.value).submittedAt });
+      else if (row.type === retentionReviewPermissionType) {
+        if (await activeRetentionReview(tx, fact)) add('authorized_retention_miss', { status: 'missed' });
+      } else add('authorized_attempt_changed', { submitted_at: workbookAttempt(fact.value).submittedAt });
     }
   }
   const completionRows = rows.filter(row => row.type === researchWorksheetType).length;
-  return { events, discovery, coverage: coverage(completed, completionRows, detailLimit) };
+  return { events, discovery: discovery || completed > 0, coverage: coverage(completed, completionRows, detailLimit) };
 }
 
 function coverage(visible: number, candidates: number, limit: number) {
@@ -100,7 +102,8 @@ async function readResearchInventory(tx: ReadTransaction) {
   for (const { id } of rows.slice(0, detailLimit)) {
     const opened = await readWorksheetById(tx, factId(id));
     if (!opened) continue;
-    const { source, worksheet, fact } = opened;
+    const { worksheet, fact } = opened;
+    const source = worksheet.source;
     if ('todoId' in worksheet) {
       const todo = await readTodo(tx, worksheet.todoId);
       if (todo?.state !== 'completed' || todo.resultId !== id) continue;
@@ -108,7 +111,7 @@ async function readResearchInventory(tx: ReadTransaction) {
     items[id] = { inventory_id: id, kind: 'research_worksheet', status: 'ready', usage: 'unknown',
       revision: fact.ref.rev, access_epoch: fact.accessEpoch, title: textSlice(worksheet.title, 0, 80).content,
       source_fact_id: source.attemptId, source_fact_rev: String(source.revision), source_access_epoch: source.accessEpoch,
-      href: `/api/papers/${source.paperId}/attempts/${source.attemptId}/research` };
+      href: opened.source ? `/api/papers/${opened.source.paperId}/attempts/${source.attemptId}/research` : source.href };
   }
   return { items, coverage: coverage(Object.keys(items).length, rows.length, detailLimit) };
 }
@@ -133,13 +136,15 @@ async function readResearchOverview(tx: ReadTransaction) {
 async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, settingsRevision: number, now: number) {
   const { rows } = await tx.query<{ id: string; recent: boolean }>(
     `WITH attempts AS (
-       SELECT f.id, f.created_tick, r.data, row_number() OVER (ORDER BY f.created_tick DESC, f.id) <= $4 AS recent
+       SELECT f.id, f.type, f.created_tick, r.data, row_number() OVER (ORDER BY f.created_tick DESC, f.id) <= $4 AS recent
        FROM facts f JOIN fact_revs r ON (r.learner_id, r.fact_id, r.rev) = (f.learner_id, f.id, f.current_rev)
-       WHERE f.learner_id = $1 AND f.type = $2 AND $3 = ANY(f.purpose) AND $3 = ANY(r.purpose)
+       WHERE f.learner_id = $1 AND f.type IN ($2, $6) AND $3 = ANY(f.purpose) AND $3 = ANY(r.purpose)
          AND f.retracted_rev IS NULL
-     ) SELECT id, recent FROM attempts WHERE recent OR ($5 AND data @> '{"feedback":[{"result":"incorrect"}]}')
+     ) SELECT id, recent FROM attempts
+     WHERE (type=$2 AND (recent OR ($5 AND data @> '{"feedback":[{"result":"incorrect"}]}')))
+        OR (type=$6 AND $5 AND data @> '{"allowed":true}')
      ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookAttemptType, researchPurpose, recentWindow, discovery],
+    [tx.learner, workbookAttemptType, researchPurpose, recentWindow, discovery, retentionReviewPermissionType],
   );
   const facts: Record<string, Json> = {};
   let intent: TodoInput | undefined;
@@ -150,8 +155,10 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
     const id = factId(rawId);
     const fact = await whenAvailable(() => read.fact(id, { mode: 'following' }));
     if (!fact) continue;
-    const attempt = workbookAttempt(fact.value);
-    const anchor = attempt.feedback.find(item => item.result === 'incorrect')?.questionId;
+    const retention = fact.type === retentionReviewPermissionType;
+    if (retention && !await activeRetentionReview(tx, fact)) continue;
+    const attempt = retention ? undefined : workbookAttempt(fact.value);
+    const anchor = retention ? retentionReviewAnchor : attempt?.feedback.find(item => item.result === 'incorrect')?.questionId;
     if (discovery && !intent && anchor) {
       const sourceFactRev = { id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch, anchor };
       const dedupKey = reviewDedupKey(sourceFactRev);
@@ -170,8 +177,10 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
     }
     const summary = {
       id, rev: fact.ref.rev, fact_type: fact.type, access_epoch: fact.accessEpoch, retracted_rev: 0,
-      purpose: researchPurpose, data: { submitted_at: attempt.submittedAt, title: textSlice(attempt.paper.title, 0, 100).content,
-        first_incorrect_question: anchor ? attempt.paper.questions.findIndex(item => item.id === anchor) + 1 : null },
+      purpose: researchPurpose, data: attempt
+        ? { submitted_at: attempt.submittedAt, title: textSlice(attempt.paper.title, 0, 100).content,
+          first_incorrect_question: anchor ? attempt.paper.questions.findIndex(item => item.id === anchor) + 1 : null }
+        : { status: 'missed', observation: 'independent' },
     };
     if (recent) facts[id] = summary;
     else if (intent?.sourceFactRev.id === id) olderCandidate = summary;

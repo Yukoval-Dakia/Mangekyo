@@ -17,13 +17,15 @@ import {
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import {
-  configureResearch, publishWorksheet, readResearchBasis, ResearchBasisChanged, researchOrder, researchPurpose,
-  researchSettings, researchSettingsType, worksheetDraft,
+  allowRetentionReview, configureResearch, publishWorksheet, readResearchBasis, ResearchBasisChanged, researchOrder,
+  researchPurpose, researchSettings, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType, worksheetDraft,
 } from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';
 import {
-  readWorksheet, researchReader, reviewEvidence, whenAvailable, workbookSource, worksheetId, type ReviewEvidence,
+  activeRetentionReview, readWorksheet, readWorksheetById, researchReader, retentionReviewAnchor,
+  retentionReviewPermissionId, reviewEvidence, whenAvailable, workbookSource, worksheetId, type ReviewEvidence,
 } from './research-sources.ts';
 import {
   prepareResearchTriage, reviewDedupKey, reviewGoal, selectResearchTodo, type ResearchTriageTransport,
@@ -51,6 +53,15 @@ const deterministicReview: ResearchAgent = ({ questionNumber, feedback }) => ({
   ],
 });
 
+const retentionReviewDraft = {
+  title: '后测复习单',
+  steps: [
+    '回想上次独立作答时卡住的位置，先用自己的话写出解题思路。',
+    '隔一段时间再做一道考查同一要点的题，先独立作答，再对照反馈。',
+    '回看这次预测与实际结果的差异，记下需要再练的一点。',
+  ],
+};
+
 async function settings(tx: ReadTransaction) {
   return whenAvailable(async () => {
     const fact = await researchReader(tx).fact(settingsId, { mode: 'following' });
@@ -59,11 +70,11 @@ async function settings(tx: ReadTransaction) {
 }
 
 async function eligibleBasis(tx: ReadTransaction, spec: TodoSpec) {
+  const { id, revision, accessEpoch, anchor } = spec.sourceFactRev;
   // The installed executor serves zero-cost retry sheets only. Other profiles and tiers need their own admission.
   if (spec.workerProfile !== 'deterministic_compute' || spec.goal !== reviewGoal || spec.budgetCap !== 0 ||
-      spec.autonomyTier !== 1 || spec.expiresAtMs <= Date.now() || !spec.sourceFactRev.anchor) return null;
+      spec.autonomyTier !== 1 || spec.expiresAtMs <= Date.now() || !anchor) return null;
   return whenAvailable(async () => {
-    const { id, revision, accessEpoch, anchor } = spec.sourceFactRev;
     if (spec.dedupKey !== reviewDedupKey(spec.sourceFactRev)) return null;
     const basis = researchOrder({ settingsId, settingsRevision: spec.settingsRevision,
       source: { attemptId: id, revision, accessEpoch, questionId: anchor } });
@@ -73,8 +84,13 @@ async function eligibleBasis(tx: ReadTransaction, spec: TodoSpec) {
       if (fact.ref.rev !== ref.revision || fact.accessEpoch !== ref.accessEpoch) return null;
     }
     const source = await readResearchBasis(read, basis);
-    if (workbookAttempt(source.value).feedback.find(item => item.result === 'incorrect')?.questionId !== anchor) return null;
-    return { basis, source };
+    if (source.type === retentionReviewPermissionType) {
+      if (anchor !== retentionReviewAnchor || !await activeRetentionReview(tx, source)) return null;
+      return { basis, evidence: null };
+    }
+    if (source.type !== workbookAttemptType ||
+        workbookAttempt(source.value).feedback.find(item => item.result === 'incorrect')?.questionId !== anchor) return null;
+    return { basis, evidence: reviewEvidence(source.value, anchor) };
   });
 }
 
@@ -99,19 +115,18 @@ async function updateSettings<T>(action: () => Promise<T>) {
 export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule,
   agent?: ResearchAgent, triageTransport?: ResearchTriageTransport) {
   const generate = agent ?? deterministicReview;
-  const handle = createCommandHandler(db, {
-    modules: [activity, companion],
-    hooks: { async onFactsChanged(tx, tick, changes) {
-      for (const change of changes) {
-        if (change.factType === researchSettingsType) {
-          await cancelResearchTodos(tx);
-          await enqueueWork(tx, tick, wake);
-        } else if (change.factType === workbookAttemptType && (await settings(tx))?.enabled) {
-          await enqueueWork(tx, tick, wake);
-        }
+  const hooks: CommandHooks = { async onFactsChanged(tx, tick, changes) {
+    for (const change of changes) {
+      if (change.factType === researchSettingsType) {
+        await cancelResearchTodos(tx);
+        await enqueueWork(tx, tick, wake);
+      } else if ((change.factType === workbookAttemptType || change.factType === retentionReviewPermissionType) &&
+          (await settings(tx))?.enabled) {
+        await enqueueWork(tx, tick, wake);
       }
-    } },
-  });
+    }
+  } };
+  const handle = createCommandHandler(db, { modules: [activity, companion], hooks });
 
   const read = () => db.snapshot(scope, async tx => {
     const current = await settings(tx);
@@ -120,6 +135,18 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
   const permission = (paperId: string, attemptId: string) => db.snapshot(scope, async tx => {
     const fact = await workbookSource(tx, paperId, attemptId);
     return { allowed: fact.purpose.includes(researchPurpose), revision: fact.ref.rev };
+  });
+
+  const readRetentionPermission = (tx: ReadTransaction, key: string) =>
+    whenAvailable(() => researchReader(tx).fact(retentionReviewPermissionId(key), { mode: 'following' }));
+
+  const retentionReview = (key: string) => db.snapshot(scope, async tx => {
+    const enabled = (await settings(tx))?.enabled ?? false;
+    const fact = await readRetentionPermission(tx, key);
+    const active = fact && await activeRetentionReview(tx, fact);
+    const opened = enabled && active && await readWorksheetById(tx, worksheetId(fact.ref.id, fact.ref.rev, fact.accessEpoch));
+    return { enabled, revision: fact?.ref.rev ?? 0, allowed: Boolean(active),
+      worksheet: opened ? opened.worksheet : null };
   });
 
   const workbookChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
@@ -186,6 +213,25 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       return read();
     },
     permission,
+    retentionReview,
+    async allowRetentionReview(key: string, input: Record<string, unknown>) {
+      const { requestId, revision, value: allowed } = settingInput(input, 0, 'allowed');
+      await updateSettings(() => db.tx(scope, async tx => {
+        await lockLearner(tx, tx.learner);
+        const previous = await readRetentionPermission(tx, key);
+        const resultId = allowed ? await readMissedPosttest(tx, key)
+          : previous && retentionReviewPermission(previous.value).resultId;
+        if (!resultId) throw new RequestError(409, '当前没有可授权的独立后测偏差。');
+        const handlePermission = createCommandHandler({ ...db, query: tx.query, tx: (commandScope, run) => {
+          if (commandScope.learner !== tx.learner) throw new Error('Research command learner mismatch');
+          return run(tx);
+        } }, { modules: [companion], hooks });
+        await handlePermission({ ...scope, actor: 'learner', purpose: researchPurpose, type: allowRetentionReview,
+          id: commandId(stableId('allow-retention-review', key, requestId)),
+          input: { id: retentionReviewPermissionId(key), revision, permission: { key, resultId, allowed } } });
+      }));
+      return retentionReview(key);
+    },
     async allow(paperId: string, attemptId: string, input: Record<string, unknown>) {
       const { requestId, revision, value: allowed } = settingInput(input, 1, 'allowed');
       await permission(paperId, attemptId);
@@ -248,10 +294,10 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
         if (!todo || todo.state !== 'dispatched') return todo?.state === 'completed' ? { status: 'completed' } as const : null;
         const eligible = await eligibleBasis(tx, todo.spec);
         if (!eligible) return null;
-        const { basis, source } = eligible;
-        const { attemptId, revision, accessEpoch, questionId } = basis.source;
+        const { basis, evidence } = eligible;
+        const { attemptId, revision, accessEpoch } = basis.source;
         const id = worksheetId(attemptId, revision, accessEpoch);
-        return { status: 'ready', todo, id, basis, evidence: reviewEvidence(source.value, questionId) } as const;
+        return { status: 'ready', todo, id, basis, evidence } as const;
       });
       const cancel = () => cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
       if (!prepared) {
@@ -259,7 +305,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
         return true;
       }
       if (prepared.status === 'ready') {
-        const draft = worksheetDraft(await generate(prepared.evidence));
+        const draft = worksheetDraft(prepared.evidence ? await generate(prepared.evidence) : retentionReviewDraft);
         const publish = createCommandHandler(db, {
           modules: [companion],
           hooks: { async onFactsChanged(tx, tick) {
@@ -274,7 +320,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
           ...scope, actor: 'companion', purpose: researchPurpose, type: publishWorksheet,
           id: commandId(stableId('publish-worksheet', prepared.id)),
           input: { id: prepared.id, todoId, basis: prepared.basis, draft,
-            method: agent ? 'local-agent' : 'deterministic-v1', questionNumber: prepared.evidence.questionNumber },
+            method: agent && prepared.evidence ? 'local-agent' : 'deterministic-v1', questionNumber: prepared.evidence?.questionNumber ?? 1 },
         }));
         if (!receipt) {
           await cancel();

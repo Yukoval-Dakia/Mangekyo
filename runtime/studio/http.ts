@@ -190,6 +190,11 @@ export function serve(
         const result = await student.retention.freeze(freeze[1], await body(req));
         return json(res, result.state === 'pending' ? 202 : 200, result);
       }
+      const retentionReview = /^\/api\/retention\/([0-9A-HJKMNP-TV-Z]{26})\/research$/.exec(path);
+      if (retentionReview?.[1] && method === 'GET')
+        return json(res, 200, await student.research.retentionReview(retentionReview[1]));
+      if (retentionReview?.[1] && method === 'PUT')
+        return json(res, 200, await student.research.allowRetentionReview(retentionReview[1], await body(req)));
       const retention = /^\/api\/retention\/([0-9A-HJKMNP-TV-Z]{26})(\/reconcile)?$/.exec(path);
       if (retention?.[1] && !retention[2] && method === 'GET')
         return json(res, 200, await student.retention.get(retention[1]));

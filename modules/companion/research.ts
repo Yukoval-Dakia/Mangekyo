@@ -1,9 +1,11 @@
-import { factId, type ReadContext, type Revision } from '@mangekyo/kernel';
+import { derivationId, factId, type ReadContext, type Revision } from '@mangekyo/kernel';
 
 export const researchPurpose = 'background-research';
 export const researchSettingsType = 'companion.researchSettings';
 export const researchOrderType = 'companion.researchOrder';
 export const researchWorksheetType = 'companion.researchWorksheet';
+export const retentionReviewPermissionType = 'companion.retentionReviewPermission';
+export const allowRetentionReview = 'companion.allowRetentionReview';
 export const configureResearch = 'companion.configureResearch';
 export const publishWorksheet = 'companion.publishWorksheet';
 
@@ -23,6 +25,11 @@ export function researchRevision(value: unknown, minimum = 1): Revision {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum)
     throw new Error('教研记录版本无效。');
   return value as Revision;
+}
+
+export function retentionReviewPermission(value: unknown) {
+  const { key, resultId, allowed } = object(value);
+  return { key: factId(String(key)), resultId: derivationId(String(resultId)), allowed: researchEnabled(allowed) };
 }
 
 export function researchSettings(value: unknown) {
