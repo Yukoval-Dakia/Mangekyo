@@ -349,7 +349,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     async recordPresentation(id: string, input: unknown) {
       try {
         const data = workbookPresentation(input);
-        if (data.paper.id !== id) throw new WorkbookPresentationError('呈现卷面不匹配。');
+        if (data.paper.id !== id || 'issuanceId' in data) throw new WorkbookPresentationError('呈现卷面不匹配。');
         const key = commandId(stableId(recordWorkbookPresentationCommand, JSON.stringify(data)));
         await handle({ learner: studioLearner, actor: 'learner', purpose: storagePurpose,
           id: key, type: recordWorkbookPresentationCommand, input: { id: key, data } });
