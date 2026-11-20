@@ -1,5 +1,6 @@
 import {useState} from 'react';
 import {PageTitle, ReadState, useResource} from './workspace';
+import {ConceptReading, FixedRecord} from './concept-reading';
 import {Message} from './message';
 
 type Entry = {id:string; kind?:string; rev:number; title:string; excerpt:string; author:string};
@@ -32,6 +33,11 @@ export function WorkspaceLibrary() {
 }
 
 export function WorkspaceRecord({id}:{id:string}) {
+  const refValue = new URLSearchParams(location.search).get('ref');
+  return refValue === null ? <CurrentRecord id={id} /> : <FixedRecord id={id} refValue={refValue} />;
+}
+
+function CurrentRecord({id}:{id:string}) {
   const [offset,setOffset] = useState(0);
   const [problem,setProblem] = useState('');
   const resource = useResource<Detail>('/workspace/access/records/'+encodeURIComponent(id)+'?offset='+offset);
@@ -51,6 +57,7 @@ export function WorkspaceRecord({id}:{id:string}) {
       {!!item.related?.length && <ul aria-label="关联记录">{item.related.map(link =>
         <li key={link.id}><a href={'/materials/records/'+link.id}>{link.title}</a></li>)}</ul>}
     </article>}
+    {item?.kind === 'concept' && <ConceptReading conceptId={item.id} />}
     {problem && <p role="alert">{problem}</p>}
     {offset > 0 && <button className="text-button" onClick={() => setOffset(0)}>回到开头</button>}
     {item?.nextOffset != null && <button className="text-button" onClick={() => setOffset(item.nextOffset!)}>继续阅读</button>}

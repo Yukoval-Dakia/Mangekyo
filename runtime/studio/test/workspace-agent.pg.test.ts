@@ -138,6 +138,10 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const preview = await edit('search_workspace',{query:'检索速度卷',kind:'paper'},8);
     expect(preview).toMatchObject({results:[{id:privatePaper.id,excerpt:expect.stringContaining('写出速度单位。')}]});
     expect(JSON.stringify(preview)).not.toMatch(/内部答案标记|内部评分规则标记/u);
+    const paperRef = new URLSearchParams({ref:JSON.stringify(preview.results[0].sourceRef)});
+    expect(JSON.stringify(await access.record(privatePaper.id,paperRef))).toContain('内部评分规则标记');
+    paperRef.set('view','preview');
+    expect(await access.record(privatePaper.id,paperRef)).toMatchObject({content:'写出速度单位。\n\n解释全程速度。'});
 
     await admin.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA ${schema}`);
     const graph = turn('graph');
@@ -173,6 +177,8 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const chain = await graph('search_workspace', {...filters,hops:2}, 6);
     expect(chain).toMatchObject({results:[{id:originalQuestion.id,hop:1}, {id:variant.id,hop:2,occurredAt:null,tags:['运动'],exposure:'unknown'}],
       edges:[{kind:'targets_concept',traversal:'reverse'}, {kind:'variant_of',traversal:'reverse',author:'companion',variant:{spoilsNext:'former'}}]});
+    const variantRef = new URLSearchParams({ref:JSON.stringify(chain.results[1].sourceRef),view:'preview'});
+    expect(await access.record(variant.id,variantRef)).toMatchObject({rev:1,content:'请计算这两段路程的往返平均速度并说明分母。'});
     expect(await graph('read_workspace',{id:JSON.stringify(chain.edges[1].sourceRef)},7)).toMatchObject({from:{fact:{id:variant.id,rev:1}},to:{fact:{id:originalQuestion.id,rev:1}}});
     const lookup = new URLSearchParams({conceptId:concept.id,hops:'2',kinds:'question'});
     expect(await access.list(lookup)).toMatchObject({items:[{id:originalQuestion.id},{id:variant.id}]});
