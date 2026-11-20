@@ -129,8 +129,11 @@ export function openWorkspaceRelation(options: {
 
 export function openRelationReview(db:Db, contentModule:LoadedModule) {
   const handle = createCommandHandler(db,{modules:[contentModule],hooks:createStudioCommandHooks()});
+  function unavailableBasis(error:unknown) {
+    return error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof KnowledgeEdgeBasisError;
+  }
   function translate(error:unknown): never {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof KnowledgeEdgeBasisError)
+    if (unavailableBasis(error))
       throw new RequestError(409,'知识边依据已变化或不可读。');
     if (error instanceof Error && error.message === 'Proposal not found')
       throw new RequestError(404,'找不到知识边提议。');
@@ -145,7 +148,6 @@ export function openRelationReview(db:Db, contentModule:LoadedModule) {
         if (!proposal) throw new RequestError(404,'找不到知识边提议。');
         if (proposal.state === 'rejected') return {proposalId:proposal.id,status:'rejected' as const};
         const {edge, id:edgeId} = parseEdgeWrite(proposal.input);
-        const {from,to,sources} = await readKnowledgeSources(tx,edge,owner);
         let result;
         if (proposal.state === 'confirmed') {
           const {rows:[fact]} = await tx.query<{current_rev:number;retracted_rev:number|null}>(
@@ -156,9 +158,17 @@ export function openRelationReview(db:Db, contentModule:LoadedModule) {
             ref:{v:1,fact:{id:edgeId,rev:1,type:knowledgeEdgeType},anchor:whole},undo_token:stableId('accept-knowledge-edge',id)};
           else result = {status:'changed' as const};
         }
-        return {proposalId:proposal.id,status:proposal.state,kind:edge.kind,scope:edge.scope,
+        const decision = {proposalId:proposal.id,status:proposal.state,...(result ? {result} : {})};
+        const description = await readKnowledgeSources(tx,edge,owner).catch((error:unknown) => {
+          // The learner can manage a confirmed edge after its description becomes unavailable.
+          if (proposal.state === 'confirmed' && unavailableBasis(error)) return undefined;
+          throw error;
+        });
+        if (!description) return decision;
+        const {from,to,sources} = description;
+        return {...decision,kind:edge.kind,scope:edge.scope,
           from:from.sourceRef,to:to.sourceRef,fromTitle:from.title,toTitle:to.title,sources,
-          ...(edge.variant ? {variant:edge.variant} : {}),...(result ? {result} : {})};
+          ...(edge.variant ? {variant:edge.variant} : {})};
       }).catch(translate);
     },
     async accept(id:string) {
