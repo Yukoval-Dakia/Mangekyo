@@ -101,6 +101,18 @@ function input<T>(parse: () => T) {
   catch (error) { throw new RequestError(400,error instanceof Error ? error.message : '课堂输入无效。'); }
 }
 
+// Only identities leave this query. The classroom reader authorizes each current plan and step.
+async function activeClassroomIds(tx: ReadTransaction) {
+  const {rows} = await tx.query<{id: string}>(
+    `SELECT f.id FROM facts f JOIN fact_revs r
+       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'status'='active'
+     ORDER BY f.changed_tick DESC, f.id`,
+    [tx.learner, classroomType],
+  );
+  return rows.map(row => factId(row.id));
+}
+
 export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHooks) {
   const view = async (tx: ReadTransaction, id: FactId, check: CheckNotionRead) => {
     const {fact,state,generation,adjustmentFailed} = await readClassroom(tx,id,check);
@@ -108,7 +120,30 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     return {id,rev:fact.ref.rev,topic,minutes,sessionId,status,steps,activeStepId:activeClassroomStep(state)?.id ?? null,
       ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {})};
   };
-  const get = (id: FactId) => handleErrors(() => notionReadScope(db,studioLearner).read((tx,check) => view(tx,id,check)));
+  const readView = (id: FactId, readOnly = false) =>
+    handleErrors(() => notionReadScope(db,studioLearner,{readOnly}).read((tx,check) => view(tx,id,check)));
+  const get = (id: FactId) => readView(id, true);
+  const listActive = () => notionReadScope(db, studioLearner, {readOnly: true}).read(async (tx, check) => {
+    const items = [];
+    let unconfirmed = false;
+    for (const id of await activeClassroomIds(tx)) {
+      try {
+        const {fact, state, generation} = await readClassroom(tx, id, check);
+        const step = activeClassroomStep(state);
+        if (state.status === 'active' && generation === 'ready' && step)
+          items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
+      } catch (error) {
+        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) continue;
+        if (error instanceof RequestError && error.status === 404) continue;
+        if (error instanceof RequestError && error.status === 503) {
+          unconfirmed = true;
+          continue;
+        }
+        throw error;
+      }
+    }
+    return {items, ...(!items.length && unconfirmed ? {retryable:true as const} : {})};
+  });
   const print = (id: FactId) => handleErrors(() => notionReadScope(db,studioLearner,{readOnly:true}).read(async (tx,check) => {
     const classroom = await view(tx,id,check);
     const session = await readClassroomSession(tx,classroom.sessionId,check);
@@ -147,7 +182,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
       })});
     await handleErrors(() => handle({...scope,actor:'learner',purpose,id:commandId(stableId('classroom-command',requestId)),
       type:classroomCommand,input:{id,start,route:route ?? null}}));
-    return get(id);
+    return readView(id);
   }
 
   async function mutate(id: FactId, op: ClassroomOperation, raw: Record<string, unknown>) {
@@ -177,15 +212,15 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     catch (error) {
       if (!(error instanceof RequestError || error instanceof ClassroomConflict ||
             error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
-      // Replay bypasses a now-stale expectedRev but still goes through authorized get().
+      // Replay bypasses a now-stale expectedRev but still goes through the authorized view.
     }
     const handle = createCommandHandler(db,{modules:[activity],hooks,bindCommandRead:(tx,_request,base) =>
       bindClassroomPreparation(base,() => prepare(tx,notion.check(tx)))});
     await handleErrors(() => handle({...scope,actor:'learner',purpose,id:commandId(stableId('classroom-command',requestId)),
       type:classroomCommand,input:{id,op,...mutation}}));
-    return get(id);
+    return readView(id);
   }
-  return {start,get,mutate,print};
+  return {start,get,listActive,mutate,print};
 }
 
 export const classroomPath = /^\/api\/classrooms(?:\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(adjust|advance|skip|finish|archive|print))?)?$/;
