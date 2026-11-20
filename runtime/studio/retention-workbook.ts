@@ -15,7 +15,7 @@ import {
 import type { RetentionObservation, RetentionTarget } from '../../modules/learner/retention.ts';
 import { readPosttestIssuance, type PosttestFactReader } from './retention-posttest.ts';
 import { activityHelpProcess, controlledWorkbookHelp } from '../../modules/activity/evidence-slice.ts';
-import { readEarlierControlledPosttests, workbookItemHistory } from '../../modules/activity/evidence-read.ts';
+import { readEarlierControlledPosttests, workbookItemHistory, workbookLinkCandidates, workbookWitnessesBy } from '../../modules/activity/evidence-read.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { RequestError } from './sessions.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
@@ -63,28 +63,12 @@ async function readItemEdges(
   kinds: readonly ('targets_concept' | 'variant_of')[],
 ) {
   if (!source) return [];
-  const { rows } = await tx.query<{ id: FactId }>(
-    `SELECT f.id FROM facts f JOIN fact_revs r
-       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-     WHERE f.learner_id=$1 AND f.type=$2 AND r.tick<=$3 AND r.data->>'kind'=ANY($4::text[])
-       AND (r.data->'from'->'sourceUse' @> $5::jsonb OR
-            (r.data->>'kind'='variant_of' AND r.data->'to'->'sourceUse' @> $5::jsonb))
-     ORDER BY f.id`,
-    [tx.learner, knowledgeEdgeType, cutoff, kinds, JSON.stringify(source)],
-  );
+  const rows = await workbookLinkCandidates(tx, knowledgeEdgeType, source, cutoff, kinds);
   const edges = [];
   for (const { id } of rows) {
     const edge = await openKnowledgeEdge(tx, id, { recipient: 'workspace', purpose: retentionPurpose, maySend: () => true });
     if (!edge) continue;
-    // Track every authorised revision used by the edge, and reject late transitive sources.
-    const witnesses = edge.opened.map(([{ ref, accessEpoch }]) => ({ id: ref.id, rev: ref.rev, accessEpoch }));
-    const { rows: [check] } = await tx.query<{ complete: boolean }>(
-      `SELECT NOT EXISTS (
-         SELECT 1 FROM jsonb_to_recordset($2::jsonb) AS witness(id text,rev integer)
-         LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=($1,witness.id,witness.rev)
-         WHERE r.tick IS NULL OR r.tick>$3
-       ) AS complete`, [tx.learner, JSON.stringify(witnesses), cutoff]);
-    if (!check?.complete) continue;
+    if (!await workbookWitnessesBy(tx, edge.opened.map(([fact]) => fact.ref), cutoff)) continue;
     for (const [fact, mode] of edge.opened) {
       await read.fact(fact.ref.id, mode === 'following' ? { mode } : { mode: 'pinned', rev: fact.ref.rev });
     }

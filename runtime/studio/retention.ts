@@ -10,7 +10,7 @@ import {
   retentionDeadline as deadline, retentionFreezeRequest,
 } from '../../modules/activity/retention-posttest.ts';
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
-import { throughTick, validatesWorkbookHistory } from '../../modules/activity/evidence-read.ts';
+import { throughTick, validatesWorkbookHistory, workbookWitnessesBy } from '../../modules/activity/evidence-read.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -205,11 +205,9 @@ function readAtWatermark(tx: ReadTransaction, tracked: ReadContext, cutoff: Tick
   const base = createCommandReadContext(tx, retentionPurpose);
   return { ...tracked, async fact(id, options) {
     const snapshot = await base.fact(id, options);
-    const { rowCount } = await tx.query(
-      'SELECT 1 FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=$3 AND tick<=$4',
-      [tx.learner, id, snapshot.ref.rev, cutoff],
-    );
-    if (!rowCount) throw new FactReadDeniedError('changed', '预测发起时该修订还不可见。');
+    if (!await workbookWitnessesBy(tx, [snapshot.ref], cutoff)) {
+      throw new FactReadDeniedError('changed', '预测发起时该修订还不可见。');
+    }
     return tracked.fact(id, options);
   } };
 }

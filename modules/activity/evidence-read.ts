@@ -5,7 +5,7 @@ import {
 } from './help-exposure-values.ts';
 import { recallSubmissionType, submitRecallCommand } from './recall-values.ts';
 import { closedPosttest, issuePosttestCommand, posttestIssuanceType, posttestSubmissionType, retentionPaperType } from './retention-posttest.ts';
-import { submitWorkbookAttemptCommand, workbookAttemptType, workbookPaperType } from './workbook-values.ts';
+import { submitWorkbookAttemptCommand, workbookAttemptType, workbookPaperType, type WorkbookSourceQuestionRef } from './workbook-values.ts';
 import { recordWorkbookPresentationCommand, workbookPresentationType } from './workbook-presentation.ts';
 
 export type ActivityEvidenceReadScope = {
@@ -123,6 +123,33 @@ export type WorkbookHistoryTarget = { paper: HelpRef; itemId: string };
 
 export function throughTick(tick: Tick) {
   return String(BigInt(tick) + 1n) as Tick;
+}
+
+/** These queries identify candidates or check a watermark. The caller still opens each witness. */
+export async function workbookLinkCandidates(
+  tx: ActivityEvidenceReadScope, type: string, source: WorkbookSourceQuestionRef, through: Tick,
+  kinds: readonly ('targets_concept' | 'variant_of')[],
+) {
+  const { rows } = await tx.query<{ id: FactId }>(
+    `SELECT f.id FROM facts f JOIN fact_revs r
+       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+     WHERE f.learner_id=$1 AND f.type=$2 AND r.tick<=$3 AND r.data->>'kind'=ANY($4::text[])
+       AND (r.data->'from'->'sourceUse' @> $5::jsonb OR
+            (r.data->>'kind'='variant_of' AND r.data->'to'->'sourceUse' @> $5::jsonb))
+     ORDER BY f.id`, [tx.learner, type, through, kinds, JSON.stringify(source)]);
+  return rows;
+}
+
+export async function workbookWitnessesBy(
+  tx: ActivityEvidenceReadScope, refs: readonly { id: FactId; rev: Revision }[], through: Tick,
+) {
+  const { rows: [check] } = await tx.query<{ complete: boolean }>(
+    `SELECT NOT EXISTS (
+       SELECT 1 FROM jsonb_to_recordset($2::jsonb) AS witness(id text,rev integer)
+       LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=($1,witness.id,witness.rev)
+       WHERE r.tick IS NULL OR r.tick>$3
+     ) AS complete`, [tx.learner, JSON.stringify(refs), through]);
+  return check?.complete === true;
 }
 
 /** Private safety check over immutable event births. No foreign witness or help metadata leaves this reader. */
