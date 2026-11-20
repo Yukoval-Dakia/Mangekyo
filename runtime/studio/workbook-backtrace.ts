@@ -1,21 +1,20 @@
 import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { ReadContext } from '../../kernel/src/declarations/types.ts';
-import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { workbookLinkCandidates, workbookWitnessesBy } from '../../modules/activity/evidence-read.ts';
 import {
-  confirmWorkbookTraceBasis, confirmWorkbookTraceConcepts, sharedWorkbookTraceConcepts, earlierWorkbookTraceAttempts, isFrozenWorkbookFollowup, readWorkbookFollowupForecast, workbookTraceCutoff as cutoff,
-  workbookWitnessReader as collect, WorkbookTraceReadError,
+  workbookTraceConceptProofs, sharedWorkbookTraceConcepts, earlierWorkbookTraceAttempts, isFrozenWorkbookFollowup, readWorkbookFollowupForecast, workbookTraceCutoff as cutoff,
+  workbookWitnessReader as collect, WorkbookTraceReadError, type WorkbookTraceProof,
 } from '../../modules/activity/workbook-backtrace-values.ts';
 import { workbookAttempt } from '../../modules/activity/workbook-values.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { backtrace, type TraceAttempt } from '../../modules/learner/retention-backtrace.ts';
 import { forecastType, readAnyRetentionMethod, type RetentionForecast } from '../../modules/learner/retention.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
-import { isWorkbookNotionSource, openRetentionTarget, readItemConceptLinks, readWorkbookEvidence, retentionPurpose } from './retention-workbook.ts';
+import { openRetentionTarget, readItemConceptLinks, readWorkbookEvidence, retentionPurpose } from './retention-workbook.ts';
 import { posttestAttemptFor, posttestIdFor, readPosttestIssuance } from './retention-posttest.ts';
 import { retentionHistoryValid } from './retention.ts';
 import { RequestError } from './sessions.ts';
@@ -62,7 +61,7 @@ async function stableQuestion(tx: ReadTransaction, item: Opened, edgeId: string,
   return { oldQuestion, rows: await earlierWorkbookTraceAttempts(tx,oldQuestion,through.observedThrough) };
 }
 
-export async function workbookBacktrace(tx: ReadTransaction, input: Input, reader: Reader, check: Reader) {
+export async function workbookBacktrace(tx: ReadTransaction, input: Input, reader: Reader) {
   const open = (id: string) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:retentionPurpose,maySend:() => true,
     readNotionWitness: fact => reader.fact(fact.ref.id,{mode:'pinned',rev:fact.ref.rev})});
   const root = collect(reader, tx);
@@ -76,7 +75,7 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
     const concepts = await readItemConceptLinks(tx,source,through.observedThrough,open);
     if (!concepts.length) return null;
     const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, source, through.observedThrough, ['variant_of'],'unspoiled-variant');
-    const matches = new Map<string, {text:string; content:{id:FactId; rev:Revision}; witnesses:readonly BusWitness[]}>();
+    const proofs: WorkbookTraceProof[] = [];
     for (const { id } of edges) {
       const graph = collect(reader, tx);
       const related = await stableQuestion(tx, item, id, through, graph.read, open).catch(error => {
@@ -101,19 +100,18 @@ export async function workbookBacktrace(tx: ReadTransaction, input: Input, reade
               methodIds: [], outcome: observation.result, helpLevel: process.helpLevel });
           }
           const { independentSuccesses: [later, earlier] } = backtrace({ learner: tx.learner, conceptIds, mechanismIds: [], methodIds: [], ...through }, history, candidate.witnesses());
-          const key = ref.id + ':' + ref.rev;
-          if (matches.has(key) || !later || !earlier || !await delayedSitting(tx,candidate.read,earlier,later) ||
+          if (!later || !earlier || !await delayedSitting(tx,candidate.read,earlier,later) ||
               !await workbookWitnessesBy(tx,candidate.witnesses(),through.observedThrough)) continue;
-          const conceptProof = await confirmWorkbookTraceConcepts(tx,reader,check,shared,isWorkbookNotionSource,unavailable);
-          if (!conceptProof) continue;
-          const witnesses = await confirmWorkbookTraceBasis(check,tx,root.witnesses(),[...candidate.witnesses(),...conceptProof]);
-          if (witnesses) matches.set(key,{text:old.question.prompt,content:{id:factId(ref.id),rev:ref.rev},witnesses});
+          for (const concept of await workbookTraceConceptProofs(tx,reader,shared,unavailable)) {
+            const witnesses = collect(reader,tx,[...root.witnesses(),...candidate.witnesses(),...concept]).witnesses();
+            proofs.push({text:old.question.prompt,content:{id:factId(ref.id),rev:ref.rev},witnesses});
+          }
         } catch (error) {
           if (!unavailable(error)) throw error;
         }
       }
     }
-    return matches.size === 1 ? matches.values().next().value! : null;
+    return proofs;
   } catch (error) {
     if (unavailable(error)) return null;
     throw error;
