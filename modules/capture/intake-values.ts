@@ -1,5 +1,6 @@
 import { factId, type FactId } from '@mangekyo/kernel';
 import materialFact from '@mangekyo/module-content/facts/material';
+import { sourceEnvelope, type SourceEnvelope } from './source.ts';
 
 export const intakePurpose = 'storage';
 export const intakeResearchPurpose = 'background-research';
@@ -71,6 +72,30 @@ export type IntakeDocument = {
   readonly extraction: IntakeExtraction;
   readonly requestedExtraction?: 'mineru';
 };
+
+export function archivedIntake(input: unknown): IntakeDocument & { readonly envelope: SourceEnvelope } {
+  const document = intakeDocument(input);
+  const { original, materialId, extraction, title } = document;
+  const kind = original.mediaType.startsWith('image/') ? 'photo'
+    : original.mediaType === 'application/pdf' ? 'pdf' : 'text';
+  return {
+    ...document,
+    envelope: sourceEnvelope({
+      kind, occurredAt: null, recordedAt: null, retentionPolicy: 'retained',
+      originals: [{ ...original, blobRef: `intake:${materialId}` }],
+      unit: {
+        kind: 'capture',
+        title,
+        blocks: kind === 'text' && extraction.text ? [{
+          id: 'text', parentId: null, body: {
+            kind: 'capture', layer: 'source', status: 'known', text: extraction.text,
+            ...(extraction.status === 'corrected' ? { author: 'learner', sticky: true } : {}),
+          },
+        }] : [],
+      },
+    }),
+  };
+}
 
 export type CaptureIntakeInput = {
   readonly materialId: FactId;

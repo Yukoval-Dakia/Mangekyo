@@ -5,6 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./module.ts",
+    "./source": "./source.ts",
+    "./extraction": "./extraction.ts",
+    "./paper": "./paper.ts",
     "./facts/*": "./facts/*.ts"
   },
   "dependencies": {

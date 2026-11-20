@@ -1,4 +1,4 @@
 import { defineFact } from '@mangekyo/kernel';
-import { intakeDocument, intakeFactType } from '../intake-values.ts';
+import { archivedIntake, intakeFactType } from '../intake-values.ts';
 
-export default defineFact({ type: intakeFactType, schema: { parse: intakeDocument } });
+export default defineFact({ type: intakeFactType, schema: { parse: archivedIntake } });
