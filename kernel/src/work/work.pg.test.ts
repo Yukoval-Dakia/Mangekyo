@@ -1,7 +1,6 @@
-import pg from 'pg';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { testDatabaseUrl, withLearnerDatabase } from '../../test/learner-database.ts';
+import { aroundEach, describe, expect, it, vi } from 'vitest';
 import {recordLocalRead} from './effects.ts';
-import { createPgDb } from '../db/pg.ts';
 import type { Db, DbTransaction } from '../db/types.ts';
 import { factId, learnerId } from '../declarations/ids.ts';
 import type { Json, Outcome } from '../declarations/types.ts';
@@ -16,24 +15,18 @@ import {
   type WorkRef,
 } from './index.ts';
 
-const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
-describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
-  const learner = learnerId('01KFS4AAA00000000000000000');
-  const schema = `durable_work_${process.pid}`;
-  let admin: Db;
+const learner = learnerId('01KFS4AAA00000000000000000');
+async function legacyWorkSchema(db: Db) {
+  for (const statement of kernelSchemaStatements) await db.query(statement);
+}
+
+describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
   let db: Db;
-  beforeEach(async () => {
-    admin = createPgDb(new pg.Pool({ connectionString }));
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    db = createPgDb(new pg.Pool({ connectionString }), { schema });
-    for (const statement of kernelSchemaStatements) await db.query(statement);
-    await db.query('INSERT INTO learners (id) VALUES ($1)', [learner]);
-  });
-  afterEach(async () => {
-    await db.close();
-    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-    await admin.close();
-  });
+  aroundEach(run => withLearnerDatabase(learner, async database => {
+    db = database;
+    await applyKernelSchema(db);
+    await run();
+  }, { initialize: legacyWorkSchema }));
 
   const slot = (key: string) => ({ learner, type: 'test.grade', key });
   const scope = { knowledgePoint: 'K' };
@@ -85,7 +78,7 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
       const pid = await entered.promise;
       contender = second();
       await vi.waitFor(async () => {
-        const { rows: [row] } = await admin.query<{ blocked: boolean }>(
+        const { rows: [row] } = await db.query<{ blocked: boolean }>(
           'SELECT EXISTS (SELECT FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked',
           [pid],
         );
@@ -98,7 +91,6 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
   }
 
   it.each(['wait first', 'target first'])('resumes strict range demand with concurrent writes (%s)', async order => {
-    await applyKernelSchema(db);
     await addSlot('grade', true);
     await addSlot('unknown', true);
     await addSlot('summary');
@@ -143,7 +135,6 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
   });
 
   it.each(['blocked', 'unavailable', 'denied', 'stale'])('reconciles %s on either side of registration', async status => {
-    await applyKernelSchema(db);
     await addSlot('grade', true);
     await addSlot('before');
     await addSlot('after');
@@ -175,38 +166,7 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(await relayPending(db, async () => {})).toBe(status === 'stale' ? 2 : 0);
   });
 
-  it('rolls back a failed migration and serializes concurrent migration of legacy work', async () => {
-    await db.query(`INSERT INTO slot_state (learner_id, slot_type, slot_key, pending, scope_keys)
-      VALUES ($1, 'slot', 'a', 'running', '{}'), ($1, 'slot', 'b', 'waiting', '{}')`, [learner]);
-    await db.query(`INSERT INTO work (learner_id, id, slot_type, slot_key, deriver, state, gather, token)
-      VALUES ($1, 'a', 'slot', 'a', 'derive', 'running', '{}', 'old'), ($1, 'b', 'slot', 'b', 'derive', 'waiting', NULL, NULL)`, [learner]);
-    await db.query("INSERT INTO work_waits VALUES ($1, 'b', 'slot', 'a', 7)", [learner]);
-    await db.query('CREATE TABLE work_outbox (blocker int)');
-    await expect(applyKernelSchema(db)).rejects.toThrow();
-    expect((await db.query('SELECT token FROM work ORDER BY id')).rows).toEqual([{ token: 'old' }, { token: null }]);
-    await db.query('DROP TABLE work_outbox');
-
-    await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
-    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }]);
-    expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
-      { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
-    ]);
-    expect((await db.query('SELECT observed_change_tick::text FROM work_waits')).rows).toEqual([{ observed_change_tick: '7' }]);
-    expect((await db.query('SELECT work_id, generation::text, state FROM work_outbox')).rows).toEqual([
-      { work_id: 'a', generation: '1', state: 'pending' },
-    ]);
-    expect(await cancelWork(db, { learner, workId: 'b', generation: '1' })).toBe(true);
-    expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
-    expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
-    const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (9)');
-    expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 9');
-    await expect(workerStorage(db)).rejects.toThrow('incompatible');
-  });
-
   it('dispatches scheduled and enumerated completion Todos through the same deduped outbox', async () => {
-    await applyKernelSchema(db);
     const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
     const spec: TodoInput = { dedupKey: 'scheduled', goal: 'Prepare review', workerProfile: 'deterministic_compute',
       trigger: { kind: 'scheduled', fireAtMs: 5 }, refs: [], sourceFactRev: source, autonomyTier: 1,
@@ -252,7 +212,6 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
   });
 
   it('keeps v6 SQL on the same work row while old pinned workers drain', async () => {
-    await applyKernelSchema(db);
     const id = newUlid();
     const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
     const spec: TodoInput = { dedupKey: 'legacy', goal: 'Review', trigger: { kind: 'immediate' },
@@ -281,7 +240,6 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
   });
 
   it('prioritizes admitted todos and fences cancellation after a durable start', async () => {
-    await applyKernelSchema(db);
     const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
     const emit = (dedupKey: string, priority: 0 | 1, budgetCap: number) =>
       db.tx({ learner }, tx => tx.withLearnerWrite(tick => emitTodo(tx, tick, {
@@ -307,7 +265,6 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
   });
 
   it('registers transactionally, retries the same handoff and fences late and competing completions', async () => {
-    await applyKernelSchema(db);
     await db.query("INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys) VALUES ($1, 'slot', 'private body', '{}')", [learner]);
     const request = { slotType: 'slot', slotKey: 'private body', deriver: 'derive' };
     const register = () => db.tx({ learner }, tx => tx.withLearnerWrite(tick => requestWork(tx, tick, request)));
@@ -335,7 +292,6 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
   });
 
   it('replays one authorized local snapshot and rolls back a failed read', async () => {
-    await applyKernelSchema(db);
     const step = {learner, ownerKind:'session' as const, ownerId:'turn', stepKey:'1', label:'local:search', input:{query:'old'}};
     const allow = async () => {};
     await expect(recordLocalRead(db, step, async () => {throw new Error('interrupted');}, allow)).rejects.toThrow('interrupted');
@@ -347,7 +303,6 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     await expect(recordLocalRead(db,{...step,input:{query:'new'}},read,allow)).rejects.toThrow('does not match');
   });
   it('settles a fact-scoped reservation across another erasure and blocks revoked replay', async () => {
-    await applyKernelSchema(db);
     const id = factId(newUlid());
     await db.tx({learner}, tx => tx.withLearnerWrite(async tick => {
       await tx.insert('facts', {learner_id:learner,id,type:'test.answer',current_rev:1,created_tick:tick,changed_tick:tick});
@@ -373,7 +328,6 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
   it('authorizes effect reservations and replays while reusing the durable outcome', async () => {
-    await applyKernelSchema(db);
     const request = { learner, ownerKind: 'session', ownerId: 'session', stepKey: 'answer', label: 'model', input: {} } as const;
     const entered = Promise.withResolvers<string>();
     const complete = Promise.withResolvers<string>();
@@ -390,3 +344,34 @@ describe.skipIf(!connectionString)('Durable work in PostgreSQL', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 });
+
+it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concurrent migration of legacy work', () =>
+  withLearnerDatabase(learner, async db => {
+    await db.query(`INSERT INTO slot_state (learner_id, slot_type, slot_key, pending, scope_keys)
+      VALUES ($1, 'slot', 'a', 'running', '{}'), ($1, 'slot', 'b', 'waiting', '{}')`, [learner]);
+    await db.query(`INSERT INTO work (learner_id, id, slot_type, slot_key, deriver, state, gather, token)
+      VALUES ($1, 'a', 'slot', 'a', 'derive', 'running', '{}', 'old'), ($1, 'b', 'slot', 'b', 'derive', 'waiting', NULL, NULL)`, [learner]);
+    await db.query("INSERT INTO work_waits VALUES ($1, 'b', 'slot', 'a', 7)", [learner]);
+    await db.query('CREATE TABLE work_outbox (blocker int)');
+    await expect(applyKernelSchema(db)).rejects.toThrow();
+    expect((await db.query('SELECT token FROM work ORDER BY id')).rows).toEqual([{ token: 'old' }, { token: null }]);
+    await db.query('DROP TABLE work_outbox');
+
+    await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
+    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }]);
+    expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
+      { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
+    ]);
+    expect((await db.query('SELECT observed_change_tick::text FROM work_waits')).rows).toEqual([{ observed_change_tick: '7' }]);
+    expect((await db.query('SELECT work_id, generation::text, state FROM work_outbox')).rows).toEqual([
+      { work_id: 'a', generation: '1', state: 'pending' },
+    ]);
+    expect(await cancelWork(db, { learner, workId: 'b', generation: '1' })).toBe(true);
+    expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
+    expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
+    const store = await workerStorage(db);
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (9)');
+    expect(await workerStorage(db)).toBe(store);
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 9');
+    await expect(workerStorage(db)).rejects.toThrow('incompatible');
+  }, { initialize: legacyWorkSchema }));

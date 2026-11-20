@@ -2,11 +2,15 @@ import { readFileSync } from 'node:fs';
 import { assert, it } from 'vitest';
 import { factId, type Revision } from '@mangekyo/kernel';
 import { bindQuestionAssessment, matchesSelectionConstraint } from '../assessment-values.ts';
+import { publicAnswerControls } from '../question-controls.ts';
 
 it('binds independent selection rules to the frozen question and evaluates unseen compositions', () => {
   const question = JSON.parse(readFileSync(new URL('./two-voice-question.json', import.meta.url), 'utf8'));
   const ref = { id: factId('01KFS4AAA00000000000000000'), rev: 2 as Revision };
-  const { criteria } = bindQuestionAssessment(question.response_schema, question.assessment_contract, ref);
+  const { criteria, slots } = bindQuestionAssessment(question.response_schema, question.assessment_contract, ref);
+  assert.ok(publicAnswerControls(question.interaction, question.prompt, slots));
+  question.interaction.sections[0].nodes[0].selected.push('bass-1');
+  assert.equal(publicAnswerControls(question.interaction, question.prompt, slots), undefined);
   function check(bass: number[], snare: number[]) {
     const lanes = new Map([['bass', bass], ['snare', snare]]);
     return criteria.map(rule => matchesSelectionConstraint(rule, rule.inputs.map(({slotId}) => ({

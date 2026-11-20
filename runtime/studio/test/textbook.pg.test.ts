@@ -1,34 +1,23 @@
-import { randomBytes } from 'node:crypto';
-import pg from 'pg';
 import { expect, it } from 'vitest';
 import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
-import { createPgDb } from '../../../kernel/src/db/pg.ts';
-import { applyKernelSchema } from '../../../kernel/src/schema.ts';
 import { commandId, factId, learnerId } from '../../../kernel/src/declarations/ids.ts';
-import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
-import { fileURLToPath } from 'node:url';
 import type { TextbookBlock } from '../../../modules/content/textbook-page.ts';
 import { organizerNoteType } from '../../../modules/activity/organizer-values.ts';
 import { stableId } from '../identity.ts';
 import { openTextbook, TextbookConflictError } from '../textbook.ts';
+import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
+import { loadStudioTestModule } from './modules.ts';
 
-const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
 const learner = learnerId(stableId('textbook', 'learner'));
 
-it.skipIf(!connectionString)('serves nested pages, retains conflicting edits, and scopes reference access', async () => {
-  const schema = 'textbook_' + randomBytes(6).toString('hex');
-  const admin = createPgDb(new pg.Pool({ connectionString }));
-  await admin.query('CREATE SCHEMA ' + schema);
-  const db = createPgDb(new pg.Pool({ connectionString }), { schema });
-  const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
-  const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity', import.meta.url)));
-  const textbook = openTextbook(db, content, { async onFactsChanged() {} });
-  const request = (name: string) => stableId('textbook-request', name);
-  const page = (id: string, parentId: string | null, value: string): TextbookBlock => ({ id, parentId, body: { kind: 'text', text: value } });
-  const create = (name: string, title: string, content: TextbookBlock[]) => textbook.create({ learner, requestId: request(name), clientEditSeq: 0, page: { title, blocks: content } });
-  try {
-    await applyKernelSchema(db);
-    await db.query('INSERT INTO learners (id) VALUES ($1)', [learner]);
+it.skipIf(!testDatabaseUrl)('serves nested pages, retains conflicting edits, and scopes reference access', () =>
+  withLearnerDatabase(learner, async db => {
+    const content = await loadStudioTestModule('content');
+    const activity = await loadStudioTestModule('activity');
+    const textbook = openTextbook(db, content, { async onFactsChanged() {} });
+    const request = (name: string) => stableId('textbook-request', name);
+    const page = (id: string, parentId: string | null, value: string): TextbookBlock => ({ id, parentId, body: { kind: 'text', text: value } });
+    const create = (name: string, title: string, content: TextbookBlock[]) => textbook.create({ learner, requestId: request(name), clientEditSeq: 0, page: { title, blocks: content } });
     const blocks = [page('root', null, '一级'), page('second', 'root', '二级'), page('third', 'second', '三级'), page('fourth', 'third', '四级'), page('fifth', 'fourth', '五级'), page('sixth', 'fifth', '六级')];
     const created = await create('create', '嵌套教材', blocks);
     const edit = (name: string, seq: number, rev: number, blockId: string, value: string) => ({
@@ -103,9 +92,4 @@ it.skipIf(!connectionString)('serves nested pages, retains conflicting edits, an
     expect((await textbook.list({ learner })).legacyNotes[0]).toMatchObject({ id: noteId, readOnly: true });
     await expect(textbook.revise({ ...edit('legacy-edit', 1, 1, 'anything', '不能迁移'), id: noteId }))
       .rejects.toMatchObject({ status: 409, message: expect.stringContaining('只能读取') });
-  } finally {
-    await db.close();
-    await admin.query('DROP SCHEMA ' + schema + ' CASCADE');
-    await admin.close();
-  }
-});
+  }));

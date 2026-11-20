@@ -867,7 +867,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         )
         .map((feedback) => feedback.questionId)
     : [];
-  const showForm = Boolean(draft);
+  const showForm = Boolean(draft) || attempts.length === 0;
+  const answerDisabled = busy || !draft;
   const revision = view?.id === paperId ? view.revision : undefined;
   const feedback = (activeAttempt?.feedback ?? []).filter(item => view?.questions.some(q => q.id === item.questionId));
   const questions = useWorkbookPresentation(paperId, revision, [
@@ -1064,7 +1065,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     <label className="field">
                       <span>{question.unit ? `${question.unit}（数字）` : '数字答案'}</span>
                       <input
-                        disabled={busy}
+                        disabled={answerDisabled}
                         inputMode="decimal"
                         value={draft?.answers[question.id] ?? ''}
                         onChange={(event) => changeAnswer(question.id, event.currentTarget.value)}
@@ -1074,7 +1075,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     <label className="field">
                       <span>文字作答（交卷后可按评分标准批改）</span>
                       <textarea
-                        disabled={busy}
+                        disabled={answerDisabled}
                         maxLength={4000}
                         rows={4}
                         value={draft?.answers[question.id] ?? ''}
@@ -1085,7 +1086,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     <label className="field">
                       <span>{question.selfCheck ? '自评：写下你的答案，交卷后对照参考' : '文字答案'}</span>
                       <textarea
-                        disabled={busy}
+                        disabled={answerDisabled}
                         maxLength={4000}
                         rows={3}
                         value={draft?.answers[question.id] ?? ''}
