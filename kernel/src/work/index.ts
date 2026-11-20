@@ -4,6 +4,13 @@ import { learnerId, type Tick } from '../declarations/ids.ts';
 import { clearWaits, readCurrentWork, readReadyWork, setPending, todoSlot, type WorkRef, type WorkRequest } from './demand.ts';
 
 export type { WorkRef, WorkRequest } from './demand.ts';
+export type WorkDeliveryLane = 'pending' | 'capability_pending' | { readonly deriver: string };
+
+function deliveryLane(lane: WorkDeliveryLane) {
+  return typeof lane === 'string'
+    ? {pending:lane, delivered:'delivered', deriver:null}
+    : {pending:'routed_pending' as const, delivered:'routed_delivered', deriver:lane.deriver};
+}
 export { readReadyWork, requestWork } from './demand.ts';
 export type { WaitRegistration, WaitTransition, WaitTerminalState } from './wait.ts';
 export { registerWorkWait, wakeWaitingWork } from './wait.ts';
@@ -17,24 +24,25 @@ const currentIntent = `FROM work_outbox o JOIN work w
   AND w.execution_ref = o.intent_id AND w.state = 'ready'`;
 const intentRef = 'SELECT o.learner_id AS learner, o.work_id AS "workId", o.generation::text';
 
-async function currentPendingIntent(db: DbQuery, executionRef: string): Promise<WorkRef | null> {
+async function currentPendingIntent(db: DbQuery, executionRef: string, route: ReturnType<typeof deliveryLane>): Promise<WorkRef | null> {
   const { rows: [ref] } = await db.query<WorkRef>(
-    `${intentRef} ${currentIntent} WHERE o.intent_id = $1 AND o.state = 'pending'`,
-    [executionRef],
+    `${intentRef} ${currentIntent} WHERE o.intent_id = $1 AND o.state = $2 AND ($3::text IS NULL OR w.deriver = $3)`,
+    [executionRef,route.pending,route.deriver],
   );
   return ref ?? null;
 }
 
-function markDelivered(tx: DbTransaction, ref: WorkRef, executionRef: string) {
+function markDelivered(tx: DbTransaction, ref: WorkRef, executionRef: string, route: ReturnType<typeof deliveryLane>) {
   return tx.query(
-    `UPDATE work_outbox SET state = 'delivered'
-     WHERE learner_id = $1 AND intent_id = $2 AND work_id = $3 AND generation = $4 AND state = 'pending'`,
-    [tx.learner, executionRef, ref.workId, ref.generation],
+    `UPDATE work_outbox SET state = $6
+     WHERE learner_id = $1 AND intent_id = $2 AND work_id = $3 AND generation = $4 AND state = $5`,
+    [tx.learner, executionRef, ref.workId, ref.generation, route.pending, route.delivered],
   );
 }
 
 /** Resolve the Activity's opaque identity and durably acknowledge its first start before doing work. */
-export async function acknowledgeStartedWork(db: Db, executionRef: string): Promise<WorkRef | null> {
+export async function acknowledgeStartedWork(db: Db, executionRef: string, lane: WorkDeliveryLane = 'pending'): Promise<WorkRef | null> {
+  const route = deliveryLane(lane);
   const { rows: [owner] } = await db.query<{ learner: string }>(
     'SELECT learner_id AS learner FROM work_outbox WHERE intent_id = $1',
     [executionRef],
@@ -44,11 +52,12 @@ export async function acknowledgeStartedWork(db: Db, executionRef: string): Prom
   return db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
     const { rows: [ref] } = await tx.query<WorkRef>(
-      `${intentRef} ${currentIntent} WHERE o.learner_id = $1 AND o.intent_id = $2`,
-      [learner, executionRef],
+      `${intentRef} ${currentIntent} WHERE o.learner_id = $1 AND o.intent_id = $2 AND o.state IN ($3,$4)
+        AND ($5::text IS NULL OR w.deriver = $5)`,
+      [learner, executionRef, route.pending,route.delivered,route.deriver],
     );
     if (!ref) return null;
-    await markDelivered(tx, ref, executionRef);
+    await markDelivered(tx, ref, executionRef, route);
     return ref;
   });
 }
@@ -57,9 +66,11 @@ export async function acknowledgeStartedWork(db: Db, executionRef: string): Prom
 export async function relayPending(
   db: Db,
   start: (ref: WorkRef, executionRef: string) => Promise<void>,
+  lane: WorkDeliveryLane = 'pending',
 ): Promise<number> {
+  const route = deliveryLane(lane);
   const { rows: [last] } = await db.query<{ intent_id: string }>(
-    "SELECT intent_id FROM work_outbox WHERE state = 'pending' ORDER BY intent_id DESC LIMIT 1",
+    'SELECT intent_id FROM work_outbox WHERE state = $1 ORDER BY intent_id DESC LIMIT 1', [route.pending],
   );
   if (!last) return 0;
 
@@ -70,9 +81,9 @@ export async function relayPending(
   for (;;) {
     const { rows } = await db.query<{ intent_id: string; priority: number }>(
       `SELECT o.intent_id, w.priority ${currentIntent}
-       WHERE o.state = 'pending' AND (w.priority, o.intent_id) > ($3, $1) AND o.intent_id <= $2
+       WHERE o.state = $4 AND ($5::text IS NULL OR w.deriver = $5) AND (w.priority, o.intent_id) > ($3, $1) AND o.intent_id <= $2
        ORDER BY w.priority, o.intent_id LIMIT 100`,
-      [cursor, last.intent_id, priority],
+      [cursor, last.intent_id, priority, route.pending, route.deriver],
     );
     if (rows.length === 0) break;
 
@@ -80,12 +91,12 @@ export async function relayPending(
       cursor = executionRef;
       priority = currentPriority;
       try {
-        const ref = await currentPendingIntent(db, executionRef);
+        const ref = await currentPendingIntent(db, executionRef, route);
         if (!ref) continue;
         await start(ref, executionRef);
         const result = await db.tx({ learner: learnerId(ref.learner) }, async tx => {
           await lockLearner(tx, tx.learner);
-          return markDelivered(tx, ref, executionRef);
+          return markDelivered(tx, ref, executionRef, route);
         });
         delivered += result.rowCount;
       } catch (error) {

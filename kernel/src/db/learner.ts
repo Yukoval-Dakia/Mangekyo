@@ -1,4 +1,4 @@
-import type { DbQuery, LearnerId, Tick } from './types.ts';
+import type { Db, DbTransaction, DbQuery, LearnerId, Tick } from './types.ts';
 
 export async function lockLearner(tx: DbQuery, learner: LearnerId): Promise<void> {
   const result = await tx.query<{ id: string }>(
@@ -20,4 +20,12 @@ export async function nextTick(tx: DbQuery, learner: LearnerId): Promise<Tick> {
     throw new Error('Learner does not exist');
   }
   return row.clock.toString() as Tick;
+}
+
+export function withinLearnerTransaction(db: Db, tx: DbTransaction): Db {
+  const nested: Db['tx'] = async (scope, run) => {
+    if (scope.learner !== tx.learner) throw new Error('Transaction learner mismatch');
+    return run(tx);
+  };
+  return {...db, query: tx.query, snapshot: nested, tx: nested};
 }

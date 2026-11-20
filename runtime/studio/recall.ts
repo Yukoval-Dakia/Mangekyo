@@ -1,7 +1,7 @@
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHandler, CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, derivationId, factId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { CommandReceipt, FactRef, Json } from '../../kernel/src/declarations/types.ts';
@@ -199,14 +199,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
       // Recheck authorization and write against the same learner lock. Bind the
       // existing command handler to this transaction so it still owns receipts and ticks.
       await lockLearner(tx, tx.learner);
-      const handle = createCommandHandler({
-        ...db,
-        query: tx.query,
-        tx: async (requested, apply) => {
-          if (requested.learner !== tx.learner) throw new Error('Recall transaction learner mismatch');
-          return apply(tx);
-        },
-      }, { modules: [activity], hooks });
+      const handle = createCommandHandler(withinLearnerTransaction(db, tx), { modules: [activity], hooks });
       try { return await run(tx, handle); }
       catch (error) {
         if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {

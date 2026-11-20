@@ -232,6 +232,16 @@ const migrations = [
   migrateWorkingState,
   migrateTodoWork,
   migrateLifecycle,
+  async (tx: DbQuery) => {
+    await tx.query(`ALTER TABLE work_outbox DROP CONSTRAINT work_outbox_state_check,
+      ADD CHECK (state IN ('pending', 'capability_pending', 'delivered'))`);
+    await tx.query("CREATE INDEX work_outbox_capability_pending_idx ON work_outbox(intent_id) WHERE state='capability_pending'");
+  },
+  async (tx: DbQuery) => {
+    await tx.query(`ALTER TABLE work_outbox DROP CONSTRAINT work_outbox_state_check,
+      ADD CHECK (state IN ('pending', 'capability_pending', 'delivered', 'routed_pending', 'routed_delivered'))`);
+    await tx.query("CREATE INDEX work_outbox_routed_pending_idx ON work_outbox(intent_id) WHERE state='routed_pending'");
+  },
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */

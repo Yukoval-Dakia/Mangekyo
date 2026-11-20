@@ -25,6 +25,8 @@ export type CommandHooks = {
 export type CommandRuntimeOptions = {
   readonly modules: readonly LoadedModule[];
   readonly hooks: CommandHooks;
+  // Attach host-owned readers to this transaction's purpose-bound read context.
+  readonly bindCommandRead?: (tx: DbTransaction, request: CommandRequest, base: ReadContext) => ReadContext;
   // The host may authorize specific commands to write specific foreign fact types.
   readonly crossModuleWrites?: CrossModuleWrites;
 };
