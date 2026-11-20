@@ -142,7 +142,10 @@ export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: stri
     });
     return { id: source.id, rev: source.rev, title: source.title, kind: 'attempt', lens: 'diagnose',
       sourceRef: source.sourceRef, frozenPaper: paper, questions, ...(formalAssessment ? { formalAssessment } : {}),
-      image_crop: unavailable, effective_duration_ms: unavailable, concept_history: unavailable,
+      image_crop: unavailable,
+      effective_duration_ms: attempt.effectiveDurationMs === undefined ? unavailable
+        : { state: 'observed', value: attempt.effectiveDurationMs, source: 'browser-focus-v1' },
+      concept_history: unavailable,
       mastery: unavailable, retention: unavailable };
   } catch (error) {
     if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;

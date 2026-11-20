@@ -200,6 +200,17 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
       track() {},maySend:() => true,currentObject:currentAttempt});
     const observation = JSON.parse(await bound.execute('record_observation',evidence,1));
     expect(observation).toMatchObject({ok:true});
+    const timedInput = {requestId:'timed-attempt',answers:{[question.id]:'实测东北风'},effectiveDurationMs:3200};
+    const timed = (await workbook.submit(paper.id,timedInput)).attempts.find(item => item.requestId === timedInput.requestId)!;
+    expect(timed.effectiveDurationMs).toBe(3200);
+    expect((await workbook.submit(paper.id,{...timedInput,effectiveDurationMs:4200})).attempts.find(item => item.id === timed.id))
+      .toMatchObject({effectiveDurationMs:3200});
+    await expect(workbook.submit(paper.id,{...timedInput,effectiveDurationMs:-1})).rejects.toMatchObject({status:400});
+    const timedGrant = await access.setTeaching(timed.id,{enabled:true,expectedRev:1});
+    expect(await diagnose('open_learning',{...diagnosis,refs:timed.id},9)).toMatchObject({ok:true,items:[{
+      effective_duration_ms:{state:'observed',value:3200,source:'browser-focus-v1'},
+    }]});
+    await access.setTeaching(timed.id,{enabled:false,expectedRev:timedGrant.rev});
     await access.setTeaching(paper.id,{enabled:false,expectedRev:paperGrant.rev});
     expect(await diagnose('open_learning',diagnosis,3)).toMatchObject({ok:false,code:'basis_stale'});
     expect(await diagnose('read_workspace',{id:observation.ref.id},6)).toEqual({error:expect.any(String)});

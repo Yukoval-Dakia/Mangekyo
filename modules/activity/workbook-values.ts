@@ -148,6 +148,7 @@ export type WorkbookAttempt = {
   paper: WorkbookPaper;
   answers: Record<string, WorkbookAnswer>;
   feedback: WorkbookFeedback[];
+  effectiveDurationMs?: number;
   assessmentConsent?: typeof workbookAssessmentConsent;
 };
 
@@ -156,6 +157,7 @@ export type WorkbookAttemptRequest = {
   requestId: string;
   submittedAt: string;
   answers: Record<string, string | null>;
+  effectiveDurationMs?: number;
   assessmentConsent?: typeof workbookAssessmentConsent;
 };
 
@@ -205,6 +207,7 @@ export type WorkbookAttemptView = {
   submittedAt: string;
   gradingVersion: string;
   answers: Record<string, WorkbookAnswer>;
+  effectiveDurationMs?: number;
   feedback: (Omit<WorkbookFeedback, 'expected'> & { expected: WorkbookExpected | null })[];
   assessments: WorkbookRubricAssessmentView[];
   correctCount: number;
@@ -446,8 +449,17 @@ export function workbookAttemptRequest(input: unknown): WorkbookAttemptRequest {
     requestId: workbookRequestId(row.requestId),
     submittedAt: timestamp(row.submittedAt, '提交时间'),
     answers: given,
+    ...effectiveDuration(row.effectiveDurationMs),
     ...assessmentConsent(row.assessmentConsent),
   };
+}
+
+function effectiveDuration(value: unknown): Pick<WorkbookAttemptRequest, 'effectiveDurationMs'> {
+  if (value === undefined) return {};
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 24 * 60 * 60 * 1000) {
+    throw new Error('有效用时须为 1 毫秒至 24 小时之间的整数毫秒。');
+  }
+  return { effectiveDurationMs: value };
 }
 
 function assessmentConsent(value: unknown): Pick<WorkbookAttemptRequest, 'assessmentConsent'> {
@@ -724,6 +736,7 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     paper: pap,
     answers,
     feedback,
+    ...effectiveDuration(row.effectiveDurationMs),
     ...assessmentConsent(row.assessmentConsent),
   };
 }

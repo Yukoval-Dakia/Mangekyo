@@ -47,6 +47,7 @@ export default defineCommand({
           paper,
           answers: graded.answers,
           feedback: graded.feedback,
+          ...(data.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: data.effectiveDurationMs }),
           ...(data.assessmentConsent === undefined ? {} : { assessmentConsent: data.assessmentConsent }),
         },
         purpose: controlled ? [storagePurpose, retentionTeachingPurpose]
