@@ -4,7 +4,8 @@ import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import {
-  readResearchSource, ResearchBasisChanged, researchOrder, researchPurpose, researchWorksheet,
+  readResearchSource, ResearchBasisChanged, researchOrder, researchOrderType, researchPurpose, researchWorksheet,
+  researchWorksheetType,
   type ResearchOrder,
 } from '../../modules/companion/research.ts';
 import { stableId } from './identity.ts';
@@ -49,28 +50,35 @@ export function reviewEvidence(data: unknown, questionId: string) {
 }
 export type ReviewEvidence = ReturnType<typeof reviewEvidence>;
 
-export async function readWorksheet(tx: ReadTransaction, paperId: string, attemptId: string) {
-  const attempt = await workbookSource(tx, paperId, attemptId);
-  if (!attempt.purpose.includes(researchPurpose)) return null;
-  const id = worksheetId(attempt.ref.id, attempt.ref.rev, attempt.accessEpoch);
+export async function readWorksheetById(tx: ReadTransaction, id: FactId) {
   const read = researchReader(tx);
   return whenAvailable(async () => {
     const fact = await read.fact(id, { mode: 'following' });
+    if (fact.type !== researchWorksheetType || !fact.purpose.includes(researchPurpose)) return null;
     const result = researchWorksheet(fact.value);
-    const fromTodo = 'todoId' in result;
-    const ref = fromTodo ? result.source : researchOrder((await read.fact(result.orderId, { mode: 'following' })).value).source;
-    if (ref.attemptId !== attempt.ref.id || ref.revision !== attempt.ref.rev ||
-        ref.accessEpoch !== attempt.accessEpoch) throw new ResearchBasisChanged('复习单来源已变更。');
+    const order = 'todoId' in result ? null : await read.fact(result.orderId, { mode: 'following' });
+    if (order && (order.type !== researchOrderType || !order.purpose.includes(researchPurpose))) return null;
+    const ref = 'todoId' in result ? result.source : researchOrder(order?.value).source;
     const source = await readResearchSource(read, ref);
+    if (source.type !== workbookAttemptType || id !== worksheetId(ref.attemptId, ref.revision, ref.accessEpoch))
+      return null;
+    await createCommandReadContext(tx, storagePurpose).fact(ref.attemptId, { mode: 'following' });
     const evidence = reviewEvidence(source.value, ref.questionId);
-    const href = `/api/papers/${paperId}/attempts/${attemptId}/research/${id}/source`;
+    const href = `/api/papers/${evidence.paperId}/attempts/${ref.attemptId}/research/${id}/source`;
     return {
+      fact,
       worksheet: {
         id, ...result.draft, method: result.method, deliveredAt: result.deliveredAt, tier: 1, cost: 0,
-        ...(fromTodo ? { todoId: result.todoId, digest: result.digest } : { orderId: result.orderId }),
+        ...('todoId' in result ? { todoId: result.todoId, digest: result.digest } : { orderId: result.orderId }),
         source: { ...ref, href },
       },
       source: { ...ref, ...evidence },
     };
   });
+}
+
+export async function readWorksheet(tx: ReadTransaction, paperId: string, attemptId: string) {
+  const attempt = await workbookSource(tx, paperId, attemptId);
+  if (!attempt.purpose.includes(researchPurpose)) return null;
+  return readWorksheetById(tx, worksheetId(attempt.ref.id, attempt.ref.rev, attempt.accessEpoch));
 }
