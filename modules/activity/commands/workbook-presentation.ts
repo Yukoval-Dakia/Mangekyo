@@ -1,6 +1,7 @@
 import { defineCommand } from '@mangekyo/kernel';
 import { storagePurpose } from '../library-values.ts';
-import { creation } from '../values.ts';
+import { helpRef } from '../help-exposure-values.ts';
+import { creation, object } from '../values.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
 } from '../workbook-values.ts';
@@ -27,6 +28,12 @@ export default defineCommand({
     const paper = workbookPaper(shown.value);
     if (!data.items.every(id => paper.questions.some(question => question.id === id))) {
       throw new WorkbookPresentationError('呈现题项与卷面不匹配。');
+    }
+    if ('issuanceId' in data && data.issuanceId) {
+      const issue = await ctx.read.fact(data.issuanceId, { mode: 'following' });
+      if (issue.type !== 'capture.paperIssuance' || issue.ref.rev !== 1 ||
+          !sameWorkbookJson(helpRef(object(issue.value).source), data.paper))
+        throw new WorkbookPresentationError('纸面发放与固定卷面不匹配。');
     }
     if (data.kind === 'solution') {
       const submission = await ctx.read.fact(data.submission.id, { mode: 'pinned', rev: data.submission.rev });
