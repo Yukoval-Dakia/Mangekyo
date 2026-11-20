@@ -4,6 +4,7 @@ import { currentMemory, memoryId } from './memory.ts';
 import { memoryScopeFromMessage, readMemoryGateway } from './memory-gateway.ts';
 import { applyExplicitMemory } from './explicit-memory.ts';
 import { foregroundDigest } from './foreground-digest.ts';
+import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -39,6 +40,7 @@ import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
 import {workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
+import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
 import { methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
@@ -59,10 +61,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   const scope = { learner };
   const inputs = new Map<string, ManifestInput>();
   const assessments = new Map<string, WorkspaceAssessmentBasis>();
+  const retention = new Map<string, RetentionBasis>();
   let liveMemoryRevision: number | undefined;
   let learningMemory: Awaited<ReturnType<typeof readMemoryGateway>>;
   let expandedMemory: typeof learningMemory;
-  let authorizeAssessmentRoute: (() => Promise<void>) | undefined;
+  let authorizeWorkspaceRecipient: (() => Promise<void>) | undefined;
   const maySend = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
   function trackAssessment(basis: WorkspaceAssessmentBasis) {
     const {slot, facts} = basis;
@@ -71,6 +74,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     for (const fact of facts) {
       inputs.set(`assessment-fact:${fact.id}:${fact.rev}:${fact.accessEpoch}:${fact.mode}`, fact);
     }
+  }
+  function trackRetention(basis: RetentionBasis) {
+    const {slot, facts} = basis;
+    retention.set(slot.derivationId, basis);
+    inputs.set('retention:' + slot.derivationId, slot);
+    for (const fact of facts) inputs.set(`retention-fact:${fact.id}:${fact.rev}:${fact.accessEpoch}:${fact.mode}`, fact);
   }
   async function readFact(tx: ReadTransaction, id: string, mode: 'pinned' | 'following' = 'following') {
     const fact = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });
@@ -103,11 +112,15 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
     const now = new Date().toISOString();
     if ([learningMemory, expandedMemory].some(item => item?.receipt.expiresAt && item.receipt.expiresAt <= now)) throw new ChangedEvidence();
-    if (assessments.size) {
-      if (!authorizeAssessmentRoute) throw new ChangedEvidence();
-      await authorizeAssessmentRoute();
+    if (assessments.size || retention.size) {
+      if (!authorizeWorkspaceRecipient) throw new ChangedEvidence();
+      await authorizeWorkspaceRecipient();
       for (const {slot} of assessments.values()) {
         if (!await workspaceAssessmentBasis(tx, slot, maySend)) throw new ChangedEvidence();
+      }
+      for (const basis of retention.values()) {
+        const actual = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend});
+        if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) throw new ChangedEvidence();
       }
     }
     const {
@@ -176,7 +189,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         throw new TeachingError('provider_configuration', '这个模型的学习工作区访问已关闭。请开始新会话。');
     };
     if (submission.workspaceRevision) await checkWorkspaceRoute();
-    const authorizeWorkspace = authorizeAssessmentRoute = async () => {
+    const authorizeWorkspace = authorizeWorkspaceRecipient = async () => {
       const current = await loadSettings(task);
       if (!submission.workspaceRevision || !sameRoute(submission, current) || current.apiKey !== settings.apiKey ||
           await workspaceRouteRevision(current) !== submission.workspaceRevision) throw new ChangedEvidence();
@@ -231,11 +244,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           label: step.provider.startsWith('tool:') ? step.provider : 'teaching-model',
           input: { digest: step.requestDigest, provider: step.provider, model: step.model,
             ...(memorySend ? { memoryBasis: [...learningMemory!.receipt.basis, ...(expandedMemory?.receipt.basis ?? [])] } : {}),
-            ...(assessments.size ? {assessmentBasis: [...assessments.values()]} : {}) },
+            ...(assessments.size ? {assessmentBasis: [...assessments.values()]} : {}),
+            ...(retention.size ? {retentionBasis: [...retention.values()]} : {}) },
         },
         async (requestId) => {
           let pending: Promise<string> | undefined;
-          if (assessments.size || memorySend) {
+          if (assessments.size || retention.size || memorySend) {
             try {
               // Start the reserved transport under a fresh authorization lock. The reply is awaited outside it.
               await db.tx(scope, async tx => {
@@ -260,7 +274,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         authorize,
       );
       if (dispatchDenied) throw dispatchDenied;
-      if (assessments.size || memorySend) await db.snapshot(scope, validInputs);
+      if (assessments.size || retention.size || memorySend) await db.snapshot(scope, validInputs);
       if (effect.kind === 'unknown') throw new UncertainEffect(effect.providerEffectId);
       if (memorySend && effect.result && typeof effect.result === 'object' && !Array.isArray(effect.result) &&
           'reply' in effect.result && typeof effect.result.reply === 'string') return effect.result.reply;
@@ -337,9 +351,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             historyNotice = '记忆范围或依据已变更，本轮从当前学习记录继续。';
             break;
           }
-          const assessmentSlots = parseManifest(manifest).inputs.filter((input): input is AssessmentSlot =>
+          const previousInputs = parseManifest(manifest).inputs;
+          const assessmentSlots = previousInputs.filter((input): input is AssessmentSlot =>
             input.kind === 'slot' && input.slotType === workbookRubricAssessmentType);
-          if (response.workspaceBasis?.length || assessmentSlots.length) {
+          const retentionSlots = previousInputs.filter((input): input is RadarSlot =>
+            input.kind === 'slot' && isRadarRetentionSlot(input.slotType));
+          if (response.workspaceBasis?.length || assessmentSlots.length || retentionSlots.length) {
             if (!submission.workspaceRevision || previous.workspaceRevision !== submission.workspaceRevision) {
               historyNotice = '工作区授权已变更，本轮省略了使用旧授权的对话。';
               break;
@@ -353,6 +370,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               const basis = await workspaceAssessmentBasis(tx, slot, maySend);
               if (!basis) throw new ChangedEvidence();
               trackAssessment(basis);
+            }
+            for (const slot of retentionSlots) {
+              const basis = await readRetentionBasis(tx,slot,{callerPurpose:purpose,maySend});
+              if (!basis) throw new ChangedEvidence();
+              trackRetention(basis);
             }
             for (const w of witnesses) if (!inherited.has(w.id)) inherited.set(w.id, w);
           }
@@ -379,7 +401,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()],
         maySend,
         track(w) { inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w)); },
-        trackAssessment,
+        trackAssessment, trackRetention,
         async authorize(tx) {
           if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
           await validInputs(tx);

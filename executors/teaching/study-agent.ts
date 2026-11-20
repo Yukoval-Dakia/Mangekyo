@@ -46,7 +46,7 @@ const memoryRegionTool = { type: 'function', function: { name: 'open_memory_regi
   description: '按本轮 ContextBundle.omitted 中的 expand 对象展开一个已授权的区域。',
   parameters: { type: 'object', properties: { region: { type: 'string' }, start: { type: 'integer' }, basisDigest: { type: 'string' } },
     required: ['region', 'start', 'basisDigest'], additionalProperties: false } } };
-const parallelReadOnlyWorkspaceTools = new Set(['open_learning', 'search_workspace', 'read_workspace']);
+const parallelReadOnlyWorkspaceTools = new Set(['open_learning', 'search_workspace', 'read_workspace', 'read_learner_radar']);
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type ModelReply = { message?: string; reportedModel?: string; calls?: FunctionCall[]; providerTurn?: ProviderTurn };
 
@@ -58,6 +58,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'read_file': return '读文件 · ' + String(args.name).slice(0, 96) + ' · ' + output.slice(0, 120);
     case 'search_workspace': return '检索学习记录 · ' + String(args.query ?? args.kind ?? '最近记录') + '\n' + output.slice(0, 700);
     case 'read_workspace': return '读取学习原文 · ' + String(args.id) + '\n' + output.slice(0, 900);
+    case 'read_learner_radar': return '读取学情雷达';
     case 'open_learning': return '打开学习对象 · ' + String(Array.isArray(args.refs) ? args.refs.length : 1) + ' 项\n' + output.slice(0, 900);
     case 'record_observation': return '记录学情观察 · ' + String(args.title ?? '').slice(0, 160);
     case 'mount_artifact': return '挂载交互作品 · ' + output.slice(0, 360);

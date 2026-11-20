@@ -10,6 +10,7 @@ import {
   researchPurpose, researchSettingsType, researchWorksheetType,
 } from '../../modules/companion/research.ts';
 import { readLearningOverview } from './learning-overview.ts';
+import { readRetentionRadar } from './learner-radar.ts';
 import { textSlice } from './reading.ts';
 import { readResearchForeground } from './research-foreground.ts';
 import { readWorksheetById, researchReader, whenAvailable, worksheetId } from './research-sources.ts';
@@ -205,6 +206,9 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   }
   const overview = await readResearchOverview(tx);
   const inventory = await readResearchInventory(tx);
+  const retention = await readRetentionRadar(tx, {
+    callerPurpose: researchPurpose, maySend: fact => fact.purpose.includes(researchPurpose),
+  }, { limitPerKind: 1 });
   const prefix = { facts, todos, inventory: inventory.items, forecasts: {}, memos: {}, work: {}, signals: {},
     chain: null, budget: { remaining: 0 } };
   const snapshot: TriageSnapshot = {
@@ -214,12 +218,12 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   const wakeSource = Object.values(events).map(event => (event as { kind: string }).kind).join(' ');
   const request = {
     stablePrefix: JSON.stringify({ ...prefix, settings_revision: settingsRevision,
-      learning_overview: overview,
+      learning_overview: overview, retention,
       installed_template: { id: reviewTemplate, goal: reviewGoal, worker_profile: 'deterministic_compute',
         autonomy_tier: 1, budget_cap: 0 },
       coverage: { recent_attempts: recentWindow, recent_todos: recentWindow,
         todos: coverage(Object.keys(todos).length, rows.length, recentWindow), inventory: inventory.coverage,
-        inventory_usage: 'unknown', retention: 'unavailable', preferences: 'unavailable', forecasts: 'unavailable',
+        inventory_usage: 'unknown', retention: retention.state, preferences: 'unavailable', forecasts: 'unavailable',
         memos: 'unavailable', signals: 'unavailable', work: 'unavailable' } }),
     deltaSuffix: JSON.stringify({ events, older_candidate: olderCandidate, skills: triagePromptBlock(wakeSource),
       coverage: { foreground_digests: foreground.coverage, background_digests: background.coverage },
