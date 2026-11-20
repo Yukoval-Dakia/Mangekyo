@@ -1,6 +1,7 @@
 import { learningToolError, type ToolError, type ToolErrorCode } from './tool-error.ts';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import type {PythonRead} from './python-sdk.ts';
 
 const MAX_CODE_CHARS = 20_000;
 const MAX_PYTHON_INPUT_BYTES = 256 * 1024;
@@ -12,6 +13,8 @@ const MAX_PYTHON_STDOUT_BYTES = 256 * 1024;
 const MAX_PYTHON_STDERR_BYTES = 32 * 1024;
 const MAX_PYTHON_RESULT_CHARS = 24_000;
 const PYTHON_TIMEOUT_MS = 8_000;
+const calculationImage = 'mangekyo-calculation:1';
+const legacyPythonImage = 'python:3.12-alpine';
 const MAX_QUERY_CHARS = 500;
 const MAX_SEARCH_RESPONSE_BYTES = 64 * 1024;
 const MAX_SEARCH_RESULT_CHARS = 12_000;
@@ -37,7 +40,7 @@ export type PythonAttemptsRead =
   | {ok: true; rows: PythonAttemptRow[]; issues: PythonAttemptIssue[]};
 
 const pythonWrapper = String.raw`
-import contextlib, io, json, os, sys, traceback, types
+import base64, contextlib, io, json, os, sys, traceback, types
 
 INPUT_LIMIT = 262144
 FILE_LIMIT = 16384
@@ -106,6 +109,30 @@ if "attempts" in payload:
     sdk.attempts = attempts
     sys.modules["mangekyo"] = sdk
 
+if "sdk" in payload:
+    signatures = {
+        "attempts": ("since", "subject", "paper_ids"),
+        "forgetting_risks": ("horizon_hours",),
+        "kg_prereqs": ("kc_id", "depth"),
+        "questions": ("kc_ids", "answer_exposed", "limit"),
+        "evidence_slice": (),
+    }
+    sdk = types.ModuleType("mangekyo")
+    def reader(method, fields):
+        snapshots = [(entry["args"], json.dumps(entry["value"])) for entry in payload["sdk"] if entry["method"] == method]
+        def read(*args, **kwargs):
+            positional = dict(zip(fields, args))
+            if len(args) <= len(fields) and not positional.keys() & kwargs.keys():
+                supplied = dict(positional, **kwargs)
+                for selection, snapshot in snapshots:
+                    if supplied == selection:
+                        return json.loads(snapshot)
+            raise ValueError("Declare this mangekyo read with the same arguments in reads")
+        return read
+    for method, fields in signatures.items():
+        setattr(sdk, method, reader(method, fields))
+    sys.modules["mangekyo"] = sdk
+
 work = "/tmp/workspace"
 try:
     os.makedirs(work, exist_ok=True)
@@ -126,6 +153,10 @@ err = Cap(16000)
 status = "ok"
 try:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        if "sdk" in payload:
+            for key, artifact in inputs.items():
+                if isinstance(artifact, dict) and artifact.get("mediaType") == "image/png":
+                    inputs[key] = base64.b64decode(artifact["value"])
         exec(compile(code, "<study>", "exec"), {"__name__": "__main__", "inputs": inputs})
 except SystemExit as error:
     if error.code not in (None, 0):
@@ -136,6 +167,7 @@ except BaseException:
     traceback.print_exc(file=err)
 
 collected = {}
+images = {}
 total = 0
 try:
     for name in sorted(os.listdir(work)):
@@ -146,21 +178,27 @@ try:
             continue
         try:
             size = os.path.getsize(path)
-            if size > FILE_LIMIT or total + size > TOTAL_LIMIT or len(collected) >= MAX_FILES:
+            is_image = "sdk" in payload and name.endswith(".png")
+            limit = TOTAL_LIMIT if is_image else FILE_LIMIT
+            if size > limit or total + size > TOTAL_LIMIT or len(collected) + len(images) >= MAX_FILES:
                 continue
             with open(path, "rb") as handle:
-                data = handle.read(FILE_LIMIT + 1)
+                data = handle.read(limit + 1)
+            if len(data) > limit:
+                continue
+            if is_image and data.startswith(b"\x89PNG\r\n\x1a\n"):
+                images[name] = base64.b64encode(data).decode("ascii")
+                total += len(data)
+                continue
             text = data.decode("utf-8")
         except (OSError, UnicodeDecodeError):
-            continue
-        if len(data) > FILE_LIMIT:
             continue
         collected[name] = text
         total += len(data)
 except OSError:
     pass
 
-emit({"status": status, "stdout": out.getvalue(), "stderr": err.getvalue(), "files": collected})
+emit({"status": status, "stdout": out.getvalue(), "stderr": err.getvalue(), "files": collected, "images": images})
 `;
 
 export type StudyTools = {
@@ -170,11 +208,15 @@ export type StudyTools = {
   execute: (name: string, args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]) => Promise<string | ToolError>;
 };
 
+export type CalculationArtifact = {name: string; value: string; mediaType?: 'image/png'};
+export type CalculationInput = string | {value: string; mediaType: 'image/png'};
+
 type PythonEnvelope = {
   status: 'ok' | 'error' | 'fatal';
   stdout: string;
   stderr: string;
   files: Record<string, string>;
+  images: Record<string, string>;
 };
 
 type PythonOutcome =
@@ -210,12 +252,12 @@ export function pythonCodeError(code: unknown): ToolError | undefined {
   return undefined;
 }
 
-function dockerFailure(stderr: string, code: number | null): string {
+function dockerFailure(stderr: string, code: number | null, image: string): string {
   if (/Cannot connect to the Docker daemon|permission denied while trying to connect/i.test(stderr)) {
     return 'python unavailable: docker daemon inaccessible';
   }
   if (/Unable to find image|pull access denied|No such image/i.test(stderr)) {
-    return 'python unavailable: python:3.12-alpine is not present';
+    return 'python unavailable: ' + image + ' is not present';
   }
   return code === null ? 'python unavailable' : `python unavailable (docker exit ${code})`;
 }
@@ -239,7 +281,7 @@ function removeContainer(name: string): Promise<void> {
   });
 }
 
-function runPythonContainer(name: string, input: string): Promise<PythonOutcome> {
+function runPythonContainer(name: string, input: string, image: string): Promise<PythonOutcome> {
   return new Promise(resolve => {
     let child;
     try {
@@ -251,7 +293,7 @@ function runPythonContainer(name: string, input: string): Promise<PythonOutcome>
         '--pids-limit=64', '--ulimit', 'nofile=64:64',
         '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=16m',
         '--workdir', '/tmp',
-        'python:3.12-alpine', 'python', '-I', '-B', '-c', pythonWrapper,
+        image, 'python', '-I', '-B', '-c', pythonWrapper,
       ], { stdio: ['pipe', 'pipe', 'pipe'] });
     } catch {
       resolve({ kind: 'unavailable' });
@@ -351,12 +393,58 @@ function readEnvelope(text: string): PythonEnvelope | undefined {
       }
     }
   }
+  const images: Record<string, string> = {};
+  let imageBytes = 0;
+  if (status === 'ok' && record(envelope.images)) {
+    for (const [name, content] of Object.entries(envelope.images as Record<string, unknown>)) {
+      if (!validFilename(name) || !name.endsWith('.png') || typeof content !== 'string') continue;
+      const bytes = Buffer.from(content, 'base64');
+      if (bytes.length + imageBytes > MAX_WORKSPACE_BYTES ||
+          bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' ||
+          Object.keys(images).length >= MAX_FILES) continue;
+      images[name] = bytes.toString('base64');
+      imageBytes += bytes.length;
+    }
+  }
   return {
     status,
     stdout,
     stderr,
     files,
+    images,
   };
+}
+
+async function executePython(payload: string, image: string): Promise<PythonEnvelope | ToolError> {
+  if (Buffer.byteLength(payload) > MAX_PYTHON_INPUT_BYTES)
+    return fail('budget_or_limit','Python 输入超过限制，请减少作答或结果句柄。','inputs');
+  const outcome = await runPythonContainer(`mangekyo-study-${randomUUID()}`, payload, image);
+  if (outcome.kind === 'timeout') return fail('budget_or_limit',`Python 超过 ${PYTHON_TIMEOUT_MS} 毫秒，请缩小计算范围。`,'code');
+  if (outcome.kind === 'overflow') return fail('budget_or_limit','Python 输出超过限制，请只输出结果摘要。','code');
+  if (outcome.kind === 'unavailable') return fail('tool_unavailable','当前无法启动 Python 沙箱。');
+  const envelope = readEnvelope(outcome.stdout.toString('utf8'));
+  if (!envelope) return fail('tool_unavailable',dockerFailure(outcome.stderr.toString('utf8'), outcome.code, image));
+  if (envelope.status === 'fatal') return fail('execution_failed','Python 沙箱未能准备输入。请缩小输入或改用其他工具。','inputs');
+  if (envelope.status === 'error') {
+    const detail = envelope.stderr.trim().split('\n').at(-1);
+    return fail('execution_failed',detail || 'Python 程序退出。请检查代码。','code');
+  }
+  return envelope;
+}
+
+export async function runCalculation(code: string, inputs: Record<string, CalculationInput>,
+  sdk: readonly (PythonRead & {value: unknown})[]): Promise<ToolError | {
+    ok: true; text: string; artifacts: CalculationArtifact[];
+  }> {
+  const error = pythonCodeError(code);
+  if (error) return error;
+  const envelope = await executePython(JSON.stringify({code, inputs, sdk}), calculationImage);
+  if ('ok' in envelope) return envelope;
+  return {ok: true, text: [envelope.stdout.trimEnd(), envelope.stderr.trimEnd()].filter(Boolean).join('\n') || '(no output)',
+    artifacts: [
+      ...Object.entries(envelope.files).map(([name, value]) => ({name, value})),
+      ...Object.entries(envelope.images).map(([name, value]) => ({name, value, mediaType: 'image/png' as const})),
+    ]};
 }
 
 async function readBounded(response: Response, limit: number): Promise<string | undefined> {
@@ -444,21 +532,9 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
     const code = record(args)?.code;
     const error = pythonCodeError(code);
     if (error) return error;
-    const name = `mangekyo-study-${randomUUID()}`;
     const payload = JSON.stringify({ code, files: Object.fromEntries(workspace), inputs, attempts });
-    if (Buffer.byteLength(payload) > MAX_PYTHON_INPUT_BYTES) return fail('budget_or_limit','Python 输入超过限制，请减少作答或结果句柄。','inputs');
-    const outcome = await runPythonContainer(name, payload);
-    if (outcome.kind === 'timeout') return fail('budget_or_limit',`Python 超过 ${PYTHON_TIMEOUT_MS} 毫秒，请缩小计算范围。`,'code');
-    if (outcome.kind === 'overflow') return fail('budget_or_limit','Python 输出超过限制，请只输出结果摘要。','code');
-    if (outcome.kind === 'unavailable') return fail('tool_unavailable','当前无法启动 Python 沙箱。');
-
-    const stdout = outcome.stdout.toString('utf8');
-    const stderr = outcome.stderr.toString('utf8');
-    const envelope = readEnvelope(stdout);
-    if (!envelope) return fail('tool_unavailable',dockerFailure(stderr, outcome.code));
-    if (envelope.status === 'fatal') {
-      return fail('execution_failed','Python 沙箱未能准备输入。请缩小输入或改用其他工具。','inputs');
-    }
+    const envelope = await executePython(payload, legacyPythonImage);
+    if ('ok' in envelope) return envelope;
 
     const collected: Record<string, string> = {};
     let total = 0;
@@ -468,16 +544,10 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
       collected[file] = content;
       total += bytes;
     }
-    if (envelope.status === 'ok') {
-      workspace.clear();
-      for (const [file, content] of Object.entries(collected)) workspace.set(file, content);
-    }
+    workspace.clear();
+    for (const [file, content] of Object.entries(collected)) workspace.set(file, content);
 
     const parts: string[] = [];
-    if (envelope.status === 'error') {
-      const detail = envelope.stderr.trim().split('\n').at(-1);
-      return fail('execution_failed',detail || 'Python 程序退出。请检查代码。','code');
-    }
     if (envelope.stdout.trim()) parts.push(envelope.stdout.trimEnd());
     if (envelope.stderr.trim()) parts.push(envelope.stderr.trimEnd());
     if (!parts.length) parts.push('(no output)');

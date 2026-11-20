@@ -1,0 +1,122 @@
+import type {JsonObject, ToolError, ToolErrorCode} from '@mangekyo/kernel';
+import type {ReceiveStudyImage, WorkspaceWriteReceipt} from './workspace-tools.ts';
+import type {PythonRead, PythonReadValue} from './python-sdk.ts';
+
+export const hostedReads = ['search_learning', 'open_learning', 'read_context'] as const;
+export const hostedWrites = ['save_page', 'save_question', 'save_belief', 'save_edge', 'manage_activity'] as const;
+export const onDemandTools = ['schedule_followup', 'evolve_graph', 'refresh_living_slots', 'notion_read'] as const;
+
+export type HostedRead = typeof hostedReads[number];
+export type HostedWrite = typeof hostedWrites[number];
+export type OnDemandTool = typeof onDemandTools[number];
+export type HostedTool = HostedRead | HostedWrite | OnDemandTool | 'mount_artifact';
+export type ToolArgs = Record<string, unknown>;
+export type ToolDefinition = {
+  type: string;
+  function: {name: string; description: string; parameters: Record<string, unknown>};
+};
+type Definitions<T extends string> = {[K in T]: ToolDefinition & {function: {name: K}}};
+
+export type LearningError = ToolError & {field?: string; valid_fields?: readonly string[]};
+export type LearningResult = LearningError | {ok: true; data: unknown; warnings?: readonly LearningError[]};
+export type ResultHandle = {step: number; value: string; mediaType?: 'image/png'};
+
+function toolMessage(message: string) {
+  return [...message.toWellFormed()].slice(0, 60).join('');
+}
+
+export function toolFailure(code: ToolErrorCode, message: string, next: {tool: string; args: JsonObject}, field?: string): LearningError {
+  const fields = {ok: false as const, message: toolMessage(message), next, ...(field && {field})};
+  return code === 'not_found' ? {...fields, code, candidates: []} : {...fields, code};
+}
+
+/** Turn-scoped bindings from Studio. Their reads and writes use the same authoritative data path.
+ * Each call journals/revalidates its own witnesses before publishing. Write keys are canonical
+ * identities, so aliases and pinned revisions of one ref share a key. Return [] if the
+ * write set cannot be established before execution. Across turns the bus owns serialization.
+ */
+export type LearningTools = {
+  definitions: Definitions<HostedRead | Exclude<HostedWrite, 'save_belief'>> & Partial<Definitions<OnDemandTool | 'mount_artifact'>>;
+  execute(name: HostedTool, args: ToolArgs, context: {
+    step: number;
+    handles: Readonly<Record<string, ResultHandle>>;
+    receiveImage: ReceiveStudyImage;
+    priorRead: Promise<unknown>;
+  }): Promise<LearningResult>;
+  writeKeys(name: HostedWrite | OnDemandTool | 'mount_artifact', args: ToolArgs): readonly string[];
+  preparePython(reads: readonly PythonRead[], step: number): Promise<LearningError | {
+    ok: true;
+    /** Authorized projections in request order. The host records and revalidates their witnesses. */
+    values: readonly PythonReadValue[];
+    warnings?: readonly LearningError[];
+  }>;
+  /** Recheck the producing steps when a handle is used in another call. */
+  authorizeHandles(steps: readonly number[], consumerStep: number): Promise<LearningError | {ok: true}>;
+  writes(): readonly WorkspaceWriteReceipt[];
+};
+
+const text = {type: 'string', minLength: 1, maxLength: 600};
+const action = {type: 'string', enum: ['remember', 'update', 'forget']};
+const supersedes = {type: 'string', pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'};
+const datetime = {type: 'string', format: 'date-time', description: 'UTC 时间，含毫秒。'};
+const target = {if: {properties: {action: {const: 'remember'}}},
+  then: {not: {required: ['supersedes']}}, else: {required: ['supersedes']}};
+export const saveBeliefDefinition = {type: 'function', function: {
+  name: 'save_belief',
+  description: '对一条记忆执行 remember、update 或 forget。学习者的原话与边界用 directive，实证假设用 hypothesis。update 与 forget 用本轮已确认的旧条目作为 supersedes；补充反证用 update。',
+  parameters: {type: 'object', oneOf: [
+    {type: 'object', additionalProperties: false, required: ['category', 'action', 'quote_excerpt'], properties: {
+      category: {type: 'string', enum: ['directive']}, action, supersedes,
+      kind: {type: 'string', enum: ['preference', 'claim', 'state', 'refusal']},
+      quote_excerpt: {...text, description: '本轮学习者的连续逐字原话。'},
+      text: {...text, description: '可省略。填写时与 quote_excerpt 逐字一致。'},
+      scope: {type: 'string', enum: ['general', 'current_object', 'unknown']},
+      valid_until: {type: ['string', 'null'], format: 'date-time', description: '短期状态的明确有效期，UTC 含毫秒。'},
+      goal: {...text, maxLength:200}, intent_key: {...text, maxLength:160},
+      reopen_condition: {oneOf: [
+        {type: 'object', required: ['kind'], additionalProperties: false, properties: {kind: {const: 'learner_request'}}},
+        {type: 'object', required: ['kind', 'at'], additionalProperties: false,
+          properties: {kind: {const: 'at'}, at: datetime}},
+      ]},
+    }, allOf: [target, {
+      if: {properties: {action: {const:'remember'}}},
+      then: {required:['kind'], allOf: [
+        {if: {properties: {kind: {const:'refusal'}}}, then: {required:['goal', 'intent_key', 'reopen_condition']}},
+        {if: {properties: {kind: {const:'state'}}}, then: {required:['valid_until'], properties:{valid_until:datetime}}},
+      ]},
+    }]},
+    {type: 'object', additionalProperties: false, required: ['category', 'action'], properties: {
+      category: {type: 'string', enum: ['hypothesis']}, action, supersedes, text,
+      scope: {type: 'string', enum: ['general', 'current_object']},
+      quote_excerpt: {...text, description: '撤回时逐字引用本轮学习者要求。'},
+      evidence_refs: {type: 'array', minItems: 1, maxItems: 6, items: {
+        type: 'object', additionalProperties: false, required: ['id', 'rev', 'accessEpoch', 'anchor', 'excerpt', 'direction'],
+        properties: {id: supersedes, rev: {type: 'integer', minimum: 1, maximum:2147483647},
+          accessEpoch: {type:'string', pattern:'^(0|[1-9][0-9]*)$'}, anchor: {...text,maxLength:160},
+          excerpt: {...text,maxLength:360}, direction: {type:'string', enum:['support','contradict']}},
+      }},
+    }, allOf:[target,
+      {if:{properties:{action:{const:'remember'}}}, then:{required:['text','scope','evidence_refs']}},
+      {if:{properties:{action:{const:'update'}}}, then:{required:['evidence_refs']}},
+      {if:{properties:{action:{const:'forget'}}}, then:{required:['quote_excerpt']}},
+    ]},
+  ]},
+}};
+
+export function formatLearningResult(result: LearningResult): string {
+  function error(value: LearningError) {
+    return {...value, message:toolMessage(value.message)};
+  }
+  return JSON.stringify(result.ok
+    ? {...result, ...(result.warnings && {warnings: result.warnings.map(error)})}
+    : error(result));
+}
+
+/** Wait for the original order before appending receipts, even when calls complete out of order. */
+export async function settledToolBatch<T>(calls: readonly (() => Promise<T>)[]): Promise<T[]> {
+  const completed = await Promise.allSettled(calls.map(call => call()));
+  return completed.map(result => {
+    if (result.status === 'rejected') throw result.reason;
+    return result.value;
+  });
+}
