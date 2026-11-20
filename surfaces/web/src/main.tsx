@@ -14,7 +14,6 @@ import { Intake } from './intake';
 import { Mistakes, PrintPaper } from './review';
 import {
   ReadState,
-  Today,
   Materials,
   SavedMaterial,
   Me,
@@ -24,6 +23,7 @@ import {
   type Workspace,
   type ChatLink,
 } from './workspace';
+import { Today } from './today';
 import { OfflineStatus } from './offline-status';
 import './styles.css';
 import './shell.css';
@@ -103,7 +103,7 @@ function App() {
     ) : (
       <p role="status">正在打开对话…</p>
     );
-  else if (path === '/today') content = <Today library={library} chats={chats} />;
+  else if (path === '/today') content = <Today />;
   else if (path === '/materials') content = <Materials library={library} capture={() => open('material')} />;
   else if (path === '/materials/workspace') content = <WorkspaceLibrary />;
   else if (path.startsWith('/materials/records/')) content = <WorkspaceRecord id={path.split('/')[3]!} />;

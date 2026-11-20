@@ -74,11 +74,32 @@ export function studyAttachment(input: unknown) {
     mode: value.mode as 'ask' | 'prepare',
   };
 }
+export const submitOfflinePack = 'activity.submitOfflinePack';
 export const studyRecordType = 'activity.studyRecord';
+
+export function offlinePackRecord(input: unknown) {
+  const value = object(input);
+  const id = field(value, 'id', 120);
+  const { rev, choice, result } = value;
+  if (!/^pack\/[a-z-]+$/.test(id) || typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 1 ||
+      typeof choice !== 'number' || !Number.isSafeInteger(choice) || choice < 0 ||
+      (result !== 'correct' && result !== 'incorrect')) throw new Error('内置活动提交无效。');
+  return { id, rev, choice, result };
+}
 
 export function studyRecord(input: unknown) {
   const value = object(input);
   return { title: field(value, 'title', 240), text: field(value, 'text') };
+}
+export function studyRecordFact(input: unknown) {
+  const value = object(input);
+  return {
+    ...studyRecord(value),
+    ...(value.offlinePack === undefined ? {} : {
+      offlinePack: offlinePackRecord(value.offlinePack),
+      submittedAt: new Date(field(value, 'submittedAt', 40)).toISOString(),
+    }),
+  };
 }
 export function creation<T>(value: (data: unknown) => T) {
   return {

@@ -1,3 +1,6 @@
+import { readable, readFactCollection, readValueRevisions } from '../../kernel/src/commands/fact-collection.ts';
+import { createBusScope } from '../../kernel/src/bus.ts';
+import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import {
@@ -7,53 +10,32 @@ import {
 } from '../../kernel/src/commands/reads.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { Json } from '../../kernel/src/declarations/types.ts';
+import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import {
-  createOrganizerNote,
-  organizerNote,
-  organizerNoteDraft,
-  organizerNoteRestoreInput,
-  organizerNoteSaveInput,
-  organizerNoteType,
-  restoreOrganizerNote,
-  saveOrganizerNote,
-  type OrganizerNote,
-} from '../../modules/activity/organizer-values.ts';
+import { organizerNoteType, organizerNoteView, prepareOrganizerNote } from '../../modules/activity/organizer-values.ts';
 import {
   createOrganizerTask,
-  organizerTask,
   organizerTaskDoneInput,
   organizerTaskDraft,
-  organizerTaskType,
   setOrganizerTaskDone,
-  type OrganizerTask,
 } from '../../modules/plan/organizer-task-values.ts';
+import { studyRecordType, submitOfflinePack } from '../../modules/activity/values.ts';
+import { workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
+import { todayCompletion, todayPaper, todaySettings } from '../../modules/activity/today-values.ts';
+import saveRule from '../../modules/plan/commands/save-rule.ts';
+import setGoalStatus from '../../modules/plan/commands/set-goal-status.ts';
+import todayDeriver from '../../modules/plan/derivers/today.ts';
+import { checkPack, openPack, packCandidates } from '../../modules/plan/offline-pack.ts';
+import type { GoalStatus } from '../../modules/plan/goal-values.ts';
+import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
+import { integer } from '../../modules/plan/validation.ts';
+import { readGoal, readTasks } from './learning-overview.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
-export type OrganizerTaskView = OrganizerTask & {
-  readonly id: string;
-  readonly rev: number;
-};
-
-export type OrganizerNoteVersionView = OrganizerNote & {
-  readonly rev: number;
-};
-
-export type OrganizerNoteView = OrganizerNoteVersionView & {
-  readonly id: string;
-  readonly versions: readonly OrganizerNoteVersionView[];
-};
-
-export type OrganizerSnapshot = {
-  readonly tasks: readonly OrganizerTaskView[];
-  readonly notes: readonly OrganizerNoteView[];
-};
-
-function validate<Value>(parse: (input: unknown) => Value, input: unknown): Value {
+function validate<Input, Value>(parse: (input: Input) => Value, input: Input): Value {
   try {
     return parse(input);
   } catch (error) {
@@ -82,93 +64,119 @@ function translate(error: unknown): Error {
   return error instanceof Error ? error : new Error('安排保存失败。');
 }
 
-function written(receipt: Awaited<ReturnType<ReturnType<typeof createCommandHandler>>>) {
-  const ref = receipt.wrote[0];
-  if (!ref) throw new RequestError(500, '这次写入没有返回记录。');
-  return { id: ref.id, rev: ref.rev };
-}
-
 export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule,
   hooks: CommandHooks = createStudioCommandHooks()) {
   const handle = createCommandHandler(db, { modules: [activity, plan], hooks });
 
-  async function write(type: string, requestId: string, input: unknown) {
+  const learner = studioLearner;
+  const access = {callerPurpose: storagePurpose, maySend: () => true};
+  const busActor = {
+    actor: 'learner' as const, purpose: storagePurpose, maySend: access.maySend,
+    defaultPreset: 'organizer', presets: new Map([['organizer', (fact: FactSnapshot) => fact]]),
+  };
+  const bus = createBusScope({db, learner}, busActor, handle);
+  async function write(type: string, requestId: string, input: unknown, deletionWatermark?: string) {
     try {
-      return await handle({
-        learner: studioLearner,
-        actor: 'learner',
-        purpose: storagePurpose,
+      const command = {
+        ...(deletionWatermark === undefined ? {} : {deletionWatermark}),
         type,
         id: commandId(stableId('organizer-command', type, requestId)),
         input: input as Json,
-      });
+      };
+      const {wrote: [ref]} = await bus.mutate(command);
+      if (!ref) throw new RequestError(500, '这次写入没有返回记录。');
+      return {id: ref.id, rev: ref.rev};
     } catch (error) {
       throw translate(error);
     }
   }
 
-  async function snapshot(includeHistory = true): Promise<OrganizerSnapshot> {
+  async function snapshot(includeHistory = true) {
     return db.snapshot({ learner: studioLearner }, async (tx) => {
       const read = createCommandReadContext(tx, storagePurpose);
-      const { rows: taskRows } = await tx.query<{ id: string }>(
-        `SELECT id FROM facts
-         WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-         ORDER BY created_tick, id`,
-        [tx.learner, organizerTaskType],
-      );
-      const tasks: OrganizerTaskView[] = [];
-      for (const row of taskRows) {
-        try {
-          const fact = await read.fact(factId(row.id), { mode: 'following' });
-          tasks.push({ id: row.id, rev: fact.ref.rev, ...organizerTask(fact.value) });
-        } catch (error) {
-          if (!(error instanceof FactReadDeniedError)) throw error;
-        }
-      }
-      tasks.sort(
-        (left, right) =>
-          left.date.localeCompare(right.date) ||
-          Number(left.done) - Number(right.done) ||
-          left.id.localeCompare(right.id),
-      );
+      const taskOverview = await readTasks(tx, access, null);
+      const tasks = 'items' in taskOverview ? taskOverview.items : [];
 
-      const { rows: noteRows } = await tx.query<{ id: string }>(
-        `SELECT id FROM facts
-         WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-         ORDER BY created_tick DESC, id DESC`,
-        [tx.learner, organizerNoteType],
-      );
-      const notes: OrganizerNoteView[] = [];
-      for (const row of noteRows) {
-        const id = factId(row.id);
-        try {
-          const current = await read.fact(id, { mode: 'following' });
-          const versions: OrganizerNoteVersionView[] = [];
-          if (includeHistory) {
-            const revisions = await tx.query<{ rev: number }>(
-              "SELECT rev FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND kind='value' ORDER BY rev",
-              [tx.learner, id],
-            );
-            for (const {rev} of revisions.rows) {
-              try {
-                const version = await read.fact(id, { mode: 'pinned', rev: rev as Revision });
-                versions.push({ rev, ...organizerNote(version.value) });
-              } catch (error) {
-                if (!(error instanceof FactReadDeniedError)) throw error;
-              }
-            }
-          }
-          notes.push({ id, ...organizerNote(current.value), rev: current.ref.rev, versions });
-        } catch (error) {
-          if (!(error instanceof FactReadDeniedError)) throw error;
-        }
+      const notes = [];
+      for await (const current of readFactCollection(tx, read, [organizerNoteType], { newestFirst: true })) {
+        const history = includeHistory ? await readValueRevisions(tx, read, current.ref.id) : [];
+        notes.push(organizerNoteView(current, history));
       }
       return { tasks, notes };
     });
   }
 
+  async function today(params: URLSearchParams) {
+    const { dayOf, ...settings } = validate(p => todaySettings(p, new Date().toISOString()), params);
+    const scope = { learner, purpose: storagePurpose };
+    return db.snapshot(scope, async tx => {
+      let goal: {id: string; rev: number; text: string | null; status: GoalStatus} | null = null;
+      const rules: {id: string; rev: Revision; data: PlanRule}[] = [];
+      const gathered = await gatherSnapshot({ ...db, snapshot: (_, work) => work(tx) }, scope, ctx =>
+        todayDeriver.gather(ctx, async ({read}) => {
+          const current = await readGoal(tx, access, read);
+          goal = current.state === 'set' ? {id: current.witness.id, rev: current.witness.rev, text: current.text, status: current.status} : null;
+          const day = dayOf(settings.now);
+          const papers: FactSnapshot[] = [];
+          const completed = new Set<string | null>();
+          for await (const fact of readFactCollection(tx, read, [planRuleType, workbookPaperType, workbookAttemptType, studyRecordType], {pinTypes: [workbookPaperType]})) {
+            if (fact.type === planRuleType) rules.push({id: fact.ref.id, rev: fact.ref.rev, data: planRule(fact.value)});
+            else if (fact.type === workbookPaperType) papers.push(fact);
+            else completed.add(todayCompletion(fact, day, dayOf));
+          }
+          const candidates = [
+            ...papers.flatMap(fact => todayPaper(fact, completed, day) ?? []),
+            ...packCandidates().map(c => completed.has(c.id + '@' + c.open?.rev) ? {...c, state: 'completed' as const, date: day} : c),
+          ];
+          return {
+            ...settings, ...(goal ? {goal} : {}), rules: rules.map(r => r.data), candidates,
+            constraints: {budget_min: null, locks: [], deadlines: []},
+          };
+        }));
+      if (gathered.plan.kind !== 'input') throw new Error('今天的输入未就绪。');
+      const input = gathered.plan.data as Parameters<typeof todayDeriver.derive>[0];
+      const outcome = await todayDeriver.derive(input);
+      if (outcome.kind !== 'value') throw new Error(outcome.reason);
+      const alternatives = input.candidates.filter(c => outcome.value.shortlist.includes(c.id));
+      return {...outcome.value, alternatives, rules, goal, observedThrough: input.observedThrough, openedAt: settings.now};
+    });
+  }
+
   return {
-    snapshot,
+    snapshot, today,
+
+    async open(params: URLSearchParams) {
+      const kind = params.get('kind');
+      const id = params.get('id') ?? '';
+      const rev = validate(n => integer(n, 1, 2147483647) as Revision, Number(params.get('rev')));
+      if (kind === 'pack') return {kind, ...validate(() => openPack(id, rev), null)};
+      if (kind !== 'activity') throw new RequestError(400, '活动类型无效。');
+      const ref = {id: validate(factId, id), mode: 'following' as const, rev, type: workbookPaperType};
+      const match = await readable(() => bus.resolve([ref], 'organizer'));
+      const paper = match?.items[0];
+      if (paper && todayPaper(paper, new Set(), '')) return {kind, id, rev, href: '/papers/' + id};
+      throw new RequestError(404, '这份活动的冻结版本当前不可打开。');
+    },
+
+    async rule(input: Record<string, unknown>) {
+      const requestId = clientRequest(input.requestId);
+      const id = input.id ?? stableId('plan-rule', requestId);
+      return write(saveRule.type, requestId, validate(saveRule.schema.parse, {...input, id}));
+    },
+
+    async goal(input: Record<string, unknown>) {
+      return write(setGoalStatus.type, clientRequest(input.requestId), validate(setGoalStatus.schema.parse, input));
+    },
+
+    async submit(input: Record<string, unknown>, deletionWatermark?: string) {
+      if (input.actor !== undefined || input.consent !== 'teaching') throw new RequestError(400, '请确认保存本次学习记录。');
+      const requestId = clientRequest(input.requestId);
+      const idOfPack = typeof input.id === 'string' ? input.id : '';
+      const {record, explanation, ...pack} = validate(() => checkPack(idOfPack, integer(input.rev, 1, 2147483647), integer(input.choice, 0, 2147483647)), null);
+      const id = factId(stableId('offline-pack-submission', requestId));
+      const ref = await write(submitOfflinePack, requestId, {id, data: {consent: input.consent, pack, record}}, deletionWatermark);
+      return {...ref, result: pack.result, explanation};
+    },
 
     async task(input: unknown) {
       const value = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
@@ -178,27 +186,19 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
           ...value,
           expectedRev: value.expectedRev ?? value.rev,
         });
-        return written(await write(setOrganizerTaskDone, requestId, commandInput));
+        return write(setOrganizerTaskDone, requestId, commandInput);
       }
       const data = validate(organizerTaskDraft, input);
       const id = factId(stableId('organizer-task', requestId));
-      return written(await write(createOrganizerTask, requestId, { id, data }));
+      return write(createOrganizerTask, requestId, { id, data });
     },
 
     async note(input: unknown) {
       const value = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
       const requestId = clientRequest(value.requestId);
-      if (typeof value.id === 'string' && value.id.length > 0) {
-        if (value.restoreRev !== undefined) {
-          const commandInput = validate(organizerNoteRestoreInput, input);
-          return written(await write(restoreOrganizerNote, requestId, commandInput));
-        }
-        const commandInput = validate(organizerNoteSaveInput, input);
-        return written(await write(saveOrganizerNote, requestId, commandInput));
-      }
-      const draft = validate(organizerNoteDraft, input);
       const id = factId(stableId('organizer-note', requestId));
-      return written(await write(createOrganizerNote, requestId, { id, ...draft }));
+      const command = validate(data => prepareOrganizerNote(data, id), input);
+      return write(command.type, requestId, command.input);
     },
   };
 }
