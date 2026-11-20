@@ -345,7 +345,7 @@ export function serve(
       const actionPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/artifact-actions$/.exec(path);
       if (actionPath?.[1] && method === 'POST') return json(res,200,await actOnArtifact(db,actionPath[1],await body(req)));
       const eventPath = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/events$/.exec(path);
-      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], req, res, student.recall.project);
+      if (eventPath?.[1] && method === 'GET') return await serveSessionEvents(db, eventPath[1], url.searchParams.get('watchMounts') === '1', res, student.recall.project);
       const recall = /^\/api\/sessions\/([0-9A-HJKMNP-TV-Z]{26})\/recall\/(state|reveal|display|submit)$/.exec(path);
       if (recall?.[1] && recall[2] === 'state' && method === 'GET') {
         return json(res, 200, await student.recall.readState(recall[1], url.searchParams));

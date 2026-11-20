@@ -28,8 +28,19 @@ function samples(shape: Drawing) {
   return [shape.x, shape.y, shape.height].filter((v) => typeof v !== 'number');
 }
 
+/** Only a fully public, read-only line can participate in a turn drawing. */
+export function drawingStroke(view: Artifact) {
+  const scene = view.sections[0]?.nodes[0];
+  const line = scene?.kind === 'scene' ? scene.objects[0] : undefined;
+  if (!view.drawingId || view.interaction || view.sections.length !== 1 ||
+      view.sections[0]!.nodes.length !== 1 || scene?.kind !== 'scene' ||
+      scene.objects.length !== 1 || line?.kind !== 'line' || line.stroke === 'none') return;
+  return { scene, line };
+}
+
 function checkBindings(view: Artifact): string | undefined {
   const nodes = view.sections.flatMap((section) => section.nodes);
+  if (view.drawingId && !drawingStroke(view)) return 'drawingId requires one scene containing one visible line';
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const stepTargets = new Set(
     nodes.flatMap((n) =>
