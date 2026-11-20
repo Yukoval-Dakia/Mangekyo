@@ -4,10 +4,10 @@ import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '
 import type {Revision} from '../../kernel/src/declarations/ids.ts';
 import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
 import {isSourceFactId, sourceRefV1} from '../../modules/activity/source-values.ts';
-import {workbookAttempt, workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
+import {workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
 import {knowledgeEdgeKinds, knowledgeEdgeType} from '../../modules/content/knowledge-edge.ts';
 import {resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
-import {displayOf, syntheticStudyRecords} from './workspace-access.ts';
+import {syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {readTeachingAttemptAssessments} from './learning-attempt-read.ts';
 import {textSlice} from './reading.ts';
@@ -157,24 +157,9 @@ export async function workspaceRead(tx: ReadTransaction, args: Arguments, track:
   }});
   if (!record) return workspaceSourceUnavailable;
   const {sourceRef, title, tags, links} = record;
-  let original = record.content;
-  let assessments: Awaited<ReturnType<typeof readWorkspaceAttemptAssessments>> = [];
-  if (attempt && attempt.ref.id === sourceRef.fact.id && sourceRef.anchor.kind === 'whole' && typeof original === 'string') {
-    let value;
-    try { value = workbookAttempt(attempt.value); }
-    catch { return workspaceSourceUnavailable; }
-    const {paper, feedback} = value;
-    if (paper.questions.some(question => question.kind === 'rubric')) {
-      const rubric = '未随作答共享';
-      original = displayOf(workbookAttemptType, {...value,
-        paper: {...paper, questions: paper.questions.map(question => question.kind === 'rubric'
-          ? {...question, rubric, explanation: null} : question)},
-        feedback: feedback.map(item => item.expected.kind === 'rubric'
-          ? {...item, expected: {...item.expected, rubric}, explanation: null} : item),
-      }).text;
-      if (trackAssessment) assessments = await readWorkspaceAttemptAssessments(tx, attempt, maySend, trackAssessment);
-    }
-  }
+  const original = record.content;
+  const assessments = trackAssessment && attempt?.ref.id === sourceRef.fact.id && sourceRef.anchor.kind === 'whole'
+    ? await readWorkspaceAttemptAssessments(tx, attempt, maySend, trackAssessment) : [];
   const {content, nextOffset} = typeof original === 'string'
     ? textSlice(original, offset) : {content: original, nextOffset: null};
   return JSON.stringify({id: sourceRef.fact.id, rev: sourceRef.fact.rev, kind: record.kind ?? workspaceRecordKind(sourceRef.fact.type),

@@ -42,12 +42,18 @@ export async function registerFormalAssessment(
   if (inserted.rowCount) await requestWork(tx, tick, { slotType: type, slotKey: key, deriver: policy.deriver });
 }
 
-type FormalAssessmentValue = {
+export type FormalAssessmentValue = {
   result: AssessmentResult;
   score: ReturnType<typeof readAssessmentScore>;
   criteria: (Pick<AssessmentCriterion, 'criterionId' | 'evaluator' | 'source' | 'maximum'> & { itemId: string })[];
   receipts: { itemId: string; criterionId: string; effectId: string; routeId: string; reportedModel?: string; quote?: string }[];
 };
+
+export function settledAssessmentState({result: {outcomes}}: FormalAssessmentValue) {
+  return outcomes.some(({ state }) => state === 'failed') ? 'failed'
+    : outcomes.some(({ state }) => state === 'blocked') ? 'blocked'
+    : outcomes.every(({ state }) => state === 'scored' || state === 'qualitative') ? 'complete' : 'incomplete';
+}
 
 export async function readFormalAssessment(
   tx: ReadTransaction, type: string, releaseRef: AssessmentRevisionRef, submissionRef: AssessmentRevisionRef, purpose: string,
@@ -68,11 +74,7 @@ export async function readFormalAssessment(
     if ((await revalidateManifest(tx, manifest)).kind !== 'valid' ||
         (purpose !== manifest.purpose && (await revalidateManifest(tx, manifest, purpose)).kind !== 'valid'))
       return { ...refs, state: 'blocked' as const, reason: assessmentInputsBlocked, score: null };
-    const { outcomes } = slot.value.value.result;
-    const state = outcomes.some(({ state }) => state === 'failed') ? 'failed'
-      : outcomes.some(({ state }) => state === 'blocked') ? 'blocked'
-      : outcomes.every(({ state }) => state === 'scored' || state === 'qualitative') ? 'complete' : 'incomplete';
-    return { ...refs, ...slot.value.value, state, derivationId: slot.current_id };
+    return { ...refs, ...slot.value.value, state: settledAssessmentState(slot.value.value), derivationId: slot.current_id };
   }
   if (slot?.last_error) return {
     ...refs, state: slot.last_error.reason === assessmentExecutionFailed ? 'failed' as const : 'blocked' as const,

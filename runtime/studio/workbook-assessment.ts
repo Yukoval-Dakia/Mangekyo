@@ -3,10 +3,11 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { learnerId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { Json, JsonObject } from '../../kernel/src/declarations/types.ts';
+import { factId, learnerId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import type { FactSnapshot, Json, JsonObject } from '../../kernel/src/declarations/types.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
+import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { failWork, readReadyWork, readWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
@@ -23,7 +24,8 @@ import {
   workbookFormalAssessmentType, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookDraft,
 } from '../../modules/activity/workbook-values.ts';
 import {
-  assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment, type AssessmentScope,
+  assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment,
+  settledAssessmentState, type AssessmentScope, type FormalAssessmentValue,
 } from './formal-assessment.ts';
 import { RequestError } from './sessions.ts';
 
@@ -329,6 +331,61 @@ function evaluation(
   return { outcome: { ...key, state: 'failed', reason: '评估结论、分值或引文无法与冻结标准和作答核对。' }, receipt: trace };
 }
 
-export function readWorkbookAssessment(tx: ReadTransaction, release: AssessmentRelease, submissionRef: AssessmentRevisionRef) {
-  return readFormalAssessment(tx, workbookAssessmentSlot, release.releaseRef, submissionRef, storagePurpose);
+/** A finalized score can be read with fresh witnesses when only the grants changed. */
+export async function readSavedWorkbookAssessment(
+  tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submission: FactSnapshot, paper: FactSnapshot,
+) {
+  const { rows: [row] } = await tx.query<{
+    id: string; scope_keys: AssessmentScope; manifest: unknown; value: { kind: 'value'; value: FormalAssessmentValue } | null;
+  }>(
+    `SELECT d.id, s.scope_keys, d.manifest, d.value FROM slot_state s
+     LEFT JOIN derivations d ON (d.learner_id,d.slot_type,d.slot_key,d.id) =
+       (s.learner_id,s.slot_type,s.slot_key,COALESCE(s.current_id,s.last_id))
+       AND NOT d.is_shadow AND d.deriver=$6 AND d.scope_keys=s.scope_keys
+       AND d.effective_tick>=d.gather_tick AND d.selection_ended_tick IS NULL
+       AND ((d.id=s.current_id AND d.lifecycle='effective' AND d.invalidated_tick IS NULL) OR
+         (s.current_id IS NULL AND d.lifecycle='stale' AND d.error->>'reason'='fact-access-changed'))
+     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.scope_keys->'releaseRef'=$3::jsonb
+       AND s.scope_keys->'submissionRef'->>'id'=$4 AND (s.scope_keys->'submissionRef'->>'rev')::int<=$5
+     ORDER BY (s.scope_keys->'submissionRef'->>'rev')::int DESC LIMIT 1`,
+    [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, policy.deriver],
+  );
+  if (row?.value?.kind !== 'value') return;
+  const { value } = row.value;
+  const { submissionRef, releaseEpoch, submissionEpoch } = row.scope_keys;
+  if (!sameRef(value.result.releaseRef, releaseRef) || !sameRef(value.result.submissionRef, submissionRef) ||
+      paper.ref.id !== releaseRef.id || submission.type !== workbookAttemptType || paper.type !== workbookPaperType) return;
+  const manifest = parseManifest(row.manifest);
+  if (manifest.learner !== tx.learner || manifest.purpose !== policy.purpose || manifest.inputs.length !== 2) return;
+  for (const [original, current, epoch, mode] of [
+    [releaseRef, paper.ref, releaseEpoch, 'pinned'], [submissionRef, submission.ref, submissionEpoch, 'following'],
+  ] as const) {
+    if (!manifest.inputs.some(input => input.kind === 'fact' && input.id === original.id &&
+      input.rev === original.rev && input.accessEpoch === epoch && input.mode === mode)) return;
+    // Each adjacent revision must be a grant change, including an edit later restored to the same value.
+    const { rows: [proof] } = await tx.query<{ unchanged: boolean }>(
+      `SELECT count(*) FILTER (WHERE r.kind='value' AND r.data=base.data AND r.corrects_rev=p.rev
+          AND r.purpose IS DISTINCT FROM p.purpose)=($4::int-$3::int) AS unchanged
+       FROM fact_revs base JOIN fact_revs r ON (r.learner_id,r.fact_id)=(base.learner_id,base.fact_id)
+       JOIN fact_revs p ON (p.learner_id,p.fact_id,p.rev)=(r.learner_id,r.fact_id,r.rev-1)
+       WHERE base.learner_id=$1 AND base.fact_id=$2 AND base.rev=$3 AND base.kind='value' AND r.rev>$3 AND r.rev<=$4`,
+      [tx.learner, original.id, original.rev, current.rev],
+    );
+    if (!proof?.unchanged) return;
+  }
+  return { ...value, releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
+}
+
+export async function readWorkbookAssessment(tx: ReadTransaction, release: AssessmentRelease, submissionRef: AssessmentRevisionRef) {
+  const result = await readFormalAssessment(tx, workbookAssessmentSlot, release.releaseRef, submissionRef, storagePurpose);
+  if (result.state !== 'blocked' || 'derivationId' in result) return result;
+  try {
+    const read = createCommandReadContext(tx, storagePurpose);
+    const submission = await read.fact(factId(submissionRef.id), { mode: 'following' });
+    const paper = await read.fact(factId(release.releaseRef.id), { mode: 'following' });
+    if (sameRef(submission.ref, submissionRef)) return await readSavedWorkbookAssessment(tx, release.releaseRef, submission, paper) ?? result;
+  } catch (error) {
+    if (!readFailure(error)) throw error;
+  }
+  return result;
 }

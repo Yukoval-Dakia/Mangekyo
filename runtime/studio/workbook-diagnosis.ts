@@ -1,21 +1,21 @@
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { derivationId, factId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { factId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { projectHelpExposure } from '../../modules/activity/help-exposure.ts';
 import { helpAppliesTo } from '../../modules/activity/help-exposure-values.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
-  sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookFormalAssessmentType, workbookPaper, workbookPaperType,
+  sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
   type WorkbookAttempt,
 } from '../../modules/activity/workbook-values.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
-import { formalAssessmentSlotKey, readFormalAssessment } from './formal-assessment.ts';
 import { purpose } from './identity.ts';
 import { readWorkbookHelpDisplays, readWorkbookSubmissionBirth } from './learning-attempt-read.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
-import { readWorkspaceAttemptAssessments, workspaceAssessmentBasis, type WorkspaceAssessmentBasis } from './workspace-read.ts';
+import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
+import { readWorkspaceAttemptAssessments, type WorkspaceAssessmentBasis } from './workspace-read.ts';
 
 type Access = { maySend: WorkspaceSourceRecipient; track: SourceTrack; trackAssessment?: (basis: WorkspaceAssessmentBasis) => void };
 const unavailable = { state: 'unavailable' } as const;
@@ -51,16 +51,16 @@ async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cu
 
 async function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot, access: Access) {
   const release = attempt.paper.assessmentRelease;
-  if (!release || !access.trackAssessment) return unavailable;
-  const type = workbookFormalAssessmentType;
-  const result = await readFormalAssessment(tx, type, release.releaseRef, submission.ref, purpose);
-  if (!('derivationId' in result) || !result.derivationId) return unavailable;
-  const basis = await workspaceAssessmentBasis(tx, {
-    kind: 'slot', mode: 'following', slotType: type, derivationId: derivationId(result.derivationId),
-    slotKey: formalAssessmentSlotKey(type, release.releaseRef, submission.ref),
-  }, access.maySend);
-  if (!basis) return unavailable;
-  access.trackAssessment(basis);
+  if (!release) return unavailable;
+  const read = createCommandReadContext(tx, purpose);
+  const current = await read.fact(submission.ref.id, { mode: 'following' });
+  const paper = await read.fact(factId(release.releaseRef.id), { mode: 'following' });
+  if (current.ref.rev !== submission.ref.rev || !access.maySend(current) || !access.maySend(paper)) return unavailable;
+  const result = await readSavedWorkbookAssessment(tx, release.releaseRef, current, paper);
+  if (!result) return unavailable;
+  // These current grants, rather than the original scoring epochs, license the diagnosis.
+  access.track(current, 'following');
+  access.track(paper, 'following');
   return { state: result.state, score: result.score };
 }
 

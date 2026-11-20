@@ -153,6 +153,11 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
       image_crop:{state:'unavailable'},effective_duration_ms:{state:'unavailable'},
     }]});
     expect(JSON.stringify(openedDiagnosis)).not.toContain('参考答案独有字样');
+    const reopenedPaper = await diagnose('read_workspace',{id:paper.id},4);
+    expect(reopenedPaper.content).toContain(question.prompt);
+    expect(JSON.stringify(await diagnose('read_workspace',{id:JSON.stringify(reopenedPaper.sourceRef)},5)))
+      .not.toContain('参考答案独有字样');
+    expect(JSON.stringify(opened)).not.toContain('参考答案独有字样');
     await access.setTeaching(paper.id,{enabled:false,expectedRev:paperGrant.rev});
     expect(await diagnose('open_learning',diagnosis,3)).toMatchObject({ok:false,code:'basis_stale'});
 
