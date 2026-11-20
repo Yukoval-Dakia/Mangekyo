@@ -1,3 +1,4 @@
+import { recordFromQuery, recordFromSession, recordLabel, type CurrentObject } from './current-record';
 import { forTask } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { remembered, remember, sessionPath, type Session, type Settings, type StudyAttachment } from './api';
@@ -40,7 +41,10 @@ export function Companion({ chats, settings }: { settings: Settings | undefined;
   if (id) return <LinkedChat id={id} chats={chats} settings={settings} />;
   const materialId = query.get('material');
   if (materialId) return <MaterialChat id={materialId} prepare={query.get('mode') === 'prepare'} chats={chats} settings={settings} />;
-  return <ChatRoom mode={query.get('context') === 'riding' ? 'riding' : 'companion'} chats={chats} settings={settings} />;
+  if (query.get('context') === 'riding') return <ChatRoom mode="riding" chats={chats} settings={settings} />;
+  const entry = recordFromQuery(query);
+  if (query.has('record') && !entry) return <><PageTitle title="同伴" /><p role="alert">记录链接缺少有效版本，请从原记录重新进入。</p><a href="/companion">开始普通对话</a></>;
+  return <ChatRoom mode="companion" entry={entry} chats={chats} settings={settings} />;
 }
 
 function ChatRoom({
@@ -48,6 +52,7 @@ function ChatRoom({
   initial,
   chats,
   source,
+  entry,
   settings: allSettings,
   prepare = false,
 }: {
@@ -55,6 +60,7 @@ function ChatRoom({
   initial?: Session;
   chats: Resource<ChatLink[]>;
   source?: Material;
+  entry?: CurrentObject | undefined;
   settings: Settings | undefined;
   prepare?: boolean;
 }) {
@@ -66,7 +72,14 @@ function ChatRoom({
   const grants = (settings?.mcpServers ?? []).filter(server => server.enabled && server.allowedTools.length)
     .map(({id, url, allowedTools}) => ({id, url, allowedTools}));
   const permitted = grants.filter(server => selectedTools.includes(JSON.stringify(server)));
-  const draftKey = 'free-chat:' + (sessionId ?? (source ? source.id + ':' + prepare : mode));
+  const [openingRecord, setOpeningRecord] = useState(entry);
+  const [keepForTurn, setKeepForTurn] = useState<string>();
+  const lastRecord = recordFromSession(session?.currentObject);
+  const choiceKey = lastRecord && JSON.stringify([session?.currentTurnId, lastRecord]);
+  const displayedRecord = sessionId ? lastRecord : openingRecord;
+  const selectedRecord = !sessionId || (choiceKey && choiceKey === keepForTurn) ? displayedRecord : undefined;
+  const openingKey = 'free-chat:' + (source ? source.id + ':' + prepare : openingRecord ? JSON.stringify(openingRecord) : mode);
+  const draftKey = sessionId ? 'free-chat:' + sessionId : openingKey;
   const [opening, setOpening] = useState(() => remembered(draftKey) ?? (prepare ? '请结合这段材料准备一份短讲义和可以自测的练习题。' : new URLSearchParams(location.search).has('review') ? '根据我这些实际错答，我在哪一步可能有困难？请引用其中一题，给我一道能验证你判断的追问。' : ''));
   const [excerpt, setExcerpt] = useState(() => source?.text.slice(0, 3000) ?? '');
   const excerptValid = !source || Boolean(excerpt.trim() && source.text.includes(excerpt) && excerpt.length <= 3000);
@@ -78,7 +91,7 @@ function ChatRoom({
     if (sessionId && sessionId !== lastId.current) {
       lastId.current = sessionId;
       history.replaceState(null, '', chatPath(sessionId));
-      remember('free-chat:' + (source ? source.id + ':' + prepare : mode), null);
+      remember(openingKey, null);
       chats.reload();
     }
   }, [sessionId, mode]);
@@ -106,12 +119,12 @@ function ChatRoom({
       chat.refreshingConflict
     )
       return;
-    if (sessionId) chat.send(permitted, settings);
+    if (sessionId) chat.send(permitted, settings, selectedRecord);
     else if (excerptValid) {
       const attachment: StudyAttachment | undefined = source
         ? { id: source.id, title: source.title, text: excerpt, mode: prepare ? 'prepare' : 'ask' }
         : undefined;
-      chat.start(value.trim(), attachment, permitted, settings);
+      chat.start(value.trim(), attachment, permitted, settings, selectedRecord);
     }
     setSelectedTools([]);
   }
@@ -180,9 +193,9 @@ function ChatRoom({
           {chat.problem && (
             <div className="notice problem" role="alert">
               {chat.problem.message}{' '}
-              <button className="text-button" onClick={chat.retry}>
+              {(chat.retryOperation || chat.problem.source === "read") && <button className="text-button" onClick={chat.retry}>
                 重试
-              </button>
+              </button>}
             </div>
           )}
           {(chat.outdatedDraft || chat.conflict) && (
@@ -194,6 +207,18 @@ function ChatRoom({
             </div>
           )}
           <form className="chat-composer" onSubmit={submit}>
+            {displayedRecord && <fieldset disabled={pending || unavailable || !!chat.retryOperation}>
+              <legend>{sessionId ? '最近一轮关联的记录' : '本次提问关联的记录'}</legend>
+              <p>{recordLabel(displayedRecord)}</p>
+              {sessionId ? <label><input type="checkbox" checked={!!selectedRecord}
+                onChange={e => setKeepForTurn(e.target.checked ? choiceKey : undefined)} /> 下轮继续使用这一版</label>
+                : <button type="button" className="text-button" onClick={() => {
+                  remember(openingKey, null);
+                  remember('free-chat:' + mode, opening);
+                  setOpeningRecord(undefined);
+                  history.replaceState(null, '', '/companion');
+                }}>解除关联</button>}
+            </fieldset>}
             {settings && <small>{settings.model} · {settings.baseUrl}</small>}
             {grants.length > 0 && <fieldset disabled={pending || unavailable || !!chat.retryOperation}>
               <legend>本轮允许使用的 MCP 工具</legend>

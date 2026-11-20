@@ -46,7 +46,8 @@ function App() {
       ? '/materials'
       : path === '/plan' ? '/today' : path;
   const section = destinations.find((x) => x.path === active)?.text ?? '今天';
-  const [dialog, setDialog] = useState<'settings' | 'material' | 'goal' | null>(null);
+  const [dialog, setDialog] = useState<'settings' | 'textbook-access' | 'material' | 'goal' | null>(null);
+  const [textbookVersion, setTextbookVersion] = useState(0);
   const [notice, setNotice] = useState('');
   const opener = useRef<HTMLElement | null>(null);
   const library = useResource<Workspace>('/workspace');
@@ -72,12 +73,13 @@ function App() {
       });
     return () => c.abort();
   }, [legacy]);
-  function open(kind: 'settings' | 'material' | 'goal') {
+  function open(kind: 'settings' | 'textbook-access' | 'material' | 'goal') {
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setNotice('');
     setDialog(kind);
   }
   function close() {
+    if (path === '/textbooks/page' && (dialog === 'textbook-access' || dialog === 'settings')) setTextbookVersion(n => n + 1);
     setDialog(null);
     opener.current?.focus();
   }
@@ -106,7 +108,7 @@ function App() {
   else if (path.startsWith('/materials/records/')) content = <WorkspaceRecord id={path.split('/')[3]!} />;
   else if (path === '/textbooks' || path === '/textbooks/page') content = (
     <Suspense fallback={<p role="status">正在打开教材…</p>}>
-      <StudioTextbooks editor={path.endsWith('/page')} />
+      <StudioTextbooks key={textbookVersion} openAccess={() => open('textbook-access')} editor={path.endsWith('/page')} />
     </Suspense>
   );
   else if (path === '/intake') content = <Intake />;
@@ -174,8 +176,9 @@ function App() {
         </main>
       </div>
       {browse('mobile-nav')}
-      {dialog === 'settings' && (
+      {(dialog === 'settings' || dialog === 'textbook-access') && (
         <SettingsDialog
+          textbookAccess={dialog === 'textbook-access'}
           onClose={close}
           onSave={value => {
             settings.replace(value);

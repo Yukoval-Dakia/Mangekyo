@@ -1,10 +1,11 @@
+import { RecordQuestionLink, teachingPage } from './current-record';
 import {useState} from 'react';
 import {PageTitle, ReadState, useResource} from './workspace';
 import {ConceptReading, FixedRecord} from './concept-reading';
 import {Message} from './message';
 
 type Entry = {id:string; kind?:string; rev:number; title:string; excerpt:string; author:string};
-type Detail = Entry & {text:string; nextOffset:number|null; related?:{id:string;title:string}[];
+type Detail = Entry & {category?: string; teaching?: boolean; text:string; nextOffset:number|null; related?:{id:string;title:string}[];
   question?: {prompt:string;answer?:string;rubric?:string}};
 const names: Record<string,string> = {question:'题目',page:'教材页',concept:'概念',relation:'概念关系',observation:'学情观察',annotation:'作答批注'};
 
@@ -52,6 +53,7 @@ function CurrentRecord({id}:{id:string}) {
   return <><PageTitle title={item?.title ?? '学习记录'}><a href="/materials/workspace">返回同伴工作区</a></PageTitle>
     <ReadState resource={resource} />
     {item && <article className="companion-turn"><small>{names[item.kind ?? ''] ?? '学习记录'} · 第 {item.rev} 版 · {item.author === 'companion' ? '同伴创建' : '本人保存'}</small>
+      {teachingPage(item) && <RecordQuestionLink kind="page" record={item} />}
       {item.question && <button type="button" className="tonal-button" onClick={preparePaper}>用这道题组卷</button>}
       <Message text={item.text} />
       {!!item.related?.length && <ul aria-label="关联记录">{item.related.map(link =>

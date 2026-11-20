@@ -21,7 +21,8 @@ import {
 
 const reasoningEfforts = ["default", "low", "medium", "high", "xhigh", "max"];
 
-export function SettingsDialog({ onClose, onSave }: {
+export function SettingsDialog({ onClose, onSave, textbookAccess = false }: {
+  textbookAccess?: boolean;
   onClose: () => void;
   onSave: (settings: Settings) => void;
 }) {
@@ -194,7 +195,7 @@ export function SettingsDialog({ onClose, onSave }: {
               </select>
             </label>)}
           </section>
-          <WorkspaceAccessPanel disabled={saving} />
+          <WorkspaceAccessPanel disabled={saving} textbookAccess={textbookAccess} />
           <section className="settings-section" aria-labelledby="mcp-title">
             <div className="settings-section-heading">
               <h3 id="mcp-title">MCP 服务</h3>

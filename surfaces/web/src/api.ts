@@ -94,6 +94,7 @@ export interface Turn {
 }
 
 export interface Session {
+  currentObject?: import("./current-record").BoundObject;
   artifacts?: unknown;
   attachment?: StudyAttachment;
   id: string;

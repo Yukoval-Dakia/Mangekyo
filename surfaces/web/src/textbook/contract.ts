@@ -7,7 +7,7 @@ import type {
 import type { TextbookEdit } from '../../../../modules/content/textbook-edits.ts';
 
 export type { TextbookBlock as Block, TextbookBlockBody as Body, TextbookEdit as Edit };
-export type Page = TextbookPage & { id: string; rev: number };
+export type Page = TextbookPage & { id: string; rev: number; purpose?: readonly string[] };
 export type Request = { id: string; expectedRev: number; clientEditSeq: number; edits: [TextbookEdit] };
 export type Address = { id: string; rev?: number; block?: string };
 export type Chapter = { title: string; pages: { id: string; title: string }[] };

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, remember, remembered, requestId, sessionEvents, sessionPath, type Session, type Settings, type SessionEvent, type StudyAttachment } from "./api";
 
+import type { CurrentObject } from "./current-record";
 import {selectedRoute, type Route, type McpGrant} from './model-route';
 import { readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 
-type Operation =
+type Operation = {currentObject?: CurrentObject | undefined} & (
   | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
-  | { kind: "answer"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; sessionId: string; parentId: string; answer: string };
+  | { kind: "answer"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; sessionId: string; parentId: string; answer: string });
 
 const progressLabels: Record<NonNullable<SessionEvent["phase"]>, string> = {
   queued: "正在等待同伴…",
@@ -139,7 +140,9 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const previous = sessionRef.current;
       if ((previous?.currentTurnId === update.session.currentTurnId && previous?.status !== "pending") ||
           previous?.turns.some(t => t.turnId === update.session.currentTurnId)) return;
-      setSession({ ...previous, ...update.session, turns: previous?.turns ?? [], withdrawn: previous?.withdrawn ?? new Set(),
+      const next = { ...previous, ...update.session };
+      if (previous?.currentTurnId !== next.currentTurnId) delete next.currentObject;
+      setSession({ ...next, turns: previous?.turns ?? [], withdrawn: previous?.withdrawn ?? new Set(),
         mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] });
       setProgressLabel(update.phase ? progressLabels[update.phase] : undefined);
       setStreamingReply(update.message);
@@ -231,11 +234,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const result = operation.kind === "create"
         ? await api<Session>("/sessions", {
           method: "POST",
-          body: { route: operation.route, mcpGrants: operation.mcpGrants, caseId, requestId: operation.requestId, question: operation.question, attachment: operation.attachment },
+          body: { currentObject: operation.currentObject, route: operation.route, mcpGrants: operation.mcpGrants, caseId, requestId: operation.requestId, question: operation.question, attachment: operation.attachment },
         })
         : await api<Session>(`${sessionPath(operation.sessionId)}/answers`, {
           method: "POST",
-          body: { route: operation.route, mcpGrants: operation.mcpGrants, answer: operation.answer, parentId: operation.parentId, requestId: operation.requestId },
+          body: { currentObject: operation.currentObject, route: operation.route, mcpGrants: operation.mcpGrants, answer: operation.answer, parentId: operation.parentId, requestId: operation.requestId },
         });
       if (result.caseId !== caseId || (operation.kind === "answer" && result.id !== operation.sessionId)) {
         throw new Error("Session identity mismatch");
@@ -252,15 +255,18 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       if (operation.kind === "answer" && error instanceof ApiError && error.status === 409) {
         setRetryOperation(undefined);
         setConflict(true);
+        setRefresh(n => n + 1);
         setRefreshingConflict(true);
         return;
       }
-      const rejected = error instanceof ApiError && [400, 401, 403, 404, 413, 415, 422].includes(error.status);
+      const rejected = error instanceof ApiError && [400, 401, 403, 404, 409, 413, 415, 422].includes(error.status);
       if (rejected && operation.kind === "create") remember(createKey, null);
       setRetryOperation(rejected ? undefined : operation);
       setProblem({
         source: "write",
-        message: error instanceof ApiError && error.status === 422 ? "这次对话使用原模型端点，请新建对话以使用当前端点。" :
+        message: operation.currentObject && error instanceof ApiError && error.status === 403 ? "这条记录当前无法用于教学。可解除关联后继续。要使用这条记录，请在「学习设置 → 学习记录访问」检查记录和模型授权，再从记录重新提问。" :
+          error instanceof ApiError && error.status === 409 ? "请求与已有记录冲突，请核对后重新发送。" :
+          error instanceof ApiError && error.status === 422 ? "这次对话使用原模型端点，请新建对话以使用当前端点。" :
           operation.kind === "create" ? "暂时无法开始对话。" : "暂时无法发送这条作答。",
       });
     } finally {
@@ -270,19 +276,19 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     }
   }
 
-  function start(question?: string, attachment?: StudyAttachment, mcpGrants?: McpGrant[], settings?: Settings) {
+  function start(question?: string, attachment?: StudyAttachment, mcpGrants?: McpGrant[], settings?: Settings, currentObject?: CurrentObject) {
     if (inFlight.current || retryOperation) return;
     const text = question?.trim();
     const id = text ? requestId() : remembered(createKey) ?? requestId();
     if (!text) remember(createKey, id);
-    void perform({ kind: "create", route: selectedRoute(settings), mcpGrants, requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
+    void perform({ kind: "create", currentObject, route: selectedRoute(settings), mcpGrants, requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
   }
 
-  function send(mcpGrants?: McpGrant[], settings?: Settings) {
+  function send(mcpGrants?: McpGrant[], settings?: Settings, currentObject?: CurrentObject) {
     const answer = draft?.text.trim();
     const parentId = session?.currentTurnId;
     if (!session || session.status !== "ready" || !answer || !parentId || draft?.parentId !== parentId || retryOperation) return;
-    void perform({ kind: "answer", route: selectedRoute(settings), mcpGrants, requestId: requestId(), sessionId: session.id, parentId, answer });
+    void perform({ kind: "answer", currentObject, route: selectedRoute(settings), mcpGrants, requestId: requestId(), sessionId: session.id, parentId, answer });
   }
 
   function editDraft(text: string) {

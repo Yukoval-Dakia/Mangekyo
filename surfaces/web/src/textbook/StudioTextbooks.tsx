@@ -1,4 +1,5 @@
 import { useRef, useState, type FormEvent } from 'react';
+import { RecordQuestionLink } from '../current-record';
 import { api, requestId } from '../api';
 import { ListLink, PageTitle, ReadState, useResource } from '../workspace';
 import { TextbookWorkspace, textbookLink, type Page, type Transport } from './index';
@@ -30,7 +31,7 @@ const transport: Transport = {
   },
 };
 
-export default function StudioTextbooks({ editor }: { editor: boolean }) {
+export default function StudioTextbooks({ editor, openAccess }: { editor: boolean; openAccess: () => void }) {
   const index = useResource<{ pages: { id: string; title: string }[] }>('/textbooks');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -56,7 +57,10 @@ export default function StudioTextbooks({ editor }: { editor: boolean }) {
     <a className="back-link" href="/textbooks">‹ 教材列表</a>
     <ReadState resource={index} />
     {index.data && <TextbookWorkspace chapters={[{ title: '我的教材页', pages: index.data.pages }]}
-      initialPage={index.data.pages[0]?.id ?? ''} draftScope="studio" transport={transport} />}
+      initialPage={index.data.pages[0]?.id ?? ''} draftScope="studio" transport={transport} slots={{practice: page =>
+        page.purpose?.some(value => value === 'teaching' || value === 'all')
+          ? <RecordQuestionLink kind="page" record={page} />
+          : <button className="text-button" onClick={openAccess}>在学习记录访问中开放教材</button>}} />}
   </>;
   return <>
     <PageTitle title="个人教材" />
