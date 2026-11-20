@@ -8,6 +8,8 @@
     "./facts/asset": "./facts/asset.ts",
     "./facts/asset-contract": "./asset.ts",
     "./facts/textbook-page": "./textbook-page.ts",
+    "./textbook-conflict": "./textbook-conflict.ts",
+    "./knowledge-entity": "./knowledge-entity.ts",
     "./knowledge-edge": "./knowledge-edge.ts",
     "./facts/assessment": "./assessment-values.ts",
     "./facts/material": "./facts/material.ts"
