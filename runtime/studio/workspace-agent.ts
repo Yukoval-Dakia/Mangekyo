@@ -57,9 +57,11 @@ export function openWorkspaceTools(options: {
     const raw = await recordLocalRead(db, {learner:studioLearner, ownerKind:'session', ownerId:turn,
       stepKey:String(step), label:'local:'+name, input:args}, async tx => {
       const witnesses = new Map<string, WorkspaceWitness>();
-      const track: SourceTrack = (fact, mode) => witnesses.set(fact.ref.id, {
-        id:fact.ref.id, type:fact.type, rev:fact.ref.rev, epoch:fact.accessEpoch, ...(mode ? {mode} : {}),
-      });
+      const track: SourceTrack = (fact, mode) => {
+        const key = `${fact.ref.id}:${fact.ref.rev}`;
+        if (mode === 'pinned' && witnesses.has(key)) return;
+        witnesses.set(key, {id:fact.ref.id, type:fact.type, rev:fact.ref.rev, epoch:fact.accessEpoch, ...(mode ? {mode} : {})});
+      };
       const assessmentBasis: WorkspaceAssessmentBasis[] = [];
       const text = name === 'read_workspace'
         ? await workspaceRead(tx,args,track,options.maySend,options.trackAssessment ? basis => assessmentBasis.push(basis) : undefined)

@@ -3,11 +3,12 @@ import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId, type Revision} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {intakeFactType} from '../../modules/activity/intake-values.ts';
-import {materialType, storagePurpose} from '../../modules/activity/library-values.ts';
-import {organizerNote, organizerNoteType} from '../../modules/activity/organizer-values.ts';
+import {goalType, materialType, storagePurpose, studyGoal} from '../../modules/activity/library-values.ts';
+import {organizerNote, organizerNoteType, organizerTask, organizerTaskType} from '../../modules/activity/organizer-values.ts';
+import {practiceSubmission, ridingPracticeType} from '../../modules/activity/practice-values.ts';
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
 import {studyRecord} from '../../modules/activity/values.ts';
-import {workbookAttempt, workbookAttemptType} from '../../modules/activity/workbook-values.ts';
+import {workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {
   WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
   type WorkspaceEntryKind,
@@ -19,9 +20,18 @@ import {intakeTextOf, isMaterialIntakePair, materialIntakeReference, materialTex
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = (fact: FactSnapshot) => boolean;
-type SourceAccess =
+export type SourceAccess = { track?: SourceTrack } & (
   | {recipient: 'learner'}
-  | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; track?: SourceTrack};
+  | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient}
+);
+
+export function sourcePurpose(access: SourceAccess): string {
+  return access.recipient === 'learner' ? storagePurpose : purpose;
+}
+
+export function sourceMaySend(access: SourceAccess, fact: FactSnapshot): boolean {
+  return access.recipient === 'learner' || access.maySend(fact);
+}
 type SourceProjection = {
   title: string;
   content: string | number | null;
@@ -50,6 +60,29 @@ function sourceText(fact: FactSnapshot) {
     }
   }
   return undefined;
+}
+
+function searchText(fact: FactSnapshot, content: SourceProjection['content']): string {
+  const prompts = (questions: readonly {prompt: string}[]) => questions.map(question => question.prompt).join(' ');
+  switch (fact.type) {
+    case workbookPaperType: return prompts(workbookPaper(fact.value).questions);
+    case workbookAttemptType: return prompts(workbookAttempt(fact.value).paper.questions);
+    case ridingPracticeType: return prompts(practiceSubmission(fact.value).paper.questions);
+    case goalType: return studyGoal(fact.value).text ?? '';
+    case organizerTaskType: return organizerTask(fact.value).date;
+    case materialType: return typeof content === 'string' ? content : '';
+    default: return sourceText(fact)?.text ?? '';
+  }
+}
+
+export function sourceSearchExcerpt(fact: FactSnapshot, content: SourceProjection['content']): string {
+  try {
+    const text = searchText(fact, content).replace(/\s+/g, ' ').trim();
+    if (text.length <= 240) return text;
+    return textSlice(text, 0, 239).content + '…';
+  } catch {
+    return '';
+  }
 }
 
 function project(fact: FactSnapshot, anchor: SourceAnchorV1): SourceProjection | undefined {
@@ -93,10 +126,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const id = reference?.fact.id ?? input;
   if (!isSourceFactId(id) || (mode !== 'pinned' && mode !== 'following')) return;
   const anchor: SourceAnchorV1 = reference?.anchor ?? {kind: 'whole'};
-  const reader = createCommandReadContext(tx, access.recipient === 'learner' ? storagePurpose : purpose);
+  const reader = createCommandReadContext(tx, sourcePurpose(access));
   const seen = new Map<string, FactSnapshot>();
   const path = new Set<string>();
-  const accepts = (fact: FactSnapshot) => access.recipient === 'learner' || access.maySend(fact);
+  const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
     (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType);
@@ -152,7 +185,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         if (fact.type !== materialType || textReference) return;
         const projection = project(fact, anchor);
         if (!projection) return;
-        if (access.recipient === 'workspace') access.track?.(fact, reference ? mode : undefined);
+        access.track?.(fact, reference ? mode : undefined);
         return {id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), ...projection};
       }
       if (currentDocument.type !== intakeFactType || !accepts(currentDocument)) return;
@@ -171,11 +204,9 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       ? {...anchor, end:Math.min(anchor.end, intakeTextOf(body).text.length)} : anchor;
     const projection = project(body, projectionAnchor);
     if (!projection) return;
-    if (access.recipient === 'workspace') {
-      for (const witness of seen.values()) {
-        const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
-        access.track?.(witness, isReferenced ? mode : undefined);
-      }
+    for (const witness of seen.values()) {
+      const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
+      access.track?.(witness, isReferenced ? mode : undefined);
     }
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {

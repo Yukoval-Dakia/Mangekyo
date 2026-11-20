@@ -14,9 +14,10 @@ import {openWorkspaceAccess} from '../workspace-access.ts'; import {openWorkspac
 import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organizer.ts';
 import {learningOverviewPurpose, readLearningOverview} from '../learning-overview.ts';
 import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
+import {workspaceQuery} from '../workspace-read.ts';
 
 const connectionString = process.env.MANGEKYO_TEST_DATABASE_URL;
-it.skipIf(!connectionString)('preserves source links and resolves workspace anchors under revision and purpose changes', async () => {
+it.skipIf(!connectionString)('reopens authorized workspace versions and searches directed knowledge links in PostgreSQL', async () => {
   const schema = 'workspace_test_'+randomBytes(6).toString('hex');
   const admin = createPgDb(new pg.Pool({connectionString}));
   await admin.query('CREATE SCHEMA '+schema);
@@ -129,6 +130,74 @@ it.skipIf(!connectionString)('preserves source links and resolves workspace anch
     const result = await edit('read_workspace',{id:JSON.stringify(answer)},7);
     expect(result).toMatchObject({sourceRef:answer,content:'实测东北风'});
     expect(JSON.stringify(result)).not.toContain('参考答案独有字样');
+    const privatePaper = await workbook.save({requestId:'search-preview',title:'检索速度卷',questions:[
+      {kind:'exact',prompt:'写出速度单位。',answers:['内部答案标记']},
+      {kind:'rubric',prompt:'解释全程速度。',rubric:'内部评分规则标记'},
+    ]});
+    await access.setTeaching(privatePaper.id,{enabled:true,expectedRev:1});
+    const preview = await edit('search_workspace',{query:'检索速度卷',kind:'paper'},8);
+    expect(preview).toMatchObject({results:[{id:privatePaper.id,excerpt:expect.stringContaining('写出速度单位。')}]});
+    expect(JSON.stringify(preview)).not.toMatch(/内部答案标记|内部评分规则标记/u);
+
+    await admin.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA ${schema}`);
+    const graph = turn('graph');
+    const concept = await graph('save_workspace', {kind:'concept', title:'平均速度 Kinematics', body:'用总路程和总时间。'}, 1);
+    const originalQuestion = await graph('save_workspace', {kind:'question', title:'骑行题', tags:['运动'], body:'骑行全程的平均速度是多少？', answer:'答案检索隔离词'}, 2);
+    const variant = await graph('save_workspace', {kind:'question', title:'往返变式', tags:['运动'], body:'请计算这两段路程的往返平均速度并说明分母。', answer:'12 千米每小时'}, 3);
+    const compound = await graph('save_workspace', {kind:'concept',title:'分段运动',body:'先掌握平均速度。'},15);
+    const use = (id: string) => ({id, rev:1, accessEpoch:'0'});
+    const claim = (kind: string, from: {id:string}, to: {id:string}, targetKind = 'question') => ({
+      kind, scope:'运动学', from:{kind:kind === 'prereq_of' ? 'concept' : 'question', sourceUse:use(from.id)}, to:{kind:targetKind, sourceUse:use(to.id)},
+      sourceUses:[use(from.id), use(to.id)],
+    });
+    const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
+    const handle = createCommandHandler(db, {modules:[content], hooks:{async onFactsChanged() {}}});
+    const write = (type:string, key:string, actor:'learner'|'companion', edge:ReturnType<typeof claim>, proof = {}) =>
+      handle({learner:studioLearner, id:commandId(stableId(key)), actor, purpose:'teaching', type:'content.'+type,
+        input:{id:stableId('edge',key), edge, purpose:'teaching', ...proof}});
+    await write('createKnowledgeEdge','target','learner',claim('targets_concept', originalQuestion, concept, 'concept'));
+    await write('createKnowledgeEdge','prerequisite','learner',claim('prereq_of',concept,compound,'concept'));
+    const variantEdge = {...claim('variant_of', variant, originalQuestion),
+      variant:{familyId:'ride', preserved:['总路程/总时间'], changed:['返程速度'], spoilsNext:'former'}};
+    expect((await write('createKnowledgeEdge','candidate','companion',variantEdge)).state).toBe('proposed');
+    const proof = await write('recordKnowledgeEdgeEvidence','checked','learner',variantEdge,{method:'trusted_source'});
+    const verified = {verification:use(proof.wrote[0]!.id)};
+    await expect(write('createVerifiedKnowledgeEdge','wrong','companion',{...variantEdge, scope:'另一范围'},verified)).rejects.toThrow('不符');
+    expect((await write('createVerifiedKnowledgeEdge','verified','companion',variantEdge,verified)).state).toBe('done');
+
+    const filters = {conceptId:concept.id, kinds:['question'], tags:['运动'], edgeKinds:['targets_concept','variant_of']};
+    expect(await graph('search_workspace',{...filters,conceptId:compound.id,edgeKinds:['prereq_of','targets_concept']},16))
+      .toMatchObject({results:[{id:originalQuestion.id,hop:2}],edges:[{kind:'prereq_of'},{kind:'targets_concept'}]});
+    expect(await graph('search_workspace', {...filters,hops:0}, 4)).toMatchObject({conceptRef:{fact:{id:concept.id,rev:1}},edges:[]});
+    expect(await graph('search_workspace', {...filters,hops:1}, 5)).toMatchObject({results:[{id:originalQuestion.id,hop:1}]});
+    const chain = await graph('search_workspace', {...filters,hops:2}, 6);
+    expect(chain).toMatchObject({results:[{id:originalQuestion.id,hop:1}, {id:variant.id,hop:2,occurredAt:null,tags:['运动'],exposure:'unknown'}],
+      edges:[{kind:'targets_concept',traversal:'reverse'}, {kind:'variant_of',traversal:'reverse',author:'companion',variant:{spoilsNext:'former'}}]});
+    expect(await graph('read_workspace',{id:JSON.stringify(chain.edges[1].sourceRef)},7)).toMatchObject({from:{fact:{id:variant.id,rev:1}},to:{fact:{id:originalQuestion.id,rev:1}}});
+    const lookup = new URLSearchParams({conceptId:concept.id,hops:'2',kinds:'question'});
+    expect(await access.list(lookup)).toMatchObject({items:[{id:originalQuestion.id},{id:variant.id}]});
+    expect(await graph('search_workspace',{query:'往返平均速度',kind:'question',tags:['运动']},8)).toMatchObject({
+      results:[{id:variant.id,excerpt:'请计算这两段路程的往返平均速度并说明分母。',matched:expect.arrayContaining(['fts'])}]});
+    expect(await graph('search_workspace',{query:'kinematiks',kind:'concept'},9)).toMatchObject({results:[{id:concept.id,matched:['trgm']}]});
+    expect(await graph('search_workspace',{query:'答案检索隔离词'},10)).toMatchObject({results:[]});
+    expect(await graph('search_workspace',{kind:'attempt',query:'海风',since:'2000-01-01'},11)).toMatchObject({results:[{id:attempt.id,occurredAt:expect.any(String)}]});
+    expect(await graph('search_workspace',{kind:'question',exposureFilter:'unexposed'},12)).toMatchObject({results:[],unappliedFilters:[{reason:'coverage_unknown'}]});
+    expect(await graph('search_workspace',{...filters,edgeKinds:['prereq_of']},14)).toMatchObject({results:[],edges:[]});
+    const indexed = {learner:studioLearner,id:variant.id,rev:1,accessEpoch:'0',type:'activity.workspaceEntry'};
+    await db.snapshot({learner:studioLearner}, async tx => {
+      const query = {query:'与表面词完全不同',kind:'question',tags:['运动']};
+      const access = {recipient:'workspace',maySend:() => true} as const;
+      expect(await workspaceQuery(tx,query,access,{matched:'semantic',candidates:[
+        {...indexed,id:originalQuestion.id,accessEpoch:'1'}, {...indexed,learner:stableId('other learner')}, indexed,indexed,
+      ]})).toMatchObject({results:[{id:variant.id,matched:['semantic']}]});
+      expect(await workspaceQuery(tx,filters,{recipient:'workspace',maySend:fact => fact.ref.id !== originalQuestion.id}))
+        .toMatchObject({results:[],edges:[]});
+    });
+    await access.setTeaching(originalQuestion.id,{enabled:false,expectedRev:1});
+    expect(await graph('search_workspace',{...filters,hops:2},6)).toMatchObject({error:expect.any(String)});
+    expect(await graph('search_workspace',{...filters,hops:2},13)).toMatchObject({results:[],edges:[]});
+    await db.snapshot({learner:learnerId(stableId('other learner'))}, async tx =>
+      expect(await workspaceQuery(tx,filters,{recipient:'learner'})).toBeUndefined());
   } finally {
     await db.close(); await admin.query('DROP SCHEMA '+schema+' CASCADE'); await admin.close();
   }
