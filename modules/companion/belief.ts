@@ -1,4 +1,4 @@
-import type { FactSnapshot } from '@mangekyo/kernel';
+import type { FactSnapshot, ToolError } from '@mangekyo/kernel';
 import { activityEvidence } from './activity-evidence.ts';
 import { claimEvidence, claimId, claimInput, claimRecord, ClaimInputError, claimText, structuredClaim } from './claim.ts';
 import { extractedUnderstanding, opensCitation, understandingCitation, type ActivityCitation, type ExtractedUnderstanding } from './understanding.ts';
@@ -42,6 +42,11 @@ export function beliefInput(input: unknown) {
     ...assertions.map(entry => entry.data.belief.supersedes?.id)].filter(Boolean);
   if (new Set(targets).size !== targets.length) throw new ClaimInputError('同轮只能变更该记忆一次。');
   return {claims, assertions};
+}
+
+export function beliefToolFailure(tool: string, message: string): ToolError {
+  return {ok: false, code: 'invalid_args', message: [...message].slice(0, 60).join(''),
+    next: {tool: 'find_tools', args: {query: tool}}};
 }
 
 export function beliefFields(args: Record<string, unknown>, fields: string[]) {

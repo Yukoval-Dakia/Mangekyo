@@ -10,7 +10,7 @@ import {
   applyClaimCommand, claimEvidence, claimExpiry, claimId, claimType, ClaimInputError, claimText, editableTurnClaim,
   requirePreservedObjectScope, structuredClaim,
 } from '../../modules/companion/claim.ts';
-import { beliefFields, beliefInput, directiveDetails, hypothesisRequest, quoteFromTurn, saveBeliefCommand } from '../../modules/companion/belief.ts';
+import { beliefFields, beliefInput, beliefToolFailure, directiveDetails, hypothesisRequest, quoteFromTurn, saveBeliefCommand } from '../../modules/companion/belief.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import { extractedUnderstanding, type ActivityCitation } from '../../modules/companion/understanding.ts';
 import { hypothesisIsHead, openObjectiveCitations } from './belief-evidence.ts';
@@ -145,7 +145,7 @@ export function openTurnMemory(options: {
       return pendingReply(action);
     } catch (error) {
       if (!(error instanceof ClaimInputError)) throw error;
-      return JSON.stringify(learningToolError(options.belief ? 'invalid_args' : 'invalid_memory',undefined,error.message));
+      return JSON.stringify(options.belief ? beliefToolFailure(name, error.message) : learningToolError('invalid_memory',undefined,error.message));
     }
   }
   async function commit(): Promise<WorkspaceWriteReceipt[]> {
