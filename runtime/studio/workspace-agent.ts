@@ -9,7 +9,7 @@ import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
-import {openLearningLimit, workspaceDefinitions} from '../../executors/teaching/workspace-tools.ts';
+import {openLearningLimit, workspaceDefinitions, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {learningToolError, openLearningBatch, parseLearningReference, parseOpenLearningArgs} from './workspace-open.ts';
@@ -54,7 +54,7 @@ export function openWorkspaceTools(options: {
   const opened = new Map<string, Seen>();
   const openedAnswers = new Map<string, WorkspaceWitness>();
   const produced = new Map<string, number>();
-  const receipts = new Map<string,{id:string;rev:number;title:string}>();
+  const receipts = new Map<string,WorkspaceWriteReceipt>();
   async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>) {
     if (!isJson(args)) return JSON.stringify({error:'请将查询字段放在一个 JSON 对象里。'});
     const raw = await recordLocalRead(db, {learner:studioLearner, ownerKind:'session', ownerId:turn,
@@ -195,7 +195,8 @@ export function openWorkspaceTools(options: {
       const written = receipt.wrote[0];
       if (written) {
         produced.set(written.id, written.rev);
-        receipts.set(written.id, {id:written.id, rev:written.rev, title:String(entry.title)});
+        receipts.set(written.id, {id:written.id, rev:written.rev, title:String(entry.title),
+          ...(observation ? {observation:{status:'saved',text:String(entry.body),undo_token:key}} : {})});
       }
       if (written && observation) return JSON.stringify({ok:true, status:'saved', kind:'inferred',
         ref:{id:written.id,rev:written.rev}, undo_token:key});

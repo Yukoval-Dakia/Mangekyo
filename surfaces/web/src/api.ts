@@ -79,7 +79,8 @@ export interface Turn {
   turnId?: string;
   artifacts?: unknown;
   trace?: string[];
-  writes?: {id:string; rev:number; title:string}[];
+  writes?: {id: string; rev: number; title: string; observation?:
+    {status: 'saved'; text: string; undo_token: string} | {status: 'changed'} | {status: 'withdrawn'}}[];
   recall?: { title: string; lesson: string; items: import('./recall-cards').RecallItem[] };
   answer?: string;
   action: "diagnostic_question" | "transfer_question" | "targeted_explanation" | "clarifying_question" | "companion_reply";

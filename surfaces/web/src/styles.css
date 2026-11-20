@@ -185,6 +185,8 @@ p, h1, h2, h3, ol, ul, figure { margin: 0; }
 .read-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .read-heading strong { font-size: 13px; overflow-wrap: anywhere; }
 .read-heading span { white-space: nowrap; font-size: 11px; color: #3d624b; }
+.saved-observation { display: grid; justify-items: start; gap: 6px; overflow-wrap: anywhere; }
+.saved-observation p { white-space: pre-wrap; margin: 0 0 6px; }
 .read-list li p { font-size: 13px; }
 .model-info { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
 

@@ -598,7 +598,9 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule) {
       try {
         const receipt = await handle({learner:studioLearner,actor:'learner',purpose:'storage',
           id:commandId(stableId('withdraw-workspace-observation',token)),type:'activity.withdrawWorkspaceObservation',input:{id}});
-        return {status:'withdrawn',ref:receipt.wrote[0]};
+        const ref = receipt.wrote[0];
+        if (!ref) throw new RequestError(500,'撤回命令没有返回修订。');
+        return {status:'withdrawn',ref:{id:ref.id,rev:ref.rev}};
       } catch (error) {
         if (error instanceof WorkspaceInputError || error instanceof FactReadDeniedError)
           throw new RequestError(409,'观察版本已变化。');
