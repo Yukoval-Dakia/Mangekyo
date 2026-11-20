@@ -1,4 +1,4 @@
-import { recoverDraft, selectDraft, pendingDraft, settleDraft, type Draft } from './today-draft';
+import { answerKey, forgetPackDrafts, recoverDraft, selectDraft, pendingDraft, settleDraft, type Draft } from './today-draft';
 import { useDraftWatermark } from './draft-watermark';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, deletedSubmission, remember, remembered, submissionId } from './api';
@@ -72,15 +72,29 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
   const { kind, id, rev } = refValue;
   const watermark = useDraftWatermark();
   const key = packKey(refValue);
-  const draftKey = 'mangekyo:' + key + ':answer';
+  const draftKey = answerKey(refValue);
+  const requested = new URLSearchParams(location.search).get('answer');
   const [pack, setPack] = useState<Pack | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(() => recoverDraft(draftKey));
+  const [draft, setDraft] = useState<Draft | null>(() => kind === 'pack' ? recoverDraft(refValue, requested) : null);
   const selectedId = useRef(draft?.requestId);
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<Result | null>(null);
   const [reload, setReload] = useState(0);
+  const resetForm = useCallback(() => {
+    selectedId.current = undefined;
+    setDraft(null);
+    setConsent(false);
+    setPack(null);
+    setResult(null);
+  }, []);
+  const invalidatePack = useCallback(() => {
+    if (kind !== 'pack') return;
+    remember(key, null);
+    forgetPackDrafts(draftKey);
+    resetForm();
+  }, [kind, key, draftKey, resetForm]);
   useEffect(() => {
     const controller = new AbortController();
     const ref = { kind, id, rev };
@@ -103,11 +117,13 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
             return;
           }
         }
-        remember(key, null);
+        invalidatePack();
         throw new Error('活动版本或入口不符。');
       } catch (failure) {
         if (controller.signal.aborted) return;
-        if (failure instanceof ApiError && [400, 401, 403, 404, 410].includes(failure.status)) remember(key, null);
+        if (failure instanceof ApiError && [400, 401, 403, 404, 410].includes(failure.status)) {
+          invalidatePack();
+        }
         const cached = cachedPack(ref);
         if (failure instanceof TypeError && cached) {
           setPack(cached);
@@ -117,17 +133,24 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
     }
     void read();
     return () => controller.abort();
-  }, [kind, id, rev, key, reload]);
+  }, [kind, id, rev, key, invalidatePack, reload]);
 
   useEffect(() => {
     const reconfirm = () => setConsent(false);
+    function invalidated(event: StorageEvent) {
+      if (event.key !== 'mangekyo:' + key || event.newValue !== null) return;
+      resetForm();
+      setError('这份题包需要联网重新核对。');
+    }
+    window.addEventListener('storage', invalidated);
     window.addEventListener('online', reconfirm);
     window.addEventListener('offline', reconfirm);
     return () => {
+      window.removeEventListener('storage', invalidated);
       window.removeEventListener('online', reconfirm);
       window.removeEventListener('offline', reconfirm);
     };
-  }, []);
+  }, [key, resetForm]);
   const clearStale = useCallback(
     (requestId: string) => {
       settleDraft(draftKey, requestId, true);
@@ -144,7 +167,7 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
     if (!draft || result) return;
     function reconcile() {
       const current = localStorage.getItem(latestKey);
-      if (validWatermark(current) && draft && BigInt(bindDeletionWatermark(draft.requestId)) < BigInt(current)) {
+      if (validWatermark(current) && draft && BigInt(draft.deletionWatermark ?? bindDeletionWatermark(draft.requestId)) < BigInt(current)) {
         clearStale(draft.requestId);
       }
     }
@@ -165,6 +188,11 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
     try {
       const next = { choice, requestId: submissionId() };
       selectDraft(draftKey, next);
+      if (requested !== null) {
+        const url = new URL(location.href);
+        url.searchParams.set('answer', next.requestId);
+        history.replaceState(history.state, '', url);
+      }
       selectedId.current = next.requestId;
       setDraft(next);
       setConsent(false);
@@ -180,9 +208,10 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
       return;
     }
     setBusy(true);
+    setConsent(false);
     setError('');
     try {
-      const deletionWatermark = bindDeletionWatermark(draft.requestId);
+      const deletionWatermark = draft.deletionWatermark ?? bindDeletionWatermark(draft.requestId);
       try {
         const current = BigInt(await synchronizeDeletion());
         const original = BigInt(deletionWatermark);
@@ -199,17 +228,27 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
         return;
       }
       if (selectedId.current !== draft.requestId) return;
-      pendingDraft(draftKey, draft);
-      setDraft({ ...draft, pending: true });
+      if (!cachedPack(refValue)) {
+        setError('本机无法核对这份题包，请重新打开。本次未发送。');
+        return;
+      }
+      let frozen;
+      try {
+        frozen = pendingDraft(refValue, draft, deletionWatermark);
+      } catch {
+        setError('待核对请求无法保存，本次未发送。');
+        return;
+      }
+      setDraft(frozen);
       const response = await fetch('/api/today/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id,
-          rev,
-          requestId: draft.requestId,
-          choice: draft.choice,
-          deletionWatermark,
+          id: frozen.id,
+          rev: frozen.rev,
+          requestId: frozen.requestId,
+          choice: frozen.choice,
+          deletionWatermark: frozen.deletionWatermark,
           consent: 'teaching',
         }),
       });
@@ -233,9 +272,11 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
       if (deletedSubmission(failure)) {
         clearStale(draft.requestId);
       } else {
-        if (failure instanceof ApiError && failure.status >= 400 && failure.status < 500) {
-          const editable = { ...draft, pending: false };
-          setDraft(editable);
+        if (failure instanceof ApiError && [401, 403, 404].includes(failure.status)) {
+          settleDraft(draftKey, draft.requestId, true);
+          resetForm();
+        } else if (failure instanceof ApiError && [400, 409, 422].includes(failure.status)) {
+          setDraft({ choice: draft.choice, requestId: draft.requestId });
           settleDraft(draftKey, draft.requestId, false);
         }
         setError(
@@ -267,7 +308,8 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
             {pack.source} · 第 {rev} 版
           </small>
           {watermark.notice}
-          <fieldset disabled={busy || !!result || draft?.pending || !watermark.ready}>
+          {requested && !draft && !result && <p>这份本机作答已清除。 <a href={openLink(refValue, mode)}>打开题包</a></p>}
+          <fieldset disabled={busy || !!result || draft?.pending || (!!requested && !draft) || !watermark.ready}>
             <legend>{pack.prompt}</legend>
             {pack.choices.map((label, index) => (
               <label key={index} className="today-choice">

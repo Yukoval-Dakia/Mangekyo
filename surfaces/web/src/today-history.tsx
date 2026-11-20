@@ -1,3 +1,6 @@
+import { useEffect, useState } from 'react';
+import { latestKey, validWatermark } from './deletion-watermark';
+import { savedDrafts } from './today-draft';
 import { remember, remembered } from './api';
 import { cachedPack, openLink, otherCachedPacks, type ActivityRef } from './today-pack';
 
@@ -53,4 +56,36 @@ export function TodayHistory() {
       </li>)}</ul>
     </section>}
   </>;
+}
+
+export function SavedTodayAnswers({ mode }: { mode: string }) {
+  const [answers, setAnswers] = useState<{ href: string; label: string }[]>([]);
+  useEffect(() => {
+    function refresh() {
+      try {
+        const watermark = localStorage.getItem(latestKey);
+        if (!validWatermark(watermark)) { setAnswers([]); return; }
+        setAnswers(otherCachedPacks([]).flatMap(pack =>
+          savedDrafts(pack, watermark).map(draft => ({
+            href: openLink(pack, mode) + '&answer=' + encodeURIComponent(draft.requestId),
+            label: [pack.title, draft.pending ? '待核对' : '草稿', pack.choices[draft.choice]].join(' · '),
+          }))));
+      } catch {
+        setAnswers([]);
+      }
+    }
+    refresh();
+    window.addEventListener('storage', refresh);
+    window.addEventListener(latestKey, refresh);
+    window.addEventListener('pageshow', refresh);
+    return () => {
+      window.removeEventListener('storage', refresh);
+      window.removeEventListener(latestKey, refresh);
+      window.removeEventListener('pageshow', refresh);
+    };
+  }, [mode]);
+  return answers.length > 0 && <section className="day-sheet">
+    <h2>本机作答</h2>
+    <ul>{answers.map(answer => <li key={answer.href}><a href={answer.href}>{answer.label}</a></li>)}</ul>
+  </section>;
 }

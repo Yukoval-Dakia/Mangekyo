@@ -3,7 +3,7 @@ import { api, ApiError, remember, remembered, requestId } from './api';
 import { PageTitle } from './workspace';
 import { RetentionPosttests } from './retention-posttests';
 import { openLink, TodayActivity, type ActivityRef } from './today-pack';
-import { rememberPlan, TodayHistory } from './today-history';
+import { rememberPlan, SavedTodayAnswers, TodayHistory } from './today-history';
 import './today.css';
 
 type Mode = 'any' | 'one-hand' | 'voice';
@@ -338,6 +338,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
         </p>
       )}
       {offline && <TodayHistory />}
+      <SavedTodayAnswers mode={mode} />
       {loading && !plan && <p role="status">正在读取今天的安排…</p>}
       {plan && (
         <section className="day-sheet" aria-busy={loading}>
