@@ -28,10 +28,12 @@ export default defineCommand({
   write: async (ctx, input): Promise<readonly FactWrite[]> => {
     const current = await ctx.read.fact(input.id, { mode: 'following' });
     if (current.ref.rev !== input.expectedRev) {
-      throw new Error('工作区条目已在别处更新。');
+      throw new Error(`Fact revision conflict: ${input.id}`);
     }
+    const use = input.purpose ?? teachingPurpose;
     const revokingTurn = !input.enabled && current.type === 'activity.studyTurn' && studyTurn(current.value).caseId === 'companion';
-    if (!revokingTurn && !workspaceShareableTypes.includes(current.type)) throw new Error('这类记录不能从工作区开放。');
+    if (!revokingTurn && (use !== teachingPurpose || !workspaceShareableTypes.includes(current.type)))
+      throw new Error('这类记录不能从工作区开放。');
     const targets = [current];
     if ('intakeId' in input && input.intakeId !== undefined) {
       if (current.type !== materialType) throw new Error('只有材料可以关联交入记录。');
@@ -42,10 +44,10 @@ export default defineCommand({
     }
     return targets.flatMap((fact): FactWrite[] => {
       if (fact.purpose.includes('all')) throw new Error('这条记录允许全部用途，请先明确其他用途。');
-      if (fact.purpose.includes(teachingPurpose) === input.enabled) return [];
+      if (fact.purpose.includes(use) === input.enabled) return [];
       const purpose = input.enabled
-        ? [...fact.purpose, teachingPurpose]
-        : fact.purpose.filter((item) => item !== teachingPurpose);
+        ? [...fact.purpose, use]
+        : fact.purpose.filter((item) => item !== use);
       return [{
         kind: 'set_purpose',
         id: fact.ref.id,

@@ -22,11 +22,17 @@ export default defineCommand({
       if (data.sticky || (data.ttl && data.ttl <= new Date().toISOString()))
         throw new ClaimInputError('抽取结果已失效或由本人管理。');
       let teaching = true;
+      let quoteOnly = false;
       for (const citation of data.evidence_refs) {
         const fact = await ctx.read.fact(citation.id, {mode: 'following'});
         const source = activityEvidence(fact);
         if (!source || !opensCitation({...source, ref: {...fact.ref, accessEpoch: fact.accessEpoch}}, citation))
           throw new ClaimInputError('活动证据已变更。');
+        if (source.quoteOnly) {
+          if (!citation.span || data.kind !== 'observation' || prior || data.evidence_refs.length !== 1)
+            throw new ClaimInputError('本轮原话只支持带精确范围的观察。');
+          quoteOnly = true;
+        }
         teaching &&= fact.purpose.includes('teaching') || fact.purpose.includes('all');
       }
       if (prior) {
@@ -42,7 +48,7 @@ export default defineCommand({
         writes.push({kind: 'revise', id, expectedRev: prior.rev, data});
       } else {
         writes.push({kind: 'create', id, factType: memoryAssertionType, data,
-          purpose: ['storage', researchPurpose, ...(teaching ? ['teaching'] : [])]});
+          purpose: quoteOnly ? ['storage'] : ['storage', researchPurpose, ...(teaching ? ['teaching'] : [])]});
       }
     }
     return writes;

@@ -15,11 +15,12 @@ export const turnEvidenceType = turn.type;
 type Fragment = { anchor: string; text: string; prompt?: string; result?: 'correct' | 'incorrect' };
 type ActivityKind = 'conversation' | 'attempt' | 'posttest' | 'intake' | 'notes' | 'artifact' | 'feedback';
 
-export function activityEvidence(fact: FactSnapshot): { kind: ActivityKind; fragments: Fragment[] } | undefined {
+export function activityEvidence(fact: FactSnapshot): { kind: ActivityKind; fragments: Fragment[]; quoteOnly?: true } | undefined {
   switch (fact.type) {
     case turn.type: {
-      const { caseId, answer } = turn.schema.parse(fact.value);
-      if (caseId === 'companion' && answer?.trim()) return { kind: 'conversation', fragments: [{anchor: 'message', text: answer}] };
+      const { caseId, answer, allowBackgroundUnderstanding } = turn.schema.parse(fact.value);
+      if (caseId === 'companion' && answer?.trim()) return { kind: 'conversation',
+        fragments: [{anchor: 'message', text: answer}], ...(allowBackgroundUnderstanding ? {quoteOnly: true} : {}) };
       return;
     }
     case workbook.type:

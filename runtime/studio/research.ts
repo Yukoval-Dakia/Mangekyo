@@ -4,8 +4,8 @@ import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts'
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
+import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, readReadyWork, readWork, type WorkRef,
@@ -178,6 +178,11 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
         (await settings(tx))?.enabled) await enqueueWork(tx, tick, wake);
   };
 
+  const turnCompleted = async (tx: DbTransaction, tick: Tick, id: string) => {
+    if (extract && (await settings(tx))?.enabled &&
+        await whenAvailable(() => researchReader(tx).fact(factId(id), {mode: 'following'}))) await enqueueWork(tx, tick, wake);
+  };
+
   const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => {
     const scan = await db.tx(scope, async tx => {
       await lockLearner(tx, tx.learner);
@@ -276,6 +281,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     },
     workbookChanged,
     activityChanged,
+    turnCompleted,
     advance,
     async reconcile() {
       await db.tx(scope, async tx => {

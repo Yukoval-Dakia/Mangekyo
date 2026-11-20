@@ -2,23 +2,33 @@ import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
+import { studyTurn, turnResearchPurpose } from '../../modules/activity/values.ts';
 import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
 import {
   applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
 } from '../../modules/companion/claim.ts';
 import { manageMemoryAssertionCommand, memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
-import { extractedUnderstanding, reviewUnderstanding, understandingPresentation } from '../../modules/companion/understanding.ts';
+import { citationExcerpt, extractedUnderstanding, reviewUnderstanding, understandingPresentation } from '../../modules/companion/understanding.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { areMemoryClaimsCurrent, claimUndoToken, claimWitness, currentMemoryClaims, managedClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
-import { clientRequest, RequestError } from './sessions.ts';
+import { clientRequest, readOwnStudyTurn, RequestError, turnResearchAccess } from './sessions.ts';
+import { completeTurnStream } from './stream.ts';
 import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
 
 export function openMemoryManagement(db: Db, activity: LoadedModule, companion: LoadedModule) {
   const learner = studioLearner;
   const scope = {learner};
   const manageAssertion = createCommandHandler(db, {modules: [companion], hooks: createStudioCommandHooks()});
+  const revokeTurn = createCommandHandler(db, {modules: [activity], hooks: createStudioCommandHooks({
+    async afterFactsChanged(tx, _tick, changes) {
+      for (const change of changes) {
+        if (change.factType !== 'activity.studyTurn') throw new ClaimInputError('目标不是同伴原话。');
+        await completeTurnStream(tx, change.ref.id);
+      }
+    },
+  })});
   async function translate<T>(run: () => Promise<T>) {
     try { return await run(); } catch (error) {
       if (isMemoryConflict(error) || error instanceof Error && error.message.startsWith('Fact revision conflict:'))
@@ -56,8 +66,10 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
           const sources = await openUnderstandingCitations(tx, data.evidence_refs, 'storage');
           const evidenceState = sources.length === data.evidence_refs.length ? 'current' : 'unavailable';
           understandings.push({ref: claimWitness(fact), evidenceState,
+            ...(data.evidence_refs.some(ref => ref.span) ? {status: data.sticky ? 'learner-corrected' : 'tentative'} : {}),
             understanding: evidenceState === 'current'
-              ? {...data, kind: understandingPresentation(data, sources), review: reviewUnderstanding(fact.ref.id, data, sources)}
+              ? {...data, kind: understandingPresentation(data, sources), review: reviewUnderstanding(fact.ref.id, data, sources),
+                evidence_refs: data.evidence_refs.map((ref, index) => ({...ref, excerpt: citationExcerpt(sources[index]!, ref)}))}
               : {...data, text: null, scope: null, evidence_refs: []}});
         }
         return {items, understandings, next: rows.length > 50 ? rows[49]!.id : null};
@@ -135,14 +147,19 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       const {expectedRev} = input;
       if (typeof expectedRev !== 'number' || !Number.isSafeInteger(expectedRev) || expectedRev < 1 || expectedRev > 2_147_483_647)
         throw new RequestError(400, '原话版本无效。');
-      const handle = createCommandHandler(db, {modules: [activity], hooks: createStudioCommandHooks({
-        async afterFactsChanged(_tx, _tick, changes) {
-          if (changes.some(change => change.factType !== 'activity.studyTurn')) throw new ClaimInputError('目标不是同伴原话。');
-        },
-      })});
-      const receipt = await translate(() => handle({learner, actor:'learner', purpose, type: setWorkspaceTeachingCommand,
-        id: commandId(stableId('revoke-memory-source', id, String(expectedRev))), input: {id, expectedRev, enabled: false}}));
-      return {status: 'revoked', ref: receipt.wrote[0]};
+      const use = input.purpose === undefined ? purpose : input.purpose;
+      if (use !== purpose && use !== turnResearchPurpose) throw new RequestError(400, '原话用途无效。');
+      const read = () => translate(() => db.snapshot(scope, tx => readOwnStudyTurn(tx, id)));
+      const turn = await read();
+      if (studyTurn(turn.value).caseId !== 'companion' || turn.purpose.includes('all'))
+        throw new RequestError(409, '此原话用途不可单独撤回。');
+      if (turn.ref.rev === expectedRev && !turn.purpose.includes(use))
+        return {status: 'revoked', ref: turn.ref, backgroundUnderstanding: turnResearchAccess(turn)};
+      const research = use === turnResearchPurpose;
+      const receipt = await translate(() => revokeTurn({learner, actor:'learner', purpose: use, type: setWorkspaceTeachingCommand,
+        id: commandId(stableId(research ? 'revoke-memory-source-research' : 'revoke-memory-source', id, String(expectedRev))),
+        input: {id, expectedRev, enabled: false, ...(research ? {purpose: use} : {})}}));
+      return {status: 'revoked', ref: receipt.wrote[0], backgroundUnderstanding: turnResearchAccess(await read())};
     },
   };
 }

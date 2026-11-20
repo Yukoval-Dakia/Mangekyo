@@ -12,7 +12,7 @@ import { activityEvidence, activityEvidenceTypes, turnEvidenceType } from '../..
 import { claimType, ClaimInputError } from '../../modules/companion/claim.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import {
-  extractionGoal, extractionInstructions, extractorProfile, extractedUnderstanding, extractUnderstandings, opensCitation,
+  conversationExtractionInstructions, extractionGoal, extractionInstructions, extractorProfile, extractedUnderstanding, extractUnderstandings, opensCitation,
   publishUnderstandingCommand, reviewUnderstanding, type ActivityCitation,
 } from '../../modules/companion/understanding.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
@@ -23,6 +23,8 @@ import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { methodName, slotType, stableId, studioLearner } from './identity.ts';
 import { whenAvailable } from './research-sources.ts';
+import { completedCompanionTurns } from './research-foreground.ts';
+import { textSlice } from './reading.ts';
 import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
 import { undoTextbookCommand } from './workspace-textbook.ts';
@@ -34,7 +36,8 @@ export type UnderstandingTransport = {
   sample(request: { instructions: string; input: string; providerEffectId: string }): Promise<string>;
 };
 const windowMs = 86_400_000;
-const mayResearch: WorkspaceSourceRecipient = fact => fact.purpose.includes(researchPurpose) || fact.purpose.includes('all');
+const mayResearch: WorkspaceSourceRecipient = fact =>
+  fact.purpose.includes(researchPurpose) || (fact.type !== turnEvidenceType && fact.purpose.includes('all'));
 const sourceReader = (tx: ReadTransaction, purpose: string) => createAuthorizedFactReader(tx, purpose, mayResearch);
 
 async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpose = researchPurpose,
@@ -87,10 +90,10 @@ async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpos
   if ((fact.type === workbookAttemptType || fact.type === posttestSubmissionType) &&
       !await readActivitySubmissionBirth(tx, fact.ref, fact.type)) return null;
   const fragments = activity.fragments.filter(fragment => fragment.text.trim()).slice(0, 12).map(fragment => ({
-    ...fragment, text: fragment.text.slice(0, 1200).toWellFormed(),
+    ...fragment, text: activity.quoteOnly ? textSlice(fragment.text, 0, 1200).content : fragment.text.slice(0, 1200).toWellFormed(),
     ...(fragment.prompt ? {prompt: fragment.prompt.slice(0, 350).toWellFormed()} : {}),
   }));
-  return fragments.length ? {kind: activity.kind, ref, basis, basisDigest, fragments, ...provenance} : null;
+  return fragments.length ? {...activity, ref, basis, basisDigest, fragments, ...provenance} : null;
 }
 
 export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], purpose?: string,
@@ -102,29 +105,29 @@ export async function openUnderstandingCitations(tx: ReadTransaction, refs: read
   });
 }
 
-function extractionKey(id: string, revision: number) {
-  return `understanding:${id}:${revision}`;
+function extractionKey(source: NonNullable<Awaited<ReturnType<typeof openUnderstandingActivity>>>) {
+  return `understanding:${source.ref.id}:${source.quoteOnly ? 1 : source.ref.rev}`;
 }
 
 export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: Tick, settingsRevision: number, now: number) {
   const {rows} = await tx.query<{ id: string }>(`
     WITH eligible AS (
-      SELECT f.id,f.current_rev,CASE WHEN f.type=$5 THEN GREATEST(d.effective_tick,f.changed_tick)
+      SELECT f.id,CASE WHEN f.type=$7 THEN GREATEST(done.effective_tick,f.changed_tick)
         ELSE f.changed_tick END AS seen FROM facts f
-      LEFT JOIN slot_state s ON f.type=$5 AND (s.learner_id,s.slot_key,s.slot_type)=(f.learner_id,f.id,$6)
-      LEFT JOIN derivations d ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.current_id)
-      WHERE f.learner_id=$1 AND f.type=ANY($2::text[]) AND f.retracted_rev IS NULL
-        AND f.purpose && ARRAY[$3,'all'] AND (f.type<>$5 OR
-          (d.lifecycle='effective' AND d.deriver=$7 AND d.invalidated_tick IS NULL AND NOT d.is_shadow))
+      JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+      LEFT JOIN (${completedCompanionTurns}) done ON f.type=$7 AND done.id=f.id
+      WHERE f.learner_id=$1 AND f.type=ANY($4::text[]) AND f.retracted_rev IS NULL
+        AND f.purpose && ARRAY[$5,'all'] AND (f.type<>$7 OR
+          (done.id IS NOT NULL AND r.data->'allowBackgroundUnderstanding'='true'::jsonb AND $5=ANY(f.purpose)))
         AND NOT EXISTS (SELECT 1 FROM working_todos t WHERE t.learner_id=f.learner_id
-          AND t.dedup_key='understanding:'||f.id||':'||f.current_rev)
-    ) SELECT id FROM eligible WHERE seen>$4::bigint ORDER BY eligible.seen,id`,
-    [tx.learner, activityEvidenceTypes, researchPurpose, reviewed, turnEvidenceType, slotType, methodName]);
+          AND t.dedup_key='understanding:'||f.id||':'||CASE WHEN f.type=$7 THEN 1 ELSE f.current_rev END)
+    ) SELECT id FROM eligible WHERE seen>$6::bigint ORDER BY eligible.seen,id`,
+    [tx.learner, slotType, methodName, activityEvidenceTypes, researchPurpose, reviewed, turnEvidenceType]);
   const todos: TodoInput[] = [];
   for (const row of rows) {
     const source = await openUnderstandingActivity(tx, row.id);
     if (!source) continue;
-    todos.push({dedupKey: extractionKey(source.ref.id, source.ref.rev), trigger: {kind: 'immediate'},
+    todos.push({dedupKey: extractionKey(source), trigger: {kind: 'immediate'},
       workerProfile: extractorProfile, goal: extractionGoal, refs: [],
       sourceFactRev: {id: source.ref.id, revision: source.ref.rev, accessEpoch: source.ref.accessEpoch},
       autonomyTier: 2, budgetCap: 0, settingsRevision, expiresAtMs: now + windowMs});
@@ -136,9 +139,11 @@ export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: 
 export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec) {
   const {id, revision, accessEpoch} = spec.sourceFactRev;
   if (spec.workerProfile !== extractorProfile || spec.goal !== extractionGoal || spec.budgetCap !== 0 ||
-      spec.autonomyTier !== 2 || spec.expiresAtMs <= Date.now() || spec.dedupKey !== extractionKey(id, revision)) return null;
+      spec.autonomyTier !== 2 || spec.expiresAtMs <= Date.now()) return null;
   const source = await openUnderstandingActivity(tx, id);
-  if (source?.ref.rev !== revision || source.ref.accessEpoch !== accessEpoch) return null;
+  if (source?.ref.rev !== revision || source.ref.accessEpoch !== accessEpoch || spec.dedupKey !== extractionKey(source)) return null;
+  if (source.kind === 'conversation' && (!source.quoteOnly ||
+      !(await tx.query(`${completedCompanionTurns} AND s.slot_key=$4`, [tx.learner, slotType, methodName, id])).rowCount)) return null;
   return source;
 }
 
@@ -190,10 +195,10 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
           !await settingsCurrent(tx, todo.spec.settingsRevision)) return null;
       const source = await eligibleExtraction(tx, todo.spec);
       if (!source || await learnerGovernedSince(tx, source.born, source.ref.id)) return null;
-      const prior = await existingUnderstandings(tx, source.ref.id);
+      const prior = source.quoteOnly ? [] : await existingUnderstandings(tx, source.ref.id);
       const target = prior.map(({ref, data: {kind, text, scope, ttl}, directions}) => ({id: ref.id, kind, text, scope, ttl, directions}));
       const input = JSON.stringify({source: {ref: source.ref, kind: source.kind, fragments: source.fragments},
-        considered_at: new Date(todo.spec.expiresAtMs - windowMs).toISOString(), existing: target});
+        considered_at: new Date(todo.spec.expiresAtMs - windowMs).toISOString(), ...(!source.quoteOnly ? {existing: target} : {})});
       return {todo, source, prior, input};
     };
     const cancel = () => cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
@@ -214,14 +219,15 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
     try {
       const {todo, source, prior, input} = prepared;
       const readOutput = (raw: string) => extractUnderstandings(raw, source, todo.spec.expiresAtMs - windowMs, prior);
+      const instructions = source.quoteOnly ? conversationExtractionInstructions : extractionInstructions;
       const effect = await runEffect(db, {...scope, ownerKind: 'derivation', ownerId: todoId, stepKey: 'extraction-v1',
-        label: 'model:' + transport.route, input: {instructions: extractionInstructions, input,
+        label: 'model:' + transport.route, input: {instructions, input,
           ...(source.basisDigest ? {basis: source.basisDigest} : {})}}, async providerEffectId => {
         // Protect admission and starting the send, then release the learner lock while the host awaits the reply.
         const {response} = await db.tx(scope, async tx => {
           await lockLearner(tx, tx.learner);
           await matches(tx);
-          const response = transport.sample({instructions: extractionInstructions, input, providerEffectId});
+          const response = transport.sample({instructions, input, providerEffectId});
           void response.catch(() => {});
           return {response};
         });

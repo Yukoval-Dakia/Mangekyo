@@ -8,10 +8,10 @@ import { isMemoryConflict, openTurnMemory } from './turn-memory.ts';
 import { claimType } from '../../modules/companion/claim.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
-import { derivationId, factId, learnerId } from '../../kernel/src/declarations/ids.ts';
+import { derivationId, factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
@@ -37,7 +37,7 @@ import {
   type TeachingResponse,
 } from '../../executors/teaching/index.ts';
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
-import { caseId, type DisplayTurn } from './sessions.ts';
+import { caseId, readOwnStudyTurn, type DisplayTurn } from './sessions.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
@@ -56,7 +56,8 @@ class UncertainEffect extends Error {
 }
 class ChangedEvidence extends Error {}
 
-export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness) {
+export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness,
+  onTurnCompleted?: (tx: DbTransaction, tick: Tick, id: string) => Promise<void>) {
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
@@ -90,9 +91,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     inputs.set('retention:' + slot.derivationId, slot);
     for (const fact of facts) inputs.set(`retention-fact:${fact.id}:${fact.rev}:${fact.accessEpoch}:${fact.mode}`, fact);
   }
-  async function readFact(tx: ReadTransaction, id: string, mode: 'pinned' | 'following' = 'following') {
-    const fact = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });
-    inputs.set(id, {
+  function trackFact(fact: FactSnapshot, mode: 'pinned' | 'following' = 'following') {
+    inputs.set(fact.ref.id, {
       kind: 'fact',
       id: fact.ref.id,
       rev: fact.ref.rev,
@@ -101,7 +101,15 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     });
     return fact.value;
   }
+  async function readFact(tx: ReadTransaction, id: string, mode?: 'pinned' | 'following') {
+    return trackFact(await createCommandReadContext(tx, purpose).fact(factId(id), {mode: 'following'}), mode);
+  }
   const read = (id: string) => db.snapshot(scope, (tx) => readFact(tx, id));
+  const priorTurn = (id: string) => db.snapshot(scope, async tx => {
+    const fact = await readOwnStudyTurn(tx, id);
+    const teaching = fact.purpose.includes(purpose) || fact.purpose.includes('all');
+    return {data: studyTurn(teaching ? trackFact(fact) : fact.value), teaching};
+  });
 
   async function readFeedback(tx: ReadTransaction, id: string) {
     const {
@@ -146,7 +154,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if ((await revalidateManifest(tx, manifest)).kind !== 'valid') throw new ChangedEvidence();
     return manifest;
   }
-  const settle = (feedback: DisplayTurn) => finishWork(db, ref, async (tx, tick) => {
+  const settle = (feedback: DisplayTurn, optedIn: boolean) => finishWork(db, ref, async (tx, tick) => {
     const manifest = await validInputs(tx);
     const id = stableId('feedback', ref.learner, ref.workId, ref.generation);
     const sourceIds = [...(feedback.workspaceBasis ?? []).filter(item => item.id !== memoryId),
@@ -175,11 +183,13 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       [learner, slotType, job.slotKey, id, tick],
     );
     await completeTurnStream(tx, job.slotKey);
+    if (optedIn) await onTurnCompleted?.(tx, tick, job.slotKey);
   });
   try {
     const submission = studyTurn(await read(job.slotKey));
     if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
-    const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
+    const original = submission.parentId ? await priorTurn(submission.sessionId) : {data: submission, teaching: true};
+    const origin = original.data;
     const task = turnTask(submission.caseId, origin.attachment?.mode === 'prepare');
     const settings = await loadSettings(task);
     if (!sameRoute(submission, settings))
@@ -203,7 +213,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     }
     const mcpServers = checkMcpAccess(settings);
     if (submission.parentId) {
-      const previous = studyTurn(await read(submission.parentId));
+      const {data: previous} = await priorTurn(submission.parentId);
       if (!sameRoute(origin, settings) || !sameRoute(previous, settings))
         throw new TeachingError('provider_configuration', '此对话使用过不同端点，请新建对话。');
     }
@@ -342,7 +352,14 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         let historyBytes = 0;
         const historyLimit = submission.workspaceRevision ? 32 : 3;
         for (let count = 0; previousId && count < historyLimit; count++) {
-          const previous = studyTurn(await readFact(tx, previousId));
+          const previous = await readFact(tx, previousId).then(studyTurn).catch((error: unknown) => {
+            if (error instanceof FactReadDeniedError && error.reason === 'purpose') return;
+            throw error;
+          });
+          if (!previous) {
+            historyNotice = '旧回复的依据已变更，本轮从当前消息继续。';
+            break;
+          }
           if (previous.sessionId !== submission.sessionId || previous.caseId !== submission.caseId || !sameRoute(previous, settings) || !previous.answer) {
             throw new ChangedEvidence();
           }
@@ -425,7 +442,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       });
       await onProgress({ phase: 'thinking' });
       const { title, distanceKm, movingMinutes, stoppedMinutes } = ridingLesson;
-      const attachment = origin.attachment;
+      const attachment = original.teaching ? origin.attachment : undefined;
       const material = submission.caseId === 'riding'
         ? `《${title}》：全程 ${distanceKm} 公里，移动 ${movingMinutes} 分钟，停车 ${stoppedMinutes} 分钟。移动均速 ${averageSpeed(distanceKm, movingMinutes)} 公里/小时，全程均速 ${averageSpeed(distanceKm, movingMinutes + stoppedMinutes)} 公里/小时。`
         : attachment ? `《${attachment.title}》\n${attachment.text}` : undefined;
@@ -571,7 +588,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         })),
       };
     }
-    await settle(feedback);
+    await settle(feedback, submission.allowBackgroundUnderstanding === true);
   } catch (error) {
     if (
       !(

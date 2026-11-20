@@ -18,11 +18,19 @@ const acceptedForeground = `FROM slot_state s JOIN derivations d
     AND t.type='activity.studyTurn' AND $4=ANY(t.purpose) AND t.retracted_rev IS NULL`;
 const foregroundLimit = 4;
 
+export const completedCompanionTurns = `SELECT s.slot_key AS id, d.effective_tick
+  FROM slot_state s JOIN derivations d
+    ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.last_id)
+  WHERE s.learner_id=$1 AND s.slot_type=$2 AND d.deriver=$3 AND NOT d.is_shadow
+    AND d.effective_tick>=d.gather_tick AND d.value->>'action'='companion_reply'`;
+
 export async function newResearchWatermark(tx: ReadTransaction) {
   const { rows: [row] } = await tx.query<{ observed: Tick; reviewed: Tick }>(
     `SELECT GREATEST(
        COALESCE((SELECT max(changed_tick) FROM facts WHERE learner_id=$1),0),
-       COALESCE((SELECT max(d.effective_tick) ${acceptedForeground}),0)
+       COALESCE((SELECT max(done.effective_tick) FROM (${completedCompanionTurns}) done
+         JOIN facts f ON (f.learner_id,f.id)=($1,done.id)
+         WHERE f.type='activity.studyTurn' AND f.retracted_rev IS NULL AND $4=ANY(f.purpose)),0)
      )::text AS observed,
      COALESCE((SELECT fact_tick FROM working_todo_watermarks WHERE learner_id=$1),0)::text AS reviewed`,
     [tx.learner, slotType, methodName, researchPurpose],
@@ -62,7 +70,10 @@ export async function readResearchForeground(tx: ReadTransaction, reviewed: Tick
         const fact = input.mode === 'pinned' && current.ref.rev !== input.rev
           ? await read.fact(input.id, { mode: 'pinned', rev: input.rev as Revision }) : current;
         if (fact.ref.rev !== input.rev || !fact.purpose.includes(researchPurpose)) return false;
-        if (input === turn && studyTurn(fact.value).workspaceRevision) return false;
+        if (fact.type === 'activity.studyTurn') {
+          const submission = studyTurn(fact.value);
+          if (submission.allowBackgroundUnderstanding || (input === turn && submission.workspaceRevision)) return false;
+        }
       }
       return true;
     });
