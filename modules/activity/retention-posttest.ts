@@ -14,8 +14,8 @@ export function retentionPaper(input: unknown) {
   const paper = workbookPaper(input);
   const [item] = paper.questions;
   if (paper.questions.length !== 1 || !item || item.kind === 'rubric' ||
-      (item.kind === 'exact' && item.selfCheck) || item.sourceQuestionRef || paper.materialId !== null || paper.assessmentRelease) {
-    throw new Error('受控后测须使用一题内嵌、可确定性正式判分的冻结卷。');
+      (item.kind === 'exact' && item.selfCheck) || paper.materialId !== null || paper.assessmentRelease) {
+    throw new Error('受控后测须使用一题可确定性正式判分的冻结卷。');
   }
   return paper;
 }
@@ -50,6 +50,10 @@ export async function issuedPosttestPaper(read: ReadContext, issued: ReturnType<
     throw new Error('后测冻结卷版本或授权已变化。');
   }
   const paper = retentionPaper(source.value);
-  if (paper.questions[0]!.id !== issued.itemId) throw new Error('后测题项不匹配。');
+  const item = paper.questions[0]!;
+  if (item.id !== issued.itemId) throw new Error('后测题项不匹配。');
+  if (item.sourceQuestionRef) {
+    await read.fact(factId(item.sourceQuestionRef.id), { mode: 'pinned', rev: item.sourceQuestionRef.rev });
+  }
   return paper;
 }

@@ -134,9 +134,11 @@ export async function readMissedPosttest(tx: ReadTransaction, key: string, resul
   if (parent?.kind !== 'slot' || !manifest.inputs.some(input => input.kind === 'fact' &&
       input.id === observation.submission.id && input.rev === observation.submission.rev)) return;
   const [forecast] = await currentSelections(tx, forecastType, parent.derivationId, parent.slotKey);
-  if (forecast?.value.kind !== 'value' || !('estimate' in forecast.value.value) ||
-      forecast.value.value.estimate.kind !== 'categorical' || forecast.value.value.estimate.expected !== 'correct' ||
-      !await validRetentionManifest(tx, forecast)) return;
+  const estimate = forecast?.value.kind === 'value' && 'estimate' in forecast.value.value
+    ? forecast.value.value.estimate : undefined;
+  const predictedCorrect = estimate?.kind === 'categorical' ? estimate.expected === 'correct'
+    : estimate?.kind === 'probabilistic' ? estimate.probability >= 0.5 : false;
+  if (!predictedCorrect || !await validRetentionManifest(tx, forecast!)) return;
   const { rowCount } = await tx.query(
     'SELECT 1 FROM facts WHERE learner_id=$1 AND id=$2 AND type=$3 AND retracted_rev IS NULL',
     [tx.learner, observation.submission.id, posttestSubmission],
@@ -182,9 +184,16 @@ function projectRetention(selected: SelectionRead) {
   if ('status' in value && observation) return { ...common, kind: 'reconciliation' as const,
     forecastId: forecast.row.id, status: value.status,
     observation: { result: observation.result, exposure: observation.exposure.kind } };
-  if ('estimate' in value) return { ...common, kind: 'forecast' as const,
-    estimate: estimate.kind === 'unknown' ? { kind: 'unknown' as const, reason: estimate.reason }
-      : { kind: 'categorical' as const, expected: estimate.expected } };
+  if ('estimate' in value) {
+    if (estimate.kind === 'probabilistic') {
+      return { ...common, kind: 'forecast' as const,
+        estimate: { kind: 'probabilistic' as const, probability: estimate.probability,
+          interval: estimate.interval, uncertainty: estimate.uncertainty } };
+    }
+    return { ...common, kind: 'forecast' as const,
+      estimate: estimate.kind === 'unknown' ? { kind: 'unknown' as const, reason: estimate.reason }
+        : { kind: 'categorical' as const, expected: estimate.expected } };
+  }
   return undefined;
 }
 

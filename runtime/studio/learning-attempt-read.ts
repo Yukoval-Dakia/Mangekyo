@@ -40,17 +40,23 @@ export async function readActivitySubmissionBirth(
   tx: ReadTransaction, ref: FactRef, type: keyof typeof submissionCommands,
 ) {
   if (ref.learner !== tx.learner) return;
-  const { rows: [birth] } = await tx.query<{ tick: Tick; submitted_at: string | null; condition: string | null }>(
+  const { rows: [birth] } = await tx.query<{
+    tick: Tick; recorded_tick: Tick; unchanged: boolean; submitted_at: string | null; condition: string | null;
+  }>(
     `SELECT r.tick::text AS tick, c.input->'input'->'data'->>'submittedAt' AS submitted_at,
+       selected.tick::text AS recorded_tick, selected.data=r.data AS unchanged,
        c.input->'input'->>'condition' AS condition
      FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+     JOIN fact_revs selected ON (selected.learner_id,selected.fact_id,selected.rev)=(r.learner_id,r.fact_id,$5)
      JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
      WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.kind='value' AND r.author='learner'
-       AND f.type=$3 AND c.type=$4 AND c.state='done'`,
-    [tx.learner, ref.id, type, submissionCommands[type]],
+       AND selected.kind='value' AND f.type=$3 AND c.type=$4 AND c.state='done'`,
+    [tx.learner, ref.id, type, submissionCommands[type], ref.rev],
   );
   const condition = type === posttestSubmissionType ? closedPosttest : null;
-  return birth?.condition === condition ? {tick: birth.tick, submittedAt: birth.submitted_at} : undefined;
+  return birth?.condition === condition
+    ? {tick: birth.tick, recordedAt: birth.recorded_tick, unchanged: birth.unchanged, submittedAt: birth.submitted_at}
+    : undefined;
 }
 
 export async function readActivityHelpEvents(

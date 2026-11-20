@@ -3,9 +3,10 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, factId, learnerId, type DerivationId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
-import type { GatherContext, GatherInput, Json, JsonObject, Outcome, Waiting } from '../../kernel/src/declarations/types.ts';
+import type { GatherContext, GatherInput, Json, JsonObject, Outcome, ReadContext, Waiting } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { retentionPaperType, posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
+import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -17,10 +18,17 @@ import forecast from '../../modules/learner/derivers/retention-forecast.ts';
 import reconciliation from '../../modules/learner/derivers/retention-reconciliation.ts';
 import forecastSlot from '../../modules/learner/slots/forecast.ts';
 import reconciliationSlot from '../../modules/learner/slots/reconciliation.ts';
-import { defaultRetentionMethod, readRetentionMethod, type RetentionForecast, type RetentionObservation, type RetentionTarget } from '../../modules/learner/retention.ts';
+import {
+  defaultRetentionMethod, evaluateFrozenRetention, readAnyRetentionMethod,
+  type RetentionForecast, type RetentionObservation, type RetentionTarget,
+} from '../../modules/learner/retention.ts';
+import { createPythonDeriverHost, type PythonDeriverHost } from '../../executors/python-deriver/host.ts';
+import type { CognitionResult } from '../../executors/python-deriver/schema.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { posttestAttemptFor, posttestIdFor, posttestWriter, readPosttestIssuance } from './retention-posttest.ts';
-import { openRetentionTarget, readWorkbookObservation, retentionPurpose } from './retention-workbook.ts';
+import {
+  openRetentionTarget, readComparableWorkbookEvidence, readItemDimensions, readWorkbookObservation, retentionPurpose,
+} from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
 
 const forecastPolicy = { slot: forecastSlot, purpose: retentionPurpose, deriver: forecast.name + '@' + forecast.version };
@@ -33,6 +41,7 @@ type ForecastScope = {
   target: RetentionTarget;
   method?: string;
   paperEpoch: Tick;
+  evidenceThrough?: Tick;
   priorAttemptIds: FactId[];
   window: RetentionForecast['input']['window'];
   sourceReconciliationKey?: string;
@@ -133,9 +142,18 @@ async function enqueue(tx: DbTransaction, policy: CandidatePolicy, key: string, 
 }
 
 function sameTarget(actual: Awaited<ReturnType<typeof openRetentionTarget>>, expected: ForecastScope) {
-  if (canonicalJsonString(actual.target) !== canonicalJsonString(expected.target) || actual.accessEpoch !== expected.paperEpoch) {
+  if (canonicalJsonString({ ...actual.target, condition: expected.target.condition }) !== canonicalJsonString(expected.target) ||
+      actual.accessEpoch !== expected.paperEpoch) {
     throw new RequestError(409, forecastUnavailable);
   }
+}
+
+function againstFrozenTarget(observation: RetentionObservation, target: RetentionTarget): RetentionObservation {
+  return {
+    ...observation,
+    ...(target.condition === 'same-item' ? {} : { novelty: target.condition }),
+    ...(target.dimensions ? { dimensions: target.dimensions } : {}),
+  };
 }
 
 function reconciliationKeyFor(forecast: DerivationId, attempt: FactId) {
@@ -151,8 +169,45 @@ function gatherInSnapshot(
   return db.snapshot(scope, tx => gatherSnapshot({ ...db, snapshot: (_, read) => read(tx) }, scope, ctx => gather(tx, ctx)));
 }
 
-export function openRetention(db: Db, activity: LoadedModule, method = defaultRetentionMethod) {
-  if (!readRetentionMethod(method)) throw new Error('保持方法配置无效：' + method);
+const legacyRetentionMethod = 'last-independent-result@1';
+const pythonHost = createPythonDeriverHost();
+
+export async function evaluateStudioRetention(method: NonNullable<ReturnType<typeof readAnyRetentionMethod>>,
+  input: RetentionForecast['input'], host: PythonDeriverHost = pythonHost) {
+  return evaluateFrozenRetention(method, input, async (slice, version) => {
+    const selected = readAnyRetentionMethod(version);
+    if (!selected || !('deriver' in selected)) throw new Error('未登记的 Python 保持力方法。');
+    const response = await host.derive(selected.deriver, slice);
+    if (response.kind === 'failed') throw new Error(response.reason);
+    if (response.outcome.kind !== 'value') throw new Error('Python 保持力方法未返回计算结果。');
+    return response.outcome.value as CognitionResult;
+  });
+}
+
+async function evidenceWatermark(tx: ReadTransaction) {
+  const { rows: [row] } = await tx.query<{ clock: Tick }>('SELECT clock::text FROM learners WHERE id=$1', [tx.learner]);
+  if (!row) throw new Error('学习者证据水位缺失。');
+  return row.clock;
+}
+
+function readAtWatermark(tx: ReadTransaction, tracked: ReadContext, cutoff: Tick): ReadContext {
+  const base = createCommandReadContext(tx, retentionPurpose);
+  return { ...tracked, async fact(id, options) {
+    const snapshot = await base.fact(id, options);
+    const { rowCount } = await tx.query(
+      'SELECT 1 FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=$3 AND tick<=$4',
+      [tx.learner, id, snapshot.ref.rev, cutoff],
+    );
+    if (!rowCount) throw new FactReadDeniedError('changed', '预测发起时该修订还不可见。');
+    return tracked.fact(id, options);
+  } };
+}
+
+export function openRetention(db: Db, activity: LoadedModule, method = defaultRetentionMethod,
+  host: PythonDeriverHost = pythonHost) {
+  const configured = readAnyRetentionMethod(method);
+  if (!configured) throw new Error('保持方法配置无效：' + method);
+  const supportsVariant = 'deriver' in configured;
   const posttest = posttestWriter(db, activity);
 
   function write<T>(run: (tx: DbTransaction) => Promise<T>) {
@@ -165,21 +220,24 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   async function enqueueForecast(
     tx: DbTransaction, key: string, opened: Awaited<ReturnType<typeof openRetentionTarget>>,
     plan: Pick<ForecastScope, 'priorAttemptIds' | 'window' | 'sourceReconciliationKey'>,
+    condition = opened.target.condition,
   ) {
     await enqueue(tx, forecastPolicy, key, {
-      target: opened.target, method, paperEpoch: opened.accessEpoch, ...plan,
+      target: { ...opened.target, condition }, method, paperEpoch: opened.accessEpoch,
+      evidenceThrough: await evidenceWatermark(tx), ...plan,
     });
     return { key, state: 'pending' as const };
   }
 
   async function freeze(paperId: string, input: Record<string, unknown>) {
-    const { requestId, itemId, priorAttemptIds, through } = requestInput(() => {
-      const { requestId, itemId, priorAttemptIds = [], through } = input;
+    const { requestId, itemId, priorAttemptIds, through, condition } = requestInput(() => {
+      const { requestId, itemId, priorAttemptIds = [], through, condition = 'same-item' } = input;
       if (typeof itemId !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(itemId) ||
+          (condition !== 'same-item' && condition !== 'variant') ||
           !Array.isArray(priorAttemptIds) || priorAttemptIds.length > 10 ||
           new Set(priorAttemptIds).size !== priorAttemptIds.length) throw new Error();
       return { requestId: workbookRequestId(requestId), itemId, priorAttemptIds: priorAttemptIds.map(recordId).sort(),
-        through: deadline(through) };
+        through: deadline(through), condition: condition === 'variant' ? 'variant' as const : 'same-item' as const };
     });
     const id = factId(paperId);
     const key = forecastSlot.key({ forecastId: stableId('retention-forecast', id, requestId) });
@@ -187,7 +245,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
       const existing = await findSlot<RetentionForecast, ForecastScope>(tx, forecastSlot.type, key);
       if (existing) {
         const stored = existing.scope_keys;
-        if (stored.target.itemId !== itemId || stored.window.through !== through ||
+        if (stored.target.itemId !== itemId || stored.target.condition !== condition || stored.window.through !== through ||
             canonicalJsonString(stored.priorAttemptIds) !== canonicalJsonString(priorAttemptIds)) {
           throw new RequestError(409, '预测请求标识已使用。');
         }
@@ -196,9 +254,18 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
       const requestedAt = new Date().toISOString();
       if (through <= requestedAt) throw new RequestError(400, '预测截止时间须晚于当前。');
       const read = createCommandReadContext(tx, retentionPurpose);
-      const opened = await openRetentionTarget(read, id, itemId);
-      for (const attemptId of priorAttemptIds) await readWorkbookObservation(tx, read, opened, attemptId);
-      return enqueueForecast(tx, key, opened, { priorAttemptIds, window: { requestedAt, through } });
+      const opened = await openRetentionTarget(tx, read, id, itemId);
+      const cutoff = await evidenceWatermark(tx);
+      let witnessedVariant = false;
+      for (const attemptId of priorAttemptIds) {
+        const { evidence, novelty } = await readComparableWorkbookEvidence(tx, read, opened, attemptId, cutoff);
+        witnessedVariant ||= novelty === 'isomorphic';
+        if (evidence.observation.submittedAt > requestedAt) throw new RequestError(422, '交卷时间晚于预测发起时间。');
+      }
+      if (condition === 'variant' && (!opened.sealed || !witnessedVariant || !supportsVariant)) {
+        throw new RequestError(422, '变式保持预测需要受控题、有依据的变式交卷及支持变式的方法。');
+      }
+      return enqueueForecast(tx, key, opened, { priorAttemptIds, window: { requestedAt, through } }, condition);
     });
   }
 
@@ -220,7 +287,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     const read = createCommandReadContext(tx, retentionPurpose);
     const { target, window, sourceReconciliationKey } = row.scope_keys;
     if (sourceReconciliationKey) await currentReconciliation(tx, sourceReconciliationKey);
-    const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
+    const opened = await openRetentionTarget(tx, read, target.paper.id, target.itemId);
     sameTarget(opened, row.scope_keys);
     return { frozen, read, window, opened, sourceReconciliationKey };
   }
@@ -286,7 +353,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
             if (!sourceReconciliationKey || !scheduledAt || through <= now) continue;
             await currentReconciliation(tx, sourceReconciliationKey);
             const read = createCommandReadContext(tx, retentionPurpose);
-            const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
+            const opened = await openRetentionTarget(tx, read, target.paper.id, target.itemId);
             sameTarget(opened, scheduled);
             items.push({ forecastKey, title: opened.paper.title, through, scheduledAt, sourceReconciliationKey, state: 'preparing' });
             continue;
@@ -315,7 +382,8 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
 
   async function reconcileAttempt(tx: DbTransaction, current: Awaited<ReturnType<typeof currentForecast>>, attemptId: FactId) {
     const { frozen, read, window, opened } = current;
-    const observation = await readWorkbookObservation(tx, read, opened, attemptId, frozen.derivationId);
+    const observation = againstFrozenTarget(await readWorkbookObservation(tx, read, opened, attemptId, frozen.derivationId),
+      frozen.value.input.target);
     afterFreeze(observation, window, frozen.effectiveTick);
     const key = reconciliationKeyFor(frozen.derivationId, attemptId);
     const existing = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, key);
@@ -377,20 +445,43 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     if (terminal) { await block('保持推导执行失败。'); return; }
     try {
       const gathered = await gatherInSnapshot(db, learner, (tx, ctx) => {
-        if (work.slotType === forecastSlot.type) return forecast.gather(ctx, async ({ read }) => {
+        if (work.slotType === forecastSlot.type) return forecast.gather(ctx, async () => {
           const slot = await findSlot<RetentionForecast, ForecastScope>(tx, forecastSlot.type, work.slotKey);
           if (!slot) throw new Error('Forecast work is missing slot scope');
-          const { target, window, priorAttemptIds } = slot.scope_keys;
-          const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
+          const { target, window, priorAttemptIds, evidenceThrough } = slot.scope_keys;
+          const cutoff = evidenceThrough ?? ctx.snapshotTick;
+          const read = readAtWatermark(tx, ctx.read, cutoff);
+          const opened = await openRetentionTarget(tx, read, target.paper.id, target.itemId);
           sameTarget(opened, slot.scope_keys);
-          const observations = [];
+          const observations: RetentionObservation[] = [];
+          const evidenceRows: ActivityEvidenceObservation[] = [];
+          const targetDimensions = await readItemDimensions(tx, read, opened.question.sourceQuestionRef, cutoff);
           for (const id of priorAttemptIds) {
-            const observation = await readWorkbookObservation(tx, read, opened, id);
+            const comparable = await readComparableWorkbookEvidence(tx, read, opened, id, cutoff);
+            const { evidence, novelty } = comparable;
+            const { observation, process } = evidence;
+            if (observation.submittedAt > window.requestedAt || BigInt(evidence.recordedAt) > BigInt(cutoff)) {
+              throw new RequestError(409, '交卷在预测发起时尚未登记。');
+            }
             if (window.scheduledAt) requireIndependentPosttest(observation);
-            observations.push(observation);
+            if (novelty === 'same') observations.push(observation);
+            const dimensions = novelty === 'same' ? targetDimensions
+              : await readItemDimensions(tx, read, comparable.opened.question.sourceQuestionRef, cutoff);
+            evidenceRows.push({
+              submission: observation.submission, occurredAt: observation.submittedAt,
+              concepts: dimensions, novelty, helpLevel: process.helpLevel, result: observation.result,
+              ...(observation.result === 'unknown' ? {} : { score: observation.result === 'correct' ? 1 : 0 }),
+              ...(evidence.duration === undefined ? {} : { duration: evidence.duration }),
+            });
           }
           observations.sort((a, b) => BigInt(a.admittedAt) < BigInt(b.admittedAt) ? -1 : 1);
-          return { target, window, observations, ...(slot.scope_keys.method ? { method: slot.scope_keys.method } : {}) };
+          const canonicalEvidence = activityEvidenceSlice(ctx.snapshotTick, window.requestedAt,
+            { ref: target.paper.id, at: window.through }, evidenceRows);
+          const [kcId] = targetDimensions;
+          return {
+            target: kcId && targetDimensions.length === 1 ? { ...target, dimensions: { kcId } } : target,
+            window, observations, canonicalEvidence, method: slot.scope_keys.method ?? legacyRetentionMethod,
+          };
         });
         return reconciliation.gather(ctx, async ({ read }) => {
           const slot = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, work.slotKey);
@@ -402,9 +493,10 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
           if (frozen.state !== 'current' || frozen.derivationId !== forecastId) throw new RequestError(409, forecastUnavailable);
           await read.slot({ learner, type: forecastSlot.type, key: forecastKey }, { mode: 'following' });
           const { target, window } = row.scope_keys;
-          const opened = await openRetentionTarget(read, target.paper.id, target.itemId);
+          const opened = await openRetentionTarget(tx, read, target.paper.id, target.itemId);
           sameTarget(opened, row.scope_keys);
-          const observation = await readWorkbookObservation(tx, read, opened, attemptId, forecastId);
+          const observation = againstFrozenTarget(await readWorkbookObservation(tx, read, opened, attemptId, forecastId),
+            frozen.value.input.target);
           afterFreeze(observation, window, frozen.effectiveTick);
           return { forecastId, forecast: frozen.value, observation };
         });
@@ -412,9 +504,12 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
       const sealed = await sealCandidate(db, ref, policy, gathered);
       if (sealed.kind !== 'sealed') return;
       if (work.slotType === forecastSlot.type) {
-        const input = sealed.plan.data as Parameters<typeof forecast.derive>[0];
-        const result = new Date().toISOString() < input.window.through ? forecast.derive(input)
-          : { kind: 'failed', reason: '观察窗口在预测冻结前已结束。' };
+        const { method, ...input } = sealed.plan.data as Parameters<typeof forecast.derive>[0];
+        const selected = readAnyRetentionMethod(method ?? legacyRetentionMethod);
+        if (!selected) { await block('冻结预测使用了未知的保持方法。'); return; }
+        const result = new Date().toISOString() < input.window.through
+          ? { kind: 'value' as const, value: await evaluateStudioRetention(selected, input, host) }
+          : { kind: 'failed' as const, reason: '观察窗口在预测冻结前已结束。' };
         await submitCandidate(db, ref, policy, sealed.id, result, propagation);
       } else {
         const input = sealed.plan.data as Parameters<typeof reconciliation.derive>[0];
