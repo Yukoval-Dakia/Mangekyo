@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { WorkbookFeedback } from '../../../modules/activity/workbook-values.ts';
 import { api, ApiError, requestId } from './api';
 import { ExpectedView } from './expected-view';
@@ -7,6 +7,8 @@ import { ReadState, useResource } from './workspace';
 type Receipt = { revision: number; enabled: boolean } | { revision: number; allowed: boolean };
 type Sheet = { id: string; title: string; steps: string[]; tier: number; cost: number; source: { href: string } };
 type Source = { paperTitle: string; questionNumber: number; prompt: string; feedback: WorkbookFeedback };
+
+const researchSettingsChanged = 'research-settings-changed';
 
 function ResearchChoice({ path, field, label, help, children }: {
   path: string;
@@ -55,6 +57,7 @@ function ResearchChoice({ path, field, label, help, children }: {
       refresh();
     } finally {
       setBusy(false);
+      if (field === 'enabled') window.dispatchEvent(new Event(researchSettingsChanged));
     }
   }
 
@@ -79,7 +82,7 @@ function ResearchChoice({ path, field, label, help, children }: {
 
 export function ResearchSettings() {
   return <ResearchChoice path="/research/settings" field="enabled" label="启用后台教研"
-    help="启用后，同伴可以为已开放的作答准备零费用复习单。每次作答都由你在原卷中单独开放。" />;
+    help="启用后，同伴可以为你准备零费用复习单。你可以在原卷开放单次作答，也可以在后测对账中开放该次摘要。" />;
 }
 
 function WorksheetSource({ href, unavailable }: { href: string; unavailable: () => void }) {
@@ -108,15 +111,21 @@ function WorksheetSource({ href, unavailable }: { href: string; unavailable: () 
   </>;
 }
 
+function WorksheetContents({ sheet }: { sheet: Sheet }) {
+  return <>
+    <h3>{sheet.title}</h3>
+    <p className="field-help">Tier {sheet.tier} · 费用 {sheet.cost}</p>
+    <ol>{sheet.steps.map((step, i) => <li key={i}>{step}</li>)}</ol>
+  </>;
+}
+
 function Worksheet({ path, refresh }: { path: string; refresh: () => void }) {
   const resource = useResource<{ worksheet: Sheet | null }>(path);
   const sheet = resource.data?.worksheet;
   return <div className="research-sheet">
     <ReadState resource={resource} />
     {!resource.error && resource.data && (sheet ? <>
-      <h3>{sheet.title}</h3>
-      <p className="field-help">Tier {sheet.tier} · 费用 {sheet.cost}</p>
-      <ol>{sheet.steps.map((step, i) => <li key={i}>{step}</li>)}</ol>
+      <WorksheetContents sheet={sheet} />
       <WorksheetSource key={sheet.id} href={sheet.source.href} unavailable={refresh} />
     </> : <p>暂未产出复习单。 <button type="button" className="text-button" onClick={refresh}>重新查看</button></p>)}
   </div>;
@@ -128,4 +137,91 @@ export function AttemptResearch({ paperId, attemptId }: { paperId: string; attem
     help="开放后，后台教研可读取这份原答。收回后，这次作答的复习单及其来源将不再可读。">
     {(allowed, revision, refresh) => allowed && <Worksheet key={revision} path={path} refresh={refresh} />}
   </ResearchChoice>;
+}
+
+type ReconciliationResearchView = {
+  enabled: boolean;
+  revision: number;
+  allowed: boolean;
+  worksheet: (Sheet & { method: string; deliveredAt: string; digest?: string }) | null;
+};
+
+export function ReconciliationResearch({ recordKey }: { recordKey: string }) {
+  const path = '/retention/' + encodeURIComponent(recordKey) + '/research';
+  const [view, setView] = useState<ReconciliationResearchView>();
+  const [message, setMessage] = useState('');
+  const [readFailed, setReadFailed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const activeRead = useRef<AbortController | null>(null);
+  const saving = useRef(false);
+  const refresh = useCallback(() => {
+    activeRead.current?.abort();
+    setView(undefined);
+    setReadFailed(false);
+    if (document.hidden || saving.current) return;
+    const controller = new AbortController();
+    activeRead.current = controller;
+    api<ReconciliationResearchView>(path, { signal: controller.signal }).then(result => {
+      if (!controller.signal.aborted) setView(result);
+    }).catch(() => {
+      if (!controller.signal.aborted) setReadFailed(true);
+    });
+  }, [path]);
+
+  useEffect(() => {
+    refresh();
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    window.addEventListener(researchSettingsChanged, refresh);
+    return () => {
+      activeRead.current?.abort();
+      activeRead.current = null;
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener(researchSettingsChanged, refresh);
+    };
+  }, [refresh]);
+
+  async function save() {
+    if (!view || saving.current) return;
+    saving.current = true;
+    setBusy(true);
+    setMessage('');
+    setView(undefined);
+    try {
+      await api<ReconciliationResearchView>(path, { method: 'PUT', body: {
+        requestId: requestId(), revision: view.revision, allowed: !view.allowed,
+      } });
+    } catch (error) {
+      setMessage(error instanceof ApiError && error.status === 409
+        ? '授权状态已变化，请核对后再操作。' : '未能确认保存结果，请核对当前状态。');
+    } finally {
+      saving.current = false;
+      setBusy(false);
+      if (activeRead.current) refresh();
+    }
+  }
+
+  return <section className="research-choice" aria-label="后测复习单">
+    <p className="field-help">你可以授权后台使用此次对账摘要，生成零费用复习单。授权可随时在这里撤回。</p>
+    {message && <p role="alert">{message}</p>}
+    {!view ? <div className="research-controls">
+      {busy || !readFailed ? <span role="status">{busy ? '正在保存…' : '正在读取授权…'}</span> :
+        <><span role="alert">暂时无法读取本次授权。</span> <button type="button" className="text-button" onClick={refresh}>重新读取</button></>}
+    </div> : <>
+      {!view.enabled && <p>后台教研已关闭。可在「学习设置」中启用后台教研。</p>}
+      <div className="research-controls">
+        <span role="status">{view.allowed ? '此次摘要已授权' : '此次摘要未授权'}</span>
+        {(view.allowed || view.enabled) && <button type="button" className="text-button"
+          onClick={() => void save()}>{view.allowed ? '撤回此次授权' : '授权使用此次摘要'}</button>}
+      </div>
+      {view.enabled && view.allowed && <div className="research-sheet">
+        {view.worksheet ? <>
+          <WorksheetContents sheet={view.worksheet} />
+          {view.worksheet.digest && <p>{view.worksheet.digest}</p>}
+          <a href={view.worksheet.source.href}>查看对账来源</a>
+        </> : <p>此次摘要已开放，暂未生成复习单。 <button type="button" className="text-button" onClick={refresh}>重新查看</button></p>}
+      </div>}
+    </>}
+  </section>;
 }
