@@ -4,57 +4,18 @@ import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { FactId } from '../../kernel/src/declarations/ids.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
-import { validateBankItem } from '../../modules/activity/question-assessment.ts';
-import { workbookRequestId } from '../../modules/activity/workbook-values.ts';
-import { assetType, checkQuestionTeachingSources, questionAsset, questionPrompt } from '../../modules/content/asset.ts';
-import { fields, list, pageId, record, revision, text } from '../../modules/content/parse.ts';
-import { readQuestionState, type QuestionVerification } from '../../modules/content/question-state.ts';
-import { openQuestionForRelease, questionVerificationKey, questionVerificationType } from '../../modules/content/question-verification.ts';
+import {
+  bankProposalView, inspectBankQuestion, parsePaper, parseProposal, recordedReferences, selectBankQuestions, type QuestionRef,
+} from '../../modules/activity/iqdb-selection.ts';
+import { assetType } from '../../modules/content/asset.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { enqueueQuestionVerification, readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { RequestError } from './sessions.ts';
 
-function questionRef(input: unknown) {
-  const row = record(input);
-  fields(row, 'id', 'rev');
-  return { id: pageId(row.id), rev: revision(row.rev) };
-}
-
-type QuestionRef = ReturnType<typeof questionRef>;
 export type IssueBank = (tx: DbTransaction, input: { requestId: string; questionRefs: readonly QuestionRef[]; deletionWatermark: string }) => Promise<{ id: FactId }>;
 const scope = { learner: studioLearner };
-const use = 'practice';
 const proposalLabel = 'iqdb-proposal';
 const blocked = () => new RequestError(409, '请重新选择当前获准且已独立验收的固定题版。');
-const normalize = (value: string) => value.normalize('NFKC').toLowerCase();
-const mentions = (question: { title: string; prompt: string }, term: string) =>
-  normalize(`${question.title}\n${question.prompt}`).includes(normalize(term));
-
-function parseProposal(row: Record<string, unknown>) {
-  fields(row, 'requestId', 'need', 'durationMinutes', 'coverage', 'questionRefs');
-  const { durationMinutes } = row;
-  const need = text(row.need, '练习需求').trim();
-  const coverage = list(row.coverage ?? []).map(value => text(value, '覆盖目标').trim());
-  const questionRefs = list(row.questionRefs ?? []).map(questionRef);
-  if (typeof durationMinutes !== 'number' || !Number.isSafeInteger(durationMinutes) || durationMinutes < 1 ||
-      durationMinutes > 240 || need.length > 500 || coverage.length > 20 || coverage.some(value => value.length > 120) ||
-      new Set(coverage).size !== coverage.length || questionRefs.length > 20 ||
-      new Set(questionRefs.map(ref => ref.id)).size !== questionRefs.length) throw new Error('练习范围或时长无效。');
-  return { requestId: workbookRequestId(row.requestId), need, durationMinutes, coverage, questionRefs };
-}
-
-function parsePaper(row: Record<string, unknown>) {
-  fields(row, 'requestId', 'sourceRef', 'proposalId');
-  const requestId = workbookRequestId(row.requestId);
-  if (row.proposalId !== undefined && row.sourceRef === undefined) return { requestId, proposalId: pageId(row.proposalId) };
-  if (row.sourceRef !== undefined && row.proposalId === undefined) return { requestId, sourceRef: questionRef(row.sourceRef) };
-  throw new Error('请选择提案或固定题版。');
-}
-
-function recordedReferences(receipt: string) {
-  const value: unknown = JSON.parse(receipt);
-  return list(Array.isArray(value) ? value : record(value).questionRefs).map(questionRef);
-}
 
 function validated<Result>(parse: () => Result) {
   try { return parse(); }
@@ -64,34 +25,7 @@ function validated<Result>(parse: () => Result) {
 async function inspectQuestion(tx: ReadTransaction, id: FactId, pinned?: QuestionRef['rev']) {
   const read = { ...createCommandReadContext(tx, purpose), slot: readCurrentQuestionVerification(tx) };
   try {
-    const fact = await read.fact(id, { mode: 'following' });
-    if (fact.type !== assetType || (pinned !== undefined && fact.ref.rev !== pinned)) return;
-    const asset = questionAsset(fact.value);
-    await checkQuestionTeachingSources(read, asset);
-    const { state } = await readQuestionState(read, id);
-    const version = { id, rev: fact.ref.rev, recheck: state.recheck };
-    const restricted = state.restrictions.some(entry => entry.scope === 'all' || entry.scope === use);
-    const complete = Boolean(asset.response_schema && asset.assessment_contract);
-    let status: 'restricted' | 'draft' | 'needs_verification' | 'release_ready' = restricted ? 'restricted'
-      : complete ? 'needs_verification' : 'draft';
-    let reviewed = false;
-    if (status === 'needs_verification') {
-      try {
-        const ref = { learner: tx.learner, type: questionVerificationType, key: questionVerificationKey(version) };
-        const { outcome } = await read.slot<QuestionVerification>(ref, { mode: 'following' });
-        reviewed = outcome.kind === 'value' && outcome.value.status === 'needs-review';
-        if (outcome.kind === 'value' && outcome.value.status === 'ready') {
-          const { contract } = await openQuestionForRelease(read, id, use);
-          reviewed = true;
-          try { validateBankItem(contract.items[0]!, contract.releaseRef); status = 'release_ready'; }
-          catch { status = 'restricted'; }
-        }
-      } catch (error) {
-        if (!(error instanceof FactNotFoundError) &&
-            !(error instanceof Error && error.message === '这版题目需要当前有效的独立验收。')) throw error;
-      }
-    }
-    return { public: { id, rev: fact.ref.rev, title: asset.title, prompt: questionPrompt(asset), status }, version, reviewed };
+    return await inspectBankQuestion(read, id, pinned);
   } catch (error) {
     if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError ||
         (error instanceof Error && error.message === '题目来源未授权教学用途或依据已变化。')) return;
@@ -121,9 +55,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       const proposalId = stableId(proposalLabel, input.requestId);
       const saved = await recordLocalRead(db, { ...scope, ownerKind: 'session', ownerId: proposalId,
         stepKey: 'plan', label: proposalLabel, input }, async tx => {
-        const questionRefs = input.questionRefs.length ? input.questionRefs : (await listQuestions(tx))
-          .filter(question => [input.need, ...input.coverage].some(term => mentions(question, term)))
-          .slice(0, 20).map(({ id, rev }) => ({ id, rev }));
+        const questionRefs = input.questionRefs.length ? input.questionRefs : selectBankQuestions(input, await listQuestions(tx));
         return JSON.stringify({ ...input, questionRefs });
       }, tx => assertDeletionWatermark(tx, watermark)).catch(error => {
         if (error instanceof Error && error.message === 'Workspace read receipt does not match the request')
@@ -142,16 +74,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
             await enqueueQuestionVerification(tx, opened.version);
           selected.push(opened);
         }
-        const issue = selected.length > 0 && selected.length === requested.length &&
-          selected.every(entry => entry.public.status === 'release_ready');
-        const gaps = ['duration_unestimated', ...(input.coverage.length ? ['coverage_unconfirmed'] : []),
-          ...(!requested.length ? ['no_matching_question'] : []),
-          ...(selected.length !== requested.length ? ['question_unavailable'] : []),
-          ...selected.flatMap(({ public: question }) => question.status === 'release_ready' ? [] : [question.status])];
-        return { ...input, proposalId, questionRefs: selected.map(({ public: { id, rev } }) => ({ id, rev })),
-          coverage: input.coverage.map(target => ({ target,
-            status: selected.some(({ public: question }) => mentions(question, target)) ? 'mentioned' : 'unconfirmed' })),
-          gaps: [...new Set(gaps)], next: issue ? 'issue' : 'review_questions' };
+        return bankProposalView(input, proposalId, requested, selected);
       });
     },
     async papers({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {

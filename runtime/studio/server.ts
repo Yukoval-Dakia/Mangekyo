@@ -62,36 +62,29 @@ const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/
 const capture = await loadModuleDirectory(fileURLToPath(new URL('../../modules/capture', import.meta.url)));
 const content = await loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
 const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
-const understandingModule = process.env.MANGEKYO_UNDERSTANDING_MODULE;
-const understandingTransport = understandingModule
-  ? (await import(pathToFileURL(understandingModule).href)).understandingTransport
-  : undefined;
-if (understandingModule && !understandingTransport) throw new Error('宿主模块须导出 understandingTransport');
+async function trustedExport<T>(path: string | undefined, name: string, accepts: (value: T) => boolean = Boolean): Promise<T | undefined> {
+  if (!path) return;
+  const exported = (await import(pathToFileURL(path).href))[name] as T;
+  if (!accepts(exported)) throw new Error('宿主模块须导出 ' + name);
+  return exported;
+}
+const understandingTransport = await trustedExport<Parameters<typeof openResearch>[5]>(
+  process.env.MANGEKYO_UNDERSTANDING_MODULE, 'understandingTransport');
 const research = openResearch(db, activity, companion, undefined, undefined, understandingTransport);
 const intake = openIntake(db, capture, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
-const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
-const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
-  ? (await import(pathToFileURL(assessmentModule).href)).workbookAssessmentHost
-  : undefined;
-if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模块须导出 workbookAssessmentHost');
+const assessmentHost = await trustedExport<WorkbookAssessmentHost>(process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE, 'workbookAssessmentHost');
 const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 const pythonHost = createPythonDeriverHost();
 const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
 const retentionComparison = openRetentionComparison(db, pythonHost);
 const iqdbModule = process.env.MANGEKYO_IQDB_EFFECT_MODULE;
-const iqdbHost: QuestionEffectHost | undefined = iqdbModule && mode !== 'web'
-  ? (await import(pathToFileURL(iqdbModule).href)).questionEffectHost
-  : undefined;
-if (iqdbModule && mode !== 'web' && (typeof iqdbHost?.invoke !== 'function' || typeof iqdbHost.mayReceive !== 'function'))
-  throw new Error('题库核验宿主模块须导出 questionEffectHost');
-const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
-const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
-  ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
-  : undefined;
-if (artifactAssessmentModule && mode !== 'web' && typeof readArtifactAssessmentWitness !== 'function')
-  throw new Error('作品评估宿主模块须导出 readArtifactAssessmentWitness');
+const iqdbHost = await trustedExport<QuestionEffectHost>(mode !== 'web' ? iqdbModule : undefined, 'questionEffectHost',
+  value => typeof value?.invoke === 'function' && typeof value?.mayReceive === 'function');
+const readArtifactAssessmentWitness = await trustedExport<ReadArtifactAssessmentWitness>(
+  mode !== 'web' ? process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE : undefined,
+  'readArtifactAssessmentWitness', value => typeof value === 'function');
 
 async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());

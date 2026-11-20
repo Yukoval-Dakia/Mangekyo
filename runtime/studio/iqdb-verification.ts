@@ -1,7 +1,7 @@
 import { FactNotFoundError, guardAccess } from '../../kernel/src/commands/reads.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { derivationId, factId, learnerId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { derivationId, learnerId } from '../../kernel/src/declarations/ids.ts';
 import type { EffectRequest, FactSnapshot, Json, Outcome, ReadContext } from '../../kernel/src/declarations/types.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
@@ -9,7 +9,7 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { failWork, readReadyWork, requestWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
-import { readQuestionState } from '../../modules/content/question-state.ts';
+import { parseQuestionVerificationKey, readQuestionState } from '../../modules/content/question-state.ts';
 import {
   gather, questionVerificationEffectResult, questionVerificationKey, questionVerificationType, settle,
   type QuestionVerificationEffectReceipt,
@@ -24,7 +24,7 @@ export type QuestionEffectHost = {
 
 const policy: CandidatePolicy = { slot: { type: questionVerificationType }, deriver: deriver.name, purpose };
 const propagation = createPropagationHooks([]);
-type QuestionVersion = { id: FactId; rev: Revision; recheck: number };
+type QuestionVersion = NonNullable<ReturnType<typeof parseQuestionVerificationKey>>;
 
 export function readCurrentQuestionVerification(tx: ReadTransaction): ReadContext['slot'] {
   return async <Value>(slot: Parameters<ReadContext['slot']>[0], { mode }: Parameters<ReadContext['slot']>[1]) => {
@@ -66,12 +66,8 @@ export async function executeQuestionVerification(db: Db, ref: WorkRef, host?: Q
   const scope = { learner: learnerId(ref.learner), purpose };
   const work = await db.snapshot(scope, tx => readReadyWork(tx, ref));
   if (!work || work.deriver !== policy.deriver || work.slotType !== policy.slot.type) return;
-  const [question, revision, generation] = work.slotKey.split(':');
-  const version = { id: factId(question ?? ''), rev: Number(revision) as Revision, recheck: Number(generation) };
-  if (!Number.isInteger(version.rev) || version.rev < 1 || !Number.isSafeInteger(version.recheck) ||
-      version.recheck < 0 || questionVerificationKey(version) !== work.slotKey) {
-    await failWork(db, ref); return;
-  }
+  const version = parseQuestionVerificationKey(work.slotKey);
+  if (!version) { await failWork(db, ref); return; }
   const snapshot = await gatherSnapshot(db, scope, async ctx => {
     const { state } = await readQuestionState(ctx.read, version.id);
     if (state.recheck !== version.recheck) throw new FactNotFoundError('题目复验代次已变。');

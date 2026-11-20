@@ -1,3 +1,4 @@
+import { revisionsOnlyChangeGrants } from '../../kernel/src/commands/fact-collection.ts';
 import { createHash } from 'node:crypto';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
@@ -14,16 +15,17 @@ import { failWork, readReadyWork, readWork, runEffect, type WorkRef } from '../.
 import { checkAssessmentPublication, type ReadVerifiedAssessmentPublicationEvidence } from '../../modules/activity/assessment-publication.ts';
 import {
   assessmentResult, readAssessmentScore, type AssessmentRelease,
-  type AssessmentRevisionRef, type AssessmentSubmission,
+  type AssessmentRevisionRef,
 } from '../../modules/activity/assessment-values.ts';
 import { evaluateBankCriterion, frozenWorkbookSubmission, isLocalQuestionCriterion } from '../../modules/activity/question-assessment.ts';
 import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
 import { boundedWorkbookReply, prepareWorkbookRelease as prepareRelease, sameAssessmentRef as sameRef,
-  workbookEvaluation, workbookTextEvaluator, type WorkbookEvaluation } from '../../modules/activity/workbook-assessment-values.ts';
+  AssessmentInputUnavailable, gatherWorkbookAssessment, workbookEvaluation, workbookTextEvaluator,
+  type FrozenWorkbookAssessmentInputs, type WorkbookEvaluation } from '../../modules/activity/workbook-assessment-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import formalAssessmentSlot from '../../modules/activity/slots/workbook-formal-assessment.ts';
 import {
-  independentlyAuthoredPaper, sameWorkbookJson, workbookAssessmentConsent, workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
+  workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
   workbookFormalAssessmentType, workbookPaper, workbookPaperType, WorkbookSourceMismatch, type WorkbookDraft,
 } from '../../modules/activity/workbook-values.ts';
 import {
@@ -73,13 +75,6 @@ export type WorkbookAssessmentHost = {
   readonly resolveAssessmentRoute?: (routeId: string) => Promise<WorkbookAssessmentRoute | null>;
 };
 
-type FrozenInputs = {
-  release: AssessmentRelease;
-  submission: AssessmentSubmission;
-  questions: Record<string, { prompt: string; rubric: string }>;
-  consent: boolean;
-  independent?: boolean;
-};
 function digest(text: string) {
   return createHash('sha256').update(text).digest('hex');
 }
@@ -89,8 +84,6 @@ export function prepareWorkbookRelease(value: unknown, paperId: FactId, draft: W
 }
 
 export const frozenSubmission = frozenWorkbookSubmission;
-
-class AssessmentInputUnavailable extends Error {}
 
 async function authorizeBankBasis(tx: ReadTransaction, release: AssessmentRevisionRef) {
   const read = createCommandReadContext(tx, storagePurpose);
@@ -163,28 +156,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
 
     try {
       const snapshot = await gatherSnapshot(assessmentDb, { learner, purpose: activePolicy.purpose }, async ({ read }) => {
-        const { releaseRef, submissionRef } = scope;
-        const attemptFact = await read.fact(submissionRef.id, { mode: 'following' });
-        const paperFact = await read.fact(releaseRef.id, { mode: 'pinned', rev: releaseRef.rev });
-        if (attemptFact.type !== workbookAttemptType || paperFact.type !== workbookPaperType ||
-            !sameRef(attemptFact.ref, submissionRef) || attemptFact.accessEpoch !== scope.submissionEpoch ||
-            paperFact.accessEpoch !== scope.releaseEpoch) throw new AssessmentInputUnavailable();
-        const attempt = workbookAttempt(attemptFact.value);
-        const paper = workbookPaper(paperFact.value);
-        const release = paper.assessmentRelease;
-        if (!release || !sameRef(release.releaseRef, releaseRef) ||
-            !sameWorkbookJson(release, attempt.paper.assessmentRelease) || attempt.paperId !== releaseRef.id) {
-          throw new AssessmentInputUnavailable();
-        }
-        const input: FrozenInputs = {
-          release, submission: frozenSubmission(release, submissionRef, attempt.answers),
-          questions: Object.fromEntries(paper.questions.flatMap(question => question.kind === 'rubric' &&
-            release.items.some(({ itemId }) => itemId === question.id)
-            ? [[question.id, { prompt: question.prompt, rubric: question.rubric }]] : [])),
-          independent: independentlyAuthoredPaper(paper) && independentlyAuthoredPaper(attempt.paper),
-          consent: attempt.assessmentConsent === workbookAssessmentConsent,
-        };
-        return { kind: 'input', data: input, effects: [] };
+        return gatherWorkbookAssessment(read, scope);
       });
       const sealed = await sealCandidate(assessmentDb, ref, activePolicy, snapshot);
       if (sealed.kind !== 'sealed') return;
@@ -193,7 +165,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
         return;
       }
       // Only this adapter writes the versioned gather plan. Use the sealed copy on activity retry.
-      const { release, submission, questions, consent, independent } = sealed.plan.data as FrozenInputs;
+      const { release, submission, questions, consent, independent } = sealed.plan.data as FrozenWorkbookAssessmentInputs;
       const authorize = async (tx: ReadTransaction) => {
         if (!(await readReadyWork(tx, ref)) || (await revalidateManifest(tx, sealed.manifest)).kind !== 'valid')
           throw new AssessmentInputUnavailable();
@@ -298,16 +270,7 @@ export async function readSavedWorkbookAssessment(
   ] as const) {
     if (!manifest.inputs.some(input => input.kind === 'fact' && input.id === original.id &&
       input.rev === original.rev && input.accessEpoch === epoch && input.mode === mode)) return;
-    // Each adjacent revision must be a grant change, including an edit later restored to the same value.
-    const { rows: [proof] } = await tx.query<{ unchanged: boolean }>(
-      `SELECT count(*) FILTER (WHERE r.kind='value' AND r.data=base.data AND r.corrects_rev=p.rev
-          AND r.purpose IS DISTINCT FROM p.purpose)=($4::int-$3::int) AS unchanged
-       FROM fact_revs base JOIN fact_revs r ON (r.learner_id,r.fact_id)=(base.learner_id,base.fact_id)
-       JOIN fact_revs p ON (p.learner_id,p.fact_id,p.rev)=(r.learner_id,r.fact_id,r.rev-1)
-       WHERE base.learner_id=$1 AND base.fact_id=$2 AND base.rev=$3 AND base.kind='value' AND r.rev>$3 AND r.rev<=$4`,
-      [tx.learner, original.id, original.rev, current.rev],
-    );
-    if (!proof?.unchanged) return;
+    if (!await revisionsOnlyChangeGrants(tx, original.id, original.rev, current.rev)) return;
   }
   return { ...value, releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
 }
