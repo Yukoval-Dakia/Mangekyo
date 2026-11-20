@@ -1,6 +1,6 @@
 import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
-import type { ReviewEntry } from './review.ts';
+import { attemptView, projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
@@ -34,7 +34,6 @@ import {
   workbookAttemptType,
   workbookAssessmentRequest,
   workbookAssessmentResult,
-  workbookCorrectCount,
   workbookDraft,
   WorkbookSourceMismatch,
   workbookPaper,
@@ -51,7 +50,6 @@ import {
   type WorkbookDraft,
   type WorkbookPaper,
   type WorkbookRubricAssessment,
-  type WorkbookRubricAssessmentView,
   type WorkbookRubricQuestion,
   type WorkbookSourceView,
   type WorkbookSummary,
@@ -169,48 +167,11 @@ async function sourceView(
   }
 }
 
-function attemptView(
-  id: string,
-  attempt: WorkbookAttempt,
-  assessments: WorkbookRubricAssessmentView[],
-): WorkbookAttemptView {
-  return {
-    id,
-    requestId: attempt.requestId,
-    submittedAt: attempt.submittedAt,
-    ...(attempt.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: attempt.effectiveDurationMs }),
-    gradingVersion: attempt.gradingVersion,
-    answers: attempt.answers,
-    feedback: attempt.feedback.map(item => item.result === 'unanswered' ? {...item, expected: null, explanation: null} : item),
-    assessments,
-    correctCount: workbookCorrectCount(attempt.feedback),
-    total: attempt.paper.questions.filter(
-      q => q.kind !== 'rubric' && (q.kind !== 'exact' || !q.selfCheck),
-    ).length,
-  };
-}
+const unavailableFact = (error: unknown) => error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+const unavailablePaper = (error: unknown) => error instanceof RequestError && (error.status === 403 || error.status === 404);
 
-async function allAttempts(
-  tx: ReadTransaction,
-  read: ReturnType<typeof createCommandReadContext>,
-): Promise<{ id: FactId; rev: Revision; attempt: WorkbookAttempt }[]> {
-  const { rows } = await tx.query<{ id: string }>(
-    `SELECT id FROM facts
-     WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-     ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookAttemptType],
-  );
-  const attempts: Awaited<ReturnType<typeof allAttempts>> = [];
-  for (const row of rows) {
-    try {
-      const fact = await read.fact(factId(row.id), { mode: 'following' });
-      attempts.push({ id: fact.ref.id, rev: fact.ref.rev, attempt: workbookAttempt(fact.value) });
-    } catch (error) {
-      if (!(error instanceof FactReadDeniedError) && !(error instanceof FactNotFoundError)) throw error;
-    }
-  }
-  return attempts;
-}
+const allAttempts = (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>) =>
+  readWorkbookAttempts(tx, read, unavailableFact);
 
 async function requireSource(db: Db, id: string): Promise<void> {
   const exists = await db.snapshot({ learner: studioLearner }, async (tx) => {
@@ -292,50 +253,8 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     async list(): Promise<WorkbookSummary[]> {
       return db.snapshot({ learner: studioLearner }, async (tx) => {
         const read = createCommandReadContext(tx, storagePurpose);
-        const attempts = await allAttempts(tx, read);
-        const grouped = new Map<string, { count: number; last: string | null }>();
-        for (const { attempt } of attempts) {
-          const current = grouped.get(attempt.paperId) ?? { count: 0, last: null };
-          current.count += 1;
-          if (current.last === null || attempt.submittedAt > current.last) {
-            current.last = attempt.submittedAt;
-          }
-          grouped.set(attempt.paperId, current);
-        }
-        const { rows } = await tx.query<{ id: string }>(
-          `SELECT id FROM facts
-           WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-           ORDER BY created_tick DESC, id`,
-          [tx.learner, workbookPaperType],
-        );
-        const summaries: WorkbookSummary[] = [];
-        for (const row of rows) {
-          try {
-            const paper = await readPaper(tx, factId(row.id));
-            const source = paper.materialId === null
-              ? null
-              : await sourceView(tx, read, paper.materialId);
-            const usage = grouped.get(row.id);
-            summaries.push({
-              id: row.id,
-              title: paper.title,
-              questionCount: paper.questions.length,
-              savedAt: paper.savedAt,
-              sourceId: paper.materialId,
-              sourceTitle: source?.title ?? null,
-              attemptCount: usage?.count ?? 0,
-              lastAttemptAt: usage?.last ?? null,
-            });
-          } catch (error) {
-            if (
-              error instanceof FactReadDeniedError ||
-              error instanceof FactNotFoundError ||
-              (error instanceof RequestError && (error.status === 403 || error.status === 404))
-            ) continue;
-            throw error;
-          }
-        }
-        return summaries;
+        return readWorkbookSummaries(tx, await allAttempts(tx, read), id => readPaper(tx, id),
+          id => sourceView(tx, read, id), error => unavailableFact(error) || unavailablePaper(error));
       });
     },
 
@@ -363,39 +282,14 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     async review(): Promise<ReviewEntry[]> {
       return db.snapshot({ learner: studioLearner }, async tx => {
         const read = createCommandReadContext(tx, storagePurpose);
-        const seen = new Set<string>();
-        const available = new Map<string, boolean>();
-        const result: ReviewEntry[] = [];
         const assessments = await allAssessments(tx);
-        for (const { id, attempt } of await allAttempts(tx, read)) {
-          if (!available.has(attempt.paperId)) {
-            try {
-              available.set(attempt.paperId, Boolean(await readPaperOrNull(tx, factId(attempt.paperId))));
-            } catch (error) {
-              if (!(error instanceof RequestError) || ![403, 404].includes(error.status)) throw error;
-              available.set(attempt.paperId, false);
-            }
+        return projectWorkbookReview(await allAttempts(tx, read), assessments, async paperId => {
+          try { return Boolean(await readPaperOrNull(tx, factId(paperId))); }
+          catch (error) {
+            if (!unavailablePaper(error)) throw error;
+            return false;
           }
-          if (!available.get(attempt.paperId)) continue;
-          for (const f of attempt.feedback) {
-            const key = attempt.paperId + '/' + f.questionId;
-            const grade = assessments.get(id)?.find(result => result.questionId === f.questionId);
-            const verdict = grade?.verdict ?? f.result;
-            if (verdict === 'pending' || verdict === 'unanswered' || verdict === 'self-check' || seen.has(key)) continue;
-            seen.add(key);
-            if (verdict !== 'incorrect' && verdict !== 'partial') continue;
-            const q = attempt.paper.questions.find(q => q.id === f.questionId);
-            if (!q) continue;
-            const expected = f.expected.kind === 'exact'
-              ? f.expected.values.join(' / ')
-              : f.expected.kind === 'rubric'
-                ? f.expected.rubric
-                : [f.expected.value, f.expected.unit].filter(x => x !== null).join(' ');
-            result.push({ paperId: attempt.paperId, title: attempt.paper.title, questionId: q.id,
-              prompt: q.prompt, answer: String(f.answer), expected, explanation: grade?.feedback ?? f.explanation });
-          }
-        }
-        return result;
+        });
       });
     },
 
