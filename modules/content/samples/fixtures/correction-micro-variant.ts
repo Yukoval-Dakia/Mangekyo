@@ -12,7 +12,7 @@ const learner = learnerId(id('100'));
 const rev = 1 as Revision;
 const accessEpoch = '0' as Tick;
 const ref = (suffix: string) => ({ id: id(suffix), rev });
-const source = { learner, ...ref('101') };
+const source = { learner, ...ref('101'), accessEpoch };
 const first = ref('102');
 const second = ref('103');
 const archetype = ref('104');
@@ -61,7 +61,7 @@ export async function seedCorrectionMicroVariant(db: DbQuery) {
     async function edge(id: FactId, kind: 'instance_of' | 'variant_of', from: ReturnType<typeof endpoint>, to: ReturnType<typeof endpoint>) {
       await fact(id, knowledgeEdgeType, {
         kind, from, to, sourceUses: [from.sourceUse, to.sourceUse], scope: 'average-speed',
-        ...(kind === 'variant_of' ? { variant: { familyId: 'average-speed', relation: 'single_condition',
+        ...(kind === 'variant_of' ? { variant: { familyId: 'average-speed', relation: 'numbers_only',
           preserved: ['两段速度'], changed: ['第二段时长'], spoilsNext: 'none' } } : {}),
       });
     }

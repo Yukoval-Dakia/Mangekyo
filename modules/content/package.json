@@ -14,6 +14,7 @@
     "./question-meta": "./question-meta.ts",
     "./question-verification": "./question-verification.ts",
     "./facts/paper-capsules": "./paper-capsules.ts",
+    "./facts/correction-micro-variant": "./correction-micro-variant.ts",
     "./facts/question-release": "./question-release.ts",
     "./facts/assessment": "./assessment-values.ts",
     "./facts/material": "./facts/material.ts"

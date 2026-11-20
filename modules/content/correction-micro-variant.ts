@@ -70,7 +70,7 @@ async function releaseCurrent(access: CorrectionMicroVariantAccess, question: Qu
  * Supply the complete bounded set of relevant archetype mappings so ambiguity can be detected.
  * Keep this reference server-side, and rerun selection before release if the snapshot changes. */
 export async function readCorrectionMicroVariant(access: CorrectionMicroVariantAccess, input: {
-  readonly source: FactRef;
+  readonly source: FactRef & Pick<FactSnapshot, 'accessEpoch'>;
   readonly variantEdgeIds: readonly FactId[];
   readonly archetypeEdgeIds: readonly FactId[];
 }): Promise<QuestionRef | undefined> {
@@ -95,7 +95,7 @@ export async function readCorrectionMicroVariant(access: CorrectionMicroVariantA
   try {
     const fact = await graph.read.fact(source.id, { mode: 'pinned', rev: source.rev });
     if (fact.type !== assetType || knowledgeEndpointKind(fact) !== 'question' ||
-        fact.ref.learner !== source.learner || fact.ref.id !== source.id || fact.ref.rev !== source.rev) return;
+        fact.accessEpoch !== source.accessEpoch || fact.ref.learner !== source.learner || fact.ref.id !== source.id || fact.ref.rev !== source.rev) return;
     const root = { kind: 'question' as const, sourceUse: { id: source.id, rev: source.rev, accessEpoch: fact.accessEpoch } };
     const { paths } = await walkKnowledgeEdges(graph, {
       root, edgeIds: variantEdgeIds, mode: 'pinned', hops: 1, uniquePaths: true, unavailable,
@@ -110,7 +110,7 @@ export async function readCorrectionMicroVariant(access: CorrectionMicroVariantA
     for (const { endpoint, edge } of candidates) {
       const { id, rev } = endpoint.sourceUse;
       // The correction can reveal the source solution. Require this edge to be safe in that direction.
-      if (id === source.id || !edge.variant || !canUseDistinguishingVariant(edge, source.id, 'solution_seen')) continue;
+      if (id === source.id || !edge.variant || !canUseDistinguishingVariant(edge, source.id, 'solution_seen', 'numbers_only')) continue;
       try {
         const candidateArchetype = await readArchetype(graph, endpoint, archetypeEdgeIds, unavailable);
         if (!candidateArchetype || knowledgeUseKey(candidateArchetype) !== knowledgeUseKey(archetype)) continue;

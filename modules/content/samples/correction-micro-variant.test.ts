@@ -3,7 +3,7 @@ import { expect, test } from 'vitest';
 import { createAuthorizedFactReader, FactReadDeniedError } from '../../../kernel/src/commands/reads.ts';
 import type { Db, ReadTransaction } from '../../../kernel/src/db/types.ts';
 import { readEffectiveSlotVersion } from '../../../kernel/src/derivations/revalidate.ts';
-import { withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
+import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { readActivityHelpEvents } from '../../activity/evidence-read.ts';
 import { projectHelpExposure } from '../../activity/help-exposure.ts';
 import { readCorrectionMicroVariant } from '../correction-micro-variant.ts';
@@ -62,7 +62,7 @@ function open(db: Db, options: {
   });
 }
 
-test('selects one current unexposed single-condition variant using a read-only snapshot', async () => {
+test('selects one current unexposed numbers-only variant using a read-only snapshot', async () => {
   await withLearnerDatabase(learner, async db => {
     await seedCorrectionMicroVariant(db);
     const onlySecond = { ...input, variantEdgeIds: [input.variantEdgeIds[1]!] };
@@ -85,7 +85,7 @@ test('selects one current unexposed single-condition variant using a read-only s
       runs.push(run);
     }
     const times = runs.map(run => run.elapsed).sort((a, b) => a - b);
-    console.info('correction micro-variant PGlite fixture', { queries: runs[0]?.queries,
+    console.info('correction micro-variant fixture', { queries: runs[0]?.queries,
       medianMs: times[5]?.toFixed(2), maxMs: times.at(-1)?.toFixed(2),
       unknownQueries: unknown.queries, unknownMs: unknown.elapsed.toFixed(2) });
 
@@ -98,6 +98,13 @@ test('selects one current unexposed single-condition variant using a read-only s
     await db.query(`UPDATE fact_revs SET data=jsonb_set(data,'{variant,spoilsNext}','"latter"') WHERE fact_id=$1`,
       [onlySecond.variantEdgeIds[0]!]);
     expect((await open(db, { input: onlySecond })).result).toEqual(second);
+
+    for (const relation of ['single_condition', 'representation_transfer']) {
+      await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{variant,relation}',to_jsonb($2::text)) WHERE fact_id=$1", [onlySecond.variantEdgeIds[0]!, relation]);
+      expect((await open(db, { input: onlySecond })).result).toBeUndefined();
+    }
+    await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{variant,relation}','\"numbers_only\"') WHERE fact_id=$1", [onlySecond.variantEdgeIds[0]!]);
+    expect((await open(db, { input: { ...input, source: { ...input.source, accessEpoch: '1' as Tick } } })).result).toBeUndefined();
 
     const state = await questionStateId(second.id);
     const { rows: [original] } = await db.query<{ data: unknown }>('SELECT data FROM fact_revs WHERE fact_id=$1', [state]);
@@ -113,5 +120,5 @@ test('selects one current unexposed single-condition variant using a read-only s
 
     const { rows: [clock] } = await db.query<{ clock: string }>('SELECT clock::text FROM learners WHERE id=$1', [learner]);
     expect(clock?.clock).toBe('2');
-  }, { postgres: false });
+  }, { postgres: Boolean(testDatabaseUrl) });
 }, 20_000);

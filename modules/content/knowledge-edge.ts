@@ -395,9 +395,10 @@ export async function openBusKnowledgeEdge(
 }
 
 /** Direction names refer to the original from/to endpoints. Unknown exposure is ineligible. */
-export function canUseDistinguishingVariant(edge: KnowledgeEdge, previous: FactId, exposure: 'unseen' | 'solution_seen' | 'unknown') {
+export function canUseDistinguishingVariant(edge: KnowledgeEdge, previous: FactId, exposure: 'unseen' | 'solution_seen' | 'unknown',
+  requiredRelation: 'single_condition' | 'numbers_only' = 'single_condition') {
   const relation = edge.variant;
-  if (edge.kind !== 'variant_of' || relation?.relation !== 'single_condition' || exposure === 'unknown') return false;
+  if (edge.kind !== 'variant_of' || relation?.relation !== requiredRelation || exposure === 'unknown') return false;
   if (edge.from.sourceUse.id !== previous && edge.to.sourceUse.id !== previous) return false;
   if (exposure === 'unseen') return true;
   const nextIsFormer = edge.to.sourceUse.id === previous;
