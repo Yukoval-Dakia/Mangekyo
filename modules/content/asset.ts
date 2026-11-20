@@ -364,7 +364,7 @@ export async function openAssetReference(read: AssetReader, reference: AssetRefe
     const blocks = fact.type === 'capture.source'
       ? list(record(record(fact.value).unit).blocks).map(record)
       : fact.type === assetType ? parseAsset(fact.value).blocks : textbookPageFrom(fact).blocks;
-    if (!blocks.some(block => block.id === anchor.blockId)) throw new Error(`内容块不存在：${anchor.blockId}`);
+    if (!blocks.some(block => block.id === anchor.blockId)) throw new AssetBasisError(`内容块不存在：${anchor.blockId}`);
   }
   if (anchor.kind === 'path') {
     let fragment: unknown = fact.value;

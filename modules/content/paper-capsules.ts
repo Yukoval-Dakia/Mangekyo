@@ -2,7 +2,7 @@ import { FactNotFoundError, type FactId, type LearnerId, type Revision } from '@
 import { AssetBasisError, assetType, checkTextbookBasis, openAssetReference, questionAsset, type AssetReadContext } from './asset.ts';
 import { openKnowledgeEntity } from './knowledge-entity.ts';
 import {
-  KnowledgeEdgeBasisError, knowledgeUseKey, readKnowledgeUse, walkKnowledgeEdges,
+  KnowledgeEdgeBasisError, knowledgeEndpointKind, knowledgeUseKey, readKnowledgeUse, walkKnowledgeEdges, workspaceEntryType,
   type KnowledgeEdge, type KnowledgeEndpoint, type KnowledgeSourceUse,
 } from './knowledge-edge.ts';
 
@@ -25,6 +25,9 @@ export type PaperCapsuleAccess = {
   readonly purpose: string;
   readonly recipient: string;
   readonly read: AssetReadContext['read'];
+  // Reopen a legacy frozen question and its full provenance under the same snapshot,
+  // purpose and recipient. Return the authorized pinned witness only on success.
+  readonly reopenLegacyQuestion?: (ref: FrozenQuestionRef) => Promise<KnowledgeSourceUse | undefined>;
   // The host classifies expected authorization and missing-source errors. Other failures remain visible.
   readonly isUnavailable: (error: unknown) => boolean;
   // Use the host's existing opaque authenticated handles. The token exposes none of the binding.
@@ -43,7 +46,8 @@ function acceptedPaperEdge(question: KnowledgeSourceUse, edge: KnowledgeEdge) {
       edge.from.blockId !== undefined && edge.to.kind === 'concept' && edge.to.blockId === undefined;
   }
   return edge.from.kind === 'question' && knowledgeUseKey(edge.from.sourceUse) === knowledgeUseKey(question) &&
-    (edge.kind === 'targets_concept' || edge.kind === 'instance_of');
+    ((edge.kind === 'targets_concept' && edge.to.kind === 'concept') ||
+      (edge.kind === 'instance_of' && edge.to.kind === 'archetype'));
 }
 
 async function fixedEntity(access: PaperCapsuleAccess, endpoint: KnowledgeEndpoint) {
@@ -72,9 +76,17 @@ async function discover(access: PaperCapsuleAccess, sourceQuestionRef: FrozenQue
   try {
     const { id, rev } = sourceQuestionRef;
     const root = await access.read.fact(id, { mode: 'pinned', rev });
-    if (root.ref.id !== id || root.ref.rev !== rev || root.ref.learner !== access.learner || root.type !== assetType) return [];
-    await checkTextbookBasis(access.read, questionAsset(root.value).basis ?? []);
+    if (root.ref.id !== id || root.ref.rev !== rev || root.ref.learner !== access.learner ||
+        knowledgeEndpointKind(root) !== 'question') return [];
     const question = { id, rev, accessEpoch: root.accessEpoch };
+    if (root.type === assetType) {
+      await checkTextbookBasis(access.read, questionAsset(root.value).basis ?? []);
+    } else if (root.type === workspaceEntryType) {
+      const witness = await access.reopenLegacyQuestion?.({ id, rev });
+      if (!witness || knowledgeUseKey(witness) !== knowledgeUseKey(question)) return [];
+    } else {
+      return [];
+    }
     const graph = await walkKnowledgeEdges(access, {
       root: { kind: 'question', sourceUse: question }, edgeIds, mode: 'pinned', hops: 2,
       acceptEdge: edge => acceptedPaperEdge(question, edge), uniquePaths: true,
@@ -128,11 +140,14 @@ function sameTrail(left: Trail, right: Trail) {
   });
 }
 
-/** Obtain fresh authorized candidate IDs for the clicked paper item before resolving its handle. */
-export async function openPaperCapsule(access: PaperCapsuleAccess, ref: string, edgeIds: readonly FactId[]) {
+/** The host reopens the current issuance and supplies its frozen item ref and freshly authorized edge IDs. */
+export async function openPaperCapsule(
+  access: PaperCapsuleAccess, ref: string, edgeIds: readonly FactId[], expectedQuestionRef: FrozenQuestionRef,
+) {
   const binding = await access.unseal(ref);
-  if (!binding || binding.version !== 1 || binding.learner !== access.learner ||
-      binding.purpose !== access.purpose || binding.recipient !== access.recipient) return;
+  if (!binding || !expectedQuestionRef || binding.version !== 1 || binding.learner !== access.learner ||
+      binding.purpose !== access.purpose || binding.recipient !== access.recipient ||
+      binding.question.id !== expectedQuestionRef.id || binding.question.rev !== expectedQuestionRef.rev) return;
   const matches = await discover(access, binding.question, edgeIds);
   return matches.find(match => match.binding.kind === binding.kind &&
     knowledgeUseKey(match.binding.question) === knowledgeUseKey(binding.question) &&

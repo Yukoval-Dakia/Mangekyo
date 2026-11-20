@@ -300,11 +300,17 @@ export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
   }
   const projectedRoot = await project(input.root, root);
   const nodeKey = (endpoint: KnowledgeEndpoint) => JSON.stringify([endpoint.sourceUse.id, endpoint.sourceUse.rev, endpoint.blockId ?? null]);
-  const rows = await Promise.all([...new Set(input.edgeIds)].map(async id => {
+  async function openEdge(id: FactId) {
     try {
       const fact = await ctx.read.fact(id, { mode: 'following' });
       if (fact.type !== knowledgeEdgeType) throw new KnowledgeEdgeBasisError('图谱边类型不符。');
-      const edge = parseKnowledgeEdge(fact.value);
+      let edge;
+      try {
+        edge = parseKnowledgeEdge(fact.value);
+      } catch (error) {
+        if (!input.unavailable) throw error;
+        throw new KnowledgeEdgeBasisError('候选知识边不符合关系契约。', { cause: error });
+      }
       if (input.acceptEdge && !input.acceptEdge(edge)) return undefined;
       const basis = await verifyKnowledgeEdge(ctx, edge);
       if (edge.verification) {
@@ -325,7 +331,12 @@ export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
       if (input.unavailable?.(error)) return undefined;
       throw error;
     }
-  }));
+  }
+  const rows = [];
+  for (const id of new Set(input.edgeIds)) {
+    const row = await openEdge(id);
+    if (row) rows.push(row);
+  }
   type Step = {
     endpoint: KnowledgeEndpoint; hop: number; via: FactSnapshot['ref']; edge: KnowledgeEdge;
     trail: readonly { readonly edge: KnowledgeSourceUse; readonly endpoint: KnowledgeEndpoint }[];
@@ -337,7 +348,6 @@ export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
   for (let hop = 1; hop <= input.hops && frontier.size; hop++) {
     const matches = new Map<string, Step | null>();
     for (const row of rows) {
-      if (!row) continue;
       const forward = input.direction !== 'inbound' ? frontier.get(nodeKey(row.from)) : undefined;
       const reverse = input.direction !== 'outbound' ? frontier.get(nodeKey(row.to)) : undefined;
       const edgeUse = { id: row.ref.id, rev: row.ref.rev, accessEpoch: row.accessEpoch };
