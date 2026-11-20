@@ -99,11 +99,13 @@ function notionHost(db: Db, scope = learnerScope) {
     return selection;
   }
 
-  async function provider<T>(selection: NotionSelection, watermark: string, stream: Parameters<typeof connection.read<T>>[0], page?: string) {
+  async function provider<T>(selection: NotionSelection, watermark: string, stream: Parameters<typeof connection.read<T>>[0],
+    page?: string, signal?: AbortSignal) {
     const {id, selectionEpoch: epoch} = selection;
     try {
-      return await connection.read(stream, () => snapshot(tx => live(tx, id, epoch, watermark, page)));
+      return await connection.read(stream, () => snapshot(tx => live(tx, id, epoch, watermark, page)), signal);
     } catch (error) {
+      signal?.throwIfAborted();
       if (error instanceof NotionSourceUnavailable && error.invalidated) {
         const key = error.invalidated.kind === 'selection' ? 'root' : error.invalidated.pageId;
         await locked(async tx => {
@@ -226,7 +228,7 @@ export function notionReadScope(db: Db, learner: LearnerId, signal?: AbortSignal
       signal?.throwIfAborted();
       if (!pages.has(key)) {
         try {
-          await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId);
+          await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId, signal);
           pages.set(key, 'authorized');
         } catch (error) {
           if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;

@@ -9,7 +9,7 @@ export function openNotionReadTransport(origin: string, token: string | undefine
   unavailable: (status: 502 | 503, message: string) => Error) {
   return {
     configured: Boolean(token),
-    async read<T>(requests: Requests<T>, authorize: () => Promise<unknown>): Promise<T> {
+    async read<T>(requests: Requests<T>, authorize: () => Promise<unknown>, cancelled?: AbortSignal): Promise<T> {
       if (!token) throw unavailable(503, '尚未配置服务端 Notion 只读连接。');
       let step = await requests.next();
       while (!step.done) {
@@ -19,7 +19,9 @@ export function openNotionReadTransport(origin: string, token: string | undefine
         await authorize();
         let reply: DocumentResponse;
         try {
-          const response = await fetch(url, {method: request.method, redirect: 'error', signal: AbortSignal.timeout(15_000),
+          const timeout = AbortSignal.timeout(15_000);
+          const signal = cancelled ? AbortSignal.any([cancelled, timeout]) : timeout;
+          const response = await fetch(url, {method: request.method, redirect: 'error', signal,
             headers: {authorization: 'Bearer ' + token, 'Notion-Version': version, 'Content-Type':'application/json'},
             ...(request.method === 'POST' ? {body: JSON.stringify(request.body)} : {})});
           if (response.ok) {
@@ -31,6 +33,7 @@ export function openNotionReadTransport(origin: string, token: string | undefine
             reply = {status: response.status, body: null};
           }
         } catch {
+          cancelled?.throwIfAborted();
           step = await requests.throw(unavailable(502, '未能确认 Notion 来源。'));
           continue;
         }
