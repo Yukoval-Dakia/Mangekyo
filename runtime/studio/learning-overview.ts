@@ -1,4 +1,5 @@
-import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import { readable } from '../../kernel/src/commands/fact-collection.ts';
+import {createCommandReadContext} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot, ReadContext} from '../../kernel/src/declarations/types.ts';
@@ -14,15 +15,6 @@ export type LearningOverviewAccess = {
   readonly maySend: (fact: LearningOverviewFact, snapshot: FactSnapshot) => boolean;
   readonly track?: (snapshot: FactSnapshot) => void;
 };
-export async function readable<T>(open: () => Promise<T>) {
-  try {
-    return await open();
-  } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return undefined;
-    throw error;
-  }
-}
-
 async function authorized(id: string, access: LearningOverviewAccess, read: ReadContext) {
   const fact = await readable(() => read.fact(factId(id), {mode: 'following'}));
   if (!fact) return;

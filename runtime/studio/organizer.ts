@@ -1,3 +1,4 @@
+import { readable, readFactCollection, readValueRevisions } from '../../kernel/src/commands/fact-collection.ts';
 import { createBusScope } from '../../kernel/src/bus.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
@@ -7,22 +8,12 @@ import {
   FactNotFoundError,
   FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+import type { Db } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot, Json, ReadContext } from '../../kernel/src/declarations/types.ts';
+import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import {
-  createOrganizerNote,
-  organizerNote,
-  organizerNoteDraft,
-  organizerNoteRestoreInput,
-  organizerNoteSaveInput,
-  organizerNoteType,
-  restoreOrganizerNote,
-  saveOrganizerNote,
-  type OrganizerNote,
-} from '../../modules/activity/organizer-values.ts';
+import { organizerNoteType, organizerNoteView, prepareOrganizerNote } from '../../modules/activity/organizer-values.ts';
 import {
   createOrganizerTask,
   organizerTaskDoneInput,
@@ -39,13 +30,10 @@ import { checkPack, openPack, packCandidates } from '../../modules/plan/offline-
 import type { GoalStatus } from '../../modules/plan/goal-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
 import { integer } from '../../modules/plan/validation.ts';
-import { readGoal, readTasks, readable } from './learning-overview.ts';
+import { readGoal, readTasks } from './learning-overview.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-
-type OrganizerNoteVersionView = OrganizerNote & { readonly rev: number };
-type OrganizerNoteView = OrganizerNoteVersionView & { readonly id: string; readonly versions: readonly OrganizerNoteVersionView[] };
 
 function validate<Input, Value>(parse: (input: Input) => Value, input: Input): Value {
   try {
@@ -74,18 +62,6 @@ function translate(error: unknown): Error {
     }
   }
   return error instanceof Error ? error : new Error('安排保存失败。');
-}
-
-async function* todayFacts(tx: ReadTransaction, read: ReadContext, types: string[]) {
-  const {rows} = await tx.query<{id: string; current_rev: Revision; type: string}>(
-    'SELECT id,current_rev,type FROM facts WHERE learner_id=$1 AND type=ANY($2::text[]) AND retracted_rev IS NULL ORDER BY created_tick,id',
-    [tx.learner, types]);
-  for (const row of rows) {
-    const id = factId(row.id);
-    const fact = await readable(() => read.fact(id, row.type === workbookPaperType
-      ? {mode: 'pinned', rev: row.current_rev} : {mode: 'following'}));
-    if (fact) yield fact;
-  }
 }
 
 export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule,
@@ -121,28 +97,10 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
       const taskOverview = await readTasks(tx, access, null);
       const tasks = 'items' in taskOverview ? taskOverview.items : [];
 
-      const { rows: noteRows } = await tx.query<{ id: string }>(
-        `SELECT id FROM facts
-         WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-         ORDER BY created_tick DESC, id DESC`,
-        [tx.learner, organizerNoteType],
-      );
-      const notes: OrganizerNoteView[] = [];
-      for (const row of noteRows) {
-        const id = factId(row.id);
-        const current = await readable(() => read.fact(id, {mode: 'following'}));
-        if (!current) continue;
-        const versions: OrganizerNoteVersionView[] = [];
-        if (includeHistory) {
-          const {rows} = await tx.query<{rev: Revision}>(
-            "SELECT rev FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND kind='value' ORDER BY rev",
-            [tx.learner, id]);
-          for (const {rev} of rows) {
-            const version = await readable(() => read.fact(id, {mode: 'pinned', rev}));
-            if (version) versions.push({rev, ...organizerNote(version.value)});
-          }
-        }
-        notes.push({id, ...organizerNote(current.value), rev: current.ref.rev, versions});
+      const notes = [];
+      for await (const current of readFactCollection(tx, read, [organizerNoteType], { newestFirst: true })) {
+        const history = includeHistory ? await readValueRevisions(tx, read, current.ref.id) : [];
+        notes.push(organizerNoteView(current, history));
       }
       return { tasks, notes };
     });
@@ -161,7 +119,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
           const day = dayOf(settings.now);
           const papers: FactSnapshot[] = [];
           const completed = new Set<string | null>();
-          for await (const fact of todayFacts(tx, read, [planRuleType, workbookPaperType, workbookAttemptType, studyRecordType])) {
+          for await (const fact of readFactCollection(tx, read, [planRuleType, workbookPaperType, workbookAttemptType, studyRecordType], {pinTypes: [workbookPaperType]})) {
             if (fact.type === planRuleType) rules.push({id: fact.ref.id, rev: fact.ref.rev, data: planRule(fact.value)});
             else if (fact.type === workbookPaperType) papers.push(fact);
             else completed.add(todayCompletion(fact, day, dayOf));
@@ -238,17 +196,9 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
     async note(input: unknown) {
       const value = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
       const requestId = clientRequest(value.requestId);
-      if (typeof value.id === 'string' && value.id.length > 0) {
-        if (value.restoreRev !== undefined) {
-          const commandInput = validate(organizerNoteRestoreInput, input);
-          return write(restoreOrganizerNote, requestId, commandInput);
-        }
-        const commandInput = validate(organizerNoteSaveInput, input);
-        return write(saveOrganizerNote, requestId, commandInput);
-      }
-      const draft = validate(organizerNoteDraft, input);
       const id = factId(stableId('organizer-note', requestId));
-      return write(createOrganizerNote, requestId, { id, ...draft });
+      const command = validate(data => prepareOrganizerNote(data, id), input);
+      return write(command.type, requestId, command.input);
     },
   };
 }
