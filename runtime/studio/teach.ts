@@ -613,14 +613,18 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const turnInput = inputs.get(job.slotKey);
       // The original provider request digest includes the tool schema and system prompt.
       // Persist the choice before the first sample so a retried turn keeps the same catalog.
-      const beliefTools = learningV1 || Boolean(memoryTurn && learningMemory && turnInput?.kind === 'fact' &&
-        await recordLocalRead(db, {learner, ownerKind: 'session', ownerId: job.slotKey, stepKey: 'belief-tools',
-          label: 'local:tool-contract', input: {tool: 'save_belief'}}, async tx => {
+      function toolContract(stepKey: string, tool: string, version: string) {
+        return recordLocalRead(db, {learner, ownerKind:'session', ownerId:slotKey, stepKey,
+          label:'local:tool-contract', input:{tool}}, async tx => {
           const {rowCount} = await tx.query(`SELECT 1 FROM effects
             WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2 AND label='teaching-model' LIMIT 1`,
-          [learner, job.slotKey]);
-          return rowCount ? 'legacy' : 'belief';
-        }, memoryRequest.authorize) === 'belief');
+          [learner, slotKey]);
+          return rowCount ? 'legacy' : version;
+        }, memoryRequest.authorize);
+      }
+      const beliefTools = learningV1 || Boolean(memoryTurn && learningMemory && turnInput?.kind === 'fact' &&
+        await toolContract('belief-tools','save_belief','belief') === 'belief');
+      const manageBeliefs = learningV1 && await toolContract('management-context','read_context','management') === 'management';
       function trackWorkspace(w: WorkspaceWitness, checkAtDispatch?: true) {
         trackNotion(w);
         inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
@@ -661,7 +665,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         },
       }) : undefined;
       if (learningV1 && (!workspace || !turnMemory)) throw new ChangedEvidence();
-      const toolsV1 = learningV1 && workspace && turnMemory ? openLearningTools({db,turn:slotKey,workspace,maySend,
+      const toolsV1 = learningV1 && workspace && turnMemory ? openLearningTools({db,turn:slotKey,workspace,maySend,manageBeliefs,
         authorize:authorizeLearning,track(w) {
           keepLearningBasis(w);
           trackWorkspace(w,true);
@@ -682,10 +686,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           }
         },
         saveBelief:(args,step) => turnMemory.execute('save_belief',args,step),
-        async readContext(intent,step,expand) {
+        async readContext(intent,step,expand,query) {
           const packet = await readMemoryGateway({...memoryRequest,intent,maxBytes:expand ? 16_384 : 8192,beliefTools:true,
-            ...(expand ? {expand} : {}),owner:{kind:'session',id:slotKey,step:'context-v1:'+String(step)}});
+            ...(expand ? {expand} : {}), ...(query ? {query} : {}),owner:{kind:'session',id:slotKey,step:'context-v1:'+String(step)}});
           if (!packet) return;
+          if (intent === 'management') turnMemory.rememberRetrieved(packet);
           packet.receipt.basis.forEach(keepLearningBasis);
           trackMemory(packet);
           return packet.bundle;

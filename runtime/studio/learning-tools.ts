@@ -1,3 +1,5 @@
+import { memoryRetrieveQuery } from '../../modules/companion/belief.ts';
+import { ClaimInputError } from '../../modules/companion/claim.ts';
 import { toolFailure, type HostedTool, type LearningTools, type LearningResult } from '../../executors/teaching/learning-tools.ts';
 import { workspaceDefinitions } from '../../executors/teaching/workspace-tools.ts';
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
@@ -42,14 +44,15 @@ function existing(raw: string, name: HostedTool): LearningResult {
 }
 const intents = ['tutoring','planning','execution','history'] as const satisfies readonly MemoryIntent[];
 export function openLearningTools(options: {
-  db: Db; turn: string; workspace: ReturnType<typeof openWorkspaceTools>; maySend: WorkspaceSourceRecipient;
+  db: Db; turn: string; manageBeliefs: boolean; workspace: ReturnType<typeof openWorkspaceTools>; maySend: WorkspaceSourceRecipient;
   authorize(tx: ReadTransaction): Promise<void>; authorizeRemote(): Promise<boolean>;
   track(witness: WorkspaceWitness): void;
-  readContext(intent: typeof intents[number], step: number, expand?: RegionPage): Promise<ContextBundle | undefined>;
+  readContext(intent: MemoryIntent, step: number, expand?: RegionPage, query?: string): Promise<ContextBundle | undefined>;
   draftBasis(): DraftWitness[];
   saveBelief(args: Record<string,unknown>, step: number): Promise<string>;
 }): LearningTools {
   const {db,turn,workspace,maySend,authorize} = options;
+  const allowedIntents: readonly MemoryIntent[] = options.manageBeliefs ? [...intents,'management'] : intents;
   const question = openWorkspaceQuestion(db,turn,maySend,authorize,options.draftBasis);
   const artifact = workspace.presentationTool;
   const pages = new Map<string,RegionPage>();
@@ -69,8 +72,10 @@ export function openLearningTools(options: {
   return {
     definitions:{
       search_learning:renamed('search_learning'),open_learning:renamed('open_learning'),
-      read_context:tool('read_context','读取已授权学习上下文，intent 支持 radar、tutoring、conversation、planning、execution、history。从返回的 omitted.expand 可打开更多本轮已授权内容。当前只读当前视点。',{
-        intent:{type:'string',enum:['radar','conversation',...intents]},horizon_hours:{type:'integer',minimum:1,maximum:168},
+      read_context:tool('read_context','读取已授权学习上下文，intent 支持 radar、tutoring、conversation、planning、execution、history。从返回的 omitted.expand 可打开更多本轮已授权内容。当前只读当前视点。' +
+        (options.manageBeliefs ? '更正或忘记记忆前，用 management 和可选 query 查找原条目。' : ''),{
+        intent:{type:'string',enum:['radar','conversation',...allowedIntents]},
+        ...(options.manageBeliefs ? {query:{type:'string',minLength:1,maxLength:120}} : {}),horizon_hours:{type:'integer',minimum:1,maximum:168},
         expand:{type:'object',additionalProperties:false,required:['region','start','basisDigest'],properties:{
           region:{type:'string'},start:{type:'integer',minimum:0},basisDigest:{type:'string',pattern:'^[0-9a-f]{64}$'},
         }},
@@ -93,7 +98,11 @@ export function openLearningTools(options: {
         return toolFailure('not_found','目前教材只接支持的正文和块，保存计算产物尚未接入。',fallback(name));
       if (name === 'save_page' || name === 'save_edge')
         return existing(await workspace.execute(native[name],args,step),name);
-      if (name === 'save_belief') return existing(await options.saveBelief(args,step),name);
+      if (name === 'save_belief') {
+        if (options.manageBeliefs && (args.action === 'update' || args.action === 'forget') && args.supersedes === undefined)
+          return toolFailure('invalid_args','请先查找要更正或忘记的原条目。',{tool:'read_context',args:{intent:'management'}},'supersedes');
+        return existing(await options.saveBelief(args,step),name);
+      }
       if (name === 'save_question') return question(args,step);
       if (name === 'manage_activity' || name === 'mount_artifact') {
         const {action,...work} = args;
@@ -103,15 +112,24 @@ export function openLearningTools(options: {
       }
       if (name === 'read_context') {
         await priorRead;
-        if (Object.keys(args).some(key => !['intent','horizon_hours','expand'].includes(key)) ||
+        const management = options.manageBeliefs && args.intent === 'management';
+        if (Object.keys(args).some(key => !['intent','horizon_hours','expand'].includes(key) && !(management && key === 'query')) ||
             (args.horizon_hours !== undefined && args.intent !== 'radar') ||
             (args.expand !== undefined && args.intent === 'radar'))
           return toolFailure('invalid_args','此读取仅支持当前视点。',{tool:'read_context',args:{intent:'tutoring'}});
         if (args.intent === 'radar') return existing(await workspace.execute('read_learner_radar',
           args.horizon_hours === undefined ? {} : {horizon_hours:args.horizon_hours},step),name);
-        const intent = args.intent === 'conversation' ? 'tutoring' : intents.find(value => value === args.intent);
+        const intent = args.intent === 'conversation' ? 'tutoring' : allowedIntents.find(value => value === args.intent);
         if (!intent) return toolFailure('not_found','此上下文意图尚无授权的生产读取。',{tool:'read_context',args:{intent:'tutoring'}});
-        const next = {tool:'read_context',args:{intent}};
+        let query: string | undefined;
+        if (management) {
+          try { query = memoryRetrieveQuery({query:args.query}); }
+          catch (error) {
+            if (!(error instanceof ClaimInputError)) throw error;
+            return toolFailure('invalid_args',error.message,{tool:'read_context',args:{intent}},'query');
+          }
+        }
+        const next = {tool:'read_context',args:{intent,...(query ? {query} : {})}};
         const expand = args.expand === undefined ? undefined : pages.get(canonicalJsonString(args.expand));
         if (args.expand !== undefined && !expand)
           return toolFailure('not_found','请传本轮已返回的展开位置。',next,'expand');
@@ -119,7 +137,7 @@ export function openLearningTools(options: {
           try { recallRegions(intent,8192,expand); }
           catch { return toolFailure('invalid_args','展开位置与所选意图不符。',next,'expand'); }
         }
-        const context = await options.readContext(intent,step,expand);
+        const context = await options.readContext(intent,step,expand,query);
         if (!context || context.omitted.some(item => item.reason === 'basis_stale'))
           return toolFailure('basis_stale','上下文见证已变化。',next);
         for (const item of context.omitted) if (item.reason === 'budget')

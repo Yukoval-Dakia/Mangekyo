@@ -46,6 +46,12 @@ export function openTurnMemory(options: {
   const hypothesisTargets = new Set<string>();
   const targets = new Set<string>();
   let opened = false;
+  function rememberRetrieved(packet: Packet) {
+    opened = true;
+    for (const ref of packet.receipt.sent) {
+      if (ref.type === claimType || ref.type === memoryAssertionType) candidates.set(ref.id, ref);
+    }
+  }
   async function stageHypothesis(args: Record<string, unknown>, step: number) {
     const {action, text, supersedes, quote_excerpt} = args;
     const belief = options.belief!;
@@ -82,8 +88,7 @@ export function openTurnMemory(options: {
     try {
       if (name === 'retrieve_memory') {
         const packet = await options.retrieve(memoryRetrieveQuery(args), step);
-        opened = true;
-        for (const ref of packet.receipt.basis) if (ref.type === claimType || ref.type === memoryAssertionType) candidates.set(ref.id, ref);
+        rememberRetrieved(packet);
         return packet.context;
       }
       const explicit = !!options.belief;
@@ -148,7 +153,7 @@ export function openTurnMemory(options: {
     });
   }
   const hasPending = () => pending.length > 0 || assertions.length > 0;
-  return {execute, commit, hasPending, used: () => hasPending() || opened};
+  return {execute, commit, hasPending, rememberRetrieved, used: () => hasPending() || opened};
 }
 
 export function isMemoryConflict(error: unknown) {
