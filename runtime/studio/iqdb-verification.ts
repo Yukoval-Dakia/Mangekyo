@@ -2,7 +2,7 @@ import { FactNotFoundError, guardAccess } from '../../kernel/src/commands/reads.
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, learnerId } from '../../kernel/src/declarations/ids.ts';
-import type { EffectRequest, FactSnapshot, Json, Outcome, ReadContext } from '../../kernel/src/declarations/types.ts';
+import type { Outcome, ReadContext } from '../../kernel/src/declarations/types.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -16,11 +16,7 @@ import {
 } from '../../modules/content/question-verification.ts';
 import deriver from '../../modules/content/derivers/question-verification.ts';
 import { purpose } from './identity.ts';
-
-export type QuestionEffectHost = {
-  mayReceive(request: EffectRequest, fact: FactSnapshot): boolean;
-  invoke(request: EffectRequest, invocationId: string): Promise<Json>;
-};
+import type { openLocalQuestionEffect } from './iqdb-local-effect.ts';
 
 const policy: CandidatePolicy = { slot: { type: questionVerificationType }, deriver: deriver.name, purpose };
 const propagation = createPropagationHooks([]);
@@ -61,7 +57,9 @@ export async function enqueueQuestionVerification(tx: DbTransaction, version: Qu
   });
 }
 
-export async function executeQuestionVerification(db: Db, ref: WorkRef, host?: QuestionEffectHost, terminal = false) {
+export async function executeQuestionVerification(
+  db: Db, ref: WorkRef, host: Awaited<ReturnType<typeof openLocalQuestionEffect>>, terminal = false,
+) {
   if (!host || terminal) { await failWork(db, ref); return; }
   const scope = { learner: learnerId(ref.learner), purpose };
   const work = await db.snapshot(scope, tx => readReadyWork(tx, ref));
@@ -82,7 +80,7 @@ export async function executeQuestionVerification(db: Db, ref: WorkRef, host?: Q
         throw new FactNotFoundError('核验依据已变化。');
       for (const input of sealed.manifest.inputs) {
         if (input.kind !== 'fact') throw new Error('核验依据必须是已打开的事实。');
-        await guardAccess(tx, input, { purpose, maySend: fact => host.mayReceive(request, fact) });
+        await guardAccess(tx, input, { purpose, maySend: () => true });
       }
     };
     const receipt = await runEffect(db, { ...scope, ownerKind: 'derivation', ownerId: sealed.id, ...request }, async invocationId => {
@@ -93,11 +91,13 @@ export async function executeQuestionVerification(db: Db, ref: WorkRef, host?: Q
       });
       const reply = await result;
       if (!reply) throw new Error('核验接收方未给出确定回执。');
-      return questionVerificationEffectResult(invocationId, reply.value);
+      return { ...questionVerificationEffectResult(invocationId, reply.value), execution: host.execution };
     }, authorize, { manifest: sealed.manifest, work: ref });
-    receipts.push(receipt.kind === 'done'
-      ? { ownerId: sealed.id, request, state: 'done', result: receipt.result }
-      : { ownerId: sealed.id, request, state: 'unknown' });
+    if (receipt.kind === 'unknown') {
+      await submitCandidate(db, ref, policy, sealed.id, { kind: 'failed', reason: '独立核验回执待核对。' }, propagation);
+      return;
+    }
+    receipts.push({ ownerId: sealed.id, request, state: 'done', result: receipt.result });
   }
   await submitCandidate(db, ref, policy, sealed.id, settle(sealed, receipts), propagation);
 }

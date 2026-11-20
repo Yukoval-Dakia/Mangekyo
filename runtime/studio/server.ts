@@ -36,7 +36,8 @@ import { openResearch } from './research.ts';
 import { validateResearchScoutHost } from './research-scout.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openIqdb } from './iqdb.ts';
-import { executeQuestionVerification, type QuestionEffectHost } from './iqdb-verification.ts';
+import { openLocalQuestionEffect } from './iqdb-local-effect.ts';
+import { executeQuestionVerification } from './iqdb-verification.ts';
 import { questionVerificationType } from '../../modules/content/question-verification.ts';
 import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
@@ -91,12 +92,7 @@ const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 const pythonHost = createPythonDeriverHost();
 const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
 const retentionComparison = openRetentionComparison(db, pythonHost);
-const iqdbModule = process.env.MANGEKYO_IQDB_EFFECT_MODULE;
-const iqdbHost: QuestionEffectHost | undefined = iqdbModule && mode !== 'web'
-  ? (await import(pathToFileURL(iqdbModule).href)).questionEffectHost
-  : undefined;
-if (iqdbModule && mode !== 'web' && (typeof iqdbHost?.invoke !== 'function' || typeof iqdbHost.mayReceive !== 'function'))
-  throw new Error('题库核验宿主模块须导出 questionEffectHost');
+const iqdbHost = await openLocalQuestionEffect(process.env.MANGEKYO_IQDB_LOCAL_WASM);
 const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
 const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
   ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
@@ -120,7 +116,7 @@ async function openWeb() {
     context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
     onResearchFactsChanged: research.workbookChanged,
   });
-  const iqdb = openIqdb(db, Boolean(iqdbModule), workbook.issueBank);
+  const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank);
   const student = { notion:openStudioNotion(db,capture), textbook, relationReview:openRelationReview(db,content),
     workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
