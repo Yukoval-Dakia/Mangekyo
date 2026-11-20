@@ -3,6 +3,20 @@ import type { Db, DbQuery, LearnerScope, ReadTransaction } from './db/types.ts';
 import type { CommandId, FactId } from './declarations/ids.ts';
 import type { Actor } from './commands/contracts.ts';
 
+// A rename preserves the catalog identity and requires every old connection to have left.
+export async function requireLifecycleCutover(tx: DbQuery) {
+  const { rows: [marker] } = await tx.query<{ present: boolean }>(
+    "SELECT to_regclass('kernel_v8_cutover') IS NOT NULL AS present");
+  if (marker?.present) {
+    const { rows } = await tx.query(`SELECT 1 FROM kernel_v8_cutover c JOIN kernel_runtime_identity k USING (store_id)
+      JOIN pg_database d ON d.oid=c.database_oid WHERE d.datname=current_database()
+        AND d.datname='mangekyo_v8_' || lower(k.store_id) AND c.source_name<>d.datname
+        AND NOT EXISTS (SELECT FROM pg_database old WHERE old.datname=c.source_name)`);
+    if (rows.length === 1) return;
+  }
+  throw new Error('Legacy Studio endpoint is not fenced. Follow the offline v8 cutover in executors/temporal/README.md');
+}
+
 export async function migrateLifecycle(tx: DbQuery) {
   await tx.query(`CREATE TABLE tombstones (
     learner_id text NOT NULL REFERENCES learners(id), id text NOT NULL,
@@ -12,11 +26,18 @@ export async function migrateLifecycle(tx: DbQuery) {
     learner_id text NOT NULL REFERENCES learners(id), request_id text NOT NULL, root_id text NOT NULL,
     expected_rev integer NOT NULL, generation bigint NOT NULL, object_removed boolean NOT NULL DEFAULT false,
     PRIMARY KEY (learner_id,request_id), UNIQUE (learner_id,root_id))`);
-  // Already-running v7 processes also acquire the learner lock, but do not know about v8.
+  // Legacy effect completions carry a reservation tick even when their owner differs from the erased fact.
   await tx.query(`CREATE FUNCTION reject_erased_identity() RETURNS trigger LANGUAGE plpgsql AS $$
     DECLARE target text;
     BEGIN
-      IF TG_TABLE_NAME='effects' THEN target := NEW.owner_id; ELSE target := NEW.id; END IF;
+      IF TG_TABLE_NAME='effects' THEN
+        target := NEW.owner_id;
+        IF TG_OP='UPDATE' AND EXISTS (SELECT FROM erasure_requests
+            WHERE learner_id=OLD.learner_id AND generation>OLD.started_tick) THEN
+          RAISE EXCEPTION 'Effect reservation predates erasure' USING ERRCODE='55000';
+        END IF;
+      ELSE target := NEW.id;
+      END IF;
       IF EXISTS (SELECT FROM tombstones WHERE learner_id=NEW.learner_id AND kind=TG_ARGV[0]
                  AND id=target) THEN
         RAISE EXCEPTION 'Erased identity' USING ERRCODE='55000';

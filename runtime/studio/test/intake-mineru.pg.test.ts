@@ -162,6 +162,8 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
       read:async () => { throw new Error('late result reached polling'); },
     }).execute(ref!);
     await entered.promise;
+    await db.query(`INSERT INTO effects (learner_id,owner_kind,owner_id,step_key,label,input_digest,state,started_tick)
+      SELECT id,'session','legacy-session','call','external','digest','started',clock FROM learners WHERE id=$1`, [studioLearner]);
     const confirmed = 'permanently-delete-original';
     try {
       const marker = join(directory,'intake',prior.id,'store-id');
@@ -185,6 +187,11 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     // A worker that loaded v7 before migration cannot reinstall the identity.
     await expect(db.query(`INSERT INTO facts(learner_id,id,type,current_rev,created_tick,changed_tick)
       VALUES ($1,$2,'legacy',1,1,1)`,[studioLearner,prior.id])).rejects.toThrow('Erased identity');
+    await expect(db.query(`UPDATE effects SET state='done',result='"late response"'
+      WHERE learner_id=$1 AND owner_id='legacy-session' AND state='started'`, [studioLearner]))
+      .rejects.toMatchObject({code:'55000'});
+    expect((await db.query("SELECT state,result FROM effects WHERE learner_id=$1 AND owner_id='legacy-session'", [studioLearner])).rows)
+      .toEqual([{state:'started',result:null}]);
     const ids = [prior.id,intakeIdFor(factId(prior.id))];
     expect((await db.query('SELECT data FROM fact_revs WHERE learner_id=$1 AND fact_id=ANY($2)',[studioLearner,ids])).rows).toEqual([]);
     expect((await db.query('SELECT result FROM effects WHERE learner_id=$1 AND owner_id=ANY($2)',[studioLearner,ids])).rows).toEqual([]);
