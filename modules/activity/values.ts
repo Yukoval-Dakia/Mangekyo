@@ -1,6 +1,6 @@
 import { factId } from '@mangekyo/kernel';
 
-function object(input: unknown): Record<string, unknown> {
+export function object(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('记录格式无效');
   return input as Record<string, unknown>;
 }

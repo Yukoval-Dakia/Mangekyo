@@ -68,6 +68,7 @@ function ref(input: unknown): HelpRef {
   allowFields(value, ['id', 'rev']);
   return { id: factId(textId(value.id)), rev: positiveInteger(value.rev) as Revision };
 }
+export { ref as helpRef };
 
 function item(input: unknown): HelpItem {
   const value = record(input);

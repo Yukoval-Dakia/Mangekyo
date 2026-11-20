@@ -63,7 +63,7 @@ const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
   : undefined;
 if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模块须导出 workbookAssessmentHost');
 const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
-const retention = openRetention(db);
+const retention = openRetention(db, activity);
 const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
 const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
   ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
