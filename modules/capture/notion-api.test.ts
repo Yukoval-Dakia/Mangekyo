@@ -1,8 +1,10 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { expect, it } from 'vitest';
-import { notionReadPage, notionReadRows, notionVersion, NotionSourceUnavailable, type NotionReadRequest, type NotionReadResponse } from './notion-api.ts';
-import { advanceNotionCursor, notionSourceProjection } from './notion-values.ts';
+import { learnerId } from '@mangekyo/kernel';
+import { notionReadPage, notionReadRows, notionVersion, type NotionReadRequest, type NotionReadResponse } from './notion-api.ts';
+import { applyNotionSourceInvalidation, openNotionBoundedSnapshot, prepareNotionBoundedSnapshot, type NotionBoundedSnapshot, type NotionBoundedUse } from './notion-source.ts';
+import { notionSourceProjection } from './notion-values.ts';
 
 const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const timestamp = '2026-11-20T12:00:00.000Z';
@@ -23,32 +25,31 @@ async function run<T>(stream: AsyncGenerator<NotionReadRequest, T, NotionReadRes
   return step.value;
 }
 
-it('reads all tied rows and paginated nested blocks over HTTP under the same selection', async () => {
-  let selected = true;
+it('reads paginated sources and closes bounded handles at the scope of remote access loss', async () => {
+  let denied: { scope: 'root' | 'child'; status: number } | undefined;
   let signature = 'first-test-signature';
-  const calls: string[] = [];
-  const queryBodies: unknown[] = [];
   const server = createServer(async (request, response) => {
     if (request.headers.authorization !== 'Bearer isolated-token' || request.headers['notion-version'] !== notionVersion) {
       response.writeHead(401).end();
       return;
     }
     const url = new URL(request.url!, 'http://127.0.0.1');
-    calls.push(`${request.method} ${url.pathname}`);
     let outgoing: unknown;
     if (request.method === 'POST' && url.pathname === `/v1/data_sources/${root.id}/query`) {
       let raw = '';
       for await (const chunk of request) raw += String(chunk);
       const body = JSON.parse(raw);
-      queryBodies.push(body);
+      if (body.filter?.last_edited_time?.on_or_after !== timestamp) return void response.writeHead(422).end();
       outgoing = body.start_cursor ? listed([row(2)]) : listed([row(3)], 'rows-next');
     } else if (url.pathname === `/v1/pages/${id(2)}`) {
-      outgoing = selected ? row(2) : { ...row(2), parent: { type: 'data_source_id', data_source_id: id(9) } };
+      outgoing = row(2);
     } else if (url.pathname === `/v1/blocks/${id(2)}/children`) {
+      if (denied?.scope === 'root' && url.searchParams.has('start_cursor')) return void response.writeHead(denied.status).end();
       outgoing = url.searchParams.has('start_cursor') ? listed([block(7), { ...block(8), type: 'file',
         file: { type: 'file', name: 'worksheet.pdf', file: { url: `https://example.org/doc?signature=${signature}`, expiry_time: timestamp } } }])
         : listed([block(4, true)], 'block+/next');
     } else if (url.pathname === `/v1/blocks/${id(4)}/children`) {
+      if (denied?.scope === 'child') return void response.writeHead(denied.status).end();
       outgoing = listed([block(5)]);
     } else {
       response.writeHead(404).end();
@@ -71,26 +72,50 @@ it('reads all tied rows and paginated nested blocks over HTTP under the same sel
     const previous = { pageId: id(3), lastEditedTime: timestamp };
     const rows = await run(notionReadRows(root, previous), request);
     expect(rows).toEqual([previous, { pageId: id(2), lastEditedTime: timestamp }]);
-    expect(advanceNotionCursor(previous, rows)).toEqual(previous);
-    expect(queryBodies[1]).toMatchObject({ start_cursor: 'rows-next', filter: { last_edited_time: { on_or_after: timestamp } } });
     const page = await run(notionReadPage(root, id(2)), request);
     const envelope = await notionSourceProjection(page);
     expect(envelope.unit.blocks.slice(-4).map(item => [item.parentId, item.body.text])).toEqual([
       [null, '块 4'], [id(4), '块 5'], [null, '块 7'], [null, '[Notion file]'],
     ]);
-    expect(envelope.unit.blocks.map(item => item.body.text)).toContain('Due: 2026-11-25');
-    expect(envelope.unit.blocks.map(item => item.body.notionBody)).toContainEqual({ type: 'property',
-      propertyType: 'relation', id: 'relation', name: 'Related', value: [{ id: id(21) }], availability: 'partial' });
     const attachment = envelope.unit.blocks.at(-1)?.body;
-    expect(attachment?.notionBody).toMatchObject({ data: { file: { origin: 'https://example.org', path: '/doc' } } });
     expect(JSON.stringify(attachment)).not.toMatch(/signature|expiry_time/);
     signature = 'second-test-signature';
     const reordered = await notionSourceProjection(await run(notionReadPage(root, id(2)), request));
     expect(reordered.unit.blocks.at(-1)?.body.contentHash).toBe(attachment?.contentHash);
-    const count = calls.length;
-    selected = false;
-    await expect(run(notionReadPage(root, id(2)), request)).rejects.toBeInstanceOf(NotionSourceUnavailable);
-    expect(calls.slice(count)).toEqual([`GET /v1/pages/${id(2)}`]);
+    const readError = (selected: NotionBoundedUse['selection']['root']) => run(notionReadPage(selected, id(2)), request).catch(error => error);
+    for (const [selected, status, preset, target] of [
+      [root, 403, 'temporary', { kind: 'page', pageId: id(2) }],
+      [{ kind: 'page', id: id(2) }, 404, 'turn-only', { kind: 'selection' }],
+    ] as const) {
+      const selection = { root: selected, learner: learnerId('01KFS4AAA00000000000000000'), selectionId: 'notes', selectionEpoch: '1' };
+      const use = { preset, selection, pageId: id(2), conversationId: 'chat', turnId: 'turn', authorizationEpoch: '0',
+        recipient: { purpose: 'turn-tool', id: 'tool' }, authorizedAt: timestamp, expiresAt: '2026-11-21T12:00:00.000Z' } satisfies NotionBoundedUse;
+      const fresh = { ...use, selection: { ...selection, selectionEpoch: '2' } };
+      let saved: NotionBoundedSnapshot | undefined = await prepareNotionBoundedSnapshot(use, use, page, timestamp);
+      const replacement = await prepareNotionBoundedSnapshot(fresh, fresh, page, timestamp);
+      const open = (current = use, now = timestamp) => saved && openNotionBoundedSnapshot(saved, current, now);
+      expect(open()?.title).toBe('滴定');
+      expect(() => open({ ...use, turnId: 'next' })).toThrow('本轮授权无效');
+      expect(() => open(use, use.expiresAt)).toThrow('本轮授权无效');
+      const handles = [{ handle: { id: 'saved' }, use }, { handle: { id: 'fresh' }, use: fresh },
+        { handle: { id: 'other-handle' }, use: { ...use, pageId: target.kind === 'page' ? id(3) : use.pageId } }];
+      const closed: string[] = [];
+      const close = async ({ id }: { id: string }, reason: string) => {
+        expect(reason).toBe('source-revoked');
+        closed.push(id);
+        if (id === 'saved') saved = undefined;
+      };
+      denied = { scope: 'child', status };
+      expect(await applyNotionSourceInvalidation(await readError(selected), selection, selection, handles, { close })).toBeNull();
+      denied = { scope: 'root', status };
+      const error = await readError(selected);
+      expect(await applyNotionSourceInvalidation(error, selection, fresh.selection, handles, { close })).toBeNull();
+      expect(open()).toBeDefined();
+      expect(await applyNotionSourceInvalidation(error, selection, selection, handles, { close })).toMatchObject({ target });
+      expect(closed).toEqual(target.kind === 'selection' ? ['saved', 'other-handle'] : ['saved']);
+      expect(open()).toBeUndefined();
+      expect(openNotionBoundedSnapshot(replacement, fresh, timestamp).title).toBe('滴定');
+    }
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

@@ -143,14 +143,15 @@ function semanticBody(value: Json): Json {
 
 type ProjectedBlock = { id: string; parentId: string | null; text: string; body: JsonObject };
 
-function* notionReadChildren(pageId: string, parentId: string | null, seenBlocks: Set<string>, blocks: ProjectedBlock[]):
+function* notionReadChildren(pageId: string, parentId: string | null, seenBlocks: Set<string>, blocks: ProjectedBlock[],
+  boundary: NotionInvalidatedSource):
   Generator<NotionReadRequest, void, NotionReadResponse> {
   const cursors = new Set<string>();
   let cursor: string | null = null;
   do {
     const query: string = cursor === null ? 'page_size=100' : `page_size=100&start_cursor=${encodeURIComponent(cursor)}`;
     const reply = yield { method: 'GET', path: `/v1/blocks/${parentId ?? pageId}/children?${query}` };
-    const page = pagination(reply, cursors);
+    const page = pagination(reply, cursors, parentId === null ? boundary : undefined);
     for (const entry of page.results) {
       const block = notionRecord(entry);
       const id = notionId(block.id);
@@ -165,7 +166,7 @@ function* notionReadChildren(pageId: string, parentId: string | null, seenBlocks
         ...(type === 'unsupported' ? { availability: 'unavailable' } : {}) } });
       // A child page/database has its own grant boundary.
       if (block.has_children && type !== 'child_page' && type !== 'child_database') {
-        yield* notionReadChildren(pageId, id, seenBlocks, blocks);
+        yield* notionReadChildren(pageId, id, seenBlocks, blocks, boundary);
       }
     }
     cursor = page.next;
@@ -213,7 +214,7 @@ export async function* notionReadPage(root: NotionRoot, requestedPage: string):
   const boundary = pageBoundary(selected, pageId);
   const first = pageMetadata(response(yield get, boundary), selected, pageId);
   const blocks: ProjectedBlock[] = [];
-  yield* notionReadChildren(pageId, null, new Set(), blocks);
+  yield* notionReadChildren(pageId, null, new Set(), blocks, boundary);
   const last = pageMetadata(response(yield get, boundary), selected, pageId);
   if (first.lastEditedTime !== last.lastEditedTime || first.title !== last.title) {
     throw new NotionSourceChanged('拉取期间 Notion 页面有更新，请重试。');

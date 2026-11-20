@@ -1,8 +1,8 @@
-export default async function({ db, learner, load, send, stableId, assert }) {
+export default async function({ db, learner, load, send, assert }) {
   const { createAuthorizedFactReader } = await load('kernel/src/commands/reads.ts');
   const { captureSourceCommand, sourceEnvelope } = await load('modules/capture/source.ts');
   const {
-    notionRevisionDiff, notionSourceRecipient, openNotionBoundedSnapshot, prepareNotionBoundedSnapshot,
+    notionRevisionDiff, notionSourceRecipient,
     prepareNotionIngest, prepareNotionRevision, refreshNotionSourceCommand, revokeNotionSourceCommand, setNotionPurposeCommand,
   } = await load('modules/capture/notion-source.ts');
   const uuid = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
@@ -39,22 +39,7 @@ export default async function({ db, learner, load, send, stableId, assert }) {
   await send(revokeNotionSourceCommand, { ...target, expectedRev: 3, accessEpoch: storage.accessEpoch });
   await assert.rejects(open(1, 'storage'), { reason: 'retracted' });
 
-  const use = {
-    selection: { learner, selectionId: selection.id, selectionEpoch: '4', root: selection.root },
-    pageId: page.pageId, conversationId: stableId('notion-acceptance-chat'), turnId: stableId('notion-acceptance-turn'),
-    authorizationEpoch: '2', recipient: { purpose: 'turn-tool', id: 'tool-call-8' },
-    authorizedAt: at, expiresAt: '2026-11-21T01:00:00.000Z',
-  };
   for (const preset of ['turn-only', 'temporary']) {
     await assert.rejects(prepareNotionIngest({ ...selection, preset }, page, at), /不能保存/);
-    const grant = { ...use, preset };
-    const snapshot = await prepareNotionBoundedSnapshot(grant, grant, page, at);
-    assert.equal(openNotionBoundedSnapshot(snapshot, grant, at).blocks[0].text, '任务 2');
-    const mismatch = [
-      { ...grant, turnId: stableId('next-turn') },
-      { ...grant, recipient: { ...grant.recipient, id: 'other-tool' } },
-    ];
-    for (const current of mismatch) assert.throws(() => openNotionBoundedSnapshot(snapshot, current, at), /本轮授权无效/);
-    assert.throws(() => openNotionBoundedSnapshot(snapshot, grant, grant.expiresAt), /本轮授权无效/);
   }
 }

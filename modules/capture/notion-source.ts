@@ -36,12 +36,15 @@ export type NotionSelectionWitness = {
   readonly selectionEpoch: string;
 };
 
-// Use the witness captured before the provider call. The host applies this
-// signal only within that still-current generation, before any further reads
-// or sends, and invalidates retained reads and bounded handles in its scope.
-export function notionSourceInvalidation(error: unknown, witness: NotionSelectionWitness) {
-  if (!(error instanceof NotionSourceUnavailable) || !error.invalidated) return null;
-  return { selection: witness, target: error.invalidated };
+function sameNotionSelection(left: NotionSelectionWitness, right: NotionSelectionWitness) {
+  return left.learner === right.learner && left.selectionId === right.selectionId && left.selectionEpoch === right.selectionEpoch;
+}
+
+export function notionSourceInvalidation(error: unknown, dispatched: NotionSelectionWitness, current: NotionSelectionWitness | null) {
+  if (!(error instanceof NotionSourceUnavailable) || !error.invalidated || !current ||
+      !sameNotionSelection(dispatched, current)) return null;
+  const { learner, selectionId, selectionEpoch } = dispatched;
+  return { selection: { learner, selectionId, selectionEpoch }, target: error.invalidated };
 }
 
 export type NotionBoundedUse = {
@@ -128,6 +131,23 @@ export type NotionBoundedLifecycle = {
   open(handle: NotionBoundedHandle, current: NotionBoundedUse, now: string): Promise<NotionBoundedSnapshot['projection']>;
   close(handle: NotionBoundedHandle, reason: NotionBoundedEnd): Promise<void>;
 };
+
+// Apply with the host's live generation and immutable bindings for its open
+// handles. Close fences each handle before destruction. A replacement grant
+// has a separate generation and its handles are outside this operation.
+export async function applyNotionSourceInvalidation(
+  error: unknown, dispatched: NotionSelectionWitness, current: NotionSelectionWitness | null,
+  handles: readonly { readonly handle: NotionBoundedHandle; readonly use: Pick<NotionBoundedUse, 'selection' | 'pageId'> }[],
+  lifecycle: Pick<NotionBoundedLifecycle, 'close'>,
+) {
+  const invalidation = notionSourceInvalidation(error, dispatched, current);
+  if (!invalidation) return null;
+  const { selection, target } = invalidation;
+  const affected = handles.filter(({ use }) => sameNotionSelection(selection, use.selection) &&
+    (target.kind === 'selection' || notionId(use.pageId) === target.pageId));
+  await Promise.all(affected.map(({ handle }) => lifecycle.close(handle, 'source-revoked')));
+  return invalidation;
+}
 
 export function notionRecipientAllowed(selection: NotionSelection, purpose: string, recipient: NotionRecipient) {
   if (selection.preset !== 'storage' && selection.preset !== 'learning') return false;
