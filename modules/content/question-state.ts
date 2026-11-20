@@ -7,6 +7,7 @@ import { parseSaveQuestion } from './question-authoring.ts';
 export const questionStateType = 'content.questionState';
 export const questionMetaType = 'overlay.question_meta';
 export const questionVerificationType = 'content.questionVerification';
+export const questionVerificationMethodVersion = '2';
 export const questionMetaDraftType = 'content.questionMetaDraft';
 export const questionKey = ({ id, rev }: { id: string; rev: number }) => `${id}:${rev}`;
 export const questionVerificationKey = (input: { id: string; rev: number; recheck?: number }) =>
@@ -62,20 +63,25 @@ export function parseQuestionMetaDraft(input: unknown) {
 
 export type QuestionMetaDraft = ReturnType<typeof parseQuestionMetaDraft>;
 
-export type VerificationReceipt = { readonly invocationId: string; readonly result: Json };
-export type QuestionVerification = ReturnType<typeof evaluateQuestionVerification>;
-
-/** Receipts are supplied by the effect host, never by the question author or a command argument. */
-export function evaluateQuestionVerification(input: {
+export type QuestionVerificationBasis = {
   readonly id: FactId;
   readonly rev: Revision;
   readonly accessEpoch: string;
   readonly recheck: number;
-  readonly checks?: readonly VerificationReceipt[];
-}) {
-  const { id, rev, accessEpoch, recheck, checks = [] } = input;
-  const basis = { id, rev, accessEpoch, recheck };
-  const review = (reason: string) => ({ status: 'needs-review' as const, basis, reason });
+  readonly methodVersion: string;
+};
+export type VerificationReceipt = { readonly invocationId: string; readonly result: Json };
+export type QuestionVerification = ReturnType<typeof evaluateQuestionVerification>;
+
+export function questionVerificationReview(basis: QuestionVerificationBasis, reason: string) {
+  return { status: 'needs-review' as const, basis, reason };
+}
+
+/** The public settler supplies results already matched to the sealed ledger plan. */
+export function evaluateQuestionVerification(
+  basis: QuestionVerificationBasis, checks: readonly VerificationReceipt[],
+) {
+  const review = (reason: string) => questionVerificationReview(basis, reason);
   if (checks.length !== 4 || checks.some(check => !check.invocationId) ||
       new Set(checks.map(check => check.invocationId)).size !== checks.length) {
     return review('需要三次独立求解和一次独立契约验收回执。');
@@ -101,7 +107,7 @@ export function evaluateQuestionVerification(input: {
   };
 }
 
-/** Release callers must use a witness-tracking read context and its current-slot read. */
+/** Server-only release read. Use a witness-tracking context and project for the actual recipient. */
 export async function openQuestionForRelease(
   read: ReadContext, id: FactId, releaseUse: string,
 ) {
@@ -121,7 +127,8 @@ export async function openQuestionForRelease(
   const result = slot.outcome;
   if (result.kind !== 'value' || result.value.status !== 'ready' ||
       result.value.basis.id !== id || result.value.basis.rev !== question.ref.rev ||
-      result.value.basis.accessEpoch !== question.accessEpoch || result.value.basis.recheck !== state.recheck) {
+      result.value.basis.accessEpoch !== question.accessEpoch || result.value.basis.recheck !== state.recheck ||
+      result.value.basis.methodVersion !== questionVerificationMethodVersion) {
     throw new Error('这版题目需要当前有效的独立验收。');
   }
   return { ref: question.ref, asset, contract: freezeQuestionAssessment(asset, question.ref) };
