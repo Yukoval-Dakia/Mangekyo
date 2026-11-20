@@ -1,4 +1,6 @@
-import { isJson, learnerId, type Asset as KernelAsset, type FactRef, type FactSnapshot, type JsonObject, type ReadContext } from '@mangekyo/kernel';
+import { isJson, type Asset as KernelAsset, learnerId, type FactRef, type FactSnapshot, type JsonObject, type ReadContext } from '@mangekyo/kernel';
+import { bindQuestionAssessment } from './assessment-values.ts';
+import { parseKnowledgeEntity, type KnowledgeEntityKind } from './knowledge-entity.ts';
 import { fields, key, list, optionalKey, pageId, record, revision, text } from './parse.ts';
 
 import { parseDisciplineContext, type DisciplineContext } from './discipline-context.ts';
@@ -61,7 +63,9 @@ export type ContentUnit = { readonly title: string; readonly basis?: readonly As
   { readonly kind: 'question'; readonly promptBlockId: string; readonly response_schema?: readonly JsonObject[];
     readonly assessment_contract?: readonly JsonObject[] }
   | { readonly kind: 'discipline'; readonly tags?: readonly string[]; readonly discipline_context?: DisciplineContext }
-  | { readonly kind: Exclude<(typeof assetKinds)[number], 'question' | 'discipline'>; readonly tags?: readonly string[] }
+  | { readonly kind: KnowledgeEntityKind; readonly tags?: readonly string[] } &
+    Omit<ReturnType<typeof parseKnowledgeEntity>, 'kind' | 'canonicalName'>
+  | { readonly kind: Exclude<(typeof assetKinds)[number], 'question' | 'discipline' | KnowledgeEntityKind>; readonly tags?: readonly string[] }
 );
 export type Asset = KernelAsset<ContentUnit, Block>;
 export type QuestionAsset = Extract<Asset, { kind: 'question' }>;
@@ -133,7 +137,7 @@ export function parseTextbookReference(input: unknown): TextbookReference {
   fields(fact, 'learner', 'id', 'rev');
   const type = key(value.type);
   const anchor = parseAnchor(value.anchor);
-  if (anchor.kind === 'block' && type !== textbookPageType && type !== assetType) {
+  if (anchor.kind === 'block' && type !== textbookPageType && type !== assetType && type !== 'capture.source') {
     throw new Error('块锚点必须指向内容资产或教材页。');
   }
   return {
@@ -276,6 +280,15 @@ export function parseAsset(input: unknown): Asset {
     return { kind, ...parseUnit(value), blocks: parseAssetBlocks(value.blocks), ...parseTags(value),
       ...(value.discipline_context === undefined ? {} : { discipline_context: parseDisciplineContext(value.discipline_context) }) };
   }
+  if (kind === 'concept' || kind === 'method' || kind === 'archetype') {
+    fields(value, ...common, 'tags', 'aliases', 'embedding', 'mergedInto');
+    const unit = parseUnit(value);
+    const { canonicalName: _, ...entity } = parseKnowledgeEntity({
+      kind, canonicalName: unit.title, aliases: value.aliases ?? [], mergedInto: value.mergedInto ?? null,
+      ...(value.embedding === undefined ? {} : { embedding: value.embedding }),
+    });
+    return { ...unit, ...entity, blocks: parseAssetBlocks(value.blocks), ...parseTags(value) };
+  }
   if (kind !== 'question') {
     fields(value, ...common, 'tags');
     return { kind, ...parseUnit(value), blocks: parseAssetBlocks(value.blocks), ...parseTags(value) };
@@ -348,8 +361,10 @@ export async function openAssetReference(read: AssetReader, reference: AssetRefe
   const fact = await pinnedFact(read, reference.fact);
   if (fact.type !== reference.type) throw new Error('引用的事实类型不符。');
   if (anchor.kind === 'block') {
-    const blocks = fact.type === assetType ? parseAsset(fact.value).blocks : textbookPageFrom(fact).blocks;
-    if (!locateTextbookBlock(blocks, anchor.blockId)) throw new Error(`教材块不存在：${anchor.blockId}`);
+    const blocks = fact.type === 'capture.source'
+      ? list(record(record(fact.value).unit).blocks).map(record)
+      : fact.type === assetType ? parseAsset(fact.value).blocks : textbookPageFrom(fact).blocks;
+    if (!blocks.some(block => block.id === anchor.blockId)) throw new Error(`内容块不存在：${anchor.blockId}`);
   }
   if (anchor.kind === 'path') {
     let fragment: unknown = fact.value;
@@ -379,6 +394,24 @@ export function questionAsset(value: unknown): QuestionAsset {
   const asset = parseAsset(value);
   if (asset.kind !== 'question') throw new Error('目标资产不是题目。');
   return asset;
+}
+
+export function freezeQuestionAssessment(asset: QuestionAsset, { id, rev }: Pick<FactRef, 'id' | 'rev'>) {
+  const ref = { id, rev };
+  return { releaseRef: ref, items: [{ itemId: 'question', promptRef: ref,
+    ...bindQuestionAssessment(asset.response_schema, asset.assessment_contract, ref),
+  }] };
+}
+
+export async function checkQuestionTeachingSources(read: AssetReader, asset: Pick<QuestionAsset, 'basis'>) {
+  for (const source of asset.basis ?? []) {
+    const pinned = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
+    const current = await read.fact(source.id, { mode: 'following' });
+    if (pinned.type !== source.type || pinned.accessEpoch !== source.epoch ||
+        ![pinned, current].every(opened => opened.purpose.includes('teaching') || opened.purpose.includes('all'))) {
+      throw new Error('题目来源未授权教学用途或依据已变化。');
+    }
+  }
 }
 
 export function questionPrompt(asset: QuestionAsset) {
