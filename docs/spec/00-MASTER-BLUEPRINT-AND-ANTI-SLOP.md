@@ -9,6 +9,7 @@
   - `04-ALWAYS-DOING-COMPANION-AND-FRONTIER-TOOLS.md`（两层 Always-Doing 编排、唯一全能同伴、Memory Gateway、超越前沿的 10 窄工具与完整 Python SDK）
   - `05-SURFACES-PRIVACY-OPS-AND-ACCEPTANCE.md`（四处 Material 3 Expressive 表面、离线多设备、数据自主与永久删除、低打扰设置、危机转介、全量贯通验收总表）
   - `06-DATA-REUSE-AND-THIN-CAPABILITIES.md`（少建层、数据多元复用矩阵、大模块小能力设计原则，以及以极轻小能力落地的 6 项高阶智能跃升）
+  - `07-LIVING-INFRASTRUCTURE-AND-ALWAYS-ON-MAINTENANCE.md`（四齿轮能力回环、Notion 只读扩展、4 块活基础设施地基原语、Always-On 4 大家族与慢变量全域维护）
 
 ---
 
