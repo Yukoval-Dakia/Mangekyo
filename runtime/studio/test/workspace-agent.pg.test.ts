@@ -16,6 +16,7 @@ import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organ
 import {intakeWriteTargets} from '../intake.ts';
 import {learningOverviewPurpose, readLearningOverview} from '../learning-overview.ts';
 import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
+import {workbookRubricAssessmentType, workbookRubricAssessmentVersion, workbookRubricVersion} from '../../../modules/activity/workbook-values.ts';
 import {workspaceQuery} from '../workspace-read.ts';
 import {openTextbook} from '../textbook.ts';
 import {readCurrentLearningObject} from '../current-learning-object.ts';
@@ -295,8 +296,13 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     const chain = await graph('search_workspace', {...filters,hops:2}, 6);
     expect(chain).toMatchObject({results:[{id:originalQuestion.id,hop:1}, {id:variant.id,hop:2,occurredAt:null,tags:['运动'],exposure:'unknown'}],
       edges:[{kind:'targets_concept',traversal:'reverse'}, {kind:'variant_of',traversal:'reverse',author:'companion',variant:{spoilsNext:'former'}}]});
-    const variantRef = new URLSearchParams({ref:JSON.stringify(chain.results[1].sourceRef),view:'preview'});
-    expect(await access.record(variant.id,variantRef)).toMatchObject({rev:1,content:'请计算这两段路程的往返平均速度并说明分母。'});
+    for (const anchor of [{kind:'whole'}, {kind:'question', itemId:'question'}]) {
+      const sourceRef = {...chain.results[1].sourceRef, anchor};
+      const params = new URLSearchParams({ref:JSON.stringify(sourceRef), view:'preview'});
+      expect(await access.record(variant.id, params)).toEqual({
+        id:variant.id, rev:1, title:'往返变式', sourceRef, content:'请计算这两段路程的往返平均速度并说明分母。',
+      });
+    }
     expect(await graph('read_workspace',{id:JSON.stringify(chain.edges[1].sourceRef)},7)).toMatchObject({from:{fact:{id:variant.id,rev:1}},to:{fact:{id:originalQuestion.id,rev:1}}});
     const lookup = new URLSearchParams({conceptId:concept.id,hops:'2',kinds:'question'});
     expect(await access.list(lookup)).toMatchObject({items:[{id:originalQuestion.id},{id:variant.id}]});
@@ -361,6 +367,43 @@ it.skipIf(!connectionString)('reopens authorized workspace versions and searches
     }]});
     await access.setTeaching(compound.id,{enabled:false,expectedRev:1});
     expect(await relation('save_relation',draft,6)).toMatchObject({code:'access_revoked',next:{tool:'search_workspace'}});
+
+    // Simulate a previously graded rubric slot; the two source grants and Studio calls use live entry points.
+    const gradedQuestion = privatePaper.questions[1]!;
+    const gradedAnswer = '路程除以时间';
+    const {attempts:[gradedAttempt]} = await workbook.submit(privatePaper.id, {
+      requestId:'bus-rubric', answers:{[gradedQuestion.id]:gradedAnswer},
+    });
+    if (!gradedAttempt) throw new Error('Missing rubric attempt');
+    const gradedAttemptId = gradedAttempt.id;
+    await access.setTeaching(gradedAttempt.id,{enabled:true,expectedRev:1});
+    const gradeId = stableId('bus-rubric-result');
+    await db.tx({learner:studioLearner}, tx => tx.withLearnerWrite(async tick => {
+      const scope = JSON.stringify({paperId:privatePaper.id,attemptId:gradedAttempt.id});
+      const inputs = [gradedAttempt.id, privatePaper.id].map(id =>
+        ({kind:'fact',id,rev:2,accessEpoch:'1',mode:'pinned'}));
+      await tx.insert('derivations', {learner_id:tx.learner,id:gradeId,slot_type:workbookRubricAssessmentType,slot_key:gradeId,
+        deriver:workbookRubricAssessmentVersion,scope_keys:scope,lifecycle:'effective',freshness:'current',
+        gather_tick:tick,effective_tick:tick,manifest:JSON.stringify({version:1,learner:tx.learner,purpose:'storage',gatherTick:tick,inputs}),
+        value:JSON.stringify({paperId:privatePaper.id,attemptId:gradedAttempt.id,questionId:gradedQuestion.id,requestId:'bus-rubric',
+          assessedAt:new Date().toISOString(),assessmentVersion:workbookRubricAssessmentVersion,rubricVersion:workbookRubricVersion,
+          rubric:'内部评分规则标记',providerBaseUrl:'fixture',verdict:'correct',feedback:'正确',evidence:[gradedAnswer],trace:[]})});
+      await tx.insert('slot_state',{learner_id:tx.learner,slot_type:workbookRubricAssessmentType,slot_key:gradeId,
+        current_id:gradeId,last_id:gradeId,scope_keys:scope,changed_tick:tick});
+    }));
+    async function openGradedAttempt(name:string, denyPaper:boolean) {
+      const bases: unknown[] = [];
+      const tools = openWorkspaceTools({db,turn:stableId(name),prior:[],authorize:async () => {},track() {},
+        trackAssessment:basis => bases.push(basis),maySend:fact => !denyPaper || fact.ref.id !== privatePaper.id});
+      return {result:JSON.parse(await tools.execute('read_workspace',{id:gradedAttemptId},1)),bases};
+    }
+    const grade = await openGradedAttempt('bus-allowed',false);
+    expect(grade.result.assessments).toMatchObject([{verdict:'correct',evidence:[gradedAnswer]}]);
+    expect(grade.bases).toMatchObject([{facts:[{id:gradedAttempt.id,mode:'following'},{id:privatePaper.id,mode:'pinned'}]}]);
+    const blocked = await openGradedAttempt('bus-restricted',true);
+    expect(blocked.result).toMatchObject({id:gradedAttemptId});
+    expect(blocked.result.assessments).toBeUndefined();
+    expect(blocked.bases).toEqual([]);
   } finally {
     await db.close(); await admin.query('DROP SCHEMA '+schema+' CASCADE'); await admin.close();
   }
