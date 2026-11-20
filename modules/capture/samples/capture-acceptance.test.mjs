@@ -18,6 +18,7 @@ const { createCommandHandler } = await load('kernel/src/commands/handle.ts');
 const { createStudioCommandHooks } = await load('runtime/studio/command-hooks.ts');
 const { stableId } = await load('runtime/studio/identity.ts');
 
+const {createCommandReadContext, UnsupportedReadError} = await load('kernel/src/commands/reads.ts');
 const connectionString = process.env.MANGEKYO_CAPTURE_ACCEPTANCE_URL;
 
 const schema = 'capture_accept_' + randomUUID().replaceAll('-', '');
@@ -34,11 +35,14 @@ try {
   const modules = await Promise.all(['capture', 'content', 'activity'].map(name =>
     loadModuleDirectory(fileURLToPath(new URL('modules/' + name, root))),
   ));
-  const handle = createCommandHandler(db, { modules, hooks: createStudioCommandHooks() });
+  const hooks = createStudioCommandHooks();
+  const handle = createCommandHandler(db, { modules, hooks });
   function send(type, input, { actor = 'learner', purpose = 'storage' } = {}) {
     return handle({ learner, id: stableId(randomUUID()), type, input, actor, purpose });
   }
-  const fixture = { db, learner, stableId, load, send, assert };
+  const read = (action, purpose = 'storage') => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
+  const current = id => read(context => context.fact(id, { mode: 'following' }));
+  const fixture = { db, learner, stableId, load, send, assert, read, current, hooks, content: modules.find(module => module.definition.name === 'content') };
   await run(fixture);
   await exerciseNotion(fixture);
   await exerciseTextbook(fixture);
@@ -48,12 +52,9 @@ try {
   await admin?.end();
 }
 
-async function run({db,learner,stableId,load,send,assert}) {
-  const {createCommandReadContext, UnsupportedReadError} = await load('kernel/src/commands/reads.ts');
+async function run({ send, read, current }) {
   const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, projectNewPaper, paperIssuance,
-    paperIssuanceId, paperIssuanceType, paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
-  const reads = (purpose, action) => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
-  const read = id => reads('storage', context => context.fact(id, {mode:'following'}));
+    paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
   const at = '2026-11-21T01:00:00.000Z';
   const crop_ref = {original:0,page:1,bbox:[0.1,0.2,0.8,0.9]};
   const block = (id,body) => ({id,parentId:null,body:{kind:'capture',crop_ref,...body}});
@@ -81,7 +82,7 @@ async function run({db,learner,stableId,load,send,assert}) {
   await assert.rejects(send('capture.applyExtraction',target,{actor:'companion'}),/unedited companion draft/);
   const proposal=await send('capture.proposeExtraction',target,{actor:'companion'});
   assert.equal(proposal.state,'proposed');
-  assert.equal((await read(learnerId)).ref.rev,1);
+  assert.equal((await current(learnerId)).ref.rev,1);
 
   const {gatherLayeredExtraction,settleLayeredExtraction,mergeLayeredSource,clarificationRegions,layeredExtractionSlot,layeredExtractionDeriver} = await load('modules/capture/extraction.ts');
   const {gatherSnapshot} = await load('kernel/src/derivations/gather.ts');
@@ -89,7 +90,7 @@ async function run({db,learner,stableId,load,send,assert}) {
   const {requestWork,runEffect} = await load('kernel/src/work/index.ts');
   await db.query("INSERT INTO slot_state(learner_id,slot_type,slot_key,scope_keys) VALUES ($1,$2,$3,'{}')",[learner,layeredExtractionSlot,learnerId]);
   const work = await db.tx({learner},tx=>tx.withLearnerWrite(tick=>requestWork(tx,tick,{slotType:layeredExtractionSlot,slotKey:learnerId,deriver:layeredExtractionDeriver})));
-  const savedSource=await read(learnerId);
+  const savedSource=await current(learnerId);
   const scope={learner,purpose:'teaching'};
   const targetKey={target:{id:learnerId,rev:savedSource.ref.rev},accessEpoch:savedSource.accessEpoch,modelMethod:'fixture/vision-v1'};
   const gathered=await gatherSnapshot(db,scope,ctx=>gatherLayeredExtraction(ctx,targetKey));
@@ -109,11 +110,11 @@ async function run({db,learner,stableId,load,send,assert}) {
   assert.equal(settleLayeredExtraction(sealed.plan.data, [{request:effect,state:'done',result:{version:effect.stepKey,blocks:[forged]}}]).kind, 'unknown');
   const submitted=await submitCandidate(db,work,policy,sealed.id,outcome,{onSlotChanged:()=>{}});
   assert.equal(submitted.kind,'effective');
-  assert.equal((await read(learnerId)).ref.rev,1);
-  assert.equal(mergeLayeredSource(await read(learnerId),outcome).source.unit.blocks.length,blocks.length);
+  assert.equal((await current(learnerId)).ref.rev,1);
+  assert.equal(mergeLayeredSource(await current(learnerId),outcome).source.unit.blocks.length,blocks.length);
   const layeredIssue = paperIssuance({source:targetKey.target,epoch:targetKey.accessEpoch,layout:{lines:10,columns:16},
     extraction:{derivationId:sealed.id,sourceRev:1,modelMethod:targetKey.modelMethod}});
-  const preview = await reads('storage', context => projectIssuedPaper(bindPaperCommandRead(context, {readExtraction: async (_request, mode) => {
+  const preview = await read(context => projectIssuedPaper(bindPaperCommandRead(context, {readExtraction: async (_request, mode) => {
     assert.equal(mode, 'current');
     return {deriver:layeredExtractionDeriver,manifest:sealed.manifest,
       snapshot:{id:sealed.id,slot:{learner,type:layeredExtractionSlot,key:learnerId},outcome}};
@@ -129,13 +130,13 @@ async function run({db,learner,stableId,load,send,assert}) {
   assert.equal((await send('capture.clarifyExtraction', { ...clarify, target: { id: learnerId, rev: 2 } })).wrote.length, 0);
   const fixed=await send('capture.correctExtraction',{target:{id:learnerId,rev:2},blockId:'unknown',anchor:unknowable,text:'0.5'});
   assert.equal(fixed.wrote[0].rev,3);
-  const current=await gatherSnapshot(db,scope,async ctx=>({kind:'input',effects:[],data:
+  const liveSlot=await gatherSnapshot(db,scope,async ctx=>({kind:'input',effects:[],data:
     (await ctx.read.slot({learner,type:layeredExtractionSlot,key:learnerId},{mode:'following'})).outcome,
   }));
-  const live=mergeLayeredSource(await read(learnerId),current.plan.data);
+  const live=mergeLayeredSource(await current(learnerId),liveSlot.plan.data);
   assert.equal(live.differences[0].blockId,'unknown');
   assert.equal(live.source.unit.blocks.find(b=>b.id==='unknown').body.text,'0.5');
-  assert.deepEqual(clarificationRegions(await read(learnerId), outcome), []);
+  assert.deepEqual(clarificationRegions(await current(learnerId), outcome), []);
   assert.deepEqual(live.source.originals,savedSource.value.originals);
   console.log(JSON.stringify({checked:'capture slot pg',manifest:gathered.manifest.inputs,modelMethod:effect.input.modelMethod,
     derivation:sealed.id,sourceRev:fixed.wrote[0].rev,stickyDifferences:live.differences.length}));
@@ -143,7 +144,7 @@ async function run({db,learner,stableId,load,send,assert}) {
   const draft = targetCapture(base);
   await send('capture.ingest', draft, { actor: 'companion' });
   await send('capture.applyExtraction', { target: { id: base, rev: 1 }, blocks }, { actor: 'companion' });
-  const snapshot = await read(base);
+  const snapshot = await current(base);
   assert.deepEqual(snapshot.value.originals, draft.envelope.originals);
   assert.equal(snapshot.ref.rev, 2);
   assert.equal(snapshot.value.unit.blocks.length, blocks.length);
@@ -151,12 +152,12 @@ async function run({db,learner,stableId,load,send,assert}) {
   const issued = await send('capture.issuePaper',issue);
   const issuanceId = issued.wrote[0].id;
   assert.equal((await send('capture.issuePaper',issue)).wrote.length,0);
-  const issuanceFact = await read(issuanceId);
-  const projected = await reads('storage',ctx=>projectIssuedPaper(ctx,paperIssuance(issuanceFact.value)));
+  const issuanceFact = await current(issuanceId);
+  const projected = await read(ctx=>projectIssuedPaper(ctx,paperIssuance(issuanceFact.value)));
   assert.equal(projected.issuanceId,issuanceId);
   assert.ok(projected.pages.length>2);
   assert.equal(projected.pages.flatMap(page=>page.pieces).filter(piece=>piece.blockId==='shared').map(piece=>piece.text).join(''),passage);
-  await assert.rejects(reads('storage',ctx=>projectIssuedPaper(ctx,{...issue,epoch:'999'})), /用途已变更/);
+  await assert.rejects(read(ctx=>projectIssuedPaper(ctx,{...issue,epoch:'999'})), /用途已变更/);
   assert.doesNotMatch(JSON.stringify(projected),/hidden|blobRef|crop_ref|sha256/);
 
   const prompt = '2 + 3 = ?';
@@ -179,64 +180,44 @@ async function run({db,learner,stableId,load,send,assert}) {
       target:{fact:written.wrote[0],type:'content.asset',anchor:{kind:'whole'}}}},
   ]} });
   const textbook = {source:{id:pageId,rev:1},epoch:'0',layout:issue.layout};
-  await assert.rejects(reads('storage',ctx=>projectIssuedPaper(ctx,textbook)), /未授权教学用途/);
+  await assert.rejects(read(ctx=>projectIssuedPaper(ctx,textbook)), /未授权教学用途/);
   await assert.rejects(send('capture.issuePaper',textbook), /未授权教学用途/);
-
-  const legacyId = stableId('legacy-workspace-question'), workbookId = stableId('legacy-workbook');
-  const legacyEntry = { kind: 'question', title: '旧题', body: prompt, answer: '5' };
-  const legacyItem = { id: 'q1', kind: 'numeric', prompt, answer: 5, tolerance: 0, unit: null, explanation: null };
-  const legacyWorkbook = { title: '旧卷', savedAt: at, materialId: null };
-  await send('activity.saveWorkspaceEntry', { id: legacyId, entry: legacyEntry, basis: [] });
-  await send('activity.saveWorkbookPaper', { id: workbookId, data: {
-    ...legacyWorkbook, questions: [{ ...legacyItem, sourceQuestionRef: { id: legacyId, rev: 1 } }],
-  } });
-  const legacy = { ...issue, epoch: '0', source: { id: workbookId, rev: 1 } };
-  assert.equal((await send('capture.issuePaper', legacy)).wrote.length, 1);
-  await send('activity.setWorkspaceTeaching', { id: legacyId, expectedRev: 1, enabled: false });
-  await assert.rejects(reads('storage', ctx => projectIssuedPaper(ctx, legacy)), /教学用途/);
 
   const { freezeQuestionAssessment, questionAsset } = await load('modules/content/asset.ts');
   const { questionVerificationKey, questionVerificationType } = await load('modules/content/question-state.ts');
   await send('content.setQuestionTeaching', { id: questionId, expectedRev: 1, allowed: true });
-  const bank = await read(questionId);
-  const { id, rev } = bank.ref;
-  const wrapId = stableId('legacy-with-iqdb-basis');
-  await send('activity.saveWorkspaceEntry', {
-    id: wrapId, entry: legacyEntry, basis: [{ id, rev, epoch: bank.accessEpoch }],
-  });
-  const workbookRef = { id: stableId('legacy-contract-prompt'), rev: 1 };
-  const [assessmentItem] = freezeQuestionAssessment(questionAsset(bank.value), bank.ref).items;
-  await send('activity.saveWorkbookPaper', { id: workbookRef.id, data: {
-    ...legacyWorkbook,
-    questions: [legacyItem],
-    assessmentRelease: {
-      releaseRef: workbookRef,
-      items: [{ ...assessmentItem, itemId: legacyItem.id, promptRef: { id: wrapId, rev: 1 } }],
-    },
-  } });
-  const throughPrompt = { ...legacy, source: workbookRef };
-  await assert.rejects(send('capture.issuePaper', throughPrompt), UnsupportedReadError);
-  const missingReady = await gatherSnapshot(db, { learner, purpose: 'storage' }, async ({ read }) => ({
-    kind: 'input', data: await projectNewPaper(read, throughPrompt), effects: [],
-  }));
-  assert.deepEqual(missingReady.plan, {
-    kind: 'waiting',
-    targets: [{ kind: 'slot', ref: { learner, type: questionVerificationType, key: questionVerificationKey({ id, rev }) } }],
-  });
+  const bank = await current(questionId);
+  const [assessment] = freezeQuestionAssessment(questionAsset(bank.value), bank.ref).items;
+  const entry = { kind: 'question', title: '旧题', body: prompt, answer: '5' };
+  const question = { id: 'q1', kind: 'numeric', prompt, answer: 5, tolerance: 0, unit: null, explanation: null };
+  async function legacyWorkbook(id, field) {
+    const source = { id: stableId(id + field), rev: 1 };
+    const pinned = { id, rev: 1 };
+    const data = field === 'promptRef'
+      ? { questions: [question], assessmentRelease: { releaseRef: source, items: [{ ...assessment, itemId: 'q1', promptRef: pinned }] } }
+      : { questions: [{ ...question, sourceQuestionRef: pinned }] };
+    await send('activity.saveWorkbookPaper', { id: source.id, data: { title: '旧卷', materialId: null, savedAt: at, ...data } });
+    return { ...issue, source, epoch: '0' };
+  }
+  const originalId = stableId('legacy-workspace-question');
+  await send('activity.saveWorkspaceEntry', { id: originalId, entry, basis: [] });
+  const histories = await Promise.all(['sourceQuestionRef','promptRef'].map(field => legacyWorkbook(originalId, field)));
+  for (const paper of histories) assert.equal((await send('capture.issuePaper',paper)).wrote.length,1);
+  await send('activity.setWorkspaceTeaching', { id: originalId, expectedRev: 1, enabled: false });
+  for (const paper of histories) await assert.rejects(read(ctx=>projectIssuedPaper(ctx,paper)), /教学用途/);
 
-  // Restore a previously issued paper without rerunning today's release checks.
-  const { applyFactWrites } = await load('kernel/src/commands/writes.ts');
-  const { default: issuanceDeclaration } = await load('modules/capture/facts/paper-issuance.ts');
-  const historicalId = await paperIssuanceId(throughPrompt);
-  await db.tx({ learner }, tx => tx.withLearnerWrite(tick => applyFactWrites(tx, tick, [
-    { kind: 'create', id: historicalId, factType: paperIssuanceType, data: throughPrompt, purpose: ['storage'] },
-  ], { actor: 'learner', purpose: 'storage', commandId: stableId('restore-historical-paper') },
-  type => type === paperIssuanceType ? issuanceDeclaration : undefined)));
-  const historical = await reads('storage', ctx => projectIssuedPaper(ctx, throughPrompt));
-  assert.equal(historical.issuanceId, historicalId);
-  assert.equal(historical.pages.flatMap(page => page.pieces).map(piece => piece.text).join(''), prompt);
-  await send('content.setQuestionTeaching', { id, expectedRev: rev, allowed: false });
-  await assert.rejects(reads('storage', ctx => projectIssuedPaper(ctx, throughPrompt)), /来源权限已变更/);
+  const wrapperId = stableId('legacy-with-iqdb-basis');
+  await send('activity.saveWorkspaceEntry', { id: wrapperId, entry, basis: [{ id: questionId, rev: bank.ref.rev, epoch: bank.accessEpoch }] });
+  const throughPrompt = await legacyWorkbook(wrapperId, 'promptRef');
+  await assert.rejects(send('capture.issuePaper', throughPrompt), UnsupportedReadError);
+  const missingReady = await gatherSnapshot(db, { learner, purpose: 'storage' }, async ({read}) => ({
+    kind:'input', data:await projectNewPaper(read,throughPrompt), effects:[],
+  }));
+  assert.deepEqual(missingReady.plan, {kind:'waiting', targets:[
+    {kind:'slot',ref:{learner,type:questionVerificationType,key:questionVerificationKey(bank.ref)}},
+  ]});
+  await send('content.setQuestionTeaching', { id: questionId, expectedRev: bank.ref.rev, allowed: false });
+  await assert.rejects(read(ctx=>projectNewPaper(ctx,throughPrompt)), /来源权限已变更/);
 
   const questionPages = projected.pages.filter(page=>page.pieces.some(piece=>piece.itemId==='q2')).map(page=>page.number);
   assert.ok(questionPages.length>1);
@@ -248,7 +229,7 @@ async function run({db,learner,stableId,load,send,assert}) {
     const returned = {issuanceId,source:{id:source,rev:1},page,original:0};
     const receipts = i===0 ? await Promise.all([send('capture.collectPaper',returned),send('capture.collectPaper',returned)]) : [await send('capture.collectPaper',returned)];
     assert.equal(receipts.reduce((total,receipt)=>total+receipt.wrote.length,0),1);
-    const run = paperRun((await read(runId)).value);
+    const run = paperRun((await current(runId)).value);
     const coverage = paperReturnCoverage(projected.pages,run.pages.map(page=>page.number));
     assert.equal(coverage.find(item=>item.itemId==='q2').status,i===questionPages.length-1?'pages-received':'unsubmitted');
     if(i===0) {
@@ -256,7 +237,7 @@ async function run({db,learner,stableId,load,send,assert}) {
       assert.equal((await send('capture.collectPaper',{...returned,retryId})).wrote[0].id,retryId);
     }
   }
-  const run = paperRun((await read(runId)).value);
+  const run = paperRun((await current(runId)).value);
   assert.equal(run.pages.length,questionPages.length);
   console.log(JSON.stringify({checked:'capture pg',pages:projected.pages.length,returned:run.pages.length,stickyText:'0.5'}));
 }

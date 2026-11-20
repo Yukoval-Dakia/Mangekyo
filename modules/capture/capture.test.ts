@@ -1,6 +1,3 @@
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 import { factId } from '@mangekyo/kernel';
 import { archivedIntake, intakeDocument } from './intake-values.ts';
@@ -28,7 +25,5 @@ it('binds editable voice transcription to the requested recording', () => {
 });
 
 it('runs layered capture, paper return, Notion and textbook workflows through the command handler', { timeout: 45_000 }, async () => {
-  const script = fileURLToPath(new URL('samples/capture-acceptance.test.mjs', import.meta.url));
-  const tsx = fileURLToPath(new URL('../../runtime/studio/node_modules/.bin/tsx', import.meta.url));
-  await promisify(execFile)(tsx, [script]);
+  await import(new URL('./samples/capture-acceptance.test.mjs', import.meta.url).href);
 });
