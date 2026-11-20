@@ -1,5 +1,5 @@
 import { defineCommand } from '@mangekyo/kernel';
-import { notionRetainedPurposes, notionSourceTarget, readNotionSourceTarget, setNotionPurposeCommand } from '../notion-source.ts';
+import { checkNotionAdmission, notionRetainedPurposes, notionSourceTarget, readNotionSourceTarget, setNotionPurposeCommand } from '../notion-source.ts';
 import { notionRecord } from '../notion-values.ts';
 
 export default defineCommand({
@@ -13,8 +13,10 @@ export default defineCommand({
     },
   },
   async write(ctx, target) {
-    const { current } = await readNotionSourceTarget(ctx, target);
-    if (current.purpose.length === target.purpose.length && target.purpose.every(use => current.purpose.includes(use))) return [];
+    const { current, source } = await readNotionSourceTarget(ctx, target);
+    const narrowing = target.purpose.every(use => current.purpose.includes(use));
+    if (narrowing && current.purpose.length === target.purpose.length) return [];
+    if (!narrowing) await checkNotionAdmission(ctx, target.id, source, target.purpose);
     return [{ kind: 'set_purpose', id: current.ref.id, expectedRev: current.ref.rev, purpose: target.purpose }];
   },
 });
