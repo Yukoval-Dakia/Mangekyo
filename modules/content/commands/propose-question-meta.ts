@@ -1,8 +1,7 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
 import { assetType, checkTextbookBasis, mergeTextbookBasis, questionAsset } from '../asset.ts';
 import { parseQuestionMetaProposal, proposeQuestionMetaCommand } from '../question-writes.ts';
-import { normalizeKnowledgeName } from '../knowledge-entity.ts';
-import { parseQuestionMetaDraft, questionMetaDraftId, questionMetaDraftType, validateQuestionMetaReferences } from '../question-state.ts';
+import { parseQuestionMetaDraft, questionMetaDraftId, questionMetaDraftType, questionSolutionKey, questionTagKey, validateQuestionMetaReferences } from '../question-state.ts';
 
 export default defineCommand({
   type: proposeQuestionMetaCommand, destructive: true, schema: { parse: parseQuestionMetaProposal },
@@ -18,10 +17,10 @@ export default defineCommand({
     if (previous.id !== id || previous.expectedRev !== expectedRev) throw new Error('活元信息与题版不匹配。');
     await checkTextbookBasis(ctx.read, previous.basis);
     const tags = new Map([...previous.append_metadata?.tags ?? [], ...append_metadata.tags].map(tag => [
-      JSON.stringify([tag.kind, normalizeKnowledgeName(tag.term), tag.scope]), tag,
+      questionTagKey(tag), tag,
     ]));
     const solutions = new Map([...previous.append_metadata?.solutions ?? [], ...append_metadata.solutions].map(solution => [
-      normalizeKnowledgeName(solution.method), solution,
+      questionSolutionKey(solution), solution,
     ]));
     return [{
       kind: 'correct', id: draft.ref.id, expectedRev: draft.ref.rev,

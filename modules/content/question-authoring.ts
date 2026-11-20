@@ -41,7 +41,7 @@ function references(value: unknown, field: string) {
   return parsed;
 }
 
-function appendMetadata(input: unknown) {
+export function parseQuestionMetadata(input: unknown, allowEmpty = false) {
   const value = record(input);
   fields(value, 'solutions', 'tags');
   const solutions = array(value.solutions ?? [], 'solutions', 8).map(entry => {
@@ -78,7 +78,7 @@ function appendMetadata(input: unknown) {
       ...(discriminator ? { contrast: discriminator } : {}),
     };
   });
-  if (!solutions.length && !tags.length) throw new QuestionAuthoringError('invalid_args', 'append_metadata', '请填写解法或术语标签。');
+  if (!allowEmpty && !solutions.length && !tags.length) throw new QuestionAuthoringError('invalid_args', 'append_metadata', '请填写解法或术语标签。');
   return { solutions, tags };
 }
 
@@ -106,7 +106,7 @@ function frozenFields(value: Record<string, unknown>) {
 export function parseSaveQuestion(input: unknown) {
   try {
     const value = record(input);
-    const metadata = value.append_metadata === undefined ? {} : { append_metadata: appendMetadata(value.append_metadata) };
+    const metadata = value.append_metadata === undefined ? {} : { append_metadata: parseQuestionMetadata(value.append_metadata) };
     if (value.ref === undefined) {
       fields(value, ...questionFields, 'append_metadata');
       return { kind: 'create' as const, question: {

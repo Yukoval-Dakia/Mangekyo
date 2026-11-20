@@ -11,6 +11,7 @@
     "./textbook-conflict": "./textbook-conflict.ts",
     "./knowledge-entity": "./knowledge-entity.ts",
     "./knowledge-edge": "./knowledge-edge.ts",
+    "./question-meta": "./question-meta.ts",
     "./question-verification": "./question-verification.ts",
     "./facts/assessment": "./assessment-values.ts",
     "./facts/material": "./facts/material.ts"

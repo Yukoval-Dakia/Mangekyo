@@ -1,8 +1,8 @@
 import { type FactId, type FactSnapshot, type Json, type ReadContext, type Revision } from '@mangekyo/kernel';
 import { assetType, checkQuestionTeachingSources, freezeQuestionAssessment, parseTextbookBasis, questionAsset } from './asset.ts';
-import { contentStableId } from './knowledge-entity.ts';
+import { contentStableId, normalizeKnowledgeName } from './knowledge-entity.ts';
 import { fields, list, pageId, record, revision, text } from './parse.ts';
-import { parseSaveQuestion } from './question-authoring.ts';
+import { parseQuestionMetadata } from './question-authoring.ts';
 
 export const questionStateType = 'content.questionState';
 export const questionMetaType = 'overlay.question_meta';
@@ -55,13 +55,16 @@ export function parseQuestionMetaDraft(input: unknown) {
   const value = record(input);
   fields(value, 'id', 'expectedRev', 'append_metadata', 'basis', 'sticky');
   const id = pageId(value.id), expectedRev = revision(value.expectedRev);
-  const append_metadata = value.append_metadata === null ? null
-    : parseSaveQuestion({ ref: id, expected_rev: expectedRev, append_metadata: value.append_metadata }).append_metadata;
-  if (append_metadata === undefined || typeof value.sticky !== 'boolean') throw new Error('题目活元信息无效。');
+  const append_metadata = value.append_metadata === null ? null : parseQuestionMetadata(value.append_metadata);
+  if (typeof value.sticky !== 'boolean') throw new Error('题目活元信息无效。');
   return { id, expectedRev, append_metadata, basis: parseTextbookBasis(value.basis), sticky: value.sticky };
 }
 
 export type QuestionMetaDraft = ReturnType<typeof parseQuestionMetaDraft>;
+export const questionTagKey = (tag: { kind: string; term: string; scope: string }) =>
+  JSON.stringify([tag.kind, normalizeKnowledgeName(tag.term), tag.scope]);
+export const questionSolutionKey = (solution: { method: string }) => normalizeKnowledgeName(solution.method);
+
 
 export type QuestionVerificationBasis = {
   readonly id: FactId;

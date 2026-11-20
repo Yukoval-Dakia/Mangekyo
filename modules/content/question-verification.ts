@@ -1,5 +1,5 @@
 import {
-  type DerivationId, type EffectReceipt, type EffectRequest, type FactId, type GatherContext, type GatherInput,
+  type EffectRequest, type FactId, type GatherContext, type GatherInput,
   type Json, type JsonObject, type Outcome, type ReadContext, type Revision,
 } from '@mangekyo/kernel';
 import {
@@ -7,7 +7,9 @@ import {
   type AssetReference, type Block, type BlockBody, type QuestionAsset,
 } from './asset.ts';
 import { pageId, record, revision } from './parse.ts';
+import type { AnswerSlot } from './assessment-values.ts';
 import { publicAnswerControls } from './question-controls.ts';
+import { jsonObject, readQuestionEffect, sameEffectInput, type QuestionEffectReceipt, type SealedQuestionEffects } from './question-effects.ts';
 import {
   evaluateQuestionVerification, questionVerificationMethodVersion, questionVerificationReview,
   type QuestionVerification, type QuestionVerificationBasis, type VerificationReceipt,
@@ -15,6 +17,8 @@ import {
 
 export { openQuestionForRelease, questionVerificationKey, questionVerificationMethodVersion, questionVerificationType } from './question-state.ts';
 export type { QuestionVerification, QuestionVerificationBasis } from './question-state.ts';
+export { questionEffectResult as questionVerificationEffectResult } from './question-effects.ts';
+export type { QuestionEffectReceipt as QuestionVerificationEffectReceipt } from './question-effects.ts';
 
 const steps = [
   { stepKey: 'solve-1', label: 'question-independent-solve' },
@@ -26,19 +30,6 @@ const steps = [
 type QuestionVerificationPlanData = QuestionVerificationBasis & { readonly blockedReason?: string };
 
 type QuestionVerificationKey = { readonly id: FactId; readonly rev: Revision; readonly recheck?: number };
-type SealedQuestionVerification = {
-  readonly id: DerivationId;
-  readonly plan: GatherInput<Json>;
-};
-
-/** The host attaches the owner from the effect ledger, using the sealed candidate as ownerId. */
-export type QuestionVerificationEffectReceipt = EffectReceipt & { readonly ownerId: DerivationId };
-
-/** Call inside the ledger invocation callback, using its server-assigned invocation ID. */
-export function questionVerificationEffectResult(invocationId: string, result: Json): JsonObject {
-  return { invocationId, result };
-}
-
 export async function gather(
   ctx: GatherContext, { id, rev, recheck = 0 }: QuestionVerificationKey,
 ): Promise<GatherInput<QuestionVerificationPlanData>> {
@@ -53,34 +44,39 @@ export async function gather(
     kind: 'input', data: { ...data, blockedReason: reason }, effects: [],
   });
   if (!asset.response_schema || !asset.assessment_contract) return blocked('题目缺少完整作答与评分契约。');
-  if (asset.blocks.some(block => block.body.kind !== 'interaction' && needsUnsupportedProjection(block.body))) {
-    return blocked('题目含未能安全投影的交互、图像或嵌套题。');
-  }
-  const sharedMaterials = [];
-  for (const block of asset.blocks) {
-    if (block.body.kind !== 'sharedMaterial') continue;
-    const material = await projectSharedMaterial(ctx.read, asset, block);
-    if (!material) return blocked('题目有未能安全投影的必需共享材料。');
-    sharedMaterials.push(material);
-  }
+
   const contract = freezeQuestionAssessment(asset, { id, rev });
   const slots = contract.items[0]!.slots;
-  const controls = [];
-  for (const { body } of asset.blocks) {
-    if (body.kind !== 'interaction') continue;
-    const projection = publicAnswerControls(body.view, questionPrompt(asset), slots);
-    if (!projection || controls.length) return blocked('交互块无法投影为明确的公开作答选项。');
-    controls.push(projection);
-  }
+  const projection = await projectQuestionPrompt(ctx.read, asset, slots);
+  if (projection.kind === 'blocked') return blocked(projection.reason);
   // These inputs remain local until the host reapplies purpose, recipient and
   // spoiler checks to the current witnesses before dispatch or ledger replay.
-  const publicInput = { prompt: questionPrompt(asset), response_schema: slots, controls,
-    sharedMaterials, ref: { id, rev }, verification: data,
-  };
+  const publicInput = { ...projection.content, response_schema: slots, ref: { id, rev }, verification: data };
   const effects: EffectRequest[] = steps.map(step => ({
     ...step, input: step.stepKey === 'contract' ? { ...publicInput, contract } : publicInput,
   }));
   return { kind: 'input', data, effects };
+}
+
+export async function projectQuestionPrompt(read: ReadContext, asset: QuestionAsset, slots?: readonly AnswerSlot[]) {
+  const controls = [];
+  for (const { body } of asset.blocks) {
+    if (body.kind !== 'interaction') continue;
+    const projection = slots && publicAnswerControls(body.view, questionPrompt(asset), slots);
+    if (!projection || controls.length) return { kind: 'blocked', reason: '交互块无法投影为明确的公开作答选项。' } as const;
+    controls.push(projection);
+  }
+  if (asset.blocks.some(block => block.body.kind !== 'interaction' && needsUnsupportedProjection(block.body))) {
+    return { kind: 'blocked', reason: '题目含未能安全投影的交互、图像或嵌套题。' } as const;
+  }
+  const sharedMaterials = [];
+  for (const block of asset.blocks) {
+    if (block.body.kind !== 'sharedMaterial') continue;
+    const material = await projectSharedMaterial(read, asset, block);
+    if (!material) return { kind: 'blocked', reason: '题目有未能安全投影的必需共享材料。' } as const;
+    sharedMaterials.push(material);
+  }
+  return { kind: 'ready', content: { prompt: questionPrompt(asset), sharedMaterials, controls } } as const;
 }
 
 function needsUnsupportedProjection(body: BlockBody) {
@@ -142,19 +138,6 @@ async function projectSharedMaterial(read: ReadContext, question: QuestionAsset,
   return { blockId: block.id, source: { id: ref.id, rev: ref.rev, type, accessEpoch: basis.epoch }, pieces };
 }
 
-function jsonObject(value: Json | undefined): value is JsonObject {
-  return value != null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function sameInput(left: Json, right: Json): boolean {
-  if (left === right) return true;
-  if (Array.isArray(left)) {
-    return Array.isArray(right) && left.length === right.length && left.every((value, index) => sameInput(value, right[index]!));
-  }
-  return jsonObject(left) && jsonObject(right) && Object.keys(left).length === Object.keys(right).length &&
-    Object.entries(left).every(([key, value]) => Object.hasOwn(right, key) && sameInput(value, right[key]!));
-}
-
 function readBasis(input: Json): QuestionVerificationBasis {
   const value = record(input);
   const { accessEpoch, recheck, methodVersion } = value;
@@ -167,7 +150,7 @@ function readBasis(input: Json): QuestionVerificationBasis {
 
 /** Match ledger receipts to the exact sealed requests before applying the consensus rules. */
 export function settle(
-  sealed: SealedQuestionVerification, receipts: readonly QuestionVerificationEffectReceipt[],
+  sealed: SealedQuestionEffects, receipts: readonly QuestionEffectReceipt[],
 ): Outcome<QuestionVerification> {
   const basis = readBasis(sealed.plan.data);
   const review = (reason: string) => ({ kind: 'value' as const, value: questionVerificationReview(basis, reason) });
@@ -181,20 +164,13 @@ export function settle(
   for (const step of steps) {
     const request = sealed.plan.effects.find(effect => effect.stepKey === step.stepKey);
     if (!request || request.label !== step.label || !jsonObject(request.input) ||
-        !request.input.verification || !sameInput(request.input.verification, basis)) {
+        !request.input.verification || !sameEffectInput(request.input.verification, basis)) {
       return review('封存请求与题版或复验代次不一致。');
     }
     const receipt = receipts.find(entry => entry.request.stepKey === step.stepKey);
-    if (!receipt || receipt.ownerId !== sealed.id || receipt.request.label !== request.label ||
-        !sameInput(receipt.request.input, request.input)) {
-      return review('效果回执与封存验题请求不一致。');
-    }
-    if (receipt.state !== 'done' || !jsonObject(receipt.result)) return review('有验题效果尚无确定回执。');
-    const { invocationId, result } = receipt.result;
-    if (typeof invocationId !== 'string' || !invocationId || invocationId.trim() !== invocationId || result === undefined) {
-      return review('验题效果缺少服务端调用身份或结果。');
-    }
-    checks.push({ invocationId, result });
+    const checked = readQuestionEffect(sealed.id, request, receipt);
+    if (checked.kind !== 'done') return review(checked.reason);
+    checks.push({ invocationId: checked.invocationId, result: checked.result });
   }
   return { kind: 'value', value: evaluateQuestionVerification(basis, checks) };
 }
