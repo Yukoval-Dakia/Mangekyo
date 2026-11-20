@@ -14,6 +14,7 @@ import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 
 type StudyWorkspaceTools = WorkspaceTools & {
+  presentationOnly?: true;
   executeRead?: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>, receiveImage?: ReceiveStudyImage) => Promise<string>;
   preparePythonAttempts?: (args: Record<string, unknown>, step: number) => Promise<PreparedPythonAttempts>;
 };
@@ -122,12 +123,12 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const remotes = await loadMcpTools(options.tools?.mcpServers ?? [], model, options.runEffect, connections);
   const discovery = tools && options.discoverTools ? studyToolDiscovery(remotes) : undefined;
   const builtins = tools?.names.map(name => {
-    const tool = definition(name, Boolean(workspace?.preparePythonAttempts));
+    const tool = definition(name, Boolean(workspace?.preparePythonAttempts && !workspace.presentationOnly));
     if (name === 'exa_search' && pinnedQuery) tool.function.description += ' 本轮只会检索学生指定的公开主题：' + pinnedQuery;
     return tool;
   }) ?? [];
   const nativeTools = workspace
-    ? [...workspaceDefinitions, ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
+    ? [...(workspace.presentationOnly ? [] : workspaceDefinitions), ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
     : [];
   const coreDefinitions = [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []),
     ...(options.memoryTools ? memoryToolDefinitions : []),
@@ -209,7 +210,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       let attempts: Extract<PreparedPythonAttempts, {ok:true}> | undefined;
       if (name === 'python' && args.attempts !== undefined) {
         const summary = 'Python 验算 · 作答选择不可用';
-        if (!workspace?.preparePythonAttempts || !args.attempts || typeof args.attempts !== 'object' || Array.isArray(args.attempts)) {
+        if (!workspace?.preparePythonAttempts || workspace.presentationOnly || !args.attempts || typeof args.attempts !== 'object' || Array.isArray(args.attempts)) {
           return {summary, content:JSON.stringify(learningToolError('invalid_args','attempts','工作区已开放时可选择已提交的作答引用。'))};
         }
         const codeError = pythonCodeError(args.code);
