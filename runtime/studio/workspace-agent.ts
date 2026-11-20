@@ -76,7 +76,10 @@ export function openWorkspaceTools(options: {
   for (const w of [...(options.pageBasis ?? []), ...options.prior]) rememberPageSource(w);
   const savePage = openWorkspaceTextbook({
     db, turn, authorize:options.authorize, maySend:options.maySend, opened:pageOpened,
-    basis:() => [...pageSources.values()],
+    basis() {
+      for (const witness of pageSources.values()) options.track(witness,true);
+      return [...pageSources.values()];
+    },
     ...(currentObject?.root.type === textbookPageType ? {currentPage:currentObject.root} : {}),
     saved(receipt,witness) {
       receipts.set(receipt.page?.status === 'saved' ? receipt.page.undo_token : receipt.page!.proposalId,receipt);
@@ -212,7 +215,13 @@ export function openWorkspaceTools(options: {
           rememberPageOpen(w);
         }
       }
-      if (value.ok) for (const witness of witnesses) overviewBasis.set(witness.id,witness);
+      if (value.ok) for (const witness of witnesses) {
+        overviewBasis.set(witness.id,witness);
+        rememberPageSource(witness);
+      }
+    } else {
+      // Search and overview can contribute published excerpts. Explicit links still require an opened record.
+      for (const witness of witnesses) rememberPageSource(witness);
     }
     if (pythonAttempts) {
       if (value.ok !== true) return text;
@@ -247,10 +256,7 @@ export function openWorkspaceTools(options: {
         const ref = sourceRefV1(item.sourceRef);
         if (ref && item.ok !== false && item.part?.kind !== 'image_crop') {
           const witness = witnesses.find(w => w.id === ref.fact.id && w.rev === ref.fact.rev && w.type === ref.fact.type);
-          if (witness) {
-            rememberPageOpen(witness);
-            for (const source of witnesses) rememberPageSource(source);
-          }
+          if (witness) rememberPageOpen(witness);
         }
         if (ref && typeof item.content === 'string' && item.content.length && workspaceAttemptTypes.includes(ref.fact.type) &&
             (ref.anchor.kind === 'whole' || ref.anchor.kind === 'answer-slot')) {
