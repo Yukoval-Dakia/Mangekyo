@@ -1,42 +1,14 @@
-import { expect, it } from 'vitest';
-import { factId, learnerId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
-import { previewTextbookRevision, selectTextbookEdits } from '../textbook-edits.ts';
-import { textbookPageType } from '../textbook-page.ts';
+import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { it } from 'vitest';
 
-it('keeps a later block change selectable when the first block is missing', async () => {
-  const learner = learnerId('01KFS4AAA00000000000000000');
-  const id = factId('01KFS4AAA00000000000000001');
-  const snapshot: FactSnapshot = {
-    type: textbookPageType, ref: { learner, id, rev: 2 as Revision },
-    accessEpoch: '0' as Tick, purpose: ['storage'],
-    value: { title: '平均速度', blocks: [
-      { id: 'formula', parentId: null, body: { kind: 'formula', latex: 's/t' } },
-      { id: 'explanation', parentId: null, body: { kind: 'text', text: '时间比时间；全程。' } },
-    ] },
-  };
-  const unavailable = async (): Promise<never> => { throw new Error('Only fact reads are expected'); };
-  const read: ReadContext = { fact: async <Value>() => snapshot as FactSnapshot<Value>, slot: unavailable, range: unavailable };
-  const rewrite = { kind: 'rewrite', blockId: 'formula', body: { kind: 'formula', latex: '\\Delta s/\\Delta t' } };
-  const preview = await previewTextbookRevision({ learner, read }, {
-    id, expectedRev: 2, clientEditSeq: 4,
-    edits: [{ ...rewrite, blockId: 'missing' }, rewrite],
+it('previews and adopts individual textbook block changes through the shared acceptance runner', async () => {
+  const require = createRequire(new URL('../../../runtime/studio/package.json', import.meta.url));
+  const runner = fileURLToPath(new URL('../../capture/samples/capture-acceptance.test.mjs', import.meta.url));
+  await promisify(execFile)(process.execPath, [require.resolve('tsx/cli'), runner], {
+    env: { ...process.env, MANGEKYO_CAPTURE_ACCEPTANCE_URL: '' },
+    timeout: 20_000,
   });
-  expect(preview.items.map(item => item.state)).toEqual(['invalid', 'ready']);
-  expect(preview.items[1]?.before?.block.body).toEqual({ kind: 'formula', latex: 's/t' });
-  expect(selectTextbookEdits(preview, ['formula'])).toEqual({ id, expectedRev: 2, clientEditSeq: 4, edits: [rewrite] });
-  expect(() => selectTextbookEdits(preview, ['missing'])).toThrow('请选择有效');
-  const patches = await previewTextbookRevision({ learner, read }, {
-    id, expectedRev: 2, clientEditSeq: 5,
-    edits: [
-      { kind: 'replace_anchor', blockId: 'explanation', anchor: '时间', replacement: '路程' },
-      { kind: 'insert_after', blockId: 'example', afterId: 'explanation', body: { kind: 'text', text: '新例子' } },
-      { kind: 'delete_block', blockId: 'formula' },
-    ],
-  });
-  expect(patches.items).toMatchObject([
-    { state: 'invalid', reason: '教材文本锚点必须恰好匹配一处。' },
-    { state: 'ready', before: null, after: { block: { id: 'example' }, siblingIndex: 2 } },
-    { state: 'ready', before: { block: { id: 'formula' } }, after: null },
-  ]);
-  expect(selectTextbookEdits(patches, ['example']).edits).toHaveLength(1);
-});
+}, 25_000);
