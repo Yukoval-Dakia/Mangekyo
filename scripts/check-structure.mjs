@@ -51,6 +51,19 @@ async function readPackageName(dir) {
   }
 }
 
+async function workspacePackageNames(dir) {
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return new Set();
+    throw error;
+  }
+  const names = await Promise.all(entries.filter(entry => entry.isDirectory())
+    .map(entry => readPackageName(path.join(dir, entry.name))));
+  return new Set(names.filter(Boolean));
+}
+
 function scriptKindFor(filePath) {
   if (/\.tsx$/i.test(filePath)) return ts.ScriptKind.TSX;
   if (/\.[cm]?jsx$/i.test(filePath)) return ts.ScriptKind.JSX;
@@ -164,11 +177,16 @@ function lineCount(source) {
 export async function checkStructure(root) {
   const rootDir = path.resolve(root);
   const violations = [];
-  const stats = { kernelFiles: 0, moduleFiles: 0, executorFiles: 0 };
+  const stats = { kernelFiles: 0, moduleFiles: 0, executorFiles: 0, runtimeFiles: 0, runtimeLines: 0 };
 
   const kernelDir = path.join(rootDir, 'kernel');
   const modulesDir = path.join(rootDir, 'modules');
   const executorsDir = path.join(rootDir, 'executors');
+  const runtimeDir = path.join(rootDir, 'runtime');
+  const [runtimeNames, surfaceNames] = await Promise.all([
+    workspacePackageNames(runtimeDir),
+    workspacePackageNames(path.join(rootDir, 'surfaces')),
+  ]);
 
   const kernelPackageName = await readPackageName(kernelDir);
   const kernelNames = new Set([KERNEL_PACKAGE, kernelPackageName].filter(Boolean));
@@ -217,6 +235,8 @@ export async function checkStructure(root) {
   for (const { dir, name } of moduleDirs) groups.push({ dir, kind: 'module', label: `modules/${name}/`, packageName: modulePackages.get(name) });
   for (const { dir, name } of executorDirs) groups.push({ dir, kind: 'executor', label: `executors/${name}/`, packageName: executorPackages.get(name) });
 
+  groups.push({ dir: runtimeDir, kind: 'runtime', label: 'runtime/' });
+
   for (const group of groups) {
     const files = await listSourceFiles(group.dir);
     let totalLines = 0;
@@ -247,10 +267,13 @@ export async function checkStructure(root) {
           kernelNames,
           modulePackageNames,
           executorPackageNames,
+          runtimeNames,
+          surfaceNames,
         });
         if (error) violations.push(`${relToRoot}: ${error}`);
       }
     }
+    if (group.kind === 'runtime') stats.runtimeLines = totalLines;
     if (totalLines > MAX_SOURCE_LINES) {
       violations.push(`${group.label}total ${totalLines} lines exceeds ${MAX_SOURCE_LINES} line limit`);
     }
@@ -259,7 +282,7 @@ export async function checkStructure(root) {
   return { ok: violations.length === 0, violations, stats };
 }
 
-function checkImport({ kind, specifier, fromFile, rootDir, groupDir, groupPackageName, kernelNames, modulePackageNames, executorPackageNames }) {
+function checkImport({ kind, specifier, fromFile, rootDir, groupDir, groupPackageName, kernelNames, modulePackageNames, executorPackageNames, runtimeNames, surfaceNames }) {
   const isRelative = specifier.startsWith('./') || specifier.startsWith('../') || specifier === '.' || specifier === '..';
   if (isRelative) {
     const resolved = path.resolve(path.dirname(fromFile), specifier);
@@ -268,6 +291,13 @@ function checkImport({ kind, specifier, fromFile, rootDir, groupDir, groupPackag
       return `relative import escapes repository root: "${specifier}"`;
     }
     const relParts = relToRoot.split(path.sep).join('/').split('/');
+    if (relParts[0] === 'runtime' && kind !== 'runtime') {
+      return `${kind} must not depend on runtime; got "${specifier}"`;
+    }
+    if (kind === 'runtime' && ((relParts[0] === 'surfaces' && relParts[1] !== 'shared') ||
+        ['scripts', 'docs'].includes(relParts[0]))) {
+      return `runtime may only compose production packages and shared presentation; got "${specifier}"`;
+    }
     if (kind === 'module') {
       const insideOwn = groupDir && resolved.startsWith(groupDir + path.sep);
       if (insideOwn) return null;
@@ -304,6 +334,12 @@ function checkImport({ kind, specifier, fromFile, rootDir, groupDir, groupPackag
 
   const packageName = packageNameOf(specifier);
   const subpath = subpathOf(specifier, packageName);
+  if (kind !== 'runtime' && runtimeNames.has(packageName)) {
+    return `${kind} must not depend on runtime; got "${specifier}"`;
+  }
+  if (kind === 'runtime' && surfaceNames.has(packageName)) {
+    return `runtime must not depend on a surface package; got "${specifier}"`;
+  }
   if (kind === 'module') {
     if (kernelNames.has(packageName)) {
       if (subpath !== '') {
@@ -341,7 +377,7 @@ async function main() {
   const root = args[0] ? path.resolve(args[0]) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const result = await checkStructure(root);
   if (result.ok) {
-    console.log(`check-structure: OK (${result.stats.kernelFiles} kernel files, ${result.stats.moduleFiles} module files, ${result.stats.executorFiles} executor files)`);
+    console.log(`check-structure: OK (${result.stats.kernelFiles} kernel files, ${result.stats.moduleFiles} module files, ${result.stats.executorFiles} executor files, ${result.stats.runtimeFiles} runtime files / ${result.stats.runtimeLines} lines)`);
     process.exit(0);
   }
   console.error('check-structure: FAIL');

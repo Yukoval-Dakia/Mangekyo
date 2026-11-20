@@ -315,7 +315,7 @@ surfaces/web   界面
 ```
 
 - 依赖方向硬规则：`modules/*` 只能依赖 `kernel` 与其他模块的 `./facts/*`、`./slots/*` 子路径；`kernel` 不依赖任何模块；`executors` 只依赖 `kernel`。
-- 检查脚本 `scripts/check-structure` 静态扫 import 路径违例 + 行数上限（kernel ≤1.5 万行，每模块 ≤1.5 万行，不含测试）。这是仅有的两条结构检查。
+- 检查脚本 `scripts/check-structure` 静态扫 import 路径违例 + 行数上限（kernel、每模块及 runtime 总计各 ≤1.5 万行，不含测试）。这是仅有的两条结构检查。
 - 生成器产出可编译骨架 + 有区分力的 sample + AGENTS.md 模板（一页内）。
 
 ## 13. 两种实现的共同比较协议
