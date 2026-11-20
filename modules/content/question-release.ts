@@ -1,1 +1,1 @@
-export { openQuestionForRelease } from './question-state.ts';
+export { openQuestionForRelease, questionVerificationType } from './question-state.ts';

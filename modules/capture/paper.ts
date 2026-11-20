@@ -4,7 +4,7 @@ import {
 } from '@mangekyo/kernel';
 import { assetType, checkQuestionTeachingSources, checkTextbookBasis, parseTextbookPage, questionAsset, questionPrompt, textbookPageType,
   type AssetReference } from '@mangekyo/module-content/facts/asset-contract';
-import { openQuestionForRelease } from '@mangekyo/module-content/facts/question-release';
+import { openQuestionForRelease, questionVerificationType } from '@mangekyo/module-content/facts/question-release';
 import { captureObject as object, captureRef, captureText as text, sha256 } from './parse.ts';
 import { captureSourceType, sourceEnvelope, type Block } from './source.ts';
 import { layeredExtractionDeriver, layeredExtractionSlot, mergeLayeredSource, type LayeredExtractionValue } from './extraction.ts';
@@ -72,19 +72,20 @@ export type PaperExtractionReader = (request: ExtractionRequest, mode: 'current'
   readonly manifest: { readonly learner: LearnerId; readonly inputs: readonly unknown[] };
 }>;
 
-const paperExtraction = Symbol('paper extraction reader');
+const paperExtraction = Symbol.for('@mangekyo/module-capture/paper.extraction-reader');
 type BoundPaperRead = ReadContext & { readonly [paperExtraction]?: PaperExtractionReader };
 
 export function bindPaperCommandRead(
   base: ReadContext, {
     readExtraction,
-    readQuestionSlot = base.slot.bind(base),
+    readQuestionSlot,
   }: { readonly readExtraction?: PaperExtractionReader; readonly readQuestionSlot?: ReadContext['slot'] },
 ): ReadContext {
   const read: BoundPaperRead = {
     fact: base.fact.bind(base),
     range: base.range.bind(base),
-    slot: readQuestionSlot,
+    slot: (ref, options) => readQuestionSlot && ref.type === questionVerificationType && options.mode === 'following'
+      ? readQuestionSlot(ref, options) : base.slot(ref, options),
     ...(readExtraction ? { [paperExtraction]: readExtraction } : {}),
   };
   return read;
@@ -343,12 +344,13 @@ async function frozenExtractionParts(fact: FactSnapshot, issuance: PaperIssuance
 
 async function projectPaper(
   read: ReadContext, issuance: PaperIssuance, mode: 'current' | 'pinned',
+  readExtraction = (read as BoundPaperRead)[paperExtraction],
 ) {
   const fact = await read.fact(issuance.source.id, { mode: 'pinned', rev: issuance.source.rev });
   if (fact.accessEpoch !== issuance.epoch || fact.ref.id !== issuance.source.id || fact.ref.rev !== issuance.source.rev)
     throw new Error('原件发放版本或用途已变更。');
   const { title, pieces } = issuance.extraction
-    ? await frozenExtractionParts(fact, issuance, mode, (read as BoundPaperRead)[paperExtraction])
+    ? await frozenExtractionParts(fact, issuance, mode, readExtraction)
     : await frozenPrintParts(read, fact, mode === 'current');
   return { issuanceId: await paperIssuanceId(issuance), title, pages: paginate(pieces, issuance.layout) };
 }
@@ -371,19 +373,19 @@ async function storedPaperIssuance(read: ReadContext, id: ReturnType<typeof fact
   return checkedPaperIssuance(fact, id);
 }
 
-export async function projectIssuedPaper(read: ReadContext, issuance: PaperIssuance) {
+export async function projectIssuedPaper(read: ReadContext, issuance: PaperIssuance, readExtraction?: PaperExtractionReader) {
   const stored = await storedPaperIssuance(read, await paperIssuanceId(issuance));
-  return stored ? projectPaper(read, stored, 'pinned') : projectPaper(read, issuance, 'current');
+  return stored ? projectPaper(read, stored, 'pinned', readExtraction) : projectPaper(read, issuance, 'current', readExtraction);
 }
 
-export async function issuePaperWrites(read: ReadContext, data: PaperIssuance): Promise<readonly FactWrite[]> {
+export async function issuePaperWrites(read: ReadContext, data: PaperIssuance, readExtraction?: PaperExtractionReader): Promise<readonly FactWrite[]> {
   const id = await paperIssuanceId(data);
   const stored = await storedPaperIssuance(read, id);
   if (stored) {
-    await projectPaper(read, stored, 'pinned');
+    await projectPaper(read, stored, 'pinned', readExtraction);
     return [];
   }
-  await projectPaper(read, data, 'current');
+  await projectPaper(read, data, 'current', readExtraction);
   return [{ kind: 'create', id, factType: paperIssuanceType, data, purpose: ['storage'] }];
 }
 
@@ -420,9 +422,10 @@ export function collectPaperInput(input: unknown) {
 
 export async function collectPaperWrites(
   read: ReadContext, { issuanceId, source, page, original, retryId }: ReturnType<typeof collectPaperInput>,
+  readExtraction?: PaperExtractionReader,
 ): Promise<readonly FactWrite[]> {
   const issuance = await read.fact(issuanceId, { mode: 'following' });
-  const printed = await projectPaper(read, await checkedPaperIssuance(issuance, issuanceId), 'pinned');
+  const printed = await projectPaper(read, await checkedPaperIssuance(issuance, issuanceId), 'pinned', readExtraction);
   const fact = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
   if (fact.type !== captureSourceType) throw new Error('回收图片必须来自原件。');
   const captured = sourceEnvelope(fact.value);
