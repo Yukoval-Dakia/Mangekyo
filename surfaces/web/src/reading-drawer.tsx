@@ -45,6 +45,7 @@ export function ReadingDrawer({ items }: { items: ReadingItem[] }) {
   }, [selected]);
   const available = items.filter(entry => !hidden.includes(entry.id));
   const item = available.find(entry => entry.id === selected);
+  if (selected !== null && !item) setSelected(null);
   const overflow = available.slice(3).filter(entry => entry !== item);
   if (!available.length) return null;
   return <>
@@ -80,13 +81,18 @@ export function QuestionContext({ itemId, readingContext, source, previous, hist
   const presentation = useQuestionPresentation(itemId);
   const items: ReadingItem[] = [];
   if (presentation && historical === Boolean(presentation.attempt)) {
-    const kinds = new Set<ReadingContextEntry['kind']>();
-    const entries = (readingContext ?? []).filter(entry => entry?.kind === 'archetype' || entry?.kind === 'backtrace');
-    if (presentation.notion) entries.push(presentation.notion);
+    const initial = readingContext ?? [];
+    const entries = [...(presentation.confirmed ?? initial)];
+    // Keep surviving cold-read buttons in place when the snapshot brings additional choices.
+    const position = (entry: ReadingContextEntry) => {
+      const index = initial.findIndex(card => card?.kind === entry?.kind && card?.ref === entry?.ref);
+      return index < 0 ? initial.length : index;
+    };
+    entries.sort((left, right) => position(left) - position(right));
     for (const entry of entries) {
       const label = entry && capsuleLabel(entry.kind);
-      if (!label || typeof entry.ref !== 'string' || !entry.ref.trim() || kinds.has(entry.kind)) continue;
-      kinds.add(entry.kind);
+      if (!label || typeof entry.ref !== 'string' || !entry.ref.trim() ||
+          entries.filter(other => other?.kind === entry.kind).length !== 1) continue;
       const id = JSON.stringify([entry.kind, entry.ref]);
       items.push({ id, label, content: unavailable => <PaperReadingCapsule
         presentation={presentation} itemId={itemId} entry={entry} onUnavailable={unavailable} /> });

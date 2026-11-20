@@ -20,7 +20,7 @@ import { sameWorkbookJson, WorkbookSourceMismatch, workbookAttempt, workbookAtte
 import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { workbookWitnessReader } from '../../modules/activity/workbook-backtrace-values.ts';
-import { notionReadScope, type CheckNotionRead } from './notion.ts';
+import { notionReadScope, NotionReadUnchecked, type CheckNotionRead } from './notion.ts';
 import type { openRetention } from './retention.ts';
 import { selectedWorkbookRead, retentionPurpose } from './retention-workbook.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
@@ -39,7 +39,8 @@ type Kind = 'notion' | 'archetype' | 'backtrace';
 const scope = {learner: studioLearner};
 const unavailable = (error: unknown) => error instanceof WorkbookSourceMismatch || error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 const denied = () => new RequestError(403, '本题帮助的发放、授权或呈现许可已失效。');
-const skipNotion: CheckNotionRead = async () => { throw new FactReadDeniedError('recipient','Notion 需要另行确认。'); };
+const localKinds = ['archetype','backtrace'] as const;
+const allKinds = [...localKinds,'notion'] as const;
 const pinned = {mode: 'pinned' as const, rev: 1 as Revision};
 
 export const historicalWorkbookMount = (tx: ReadTransaction, id: FactId, fact: FactSnapshot, read: ReadContext) =>
@@ -48,58 +49,72 @@ export const historicalWorkbookMount = (tx: ReadTransaction, id: FactId, fact: F
 export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: CommandHooks, authority: WorkbookContextAuthority) {
   const key = randomBytes(32);
   const sign = (...scope: unknown[]) => createHmac('sha256', key).update(canonicalJsonString(scope)).digest('base64url');
-  async function discover(tx: ReadTransaction, mount: BoundMount, item: WorkbookQuestion, check: CheckNotionRead,
-    remote: boolean, requested?: string) {
+  async function discover(tx: ReadTransaction, mount: BoundMount, item: WorkbookQuestion, check?: CheckNotionRead,
+    requested?: string, collectPages?: CheckNotionRead) {
     if (!item.sourceQuestionRef) return { handles: [] };
     const question = helpRef(item.sourceQuestionRef);
     const use = mount.issuance ? retentionPurpose : purpose;
-    const selected = selectedWorkbookRead(tx,use,createCommandReadContext(tx,use),remote ? check : skipNotion);
-    const read: Reader = { fact: async <Value>(...args: Parameters<Reader['fact']>) =>
-      await selected.fact(...args) as FactSnapshot<Value> };
+    const source = createCommandReadContext(tx,use);
     const edges = await workbookCapsuleLinkCandidates(tx,question,knowledgeEdgeType,use);
-    const bindings = new Map<string, PaperCapsuleBinding>();
-    const access = {
-      learner: tx.learner, purpose:use, recipient:tx.learner, read, isUnavailable: unavailable,
-      async reopenLegacyQuestion(this: {read:Reader},ref: HelpRef) {
-        const sources: [FactSnapshot, 'pinned' | 'following' | undefined][] = [];
-        const value = await resolveSource(tx, {v:1,fact:{...ref,type:workspaceEntryType},anchor:{kind:'whole'}}, {
-          recipient: 'learner', track: (fact,mode) => sources.push([fact,mode]),
-        });
-        if (value?.kind !== 'question') return;
-        let root;
-        for (const [fact,mode] of sources) {
-          const checked = await this.read.fact(fact.ref.id,mode === 'following' ? {mode} : {mode:'pinned',rev:fact.ref.rev});
-          if (checked.ref.id === ref.id && checked.ref.rev === ref.rev) root = checked;
+    const pages = new Set<FactSnapshot>();
+    const handles: {kind: Kind; ref:string}[] = [];
+    for (const kind of check || collectPages ? allKinds : localKinds) {
+      let pending = false;
+      const selected = selectedWorkbookRead(tx,use,source,async fact => {
+        if (!check) { pending = true; pages.add(fact); return; }
+        try { await check(fact); } catch (error) {
+          if (error instanceof NotionReadUnchecked) pending = true;
+          throw error;
         }
-        return root && {...ref,accessEpoch:root.accessEpoch};
-      },
-      async seal(binding: PaperCapsuleBinding) {
-        const ref = sign('capsule',mount,item.id,binding);
-        bindings.set(ref,binding);
-        return ref;
-      },
-      async unseal(ref: string) { return bindings.get(ref) ?? null; },
-    };
-    const handles: {kind: Kind; ref: string}[] = (await listPaperCapsules(access,question,edges))
-      .filter(({kind}) => (kind === 'notion-block') === remote)
-      .map(({kind,ref})=>({kind:kind==='notion-block' ? 'notion' : kind,ref}));
-    const backtrace = remote ? null :
-      await authority.backtrace?.(tx, {paper:mount.paper,itemId:item.id,question,...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},read);
-    if (backtrace) {
-      const ref = sign('backtrace',mount,item.id,question,backtrace.content,backtrace.witnesses);
-      handles.push({kind:'backtrace',ref});
-      if (ref === requested) return {handles, card:{kind:'backtrace' as const,text:backtrace.text,content:backtrace.content,basis:backtrace.witnesses}};
+      });
+      const read: Reader = { fact: async <Value>(...args: Parameters<Reader['fact']>) =>
+        await selected.fact(...args) as FactSnapshot<Value> };
+      if (kind === 'backtrace') {
+        const trace = await authority.backtrace?.(tx,{paper:mount.paper,itemId:item.id,question,
+          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},read);
+        if (!trace || pending) continue;
+        const ref = sign('backtrace',mount,item.id,question,trace.content,trace.witnesses);
+        handles.push({kind,ref});
+        if (ref === requested) return {handles,card:{kind,text:trace.text,content:trace.content,basis:trace.witnesses}};
+        continue;
+      }
+      const bindings = new Map<string, PaperCapsuleBinding>();
+      const access = {
+        learner: tx.learner, purpose:use, recipient:tx.learner, read, isUnavailable: unavailable,
+        async reopenLegacyQuestion(this: {read:Reader},ref: HelpRef) {
+          const sources: [FactSnapshot, 'pinned' | 'following' | undefined][] = [];
+          const value = await resolveSource(tx, {v:1,fact:{...ref,type:workspaceEntryType},anchor:{kind:'whole'}}, {
+            recipient: 'learner', track: (fact,mode) => sources.push([fact,mode]),
+          });
+          if (value?.kind !== 'question') return;
+          let root;
+          for (const [fact,mode] of sources) {
+            const checked = await this.read.fact(fact.ref.id,mode === 'following' ? {mode} : {mode:'pinned',rev:fact.ref.rev});
+            if (checked.ref.id === ref.id && checked.ref.rev === ref.rev) root = checked;
+          }
+          return root && {...ref,accessEpoch:root.accessEpoch};
+        },
+        async seal(binding: PaperCapsuleBinding) {
+          const ref = sign('capsule',mount,item.id,binding);
+          bindings.set(ref,binding);
+          return ref;
+        },
+        async unseal(ref: string) { return bindings.get(ref) ?? null; },
+      };
+      const [label] = await listPaperCapsules(access,question,edges,kind === 'notion' ? 'notion-block' : kind);
+      if (pending || !label) continue;
+      handles.push({kind,ref:label.ref});
+      if (label.ref !== requested) continue;
+      const binding = bindings.get(label.ref)!;
+      const proof = workbookWitnessReader(read,tx);
+      const matched = await openPaperCapsule({...access,read:proof.read},label.ref,binding.trail.map(step=>step.edge.id),question);
+      if (!matched || pending) continue;
+      const {id,rev} = binding.trail.at(-1)!.endpoint.sourceUse;
+      return {handles,card:{kind,text:matched.kind === 'notion-block' ? matched.text : matched.title,
+        content:{id,rev},basis:proof.witnesses()}};
     }
-    const binding = requested ? bindings.get(requested) : undefined;
-    const proof = workbookWitnessReader(read,tx);
-    const matched = binding && requested && await openPaperCapsule({...access,read:proof.read},requested,
-      binding.trail.map(step=>step.edge.id),question);
-    if (!matched || !binding || (matched.kind === 'notion-block') !== remote) return {handles};
-    const content = binding.trail.at(-1)!.endpoint.sourceUse;
-    const card = matched.kind === 'notion-block'
-      ? {kind:'notion' as const,text:matched.text,content:{id:content.id,rev:content.rev}}
-      : {kind:'archetype' as const,text:matched.title,content:{id:content.id,rev:content.rev}};
-    return {handles,card:{...card,basis:proof.witnesses()}};
+    if (collectPages) for (const fact of pages) await collectPages(fact);
+    return {handles};
   }
 
   async function issuedMount(tx: ReadTransaction, id: FactId) {
@@ -136,7 +151,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
 
   const questions = (tx: ReadTransaction, paper: WorkbookPaper, mount: BoundMount) =>
     Promise.all(paper.questions.map(async item => {
-      const {handles} = await discover(tx,mount,item,skipNotion,false);
+      const {handles} = await discover(tx,mount,item);
       return {...workbookQuestionView(item,paper.assessmentRelease), ...(handles.length ? {readingContext:handles} : {})};
     }));
 
@@ -154,7 +169,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
         return await notionReadScope(db,studioLearner,signal).read(async (tx,check) => {
           const {mount,paper} = await resolveMount(tx,createCommandReadContext(tx,purpose),id,target.paperRev,target.attemptRef);
           const items = await Promise.all(paper.questions.map(async item => ({
-            itemId:item.id,readingContext:(await discover(tx,mount,item,check,true)).handles,
+            itemId:item.id,readingContext:(await discover(tx,mount,item,check)).handles,
           })));
           return {...target,items:items.filter(item=>item.readingContext.length)};
         });
@@ -167,14 +182,13 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       let event: ReturnType<typeof workbookReadingContext>;
       try { event = workbookReadingContext(input); }
       catch { throw new RequestError(400, '帮助请求格式无效。'); }
-      const prepare = async (tx: ReadTransaction, check: CheckNotionRead) => {
+      const prepare = async (tx: ReadTransaction, check: CheckNotionRead, collect?: boolean) => {
         const read = createCommandReadContext(tx,purpose);
         const {mount,paper} = await resolveMount(tx,read,id,event.paperRev,event.attemptRef);
         const item = paper.questions.find(question=>question.id===event.itemId);
         if (!item) throw denied();
         if (event.phase === 'opened' && !await verifyWorkbookQuestionPermit(tx,read,event.permit,mount,item.id)) throw denied();
-        const local = (await discover(tx,mount,item,skipNotion,false,event.ref)).card;
-        const card = local ?? (await discover(tx,mount,item,check,true,event.ref)).card;
+        const {card} = await discover(tx,mount,item,collect ? undefined : check,event.ref,collect ? check : undefined);
         if (!card) return null;
         const witness = mount.issuance ? canonicalJsonString(card.basis) : '';
         const openingId = factId(stableId('paper-capsule-open',event.ref,witness));
@@ -189,7 +203,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
         }
         return {openingId, displayRef, presentation, card, purpose:mount.issuance ? retentionPurpose : purpose};
       };
-      try { return await notionReadScope(db,studioLearner).read(prepare, async (tx,check) => {
+      try { return await notionReadScope(db,studioLearner).read((tx,check) => prepare(tx,check,true), async (tx,check) => {
         const prepared = await prepare(tx,check);
         if (!prepared) throw denied();
         const {openingId, displayRef, presentation, card} = prepared;

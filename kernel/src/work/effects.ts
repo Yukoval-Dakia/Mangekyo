@@ -37,7 +37,7 @@ const json = z.json();
 export async function runEffect(
   db: Db,
   request: EffectRequest,
-  invoke: (providerEffectId: string) => Promise<Json>,
+  invoke: (providerEffectId: string, checkDispatch: (tx: ReadTransaction) => Promise<void>) => Promise<Json>,
   authorize?: (tx: ReadTransaction) => Promise<void> | void,
   // Supplied by the host only for a closed set of independently authored fact inputs.
   basis?: { manifest: Manifest; work?: WorkRef & { ownerSlot?: WorkRequest } },
@@ -86,10 +86,25 @@ export async function runEffect(
   });
   if (reservation.kind !== 'invoke') return reservation;
 
+  // Call under the learner lock immediately before the transport starts. A
+  // durable claim can survive a transaction that changes the deletion fence.
+  const checkDispatch = async (tx: ReadTransaction) => {
+    if (tx.learner !== learner) throw new Error('Effect dispatch learner mismatch');
+    await assertUnburned(tx, 'fact', [request.ownerId]);
+    if (!basis) await assertDeletionWatermark(tx, reservation.deletionWatermark);
+    const { rows: [active] } = await tx.query(`
+      SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3
+        AND step_key=$4 AND label=$5 AND state='started' AND started_tick=$6
+        AND provider_effect_id=$7 AND effect_may_settle(learner_id, owner_id, started_tick, input_basis)`,
+    [...identity, reservation.tick, reservation.providerEffectId]);
+    if (!active)
+      throw new LifecycleError(409, '原发送凭据已失效。', 'effect_dispatch_stale');
+  };
+
   let outcome: EffectResult;
   let encoded: string | null = null;
   try {
-    const result = canonicalizeJson(await invoke(reservation.providerEffectId));
+    const result = canonicalizeJson(await invoke(reservation.providerEffectId, checkDispatch));
     encoded = JSON.stringify(result);
     outcome = { kind: 'done', result };
   } catch {

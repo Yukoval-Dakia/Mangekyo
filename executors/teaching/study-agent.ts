@@ -1,3 +1,4 @@
+import type {FirstTurnJitContext} from './first-turn-jit.ts';
 import {learningToolError} from './tool-error.ts';
 import { createHash } from 'node:crypto';
 import type { TeachingDependencies, TeachingDispatch } from './index.ts';
@@ -20,6 +21,8 @@ export type PreparedPythonAttempts = Extract<PythonAttemptsRead, {ok:false}> | (
 });
 
 export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
+  /** Persisted opt-in replacing first-turn memory, preference and current-object projections. */
+  jitContext?: FirstTurnJitContext;
   historyNotice?: string;
   currentLearningObject?: string;
   learningMemory?: string;
@@ -140,11 +143,14 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       ...(available ? { tools: definitions, ...(allowParallelCalls ? {} : { parallel_tool_calls: false }) } : {}) });
     const index = round * stride;
     const raw = await options.runEffect({ index, provider: endpoint, model, requestDigest: hash(JSON.stringify({endpoint, body})),
-      ...(options.learningMemory ? { learningMemory: true } : {}) }, async requestId => {
+      ...(options.jitContext ? {jitContext: true} : options.learningMemory ? {learningMemory: true} : {}) }, async (requestId, dispatch) => {
+      if (options.jitContext && !dispatch) {
+        throw new TeachingError('provider_configuration', '首轮学习资料需要宿主复验后才能发送。');
+      }
       let reportedModel: string | undefined;
       let lastText = '';
       let lastPush = 0;
-      const reply = await requestCompletion(endpoint, body, options.provider.apiKey, requestId, {
+      const send = () => requestCompletion(endpoint, body, options.provider.apiKey, requestId, {
         allowTools: available,
         model(value) { reportedModel = verifyTeachingModel(value, options.provider.apiKey, model); },
         async content(text) {
@@ -156,6 +162,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
           await options.onProgress({ phase: 'replying', message });
         },
       }, options.provider);
+      const reply = await (options.jitContext && dispatch ? dispatch(send) : send());
       if ('rejectedHttpStatus' in reply || 'truncated' in reply) return JSON.stringify(reply);
       const message = publicAssistantContent(reply.content ?? '').trim();
       return JSON.stringify({ reportedModel, ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });

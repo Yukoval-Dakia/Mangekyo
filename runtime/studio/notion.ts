@@ -18,6 +18,7 @@ import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../m
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { notionModelRecipient, purpose as teaching, stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { teachingTurnAllowed } from './reading.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { notionTeachingRecipients } from './workspace-access.ts';
 import { notionConnection } from './notion-transport.ts';
@@ -164,10 +165,11 @@ export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<B
 }
 
 export async function teachingResultAuthority(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
-  rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead) {
+  rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead,
+  origin?: ReturnType<typeof studyTurn>) {
   try {
     const manifest = parseManifest(rawManifest);
-    if (manifest.purpose !== teaching || !await grantCurrent(turn) ||
+    if (manifest.purpose !== teaching || !await teachingTurnAllowed(tx,turn,grantCurrent,origin) ||
         (await revalidateManifest(tx, manifest)).kind !== 'valid') return 'withdrawn';
     const recipient: NotionRecipient = () => true;
     if (turn.providerId && turn.protocol && turn.workspaceRevision)
@@ -186,6 +188,8 @@ export async function teachingResultAllowed(...args: Parameters<typeof teachingR
 export class NotionReadUnconfirmed extends FactReadDeniedError {
   constructor() { super('recipient', '暂时无法确认 Notion 来源。'); }
 }
+
+export class NotionReadUnchecked extends NotionReadUnconfirmed {}
 
 export type CheckNotionRead = (fact: FactSnapshot) => Promise<void>;
 type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => Promise<T>;
@@ -211,6 +215,7 @@ export function notionReadScope(db: Db, learner: LearnerId, signal?: AbortSignal
     const page = await pageFor(tx, fact);
     if (!page) return;
     const authority = witnesses.get(page.witness);
+    if (authority === undefined) throw new NotionReadUnchecked();
     if (authority === 'withdrawn') throw new FactReadDeniedError('recipient', '未能确认 Notion 来源。');
     if (authority !== 'authorized') throw new NotionReadUnconfirmed();
   };

@@ -1,5 +1,6 @@
 import {createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode} from 'react';
 import {api, ApiError} from './api';
+import {capsuleLabel, type ReadingContextEntry} from './paper-reading-capsule';
 
 function onVisibilityChange(notify: () => void) {
   document.addEventListener('visibilitychange', notify);
@@ -12,7 +13,7 @@ export function useVisibleDocument() {
 type Pinned = {id: string; rev: number};
 type QuestionPermit = {paper: Pinned; permit: string; items: readonly string[]; attempt?: Pinned};
 type DeferredLabels = {paperRev: number; attemptRef?: Pinned; items: {
-  itemId: string; readingContext: {kind: 'notion'; ref: string}[];
+  itemId: string; readingContext: ReadingContextEntry[];
 }[]};
 const Presentation = createContext<{grant: QuestionPermit | null; labels?: DeferredLabels | undefined}>({grant: null});
 
@@ -36,6 +37,10 @@ export function QuestionPresentation({value, children}: {value: QuestionPermit |
     const controller = new AbortController();
     void api<DeferredLabels>(path, {signal: controller.signal}).then(labels => {
       if (!controller.signal.aborted && labels?.paperRev === rev && Array.isArray(labels.items) &&
+          labels.items.every(item => typeof item?.itemId === 'string' && item.itemId.length > 0 &&
+            Array.isArray(item.readingContext) && item.readingContext.every(entry =>
+              entry && capsuleLabel(entry.kind) && typeof entry.ref === 'string' && entry.ref.trim())) &&
+          new Set(labels.items.map(item => item.itemId)).size === labels.items.length &&
           (attemptId === undefined ? labels.attemptRef === undefined :
             labels.attemptRef?.id === attemptId && labels.attemptRef.rev === attemptRev)) {
         setResult({scope, labels});
@@ -51,9 +56,9 @@ export function useQuestionPresentation(itemId: string) {
   const {grant: granted, labels} = useContext(Presentation);
   if (!granted?.items.includes(itemId)) return null;
   const {paper, permit, attempt} = granted;
-  const entries = labels?.items.find(item => item?.itemId === itemId)?.readingContext;
-  const notion = Array.isArray(entries) ? entries.find(entry => entry?.kind === 'notion' && typeof entry.ref === 'string' && entry.ref.trim()) : undefined;
-  return {paper, permit, notion, ...(attempt ? {attempt} : {})};
+  // A successful snapshot covers the whole mount, including items omitted because they have no cards.
+  const confirmed = labels && (labels.items.find(item => item.itemId === itemId)?.readingContext ?? []);
+  return {paper, permit, confirmed, ...(attempt ? {attempt} : {})};
 }
 
 type Receipt = {key: string; permit?: string; error?: string};
