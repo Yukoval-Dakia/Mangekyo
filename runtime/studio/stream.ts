@@ -275,7 +275,12 @@ export async function serveSessionEvents(
         if (eventId === lastEventId) continue;
         lastEventId = eventId;
         // Each event carries cumulative state, including on Last-Event-ID reattachment.
-        const data = { session, phase: row.phase ?? 'queued', ...(row.draft ? { message: row.draft } : {}) };
+        const data = {
+          session,
+          phase: row.phase ?? 'queued',
+          authorizedMountIds: artifacts.map(artifact => artifact.mountId),
+          ...(row.draft ? { message: row.draft } : {}),
+        };
         if (!res.write(event('progress', eventId, data) + artifacts.map(a => event('artifact-snapshot',eventId,a)).join(''))) {
           await new Promise<void>((resolve) => {
             const ready = () => {
