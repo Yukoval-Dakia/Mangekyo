@@ -1,23 +1,30 @@
-import { defineCommand, type FactWrite } from '@mangekyo/kernel';
-import { fields, pageId, record, revision } from '../parse.ts';
-import { textbookPageFrom } from '../textbook-page.ts';
+import { defineCommand } from '@mangekyo/kernel';
+import { fields, key, list, pageId, record, revision } from '../parse.ts';
+import { undoTextbookWrite } from '../textbook-undo.ts';
 
 export default defineCommand({
   type: 'content.undoTextbookWrite',
   destructive: true,
-  schema: { parse(input: unknown) {
-    const value = record(input);
-    fields(value, 'id', 'expectedRev', 'priorRev');
-    return { id:pageId(value.id), expectedRev:revision(value.expectedRev),
-      priorRev:value.priorRev === null ? null : revision(value.priorRev) };
-  } },
-  async write(ctx, {id, expectedRev, priorRev}): Promise<readonly FactWrite[]> {
-    const current = await ctx.read.fact(id, {mode:'following'});
-    if (current.ref.rev !== expectedRev) throw new Error(`Fact revision conflict: ${id}`);
-    textbookPageFrom(current);
-    if (priorRev === null && expectedRev === 1) return [{kind:'retract', id, expectedRev}];
-    if (priorRev === null || priorRev !== expectedRev - 1) throw new Error('教材撤回版本无效。');
-    const previous = await ctx.read.fact(id, {mode:'pinned', rev:priorRev});
-    return [{kind:'correct', id, expectedRev, data:textbookPageFrom(previous)}];
+  schema: {
+    parse(input: unknown) {
+      const value = record(input);
+      fields(value, 'id', 'expectedRev', 'priorRev', 'appliedRev', 'blockIds', 'moveBlockIds');
+      const blockIds = value.blockIds === undefined ? undefined : list(value.blockIds).map(key);
+      if (blockIds && (!blockIds.length || new Set(blockIds).size !== blockIds.length)) {
+        throw new Error('请选择不同的教材撤回块。');
+      }
+      const moveBlockIds = value.moveBlockIds === undefined ? [] : list(value.moveBlockIds).map(key);
+      if (moveBlockIds.some(id => !blockIds?.includes(id)) || new Set(moveBlockIds).size !== moveBlockIds.length) {
+        throw new Error('撤回位置须指向已选的教材块。');
+      }
+      return {
+        id: pageId(value.id), expectedRev: revision(value.expectedRev),
+        priorRev: value.priorRev === null ? null : revision(value.priorRev),
+        ...(value.appliedRev === undefined ? {} : { appliedRev: revision(value.appliedRev) }),
+        ...(blockIds ? { blockIds } : {}),
+        ...(moveBlockIds.length ? { moveBlockIds } : {}),
+      };
+    },
   },
+  write: undoTextbookWrite,
 });
