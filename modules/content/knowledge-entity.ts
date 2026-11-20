@@ -1,7 +1,7 @@
-import { FactNotFoundError, factId, type FactId, type FactSnapshot, type ReadContext } from '@mangekyo/kernel';
+import { FactNotFoundError, factId, type FactId, type FactSnapshot } from '@mangekyo/kernel';
 import { fields, list, pageId, record, text } from './parse.ts';
 
-import { assetType, checkTextbookBasis, parseAsset } from './asset.ts';
+import { assetType, checkTextbookBasis, parseAsset, type AssetReadContext } from './asset.ts';
 export const knowledgeNameType = 'content.knowledgeName';
 export const knowledgeEntityKinds = ['concept', 'method', 'archetype'] as const;
 export type KnowledgeEntityKind = (typeof knowledgeEntityKinds)[number];
@@ -80,7 +80,7 @@ export function knowledgeNameId(kind: KnowledgeEntityKind, name: string) {
   return contentStableId(knowledgeNameType, kind, normalizeKnowledgeName(name));
 }
 
-export async function openKnowledgeEntity(read: Pick<ReadContext, 'fact'>, id: FactId, pinned?: FactSnapshot['ref']['rev']) {
+export async function openKnowledgeEntity(read: AssetReadContext['read'], id: FactId, pinned?: FactSnapshot['ref']['rev']) {
   const redirects: FactSnapshot['ref'][] = [];
   let snapshot = await read.fact(id, pinned === undefined ? { mode: 'following' } : { mode: 'pinned', rev: pinned });
   let kind: KnowledgeEntityKind | undefined;
@@ -104,7 +104,7 @@ export async function openKnowledgeEntity(read: Pick<ReadContext, 'fact'>, id: F
   }
 }
 
-export async function openKnowledgeName(read: Pick<ReadContext, 'fact'>, kind: KnowledgeEntityKind, name: string) {
+export async function openKnowledgeName(read: AssetReadContext['read'], kind: KnowledgeEntityKind, name: string) {
   let fact;
   try {
     fact = await read.fact(await knowledgeNameId(kind, name), { mode: 'following' });

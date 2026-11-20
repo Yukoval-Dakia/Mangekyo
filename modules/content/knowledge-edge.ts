@@ -1,5 +1,5 @@
-import { factId, type Edge, type CommandContext, type FactId, type FactSnapshot, type Revision, type Tick } from '@mangekyo/kernel';
-import { assetType, checkTextbookBasis, openAssetReference, parseAsset } from './asset.ts';
+import { factId, type Edge, type FactId, type FactSnapshot, type Revision, type Tick } from '@mangekyo/kernel';
+import { assetType, checkTextbookBasis, openAssetReference, parseAsset, type AssetReadContext } from './asset.ts';
 import { openKnowledgeEntity } from './knowledge-entity.ts';
 import { fields, key, list, pageId, record, revision, text } from './parse.ts';
 
@@ -199,7 +199,7 @@ function tick(value: unknown): Tick {
 }
 
 export async function verifyKnowledgeEdge(
-  ctx: CommandContext,
+  ctx: AssetReadContext,
   edge: KnowledgeEdge,
 ): Promise<readonly FactSnapshot[]> {
   const facts = new Map<string, FactSnapshot>();
@@ -227,7 +227,7 @@ export function knowledgeUseKey(use: KnowledgeSourceUse): string {
   return `${use.id}:${use.rev}:${use.accessEpoch}`;
 }
 
-export async function readKnowledgeUse(ctx: CommandContext, use: KnowledgeSourceUse): Promise<FactSnapshot> {
+export async function readKnowledgeUse(ctx: AssetReadContext, use: KnowledgeSourceUse): Promise<FactSnapshot> {
   const fact = await ctx.read.fact(use.id, { mode: 'pinned', rev: use.rev });
   if (fact.ref.learner !== ctx.learner || fact.accessEpoch !== use.accessEpoch) {
     throw new KnowledgeEdgeBasisError('来源访问代次已经变化。');
@@ -273,12 +273,15 @@ export function edgePurposes(purpose: 'storage' | 'teaching', sources: readonly 
 }
 
 /** Opens only the edge candidates enumerated by the authorized bus query. */
-export async function walkKnowledgeEdges(ctx: CommandContext, input: {
+export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
   readonly root: KnowledgeEndpoint;
   readonly edgeIds: readonly FactId[];
   readonly mode: 'following' | 'pinned';
   readonly hops: 1 | 2;
   readonly direction?: 'inbound' | 'outbound' | 'both';
+  readonly acceptEdge?: (edge: KnowledgeEdge) => boolean;
+  readonly uniquePaths?: boolean;
+  readonly unavailable?: (error: unknown) => boolean;
 }) {
   if (input.edgeIds.length > 128 || (input.hops !== 1 && input.hops !== 2)) throw new Error('图谱展开超过上限。');
   const root = await readKnowledgeUse(ctx, input.root.sourceUse);
@@ -298,50 +301,76 @@ export async function walkKnowledgeEdges(ctx: CommandContext, input: {
   const projectedRoot = await project(input.root, root);
   const nodeKey = (endpoint: KnowledgeEndpoint) => JSON.stringify([endpoint.sourceUse.id, endpoint.sourceUse.rev, endpoint.blockId ?? null]);
   const rows = await Promise.all([...new Set(input.edgeIds)].map(async id => {
-    const fact = await ctx.read.fact(id, { mode: 'following' });
-    if (fact.type !== knowledgeEdgeType) throw new KnowledgeEdgeBasisError('图谱边类型不符。');
-    const edge = parseKnowledgeEdge(fact.value);
-    const basis = await verifyKnowledgeEdge(ctx, edge);
-    if (edge.verification) {
-      const { verification, ...claim } = edge;
-      const proof = await readKnowledgeUse(ctx, verification);
-      if (!matchingKnowledgeEdgeEvidence(proof, claim)) throw new KnowledgeEdgeBasisError('图谱核验证据失效。');
+    try {
+      const fact = await ctx.read.fact(id, { mode: 'following' });
+      if (fact.type !== knowledgeEdgeType) throw new KnowledgeEdgeBasisError('图谱边类型不符。');
+      const edge = parseKnowledgeEdge(fact.value);
+      if (input.acceptEdge && !input.acceptEdge(edge)) return undefined;
+      const basis = await verifyKnowledgeEdge(ctx, edge);
+      if (edge.verification) {
+        const { verification, ...claim } = edge;
+        const proof = await readKnowledgeUse(ctx, verification);
+        if (!matchingKnowledgeEdgeEvidence(proof, claim)) throw new KnowledgeEdgeBasisError('图谱核验证据失效。');
+      }
+      const snapshots = new Map(basis.map(source => [knowledgeUseKey({
+        id: source.ref.id, rev: source.ref.rev, accessEpoch: source.accessEpoch,
+      }), source]));
+      const endpoint = (end: KnowledgeEndpoint) => {
+        const snapshot = snapshots.get(knowledgeUseKey(end.sourceUse));
+        if (!snapshot) throw new KnowledgeEdgeBasisError('图谱端点依据缺失。');
+        return project(end, snapshot);
+      };
+      return { ref: fact.ref, accessEpoch: fact.accessEpoch, edge, from: await endpoint(edge.from), to: await endpoint(edge.to) };
+    } catch (error) {
+      if (input.unavailable?.(error)) return undefined;
+      throw error;
     }
-    const snapshots = new Map(basis.map(source => [knowledgeUseKey({
-      id: source.ref.id, rev: source.ref.rev, accessEpoch: source.accessEpoch,
-    }), source]));
-    const endpoint = (end: KnowledgeEndpoint) => {
-      const snapshot = snapshots.get(knowledgeUseKey(end.sourceUse));
-      if (!snapshot) throw new KnowledgeEdgeBasisError('图谱端点依据缺失。');
-      return project(end, snapshot);
-    };
-    return { ref: fact.ref, edge, from: await endpoint(edge.from), to: await endpoint(edge.to) };
   }));
+  type Step = {
+    endpoint: KnowledgeEndpoint; hop: number; via: FactSnapshot['ref']; edge: KnowledgeEdge;
+    trail: readonly { readonly edge: KnowledgeSourceUse; readonly endpoint: KnowledgeEndpoint }[];
+  };
   const start = nodeKey(projectedRoot);
   const visited = new Set([start]);
-  let frontier = new Set([start]);
-  const paths: { endpoint: KnowledgeEndpoint; hop: number; via: FactSnapshot['ref']; edge: KnowledgeEdge }[] = [];
+  let frontier = new Map<string, Step['trail']>([[start, []]]);
+  const paths: Step[] = [];
   for (let hop = 1; hop <= input.hops && frontier.size; hop++) {
-    const next = new Set<string>();
+    const matches = new Map<string, Step | null>();
     for (const row of rows) {
-      const forward = input.direction !== 'inbound' && frontier.has(nodeKey(row.from));
-      const reverse = input.direction !== 'outbound' && frontier.has(nodeKey(row.to));
-      for (const endpoint of [...(forward ? [row.to] : []), ...(reverse ? [row.from] : [])]) {
+      if (!row) continue;
+      const forward = input.direction !== 'inbound' ? frontier.get(nodeKey(row.from)) : undefined;
+      const reverse = input.direction !== 'outbound' ? frontier.get(nodeKey(row.to)) : undefined;
+      const edgeUse = { id: row.ref.id, rev: row.ref.rev, accessEpoch: row.accessEpoch };
+      const steps = [
+        ...(forward ? [{ endpoint: row.to, prior: forward }] : []),
+        ...(reverse ? [{ endpoint: row.from, prior: reverse }] : []),
+      ];
+      for (const { endpoint, prior } of steps) {
         const key = nodeKey(endpoint);
         if (visited.has(key)) continue;
-        visited.add(key);
-        next.add(key);
-        paths.push({ endpoint, hop, via: row.ref, edge: row.edge });
+        if (matches.has(key)) {
+          if (input.uniquePaths) matches.set(key, null);
+          continue;
+        }
+        matches.set(key, {
+          endpoint, hop, via: row.ref, edge: row.edge, trail: [...prior, { edge: edgeUse, endpoint }],
+        });
       }
     }
-    frontier = next;
+    frontier = new Map();
+    for (const [key, step] of matches) {
+      visited.add(key);
+      if (!step) continue;
+      paths.push(step);
+      frontier.set(key, step.trail);
+    }
   }
   return { root: projectedRoot, paths };
 }
 
 /** Adapt the existing row to the unified bus shape without persisting a second edge. */
 export async function openBusKnowledgeEdge(
-  ctx: CommandContext, edge: KnowledgeEdge,
+  ctx: AssetReadContext, edge: KnowledgeEdge,
   revision: Pick<Edge<KnowledgeEndpoint, KnowledgeEdgeKind>, 'author' | 'sticky'>,
 ): Promise<Edge<KnowledgeEndpoint, KnowledgeEdgeKind>> {
   const facts = await verifyKnowledgeEdge(ctx, edge);

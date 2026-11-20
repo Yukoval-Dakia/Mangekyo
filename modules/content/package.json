@@ -13,6 +13,7 @@
     "./knowledge-edge": "./knowledge-edge.ts",
     "./question-meta": "./question-meta.ts",
     "./question-verification": "./question-verification.ts",
+    "./facts/paper-capsules": "./paper-capsules.ts",
     "./facts/question-release": "./question-release.ts",
     "./facts/assessment": "./assessment-values.ts",
     "./facts/material": "./facts/material.ts"
