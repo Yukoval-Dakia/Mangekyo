@@ -138,7 +138,7 @@ export function serve(
       const notionAction = /^\/api\/notion\/selections\/(grant|revoke|sync)$/.exec(path)?.[1];
       const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})(\/purpose)?$/.exec(path);
       if (method === 'POST' && (notionAction || notionSource?.[2]))
-        return offlineSubmission(200,input => student.notion.mutate(notionAction ?? 'purpose',input,notionSource?.[1]));
+        return await offlineSubmission(200,input => student.notion.mutate(notionAction ?? 'purpose',input,notionSource?.[1]));
       if (method === 'GET' && notionSource?.[1] && !notionSource[2])
         return await student.notion.read(notionSource[1],url.searchParams.get('view'), data => json(res,200,data));
       if (path === '/api/workspace/access' && method === 'GET') {
