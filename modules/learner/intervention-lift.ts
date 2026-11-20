@@ -1,6 +1,7 @@
 import { factId, type FactId, type Outcome, type Revision, type Tick } from '@mangekyo/kernel';
 
 export const interventionLiftType = 'learner.interventionLift';
+export const interventionLiftMethod = 'learner/intervention-lift@1';
 
 export type LiftIdentity = { playbookId: FactId; version: number; strategyId: string };
 export type VerificationRef = { id: FactId; rev: Revision; accessEpoch: Tick };
@@ -38,6 +39,7 @@ export type InterventionLift = LiftIdentity & {
 };
 
 const day = 86_400_000;
+const minEligible = 8;
 function instant(value: string) {
   const ms = Date.parse(value);
   if (!Number.isFinite(ms) || new Date(ms).toISOString() !== value) throw new Error('干预时刻须为规范 UTC 时间。');
@@ -76,7 +78,8 @@ export function measureInterventionLift(input: LiftInput): Outcome<InterventionL
     checkRef(pair.intervention);
     const start = instant(pair.deliveredAt);
     if (start > asOf) continue;
-    if (interventions.has(pair.intervention.id)) throw new Error('同一干预被重复纳入。');
+    if (interventions.has(pair.intervention.id) || submissions.has(pair.intervention.id))
+      throw new Error('同一干预被重复纳入。');
     interventions.add(pair.intervention.id);
     // Close the entire follow-up window before sampling, including nonresponders.
     if (asOf < start + 14 * day) { pending++; continue; }
@@ -96,14 +99,17 @@ export function measureInterventionLift(input: LiftInput): Outcome<InterventionL
     }
     for (const ref of [before.submission, after.submission]) {
       checkRef(ref);
-      if (submissions.has(ref.id)) throw new Error('同一提交不能重复充当独立前后测。');
+      if (submissions.has(ref.id) || interventions.has(ref.id))
+        throw new Error('同一提交不能重复充当独立前后测。');
       submissions.add(ref.id);
       verificationRefs.push(ref);
     }
     eligible++;
     sum += after.score - before.score;
   }
-  if (!eligible) return { kind: 'unknown', reason: '缺少已满 14 天、可比且独立的变式或迁移前后测。' };
+  if (eligible < minEligible) return {
+    kind: 'unknown', reason: `已满 14 天的可比独立前后测不足（${eligible}/${minEligible}）。`,
+  };
   const closed = eligible + unresolved;
   // Paired differences lie in [-1,1]. Bound each missing difference by its
   // worst case before applying a two-sided 95% bounded-difference interval.

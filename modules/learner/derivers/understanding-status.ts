@@ -1,6 +1,7 @@
 import { defineDeriver, factId } from '@mangekyo/kernel';
 import { openWitness } from '../memory-evidence.ts';
-import { liftType, openReflection, playbook, playbookType, understandingStatusType, verifiedStatus } from '../playbook.ts';
+import { openReflection, playbook, playbookGardeningProposal, playbookType, readPlaybookLift,
+  understandingStatusType, verifiedStatus } from '../playbook.ts';
 
 export default defineDeriver({
   name: 'learner/understanding-status', version: '1', slot: understandingStatusType,
@@ -10,10 +11,10 @@ export default defineDeriver({
     if (fact.type !== playbookType) throw new Error('需要待核验的策略。');
     const proposal = playbook(fact.value);
     await openReflection(ctx.read, proposal);
-    const lift = await ctx.read.slot({learner: ctx.learner, type: liftType, key: JSON.stringify([id, proposal.version])}, {mode: 'following'});
+    const lift = await readPlaybookLift(ctx.read, ctx.learner, id, proposal);
     const status = verifiedStatus(id, proposal, lift);
     for (const ref of status.verificationRefs) await openWitness(ctx.read, ref, 'background-research');
-    return {kind: 'input', data: status, effects: []};
+    return {kind: 'input', data: {...status, gardeningProposal: playbookGardeningProposal(id, fact.ref.rev, status)}, effects: []};
   },
   derive(status) { return {kind: 'value', value: status}; },
 });

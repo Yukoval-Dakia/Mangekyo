@@ -38,7 +38,7 @@ export function verifiedAttemptFromSlice(source: Witness, expected: readonly {re
     testedHypotheses: [...new Set(events.flatMap(item => item.claim_ids))]};
 }
 
-function sameWitness(a: Witness, b: Witness) {
+export function sameWitness(a: Witness, b: Witness) {
   return a.id === b.id && a.rev === b.rev && a.accessEpoch === b.accessEpoch;
 }
 

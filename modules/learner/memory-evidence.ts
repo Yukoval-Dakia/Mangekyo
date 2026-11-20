@@ -30,6 +30,10 @@ export function witness(value: unknown) {
 }
 export type Witness = ReturnType<typeof witness>;
 
+export function witnessIdentity({id, rev, accessEpoch}: Witness): string {
+  return JSON.stringify([id, rev, accessEpoch]);
+}
+
 export function witnessList(value: unknown) {
   if (!Array.isArray(value) || !value.length) throw new Error('必须引用依据。');
   const refs = value.map(witness);
