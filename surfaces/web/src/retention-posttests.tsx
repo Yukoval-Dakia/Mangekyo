@@ -4,7 +4,9 @@ import type { reconcileRetention } from '../../../modules/learner/retention';
 import { api, ApiError, requestId } from './api';
 import { ListLink, ReadState, useResource } from './workspace';
 import { ReconciliationResearch } from './research';
-import {useVisibleDocument} from './workbook-presentation';
+import { QuestionContext } from './reading-drawer';
+import type { ReadingContextEntry } from './paper-reading-capsule';
+import { QuestionPresentation, useVisibleDocument } from './workbook-presentation';
 import './workbook.css';
 
 type Entry = { forecastKey: string; title: string; through: string; sourceReconciliationKey?: string } & (
@@ -113,6 +115,18 @@ function Reconciliation({ recordKey, entries, reload: reloadList }: { recordKey:
   </>;
 }
 
+function IssuedQuestionContext({ issue }: { issue: Issue }) {
+  const { data, error } = useResource<{
+    id: string; revision: number; questions: (WorkbookQuestionView & { readingContext?: ReadingContextEntry[] })[];
+  }>('/papers/' + encodeURIComponent(issue.id));
+  if (error || data?.id !== issue.id || !Number.isSafeInteger(data.revision) || data.revision < 1) return null;
+  const item = data.questions.find(question => question.id === issue.item.id);
+  if (!item?.readingContext?.length) return null;
+  return <QuestionPresentation value={{ paper: { id: issue.id, rev: data.revision }, permit: issue.id, items: [item.id] }}>
+    <QuestionContext itemId={item.id} readingContext={item.readingContext} />
+  </QuestionPresentation>;
+}
+
 function AnswerForm({ issue, path, submitted, withdrawn }: { issue: Issue; path: string; submitted: (key: string) => void; withdrawn: (message: string) => void }) {
   const draftKey = 'mangekyo:posttest:' + issue.id + ':' + issue.rev;
   const [answer, setAnswer] = useState(() => {
@@ -154,6 +168,7 @@ function AnswerForm({ issue, path, submitted, withdrawn }: { issue: Issue; path:
         try { sessionStorage.setItem(draftKey, value); } catch { /* Retain the in-memory answer. */ }
       }} />
     </label>
+    <IssuedQuestionContext key={issue.id} issue={issue} />
     {failure && <p role="alert">{failure}</p>}
     <div className="study-actions workbook-attempt-actions">
       {needsCheck ? <a className="tonal-button" href={location.href}>重新确认后测状态</a> :
