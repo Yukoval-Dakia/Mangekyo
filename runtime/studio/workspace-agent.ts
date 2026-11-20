@@ -9,6 +9,7 @@ import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
+import type {PreparedPythonAttempts} from '../../executors/teaching/study-agent.ts';
 import {openLearningLimit, workspaceDefinitions, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceSourceUnavailable, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
@@ -21,6 +22,7 @@ import {organizerTaskType} from '../../modules/activity/organizer-values.ts';
 import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
+import {readPythonAttempts} from './python-attempts.ts';
 
 import {presentationCatalog} from '../../surfaces/shared/presentation/index.ts';
 import type {Manifest} from '../../kernel/src/derivations/manifest.ts';
@@ -42,7 +44,7 @@ export function openWorkspaceTools(options: {
   db: Db; turn: string;
   authorize: (tx: ReadTransaction) => Promise<void>;
   maySend: (input: FactSnapshot) => boolean;
-  track: (input: WorkspaceWitness) => void;
+  track: (input: WorkspaceWitness, checkAtDispatch?: true) => void;
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
   trackRetention?: (basis: RetentionBasis) => void;
   trackDiagnosis?: () => void;
@@ -59,7 +61,10 @@ export function openWorkspaceTools(options: {
   const produced = new Map<string, number>();
   const receipts = new Map<string,WorkspaceWriteReceipt>();
   async function read(name: string, args: Record<string, unknown>, step: number, priorRead?: Promise<unknown>) {
-    if (!isJson(args)) return JSON.stringify({error:'请将查询字段放在一个 JSON 对象里。'});
+    const pythonAttempts = name === 'python_attempts';
+    if (!isJson(args)) return JSON.stringify(pythonAttempts
+      ? learningToolError('invalid_args','attempts','请选择试卷及作答引用。')
+      : {error:'请将查询字段放在一个 JSON 对象里。'});
     const raw = await recordLocalRead(db, {learner:studioLearner, ownerKind:'session', ownerId:turn,
       stepKey:String(step), label:'local:'+name, input:args}, async tx => {
       const witnesses = new Map<string, WorkspaceWitness>();
@@ -83,6 +88,8 @@ export function openWorkspaceTools(options: {
       } else if (name === 'read_learner_radar') {
         text = JSON.stringify(await readLearnerRadar(tx,args,options.maySend,track,
           options.trackRetention ? basis => retentionBasis.push(basis) : undefined));
+      } else if (pythonAttempts) {
+        text = JSON.stringify(await readPythonAttempts(tx,args,{known:id => sources.has(id), maySend:options.maySend, track}));
       } else text = await workspaceSearch(tx,args,track,options.maySend);
       return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,
         ...(name === 'read_workspace' ? {workbookProjection: 1} : {}),
@@ -121,7 +128,7 @@ export function openWorkspaceTools(options: {
         const actual = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend:options.maySend});
         if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
       }
-      for (const witness of witnesses) options.track(witness);
+      for (const witness of witnesses) options.track(witness, pythonAttempts ? true : undefined);
       for (const basis of trackedBasis) options.trackAssessment?.(basis);
       for (const basis of retentionBasis) options.trackRetention?.(basis);
       await options.authorize(tx);
@@ -130,10 +137,20 @@ export function openWorkspaceTools(options: {
     if (!current) {
       if (retentionBasis.length) throw new TeachingError('evidence_scope', '保持依据已变化，本轮结果无法使用。');
       if (trackedBasis.length || legacyWorkbookRead) throw new TeachingError('evidence_scope', '作答依据已变化，本轮结果无法使用。');
+      if (pythonAttempts) throw new TeachingError('evidence_scope', '计算所选的依据已变化，请重新发送。');
       if (name === 'open_learning') return JSON.stringify(learningToolError('basis_stale','refs','读取依据在打开后已变化。',{
         tool:'open_learning',args,why:'重新读取当前获准的版本。',
       }));
       return workspaceSourceUnavailable;
+    }
+    if (pythonAttempts) {
+      if (value.ok !== true) return text;
+      for (const w of witnesses) {
+        sources.set(w.id,w);
+        if (!opened.has(w.id)) opened.set(w.id,{id:w.id, workspace:true,
+          title:w.type === workbookAttemptType ? '已提交作答' : '普通试卷', text:'本轮 Python 统计所用的记录。'});
+      }
+      return JSON.stringify({...value,witnesses});
     }
     const values: typeof value[] = name === 'open_learning' ? value.items ?? [] : [value];
     if (name === 'open_learning' && args.lens === 'diagnose' && values.some(item => item.lens === 'diagnose')) {
@@ -285,6 +302,9 @@ export function openWorkspaceTools(options: {
   return {
     ...(options.presentationManifest ? {presentationTool} : {}),
     execute,
+    async preparePythonAttempts(args: Record<string, unknown>, step: number): Promise<PreparedPythonAttempts> {
+      return JSON.parse(await read('python_attempts', args, step));
+    },
     executeRead: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>) =>
       name === 'search_workspace' || name === 'read_workspace' || name === 'open_learning' || name === 'read_learner_radar'
         ? execute(name, args, step, priorRead)

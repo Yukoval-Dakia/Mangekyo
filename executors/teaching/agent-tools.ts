@@ -20,8 +20,19 @@ const EXA_ENDPOINT = 'https://api.exa.ai/search';
 const baseNames = ['python', 'read_file', 'write_file'] as const;
 const filenamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+export const pythonAttemptsLimit = 8;
+export type PythonAttemptRow = {
+  id: string;
+  submitted_at: string;
+  results: {question_id: string; result: 'correct' | 'incorrect' | 'partial' | 'pending' | 'unanswered' | 'self-check'}[];
+};
+type PythonAttemptIssue = {index: number; code: 'not_found' | 'access_revoked' | 'basis_stale' | 'unknown'};
+export type PythonAttemptsRead =
+  | {ok: false; code: string; field: string; message: string; issues?: PythonAttemptIssue[]}
+  | {ok: true; rows: PythonAttemptRow[]; issues: PythonAttemptIssue[]};
+
 const pythonWrapper = String.raw`
-import contextlib, io, json, os, sys, traceback
+import contextlib, io, json, os, sys, traceback, types
 
 INPUT_LIMIT = 262144
 FILE_LIMIT = 16384
@@ -80,6 +91,15 @@ try:
 except Exception:
     emit({"status": "fatal", "detail": "invalid input"})
     raise SystemExit(0)
+
+if "attempts" in payload:
+    attempt_snapshot = json.dumps(payload["attempts"])
+    def attempts():
+        """Return a fresh copy of the submitted results selected for this call."""
+        return json.loads(attempt_snapshot)
+    sdk = types.ModuleType("mangekyo")
+    sdk.attempts = attempts
+    sys.modules["mangekyo"] = sdk
 
 work = "/tmp/workspace"
 try:
@@ -142,7 +162,7 @@ export type StudyTools = {
   names: readonly string[];
   snapshotFiles: () => Record<string, string>;
   restoreFiles: (files: Record<string, string>) => void;
-  execute: (name: string, args: unknown, inputs?: Record<string, string>) => Promise<string>;
+  execute: (name: string, args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]) => Promise<string>;
 };
 
 type PythonEnvelope = {
@@ -178,6 +198,12 @@ function validFilename(value: unknown): value is string {
 
 function validText(value: unknown): value is string {
   return typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
+}
+
+export function pythonCodeError(code: unknown): string | undefined {
+  if (!validText(code) || !code.trim()) return fail('python requires non-empty code');
+  if (code.length > MAX_CODE_CHARS) return fail(`code exceeds ${MAX_CODE_CHARS} characters`);
+  return undefined;
 }
 
 function dockerFailure(stderr: string, code: number | null): string {
@@ -411,12 +437,12 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
     return `wrote ${value.name} (${bytes} bytes${previous === undefined ? '' : ', replaced'})`;
   }
 
-  async function runPython(args: unknown, inputs?: Record<string, string>): Promise<string> {
-    const value = record(args);
-    if (!value || !validText(value.code) || !value.code.trim()) return fail('python requires non-empty code');
-    if (value.code.length > MAX_CODE_CHARS) return fail(`code exceeds ${MAX_CODE_CHARS} characters`);
+  async function runPython(args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]): Promise<string> {
+    const code = record(args)?.code;
+    const error = pythonCodeError(code);
+    if (error) return error;
     const name = `mangekyo-study-${randomUUID()}`;
-    const payload = JSON.stringify({ code: value.code, files: Object.fromEntries(workspace), inputs });
+    const payload = JSON.stringify({ code, files: Object.fromEntries(workspace), inputs, attempts });
     if (Buffer.byteLength(payload) > MAX_PYTHON_INPUT_BYTES) return fail('python input exceeded the limit');
     const outcome = await runPythonContainer(name, payload);
     if (outcome.kind === 'timeout') return fail(`python timed out after ${PYTHON_TIMEOUT_MS} ms`);
@@ -511,10 +537,10 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
     }
   }
 
-  async function execute(name: string, args: unknown, inputs?: Record<string, string>): Promise<string> {
+  async function execute(name: string, args: unknown, inputs?: Record<string, string>, attempts?: PythonAttemptRow[]): Promise<string> {
     try {
       switch (name) {
-        case 'python': return await runPython(args, inputs);
+        case 'python': return await runPython(args, inputs, attempts);
         case 'read_file': return await readFile(args);
         case 'write_file': return await writeFile(args);
         case 'exa_search': return await search(args);

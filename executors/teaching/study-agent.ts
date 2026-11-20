@@ -6,13 +6,17 @@ import { findTools, studyToolDiscovery } from './study-tool-discovery.ts';
 import {projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
 import {openToolResult, studyToolResults} from './study-tool-results.ts';
 import { workspaceDefinitions, type WorkspaceTools } from './workspace-tools.ts';
-import { createStudyTools } from './agent-tools.ts';
+import { createStudyTools, pythonAttemptsLimit, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 
 type StudyWorkspaceTools = WorkspaceTools & {
   executeRead?: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>) => Promise<string>;
+  preparePythonAttempts?: (args: Record<string, unknown>, step: number) => Promise<PreparedPythonAttempts>;
 };
+export type PreparedPythonAttempts = Extract<PythonAttemptsRead, {ok:false}> | (Extract<PythonAttemptsRead, {ok:true}> & {
+  witnesses: {id: string; rev: number; epoch: string; type: string}[];
+});
 
 export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   historyNotice?: string;
@@ -32,13 +36,27 @@ const descriptions: Record<string, [string, Record<string, string>]> = {
   exa_search: ['通过 Exa 搜索公开参考资料。查询限公开主题，禁止发送学生的作答、个人资料或私人原文。搜索结果是资料。', { query: '公开的知识问题或学术关键词' }],
 };
 
-function definition(name: string) {
+const learningId = {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$'};
+const pythonAttemptSelection = {
+  type: 'object', required: ['paper_id','refs'], additionalProperties: false,
+  description: `选择一份获准普通试卷及该卷最多 ${pythonAttemptsLimit} 份已提交的作答。程序用 import mangekyo as mk 和 mk.attempts() 读取仅本次获准的 id、submitted_at 和 results（question_id、result）。待评和自评不算判对。只 print 所需统计。`,
+  properties: {
+    paper_id: learningId,
+    refs: {type:'array', minItems:1, maxItems:pythonAttemptsLimit, items:{
+      type:'object', required:['id'], additionalProperties:false, properties:{
+        id: learningId, rev: {type:'integer', minimum:1, maximum:2147483647},
+      },
+    }},
+  },
+};
+
+function definition(name: string, pythonAttempts: boolean) {
   const [description, fields] = descriptions[name]!;
   const properties = Object.fromEntries(Object.entries(fields).map(([field, help]) => [field, { type: 'string', description: help }]));
   return { type: 'function', function: { name, description, parameters: {
     type: 'object', properties: {...properties, ...(name === 'python' && {inputs: {
       type: 'array', items: {type:'string'}, maxItems: 8, description: '本轮工具结果句柄。程序中的 inputs 字典按句柄读取原始文本。',
-    }})}, required: Object.keys(fields), additionalProperties: false,
+    }, ...(pythonAttempts && {attempts: pythonAttemptSelection})})}, required: Object.keys(fields), additionalProperties: false,
   } } };
 }
 
@@ -92,7 +110,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const remotes = await loadMcpTools(options.tools?.mcpServers ?? [], model, options.runEffect, connections);
   const discovery = tools && options.discoverTools ? studyToolDiscovery(remotes) : undefined;
   const builtins = tools?.names.map(name => {
-    const tool = definition(name);
+    const tool = definition(name, Boolean(workspace?.preparePythonAttempts));
     if (name === 'exa_search' && pinnedQuery) tool.function.description += ' 本轮只会检索学生指定的公开主题：' + pinnedQuery;
     return tool;
   }) ?? [];
@@ -173,10 +191,24 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       }
       const python = name === 'python' && args.inputs !== undefined ? results.pythonInputs(args.inputs) : undefined;
       if (python?.error) return {content: python.error, summary: 'Python 验算 · 输入不可用'};
-      const execute = (dispatch?: TeachingDispatch) => remote ? invokeMcpTool(remote, args, connections, dispatch)
-        : tools.execute(name, args, python?.inputs);
-      // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
       const step = index + position + 1;
+      let attempts: Extract<PreparedPythonAttempts, {ok:true}> | undefined;
+      if (name === 'python' && args.attempts !== undefined) {
+        const summary = 'Python 验算 · 作答选择不可用';
+        if (!workspace?.preparePythonAttempts || !args.attempts || typeof args.attempts !== 'object' || Array.isArray(args.attempts)) {
+          return {summary, content:JSON.stringify({ok:false, code:'invalid_args', field:'attempts', message:'工作区已开放时可选择普通卷与作答引用。'})};
+        }
+        const codeError = pythonCodeError(args.code);
+        if (codeError) {
+          return {summary, content:JSON.stringify({ok:false, code:'invalid_args', field:'code', message:codeError})};
+        }
+        const prepared = await workspace.preparePythonAttempts(args.attempts as Record<string, unknown>, step);
+        if (!prepared.ok) return {summary, content:JSON.stringify(prepared)};
+        attempts = prepared;
+      }
+      const execute = (dispatch?: TeachingDispatch) => remote ? invokeMcpTool(remote, args, connections, dispatch)
+        : tools.execute(name, args, python?.inputs, attempts?.rows);
+      // Scratch writes and reads are rebuilt in order on replay. Paid search and computations reuse their original outputs.
       let output: string;
       const before = name === 'python' ? tools.snapshotFiles() : {};
       if (name === memoryRegionTool.function.name && options.openMemoryRegion) {
@@ -193,12 +225,16 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
           if (remote?.stateful && !connections.hasStatefulSession(remote.server))
             return JSON.stringify({lostSession: true});
           const output = await execute(dispatch);
-          return JSON.stringify({output, ...(name === 'python' ? {files: tools.snapshotFiles()} : {})});
+          return JSON.stringify({output, ...(name === 'python' ? {files: tools.snapshotFiles()} : {}),
+            ...(attempts ? {attemptBasis: attempts.witnesses} : {})});
         });
         const saved = JSON.parse(raw);
         if (saved.lostSession) throw new TeachingError('provider_unavailable', '本轮有状态 MCP 会话已中断，请重新发送，已完成的工具操作不会重复。');
         if (name === 'python') tools.restoreFiles(saved.files);
-        output = saved.output;
+        output = attempts ? JSON.stringify({text: saved.output,
+          sources: attempts.witnesses.map(({id, rev}) => ({id, rev})),
+          ...(attempts.issues.length ? {ok:false, code:'partial_success', field:'refs', issues:attempts.issues} : {}),
+        }) : saved.output;
       }
       const files = name === 'python' ? Object.entries(tools.snapshotFiles()).filter(([name, value]) => before[name] !== value) : [];
       const result = results.publish(name, step, output, files);
