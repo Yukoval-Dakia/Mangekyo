@@ -1,40 +1,28 @@
-import { factId, type CommandContext, type FactSnapshot, type LearnerId, type Revision } from '@mangekyo/kernel';
+import { factId, type CommandContext, type FactId, type FactSnapshot, type LearnerId, type Revision } from '@mangekyo/kernel';
 import { captureSourceType, sourceEnvelope, type SourceEnvelope } from './source.ts';
-import { notionConfirmPageAccess, NotionSourceUnavailable, type NotionReadRequest, type NotionReadResponse, type NotionRoot } from './notion-api.ts';
+import { notionConfirmPageAccess, NotionSourceUnavailable, type NotionReadRequest, type NotionReadResponse, type NotionRoot, type NotionSelectionWitness } from './notion-api.ts';
 import { diffNotionBlocks } from './notion-diff.ts';
 import { notionId, notionRecord, notionSelectionId, notionSourceId, notionSourceProjection, notionTimestamp } from './notion-values.ts';
+
+import { notionRetainedPurposes, notionSelectionWitness, notionRoot, readNotionSelection, selectionAllows,
+  type NotionFactReader, type NotionReadOptions, type NotionSelection } from './notion-selection.ts';
+export { notionRetainedPurposes, selectionAllows as notionRecipientAllowed } from './notion-selection.ts';
+export type { NotionPreset, NotionRetainedPreset, NotionSelection } from './notion-selection.ts';
 
 export const refreshNotionSourceCommand = 'capture.refreshNotionSource';
 export const revokeNotionSourceCommand = 'capture.revokeNotionSource';
 export const setNotionPurposeCommand = 'capture.setNotionPurpose';
 
-export type NotionRetainedPreset = 'storage' | 'learning';
-export type NotionPreset = NotionRetainedPreset | 'turn-only' | 'temporary';
+export type { NotionSelectionWitness } from './notion-api.ts';
 
-// Scope of a retained capture. The bounded presets require the host's
-// controlled turn or temporary lifecycle and must never reach this writer.
-export function notionRetainedPurposes(preset: NotionPreset = 'storage'): readonly string[] {
-  switch (preset) {
-    case 'storage': return ['storage'];
-    case 'learning': return ['storage', 'learning', 'teaching', 'background-research'];
-    default: throw new Error('该 Notion 用途不能保存为长期原件。');
-  }
+function checkNotionPageDispatch(page: unknown, selection: NotionSelectionWitness & { root: NotionRoot }) {
+  const row = notionRecord(page);
+  const root = notionRoot(row.root);
+  const witness = notionRecord(row.dispatch);
+  if (witness.learner !== selection.learner || witness.selectionId !== selection.selectionId ||
+      witness.selectionEpoch !== selection.selectionEpoch || root.kind !== selection.root.kind ||
+      root.id !== selection.root.id) throw new Error('Notion 拉取见证已变更。');
 }
-
-export type NotionSelection = {
-  readonly id: string;
-  readonly learner: LearnerId;
-  readonly root: NotionRoot;
-  readonly preset: NotionPreset;
-};
-
-export type NotionRecipient = 'learner' | 'workspace';
-
-export type NotionSelectionWitness = {
-  readonly learner: LearnerId;
-  readonly selectionId: string;
-  readonly selectionEpoch: string;
-};
 
 function sameNotionSelection(left: NotionSelectionWitness, right: NotionSelectionWitness) {
   return left.learner === right.learner && left.selectionId === right.selectionId && left.selectionEpoch === right.selectionEpoch;
@@ -106,6 +94,7 @@ export async function prepareNotionBoundedSnapshot(
 ): Promise<NotionBoundedSnapshot> {
   const witness = structuredClone(use);
   if (!notionBoundedUseAllowed(witness, current, now)) throw new Error('Notion 本轮授权无效。');
+  checkNotionPageDispatch(page, witness.selection);
   const { externalId, unit } = await notionSourceProjection(page);
   if (externalId !== notionId(witness.pageId)) throw new Error('Notion 本轮页面授权不匹配。');
   return { use: witness, projection: { title: unit.title, blocks: unit.blocks.map(({ id, parentId, body }) => ({
@@ -164,39 +153,98 @@ export async function applyNotionSourceInvalidation(
   return invalidation;
 }
 
-export function notionRecipientAllowed(selection: NotionSelection, purpose: string, recipient: NotionRecipient) {
-  if (selection.preset !== 'storage' && selection.preset !== 'learning') return false;
-  if (recipient === 'learner') return purpose === 'storage';
-  return purpose !== 'storage' && notionRetainedPurposes(selection.preset).includes(purpose);
+function matchesRoot(selection: NotionSelection, source: SourceEnvelope) {
+  return selection.active && source.kind === 'notion' && source.sourceSelectionId === selection.id &&
+    source.sourceRoot?.kind === selection.root.kind &&
+    source.sourceRoot.id === selection.root.id && (selection.root.kind === 'data-source' || source.externalId === selection.root.id);
 }
 
-// Compose with the kernel's authorized fact reader, which independently
-// verifies current and pinned-revision purposes and the access witness.
-export function notionSourceRecipient(selection: NotionSelection | null, purpose: string, recipient: NotionRecipient) {
+export function notionSourceRecipient(selection: NotionSelection | null, purpose: string, recipientId: string) {
   return (fact: FactSnapshot): boolean => {
     if (!selection || fact.type !== captureSourceType || fact.ref.learner !== selection.learner ||
-        !notionRecipientAllowed(selection, purpose, recipient)) return false;
+        !selectionAllows(selection, purpose, recipientId)) return false;
     const source = sourceEnvelope(fact.value);
-    return source.kind === 'notion' && source.sourceSelectionId === selection.id &&
-      (selection.root.kind === 'data-source' || source.externalId === notionId(selection.root.id));
+    if (!matchesRoot(selection, source) || !source.sourceSelectionEpoch) return false;
+    const use = selection.continuity?.find(entry => entry.id === recipientId && entry.purpose === purpose);
+    if (!use) return false;
+    const origin = BigInt(source.sourceSelectionEpoch);
+    return origin >= BigInt(use.sinceEpoch) && origin <= BigInt(selection.selectionEpoch);
   };
+}
+
+export type SelectedNotionAccess = {
+  readonly selectionRead: NotionFactReader;
+  readonly sourceRead: NotionFactReader;
+  readonly learner: LearnerId;
+  readonly purpose: string;
+  readonly recipientId: string;
+};
+
+/** Both readers belong to the same snapshot. sourceRead also applies current and pinned fact purposes. */
+export async function openSelectedNotionSource(access: SelectedNotionAccess, id: FactId, options: NotionReadOptions) {
+  const requested = await access.sourceRead.fact(id, options);
+  return authorizeNotionRead(access, id, options, requested);
+}
+
+async function authorizeNotionRead(
+  access: SelectedNotionAccess, id: FactId, options: NotionReadOptions, requested: FactSnapshot,
+) {
+  const current = options.mode === 'following' ? requested : await access.sourceRead.fact(id, { mode: 'following' });
+  if (current.type !== captureSourceType || current.ref.learner !== access.learner || current.ref.id !== id)
+    throw new Error('Notion 选源不可用。');
+  const source = sourceEnvelope(current.value);
+  if (source.kind !== 'notion' || !source.sourceSelectionId) throw new Error('Notion 选源不可用。');
+  const selection = await readNotionSelection(access.selectionRead, access.learner, source.sourceSelectionId);
+  const allowed = notionSourceRecipient(selection, access.purpose, access.recipientId);
+  const check = (fact: FactSnapshot) => fact.ref.id === id && fact.purpose.includes(access.purpose) && allowed(fact);
+  if (!check(current) || (options.mode === 'pinned' && (requested.ref.rev !== options.rev || !check(requested))))
+    throw new Error('Notion 选源不可用。');
+  return requested;
+}
+
+/** Pass this fact reader to the host's recursive basis walker; bind it again at actual egress. */
+export function withSelectedNotionSources(access: SelectedNotionAccess): NotionFactReader {
+  return {
+    async fact(id, options) {
+      const requested = await access.sourceRead.fact(id, options);
+      if (requested.type !== captureSourceType || sourceEnvelope(requested.value).kind !== 'notion') return requested;
+      return authorizeNotionRead(access, id, options, requested);
+    },
+  };
+}
+
+export async function checkNotionAdmission(ctx: CommandContext, id: FactId, source: SourceEnvelope, purposes: readonly string[]) {
+  if (!source.sourceSelectionId || !source.externalId) throw new Error('Notion 选源不可用。');
+  const selection = await readNotionSelection(ctx.read, ctx.learner, source.sourceSelectionId);
+  if (!selection || !matchesRoot(selection, source) || selection.selectionEpoch !== source.sourceSelectionEpoch ||
+      await notionSourceId(ctx.learner, selection.id, source.externalId, selection.selectionEpoch) !== id ||
+      !purposes.every(use => notionRetainedPurposes(selection.preset).includes(use))) throw new Error('Notion 选源或用途已变更。');
+}
+
+export async function resolveBoundedNotionSelection(read: NotionFactReader, use: NotionBoundedUse) {
+  const grant = await readNotionSelection(read, use.selection.learner, use.selection.selectionId);
+  return grant && grant.preset === use.preset && grant.selectionEpoch === use.selection.selectionEpoch &&
+    grant.root.kind === use.selection.root.kind && grant.root.id === notionId(use.selection.root.id) &&
+    selectionAllows(grant, use.recipient.purpose, use.recipient.id) ? use : null;
 }
 
 export async function prepareNotionIngest(selection: NotionSelection, page: unknown, recordedAt: string) {
   const purpose = notionRetainedPurposes(selection.preset);
   const envelope = await prepareNotionRevision(selection, page, recordedAt);
-  const id = await notionSourceId(selection.learner, selection.id, envelope.externalId);
+  const id = await notionSourceId(selection.learner, selection.id, envelope.externalId, selection.selectionEpoch);
   return { id, envelope, purpose };
 }
 
 export async function prepareNotionRevision(selection: NotionSelection, page: unknown, recordedAt: string) {
   notionRetainedPurposes(selection.preset);
+  checkNotionPageDispatch(page, { ...notionSelectionWitness(selection), root: selection.root });
   const projection = await notionSourceProjection(page);
   if (selection.root.kind === 'page' && projection.externalId !== notionId(selection.root.id)) {
     throw new Error('Notion 页面不在获准来源内。');
   }
   const envelope = {
     ...projection, kind: 'notion' as const, sourceSelectionId: notionSelectionId(selection.id),
+    sourceSelectionEpoch: selection.selectionEpoch, sourceRoot: selection.root,
     recordedAt: notionTimestamp(recordedAt), retentionPolicy: 'retained' as const, originals: [],
   };
   sourceEnvelope(envelope);
@@ -226,4 +274,15 @@ export function notionRevisionDiff(previous: SourceEnvelope, next: SourceEnvelop
     return { id, parentId, contentHash: body.contentHash };
   });
   return diffNotionBlocks(blocks(previous), blocks(next));
+}
+
+export type { NotionRefreshInput, NotionRefreshTarget, NotionObservation } from './notion-observation.ts';
+export { prepareNotionRefreshInput, notionPageObservationId, notionPageObservationType, UnchangedNotionSourceError } from './notion-observation.ts';
+
+/** Compare content only.
+ * Timestamp-only observations must still be committed using prepareNotionRefreshInput.
+ */
+export function notionRefreshHasChanges(previous: SourceEnvelope, next: SourceEnvelope) {
+  const diff = notionRevisionDiff(previous, next);
+  return previous.unit.title !== next.unit.title || Object.values(diff).some(ids => ids.length > 0);
 }

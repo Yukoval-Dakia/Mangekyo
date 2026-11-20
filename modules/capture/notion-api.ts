@@ -1,4 +1,4 @@
-import { isJson, type Json, type JsonObject } from '@mangekyo/kernel';
+import { isJson, type Json, type JsonObject, type LearnerId } from '@mangekyo/kernel';
 import { notionHash, notionId, notionRecord, notionTimestamp, type NotionCursor } from './notion-values.ts';
 
 export const notionVersion = '2026-03-11';
@@ -6,6 +6,12 @@ export const notionVersion = '2026-03-11';
 export type NotionRoot =
   | { readonly kind: 'page'; readonly id: string }
   | { readonly kind: 'data-source'; readonly id: string };
+
+export type NotionSelectionWitness = {
+  readonly learner: LearnerId;
+  readonly selectionId: string;
+  readonly selectionEpoch: string;
+};
 
 export type NotionReadRequest =
   | { readonly method: 'GET'; readonly path: `/v1/pages/${string}` | `/v1/blocks/${string}/children${string}` }
@@ -226,9 +232,10 @@ export function* notionConfirmPageAccess(root: NotionRoot, requestedPage: string
   }
 }
 
-export async function* notionReadPage(root: NotionRoot, requestedPage: string):
-  AsyncGenerator<NotionReadRequest, { pageId: string; lastEditedTime: string; title: string; blocks: ProjectedBlock[] }, NotionReadResponse> {
-  const selected = { ...root };
+export async function* notionReadPage(root: NotionRoot, requestedPage: string, dispatch?: NotionSelectionWitness):
+  AsyncGenerator<NotionReadRequest, { pageId: string; lastEditedTime: string; title: string; root: NotionRoot; dispatch?: NotionSelectionWitness; blocks: ProjectedBlock[] }, NotionReadResponse> {
+  const selected = { ...root, id: notionId(root.id) };
+  const witness = dispatch && { learner: dispatch.learner, selectionId: dispatch.selectionId, selectionEpoch: dispatch.selectionEpoch };
   const first = yield* notionConfirmPageAccess(selected, requestedPage);
   const pageId = first.pageId;
   const blocks: ProjectedBlock[] = [];
@@ -243,5 +250,5 @@ export async function* notionReadPage(root: NotionRoot, requestedPage: string):
     throw new NotionSourceChanged('拉取期间 Notion 页面有更新，请重试。');
   }
   const properties = selected.kind === 'data-source' ? await notionRowProperties(last) : [];
-  return { pageId, lastEditedTime: last.lastEditedTime, title: last.title, blocks: [...properties, ...blocks] };
+  return { root: selected, ...(witness ? { dispatch: witness } : {}), pageId, lastEditedTime: last.lastEditedTime, title: last.title, blocks: [...properties, ...blocks] };
 }

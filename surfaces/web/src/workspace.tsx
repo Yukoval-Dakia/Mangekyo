@@ -4,7 +4,6 @@ import { ErasureProgress, readErasure, pendingErasures } from './erasure';
 import { latestKey } from './deletion-watermark';
 import { enqueue } from './offline-queue';
 import { api, deletedSubmission, remember, remembered, requestId, submissionId, type Settings } from './api';
-import { RetentionPosttests } from './retention-posttests';
 import { Icon } from './icons';
 import { LearningUnderstandings } from './learning-understandings';
 import { LearningMemory } from './study-tools';
@@ -125,91 +124,6 @@ function Recent({ chats }: { chats: Resource<ChatLink[]> }) {
 
 type PaperSummary = { id: string; title: string };
 type OrganizerIndex = { tasks: { id: string; title: string; date: string; done: boolean }[]; notes: { id: string; title: string }[] };
-
-export function Today({ library, chats }: { library: Resource<Workspace>; chats: Resource<ChatLink[]> }) {
-  const organizer = useResource<OrganizerIndex>('/organizer/index');
-  const papers = useResource<PaperSummary[]>('/papers');
-  const next = organizer.data?.tasks.filter(t => !t.done).sort((a,b) => a.date.localeCompare(b.date))[0];
-  const latest = library.data?.materials[0];
-  const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(
-    new Date(),
-  );
-  const selected = new URLSearchParams(location.search).get('posttest');
-  if (selected !== null) return <>
-    <PageTitle title="今天" meta={date} />
-    <RetentionPosttests selected={selected} />
-  </>;
-  return (
-    <>
-      <PageTitle title="今天" meta={date} />
-      <section className="study-today-hero">
-        <div>
-          <span className="cover-kind"><Icon name={next ? 'today' : 'book'} />{next ? '下一项安排 · ' + next.date : latest ? '最近交入的材料' : '个人学习台'}</span>
-          <h2>{next?.title || latest?.title || '今天想学些什么？'}</h2>
-          <p>{next ? '打开计划，查看接下来的安排或记录已完成。' : latest ? '打开原文，写笔记，或选一段交给同伴备课。' : '带上你的讲义、卷子或课堂笔记，从手头正在学的内容开始。'}</p>
-          <div className="study-actions"><a className="primary-button" href={next ? '/plan?id='+next.id : latest ? materialPath(latest.id) : '/intake'}>{next ? '打开学习计划' : latest ? '继续读材料' : '导入学习材料'} <Icon name="arrow" /></a>
-          <a className="tonal-button" href={next ? '/intake' : '/plan'}>{next ? '导入材料' : '学习计划'}</a></div>
-        </div>
-        <time className="study-calendar" aria-label={date}>
-          <span>{new Intl.DateTimeFormat('zh-CN',{month:'long'}).format(new Date())}</span>
-          <strong>{new Date().getDate()}</strong>
-          <small>{new Intl.DateTimeFormat('zh-CN',{weekday:'long'}).format(new Date())}</small>
-        </time>
-      </section>
-      <div className="today-lower">
-        <section className="surface-section">
-          <div className="subhead"><h2>我的练习</h2><a href="/papers">全部练习</a></div>
-          <RetentionPosttests />
-          <ReadState resource={papers} />
-          {papers.data?.slice(0, 2).map(p => <ListLink key={p.id} href={'/papers/'+p.id} title={p.title} detail="继续作答或查看反馈" icon="practice" />)}
-          <ListLink href="/review" title="错题回看" detail="从上次答错的题回到原卷" icon="history" />
-          <ListLink href="/papers/new" title="编一份练习" detail="用自己的题目和答案组卷" icon="practice" />
-        </section>
-        <section className="surface-section">
-          <div className="subhead"><h2>学习笔记</h2><a href="/notes">全部笔记</a></div>
-          <ReadState resource={organizer} />
-          {organizer.data?.notes.slice(0,2).map(n => <ListLink key={n.id} href={'/notes?id='+n.id} title={n.title} detail="打开笔记及修订记录" icon="document" />)}
-          <ListLink href="/notes" title="整理学习笔记" detail="记录思路、原文和自己的解法" icon="book" />
-        </section>
-        <section className="surface-section">
-          <div className="subhead"><h2>学习同伴</h2><a href="/companion">全部对话</a></div>
-          <Recent chats={chats} />
-        </section>
-        <section className="surface-section">
-          <div className="subhead"><h2>起步材料</h2><a href="/materials">材料库</a></div>
-          <ListLink href="/materials/riding" title="同一趟骑行，两块码表" detail="内置讲义 · 调节停车时间" icon="book" />
-        </section>
-      </div>
-      {library.data?.goal && (
-        <section className="goal-strip">
-          <Icon name="person" />
-          <div>
-            <small>当前目标</small>
-            <p>{library.data.goal}</p>
-          </div>
-          <a href="/me">查看</a>
-        </section>
-      )}
-      {(library.data?.materials.length ?? 0) > 0 && (
-        <section className="recent-material">
-          <div className="subhead">
-            <h2>最近交入</h2>
-            <a href="/materials">全部材料</a>
-          </div>
-          {library.data?.materials.slice(0, 3).map((x) => (
-            <ListLink
-              key={x.id}
-              href={materialPath(x.id)}
-              title={x.title}
-              detail="个人材料"
-              icon="document"
-            />
-          ))}
-        </section>
-      )}
-    </>
-  );
-}
 
 export function Materials({ library, capture }: { library: Resource<Workspace>; capture: () => void }) {
   const papers = useResource<PaperSummary[]>('/papers');
