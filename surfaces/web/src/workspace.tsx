@@ -14,11 +14,12 @@ export type Workspace = { materials: Material[]; goal: string | null };
 export type ChatLink = { id: string; title: string; caseId: string };
 export type Resource<T> = { data: T | undefined; error: boolean; reload: () => void };
 
-export function useResource<T>(path: string): Resource<T> & {replace: (value: T) => void} {
+export function useResource<T>(path: string | null): Resource<T> & {replace: (value: T) => void} {
   const [data, setData] = useState<T>();
   const [error, setError] = useState(false);
   const [version, setVersion] = useState(0);
   useEffect(() => {
+    if (path === null) return;
     const controller = new AbortController();
     setError(false);
     api<T>(path, { signal: controller.signal })
@@ -38,7 +39,7 @@ export function useResource<T>(path: string): Resource<T> & {replace: (value: T)
     window.addEventListener('storage',stored);
     return () => {window.removeEventListener(latestKey,refresh);window.removeEventListener('storage',stored);};
   },[path]);
-  return { data, error, reload: () => setVersion((n) => n + 1),
+  return { data: path === null ? undefined : data, error: path !== null && error, reload: () => setVersion((n) => n + 1),
     replace(value) { setData(value); setError(false); setVersion(n => n + 1); } };
 }
 
