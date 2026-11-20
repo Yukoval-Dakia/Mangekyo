@@ -30,6 +30,7 @@ import {
   requestCommand,
   purpose,
   methodName,
+  jitMethodName,
   slotType,
   textbookUndoId,
 } from './identity.ts';
@@ -270,8 +271,8 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
   }
   return { ...view, turns: projected };
 }
-export async function openStudio(db: Db, activity: LoadedModule, {projectRecall, jitCounters = []}: {
-  projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[];
+export async function openStudio(db: Db, activity: LoadedModule, {projectRecall, jitCounters = [], enableJit = false}: {
+  projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[]; enableJit?: boolean;
 } = {}) {
   const handle = createCommandHandler(db, {
     modules: [activity],
@@ -290,7 +291,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
             scope_keys: '{}',
             changed_tick: tick,
           });
-          await requestWork(tx, tick, { slotType, slotKey: id, deriver: methodName });
+          const jit = submission.jitContextVersion === 1;
+          await requestWork(tx,tick,{slotType,slotKey:id,deriver:jit ? jitMethodName : methodName},jit ? 'capability_pending' : 'pending');
         }
       },
     }),
@@ -335,7 +337,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       throw new RequestError(422, '这次对话已绑定原模型配置，请切回该配置或新建对话。');
     const workspaceRevision = selected === 'companion' && !origin?.attachment && !attachment
       ? await workspaceRouteRevision(settings) : undefined;
-    const jitCounter = !parent && workspaceRevision && !grants?.length ? studioJitCounter(jitCounters, settings) : undefined;
+    const jitCounter = enableJit && !parent && workspaceRevision && !grants?.length ? studioJitCounter(jitCounters, settings) : undefined;
     let boundObject;
     if (currentObject) {
       if (selected !== 'companion' || origin?.attachment || attachment)

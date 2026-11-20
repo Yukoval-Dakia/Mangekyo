@@ -10,6 +10,8 @@ export type WorkRef = {
   readonly generation: string;
 };
 
+export type OutboxPendingState = 'pending' | 'capability_pending';
+
 export type WorkRequest = {
   readonly slotType: string;
   readonly slotKey: string;
@@ -24,7 +26,7 @@ type CurrentWork = {
 };
 
 /** Register demand with the caller's existing learner write lock and tick. */
-export async function requestWork(tx: DbTransaction, tick: Tick, request: WorkRequest): Promise<WorkRef> {
+export async function requestWork(tx: DbTransaction, tick: Tick, request: WorkRequest, pendingState?: OutboxPendingState): Promise<WorkRef> {
   const { slotType, slotKey, deriver } = request;
   if (slotType === todoSlot) throw new Error('Register working.todo through emitTodo');
   const { rows: [current] } = await tx.query<CurrentWork>(
@@ -36,7 +38,7 @@ export async function requestWork(tx: DbTransaction, tick: Tick, request: WorkRe
     return { learner: tx.learner, workId: current.id, generation: current.generation };
   }
 
-  return writeReadyGeneration(tx, tick, request, current);
+  return writeReadyGeneration(tx, tick, request, current, pendingState);
 }
 
 /** Enqueue a new execution after the caller has fenced the prior generation under the learner lock. */
@@ -45,6 +47,7 @@ export async function writeReadyGeneration(
   tick: Tick,
   request: WorkRequest,
   current: Pick<CurrentWork, 'id' | 'generation'> | undefined,
+  pendingState?: OutboxPendingState,
 ): Promise<WorkRef> {
   const { slotType, slotKey, deriver } = request;
   const workId = current?.id ?? newUlid();
@@ -71,10 +74,10 @@ export async function writeReadyGeneration(
       execution_ref: executionRef,
     });
   }
-  return enqueueGeneration(tx, request, { learner: tx.learner, workId, generation }, executionRef);
+  return enqueueGeneration(tx, request, { learner: tx.learner, workId, generation }, executionRef, pendingState);
 }
 
-export async function enqueueGeneration(tx: DbTransaction, slot: Pick<WorkRequest, 'slotType' | 'slotKey'>, ref: WorkRef, executionRef: string) {
+export async function enqueueGeneration(tx: DbTransaction, slot: Pick<WorkRequest, 'slotType' | 'slotKey'>, ref: WorkRef, executionRef: string, pendingState: OutboxPendingState = 'pending') {
   const { slotType, slotKey } = slot;
   const { workId, generation } = ref;
   await tx.query(
@@ -88,7 +91,7 @@ export async function enqueueGeneration(tx: DbTransaction, slot: Pick<WorkReques
     intent_id: executionRef,
     work_id: workId,
     generation,
-    state: 'pending',
+    state: pendingState,
   });
   return ref;
 }

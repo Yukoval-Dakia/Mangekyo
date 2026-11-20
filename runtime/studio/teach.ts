@@ -50,7 +50,7 @@ import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
-import { methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
+import { jitMethodName, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
 class UncertainEffect extends Error {
   constructor(requestId: string | null) {
@@ -64,7 +64,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
-  if (job.slotType !== slotType || job.deriver !== methodName) throw new Error('Unknown teaching method');
+  if (job.slotType !== slotType || (job.deriver !== methodName && job.deriver !== jitMethodName)) throw new Error('Unknown teaching method');
   const learner = learnerId(ref.learner);
   const scope = { learner };
   const inputs = new Map<string, ManifestInput>();
@@ -176,7 +176,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       id,
       slot_type: slotType,
       slot_key: job.slotKey,
-      deriver: methodName,
+      deriver: job.deriver,
       scope_keys: '{}',
       value: JSON.stringify(digest ? { ...feedback, foregroundDigest: digest } : feedback),
       lifecycle: 'effective',
@@ -194,6 +194,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   });
   try {
     const submission = studyTurn(await read(job.slotKey));
+    if ((job.deriver === jitMethodName) !== (submission.jitContextVersion === 1))
+      throw new ChangedEvidence();
     if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
     const origin = submission.parentId ? studyTurn(await read(submission.sessionId)) : submission;
     if (origin.attachment) {

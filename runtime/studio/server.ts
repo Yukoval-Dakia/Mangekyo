@@ -35,6 +35,7 @@ import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
+import { jitMethodName } from './identity.ts';
 import type { StudioJitCounter } from './first-turn-jit.ts';
 
 const port = Number(process.env.MANGEKYO_PORT || 4317);
@@ -92,7 +93,8 @@ if (!Array.isArray(jitCounters)) throw new Error('首轮计数模块须导出 st
 
 async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());
-  const studio = await openStudio(db, activity, { projectRecall: recall.project, jitCounters });
+  const studio = await openStudio(db, activity, {projectRecall:recall.project,jitCounters,
+    enableJit:process.env.MANGEKYO_STUDIO_ENABLE_JIT === '1'});
   const plan = await loadModuleDirectory(fileURLToPath(new URL('../../modules/plan', import.meta.url)));
   const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
@@ -127,11 +129,12 @@ if (mode === 'web') {
 async function runWorker(storeId: string) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
-  async function execute(id: string, terminal = false) {
-    const ref = await acknowledgeStartedWork(db, id);
-    if (!ref || await research.execute(ref, terminal)) return;
+  const jitQueue = queue + '-jit-v1';
+  async function execute(id: string, terminal = false, jit = false) {
+    const ref = await acknowledgeStartedWork(db,id,jit ? 'capability_pending' : 'pending');
+    if (!ref || (!jit && await research.execute(ref, terminal))) return;
     const work = await readWork(db, ref);
-    if (!work) return;
+    if (!work || jit !== (work.deriver === jitMethodName)) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
@@ -151,9 +154,13 @@ async function runWorker(storeId: string) {
   };
   const connection = await Connection.connect({ address: workerConfig.address });
   const client = new Client({ connection, namespace: workerConfig.namespace });
-  const { worker, connection: workerConnection } = await createWorkWorker(execute, workerConfig);
+  const workers = [await createWorkWorker(execute, workerConfig)];
+  if (jitCounters.length) workers.push(await createWorkWorker(id => execute(id,false,true), {
+    ...workerConfig, taskQueue:jitQueue, deploymentName:jitQueue,
+    onTerminalFailure:id => execute(id,true,true),
+  }));
   let stopping = false;
-  const running = worker.run();
+  const running = Promise.all(workers.map(({worker}) => worker.run()));
   void running.catch((error) => {
     console.error('Temporal Worker 停止', error.name);
     process.exitCode = 1;
@@ -162,17 +169,17 @@ async function runWorker(storeId: string) {
   if (process.env.MANGEKYO_ACTIVATE_LOCAL_BUILD === '1') {
     if (!/^(localhost|127\.0\.0\.1):\d+$/.test(workerConfig.address))
       throw new Error('自动激活构建仅限本机开发服务');
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await client.workflowService.setWorkerDeploymentCurrentVersion({
-          namespace: workerConfig.namespace,
-          deploymentName: workerConfig.deploymentName,
-          buildId: workerConfig.buildId,
-        });
-        break;
-      } catch (error) {
-        if (attempt >= 59) throw error;
-        await delay(500);
+    for (const deploymentName of jitCounters.length ? [queue,jitQueue] : [queue]) {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await client.workflowService.setWorkerDeploymentCurrentVersion({
+            namespace:workerConfig.namespace,deploymentName,buildId:workerConfig.buildId,
+          });
+          break;
+        } catch (error) {
+          if (attempt >= 59) throw error;
+          await delay(500);
+        }
       }
     }
   }
@@ -183,6 +190,7 @@ async function runWorker(storeId: string) {
         await relayPending(db, async (ref, id) => {
           if (!(await research.relayWake(client, queue, ref, id))) await startWork(client, id, { taskQueue: queue });
         });
+        if (jitCounters.length) await relayPending(db,async (_,id) => { await startWork(client,id,{taskQueue:jitQueue}); },'capability_pending');
         failed = false;
       } catch {
         if (!failed) console.error('执行交接暂时不可用，待办已保留。');
@@ -199,10 +207,10 @@ async function runWorker(storeId: string) {
     stopping = true;
     stopEvents?.();
     server?.close();
-    if (worker.getState() === 'RUNNING') worker.shutdown();
+    for (const {worker} of workers) if (worker.getState() === 'RUNNING') worker.shutdown();
     await Promise.allSettled([running, relaying]);
     await pythonHost.close();
-    await workerConnection.close();
+    await Promise.all(workers.map(({connection}) => connection.close()));
     await connection.close();
     await db.close();
   }

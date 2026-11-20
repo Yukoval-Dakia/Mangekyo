@@ -13,4 +13,5 @@ export const sourceId = (studyCase: string, id: string) =>
   factId(stableId('learning-history-v1', studyCase, id));
 export const slotType = 'activity.teachingFeedback';
 export const methodName = 'activity/evidence-tutor';
+export const jitMethodName = 'activity/evidence-tutor-jit-v1';
 export const purpose = 'teaching';
