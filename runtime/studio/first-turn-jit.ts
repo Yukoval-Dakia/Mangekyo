@@ -75,6 +75,7 @@ async function oldMistake(tx: ReadTransaction, turn: string, current: WorkspaceW
     return {evidence: {ref: id, rev: older.fact.ref.rev,
       text: '同版题目旧答判错：' + textSlice(String(answer), 0, 36).content}, basis: [...attempt.basis, ...older.basis]};
   }
+  return undefined;
 }
 
 export async function prepareFirstTurnJit(db: Db, learner: ReadTransaction['learner'], turn: string, submission: Turn,
