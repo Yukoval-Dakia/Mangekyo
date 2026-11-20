@@ -1,6 +1,6 @@
 import { FactNotFoundError } from '../declarations/read-errors.ts';
 import { isJson } from '../declarations/define.ts';
-import type { FactId, Revision, Tick } from '../declarations/ids.ts';
+import type { FactId, LearnerId, Revision, Tick } from '../declarations/ids.ts';
 import type {
   DerivationSnapshot,
   FactSnapshot,
@@ -45,12 +45,9 @@ type FactRow = {
   readonly access_epoch: string | bigint | number;
   readonly purpose: unknown;
   readonly retracted_rev: number | null;
-};
-
-type FactRevRow = {
-  readonly rev: number;
+  readonly rev: number | null;
   readonly data: unknown;
-  readonly purpose: unknown;
+  readonly revision_purpose: unknown;
   readonly kind: string;
 };
 
@@ -117,20 +114,22 @@ function purposeAllows(purposes: readonly string[], purpose: string): boolean {
   return purposes.includes(purposeAll) || purposes.includes(purpose);
 }
 
-async function readFact<Value = Json>(
+async function readFact(
   tx: ReadTransaction,
   purpose: string,
   id: FactId,
   options: FactReadOptions,
-): Promise<FactSnapshot<Value>> {
+): Promise<FactSnapshot> {
   const factId = requireFactId(id);
   const parsed = parseFactOptions(options);
 
   const factResult = await tx.query<FactRow>(
-    `SELECT type, current_rev, access_epoch, purpose, retracted_rev
-     FROM facts
-     WHERE learner_id = $1 AND id = $2`,
-    [tx.learner, factId],
+    `SELECT f.type, f.current_rev, f.access_epoch, f.purpose, f.retracted_rev,
+            r.rev, r.kind, r.purpose AS revision_purpose, r.data
+     FROM facts f LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev) =
+       (f.learner_id,f.id,COALESCE($3::integer, f.current_rev))
+     WHERE f.learner_id=$1 AND f.id=$2`,
+    [tx.learner, factId, parsed.mode === 'pinned' ? parsed.rev : null],
   );
   const fact = factResult.rows[0];
   if (fact === undefined) {
@@ -141,20 +140,13 @@ async function readFact<Value = Json>(
   }
 
   const targetRev = parsed.mode === 'following' ? fact.current_rev : parsed.rev;
-  const revResult = await tx.query<FactRevRow>(
-    `SELECT rev, data, purpose, kind
-     FROM fact_revs
-     WHERE learner_id = $1 AND fact_id = $2 AND rev = $3`,
-    [tx.learner, factId, targetRev],
-  );
-  const revision = revResult.rows[0];
-  if (revision === undefined) {
+  if (fact.rev === null) {
     if (parsed.mode === 'pinned') {
       throw new FactNotFoundError(`Fact ${factId} has no revision ${targetRev}`);
     }
     throw new Error(`Fact ${factId} current revision ${targetRev} is missing`);
   }
-  if (revision.kind !== 'value') {
+  if (fact.kind !== 'value') {
     throw new FactReadDeniedError(
       'retracted',
       `Fact ${factId} revision ${targetRev} is a retraction`,
@@ -162,7 +154,7 @@ async function readFact<Value = Json>(
   }
 
   const currentPurpose = toPurposeList(fact.purpose, 'facts.purpose');
-  const revisionPurpose = toPurposeList(revision.purpose, 'fact_revs.purpose');
+  const revisionPurpose = toPurposeList(fact.revision_purpose, 'fact_revs.purpose');
   if (!purposeAllows(currentPurpose, purpose) || !purposeAllows(revisionPurpose, purpose)) {
     throw new FactReadDeniedError(
       'purpose',
@@ -170,25 +162,25 @@ async function readFact<Value = Json>(
     );
   }
 
-  const data: unknown = revision.data;
+  const data = fact.data;
   if (!isJson(data)) {
     throw new Error(`Fact ${factId} revision ${targetRev} data is not valid JSON`);
   }
 
   return {
-    ref: { learner: tx.learner, id: factId, rev: revision.rev as Revision },
+    ref: { learner: tx.learner, id: factId, rev: fact.rev as Revision },
     type: fact.type,
     accessEpoch: toTick(fact.access_epoch),
-    value: data as Value,
+    value: data,
     purpose: revisionPurpose,
   };
 }
 
 export function createCommandReadContext(tx: ReadTransaction, purpose: string): ReadContext {
-  const allowedPurpose = requirePurpose(purpose);
+  const actor = {purpose: requirePurpose(purpose), maySend: () => true};
   return {
     fact: <Value = Json>(id: FactId, options: FactReadOptions) =>
-      readFact<Value>(tx, allowedPurpose, id, options),
+      guardAccess(tx, {...options, id}, actor) as Promise<FactSnapshot<Value>>,
     slot: async <Value = Json>(
       _ref: SlotRef,
       _options: { readonly mode: 'pinned' | 'following' | 'asof' },
@@ -212,27 +204,54 @@ type FactWitness = {
   readonly type?: string;
 };
 
+export type FactAccessActor = {
+  readonly purpose: string;
+  readonly maySend: (fact: FactSnapshot) => boolean;
+};
+
+export type FactAccessRef = {
+  readonly id: FactId;
+  readonly learner?: LearnerId;
+  readonly accessEpoch?: Tick;
+  readonly type?: string;
+} & (
+  | {readonly mode: 'following'; readonly rev?: number}
+  | {readonly mode: 'pinned'; readonly rev: number}
+);
+
+/** The host binds the learner transaction, purpose and recipient before accepting a reference. */
+export async function guardAccess(tx: ReadTransaction, ref: FactAccessRef, actor: FactAccessActor) {
+  if (!ref || typeof ref !== 'object') throw new InvalidReadRequestError('Expected a fact reference');
+  if (ref.learner !== undefined && ref.learner !== tx.learner) {
+    throw new FactReadDeniedError('recipient', 'Fact is unavailable to the recipient');
+  }
+  const options = ref.mode === 'pinned' ? {mode: ref.mode, rev: ref.rev as Revision} : {mode: ref.mode};
+  const snapshot = await readFact(tx, requirePurpose(actor.purpose), ref.id, options);
+  if (actor.maySend(snapshot) !== true) {
+    throw new FactReadDeniedError('recipient', 'Fact is unavailable to the recipient');
+  }
+  if ((ref.accessEpoch !== undefined && snapshot.accessEpoch !== ref.accessEpoch) ||
+      (ref.rev !== undefined && snapshot.ref.rev !== ref.rev) ||
+      (ref.type !== undefined && snapshot.type !== ref.type)) {
+    throw new FactReadDeniedError('changed', 'Fact witness no longer matches');
+  }
+  return snapshot;
+}
+
 /** Execution-layer reader for a single snapshot or locked transaction. */
 export function createAuthorizedFactReader(
   tx: ReadTransaction,
   purpose: string,
   maySend: (fact: FactSnapshot) => boolean,
 ) {
-  const read = createCommandReadContext(tx, purpose);
-  async function fact(id: FactId, options: FactReadOptions) {
-    const snapshot = await read.fact(id, options);
-    if (!maySend(snapshot)) throw new FactReadDeniedError('recipient', 'Fact is unavailable to the recipient');
-    return snapshot;
-  }
+  const actor = {purpose: requirePurpose(purpose), maySend};
   return {
-    fact,
+    fact: (id: FactId, options: FactReadOptions) => guardAccess(tx, {...options, id}, actor),
     async reopen(witness: FactWitness) {
-      const { id, mode, rev, accessEpoch, type } = witness;
-      const snapshot = await fact(id, mode === 'pinned' ? {mode, rev: rev as Revision} : {mode});
-      if (snapshot.ref.rev !== rev || snapshot.accessEpoch !== accessEpoch || (type !== undefined && snapshot.type !== type)) {
-        throw new FactReadDeniedError('changed', 'Fact witness no longer matches');
+      if (witness.rev === undefined || witness.accessEpoch === undefined) {
+        throw new InvalidReadRequestError('Reopening a witness requires revision and access epoch');
       }
-      return snapshot;
+      return guardAccess(tx, witness, actor);
     },
   };
 }

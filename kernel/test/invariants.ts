@@ -7,6 +7,8 @@ import type { Db } from '../src/db/types.ts';
 import { commandId, factId, learnerId } from '../src/declarations/ids.ts';
 import { applyKernelSchema } from '../src/schema.ts';
 import { createCommandHandler } from '../src/commands/handle.ts';
+import {createBusScope} from '../src/bus.ts';
+import type {FactSnapshot} from '../src/declarations/types.ts';
 import { createCommandReadContext } from '../src/commands/reads.ts';
 import { canonicalJsonString } from '../src/commands/canonical.ts';
 import { noteModule } from './commands/fixture.ts';
@@ -50,6 +52,46 @@ export function invariants(postgres = false) {
       expect(await createCommandHandler(db, { modules: [], hooks })(request)).toEqual(receipts[0]);
       await handle()({ ...request, id: commandId('01KFS4AAA00000000000000003'), input: { id: factId('01KFS4AAA00000000000000004'), text: 'original' } });
       expect((await db.query('SELECT * FROM facts')).rows).toHaveLength(2);
+    });
+    it('projects authorized results and reopens every witness with the bound command identity', async () => {
+      await handle()(request);
+      const second = factId('01KFS4AAA00000000000000004');
+      await handle()({...request, id:commandId(second), input:{id:second, text:'private value'}});
+      const actor = {actor:'companion', purpose:'storage', maySend:() => true, defaultPreset:'type',
+        presets:new Map([['type', (fact: FactSnapshot) => fact.type]])} as const;
+      const bus = createBusScope({db,learner}, actor, handle());
+      const initial = await bus.query({types:['note.entry']});
+      expect(initial.items).toEqual(['note.entry','note.entry']);
+      expect(JSON.stringify(initial)).not.toContain('private value');
+      const [first, next] = initial.witnesses;
+      if (!first || !next) throw new Error('Missing witnesses');
+      const pinned = {...first, mode:'pinned'} as const;
+      await handle()({...request, id:commandId('01KFS4AAA00000000000000005'), type:'note.correct', input:{id, text:'v2', rev:1}});
+      await expect(bus.resolve([next, first], 'type')).rejects.toMatchObject({reason:'changed'});
+      expect((await bus.resolve([next, pinned], 'type')).witnesses).toEqual([next,pinned]);
+      await expect(bus.resolve([next, {...pinned, type:'other.type'}], 'type')).rejects.toMatchObject({reason:'changed'});
+      await db.snapshot({learner}, async tx => {
+        const filtered = createBusScope(tx, {...actor, maySend:fact => fact.ref.id === second});
+        expect((await filtered.query({types:['note.entry'], limit:1})).witnesses).toEqual([next]);
+        await expect(filtered.resolve([next, pinned], 'type')).rejects.toMatchObject({reason:'recipient'});
+        await expect(filtered.resolve(Array(9).fill(next), 'type')).rejects.toThrow('eight');
+        await expect(filtered.resolve([next], 'unknown')).rejects.toThrow('preset');
+      });
+      // A different recipient or purpose cannot borrow the prior read's authority.
+      await db.snapshot({learner}, tx => expect(createBusScope(tx, {...actor,purpose:'teaching'})
+        .resolve([next], 'type')).rejects.toMatchObject({reason:'purpose'}));
+      await db.snapshot({learner:learnerId(second)}, tx => expect(createBusScope(tx, actor)
+        .resolve([next], 'type')).rejects.toMatchObject({reason:'recipient'}));
+      const spoofed = {...request, type:'note.correct', input:{id, rev:2, text:'edited'}, actor:'learner',
+        learner:learnerId(second), purpose:'teaching', id:commandId('01KFS4AAA00000000000000006')};
+      const receipt = await bus.mutate(spoofed);
+      expect(receipt.state).toBe('proposed');
+      expect((await db.query('SELECT learner_id,input FROM commands WHERE id=$1',[spoofed.id])).rows)
+        .toEqual([{learner_id:learner,input:{actor:'companion',purpose:'storage',input:spoofed.input}}]);
+      await db.query('UPDATE facts SET access_epoch=access_epoch+2 WHERE learner_id=$1 AND id=$2',[learner, id]);
+      await expect(bus.resolve([next, pinned], 'type')).rejects.toMatchObject({reason:'changed'});
+      await db.query('UPDATE facts SET retracted_rev=current_rev WHERE learner_id=$1 AND id=$2',[learner, second]);
+      await expect(bus.resolve([next], 'type')).rejects.toMatchObject({reason:'retracted'});
     });
     it('preserves old content, sticky ownership and rejects competing corrections', async () => {
       await handle()(request);
