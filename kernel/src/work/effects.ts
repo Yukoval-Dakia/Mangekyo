@@ -1,4 +1,4 @@
-import { assertDeletionWatermark, assertUnburned, deletionWatermark } from '../lifecycle.ts';
+import { assertDeletionWatermark, assertUnburned, deletionWatermark, LifecycleError } from '../lifecycle.ts';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalizeJson, canonicalJsonString } from '../commands/canonical.ts';
@@ -6,7 +6,7 @@ import { lockLearner } from '../db/learner.ts';
 import type { Db, ReadTransaction } from '../db/types.ts';
 import { learnerId } from '../declarations/ids.ts';
 import type { Manifest } from '../derivations/manifest.ts';
-import type { WorkRef } from './demand.ts';
+import type { WorkRef, WorkRequest } from './demand.ts';
 import type { Json } from '../declarations/types.ts';
 import { newUlid } from './identity.ts';
 
@@ -25,6 +25,7 @@ export type EffectResult =
 type EffectRow = {
   input_digest: string;
   basis_current: boolean;
+  legacy: boolean;
   provider_effect_id: string | null;
   state: 'started' | 'done' | 'unknown';
   result: unknown;
@@ -39,7 +40,7 @@ export async function runEffect(
   invoke: (providerEffectId: string) => Promise<Json>,
   authorize?: (tx: ReadTransaction) => Promise<void> | void,
   // Supplied by the host only for a closed set of independently authored fact inputs.
-  basis?: { manifest: Manifest; work?: WorkRef },
+  basis?: { manifest: Manifest; work?: WorkRef & { ownerSlot?: WorkRequest } },
 ): Promise<EffectResult> {
   const { ownerKind, ownerId, stepKey, label, input } = request;
   const learner = learnerId(request.learner);
@@ -50,7 +51,7 @@ export async function runEffect(
     await assertUnburned(tx, 'fact', [request.ownerId]);
     await authorize?.(tx);
     const { rows: [prior] } = await tx.query<EffectRow>(
-      `SELECT input_digest, provider_effect_id, state, result,
+      `SELECT input_digest, provider_effect_id, state, result, input_basis IS NULL AS legacy,
               effect_may_settle(learner_id, owner_id, started_tick, input_basis) AS basis_current FROM effects
        WHERE learner_id = $1 AND owner_kind = $2 AND owner_id = $3 AND step_key = $4 AND label = $5`,
       identity,
@@ -58,6 +59,8 @@ export async function runEffect(
     if (prior) {
       if (prior.input_digest !== digest) throw new Error('Effect identity already used with different input');
       if (prior.state === 'done') {
+        if (!prior.basis_current && prior.legacy)
+          throw new LifecycleError(409, '旧发送凭据缺少跨删除水位的输入依据。', 'legacy_effect_basis_missing');
         if (!prior.basis_current) throw new Error('Effect inputs no longer authorized');
         return { kind: 'done', result: json.parse(prior.result) } as const;
       }

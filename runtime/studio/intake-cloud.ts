@@ -1,3 +1,5 @@
+import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
+import { intakeIdFor } from './intake-lifecycle.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -23,7 +25,7 @@ export type MineruClient = {
   submit(input: MineruContext & {
     bytes: Buffer; mediaType: MineruMediaType; beforeUpload?: () => Promise<void>;
   }): Promise<string>;
-  read(input: MineruContext & { batchId: string }): Promise<
+  read(input: MineruContext & { batchId: string; beforeDownload?: () => Promise<void> }): Promise<
     { state: 'pending'; pages: number | null } |
     { state: 'done'; text: string; pages: number | null } |
     { state: 'failed'; message: string }
@@ -50,6 +52,7 @@ async function cloudInput(tx: ReadTransaction, intakeId: string) {
   const document = await read.fact(factId(intakeId), { mode: 'following' });
   if (document.type !== intakeFactType) return null;
   const value = intakeDocument(document.value);
+  if (intakeIdFor(value.materialId) !== document.ref.id) return null;
   const { mediaType } = value.original;
   if (value.requestedExtraction !== 'mineru' || value.extraction.status !== 'pending' || !mineruSupports(mediaType))
     return null;
@@ -101,15 +104,25 @@ export function openCloudIntakeWork(db: Db, intake: {
       return cloudInput(tx, work.slotKey);
     };
     try {
-      const original = await db.snapshot(scope, current);
-      if (!original) {
+      const frozen = await db.snapshot(scope, async tx => {
+        const original = await current(tx);
+        if (!original) return null;
+        const {rows:[clock]} = await tx.query<{tick:string}>('SELECT clock::text AS tick FROM learners WHERE id=$1',[tx.learner]);
+        const manifest = parseManifest({version:1, learner:tx.learner, purpose:intakePurpose, gatherTick:clock!.tick,
+          inputs:[original.document, original.material].map(({ref,accessEpoch}) =>
+            ({kind:'fact', id:ref.id, rev:ref.rev, accessEpoch, mode:'following'}))});
+        return {original,manifest};
+      });
+      if (!frozen) {
         await finishWork(db, ref);
         return;
       }
+      const {original,manifest} = frozen;
       const token = mineruToken();
       const authorize = async (tx: ReadTransaction) => {
         const source = await current(tx);
-        if (!source || source.document.ref.rev !== original.document.ref.rev ||
+        if (!source || source.document.ref.id !== original.document.ref.id || source.material.ref.id !== original.material.ref.id ||
+            source.document.ref.rev !== original.document.ref.rev ||
             source.material.ref.rev !== original.material.ref.rev ||
             source.document.accessEpoch !== original.document.accessEpoch ||
             source.material.accessEpoch !== original.material.accessEpoch) throw new StoppedCloudIntake();
@@ -152,9 +165,16 @@ export function openCloudIntakeWork(db: Db, intake: {
           if (stoppedBeforeUpload) return false;
           throw error;
         }
-      }, authorize);
+      }, authorize, {manifest, work:{...ref, ownerSlot:{slotType:cloudIntakeSlot,slotKey:dataId,deriver:cloudIntakeDeriver}}})
+        .catch((error: unknown) => {
+          if (error instanceof LifecycleError && error.code === 'legacy_effect_basis_missing')
+            return {kind:'unverified'} as const;
+          throw error;
+        });
       await db.snapshot(scope, authorize);
       if (configurationChanged()) return finishConfigurationChange();
+      if (submission.kind === 'unverified')
+        return publish(failure('旧上传记录缺少核对删除范围的依据，已停止轮询和重传。'));
       if (submission.kind === 'unknown') {
         await publish(failure('无法确认 MinerU 是否收到原件，已停止自动重传。你可以查看原件或手动更正。'));
         return;
@@ -172,7 +192,8 @@ export function openCloudIntakeWork(db: Db, intake: {
       for (;;) {
         await db.snapshot(scope, authorize);
         if (configurationChanged()) return finishConfigurationChange();
-        const result = await client.read({ token, dataId, batchId: submission.result, signal });
+        const result = await client.read({ token, dataId, batchId: submission.result, signal,
+          beforeDownload: () => db.snapshot(scope, authorize) });
         if (result.state === 'pending') {
           await delay(pollIntervalMs, undefined, { signal });
           continue;

@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createPgDb } from '../../../kernel/src/db/pg.ts';
 import { applyKernelSchema } from '../../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
-import { acknowledgeStartedWork, relayPending, type WorkRef } from '../../../kernel/src/work/index.ts';
+import { acknowledgeStartedWork, relayPending, runEffect, type WorkRef } from '../../../kernel/src/work/index.ts';
 import { studioLearner } from '../identity.ts';
 import { openCloudIntakeWork, type MineruClient } from '../intake-cloud.ts';
 import { handleIntakeRequest, openIntake, type IntakeMetadata } from '../intake.ts';
@@ -62,9 +62,10 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     vi.unstubAllEnvs();
   });
 
-  function capture(requestId: string, extraction: string | null = 'mineru', mediaType = 'application/pdf') {
+  function capture(requestId: string, extraction: string | null = 'mineru', mediaType = 'application/pdf', watermark = '0') {
     const form = new FormData();
     form.set('requestId', requestId);
+    form.set('deletionWatermark', watermark);
     if (extraction !== null) form.set('extraction', extraction);
     form.set('file', new Blob([mediaType === 'text/plain' ? '本地文本' : pdf], { type: mediaType }),
       mediaType === 'text/plain' ? 'note.txt' : 'exam.pdf');
@@ -202,5 +203,66 @@ describe.skipIf(!connectionString)('MinerU intake in PostgreSQL', () => {
     expect((await db.query('SELECT data FROM fact_revs WHERE learner_id=$1 AND fact_id=ANY($2)',[studioLearner,ids])).rows).toEqual([]);
     expect((await db.query('SELECT result FROM effects WHERE learner_id=$1 AND owner_id=ANY($2)',[studioLearner,ids])).rows).toEqual([]);
     expect((await db.query("SELECT input FROM commands WHERE learner_id=$1 AND input #>> '{input,materialId}'=$2",[studioLearner,prior.id])).rows).toEqual([]);
+  });
+  it.each(['finish','erase'])('resumes the same batch after an unrelated erasure (%s)', async outcome => {
+    const {watermark} = await (await fetch(origin + '/api/lifecycle')).json() as {watermark:string};
+    const a = await (await capture('other-' + outcome,null,'text/plain',watermark)).json() as IntakeMetadata;
+    const b = await (await capture('poll-' + outcome,'mineru','application/pdf',watermark)).json() as IntakeMetadata;
+    const erase = async (file: IntakeMetadata) => {
+      const res = await fetch(origin + '/api/materials/' + file.id + '/erasure', {method:'POST',
+        headers:{'content-type':'application/json'}, body:JSON.stringify({requestId:'erase-' + file.id,
+          expectedRev:file.revision,confirmation:'permanently-delete-original'})});
+      expect(await res.json()).toMatchObject({original:'removed'});
+    };
+    const owner = intakeIdFor(factId(b.id));
+    const {rows:[work]} = await db.query<{execution_ref:string}>('SELECT execution_ref FROM work WHERE learner_id=$1 AND slot_key=$2',[studioLearner,owner]);
+    const ref = await acknowledgeStartedWork(db,work!.execution_ref);
+    const batch = 'isolated-batch-' + outcome;
+    const submit = vi.fn<MineruClient['submit']>(async () => batch);
+    const read = vi.fn<MineruClient['read']>().mockRejectedValueOnce(new Error('disconnected')).mockImplementationOnce(async () => {
+      if (outcome === 'erase') await erase(b);
+      return {state:'done',text:'synthetic OCR ' + outcome,pages:1};
+    });
+    const retry = () => openCloudIntakeWork(db,intake,{submit,read}).execute(ref!);
+    await expect(retry()).rejects.toThrow('disconnected');
+    const {rows:[saved]} = await db.query<{provider_effect_id:string;result:string}>('SELECT provider_effect_id,result FROM effects WHERE owner_id=$1',[owner]);
+    expect(saved?.result).toBe(batch);
+    await erase(a);
+    await retry();
+    expect(read.mock.calls.map(([input]) => input.batchId)).toEqual([batch,batch]);
+    expect(submit).toHaveBeenCalledTimes(1);
+    if (outcome === 'finish') expect((await intake.metadata(b.id)).fullText).toBe('synthetic OCR finish');
+    else {
+      expect((await fetch(origin + '/api/materials/' + b.id + '/original')).status).toBe(404);
+      expect((await db.query('SELECT result FROM effects WHERE owner_id=$1',[owner])).rows).toEqual([]);
+      expect((await db.query('SELECT provider_effect_id,settlement FROM erased_effect_receipts WHERE owner_id=$1',[owner])).rows)
+        .toEqual([{provider_effect_id:saved!.provider_effect_id,settlement:'done'}]);
+      await retry();
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(submit).toHaveBeenCalledTimes(1);
+    }
+  });
+  it('keeps a legacy batch receipt without adopting new evidence after an erasure', async () => {
+    const {watermark} = await (await fetch(origin + '/api/lifecycle')).json() as {watermark:string};
+    const other = await (await capture('old-batch-other',null,'text/plain',watermark)).json() as IntakeMetadata;
+    const b = await (await capture('old-batch-document','mineru','application/pdf',watermark)).json() as IntakeMetadata;
+    const owner = intakeIdFor(factId(b.id));
+    const {rows:[work]} = await db.query<{execution_ref:string}>('SELECT execution_ref FROM work WHERE learner_id=$1 AND slot_key=$2',[studioLearner,owner]);
+    const ref = (await acknowledgeStartedWork(db,work!.execution_ref))!;
+    await runEffect(db,{learner:studioLearner,ownerKind:'session',ownerId:owner,stepKey:ref.generation,label:'intake-mineru',
+      input:{mediaType:b.original.mediaType,sha256:b.original.sha256,revision:b.revision}},async () => 'original-legacy-batch');
+    const submit = vi.fn<MineruClient['submit']>(), read = vi.fn<MineruClient['read']>().mockRejectedValue(new Error('disconnect'));
+    const retry = () => openCloudIntakeWork(db,intake,{submit,read}).execute(ref);
+    await expect(retry()).rejects.toThrow('disconnect');
+    expect(read.mock.calls[0]?.[0].batchId).toBe('original-legacy-batch');
+    const removed = await fetch(origin + '/api/materials/' + other.id + '/erasure',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({requestId:'erase-old-batch-other',expectedRev:other.revision,confirmation:'permanently-delete-original'})});
+    expect(await removed.json()).toMatchObject({original:'removed'});
+    await retry();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(submit).not.toHaveBeenCalled();
+    expect((await intake.metadata(b.id)).extraction.error).toContain('已停止轮询和重传');
+    expect((await db.query('SELECT input_basis,result FROM effects WHERE owner_id=$1',[owner])).rows)
+      .toEqual([{input_basis:null,result:'original-legacy-batch'}]);
   });
 });

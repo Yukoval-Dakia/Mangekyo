@@ -49,7 +49,11 @@ export async function migrateLifecycle(tx: DbQuery) {
               AND f.purpose && ARRAY[basis->'manifest'->>'purpose','all'] AND r.purpose && ARRAY[basis->'manifest'->>'purpose','all']))
         AND (NOT (basis ? 'work') OR EXISTS (SELECT FROM work w WHERE w.learner_id=who AND w.state='ready'
           AND w.id=basis->'work'->>'workId' AND w.generation=(basis->'work'->>'generation')::bigint
-          AND w.gather->>'id'=owner AND w.gather_manifest=basis->'manifest')) END FROM fence
+          AND CASE WHEN basis->'work' ? 'ownerSlot' THEN
+            w.family='derivation' AND w.slot_key=owner AND w.slot_key=basis#>>'{work,ownerSlot,slotKey}'
+            AND w.slot_type=basis#>>'{work,ownerSlot,slotType}' AND w.deriver=basis#>>'{work,ownerSlot,deriver}'
+            AND (basis->'manifest'->'inputs') @> jsonb_build_array(jsonb_build_object('kind','fact','id',owner,'mode','following'))
+          ELSE w.gather->>'id'=owner AND w.gather_manifest=basis->'manifest' END)) END FROM fence
     $$`);
   // Legacy effect completions carry a reservation tick even when their owner differs from the erased fact.
   await tx.query(`CREATE FUNCTION reject_erased_identity() RETURNS trigger LANGUAGE plpgsql AS $$

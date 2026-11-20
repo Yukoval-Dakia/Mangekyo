@@ -497,7 +497,9 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
         ...hooks,
         async onFactsChanged(tx, tick, changes) {
           const work = await readReadyWork(tx, ref);
-          if (work?.slotType !== cloudIntakeSlot || work.slotKey !== document.ref.id)
+          if (work?.slotType !== cloudIntakeSlot || work.slotKey !== document.ref.id ||
+              ![document,material].every(({ref}) => changes.some(change => change.kind === 'correct' &&
+                change.ref.id === ref.id && change.ref.rev === ref.rev + 1)))
             throw new RequestError(409, '交入工作已更改。');
           await hooks.onFactsChanged(tx, tick, changes);
         },
