@@ -14,8 +14,9 @@ import { printedWorkbookPresentation, recordWorkbookPresentationCommand, Workboo
 import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { layeredExtractionDeriver, layeredExtractionSlot, type LayeredExtractionValue } from '../../modules/capture/extraction.ts';
 import {
-  bindPaperCommandRead, collectPaperInput, collectPaperWrites, defaultPaperRunId, paperIssuance, paperIssuanceId,
-  paperIssuanceType, paperRun, paperRunType, projectIssuedPaper, projectNewPaper, type PaperExtractionReader, type PaperIssuance,
+  bindPaperCommandRead, collectPaperInput, collectPaperWrites, defaultPaperRunId, paperCollectionReceipt, paperIssuance, paperIssuanceId,
+  paperIssuanceType, paperReturnSelection, paperReturnView, paperRun, paperRunType, projectIssuedPaper, projectNewPaper,
+  readPaperDisplayInput, readPaperReprintInput, validPaperReturnIndices, type PaperExtractionReader, type PaperIssuance,
 } from '../../modules/capture/paper.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { AssetBasisError, assetType, textbookPageType } from '../../modules/content/asset.ts';
@@ -137,7 +138,7 @@ async function listPapers(tx: ReadTransaction) {
      ORDER BY created_tick DESC,id`, [tx.learner, [paperIssuanceType, captureSourceType, ...printKinds.keys()]]);
   const sources: Awaited<ReturnType<typeof printCandidate>>[] = [];
   const issued: { issuanceId: FactId; title: string; pageCount: number }[] = [];
-  const returns: { title: string; source: { id: FactId; rev: number }; originals: { index: number; name: string }[] }[] = [];
+  const returns: ReturnType<typeof paperReturnView>[] = [];
   for (const { id } of rows) {
     const fact = await ifAvailable(() => read.fact(id, { mode: 'following' }));
     if (!fact) continue;
@@ -150,8 +151,7 @@ async function listPapers(tx: ReadTransaction) {
     } else {
       const captured = fact.type === captureSourceType ? await ifAvailable(async () => sourceEnvelope(fact.value)) : undefined;
       if (captured?.kind === 'paper-return') {
-        returns.push({ title: captured.unit.title, source: { id, rev: fact.ref.rev },
-          originals: captured.originals.map(({ name }, index) => ({ name, index })) });
+        returns.push(paperReturnView(id, fact.ref.rev, captured));
       } else {
         const kind = captured?.kind === 'photo' || captured?.kind === 'pdf' ? captured.kind : printKinds.get(fact.type);
         if (kind) {
@@ -167,15 +167,6 @@ async function listPapers(tx: ReadTransaction) {
 type Collect = ReturnType<typeof collectPaperInput>;
 type PaperCommand = (type: string, data: Json, id?: CommandId, deletionWatermark?: string) => Promise<void>;
 
-export function paperReturnSelection(input: {issuanceId: unknown; page: unknown; purpose: unknown; retryId?: unknown}, id: FactId) {
-  const selected = typeof input.page === 'string' && /^\d+$/.test(input.page) ? Number(input.page) : null;
-  const {page, original, ...refs} = collectPaperInput({...input,page:selected,source:{id,rev:1},original:0});
-  if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1 ||
-      (input.purpose !== 'storage' && input.purpose !== 'learning' && input.purpose !== 'teaching' && input.purpose !== 'background-research'))
-    throw new Error('请选择发放页码和原件用途。');
-  return {...refs,page,original:0,purpose:input.purpose};
-}
-
 async function collect(read: ReadContext, command: PaperCommand, data: Collect) {
   const runId = data.retryId ?? await defaultPaperRunId(data.issuanceId);
   await command('capture.collectPaper', data as Json);
@@ -183,7 +174,7 @@ async function collect(read: ReadContext, command: PaperCommand, data: Collect) 
   if ((await collectPaperWrites(read,data)).length) throw new RequestError(409, conflict);
   const run = await read.fact(runId,{mode:'following'});
   if (run.type !== paperRunType || paperRun(run.value).issuanceId !== data.issuanceId) throw new RequestError(409, conflict);
-  return {run,receipt:{issuanceId:data.issuanceId,runId,rev:run.ref.rev,page:data.page,independence:'unknown' as const}};
+  return {run,receipt:paperCollectionReceipt(data, runId, run.ref.rev)};
 }
 
 async function present(read: ReadContext, command: PaperCommand, { issue, source }: Awaited<ReturnType<typeof readIssuance>>,
@@ -265,8 +256,7 @@ export function openCapturePapers(db: Db, capture: LoadedModule, activity: Loade
     async collect(body: Record<string, unknown>) {
       const data = input(() => collectPaperInput(body));
       const {page,original,source} = data;
-      if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1 ||
-          typeof original !== 'number' || !Number.isSafeInteger(original) || original < 0)
+      if (!validPaperReturnIndices(page, original))
         throw new RequestError(400,'回收页码或原图索引无效。');
       return write(async (read,command,tx) => {
         await assertUnburned(tx,'fact',[source.id]);
@@ -282,18 +272,11 @@ export function openCapturePapers(db: Db, capture: LoadedModule, activity: Loade
       });
     },
     async reprint(body: Record<string, unknown>) {
-      const id = input(() => {
-        if (Object.keys(body).length !== 1 || typeof body.issuanceId !== 'string') throw new Error();
-        return factId(body.issuanceId);
-      });
+      const id = input(() => readPaperReprintInput(body));
       return write(async (read, command, tx) => present(read, command, await readIssuance(tx, read, id)));
     },
     async displayed(body: Record<string, unknown>) {
-      const [id, permit] = input(() => {
-        if (Object.keys(body).length !== 2 || typeof body.issuanceId !== 'string' || typeof body.permit !== 'string')
-          throw new Error();
-        return [factId(body.issuanceId), factId(body.permit)] as const;
-      });
+      const [id, permit] = input(() => readPaperDisplayInput(body));
       return write(async (read, command, tx) => {
         await present(read, command, await readIssuance(tx, read, id), permit);
         return { recorded: true };

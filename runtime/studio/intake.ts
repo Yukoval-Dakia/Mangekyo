@@ -36,7 +36,8 @@ import { clientRequest, RequestError } from './sessions.ts';
 import { cloudIntakeSlot, enqueueCloudIntake, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
 
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
-import { paperReturnSelection, type openCapturePapers } from './capture-papers.ts';
+import { paperReturnSelection } from '../../modules/capture/paper.ts';
+import type { openCapturePapers } from './capture-papers.ts';
 import { intakeCaptureId, intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
