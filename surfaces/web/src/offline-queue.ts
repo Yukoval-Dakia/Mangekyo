@@ -1,4 +1,4 @@
-import { bindDeletionWatermark, synchronizeDeletion, verifyGenerationReceipt } from './deletion-watermark';
+import { bindDeletionWatermark, synchronizeDeletion, validWatermark, verifyGenerationReceipt } from './deletion-watermark';
 export type PendingCommand =
   | {kind:'material'; id:string; title:string; text:string}
   | {kind:'file'; id:string; title:string; file:File}
@@ -70,7 +70,7 @@ export async function synchronizeQueue(allowLegacyPosition?:number):Promise<Sync
   // The server deduplicates after a crash. The device lock also orders two open tabs.
   return navigator.locks.request('mangekyo-offline-replay',async () => {
     const result:SyncResult = {sent:0,removed:0};
-    const current = await synchronizeDeletion();
+    let current = await synchronizeDeletion();
     while (navigator.onLine) {
       const first = await transact('readonly',store => store.openCursor());
       const row:Row|undefined = first?.value;
@@ -80,7 +80,15 @@ export async function synchronizeQueue(allowLegacyPosition?:number):Promise<Sync
           return {...result,blocked:row.position,legacy:true,reason:'旧命令未保存删除水位。可按旧设备水位 0 核对或丢弃。'};
         row.deletionWatermark = '0';
       }
-      if (row.deletionWatermark !== current) {
+      if (!validWatermark(row.deletionWatermark))
+        return {...result,reason:'无法确认待发项的原删除水位。'};
+      const original = BigInt(row.deletionWatermark);
+      if (original > BigInt(current)) {
+        current = await synchronizeDeletion();
+        if (original > BigInt(current))
+          return {...result,reason:'服务端尚未确认待发项的删除水位。'};
+      }
+      if (original < BigInt(current)) {
         await discardQueued(row.position);
         result.removed++;
         continue;
@@ -89,7 +97,12 @@ export async function synchronizeQueue(allowLegacyPosition?:number):Promise<Sync
       const response = await fetch(path,init);
       if (!response.ok) {
         const error = await response.json().catch(() => null);
-        if (response.status === 410 || (response.status === 409 && error?.code === 'deletion_watermark_stale')) {
+        if (response.status === 409 && error?.code === 'deletion_watermark_stale') {
+          current = await synchronizeDeletion();
+          if (original < BigInt(current)) continue;
+          return {...result,reason:'服务端未确认待发项已过期。'};
+        }
+        if (response.status === 410) {
           await discardQueued(row.position);
           result.removed++;
           continue;

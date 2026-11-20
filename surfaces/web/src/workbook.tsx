@@ -1,3 +1,4 @@
+import { useDraftWatermark } from './draft-watermark';
 import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
@@ -789,6 +790,7 @@ function durationLabel(ms: number) {
 }
 
 function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
+  const watermark = useDraftWatermark();
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
   const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
@@ -825,7 +827,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   }, [view, draft, paperId]);
 
   useEffect(() => {
-    if (!view || draft || view.attempts.length > 0) return;
+    if (!watermark.ready || !view || draft || view.attempts.length > 0) return;
     const next: AttemptDraft = {
       version: paperId,
       requestId: submissionId(),
@@ -834,7 +836,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     };
     remember(attemptDraftKey(paperId), JSON.stringify(next));
     setDraft(next);
-  }, [view, draft, paperId]);
+  }, [view, draft, paperId, watermark.ready]);
 
   useEffect(() => {
     if (justSubmitted.current && view) {
@@ -864,7 +866,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         )
         .map((feedback) => feedback.questionId)
     : [];
-  const showForm = Boolean(draft) || attempts.length === 0;
+  const showForm = Boolean(draft);
 
   const form = useRef<HTMLFormElement>(null);
   const clock = useRef<ReturnType<typeof observePaperTime> | null>(null);
@@ -1023,6 +1025,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         </section>
       )}
       <div className="workbook-detail-grid">
+        {watermark.notice}
         {showForm && (
           <section className="workbook-attempt-panel">
             <div className="subhead">
@@ -1084,7 +1087,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 <p className="error-text" role="alert">{error}</p>
               )}
               <div className="workbook-attempt-actions">
-                <button type="button" className="text-button" disabled={busy} onClick={() => {
+                <button type="button" className="text-button" disabled={busy || (!watermark.ready && !view.attempts.length)} onClick={() => {
                   if (view.attempts.length === 0) {
                     const next: AttemptDraft = {
                       version: paperId,
@@ -1123,11 +1126,11 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
               <div className="workbook-attempt-actions">
                 <RecordQuestionLink kind="attempt" record={activeAttempt} />
                 {wrongQuestionIds.length > 0 && (
-                  <button type="button" className="tonal-button" disabled={busy} onClick={() => startRedo('wrong')}>
+                  <button type="button" className="tonal-button" disabled={busy || !watermark.ready} onClick={() => startRedo('wrong')}>
                     重做错题（{wrongQuestionIds.length}）
                   </button>
                 )}
-                <button type="button" className="tonal-button" disabled={busy} onClick={() => startRedo('full')}>
+                <button type="button" className="tonal-button" disabled={busy || !watermark.ready} onClick={() => startRedo('full')}>
                   整卷重做
                 </button>
               </div>
