@@ -1,5 +1,4 @@
-import {createCommandReadContext} from '../../kernel/src/commands/reads.ts';
-import {readable} from '../../kernel/src/commands/fact-collection.ts';
+import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
@@ -16,10 +15,14 @@ export type LearningOverviewAccess = {
   readonly track?: (snapshot: FactSnapshot) => void;
 };
 async function authorized(tx: ReadTransaction, id: string, access: LearningOverviewAccess) {
-  const fact = await readable(() => createCommandReadContext(tx, access.callerPurpose).fact(factId(id), {mode: 'following'}));
-  if (!fact) return;
-  const output = {id, rev: fact.ref.rev, type: fact.type, value: fact.value, accessEpoch: fact.accessEpoch};
-  return access.maySend(output, fact) ? { output, snapshot: fact } : undefined;
+  try {
+    const fact = await createCommandReadContext(tx, access.callerPurpose).fact(factId(id), {mode: 'following'});
+    const output = {id, rev: fact.ref.rev, type: fact.type, value: fact.value, accessEpoch: fact.accessEpoch};
+    return access.maySend(output, fact) ? { output, snapshot: fact } : undefined;
+  } catch (error) {
+    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return undefined;
+    throw error;
+  }
 }
 
 function witness(fact: LearningOverviewFact): LearningOverviewWitness {

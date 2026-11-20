@@ -1,4 +1,3 @@
-import { readFactCollection, readValueRevisions } from '../../kernel/src/commands/fact-collection.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import {
@@ -7,11 +6,21 @@ import {
   FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
-import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import { organizerNoteType, organizerNoteView, prepareOrganizerNote } from '../../modules/activity/organizer-values.ts';
+import {
+  createOrganizerNote,
+  organizerNote,
+  organizerNoteDraft,
+  organizerNoteRestoreInput,
+  organizerNoteSaveInput,
+  organizerNoteType,
+  restoreOrganizerNote,
+  saveOrganizerNote,
+  type OrganizerNote,
+} from '../../modules/activity/organizer-values.ts';
 import {
   createOrganizerTask,
   organizerTask,
@@ -30,7 +39,14 @@ export type OrganizerTaskView = OrganizerTask & {
   readonly rev: number;
 };
 
-export type OrganizerNoteView = ReturnType<typeof organizerNoteView>;
+export type OrganizerNoteVersionView = OrganizerNote & {
+  readonly rev: number;
+};
+
+export type OrganizerNoteView = OrganizerNoteVersionView & {
+  readonly id: string;
+  readonly versions: readonly OrganizerNoteVersionView[];
+};
 
 export type OrganizerSnapshot = {
   readonly tasks: readonly OrganizerTaskView[];
@@ -94,9 +110,20 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
   async function snapshot(includeHistory = true): Promise<OrganizerSnapshot> {
     return db.snapshot({ learner: studioLearner }, async (tx) => {
       const read = createCommandReadContext(tx, storagePurpose);
+      const { rows: taskRows } = await tx.query<{ id: string }>(
+        `SELECT id FROM facts
+         WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
+         ORDER BY created_tick, id`,
+        [tx.learner, organizerTaskType],
+      );
       const tasks: OrganizerTaskView[] = [];
-      for await (const fact of readFactCollection(tx, read, [organizerTaskType])) {
-        tasks.push({ id: fact.ref.id, rev: fact.ref.rev, ...organizerTask(fact.value) });
+      for (const row of taskRows) {
+        try {
+          const fact = await read.fact(factId(row.id), { mode: 'following' });
+          tasks.push({ id: row.id, rev: fact.ref.rev, ...organizerTask(fact.value) });
+        } catch (error) {
+          if (!(error instanceof FactReadDeniedError)) throw error;
+        }
       }
       tasks.sort(
         (left, right) =>
@@ -105,10 +132,36 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
           left.id.localeCompare(right.id),
       );
 
+      const { rows: noteRows } = await tx.query<{ id: string }>(
+        `SELECT id FROM facts
+         WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
+         ORDER BY created_tick DESC, id DESC`,
+        [tx.learner, organizerNoteType],
+      );
       const notes: OrganizerNoteView[] = [];
-      for await (const current of readFactCollection(tx, read, [organizerNoteType], { newestFirst: true })) {
-        const history = includeHistory ? await readValueRevisions(tx, read, current.ref.id) : [];
-        notes.push(organizerNoteView(current, history));
+      for (const row of noteRows) {
+        const id = factId(row.id);
+        try {
+          const current = await read.fact(id, { mode: 'following' });
+          const versions: OrganizerNoteVersionView[] = [];
+          if (includeHistory) {
+            const revisions = await tx.query<{ rev: number }>(
+              "SELECT rev FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND kind='value' ORDER BY rev",
+              [tx.learner, id],
+            );
+            for (const {rev} of revisions.rows) {
+              try {
+                const version = await read.fact(id, { mode: 'pinned', rev: rev as Revision });
+                versions.push({ rev, ...organizerNote(version.value) });
+              } catch (error) {
+                if (!(error instanceof FactReadDeniedError)) throw error;
+              }
+            }
+          }
+          notes.push({ id, ...organizerNote(current.value), rev: current.ref.rev, versions });
+        } catch (error) {
+          if (!(error instanceof FactReadDeniedError)) throw error;
+        }
       }
       return { tasks, notes };
     });
@@ -135,9 +188,17 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
     async note(input: unknown) {
       const value = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
       const requestId = clientRequest(value.requestId);
+      if (typeof value.id === 'string' && value.id.length > 0) {
+        if (value.restoreRev !== undefined) {
+          const commandInput = validate(organizerNoteRestoreInput, input);
+          return written(await write(restoreOrganizerNote, requestId, commandInput));
+        }
+        const commandInput = validate(organizerNoteSaveInput, input);
+        return written(await write(saveOrganizerNote, requestId, commandInput));
+      }
+      const draft = validate(organizerNoteDraft, input);
       const id = factId(stableId('organizer-note', requestId));
-      const command = validate(data => prepareOrganizerNote(data, id), input);
-      return written(await write(command.type, requestId, command.input));
+      return written(await write(createOrganizerNote, requestId, { id, ...draft }));
     },
   };
 }

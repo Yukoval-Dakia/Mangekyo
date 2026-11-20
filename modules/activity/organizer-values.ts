@@ -2,7 +2,6 @@ import {
   factId,
   type CommandContext,
   type FactId,
-  type FactSnapshot,
   type Revision,
 } from '@mangekyo/kernel';
 import { textMaterial } from './library-values.ts';
@@ -82,11 +81,6 @@ export function organizerNote(input: unknown): OrganizerNote {
   return { title: title(value), markdown, source: parsedSource(value.source) };
 }
 
-export function organizerNoteView(current: FactSnapshot, history: readonly FactSnapshot[]) {
-  const version = (fact: FactSnapshot) => ({ rev: fact.ref.rev, ...organizerNote(fact.value) });
-  return { id: current.ref.id, ...version(current), versions: history.map(version) };
-}
-
 export function organizerNoteDraft(input: unknown): OrganizerNoteDraft {
   const value = record(input);
   return {
@@ -113,17 +107,6 @@ export function organizerNoteRestoreInput(input: unknown) {
   const restoreRev = revision(value, 'restoreRev');
   if (restoreRev >= expectedRev) throw new Error('只能恢复更早的版本。');
   return { id: factId(value.id), expectedRev, restoreRev };
-}
-
-export function prepareOrganizerNote(input: unknown, newId: FactId) {
-  const value = record(input);
-  if (typeof value.id !== 'string' || value.id.length === 0) {
-    return { type: createOrganizerNote, input: { id: newId, ...organizerNoteDraft(input) } };
-  }
-  const target = { ...value, expectedRev: value.expectedRev ?? value.rev };
-  return value.restoreRev === undefined
-    ? { type: saveOrganizerNote, input: organizerNoteSaveInput(target) }
-    : { type: restoreOrganizerNote, input: organizerNoteRestoreInput(target) };
 }
 
 export async function verifiedSource(
