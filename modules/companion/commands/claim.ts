@@ -22,7 +22,10 @@ export default defineCommand({
       if (data.supersedes) {
         const target = await readClaimPredecessor(ctx, data.supersedes);
         if (!allowsTeaching(target)) throw new ClaimInputError('目标记忆不允许教学用途。');
-        requirePreservedObjectScope(editableTurnClaim(target.value).scope, data.scope);
+        const previous = editableTurnClaim(target.value);
+        if (previous.authority && data.authority !== previous.authority)
+          throw new ClaimInputError('更正须保留学习者主权规则。');
+        requirePreservedObjectScope(previous.scope, data.scope);
       }
       if (data.scope.kind === 'object') for (const ref of data.scope.basis) {
         const object = await ctx.read.fact(ref.id, {mode: 'following'});

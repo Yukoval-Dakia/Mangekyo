@@ -149,7 +149,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       if (!evidence || !excerpt) continue;
       const source = await openClaimEvidence(tx, evidence, excerpt, start, legacy);
       if (!source || !maySend(source)) continue;
-      const region = !options.management && !legacy && claim.category === 'preference' ? 'preferences' : 'claims';
+      const region = !options.management && !legacy && (claim.category === 'preference' || claim.category === 'refusal') ? 'preferences' : 'claims';
       if (!requested.includes(region)) continue;
       if (!legacy && (claim.action === 'forget' || (claim.valid_until && claim.valid_until <= at))) continue;
       const scopeBasis: WorkspaceWitness[] = [];
@@ -162,6 +162,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
         if (scopeBasis.length !== claim.scope.basis.length) continue;
       }
       add(region, {value: {id: row.id, rev: fact.ref.rev, text: legacy ? null : claim.text,
+        ...(!legacy && claim.authority && {authority: claim.authority, ...(claim.refusal && {refusal: claim.refusal})}),
         quote_excerpt: excerpt, kind: legacy ? 'legacy' : claim.category,
         scope: legacy ? {kind: 'unknown'} : claim.scope.kind === 'object'
           ? {kind: 'object', id: claim.scope.object} : claim.scope,
