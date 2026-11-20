@@ -1,6 +1,8 @@
 import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
-import type { ReviewEntry } from './review.ts';
+import { attemptView, projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
+import { historicalWorkbookMount, openWorkbookContext, type WorkbookContextAuthority } from './workbook-context.ts';
+import { posttestIssuanceType } from '../../modules/activity/retention-posttest.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
@@ -34,7 +36,6 @@ import {
   workbookAttemptType,
   workbookAssessmentRequest,
   workbookAssessmentResult,
-  workbookCorrectCount,
   workbookDraft,
   WorkbookSourceMismatch,
   workbookPaper,
@@ -51,7 +52,6 @@ import {
   type WorkbookDraft,
   type WorkbookPaper,
   type WorkbookRubricAssessment,
-  type WorkbookRubricAssessmentView,
   type WorkbookRubricQuestion,
   type WorkbookSourceView,
   type WorkbookSummary,
@@ -118,7 +118,7 @@ async function readPaperSnapshot(tx: ReadTransaction, id: FactId) {
   try {
     const fact = await createCommandReadContext(tx, storagePurpose)
       .fact(factId(id), { mode: 'following' });
-    return { paper: workbookPaper(fact.value), revision: fact.ref.rev };
+    return { paper: workbookPaper(fact.value), revision: fact.ref.rev, epoch: fact.accessEpoch };
   } catch (error) {
     mapReadFailure(error, '找不到这份试卷。', '这份试卷当前不可读取。');
   }
@@ -129,14 +129,7 @@ async function readPaper(tx: ReadTransaction, id: FactId) {
 }
 
 async function readPaperOrNull(tx: ReadTransaction, id: FactId): Promise<WorkbookPaper | null> {
-  if (await factType(tx, id) !== workbookPaperType) return null;
-  try {
-    const fact = await createCommandReadContext(tx, storagePurpose)
-      .fact(factId(id), { mode: 'following' });
-    return workbookPaper(fact.value);
-  } catch (error) {
-    mapReadFailure(error, '找不到这份试卷。', '这份试卷当前不可读取。');
-  }
+  return await factType(tx,id) === workbookPaperType ? readPaper(tx,id) : null;
 }
 
 async function readAttemptOrNull(tx: ReadTransaction, id: FactId): Promise<WorkbookAttempt | null> {
@@ -169,62 +162,15 @@ async function sourceView(
   }
 }
 
-function attemptView(
-  id: string,
-  attempt: WorkbookAttempt,
-  assessments: WorkbookRubricAssessmentView[],
-): WorkbookAttemptView {
-  return {
-    id,
-    requestId: attempt.requestId,
-    submittedAt: attempt.submittedAt,
-    ...(attempt.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: attempt.effectiveDurationMs }),
-    gradingVersion: attempt.gradingVersion,
-    answers: attempt.answers,
-    feedback: attempt.feedback.map(item => item.result === 'unanswered' ? {...item, expected: null, explanation: null} : item),
-    assessments,
-    correctCount: workbookCorrectCount(attempt.feedback),
-    total: attempt.paper.questions.filter(
-      q => q.kind !== 'rubric' && (q.kind !== 'exact' || !q.selfCheck),
-    ).length,
-  };
-}
-
-async function allAttempts(
-  tx: ReadTransaction,
-  read: ReturnType<typeof createCommandReadContext>,
-): Promise<{ id: FactId; rev: Revision; attempt: WorkbookAttempt }[]> {
-  const { rows } = await tx.query<{ id: string }>(
-    `SELECT id FROM facts
-     WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-     ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookAttemptType],
-  );
-  const attempts: Awaited<ReturnType<typeof allAttempts>> = [];
-  for (const row of rows) {
-    try {
-      const fact = await read.fact(factId(row.id), { mode: 'following' });
-      attempts.push({ id: fact.ref.id, rev: fact.ref.rev, attempt: workbookAttempt(fact.value) });
-    } catch (error) {
-      if (!(error instanceof FactReadDeniedError) && !(error instanceof FactNotFoundError)) throw error;
-    }
-  }
-  return attempts;
-}
+const factUnavailable = (error: unknown) => error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+const workbookUnavailable = (error: unknown) => factUnavailable(error) ||
+  (error instanceof RequestError && (error.status === 403 || error.status === 404));
+const allAttempts = (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>) =>
+  readWorkbookAttempts(tx, read, factUnavailable);
 
 async function requireSource(db: Db, id: string): Promise<void> {
-  const exists = await db.snapshot({ learner: studioLearner }, async (tx) => {
-    if (await factType(tx, factId(id)) !== materialType) return false;
-    try {
-      const fact = await createCommandReadContext(tx, storagePurpose)
-        .fact(factId(id), { mode: 'following' });
-      textMaterial(fact.value);
-      return true;
-    } catch (error) {
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return false;
-      throw error;
-    }
-  });
+  const exists = await db.snapshot({learner:studioLearner}, async tx =>
+    (await sourceView(tx,createCommandReadContext(tx,storagePurpose),id)).available);
   if (!exists) throw new RequestError(400, '来源材料不存在或当前不可读取。');
 }
 
@@ -236,13 +182,15 @@ function sameDraft(paper: WorkbookPaper, draft: Omit<WorkbookPaper, 'savedAt'>):
 type FormalAssessmentView = Awaited<ReturnType<typeof readWorkbookAssessment>>;
 type WorkbookDetailWithAssessment = WorkbookDetail & {
   assessmentReleaseRef?: FormalAssessmentView['releaseRef'];
-  attempts: (WorkbookAttemptView & { rev: number; formalAssessment?: FormalAssessmentView })[];
+  attempts: (WorkbookAttemptView & { rev: number; formalAssessment?: FormalAssessmentView; paperRev?: number;
+    questions: Awaited<ReturnType<ReturnType<typeof openWorkbookContext>['questions']>> })[];
 };
 
 export function openWorkbook(db: Db, activity: LoadedModule, {
   assessment = openWorkbookAssessment(db),
-  onResearchFactsChanged,
+  onResearchFactsChanged, context = {},
 }: {
+  context?: WorkbookContextAuthority;
   assessment?: ReturnType<typeof openWorkbookAssessment>;
   onResearchFactsChanged?: CommandHooks['onFactsChanged'];
 } = {}) {
@@ -257,19 +205,28 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     hooks,
   });
 
+  const capsules = openWorkbookContext(db, activity, hooks, context);
+
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
     const paperId = factIdOf(id, '找不到这份试卷。');
     return db.snapshot({ learner: studioLearner }, async (tx) => {
-      const { paper, revision } = await readPaperSnapshot(tx, paperId);
+      if (await factType(tx,paperId) === posttestIssuanceType) {
+        try { return await capsules.issued(tx,paperId); }
+        catch (error) { mapReadFailure(error,'找不到已发放的后测。','后测当前不可读取。'); }
+      }
+      const { paper, revision, epoch } = await readPaperSnapshot(tx, paperId);
       const read = createCommandReadContext(tx, storagePurpose);
       const source = paper.materialId === null
         ? null
         : await sourceView(tx, read, paper.materialId);
       const assessments = await allAssessments(tx, paperId);
       const attempts: WorkbookDetailWithAssessment['attempts'] = [];
-      for (const { id: attemptId, rev, attempt } of await allAttempts(tx, read)) {
+      for (const { id: attemptId, rev, attempt, fact } of await allAttempts(tx, read)) {
         if (attempt.paperId !== paperId) continue;
-        const view = { ...attemptView(attemptId, attempt, assessments.get(attemptId) ?? []), rev };
+        const mount = await historicalWorkbookMount(tx,paperId,fact,read);
+        const questions = mount ? await capsules.questions(tx,attempt.paper.questions,mount) : [];
+        const view = { ...attemptView(attemptId, attempt, assessments.get(attemptId) ?? []), rev, questions,
+          ...(mount ? {paperRev:mount.paper.rev} : {}) };
         const release = attempt.paper.assessmentRelease;
         attempts.push(release
           ? { ...view, formalAssessment: await readWorkbookAssessment(tx, release, { id: attemptId, rev }) }
@@ -281,7 +238,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         title: paper.title,
         savedAt: paper.savedAt,
         source,
-        questions: workbookQuestionsView(paper),
+        questions: await capsules.questions(tx,paper.questions,{paper:{id:paperId,rev:revision},epoch}),
         ...(paper.assessmentRelease ? { assessmentReleaseRef: paper.assessmentRelease.releaseRef } : {}),
         attempts,
       };
@@ -290,56 +247,15 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
 
   return {
     async list(): Promise<WorkbookSummary[]> {
-      return db.snapshot({ learner: studioLearner }, async (tx) => {
-        const read = createCommandReadContext(tx, storagePurpose);
-        const attempts = await allAttempts(tx, read);
-        const grouped = new Map<string, { count: number; last: string | null }>();
-        for (const { attempt } of attempts) {
-          const current = grouped.get(attempt.paperId) ?? { count: 0, last: null };
-          current.count += 1;
-          if (current.last === null || attempt.submittedAt > current.last) {
-            current.last = attempt.submittedAt;
-          }
-          grouped.set(attempt.paperId, current);
-        }
-        const { rows } = await tx.query<{ id: string }>(
-          `SELECT id FROM facts
-           WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-           ORDER BY created_tick DESC, id`,
-          [tx.learner, workbookPaperType],
-        );
-        const summaries: WorkbookSummary[] = [];
-        for (const row of rows) {
-          try {
-            const paper = await readPaper(tx, factId(row.id));
-            const source = paper.materialId === null
-              ? null
-              : await sourceView(tx, read, paper.materialId);
-            const usage = grouped.get(row.id);
-            summaries.push({
-              id: row.id,
-              title: paper.title,
-              questionCount: paper.questions.length,
-              savedAt: paper.savedAt,
-              sourceId: paper.materialId,
-              sourceTitle: source?.title ?? null,
-              attemptCount: usage?.count ?? 0,
-              lastAttemptAt: usage?.last ?? null,
-            });
-          } catch (error) {
-            if (
-              error instanceof FactReadDeniedError ||
-              error instanceof FactNotFoundError ||
-              (error instanceof RequestError && (error.status === 403 || error.status === 404))
-            ) continue;
-            throw error;
-          }
-        }
-        return summaries;
+      return db.snapshot({learner:studioLearner}, async tx => {
+        const read = createCommandReadContext(tx,storagePurpose);
+        return readWorkbookSummaries(tx,await allAttempts(tx,read),id => readPaper(tx,id),
+          id => sourceView(tx,read,id),workbookUnavailable);
       });
     },
 
     get,
+    readingContext: (id: string, input: Record<string,unknown>) => capsules.event(factIdOf(id,'找不到这份试卷。'),input),
     async sheet(id: string) {
       return db.snapshot({ learner: studioLearner }, async tx => {
         const { paper, revision } = await readPaperSnapshot(tx, factIdOf(id, '找不到这份试卷。'));
@@ -363,39 +279,14 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     async review(): Promise<ReviewEntry[]> {
       return db.snapshot({ learner: studioLearner }, async tx => {
         const read = createCommandReadContext(tx, storagePurpose);
-        const seen = new Set<string>();
-        const available = new Map<string, boolean>();
-        const result: ReviewEntry[] = [];
-        const assessments = await allAssessments(tx);
-        for (const { id, attempt } of await allAttempts(tx, read)) {
-          if (!available.has(attempt.paperId)) {
-            try {
-              available.set(attempt.paperId, Boolean(await readPaperOrNull(tx, factId(attempt.paperId))));
-            } catch (error) {
-              if (!(error instanceof RequestError) || ![403, 404].includes(error.status)) throw error;
-              available.set(attempt.paperId, false);
-            }
+        const attempts = await allAttempts(tx,read);
+        return projectWorkbookReview(attempts,await allAssessments(tx), async paperId => {
+          try { return Boolean(await readPaperOrNull(tx,factId(paperId))); }
+          catch (error) {
+            if (workbookUnavailable(error)) return false;
+            throw error;
           }
-          if (!available.get(attempt.paperId)) continue;
-          for (const f of attempt.feedback) {
-            const key = attempt.paperId + '/' + f.questionId;
-            const grade = assessments.get(id)?.find(result => result.questionId === f.questionId);
-            const verdict = grade?.verdict ?? f.result;
-            if (verdict === 'pending' || verdict === 'unanswered' || verdict === 'self-check' || seen.has(key)) continue;
-            seen.add(key);
-            if (verdict !== 'incorrect' && verdict !== 'partial') continue;
-            const q = attempt.paper.questions.find(q => q.id === f.questionId);
-            if (!q) continue;
-            const expected = f.expected.kind === 'exact'
-              ? f.expected.values.join(' / ')
-              : f.expected.kind === 'rubric'
-                ? f.expected.rubric
-                : [f.expected.value, f.expected.unit].filter(x => x !== null).join(' ');
-            result.push({ paperId: attempt.paperId, title: attempt.paper.title, questionId: q.id,
-              prompt: q.prompt, answer: String(f.answer), expected, explanation: grade?.feedback ?? f.explanation });
-          }
-        }
-        return result;
+        });
       });
     },
 
