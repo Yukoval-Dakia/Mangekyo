@@ -21,9 +21,9 @@ export function RecordQuestionLink({kind, record}: {kind: CurrentObject['kind'];
   const ref = currentObject(kind, record.id, 'rev' in record && record.rev);
   if (!ref) return null;
   const query = new URLSearchParams({record: kind, id: ref.id, rev: String(ref.rev)});
-  return <a className="tonal-button" href={'/companion?' + query}>
+  return <><a className="tonal-button" href={'/companion?' + query}>
     {kind === 'attempt' ? '就这次作答问同伴' : '就这条记录问同伴'}
-  </a>;
+  </a><a className="tonal-button" href={'/classroom?' + query}>用这{kind === 'attempt' ? '次作答' : '条记录'}开课</a></>;
 }
 
 export function teachingPage(item: {category?: string; kind?: string; teaching?: boolean}) {

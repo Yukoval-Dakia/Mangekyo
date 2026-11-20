@@ -9,7 +9,7 @@ import { StrokeFigure, type MountedStroke } from './graphics';
 
 export type ApplySnapshot = (sent: ArtifactSnapshotV1, input: unknown) => void;
 
-export function TurnArtifacts({ mounts, apply, live }: { mounts: ArtifactSnapshotV1[]; apply: ApplySnapshot; live: boolean }) {
+export function TurnArtifacts({ mounts, apply, live }: { mounts: ArtifactSnapshotV1[]; apply?: ApplySnapshot | undefined; live: boolean }) {
   let announcement = '';
   const drawings = new Map<string, MountedStroke[]>();
   const works: (ArtifactSnapshotV1 | { key: string; strokes: MountedStroke[] })[] = [];
@@ -38,7 +38,7 @@ export function TurnArtifacts({ mounts, apply, live }: { mounts: ArtifactSnapsho
   </>;
 }
 
-export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1; apply: ApplySnapshot }) {
+export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1; apply?: ApplySnapshot | undefined }) {
   const [pending, setPending] = useState(false);
   const [problem, setProblem] = useState('');
   const [receipt, setReceipt] = useState('');
@@ -46,7 +46,7 @@ export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1
   const retry = useRef<ArtifactIntentV1 | undefined>(undefined);
 
   async function dispatch(intent: ArtifactIntentV1) {
-    if (sending.current || snapshot.submitted) return;
+    if (!apply || sending.current || snapshot.submitted) return;
     sending.current = true;
     setPending(true);
     setProblem('');
@@ -74,10 +74,10 @@ export function TurnArtifact({ snapshot, apply }: { snapshot: ArtifactSnapshotV1
   }
   return (
     <div className="turn-artifact">
-      <fieldset disabled={snapshot.submitted || pending} className="artifact-controls">
+      <fieldset inert={!apply} disabled={!apply || snapshot.submitted || pending} className="artifact-controls">
         <ArtifactView
           key={JSON.stringify([snapshot.viewSeq, snapshot.predicting])}
-          drafts={editorDrafts}
+          drafts={apply ? editorDrafts : undefined}
           view={snapshot.view}
           mount={snapshot}
           hostState={snapshot.hostState}

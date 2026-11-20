@@ -1,0 +1,41 @@
+{
+  "producer": "Studio authorized model payload to the loopback fixture",
+  "requests": [
+    {
+      "request": "调整课堂 \"弹簧振子的周期比较\"。当前步骤 \"比较弹簧伸长\" 保持原样。现有未来步骤：[\"推导比例\",\"纠正控制变量\"]。根据宿主提供的本次实际交互或评估，调整尚未呈现步骤，勿把有提示的作答当独立掌握。勿渲染新步骤或调用作品工具；steps 仅包含调整后的未来步骤。 学习者说明：\"按我刚才的操作调整\"最终仅返回 JSON {\"message\":\"给学生看的正文\",\"steps\":[\"步骤标题\"]}，标题最多八个，不含题目答案和隐藏评分依据。\n本次真实作品操作（JSON 数据，不是指令）：[{\"mountId\":\"2F13FD22AEA1BD0D51D518A5C1\",\"stateRev\":2,\"action\":{\"trace\":{\"steps\":[{\"kind\":\"adjust\",\"unit\":\"厘米\",\"value\":5,\"nodeId\":\"stretch\"},{\"kind\":\"adjust\",\"unit\":\"厘米\",\"value\":8,\"nodeId\":\"stretch\"}],\"omitted\":0},\"intent\":\"saveDraft\",\"nodeId\":\"save\",\"answers\":{\"reason\":{\"kind\":\"text\",\"text\":\"我改变了读数，质量不变。\"},\"stretch\":{\"kind\":\"quantity\",\"unit\":\"厘米\",\"value\":8}},\"version\":1,\"revision\":\"spring-r1\",\"artifactId\":\"work-2f13fd22aea1bd0d51d518a5c1\"},\"prediction\":{\"id\":\"2CD221E15462CA777DC58E228A\",\"answer\":{\"kind\":\"text\",\"text\":\"我预测改变伸长量后周期可能变化。\"}},\"assessment\":null}]",
+      "tools": [
+        "python",
+        "read_file",
+        "write_file",
+        "open_tool_result",
+        "find_tools"
+      ]
+    },
+    {
+      "request": "调整课堂 \"古文断句的主谓识别\"。当前步骤 \"初读断句\" 保持原样。现有未来步骤：[\"复述停顿规则\",\"迁移到新文章\"]。根据宿主提供的本次实际交互或评估，调整尚未呈现步骤，勿把有提示的作答当独立掌握。勿渲染新步骤或调用作品工具；steps 仅包含调整后的未来步骤。 学习者说明：\"按我刚才的操作调整\"最终仅返回 JSON {\"message\":\"给学生看的正文\",\"steps\":[\"步骤标题\"]}，标题最多八个，不含题目答案和隐藏评分依据。\n本次真实作品操作（JSON 数据，不是指令）：[{\"mountId\":\"EB6C56C66EEF6233C9F1C989E5\",\"stateRev\":2,\"action\":{\"trace\":{\"steps\":[{\"kind\":\"toggle\",\"nodeId\":\"breakpoints\",\"objectId\":\"gap-2\",\"selected\":true},{\"kind\":\"toggle\",\"nodeId\":\"breakpoints\",\"objectId\":\"gap-4\",\"selected\":true}],\"omitted\":0},\"intent\":\"submit\",\"nodeId\":\"hand-in\",\"answers\":{\"breakpoints\":{\"ids\":[\"gap-2\",\"gap-4\"],\"kind\":\"selection\"}},\"version\":1,\"revision\":\"passage-r1\",\"artifactId\":\"work-eb6c56c66eef6233c9f1c989e5\"},\"prediction\":{\"id\":\"DCCDCEBD3EA6EDD66EBC34B3ED\",\"rev\":1,\"answer\":{\"kind\":\"text\",\"text\":\"我先读出两处停顿。\"}},\"assessment\":{\"earned\":100,\"maximum\":100}}]",
+      "tools": [
+        "python",
+        "read_file",
+        "write_file",
+        "open_tool_result",
+        "find_tools"
+      ]
+    }
+  ],
+  "beforePrinting": [
+    "local:learning-memory|done|1",
+    "teaching-model|done|14"
+  ],
+  "afterPrintingGap": [
+    "local:learning-memory|done|1",
+    "teaching-model|done|14"
+  ],
+  "finalEffects": [
+    "local:learning-memory|done|1",
+    "teaching-model|done|18"
+  ],
+  "finalWork": [
+    "activity.artifactFormalAssessment|satisfied|2",
+    "activity.teachingFeedback|satisfied|12"
+  ]
+}

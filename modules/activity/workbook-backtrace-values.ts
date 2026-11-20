@@ -31,8 +31,13 @@ export function isFrozenWorkbookFollowup(input: FollowupInput, release: ReturnTy
       o.exposure.kind === 'independent' && o.result === 'correct'));
 }
 
-type Ref = {id: string; rev: number};
+export type WorkbookTraceQuestionRef = {id: string; rev: number};
 type Reader = Pick<ReadContext,'fact'>;
+export function workbookTraceOtherQuestion(from: WorkbookTraceQuestionRef, to: WorkbookTraceQuestionRef, question: WorkbookTraceQuestionRef) {
+  const same = (ref: WorkbookTraceQuestionRef) => ref.id===question.id && ref.rev===question.rev;
+  const other = same(from) ? to : same(to) ? from : undefined;
+  return other?.id===question.id ? undefined : other;
+}
 export class WorkbookTraceReadError extends Error {}
 
 export function workbookWitnessReader(read: Reader, tx: ActivityEvidenceReadScope, basis: readonly BusWitness[] = []) {
@@ -127,8 +132,8 @@ export async function workbookTraceConceptProofs(tx: ActivityEvidenceReadScope, 
   return proofs;
 }
 
-type TraceRoot = { target: {paper: Ref}; paper: WorkbookPaper };
-export async function workbookTraceCutoff(tx: ActivityEvidenceReadScope, root: TraceRoot, ref: Ref | undefined, read: Reader) {
+type TraceRoot = { target: {paper: WorkbookTraceQuestionRef}; paper: WorkbookPaper };
+export async function workbookTraceCutoff(tx: ActivityEvidenceReadScope, root: TraceRoot, ref: WorkbookTraceQuestionRef | undefined, read: Reader) {
   if (!ref) {
     const { rows: [row] } = await tx.query<{ tick: Tick }>(
       `SELECT born.tick::text FROM fact_revs born JOIN fact_revs frozen
@@ -148,7 +153,7 @@ export async function workbookTraceCutoff(tx: ActivityEvidenceReadScope, root: T
 }
 
 
-export async function earlierWorkbookTraceAttempts(tx: ActivityEvidenceReadScope, oldQuestion: Ref, through: Tick) {
+export async function earlierWorkbookTraceAttempts(tx: ActivityEvidenceReadScope, oldQuestion: WorkbookTraceQuestionRef, through: Tick) {
   const { rows } = await tx.query<{ paper: string; item: string; attempts: string[] }>(
     `SELECT i.data#>>'{paper,id}' AS paper,i.data->>'itemId' AS item,
         (array_agg(r.fact_id ORDER BY r.tick DESC,r.fact_id))[1:2] AS attempts

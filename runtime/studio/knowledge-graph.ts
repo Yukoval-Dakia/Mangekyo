@@ -1,8 +1,9 @@
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, snapshotFactReaders, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
+import { memoWorkbookRead } from '../../modules/activity/workbook-context-read.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
   KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeUseKey,
@@ -27,13 +28,27 @@ function versionKey(id: string, rev: number): string {
   return `${id}:${rev}`;
 }
 
-export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeEdge, access: SourceAccess) {
-  const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
+function graphReads(tx: ReadTransaction, access: SourceAccess, scoped?: ReturnType<typeof snapshotFactReaders>) {
+  const purpose = sourcePurpose(access), recipient = (fact: FactSnapshot) => sourceMaySend(access,fact);
+  const reader = scoped ? scoped(purpose,recipient) : createAuthorizedFactReader(tx,purpose,recipient);
+  const source = async (ref: SourceRefV1) => {
+    const opened: Parameters<SourceTrack>[] = [];
+    return {source:await resolveSource(tx,ref,{...access,track:(...witness)=>opened.push(witness)},'pinned',reader),opened};
+  };
+  return {reader,source:scoped ? memoWorkbookRead(source) : source};
+}
+
+export function scopedKnowledgeEdges(tx: ReadTransaction, access: SourceAccess, facts: ReturnType<typeof snapshotFactReaders>) {
+  const reads = graphReads(tx,access,facts);
+  return memoWorkbookRead((id: string)=>openKnowledgeEdge(tx,id,access,reads));
+}
+
+export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeEdge, access: SourceAccess, reads = graphReads(tx,access)) {
   const sources = new Map<string, WorkspaceSource>();
   const opened: Parameters<SourceTrack>[] = [];
   const external: SourceRefV1[] = [];
   for (const use of edge.sourceUses) {
-    const snapshot = await reader.reopen({ ...use, mode: 'pinned' });
+    const snapshot = await reads.reader.reopen({ ...use, mode: 'pinned' });
     if (access.readNotionWitness && snapshot.type === captureSourceType && sourceEnvelope(snapshot.value).kind === 'notion') {
       const authorized = await access.readNotionWitness(snapshot);
       if (authorized.ref.id !== use.id || authorized.ref.rev !== use.rev || authorized.accessEpoch !== use.accessEpoch)
@@ -42,9 +57,9 @@ export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeE
       external.push(sourceReference(authorized,whole));
       continue;
     }
-    const source = await resolveSource(tx, sourceReference(snapshot, whole), {
-      ...access, track: (...witness) => opened.push(witness),
-    });
+    const resolved = await reads.source(sourceReference(snapshot,whole));
+    opened.push(...resolved.opened);
+    const {source} = resolved;
     if (!source) throw new KnowledgeEdgeBasisError('来源或其依据当前不可用。');
     sources.set(knowledgeUseKey(use), source);
   }
@@ -82,9 +97,9 @@ export async function openKnowledgeEdgeEvidence(tx: ReadTransaction, input: stri
   }
 }
 
-export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {
+export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess, reads = graphReads(tx,access)) {
   if (typeof input !== 'string' && (input.fact.type !== knowledgeEdgeType || input.anchor.kind !== 'whole' || input.textFact)) return;
-  const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
+  const {reader} = reads;
   const id = factId(typeof input === 'string' ? input : input.fact.id);
   try {
     const fact = await reader.fact(id, typeof input === 'string'
@@ -94,7 +109,7 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
     try { edge = parseKnowledgeEdge(fact.value); }
     catch { return; }
 
-    const {from,to,sources,opened} = await readKnowledgeSources(tx,edge,access);
+    const {from,to,sources,opened} = await readKnowledgeSources(tx,edge,access,reads);
 
     let verification;
     if (edge.verification) {

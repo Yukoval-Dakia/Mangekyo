@@ -221,13 +221,17 @@ export type FactAccessRef = {
 );
 
 /** The host binds the learner transaction, purpose and recipient before accepting a reference. */
-export async function guardAccess(tx: ReadTransaction, ref: FactAccessRef, actor: FactAccessActor) {
+export function guardAccess(tx: ReadTransaction, ref: FactAccessRef, actor: FactAccessActor) {
+  return guardFactAccess(tx,ref,actor,readFact);
+}
+
+async function guardFactAccess(tx: ReadTransaction, ref: FactAccessRef, actor: FactAccessActor, load: typeof readFact) {
   if (!ref || typeof ref !== 'object') throw new InvalidReadRequestError('Expected a fact reference');
   if (ref.learner !== undefined && ref.learner !== tx.learner) {
     throw new FactReadDeniedError('recipient', 'Fact is unavailable to the recipient');
   }
   const options = ref.mode === 'pinned' ? {mode: ref.mode, rev: ref.rev as Revision} : {mode: ref.mode};
-  const snapshot = await readFact(tx, requirePurpose(actor.purpose), ref.id, options);
+  const snapshot = await load(tx, requirePurpose(actor.purpose), ref.id, options);
   if (actor.maySend(snapshot) !== true) {
     throw new FactReadDeniedError('recipient', 'Fact is unavailable to the recipient');
   }
@@ -239,20 +243,34 @@ export async function guardAccess(tx: ReadTransaction, ref: FactAccessRef, actor
   return snapshot;
 }
 
-/** Execution-layer reader for a single snapshot or locked transaction. */
-export function createAuthorizedFactReader(
-  tx: ReadTransaction,
-  purpose: string,
-  maySend: (fact: FactSnapshot) => boolean,
-) {
+function authorizedFactReader(tx: ReadTransaction, purpose: string, maySend: (fact: FactSnapshot) => boolean, load: typeof readFact) {
   const actor = {purpose: requirePurpose(purpose), maySend};
   return {
-    fact: (id: FactId, options: FactReadOptions) => guardAccess(tx, {...options, id}, actor),
+    fact: (id: FactId, options: FactReadOptions) => guardFactAccess(tx,{...options,id},actor,load),
     async reopen(witness: FactWitness) {
       if (witness.rev === undefined || witness.accessEpoch === undefined) {
         throw new InvalidReadRequestError('Reopening a witness requires revision and access epoch');
       }
-      return guardAccess(tx, witness, actor);
+      return guardFactAccess(tx,witness,actor,load);
     },
   };
+}
+
+/** Execution-layer reader for a single snapshot or locked transaction. */
+export function createAuthorizedFactReader(tx: ReadTransaction, purpose: string, maySend: (fact: FactSnapshot) => boolean) {
+  return authorizedFactReader(tx,purpose,maySend,readFact);
+}
+
+/** Use only during one read-only snapshot or the read portion of a locked transaction. */
+export function snapshotFactReaders(tx: ReadTransaction) {
+  const reads = new Map<string,Promise<FactSnapshot>>();
+  const load: typeof readFact = (_tx,purpose,id,options) => {
+    const key = JSON.stringify([purpose,id,options.mode,options.mode==='pinned' ? options.rev : null]);
+    const existing = reads.get(key);
+    if (existing) return existing;
+    const result = readFact(tx,purpose,id,options);
+    reads.set(key,result);
+    return result;
+  };
+  return (purpose: string, maySend: (fact: FactSnapshot) => boolean) => authorizedFactReader(tx,purpose,maySend,load);
 }

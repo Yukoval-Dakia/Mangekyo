@@ -1,0 +1,74 @@
+{
+  "chrome": "Chrome/157.0.8103.52",
+  "pages": [
+    {
+      "path": "/classroom/5B5628CBBAE01781D8B31543A1/print",
+      "authorizedRead": 200,
+      "page": {
+        "url": "http://127.0.0.1:52768/classroom/5B5628CBBAE01781D8B31543A1/print",
+        "main": "",
+        "body": "跳到正文\nMangekyō\n交入材料\n今天\n材料\n同伴\n我\n学习设置",
+        "documentStatus": 200,
+        "ready": "complete"
+      },
+      "requests": [
+        {
+          "url": "http://127.0.0.1:52768/api/workspace",
+          "status": 200,
+          "networkId": "50163.68"
+        },
+        {
+          "url": "http://127.0.0.1:52768/api/lifecycle",
+          "status": 200,
+          "networkId": "50163.77"
+        },
+        {
+          "url": "http://127.0.0.1:52768/api/conversations",
+          "status": 200,
+          "networkId": "50163.74"
+        },
+        {
+          "url": "http://127.0.0.1:52768/api/settings",
+          "status": 200,
+          "networkId": "50163.75"
+        }
+      ],
+      "writeCommands": []
+    },
+    {
+      "path": "/classroom/652322BC39686DED2CDEFE48D5/print",
+      "authorizedRead": 404,
+      "page": {
+        "url": "http://127.0.0.1:52768/classroom/652322BC39686DED2CDEFE48D5/print",
+        "main": "",
+        "body": "跳到正文\nMangekyō\n交入材料\n今天\n材料\n同伴\n我\n学习设置",
+        "documentStatus": 200,
+        "ready": "complete"
+      },
+      "requests": [
+        {
+          "url": "http://127.0.0.1:52768/api/workspace",
+          "status": 200,
+          "networkId": "50163.144"
+        },
+        {
+          "url": "http://127.0.0.1:52768/api/conversations",
+          "status": 200,
+          "networkId": "50163.145"
+        },
+        {
+          "url": "http://127.0.0.1:52768/api/settings",
+          "status": 200,
+          "networkId": "50163.146"
+        },
+        {
+          "url": "http://127.0.0.1:52768/api/lifecycle",
+          "status": 200,
+          "networkId": "50163.147"
+        }
+      ],
+      "writeCommands": []
+    }
+  ],
+  "errors": []
+}

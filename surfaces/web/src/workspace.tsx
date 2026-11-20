@@ -167,7 +167,7 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
   return (
     <>
       <PageTitle title="材料"><a className="tonal-button" href="/intake"><Icon name="plus" /> 导入文件</a></PageTitle>
-      <div className="study-actions library-actions"><a href="/textbooks">个人教材</a><a href="/materials?view=iqdb">智能题库（IQDB）</a><a href="/papers">我的试卷</a><a href="/notes">学习笔记</a><a href="/materials/workspace">同伴工作区</a><button className="text-button" onClick={capture}>交入文字</button></div>
+      <div className="study-actions library-actions"><a href="/classroom">学习课堂</a><a href="/textbooks">个人教材</a><a href="/materials?view=iqdb">智能题库（IQDB）</a><a href="/papers">我的试卷</a><a href="/notes">学习笔记</a><a href="/materials/workspace">同伴工作区</a><button className="text-button" onClick={capture}>交入文字</button></div>
       {pendingErasures().map(id => <a key={id} href={materialPath(id)}>查看待核对的原件删除请求 · {id.slice(-6)}</a>)}
       <div className="library-controls">
         <label className="search-box">
@@ -256,7 +256,7 @@ export function Me({
   const [notionOpen, setNotionOpen] = useState(false);
   return (
     <>
-      <PageTitle title="我" />
+      <PageTitle title="我"><a href="/classroom">查看本机课堂</a></PageTitle>
       <ReadState resource={library} />
       {library.data && (
         <section className="goal-panel">
