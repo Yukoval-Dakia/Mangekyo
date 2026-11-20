@@ -90,6 +90,22 @@ export function claimValue(input: unknown) {
     supersedes: legacyRef(value.supersedes)};
 }
 
+export function editableTurnClaim(input: unknown) {
+  const claim = claimValue(input);
+  if (claim.version === 0 || claim.sticky)
+    throw new ClaimInputError('这条记忆由学习者保留，请在「我 → 记忆」更正或忘掉。');
+  return claim;
+}
+
+export function requirePreservedObjectScope(previous: ClaimScope, next: ClaimScope) {
+  if (previous.kind !== 'object') return;
+  if (next.kind !== 'object' || next.object !== previous.object || next.basis.length !== previous.basis.length ||
+      previous.basis.some(({id, rev, accessEpoch}, index) => {
+        const ref = next.basis[index];
+        return ref?.id !== id || ref.rev !== rev || ref.accessEpoch !== accessEpoch;
+      })) throw new ClaimInputError('对象记忆须保留原学习对象范围和版本依据。');
+}
+
 export function claimInput(input: unknown) {
   const {entries} = claimRecord(input);
   if (!Array.isArray(entries) || !entries.length || entries.length > 12) throw new ClaimInputError('每轮可保存 1–12 项记忆。');

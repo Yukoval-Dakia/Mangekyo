@@ -5,11 +5,14 @@ import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
-import { applyClaimCommand, claimExpiry, claimId, claimType, ClaimInputError, claimText, structuredClaim } from '../../modules/companion/claim.ts';
+import {
+  applyClaimCommand, claimExpiry, claimId, claimType, ClaimInputError, claimText, editableTurnClaim,
+  requirePreservedObjectScope, structuredClaim,
+} from '../../modules/companion/claim.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
-import { areMemoryClaimsCurrent, openClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
+import { areMemoryClaimsCurrent, openClaimEvidence, openClaimFact } from './memory-claims.ts';
 import { readMemoryGateway } from './memory-gateway.ts';
 
 type Packet = NonNullable<Awaited<ReturnType<typeof readMemoryGateway>>>;
@@ -59,24 +62,29 @@ export function openTurnMemory(options: {
         throw new ClaimInputError('使用本轮检索到且尚未变更的记忆。');
       if (args.scope !== undefined && !['general', 'current_object', 'unknown'].some(scope => scope === args.scope))
         throw new ClaimInputError('范围可为明确通用、当前对象或未知。');
+      if (args.scope === 'current_object' && !currentObject)
+        throw new ClaimInputError('本轮未绑定学习对象，不能使用当前对象范围。');
       const previous = target ? await db.snapshot({learner: studioLearner}, async tx => {
         await options.authorize(tx);
         const fact = await openClaimFact(tx, claimId(target.id));
-        const value = fact && readClaimValue(fact.value);
-        return value?.version === 1 ? value : undefined;
+        if (!fact) throw new ClaimInputError('目标记忆已变化。');
+        return editableTurnClaim(fact.value);
       }) : undefined;
-      const scope = args.scope === 'general' || args.scope === 'unknown' ? {kind: args.scope}
-        : args.scope === undefined && previous ? previous.scope
+      const usePrevious = previous && (args.scope === undefined ||
+        (args.scope === 'current_object' && previous.scope.kind === 'object' && previous.scope.object === currentObject?.root.id));
+      const scopeInput = usePrevious ? previous.scope
+        : args.scope === 'general' || args.scope === 'unknown' ? {kind: args.scope}
         : currentObject ? {kind: 'object', object: currentObject.root.id,
           basis: currentObject.basis.map(({id, rev, epoch}) => ({id, rev, accessEpoch: epoch}))} : {kind: 'unknown'};
       const valid_until = action === 'forget' ? null : expiry === undefined && previous ? previous.valid_until : claimExpiry(expiry);
       if (valid_until && valid_until <= new Date().toISOString()) throw new ClaimInputError('有效期须晚于当前时刻。');
       const entry = {id: factId(stableId('turn-memory-entry', turn, String(step))), data: structuredClaim({
         action: action === 'update' ? 'correct' : action, category: category ?? previous?.category ?? 'preference',
-        origin: 'turn', text, scope, valid_until,
+        origin: 'turn', text, scope: scopeInput, valid_until,
         evidence_refs: [{id: turn, ...source, excerpt, start}],
         supersedes: target ? {id: target.id, rev: target.rev, accessEpoch: target.epoch} : null,
       })};
+      if (previous) requirePreservedObjectScope(previous.scope, entry.data.scope);
       pending.push(entry);
       if (target) targets.add(target.id);
       return JSON.stringify({ok: true, status: 'pending', action,

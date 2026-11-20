@@ -1,5 +1,8 @@
 import { defineCommand, type FactSnapshot, type FactWrite } from '@mangekyo/kernel';
-import { applyClaimCommand, claimInput, claimType, ClaimInputError, matchesClaimEvidence, readClaimPredecessor } from '../claim.ts';
+import {
+  applyClaimCommand, claimInput, claimType, ClaimInputError, editableTurnClaim, matchesClaimEvidence,
+  readClaimPredecessor, requirePreservedObjectScope,
+} from '../claim.ts';
 
 function allowsTeaching(fact: FactSnapshot) {
   return fact.purpose.includes('teaching') || fact.purpose.includes('all');
@@ -16,8 +19,11 @@ export default defineCommand({
       const source = await ctx.read.fact(evidence.id, {mode: 'following'});
       if (!allowsTeaching(source) || !matchesClaimEvidence(source, evidence, evidence.excerpt, evidence.start))
         throw new ClaimInputError('本轮教学用途或原话已变化。');
-      if (data.supersedes && !allowsTeaching(await readClaimPredecessor(ctx, data.supersedes)))
-        throw new ClaimInputError('目标记忆不允许教学用途。');
+      if (data.supersedes) {
+        const target = await readClaimPredecessor(ctx, data.supersedes);
+        if (!allowsTeaching(target)) throw new ClaimInputError('目标记忆不允许教学用途。');
+        requirePreservedObjectScope(editableTurnClaim(target.value).scope, data.scope);
+      }
       if (data.scope.kind === 'object') for (const ref of data.scope.basis) {
         const object = await ctx.read.fact(ref.id, {mode: 'following'});
         if (!allowsTeaching(object) || object.ref.rev !== ref.rev || object.accessEpoch !== ref.accessEpoch)
