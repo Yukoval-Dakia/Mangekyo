@@ -1,3 +1,4 @@
+import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { averageSpeed, ridingLesson } from '../../../modules/activity/starter.ts';
 import type { PracticeAnswers, PracticeView } from '../../../modules/activity/practice-values.ts';
@@ -134,6 +135,7 @@ function newDraft(version: string): PracticeDraft {
 }
 
 export function StarterPractice() {
+  const watermark = useDraftWatermark();
   const [view, setView] = useState<PracticeView | null>(null);
   const [draft, setDraft] = useState(restoreDraft);
   const [selected, setSelected] = useState<string | null>();
@@ -254,6 +256,7 @@ export function StarterPractice() {
 
       <div className="starter-practice-grid">
         <div className="starter-paper">
+          {watermark.notice}
           {loading && <p role="status" className="starter-status">正在打开小卷…</p>}
           {problem && <div role="alert" className="starter-status">
             <p>{problem.message}</p>
@@ -272,7 +275,7 @@ export function StarterPractice() {
           {view && paper && !loading && (submission ? <>
             <div className="starter-review-header">
               <h2 ref={reviewHeading} tabIndex={-1} className="starter-review-title">已交卷</h2>
-              <button type="button" className="text-button" onClick={openDraft}>{draft ? '继续本轮' : '再做一轮'}</button>
+              <button type="button" className="text-button" disabled={!draft && !watermark.ready} onClick={openDraft}>{draft ? '继续本轮' : '再做一轮'}</button>
             </div>
             <ol className="starter-exercises">
               {paper.questions.map((question, index) => {
@@ -292,7 +295,7 @@ export function StarterPractice() {
             {versionChanged && <div className="starter-status">
               <p>草稿对应旧版小卷。</p>
               {!draft?.pending && <button type="button" className="text-button"
-                onClick={() => saveDraft(newDraft(view.paper.version))}>清除旧草稿并打开新版</button>}
+                disabled={!watermark.ready} onClick={() => saveDraft(newDraft(view.paper.version))}>清除旧草稿并打开新版</button>}
             </div>}
             {!versionChanged && <ol className="starter-exercises">
               {view.paper.questions.map(({ id, prompt, unit }) => (
@@ -300,7 +303,7 @@ export function StarterPractice() {
                   <label className="starter-prompt" htmlFor={`riding-${id}`}>{prompt}</label>
                   <div className="starter-answer">
                     <input id={`riding-${id}`} name={id} type="number" min="0" step="any"
-                      aria-describedby={`riding-${id}-unit`} autoComplete="off" disabled={saving}
+                      aria-describedby={`riding-${id}-unit`} autoComplete="off" disabled={saving || (!draft && !watermark.ready)}
                       value={draft?.answers[id] ?? ''} onChange={(event) => {
                         const current = draft ?? newDraft(view.paper.version);
                         saveDraft({ ...current, answers: { ...current.answers, [id]: event.currentTarget.value } });
