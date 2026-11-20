@@ -31,6 +31,9 @@ import { openWorkspaceAccess } from './workspace-access.ts';
 import { openRelationReview } from './workspace-relation.ts';
 import { openResearch } from './research.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
+import { openIqdb } from './iqdb.ts';
+import { executeQuestionVerification, type QuestionEffectHost } from './iqdb-verification.ts';
+import { questionVerificationType } from '../../modules/content/question-verification.ts';
 import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
@@ -77,6 +80,12 @@ const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 const pythonHost = createPythonDeriverHost();
 const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
 const retentionComparison = openRetentionComparison(db, pythonHost);
+const iqdbModule = process.env.MANGEKYO_IQDB_EFFECT_MODULE;
+const iqdbHost: QuestionEffectHost | undefined = iqdbModule && mode !== 'web'
+  ? (await import(pathToFileURL(iqdbModule).href)).questionEffectHost
+  : undefined;
+if (iqdbModule && mode !== 'web' && (typeof iqdbHost?.invoke !== 'function' || typeof iqdbHost.mayReceive !== 'function'))
+  throw new Error('题库核验宿主模块须导出 questionEffectHost');
 const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
 const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
   ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
@@ -93,11 +102,12 @@ async function openWeb() {
     assessment: workbookAssessment,
     onResearchFactsChanged: research.workbookChanged,
   });
+  const iqdb = openIqdb(db, Boolean(iqdbModule));
   const student = { textbook, relationReview:openRelationReview(db,content),
     workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
-    research, recall, retention, retentionComparison };
+    research, recall, retention, retentionComparison, iqdb };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -128,6 +138,7 @@ async function runWorker(storeId: string) {
     if (!work) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
+    else if (work.slotType === questionVerificationType) await executeQuestionVerification(db, ref, iqdbHost, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
     else if (work.slotType === retentionComparisonWork) await retentionComparison.execute(ref, work.slotKey, terminal);
     else if (isRetentionSlot(work.slotType)) await retention.execute(ref, terminal);
