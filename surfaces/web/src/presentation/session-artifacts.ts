@@ -157,12 +157,26 @@ function accept(mounts: ArtifactSnapshotV1[], withdrawn: ReadonlySet<string>, sn
   return mounts.map(m => m === old ? snapshot : m);
 }
 
+// A progress header and its authorized snapshots come from one host read.
+export function authorizeMounts(session: MountedSession, turnId: string, ids: ReadonlyMap<string, number>) {
+  const withdrawn = new Set(session.withdrawn);
+  const history = session.mounts.filter(m => m.turnId !== turnId);
+  const current = session.mounts.filter(m => {
+    if (m.turnId !== turnId) return false;
+    if (ids.has(m.mountId)) return true;
+    withdrawn.add(m.mountId);
+    return false;
+  });
+  current.sort((a, b) => ids.get(a.mountId)! - ids.get(b.mountId)!);
+  return { ...session, mounts: [...history, ...current], withdrawn };
+}
+
 // Only a session read (or its session header on the stream) grants a turn.
 // A snapshot cannot use its own turnId to authorize itself.
-export function streamSnapshot(previous: MountedSession | undefined, input: unknown) {
+export function streamSnapshot(previous: MountedSession | undefined, input: unknown, order?: ReadonlyMap<string, number>) {
   if (!previous || previous.status !== 'pending' || !previous.currentTurnId) return previous;
   const next = decode(input, previous.id, previous.currentTurnId);
-  if (!next) return previous;
+  if (!next || (order && !order.has(next.mountId))) return previous;
   const mounts = accept(previous.mounts, previous.withdrawn, next);
   return mounts === previous.mounts ? previous : { ...previous, mounts };
 }
@@ -182,8 +196,7 @@ export function readSession(
     const incoming: ArtifactSnapshotV1[] = [];
     for (const input of list) {
       const snapshot = decode(input, current.id, turnId);
-      if (!snapshot) return;
-      incoming.push(snapshot);
+      if (snapshot) incoming.push(snapshot);
     }
     // An explicit list is the authorization set. A delayed read cannot
     // withdraw a mount first delivered or advanced after that read started.
@@ -198,12 +211,40 @@ export function readSession(
       return false;
     });
     for (const snapshot of incoming) mounts = accept(mounts, withdrawn, snapshot, true);
+    // A terminal read can be the first delivery of an earlier mounted stroke.
+    const order = new Map(incoming.map((s, i) => [s.mountId, i]));
+    const turnMounts = mounts.filter(m => m.turnId === turnId);
+    turnMounts.sort((a, b) => (order.get(a.mountId) ?? Infinity) - (order.get(b.mountId) ?? Infinity));
+    mounts = [...mounts.filter(m => m.turnId !== turnId), ...turnMounts];
   }
   for (const turn of current.turns) {
     if (turn.turnId) read(turn.turnId, turn.artifacts);
   }
   if (current.status === 'pending' && current.currentTurnId) read(current.currentTurnId, current.artifacts);
   return { ...current, mounts, withdrawn };
+}
+
+// A reconnect read may race with a turn change, a receipt or a withdrawal.
+// Refresh only the draft bases that are still current when this read returns.
+export function refreshDraftBases(latest: MountedSession, bases: ArtifactSnapshotV1[], read: MountedSession) {
+  let mounts = latest.mounts;
+  const withdrawn = new Set(latest.withdrawn);
+  for (const base of bases) {
+    if (base.sessionId !== read.id || !mounts.includes(base)) continue;
+    const current = read.mounts.find(m => m.turnId === base.turnId && m.mountId === base.mountId);
+    if (!current) {
+      withdrawn.add(base.mountId);
+      mounts = mounts.filter(m => m !== base);
+      continue;
+    }
+    if (current.stateRev < base.stateRev || current.viewSeq < base.viewSeq)
+      throw new Error('Stale artifact checkpoint');
+    if (current.stateRev !== base.stateRev || current.viewSeq !== base.viewSeq ||
+        current.view.id !== base.view.id || current.view.revision !== base.view.revision ||
+        current.predicting !== base.predicting || current.submitted !== base.submitted)
+      mounts = mounts.map(m => m === base ? current : m);
+  }
+  return { ...latest, mounts, withdrawn };
 }
 
 export async function sendIntent(snapshot: ArtifactSnapshotV1, intent: ArtifactIntentV1) {
