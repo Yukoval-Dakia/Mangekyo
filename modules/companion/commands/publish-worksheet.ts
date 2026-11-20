@@ -1,6 +1,6 @@
 import { defineCommand, factId, type FactWrite } from '@mangekyo/kernel';
 import { publishWorksheet, readResearchBasis, researchOrder, researchPurpose,
-  researchWorksheetType, worksheetDraft } from '../research.ts';
+  researchWorksheetType, retentionReviewPermission, retentionReviewPermissionType, ResearchBasisChanged, worksheetDraft } from '../research.ts';
 
 export default defineCommand({
   type: publishWorksheet,
@@ -16,9 +16,12 @@ export default defineCommand({
       basis: researchOrder(input.basis), draft: worksheetDraft(input.draft), method, questionNumber };
   } },
   async write(ctx, { id, basis, questionNumber, ...result }): Promise<readonly FactWrite[]> {
-    await readResearchBasis(ctx.read, basis);
+    const source = await readResearchBasis(ctx.read, basis);
+    const retention = source.type === retentionReviewPermissionType;
+    if (retention && !retentionReviewPermission(source.value).allowed)
+      throw new ResearchBasisChanged('后测教研授权已撤回。');
     return [{ kind: 'create', id, factType: researchWorksheetType, purpose: [researchPurpose],
       data: { ...result, source: basis.source, deliveredAt: new Date().toISOString(),
-        digest: `已为这次作答备好第 ${questionNumber} 题的复习单。` } }];
+        digest: retention ? '已根据一次独立后测的预测偏差备好复习单。' : `已为这次作答备好第 ${questionNumber} 题的复习单。` } }];
   },
 });

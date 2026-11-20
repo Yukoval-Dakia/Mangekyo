@@ -119,4 +119,24 @@ assert.equal(posttest.forecast.value.estimate.expected, 'correct');
 assert.equal(posttest.result.value.observation.result, 'incorrect');
 await api('workspace/access/records/' + posttest.attemptId, undefined, 'GET', 404);
 const overlap = await controlled([], '21', 'awaiting-independent', () => controlled([], '20', 'observed'));
-console.log(JSON.stringify({ frozen, reconciled, revoked: 'forecast and reconciliation stale', pretest, posttest, overlap }, null, 2));
+const settings = await api('research/settings');
+if (!settings.enabled) await api('research/settings', {
+  requestId: randomUUID(), revision: settings.revision, enabled: true,
+}, 'PUT');
+const reviewPath = 'retention/' + posttest.result.key + '/research';
+assert.deepEqual(await api(reviewPath), { enabled: true, revision: 0, allowed: false, worksheet: null });
+const permission = { requestId: randomUUID(), revision: 0, allowed: true };
+await api('retention/' + overlap.result.key + '/research', permission, 'PUT', 409);
+assert.equal((await api(reviewPath, permission, 'PUT')).allowed, true);
+let worksheet;
+for (let i = 0; i < 80 && !worksheet; i++) {
+  ({ worksheet } = await api(reviewPath));
+  if (!worksheet) await delay(250);
+}
+assert.equal(worksheet?.cost, 0);
+assert.equal(worksheet.source.href, '/api/retention/' + posttest.result.key);
+assert.deepEqual((await api(reviewPath, permission, 'PUT')).worksheet, worksheet);
+assert.deepEqual(await api(reviewPath, { requestId: randomUUID(), revision: 1, allowed: false }, 'PUT'),
+  { enabled: true, revision: 2, allowed: false, worksheet: null });
+assert.deepEqual(await api('retention/' + posttest.result.key), posttest.result);
+console.log(JSON.stringify({ frozen, reconciled, revoked: 'forecast and reconciliation stale', pretest, posttest, overlap, worksheet }, null, 2));

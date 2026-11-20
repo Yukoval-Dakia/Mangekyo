@@ -1,14 +1,16 @@
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import {
   readResearchSource, ResearchBasisChanged, researchOrder, researchOrderType, researchPurpose, researchWorksheet,
-  researchWorksheetType,
+  researchWorksheetType, retentionReviewPermission, retentionReviewPermissionType,
   type ResearchOrder,
 } from '../../modules/companion/research.ts';
 import { stableId } from './identity.ts';
+import { readMissedPosttest } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
 
 export const researchReader = (tx: ReadTransaction) => createCommandReadContext(tx, researchPurpose);
@@ -50,6 +52,20 @@ export function reviewEvidence(data: unknown, questionId: string) {
 }
 export type ReviewEvidence = ReturnType<typeof reviewEvidence>;
 
+export const retentionReviewAnchor = 'retention-posttest';
+
+export function retentionReviewPermissionId(key: string) {
+  return factId(stableId('retention-review-permission', key));
+}
+
+export async function activeRetentionReview(tx: ReadTransaction, fact: FactSnapshot) {
+  if (fact.type !== retentionReviewPermissionType || !fact.purpose.includes(researchPurpose)) return null;
+  const permission = retentionReviewPermission(fact.value);
+  if (!permission.allowed || fact.ref.id !== retentionReviewPermissionId(permission.key) ||
+      !await readMissedPosttest(tx, permission.key, permission.resultId)) return null;
+  return permission;
+}
+
 export async function readWorksheetById(tx: ReadTransaction, id: FactId) {
   const read = researchReader(tx);
   return whenAvailable(async () => {
@@ -60,11 +76,14 @@ export async function readWorksheetById(tx: ReadTransaction, id: FactId) {
     if (order && (order.type !== researchOrderType || !order.purpose.includes(researchPurpose))) return null;
     const ref = 'todoId' in result ? result.source : researchOrder(order?.value).source;
     const source = await readResearchSource(read, ref);
-    if (source.type !== workbookAttemptType || id !== worksheetId(ref.attemptId, ref.revision, ref.accessEpoch))
-      return null;
-    await createCommandReadContext(tx, storagePurpose).fact(ref.attemptId, { mode: 'following' });
-    const evidence = reviewEvidence(source.value, ref.questionId);
-    const href = `/api/papers/${evidence.paperId}/attempts/${ref.attemptId}/research/${id}/source`;
+    if (id !== worksheetId(ref.attemptId, ref.revision, ref.accessEpoch)) return null;
+    const retention = source.type === retentionReviewPermissionType && ref.questionId === retentionReviewAnchor
+      ? await activeRetentionReview(tx, source) : null;
+    if (source.type !== workbookAttemptType && !retention) return null;
+    const evidence = retention ? null : reviewEvidence(source.value, ref.questionId);
+    if (evidence) await createCommandReadContext(tx, storagePurpose).fact(ref.attemptId, { mode: 'following' });
+    const href = retention ? `/api/retention/${retention.key}`
+      : `/api/papers/${evidence!.paperId}/attempts/${ref.attemptId}/research/${id}/source`;
     return {
       fact,
       worksheet: {
@@ -72,7 +91,7 @@ export async function readWorksheetById(tx: ReadTransaction, id: FactId) {
         ...('todoId' in result ? { todoId: result.todoId, digest: result.digest } : { orderId: result.orderId }),
         source: { ...ref, href },
       },
-      source: { ...ref, ...evidence },
+      source: evidence && { ...ref, ...evidence },
     };
   });
 }
