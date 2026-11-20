@@ -10,7 +10,7 @@ import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  historicalWorkbookMount as readHistory, workbookCapsuleLinkCandidates, verifyWorkbookQuestionPermit, type BoundWorkbookMount as BoundMount,
+  historicalWorkbookMount as readHistory, memoWorkbookFacts, workbookCapsuleLinkCandidates, verifyWorkbookQuestionPermit, type BoundWorkbookMount as BoundMount,
 } from '../../modules/activity/workbook-context-read.ts';
 import { helpExposureRequest, helpExposureType, helpRef, type HelpRef, type HelpPresentation } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose as purpose } from '../../modules/activity/library-values.ts';
@@ -54,8 +54,9 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
     if (!item.sourceQuestionRef) return { handles: [] };
     const question = helpRef(item.sourceQuestionRef);
     const use = mount.issuance ? retentionPurpose : purpose;
-    const source = createCommandReadContext(tx,use);
+    const source = memoWorkbookFacts(createCommandReadContext(tx,use).fact);
     const edges = await workbookCapsuleLinkCandidates(tx,question,knowledgeEdgeType,use);
+    // Buffer preflight pages so an unrelated remote category never delays a local opening.
     const pages = new Set<FactSnapshot>();
     const handles: {kind: Kind; ref:string}[] = [];
     for (const kind of check || collectPages ? allKinds : localKinds) {
@@ -67,8 +68,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
           throw error;
         }
       });
-      const read: Reader = { fact: async <Value>(...args: Parameters<Reader['fact']>) =>
-        await selected.fact(...args) as FactSnapshot<Value> };
+      const read = memoWorkbookFacts(selected.fact);
       if (kind === 'backtrace') {
         const trace = await authority.backtrace?.(tx,{paper:mount.paper,itemId:item.id,question,
           ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},read);
@@ -105,6 +105,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       if (pending || !label) continue;
       handles.push({kind,ref:label.ref});
       if (label.ref !== requested) continue;
+      if (collectPages) return {handles};
       const binding = bindings.get(label.ref)!;
       const proof = workbookWitnessReader(read,tx);
       const matched = await openPaperCapsule({...access,read:proof.read},label.ref,binding.trail.map(step=>step.edge.id),question);
