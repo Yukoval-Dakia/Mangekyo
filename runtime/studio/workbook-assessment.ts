@@ -5,21 +5,21 @@ import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, learnerId, type FactId } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot, Json, JsonObject } from '../../kernel/src/declarations/types.ts';
+import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { failWork, readReadyWork, readWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
-import { checkAssessmentPublication, type ReadVerifiedAssessmentPublicationEvidence } from '../../modules/activity/assessment-publication.ts';
+import type { ReadVerifiedAssessmentPublicationEvidence } from '../../modules/activity/assessment-publication.ts';
 import {
-  assessmentResult, readAssessmentScore, type AssessmentRelease,
+  settledAssessmentState, type FormalAssessmentValue, type AssessmentRelease,
   type AssessmentRevisionRef,
 } from '../../modules/activity/assessment-values.ts';
 import { evaluateBankCriterion, frozenWorkbookSubmission, isLocalQuestionCriterion } from '../../modules/activity/question-assessment.ts';
 import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
-import { boundedWorkbookReply, prepareWorkbookRelease as prepareRelease, sameAssessmentRef as sameRef,
+import { boundedWorkbookReply, checkWorkbookPublication, publicBankAssessment, workbookAssessmentValue, prepareWorkbookRelease as prepareRelease, sameAssessmentRef as sameRef,
   AssessmentInputUnavailable, gatherWorkbookAssessment, workbookEvaluation, workbookTextEvaluator,
   type FrozenWorkbookAssessmentInputs, type WorkbookEvaluation } from '../../modules/activity/workbook-assessment-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
@@ -30,7 +30,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import {
   assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment,
-  settledAssessmentState, type AssessmentScope, type FormalAssessmentValue,
+  type AssessmentScope,
 } from './formal-assessment.ts';
 import { RequestError } from './sessions.ts';
 
@@ -43,10 +43,6 @@ const policy: CandidatePolicy = {
 };
 const bankPolicy: CandidatePolicy = { ...policy, deriver: 'activity/workbook-bank-assessment-v1' };
 const assessmentPolicy = (paper: WorkbookPaper) => paper.questions.some(question => question.kind === 'bank') ? bankPolicy : policy;
-const publicBankAssessment = (value: FormalAssessmentValue) => ({ ...value,
-  criteria: value.criteria.map(({ source, ...criterion }) =>
-    ({ ...criterion, source: { kind: source.kind, ref: source.ref } })),
-});
 const propagation = createPropagationHooks([]);
 const maxOutputTokens = 512;
 
@@ -124,12 +120,8 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
     for (const { ref, kind, factType } of changes) {
       if (factType === workbookPaperType && kind === 'create') {
         const paper = workbookPaper((await read.fact(ref.id, { mode: 'following' })).value);
-        const release = paper.assessmentRelease;
-        if (!release) continue;
-        const items = release.items.filter(item => !paper.questions.some(question => question.id === item.itemId && question.kind === 'bank'));
-        if (!items.length) continue;
-        const review = checkAssessmentPublication({ ...release, items }, [workbookTextEvaluator], host.readVerifiedEvidence ?? (() => null));
-        if (review.state === 'needs-review') {
+        const review = checkWorkbookPublication(paper, host.readVerifiedEvidence);
+        if (review?.state === 'needs-review') {
           throw new RequestError(409, '发放需要独立核验。' + review.issues.map(issue => issue.reason).join(' '));
         }
       }
@@ -219,16 +211,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
           evaluated.push(workbookEvaluation(key, criterion, answer.value, routeId, effect));
         }
       }
-      const result = assessmentResult({
-        releaseRef: release.releaseRef, submissionRef: submission.submissionRef, outcomes: evaluated.map(entry => entry.outcome),
-      }, release, submission);
-      const value = {
-        result, score: readAssessmentScore(result, release, submission),
-        criteria: release.items.flatMap(item => item.criteria.map(({ criterionId, evaluator, source, maximum }) =>
-          ({ itemId: item.itemId, criterionId, evaluator, source, maximum }))),
-        receipts: evaluated.flatMap(({ outcome, receipt }) => receipt
-          ? [{ itemId: outcome.itemId, criterionId: outcome.criterionId, ...receipt }] : []),
-      };
+      const value = workbookAssessmentValue(release, submission, evaluated);
       await submitCandidate(assessmentDb, ref, activePolicy, sealed.id, { kind: 'value', value }, propagation);
     } catch (error) {
       if (!readFailure(error)) throw error;

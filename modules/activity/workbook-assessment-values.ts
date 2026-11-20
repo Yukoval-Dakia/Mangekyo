@@ -1,6 +1,6 @@
 import type { FactId, Json, JsonObject, ReadContext, Revision } from '@mangekyo/kernel';
 import {
-  assessmentRelease, type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease,
+  assessmentRelease, assessmentResult, formalAssessmentValue, type FormalAssessmentValue, type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease,
   type AssessmentResult, type AssessmentRevisionRef, type AssessmentSubmission,
 } from './assessment-values.ts';
 import {
@@ -10,14 +10,42 @@ import {
   type WorkbookRubricQuestion, type WorkbookRubricAssessmentView, type WorkbookPaper, type WorkbookSummary, type WorkbookSourceView,
 } from './workbook-values.ts';
 
+import { checkAssessmentPublication, type ReadVerifiedAssessmentPublicationEvidence } from './assessment-publication.ts';
 import { frozenWorkbookSubmission } from './question-assessment.ts';
 
 export const workbookTextEvaluator = { id: 'workbook-text-rubric', version: '1' } as const;
+
+export function checkWorkbookPublication(paper: WorkbookPaper, evidence?: ReadVerifiedAssessmentPublicationEvidence) {
+  const release = paper.assessmentRelease;
+  if (!release) return;
+  // Bank questions already carry their own verified publication at issuance.
+  const items = release.items.filter(item =>
+    !paper.questions.some(question => question.id === item.itemId && question.kind === 'bank'));
+  if (items.length) return checkAssessmentPublication({ ...release, items }, [workbookTextEvaluator], evidence ?? (() => null));
+}
 
 export type WorkbookEvaluation = {
   outcome: AssessmentCriterionOutcome;
   receipt?: { effectId: string; routeId: string; reportedModel?: string; quote?: string };
 };
+
+export const publicBankAssessment = (value: FormalAssessmentValue) => ({ ...value,
+  criteria: value.criteria.map(({ source, ...criterion }) =>
+    ({ ...criterion, source: { kind: source.kind, ref: source.ref } })),
+});
+
+export function workbookAssessmentValue(
+  release: AssessmentRelease, submission: AssessmentSubmission, evaluations: readonly WorkbookEvaluation[],
+) {
+  const result = assessmentResult({
+    releaseRef: release.releaseRef,
+    submissionRef: submission.submissionRef,
+    outcomes: evaluations.map(({ outcome }) => outcome),
+  }, release, submission);
+  const receipts = evaluations.flatMap(({ outcome, receipt }) =>
+    receipt ? [{ itemId: outcome.itemId, criterionId: outcome.criterionId, ...receipt }] : []);
+  return formalAssessmentValue(release, submission, result, receipts);
+}
 
 export function sameAssessmentRef(actual: AssessmentRevisionRef | undefined, expected: AssessmentRevisionRef) {
   return actual?.id === expected.id && actual.rev === expected.rev;
