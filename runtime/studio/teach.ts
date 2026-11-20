@@ -273,7 +273,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       };
       const mcp = step.provider.startsWith('tool:mcp:');
       const needsFreshEvidence = Boolean(notionWitnesses.size || protectWorkspaceDispatch || assessments.size || retention.size || memorySend);
-      const sendsMcpContext = grants.length > 0 && !step.provider.startsWith('tool:');
+      const sendsModel = !step.provider.startsWith('tool:');
       const effect = await runEffect(
         db,
         {
@@ -292,7 +292,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           try {
             // A resumed MCP call may authenticate and negotiate before sending tool arguments.
             const reply = await (mcp ? invoke(requestId, dispatch) :
-              needsFreshEvidence || sendsMcpContext ? dispatch(() => invoke(requestId)) : invoke(requestId));
+              needsFreshEvidence || sendsModel ? dispatch(() => invoke(requestId)) : invoke(requestId));
             return memorySend ? { reply, sent: { ...memorySend, requestId } } : reply;
           } catch (error) {
             console.warn('模型调用未能确认', requestId, error instanceof TeachingError ? error.code : 'transport_error');

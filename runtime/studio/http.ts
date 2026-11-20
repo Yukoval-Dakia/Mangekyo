@@ -34,7 +34,7 @@ import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
 import { serveSessionEvents } from './stream.ts';
-import { saveSettings, publicSettings, loadSettings } from './settings.ts';
+import { saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
 
 import {actOnArtifact} from './presentation-store.ts';
 
@@ -328,7 +328,7 @@ export function serve(
       if (path === '/api/settings' && method === 'PUT') {
         const input = await body(req);
         try {
-          return json(res, 200, await saveSettings(input));
+          return json(res, 200, await saveLearnerSettings(db, input));
         } catch (error) {
           throw new RequestError(400, error instanceof Error ? error.message : '设置无效。');
         }

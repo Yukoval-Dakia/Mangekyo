@@ -1,3 +1,6 @@
+import { lockLearner } from '../../kernel/src/db/learner.ts';
+import type { Db, DbTransaction } from '../../kernel/src/db/types.ts';
+import { studioLearner } from './identity.ts';
 import {readModelRoutes, type ModelRoutes, type ModelTask} from './model-routes.ts';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -15,6 +18,7 @@ export type ProviderProfile = {
   model: string;
   reasoningEffort: string;
   apiKey: string;
+  credentialRevision?: string;
 };
 
 export type McpServer = {
@@ -180,6 +184,7 @@ function readProvider(value: unknown, index: number): ProviderProfile {
         ? (model === teachingProfile.model ? teachingProfile.reasoningEffort : 'default')
         : effortOf(saved.reasoningEffort),
     apiKey: saved.apiKey === undefined ? '' : secret(saved.apiKey, '模型密钥'),
+    ...(saved.credentialRevision === undefined ? {} : {credentialRevision: identifierOf(saved.credentialRevision)}),
   };
 }
 
@@ -320,6 +325,7 @@ function mergeProvider(existing: ProviderProfile | undefined, value: unknown): P
   const model = input.model === undefined ? (existing?.model ?? teachingProfile.model) : modelOf(input.model);
   const defaultEffort = model === teachingProfile.model ? teachingProfile.reasoningEffort : 'default';
   const destinationChanged = existing !== undefined && (existing.baseUrl !== baseUrl || existing.protocol !== protocol);
+  const apiKey = input.apiKey === undefined ? (destinationChanged ? '' : existing?.apiKey ?? '') : secret(input.apiKey, '模型密钥');
   const label = optionalLabel(input.label);
   return {
     id: existing?.id ?? (input.id === undefined ? randomUUID() : identifierOf(input.id)),
@@ -331,12 +337,9 @@ function mergeProvider(existing: ProviderProfile | undefined, value: unknown): P
       input.reasoningEffort === undefined && input.reasoning_effort === undefined
         ? (existing?.model === model ? existing.reasoningEffort : defaultEffort)
         : effortOf(input.reasoningEffort ?? input.reasoning_effort),
-    apiKey:
-      input.apiKey === undefined
-        ? destinationChanged
-          ? ''
-          : (existing?.apiKey ?? '')
-        : secret(input.apiKey, '模型密钥'),
+    apiKey,
+    credentialRevision: existing?.credentialRevision && !destinationChanged && apiKey === existing.apiKey
+      ? existing.credentialRevision : randomUUID(),
   };
 }
 
@@ -415,7 +418,7 @@ function mergeSettings(prior: StoredSettings, input: Record<string, unknown>): S
   ), providers);
   return {
     ...(Object.keys(routes).length ? {routes} : {}),
-    providers,
+    providers: providers.map(provider => provider.credentialRevision ? provider : {...provider, credentialRevision: randomUUID()}),
     activeProviderId,
     mcpServers,
     ...(exaApiKey === undefined ? {} : { exaApiKey }),
@@ -458,4 +461,38 @@ export function saveSettings(input: Record<string, unknown>) {
   });
   updating = update.catch(() => {});
   return update;
+}
+
+export function saveLearnerSettings(db: Db, input: Record<string, unknown>) {
+  return db.tx({learner: studioLearner}, async tx => {
+    await lockLearner(tx, tx.learner);
+    return saveSettings(input);
+  });
+}
+
+export type ProviderAccount = { readonly providerId: string; readonly accountRevision: string };
+
+export function providerAccount(settings: ProviderSettings): ProviderAccount | undefined {
+  const accountRevision = settings.providers.find(provider => provider.id === settings.activeProviderId)?.credentialRevision;
+  return accountRevision ? {providerId: settings.activeProviderId, accountRevision} : undefined;
+}
+
+/** Bind a fresh explicitly authorized send to the current account, including legacy settings. */
+export async function freezeProviderAccount(tx: DbTransaction, task?: ModelTask) {
+  await lockLearner(tx, tx.learner);
+  let settings = await loadSettings(task);
+  if (!providerAccount(settings)) {
+    await saveSettings({});
+    settings = await loadSettings(task);
+  }
+  return {settings, account: providerAccount(settings)!};
+}
+
+/** Returns the exact settings to use while the caller still holds the learner lock. */
+export async function checkProviderAccount(tx: DbTransaction, expected: ProviderAccount, task?: ModelTask) {
+  await lockLearner(tx, tx.learner);
+  const settings = await loadSettings(task);
+  const current = providerAccount(settings);
+  if (current?.providerId === expected.providerId && current.accountRevision === expected.accountRevision) return settings;
+  return undefined;
 }

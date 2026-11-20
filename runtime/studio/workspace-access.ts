@@ -45,6 +45,8 @@ import { workspaceQuery } from './workspace-read.ts';
 import { lexicalWorkspaceSql, trigramFunction, workspaceOccurredAt } from './workspace-search.ts';
 import {
   loadSettings,
+  saveSettings,
+  type ProviderProfile,
   type ProviderProtocol,
   type ProviderSettings,
 } from './settings.ts';
@@ -115,6 +117,7 @@ type StoredRoute = {
   readonly baseUrl: string;
   readonly protocol: ProviderProtocol;
   readonly revision: string;
+  readonly credentialRevision?: string;
 };
 type StoredAccess = {
   readonly version: 1;
@@ -358,6 +361,8 @@ function normalizeStored(value: unknown): StoredAccess {
         baseUrl: route.baseUrl,
         protocol: route.protocol,
         revision: route.revision,
+        ...(typeof route.credentialRevision === 'string' && providerIdentifier.test(route.credentialRevision)
+          ? {credentialRevision: route.credentialRevision} : {}),
       };
     }
   }
@@ -389,10 +394,17 @@ export async function loadWorkspaceAccessRoutes(): Promise<Readonly<Record<strin
   return (await readStored()).routes;
 }
 
+export function workspaceGrantRevision(routes: Readonly<Record<string, StoredRoute>>, provider: ProviderProfile) {
+  const route = routes[provider.id];
+  return route?.enabled && route.baseUrl === provider.baseUrl && route.protocol === provider.protocol &&
+    provider.credentialRevision && route.credentialRevision === provider.credentialRevision ? route.revision : undefined;
+}
+
 function providerViews(settings: ProviderSettings, stored: StoredAccess): WorkspaceProviderView[] {
-  return settings.providers.map(({id, label, model, baseUrl, protocol}) => {
+  return settings.providers.map(provider => {
+    const {id, label, model, baseUrl, protocol} = provider;
     const route = stored.routes[id];
-    const matches = Boolean(route?.enabled && route.baseUrl === baseUrl && route.protocol === protocol);
+    const matches = Boolean(workspaceGrantRevision(stored.routes, provider));
     return {
       id, label, model, baseUrl, protocol,
       active: id === settings.activeProviderId,
@@ -421,22 +433,30 @@ function saveWorkspaceAccessRoute(db: Db, input: unknown) {
     if (typeof value.baseUrl !== 'string' || typeof value.protocol !== 'string') {
       throw new RequestError(400, '模型端点或协议无效。');
     }
-    const settings = await loadSettings();
-    const provider = settings.providers.find((entry) => entry.id === value.id);
+    let settings = await loadSettings();
+    let provider = settings.providers.find((entry) => entry.id === value.id);
     if (!provider) throw new RequestError(404, '找不到这个模型配置。');
     if (value.enabled && (value.baseUrl !== provider.baseUrl || value.protocol !== provider.protocol)) {
       throw new RequestError(409, '模型端点或协议已变化，请重新确认授权。');
+    }
+    if (value.enabled && !provider.credentialRevision) {
+      // Stamp a legacy profile only at an explicit grant, under the same learner lock.
+      await saveSettings({});
+      settings = await loadSettings();
+      provider = settings.providers.find(entry => entry.id === value.id)!;
     }
     const stored = await readStored();
     const previous = stored.routes[provider.id];
     const unchanged = previous?.enabled === value.enabled &&
       previous.baseUrl === provider.baseUrl &&
-      previous.protocol === provider.protocol;
+      previous.protocol === provider.protocol &&
+      previous.credentialRevision === provider.credentialRevision;
     stored.routes[provider.id] = {
       enabled: value.enabled,
       baseUrl: provider.baseUrl,
       protocol: provider.protocol,
       revision: unchanged ? previous.revision : randomUUID(),
+      ...(provider.credentialRevision ? {credentialRevision: provider.credentialRevision} : {}),
     };
     await writeStored(stored);
     return { providers: providerViews(settings, stored) };
