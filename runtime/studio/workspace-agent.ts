@@ -17,7 +17,8 @@ import {workspaceSearch, workspaceRead, workspaceAssessmentBasis, type Workspace
 import {openLearningBatch} from './workspace-open.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
-import {parseLearningReference, sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
+import {parseLearningReference, sourceReference, sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
+import {posttestSubmissionType} from '../../modules/activity/retention-posttest.ts';
 import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/plan/goal-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
@@ -34,6 +35,9 @@ import {mountArtifact} from './presentation-store.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import {textbookPageType} from '../../modules/content/textbook-page.ts';
+import {openedAnswerCitations} from '../../modules/companion/belief.ts';
+import {openObjectiveActivity} from './belief-evidence.ts';
+import type {ActivityCitation} from '../../modules/companion/understanding.ts';
 import {openWorkspaceTextbook} from './workspace-textbook.ts';
 import {openWorkspaceRelation, type OpenedRelationSource} from './workspace-relation.ts';
 
@@ -51,9 +55,11 @@ export function openWorkspaceTools(options: {
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
   trackRetention?: (basis: RetentionBasis) => void;
   trackDiagnosis?: () => void;
+  beliefTools?: boolean;
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
+  learningBasis?(): readonly WorkspaceWitness[];
   pageBasis?: readonly WorkspaceWitness[];
   jitBasis?: readonly WorkspaceWitness[];
   currentObject?: OpenedCurrentLearningObject | undefined;
@@ -67,6 +73,7 @@ export function openWorkspaceTools(options: {
   const retainForWrites = (w: WorkspaceWitness) => writeBasis.set(`${w.id}:${w.rev}`,{...w,writeBasis:true});
   const opened = new Map<string, Seen>();
   const openedAnswers = new Map<string, WorkspaceWitness>();
+  const beliefEvidence = new Map<string, ReturnType<typeof openedAnswerCitations>[number]>();
   const produced = new Map<string, number>();
   const receipts = new Map<string,WorkspaceWriteReceipt>();
   const pageSources = new Map<string, WorkspaceWitness>();
@@ -79,7 +86,7 @@ export function openWorkspaceTools(options: {
     relationOpened.set(key,{ref,witness});
   };
   const saveRelation = openWorkspaceRelation({db,turn,opened:relationOpened,
-    authorize:options.authorize,maySend:options.maySend, modelBasis:jitBasis,
+    authorize:options.authorize,maySend:options.maySend, modelBasis:() => [...jitBasis,...(options.learningBasis?.() ?? [])],
     saved(key, receipt) { receipts.set(key, receipt); },
   });
   const rememberPageSource = (w: WorkspaceWitness) => pageSources.set(`${w.id}:${w.rev}`,w);
@@ -88,6 +95,7 @@ export function openWorkspaceTools(options: {
   const savePage = openWorkspaceTextbook({
     db, turn, authorize:options.authorize, maySend:options.maySend, opened:pageOpened,
     basis() {
+      for (const witness of options.learningBasis?.() ?? []) rememberPageSource(witness);
       for (const witness of pageSources.values()) options.track(witness,true);
       return [...pageSources.values()];
     },
@@ -139,8 +147,23 @@ export function openWorkspaceTools(options: {
             text = JSON.stringify({ok:true});
           }
         } else text = JSON.stringify(await openLearningBatch(tx,{...parsed,part:parsed.part},{...access,currentObject:currentObject?.view},
-          (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
-            parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
+          async (id, itemTrack) => {
+            const ref = parseLearningReference(id);
+            if (options.beliefTools && ref && typeof ref !== 'string' && ref.fact.type === posttestSubmissionType &&
+                ref.anchor.kind === 'answer-slot' && ref.anchor.slotId === 'answer' &&
+                !ref.anchor.path?.length) {
+              const source = await openObjectiveActivity(tx, ref.fact.id, purpose, options.maySend);
+              const itemId = ref.anchor.itemId;
+              const fragment = source?.ref.rev === ref.fact.rev ? source.fragments.find(item => item.anchor === itemId) : undefined;
+              if (source && fragment) {
+                itemTrack(source.fact, 'following');
+                return JSON.stringify({id: source.ref.id, rev: source.ref.rev, title: '后测原答',
+                  content: fragment.text.slice(0, 600).toWellFormed(), sourceRef: sourceReference(source.fact, ref.anchor)});
+              }
+            }
+            return workspaceRead(tx,{id},itemTrack,options.maySend,
+              parsed.part.kind === 'assessment' ? trackAssessment : undefined);
+          }));
       } else if (name === 'read_workspace') {
         text = await workspaceRead(tx,args,track,options.maySend,trackAssessment);
       } else if (name === 'read_learner_radar') {
@@ -283,6 +306,27 @@ export function openWorkspaceTools(options: {
         }
       }
     }
+    if (options.beliefTools && (name === 'open_learning' || name === 'read_workspace')) {
+      const citations = await db.snapshot({learner:studioLearner}, async tx => {
+        await options.authorize(tx);
+        const entries = [];
+        for (const item of values) {
+          const ref = sourceRefV1(item.sourceRef);
+          if (!ref || item.ok === false || (ref.anchor.kind !== 'whole' && ref.anchor.kind !== 'answer-slot') ||
+              (typeof item.content !== 'string' && typeof item.content !== 'number')) continue;
+          const source = await openObjectiveActivity(tx, ref.fact.id, purpose, options.maySend);
+          if (!source || source.ref.rev !== ref.fact.rev ||
+              !witnesses.some(w => w.id === source.ref.id && w.rev === source.ref.rev && w.epoch === source.ref.accessEpoch)) continue;
+          entries.push(...openedAnswerCitations(source, source.ref, String(item.content),
+            ref.anchor.kind === 'answer-slot' ? ref.anchor.itemId : undefined));
+        }
+        return entries;
+      });
+      if (citations.length) {
+        for (const citation of citations) beliefEvidence.set(`${citation.id}:${citation.anchor}`, citation);
+        return JSON.stringify({...value, belief_evidence:citations});
+      }
+    }
     return text;
   }
   async function save(args: Record<string, unknown>, step: number, observation?: WorkspaceWitness[]) {
@@ -421,12 +465,18 @@ export function openWorkspaceTools(options: {
       name === 'search_workspace' || name === 'read_workspace' || name === 'open_learning' || name === 'read_learner_radar'
         ? execute(name, args, step, priorRead, receiveImage)
         : execute(name, args, step),
+    openedBeliefEvidence({id, rev, accessEpoch, anchor, excerpt}: ActivityCitation) {
+      const opened = beliefEvidence.get(`${id}:${anchor}`);
+      return opened?.rev === rev && opened.accessEpoch === accessEpoch && excerpt !== undefined && opened.excerpt.includes(excerpt);
+    },
+    knows:(id: string) => sources.has(id),
     publishedFormalArtifact: () => publishedFormalArtifact,
     reads: () => [...opened.values()],
     writes: () => [...receipts.values()],
     basis() {
       const ordinary = new Map([...sources, ...overviewBasis]);
       const basis = new Map([...ordinary.values()].map(w => [`${w.id}:${w.rev}`, w]));
+      for (const w of options.learningBasis?.() ?? []) basis.set(`${w.id}:${w.rev}`,w);
       for (const [key, witness] of writeBasis) basis.set(key, witness);
       for (const witness of jitBasis) basis.set(`${witness.id}:${witness.rev}`,{...witness,writeBasis:true,jitBasis:true});
       return [...basis.values()];

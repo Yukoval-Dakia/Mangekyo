@@ -31,7 +31,7 @@ async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNoti
       AND d.id=coalesce($4,s.current_id) AND NOT d.is_shadow AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,[tx.learner,slotType,id,pinned ?? null]);
   if (!row?.id || !row.value) return {status:row?.failed ? 'failed' as const : 'pending' as const};
-  const authority = await teachingResultAuthority(tx,await readTurn(tx,id),row.manifest,workspaceGrantChecker(tx),check);
+  const {state: authority} = await teachingResultAuthority(tx,id,await readTurn(tx,id),row.manifest,workspaceGrantChecker(tx),check);
   if (authority === 'unconfirmed') throw new RequestError(503,'暂时无法核对课堂依据。');
   if (authority !== 'authorized') throw unavailable();
   return {status:'ready' as const, steps:row.value.classroomPlan,derivationId:derivationId(row.id)};

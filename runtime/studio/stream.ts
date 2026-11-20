@@ -1,7 +1,6 @@
 import { teachingTurnAllowed } from './reading.ts';
 import type { ServerResponse } from 'node:http';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import { factId } from '../../kernel/src/declarations/ids.ts';
+import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { notionReadScope, teachingResultAuthority, type NotionReadScope } from './notion.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
@@ -11,8 +10,8 @@ import type { Db, DbQuery, ReadTransaction } from '../../kernel/src/db/types.ts'
 import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingProgress } from '../../executors/teaching/index.ts';
-import { purpose, slotType, studioLearner } from './identity.ts';
-import { RequestError, sessionMountPermissions, unconfirmedReplyMessage, unavailableReplyMessage } from './sessions.ts';
+import { slotType, studioLearner } from './identity.ts';
+import { readOwnStudyTurn, RequestError, sessionMountPermissions, unconfirmedReplyMessage, unavailableReplyMessage } from './sessions.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
@@ -185,7 +184,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
       [tx.learner, sessionId, slotType],
     );
     if (!row) throw new RequestError(404, '这次学习会话不存在。');
-    const submission = await createCommandReadContext(tx, purpose).fact(factId(row.turnId), { mode: 'following' })
+    const submission = await readOwnStudyTurn(tx, row.turnId)
       .then(input => studyTurn(input.value))
       .catch((error: unknown) => {
         if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) {
@@ -199,7 +198,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
     if (!allowed && status === 'pending')
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     const authority = !allowed ? 'withdrawn' : manifest
-      ? await teachingResultAuthority(tx, submission, manifest, grantCurrent, check) : 'authorized';
+      ? (await teachingResultAuthority(tx, row.turnId, submission, manifest, grantCurrent, check)).state : 'authorized';
     if (authority !== 'authorized') row.draft = null;
     if (status === 'ready' && (authority !== 'authorized' || row.message === null)) {
       row.message = authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage;
