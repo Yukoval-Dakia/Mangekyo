@@ -35,6 +35,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
     let title: string;
     let original: string;
     let hasAnswer = false;
+    let answerSlot: string | undefined;
     if (kind === 'attempt') {
       if (fact.type !== workbookAttemptType) return;
       // The saved attempt embeds a copy of its workbook. The diagnosis reader
@@ -45,6 +46,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
       title = opened.source.title;
       original = paper.questions.map(({id, prompt}, index) =>
         `${index + 1}. ${prompt}\n我的作答：${answers[id] ?? '未作答'}`).join('\n\n');
+      if (paper.questions.length === 1) answerSlot = paper.questions[0]?.id;
       hasAnswer = Object.values(answers).some(answer => typeof answer === 'number' || Boolean(answer?.trim()));
     } else {
       if (fact.type !== textbookPageType && fact.type !== organizerNoteType &&
@@ -60,7 +62,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
     const basisDigest = createHash('sha256').update(canonicalJsonString(basis)).digest('hex');
     const {content, nextOffset} = textSlice(original, 0, 3000);
     return {
-      root, basis, basisDigest, openedAnswer: hasAnswer && nextOffset === null,
+      root, basis, basisDigest, answerSlot, openedAnswer: hasAnswer && nextOffset === null,
       view: {alias: currentObjectAlias(kind), sourceRef, title, content, truncated: nextOffset !== null},
     };
   } catch (error) {

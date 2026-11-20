@@ -57,19 +57,20 @@ function Question({ teachingCase }: { teachingCase: TeachingCase }) {
 function WorkspaceWrite({item}: {item: NonNullable<Turn['writes']>[number]}) {
   const [action, setAction] = useState<'idle' | 'pending' | 'withdrawn' | 'changed' | 'missing'>('idle');
   const [problem, setProblem] = useState('');
-  const observation = item.observation;
-  if (!observation) return <li><a href={'/materials/records/' + item.id}>{item.title}</a> · 第 {item.rev} 版</li>;
-  if (observation.status === 'withdrawn' || action === 'withdrawn')
-    return <li role="status">学情观察已撤回</li>;
-  if (observation.status === 'changed' || action === 'changed' || action === 'missing')
-    return <li role="status">{action === 'missing' ? '撤回凭据已失效。' : '观察已变更，无法撤回原版本。'}</li>;
-  const token = observation.undo_token;
+  const saved = item.memory ?? item.observation;
+  const label = item.memory ? '记忆' : '观察';
+  if (!saved) return <li><a href={'/materials/records/' + item.id}>{item.title}</a> · 第 {item.rev} 版</li>;
+  if (saved.status === 'withdrawn' || action === 'withdrawn')
+    return <li role="status">{label}已撤回</li>;
+  if (saved.status === 'changed' || action === 'changed' || action === 'missing')
+    return <li role="status">{action === 'missing' ? '撤回凭据已失效。' : label + '已变更，无法撤回原版本。'}</li>;
+  const token = saved.undo_token;
   async function withdraw() {
     setAction('pending');
     setProblem('');
     try {
       const receipt = await api<{status: string; ref: {id: string; rev: number}}>(
-        '/workspace/observations/' + item.id + '/undo', {method: 'POST', body: {undo_token: token}});
+        (item.memory ? '/memory/claims/' : '/workspace/observations/') + item.id + '/undo', {method: 'POST', body: {undo_token: token}});
       if (receipt.status !== 'withdrawn' || receipt.ref.id !== item.id || receipt.ref.rev !== item.rev + 1)
         throw new Error('unexpected receipt');
       setAction('withdrawn');
@@ -83,11 +84,13 @@ function WorkspaceWrite({item}: {item: NonNullable<Turn['writes']>[number]}) {
     }
   }
   return <li className="saved-observation">
-    <small>学情观察 · 同伴推断</small>
-    <strong><a href={'/materials/records/' + item.id}>{item.title}</a></strong>
-    <p>{observation.text}</p>
+    {item.memory ? <strong>{item.title}</strong> : <>
+      <small>学情观察 · 同伴推断</small>
+      <strong><a href={'/materials/records/' + item.id}>{item.title}</a></strong>
+      {'text' in saved && <p>{saved.text}</p>}
+    </>}
     <button className="tonal-button" disabled={action === 'pending'} onClick={withdraw}>
-      {action === 'pending' ? '正在撤回…' : '撤回观察'}
+      {action === 'pending' ? '正在撤回…' : '撤回' + label}
     </button>
     {problem && <span role="alert">{problem}</span>}
   </li>;

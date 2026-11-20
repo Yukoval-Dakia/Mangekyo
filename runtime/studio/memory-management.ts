@@ -1,0 +1,110 @@
+import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
+import type { Db } from '../../kernel/src/db/types.ts';
+import type { LoadedModule } from '../../kernel/src/loader.ts';
+import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
+import {
+  applyClaimCommand, claimId, claimRef, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
+} from '../../modules/companion/claim.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
+import { purpose, stableId, studioLearner } from './identity.ts';
+import { areMemoryClaimsCurrent, claimWitness, currentMemoryClaims, openClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
+import { clientRequest, RequestError } from './sessions.ts';
+import { claimUndoToken, isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
+
+export function openMemoryManagement(db: Db, activity: LoadedModule, companion: LoadedModule) {
+  const learner = studioLearner;
+  const scope = {learner};
+  async function translate<T>(run: () => Promise<T>) {
+    try { return await run(); } catch (error) {
+      if (isMemoryConflict(error) || error instanceof Error && error.message.startsWith('Fact revision conflict:'))
+        throw new RequestError(409, '记忆或依据已变化，请刷新后再试。');
+      throw error;
+    }
+  }
+
+  return {
+    async list(before: string | null) {
+      if (before !== null) {
+        try { claimId(before); } catch { throw new RequestError(400, '记忆分页位置无效。'); }
+      }
+      return db.snapshot(scope, async tx => {
+        const rows = await currentMemoryClaims(tx, {learner: true, ...(before ? {before} : {})});
+        const items = [];
+        for (const {id, tick} of rows.slice(0, 50)) {
+          const fact = await openClaimFact(tx, id, 'storage');
+          if (!fact) continue;
+          const claim = readClaimValue(fact.value);
+          const ref = claimWitness(fact);
+          const evidence = claim?.version === 0 ? claim.source : claim?.evidence_refs[0];
+          const quote = claim?.version === 0 ? claim.quote : claim?.evidence_refs[0]?.excerpt;
+          const source = evidence && quote && await openClaimEvidence(tx, evidence, quote,
+            claim?.version === 1 ? claim.evidence_refs[0]?.start : 0, claim?.version === 0);
+          items.push({ref, recordedTick: tick, state: claim?.version === 1 && claim.action === 'forget' ? 'forgotten' : 'current',
+            claim: claim ?? null, evidenceState: source ? 'current' : evidence ? 'unavailable' : 'unknown'});
+        }
+        return {items, next: rows.length > 50 ? rows[49]!.id : null};
+      });
+    },
+
+    async manage(id: string, input: Record<string, unknown>) {
+      const request = clientRequest(input.requestId);
+      let entry;
+      try {
+        if (input.action !== 'correct' && input.action !== 'forget') throw new ClaimInputError('记忆操作无效。');
+        const {rev, accessEpoch} = input;
+        const supersedes = claimRef({id, rev, accessEpoch});
+        entry = {id: factId(stableId('learner-memory-entry', id, request)), data: structuredClaim({
+          action: input.action, category: 'claim', origin: 'learner', text: input.text, scope: {kind: 'unknown'},
+          evidence_refs: [], supersedes,
+        })};
+      } catch (error) {
+        if (!(error instanceof ClaimInputError)) throw error;
+        throw new RequestError(400, error.message);
+      }
+      const handle = createCommandHandler(db, {modules: [companion], hooks: createStudioCommandHooks({
+        async afterFactsChanged(tx) {
+          if (!await areMemoryClaimsCurrent(tx, [id], undefined, entry.id)) throw new ClaimInputError('已出现更新的记忆。');
+        },
+      })});
+      const receipt = await translate(() => handle({learner, actor: 'learner', purpose: 'storage',
+        id: commandId(stableId('learner-memory-command', id, request)), type: manageClaimCommand, input: entry}));
+      return memoryWriteReceipt(entry, receipt.wrote[0]!.rev, receipt.commandId);
+    },
+
+    async undo(id: string, input: Record<string, unknown>) {
+      if (typeof input.undo_token !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(input.undo_token))
+        throw new RequestError(400, '撤回凭据无效。');
+      const {rows: [born]} = await db.query<{command_id: string}>(`
+        SELECT r.command_id FROM facts f JOIN fact_revs r ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+        WHERE f.learner_id=$1 AND f.id=$2 AND f.type=$3 AND r.rev=1
+          AND c.state='done' AND c.type=ANY($4::text[])`, [learner, id, claimType, [applyClaimCommand, manageClaimCommand]]);
+      if (!born || claimUndoToken(born.command_id, id) !== input.undo_token)
+        throw new RequestError(404, '找不到该条目对应的可撤回凭据。');
+      const handle = createCommandHandler(db, {modules: [companion], hooks: createStudioCommandHooks({
+        async afterFactsChanged(tx) {
+          if (!await areMemoryClaimsCurrent(tx, [id], undefined, undefined, true))
+            throw new ClaimInputError('已有后续变更。');
+        },
+      })});
+      const receipt = await translate(() => handle({learner, actor: 'learner', purpose: 'storage',
+        id: commandId(stableId('undo-memory-command', input.undo_token as string)), type: undoClaimCommand, input: {id, rev: 1, accessEpoch: '0'}}));
+      return {status: 'withdrawn', ref: receipt.wrote[0]};
+    },
+
+    async revokeSource(id: string, input: Record<string, unknown>) {
+      const {expectedRev} = input;
+      if (typeof expectedRev !== 'number' || !Number.isSafeInteger(expectedRev) || expectedRev < 1 || expectedRev > 2_147_483_647)
+        throw new RequestError(400, '原话版本无效。');
+      const handle = createCommandHandler(db, {modules: [activity], hooks: createStudioCommandHooks({
+        async afterFactsChanged(_tx, _tick, changes) {
+          if (changes.some(change => change.factType !== 'activity.studyTurn')) throw new ClaimInputError('目标不是同伴原话。');
+        },
+      })});
+      const receipt = await translate(() => handle({learner, actor:'learner', purpose, type: setWorkspaceTeachingCommand,
+        id: commandId(stableId('revoke-memory-source', id, String(expectedRev))), input: {id, expectedRev, enabled: false}}));
+      return {status: 'revoked', ref: receipt.wrote[0]};
+    },
+  };
+}

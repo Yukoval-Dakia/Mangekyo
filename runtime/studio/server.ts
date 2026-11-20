@@ -23,6 +23,7 @@ import {
 import { openWorkbookAssessment, workbookAssessmentSlot, type WorkbookAssessmentHost } from './workbook-assessment.ts';
 import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';
+import { openMemoryManagement } from './memory-management.ts';
 import { openPractice } from './practice.ts';
 import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
@@ -85,6 +86,7 @@ async function openWeb() {
     onResearchFactsChanged: research.workbookChanged,
   });
   const student = { textbook, workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
+    memoryManagement: openMemoryManagement(db, activity, companion),
     intake, workspace: openWorkspaceAccess(db, activity, content, capture, plan), research, recall, retention, retentionComparison };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));

@@ -5,7 +5,7 @@ import { loadMcpTools, invokeMcpTool, remoteToolDefinition } from './mcp-tools.t
 import { findTools, studyToolDiscovery } from './study-tool-discovery.ts';
 import {projectChatImages, projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
 import {openToolResult, studyToolResults} from './study-tool-results.ts';
-import { workspaceDefinitions, type ReceiveStudyImage, type StudyImage, type WorkspaceTools } from './workspace-tools.ts';
+import { memoryToolDefinitions, workspaceDefinitions, type ReceiveStudyImage, type StudyImage, type WorkspaceTools } from './workspace-tools.ts';
 import { createStudyTools, pythonAttemptsLimit, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
@@ -22,6 +22,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   historyNotice?: string;
   currentLearningObject?: string;
   learningMemory?: string;
+  memoryTools?: (name: string, args: Record<string, unknown>, step: number) => Promise<string>;
   openMemoryRegion?: (input: Record<string, unknown>, step: number) => Promise<string>;
   maxCompletionTokens?: 4096 | 8192;
   tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
@@ -82,6 +83,8 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'read_learner_radar': return '读取学情雷达';
     case 'open_learning': return '打开学习对象 · ' + String(Array.isArray(args.refs) ? args.refs.length : 1) + ' 项\n' + output.slice(0, 900);
     case 'record_observation': return '记录学情观察 · ' + String(args.title ?? '').slice(0, 160);
+    case 'retrieve_memory': return '查找已获准的记忆';
+    case 'save_memory': return '登记本轮记忆操作';
     case 'mount_artifact': return '挂载交互作品 · ' + output.slice(0, 360);
     case 'save_workspace': return '保存学习记录 · ' + String(args.title) + '\n' + output.slice(0, 500);
     default: return '工具不可用';
@@ -120,6 +123,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
     ? [...workspaceDefinitions, ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
     : [];
   const coreDefinitions = [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []),
+    ...(options.memoryTools ? memoryToolDefinitions : []),
     ...(discovery ? [findTools] : Array.from(remotes, ([name, remote]) => remoteToolDefinition(name, remote)))];
   const messages: (Message | ToolMessage)[] = [...initial];
   const trace: string[] = [];
@@ -217,6 +221,8 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const before = name === 'python' ? tools.snapshotFiles() : {};
       if (name === memoryRegionTool.function.name && options.openMemoryRegion) {
         output = await options.openMemoryRegion(args, step);
+      } else if (options.memoryTools && memoryToolDefinitions.some(tool => tool.function.name === name)) {
+        output = await options.memoryTools(name, args, step);
       } else if (workspaceTool) {
         const receiveImage: ReceiveStudyImage | undefined = name === 'open_learning'
           ? value => { image = value; } : undefined;

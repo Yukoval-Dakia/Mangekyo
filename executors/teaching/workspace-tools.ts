@@ -46,10 +46,26 @@ export const workspaceDefinitions = [
     answer: text, rubric: text, id: {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$', description:'仅更新时用已有 id；创建时省略。'}, rev: integer,
   }),
 ];
+export const memoryToolDefinitions = [
+  tool('retrieve_memory', '查找目前获准使用的旧记忆。根据学习者的自然语言判断目标，含糊时先问清。query 可省略，或传可能出现在旧条目中的一小段原文字词。', {query: text}),
+  tool('save_memory', '保存学习者在本轮表达的持久偏好、明确状态，或本轮明确要求的更正、遗忘。每个独立事实调用一次。只使用本轮逐字原话片段作为证据，不能引用旧聊天、教材、工具结果或自己生成的内容。', {
+    action: {type: 'string', enum: ['remember', 'update', 'forget']},
+    text: {...text, description: '忠实表达这条独立偏好或状态，保留原话限定。遗忘时省略。'},
+    quote_excerpt: {...text, description: '本轮学习者消息的连续逐字摘录。每项各取其证据。'},
+    supersedes: {...text, description: '更正或遗忘时使用 retrieve_memory 给出的唯一目标引用。无需学习者提供标识。'},
+    category: {type: 'string', enum: ['preference', 'claim', 'state'], description: '短期状态用 state。'},
+    scope: {type: 'string', enum: ['general', 'current_object', 'unknown'],
+      description: '原话明确泛用时选 general。仅指当前对象时选 current_object。缺少可验证范围时选 unknown。更新省略则继承。'},
+    valid_until: {type: ['string', 'null'], description: '短期状态须有明确时限并转成 ISO UTC（含毫秒）；不确定时询问，不能猜。'},
+  }, ['action', 'quote_excerpt']),
+];
+
 type WriteReference = { id: string; rev: number; title: string };
 type SavedObservation = { status: 'saved'; text: string; undo_token: string };
 
-export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObservation };
+export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObservation;
+  memory?: {status: 'saved'; action: 'remember' | 'correct' | 'forget'; undo_token: string};
+};
 export type WorkspaceTools = {
   presentationTool?: (typeof workspaceDefinitions)[number];
   writes: () => readonly WorkspaceWriteReceipt[];

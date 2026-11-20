@@ -18,6 +18,7 @@ import type { RecallHttp } from './recall-http.ts';
 import { loadSettings } from './settings.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';
+import { areMemoryClaimsCurrent } from './memory-claims.ts';
 import { currentObjectAlias, readCurrentLearningObject } from './current-learning-object.ts';
 import {
   stableId,
@@ -75,6 +76,7 @@ export type DisplayTurn = {
   workspaceBasis?: WorkspaceWitness[];
   learningMemoryDigest?: string;
   memoryCommand?: string;
+  memoryManagement?: true;
   foregroundDigest?: ForegroundDigest;
   action: string;
   rationale: string;
@@ -164,22 +166,26 @@ export function recentConversations(db: Db) {
     return result;
   });
 }
-export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation'> & {
-  observation?: NonNullable<WorkspaceWriteReceipt['observation']> | {status: 'changed'} | {status: 'withdrawn'};
+type WriteState = {status: 'changed'} | {status: 'withdrawn'};
+export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory'> & {
+  observation?: NonNullable<WorkspaceWriteReceipt['observation']> | WriteState;
+  memory?: NonNullable<WorkspaceWriteReceipt['memory']> | WriteState;
 };
 
 async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[]): Promise<WorkspaceWriteView[]> {
-  const ids = writes.filter(write => write.observation).map(write => write.id);
+  const ids = writes.filter(write => write.observation || write.memory).map(write => write.id);
   if (!ids.length) return writes;
   const {rows} = await tx.query<{id: string; current_rev: number; retracted_rev: number | null}>(
     'SELECT id,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
   const facts = new Map(rows.map(row => [row.id, row]));
-  return writes.map(write => {
-    if (!write.observation) return write;
+  return Promise.all(writes.map(async write => {
+    if (!write.observation && !write.memory) return write;
     const fact = facts.get(write.id);
-    if (fact && fact.retracted_rev === null && fact.current_rev === write.rev) return write;
-    return {...write, observation: {status: fact?.retracted_rev ? 'withdrawn' : 'changed'}};
-  });
+    if (fact && fact.retracted_rev === null && fact.current_rev === write.rev &&
+        (!write.memory || await areMemoryClaimsCurrent(tx, [write.id]))) return write;
+    const state: WriteState = {status: fact?.retracted_rev ? 'withdrawn' : 'changed'};
+    return write.memory ? {...write, memory: state} : {...write, observation: state};
+  }));
 }
 
 export async function getSession(db: Db, session: string, projectRecall?: RecallHttp['project']) {
@@ -295,7 +301,7 @@ export async function openStudio(db: Db, activity: LoadedModule, { projectRecall
       ...(attachment ? { attachment } : {}),
       ...(boundObject ? {currentObject: boundObject} : {}),
       ...((selected === 'companion' || selected === 'riding') ? { agentVersion: 1, allowSearch: settings.allowSearch } : {}),
-      ...(workspaceRevision ? {workspaceRevision} : {}),
+      ...(workspaceRevision ? {workspaceRevision, ...(!grants?.length && {memoryVersion: 1})} : {}),
       model: settings.model, reasoningEffort: settings.reasoningEffort,
       providerId: settings.activeProviderId, protocol: settings.protocol,
       ...(grants?.length ? {mcpGrants: grants, mcpRevision: mcpRevision(grants, settings)} : {}),
