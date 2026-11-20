@@ -4,10 +4,11 @@ import { derivationId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Outcome } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { posttestOpensAt } from '../../modules/activity/retention-posttest.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { isStandaloneWorkbookPaper, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { forecastType, reconciliationType, type RetentionForecast } from '../../modules/learner/retention.ts';
-import { projectRetentionRead, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
+import { classifyFrozenCrossing, projectForgettingRisks, projectRetentionRead, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
 import { purpose } from './identity.ts';
 import { checkStudioNotionFact } from './notion.ts';
 import { retentionHistoryValid } from './retention.ts';
@@ -194,9 +195,13 @@ export async function readForgettingRisks(tx: ReadTransaction, maySend: Workspac
   const now = Date.parse(asOf);
   const end = now + horizonHours * 3_600_000;
   const { rows: candidates } = await tx.query<{ slot_key: string }>(
-    `SELECT slot_key FROM slot_state WHERE learner_id=$1 AND slot_type=$2
+    `SELECT s.slot_key FROM slot_state s WHERE s.learner_id=$1 AND s.slot_type=$2
+       AND EXISTS (SELECT 1 FROM derivations d
+         WHERE (d.learner_id,d.slot_type,d.slot_key)=(s.learner_id,s.slot_type,s.slot_key)
+           AND NOT d.is_shadow AND d.effective_tick <= $5::bigint)
+       AND COALESCE(scope_keys #>> '{window,scheduledAt}', scope_keys #>> '{window,requestedAt}', '') <= $3
        AND (scope_keys #>> '{window,through}' IS NULL OR scope_keys #>> '{window,through}' > $3)
-     ORDER BY changed_tick DESC, slot_key LIMIT $4`, [tx.learner, forecastType, asOf, candidateLimit + 1],
+     ORDER BY changed_tick DESC, slot_key LIMIT $4`, [tx.learner, forecastType, asOf, candidateLimit + 1, watermark],
   );
   const risks = [];
   let classified = 0;
@@ -205,14 +210,9 @@ export async function readForgettingRisks(tx: ReadTransaction, maySend: Workspac
     if (!row || BigInt(row.effective_tick) > BigInt(watermark)) continue;
     const selected = await readSelection(tx, row, { callerPurpose: purpose, maySend });
     if (!selected) continue;
-    const { estimate, input } = selected.forecast.value;
-    const requested = Date.parse(input.window.requestedAt);
-    const expires = Date.parse(input.window.through);
-    if (!(requested <= now && expires > now) || BigInt(input.observedThrough) > BigInt(row.effective_tick) ||
-        estimate.kind !== 'probabilistic' || !estimate.crossingAt ||
-        estimate.asOfAt !== (input.window.scheduledAt ?? input.window.requestedAt)) continue;
-    const crossing = Date.parse(estimate.crossingAt);
-    if (!(crossing >= Date.parse(estimate.asOfAt) && crossing <= expires)) continue;
+    const { input } = selected.forecast.value;
+    const crossing = classifyFrozenCrossing(selected.forecast.value, posttestOpensAt(input.window), row.effective_tick, now, end);
+    if (!crossing) continue;
     const projected = projectRetention(selected);
     const { paper, condition } = input.target;
     const source = selected.facts.find(({ fact }) => fact.ref.id === paper.id && fact.ref.rev === paper.rev);
@@ -227,19 +227,14 @@ export async function readForgettingRisks(tx: ReadTransaction, maySend: Workspac
     options.trackRetention(basisOf(selected));
     for (const { fact, input } of selected.facts) options.track(fact, input.mode);
     classified++;
-    if (now < crossing && crossing <= end) {
+    if (crossing.inHorizon) {
       risks.push({ forecast_id: row.id, forecast_key: key, item_id: projected.itemId, condition,
         paper: { ...paper, title: workbookPaper(source.fact.value).title.slice(0, 100).toWellFormed() },
-        crossing_at: new Date(crossing).toISOString(), forecast_as_of_at: estimate.asOfAt,
+        crossing_at: crossing.at, forecast_as_of_at: crossing.asOf,
         forecast_effective_tick: row.effective_tick, method: projected.method });
     }
   }
-  risks.sort((a, b) => a.crossing_at.localeCompare(b.crossing_at) || a.forecast_id.localeCompare(b.forecast_id));
-  return {
-    scope: 'active_frozen_workbook_forecasts',
-    state: !classified ? 'unknown' : classified === candidates.length ? 'complete' : 'partial',
-    as_of_at: asOf, through: new Date(end).toISOString(), clock_watermark: watermark, risks,
-  };
+  return projectForgettingRisks(risks, classified, candidates.length, asOf, end, watermark);
 }
 
 export async function readLearnerRadar(tx: ReadTransaction, args: Record<string, unknown>,
