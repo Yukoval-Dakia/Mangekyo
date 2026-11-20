@@ -16,58 +16,27 @@ const validResponse = {
   next_recheck_hint: null,
 };
 
-function snapshotWithTodo() {
+const firstTodo = '01K7TRJAGE0000000000000001';
+const secondTodo = '01K7TRJAGE0000000000000002';
+
+function todo(id: string, goal: string) {
   return {
-    facts: {},
-    events: {},
-    todos: {
-      '01K7TRJAGE0000000000000001': {
-        todo_id: '01K7TRJAGE0000000000000001',
-        dedup_key: 'todo:one',
-        status: 'pending',
-        trigger: 'immediate',
-        source_fact_rev: '1',
-        autonomy_tier: 1,
-        worker_profile: 'deterministic_compute',
-        goal: 'one',
-      },
-    },
-    inventory: {},
-    forecasts: {},
-    work: {},
-    memos: {},
-    signals: {},
-    chain: { id: 'chain', hop_count: '0', budget_remaining: '1' },
-    budget: { remaining: '1', unit: 'usd' },
+    todo_id: id,
+    dedup_key: 'todo:' + goal,
+    status: 'pending',
+    trigger: 'immediate',
+    source_fact_rev: '1',
+    autonomy_tier: 1,
+    worker_profile: 'deterministic_compute',
+    goal,
   };
 }
 
-function snapshotWithTwoTodos() {
+function snapshotWithTodos(todos: Record<string, ReturnType<typeof todo>> = { [firstTodo]: todo(firstTodo, 'one') }) {
   return {
     facts: {},
     events: {},
-    todos: {
-      '01K7TRJAGE0000000000000001': {
-        todo_id: '01K7TRJAGE0000000000000001',
-        dedup_key: 'todo:one',
-        status: 'pending',
-        trigger: 'immediate',
-        source_fact_rev: '1',
-        autonomy_tier: 1,
-        worker_profile: 'deterministic_compute',
-        goal: 'one',
-      },
-      '01K7TRJAGE0000000000000002': {
-        todo_id: '01K7TRJAGE0000000000000002',
-        dedup_key: 'todo:two',
-        status: 'pending',
-        trigger: 'immediate',
-        source_fact_rev: '1',
-        autonomy_tier: 1,
-        worker_profile: 'deterministic_compute',
-        goal: 'two',
-      },
-    },
+    todos,
     inventory: {},
     forecasts: {},
     work: {},
@@ -102,13 +71,13 @@ describe('research triage cards', () => {
 
 describe('research triage response validation', () => {
   it('accepts a strict noop response', () => {
-    const snapshot = parseTriageSnapshot(snapshotWithTodo());
+    const snapshot = parseTriageSnapshot(snapshotWithTodos());
     expect(parseTriageResponse(JSON.stringify(validResponse), snapshot, allowedTriageIds(snapshot)).actions).toEqual([{ kind: 'noop' }]);
   });
 
   it('accepts the real kernel initial access_epoch 0 decimal string', () => {
     const snapshot = parseTriageSnapshot({
-      ...snapshotWithTodo(),
+      ...snapshotWithTodos(),
       facts: {
         '01K7TRJAGE0000000000000009': {
           id: '01K7TRJAGE0000000000000009',
@@ -126,7 +95,7 @@ describe('research triage response validation', () => {
   });
 
   it('rejects IDs outside the snapshot and expression-like fields', () => {
-    const snapshot = parseTriageSnapshot(snapshotWithTodo());
+    const snapshot = parseTriageSnapshot(snapshotWithTodos());
     const allowed = allowedTriageIds(snapshot);
     const outside = {
       ...validResponse,
@@ -141,7 +110,7 @@ describe('research triage response validation', () => {
   });
 
   it('scores a correct first action plus an extra wrong action as false positive', () => {
-    const snapshot = snapshotWithTwoTodos();
+    const snapshot = snapshotWithTodos({ [firstTodo]: todo(firstTodo, 'one'), [secondTodo]: todo(secondTodo, 'two') });
     const fixture: TriageFixture = {
       id: 'extra-wrong-action',
       wakeSource: 'undo retract',

@@ -2,16 +2,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
+import { withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { fileURLToPath } from 'node:url';
-import pg from 'pg';
 import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
-import { createPgDb } from '../../../kernel/src/db/pg.ts';
-import { createPgliteDb } from '../../../kernel/src/db/pglite.ts';
 import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
 import { intakeWriteTargets } from '../intake.ts';
-import { applyKernelSchema } from '../../../kernel/src/schema.ts';
 import { methodName, purpose, slotType, stableId, studioLearner } from '../identity.ts';
 import { openRecall, recallItemId } from '../recall.ts';
 
@@ -24,22 +20,13 @@ await writeFile(process.env.MANGEKYO_SETTINGS_FILE,JSON.stringify({version:2,act
   {id:'default',baseUrl,model,protocol:'openai',apiKey:'',credentialRevision:accountRevision},
 ]}));
 const connectionString = process.env.MANGEKYO_RECALL_LOCAL_PG;
-const schema = 'recall_' + randomBytes(6).toString('hex');
-const admin = connectionString && createPgDb(new pg.Pool({ connectionString }));
-const require = createRequire(new URL('../../../kernel/package.json', import.meta.url));
-const db = connectionString
-  ? createPgDb(new pg.Pool({ connectionString }), { schema })
-  : createPgliteDb(new (require('@electric-sql/pglite').PGlite)());
 const scope = { learner: studioLearner };
 const turnId = stableId('recall fixture turn');
 const version = stableId('recall fixture version');
 const prompt = '三组各四枚，一共几枚？';
 const mount = { turnId, derivationId: version, itemId: recallItemId(turnId, version, 0) };
 
-try {
-  if (admin) await admin.query('CREATE SCHEMA ' + schema);
-  await applyKernelSchema(db);
-  await db.query('INSERT INTO learners (id) VALUES ($1)', [studioLearner]);
+async function exerciseRecall(db) {
   const activity = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/activity', import.meta.url)));
   const capture = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/capture', import.meta.url)));
   const content = await loadModuleDirectory(fileURLToPath(new URL('../../../modules/content', import.meta.url)));
@@ -104,11 +91,10 @@ try {
   assert.deepEqual(await recall.submit(submit('before_help')), unknown);
   assert.deepEqual(await recall.readState(mount), { answer: '12', receipt: assisted });
   console.log(connectionString ? 'PostgreSQL' : 'PGlite', 'unknown → exposed');
+}
+
+try {
+  await withLearnerDatabase(studioLearner, exerciseRecall, { postgres: Boolean(connectionString), connectionString });
 } finally {
-  await db.close();
-  await rm(config,{recursive:true,force:true});
-  if (admin) {
-    await admin.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE');
-    await admin.close();
-  }
+  await rm(config, {recursive:true, force:true});
 }

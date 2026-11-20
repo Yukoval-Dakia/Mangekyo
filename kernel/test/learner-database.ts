@@ -9,11 +9,11 @@ import { applyKernelSchema } from '../src/schema.ts';
 export const testDatabaseUrl = process.env.MANGEKYO_TEST_DATABASE_URL;
 
 export async function withLearnerDatabase(learner: string, run: (db: Db) => Promise<void>,
-  { postgres = true, initialize = applyKernelSchema, max = 10 } = {}) {
-  if (postgres && !testDatabaseUrl) throw new Error('Missing PostgreSQL test URL');
+  { postgres = true, initialize = applyKernelSchema, max = 10, connectionString = testDatabaseUrl } = {}) {
+  if (postgres && !connectionString) throw new Error('Missing PostgreSQL test URL');
   const schema = 'test_' + randomBytes(8).toString('hex');
   const db = postgres
-    ? createPgDb(new pg.Pool({ connectionString: testDatabaseUrl, max }), { schema })
+    ? createPgDb(new pg.Pool({ connectionString, max }), { schema })
     : createPgliteDb(new PGlite());
   try {
     if (postgres) await db.query('CREATE SCHEMA ' + schema);

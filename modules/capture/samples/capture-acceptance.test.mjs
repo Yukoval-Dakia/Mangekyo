@@ -2,17 +2,13 @@
 // runtime/studio/node_modules/.bin/tsx modules/capture/samples/capture-acceptance.test.mjs
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
+import { withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { fileURLToPath } from 'node:url';
 import exerciseNotion from './notion-acceptance.test.mjs';
 import exerciseTextbook from '../../content/samples/textbook-acceptance.test.mjs';
 
 const root = new URL('../../../', import.meta.url);
 const load = file => import(new URL(file, root));
-const require = createRequire(new URL('kernel/package.json', root));
-const { Pool } = require('pg');
-const { createPgDb } = await load('kernel/src/db/pg.ts');
-const { applyKernelSchema } = await load('kernel/src/schema.ts');
 const { loadModuleDirectory } = await load('kernel/src/loader.ts');
 const { createCommandHandler } = await load('kernel/src/commands/handle.ts');
 const { createStudioCommandHooks } = await load('runtime/studio/command-hooks.ts');
@@ -21,17 +17,9 @@ const { stableId } = await load('runtime/studio/identity.ts');
 const {createCommandReadContext, UnsupportedReadError} = await load('kernel/src/commands/reads.ts');
 const connectionString = process.env.MANGEKYO_CAPTURE_ACCEPTANCE_URL;
 
-const schema = 'capture_accept_' + randomUUID().replaceAll('-', '');
-const admin = connectionString ? new Pool({ connectionString }) : null;
-const { createPgliteDb } = await load('kernel/src/db/pglite.ts');
-const db = admin ? createPgDb(new Pool({ connectionString }), { schema })
-  : createPgliteDb(new (require('@electric-sql/pglite').PGlite)());
 const learner = stableId('capture-acceptance-learner');
 
-try {
-  await admin?.query('CREATE SCHEMA ' + schema);
-  await applyKernelSchema(db);
-  await db.query('INSERT INTO learners(id) VALUES ($1)', [learner]);
+await withLearnerDatabase(learner, async db => {
   const modules = await Promise.all(['capture', 'content', 'activity'].map(name =>
     loadModuleDirectory(fileURLToPath(new URL('modules/' + name, root))),
   ));
@@ -46,13 +34,9 @@ try {
   await run(fixture);
   await exerciseNotion(fixture);
   await exerciseTextbook(fixture);
-} finally {
-  await db.close();
-  await admin?.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE');
-  await admin?.end();
-}
+}, { postgres: Boolean(connectionString), connectionString });
 
-async function run({ send, read, current }) {
+async function run({ db, send, read, current }) {
   const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, projectNewPaper, paperIssuance,
     paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
   const at = '2026-11-21T01:00:00.000Z';
