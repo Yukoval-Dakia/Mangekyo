@@ -5,7 +5,7 @@ import {commandId, factId} from '../../kernel/src/declarations/ids.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory, type LoadedModule} from '../../kernel/src/loader.ts';
 import {openLearningLimit, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
-import {isSourceFactId, type SourceRefV1} from '../../modules/activity/source-values.ts';
+import {isSourceFactId, parseLearningReference, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {
   createKnowledgeEdgeCommand, createVerifiedKnowledgeEdgeCommand, withdrawKnowledgeEdgeCommand,
   knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeEndpointKind, knowledgeUseKey,
@@ -18,7 +18,6 @@ import {RequestError} from './sessions.ts';
 import type {WorkspaceSourceRecipient} from './source-read.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
-import {parseLearningReference} from './workspace-open.ts';
 
 const scope = {learner:studioLearner};
 const whole = {kind:'whole'} as const;

@@ -1,35 +1,11 @@
 import type { Json } from '../../../kernel/src/declarations/types.ts';
 
-export type TriageTier = 1 | 2 | 3 | 4;
+import type { TriageSkillId, TriageTier, TriageTodoTemplate } from '../../../modules/companion/research-triage-response.ts';
 
-export type TriageTodoTemplate = {
-  readonly dedupKey: string;
-  readonly trigger: {
-    readonly kind: 'immediate' | 'scheduled' | 'event';
-    readonly ref?: string;
-  };
-  readonly workerProfile:
-    | 'heavy_tutor_prep'
-    | 'deep_analyst'
-    | 'question_author'
-    | 'deterministic_compute';
-  readonly autonomyTier: TriageTier;
-  readonly goal: string;
-  readonly refs: readonly string[];
-  readonly sourceFactRev: string;
-  readonly budgetCap: string;
-  readonly chainId: string;
-  readonly hopCount: string;
-};
+export type { TriageTier, TriageTodoTemplate } from '../../../modules/companion/research-triage-response.ts';
 
 export type TriageSkillCard = {
-  readonly id:
-    | 'remediate_misconception'
-    | 'preemptive_forgetting_prep'
-    | 'defer_or_cancel_on_fatigue_or_undo'
-    | 'exam_or_goal_shift_replan'
-    | 'chain_post_work_followup'
-    | 'escalate_ambiguous_deep_case';
+  readonly id: TriageSkillId;
   readonly when: readonly string[];
   readonly whenNot: readonly string[];
   readonly mustCheck: readonly string[];
