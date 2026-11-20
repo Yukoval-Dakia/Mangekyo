@@ -1,3 +1,4 @@
+import type { readMineru, submitMineru, MineruMediaType } from '@mangekyo/executor-document-extraction/mineru';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
@@ -19,18 +20,7 @@ import { studioLearner } from './identity.ts';
 export const cloudIntakeSlot = 'activity.intakeCloudExtraction';
 const cloudIntakeDeriver = 'activity.mineruExtraction';
 
-type MineruMediaType = 'application/pdf' | 'image/png' | 'image/jpeg';
-type MineruContext = { token: string; dataId: string; signal?: AbortSignal };
-export type MineruClient = {
-  submit(input: MineruContext & {
-    bytes: Buffer; mediaType: MineruMediaType; beforeUpload?: () => Promise<void>;
-  }): Promise<string>;
-  read(input: MineruContext & { batchId: string; beforeDownload?: () => Promise<void> }): Promise<
-    { state: 'pending'; pages: number | null } |
-    { state: 'done'; text: string; pages: number | null } |
-    { state: 'failed'; message: string }
-  >;
-};
+export type MineruClient = { submit: typeof submitMineru; read: typeof readMineru };
 
 export function mineruSupports(mediaType: string): mediaType is MineruMediaType {
   return mediaType === 'application/pdf' || mediaType === 'image/png' || mediaType === 'image/jpeg';
