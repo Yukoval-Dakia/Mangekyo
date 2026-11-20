@@ -1,5 +1,5 @@
 import { classroomCommand, classroomMutation, classroomPlan, classroomPrompt, classroomStart, classroomRoute, classroomFact,
-  activeClassroomStep, classroomType, recoverClassroomAdjustment, seedClassroom, transitionClassroom, ClassroomConflict,
+  activeClassroomIds, activeClassroomStep, classroomType, recoverClassroomAdjustment, seedClassroom, transitionClassroom, ClassroomConflict,
   type Classroom, type ClassroomOperation } from '../../modules/activity/classroom.ts';
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
@@ -109,6 +109,22 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
       ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {})};
   };
   const get = (id: FactId) => handleErrors(() => notionReadScope(db,studioLearner).read((tx,check) => view(tx,id,check)));
+  const listActive = () => notionReadScope(db, studioLearner, {readOnly: true}).read(async (tx, check) => {
+    const items = [];
+    for (const id of await activeClassroomIds(tx)) {
+      try {
+        const {fact, state, generation} = await readClassroom(tx, id, check);
+        const step = activeClassroomStep(state);
+        if (state.status === 'active' && generation === 'ready' && step)
+          items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
+      } catch (error) {
+        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) continue;
+        if (error instanceof RequestError && (error.status === 404 || error.status === 503)) continue;
+        throw error;
+      }
+    }
+    return {items};
+  });
   const print = (id: FactId) => handleErrors(() => notionReadScope(db,studioLearner,{readOnly:true}).read(async (tx,check) => {
     const classroom = await view(tx,id,check);
     const session = await readClassroomSession(tx,classroom.sessionId,check);
@@ -185,7 +201,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
       type:classroomCommand,input:{id,op,...mutation}}));
     return get(id);
   }
-  return {start,get,mutate,print};
+  return {start,get,listActive,mutate,print};
 }
 
 export const classroomPath = /^\/api\/classrooms(?:\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(adjust|advance|skip|finish|archive|print))?)?$/;
