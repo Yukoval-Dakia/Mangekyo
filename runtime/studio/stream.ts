@@ -2,7 +2,7 @@ import type { ServerResponse } from 'node:http';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
-import { notionReadScope, teachingResultAllowed, type NotionReadScope } from './notion.ts';
+import { notionReadScope, teachingResultAuthority, type NotionReadScope } from './notion.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import type { Pool, PoolClient } from 'pg';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -11,12 +11,12 @@ import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingProgress } from '../../executors/teaching/index.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
-import { RequestError, sessionMountPermissions, unavailableReplyMessage } from './sessions.ts';
+import { RequestError, sessionMountPermissions, unconfirmedReplyMessage, unavailableReplyMessage } from './sessions.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 
-import {turnArtifacts} from './presentation-store.ts';
+import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
 
 type Phase = TeachingProgress['phase'];
 type StreamSession = {
@@ -196,25 +196,25 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
       });
     const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
-    const invalid = manifest ? !await teachingResultAllowed(tx, submission, manifest, grantCurrent, check)
-      : !await grantCurrent(submission);
-    if (invalid && status === 'pending') {
-      throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
-    }
-    if (status === 'ready' && (invalid || row.message === null)) {
-      row.message = unavailableReplyMessage;
+    const authority = manifest ? await teachingResultAuthority(tx, submission, manifest, grantCurrent, check)
+      : await grantCurrent(submission) ? 'authorized' : 'withdrawn';
+    if (authority !== 'authorized') row.draft = null;
+    if (status === 'ready' && (authority !== 'authorized' || row.message === null)) {
+      row.message = authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage;
       row.hasStudyKit = false;
     }
     const session: StreamSession = {
       id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status,
       ...(status !== 'ready' && submission.answer ? { pendingAnswer: submission.answer } : {}),
     };
-    return {session,row,artifacts:status === 'pending' ? await turnArtifacts(tx,sessionId,row.turnId,check) : []};
+    const mounts = status === 'pending' ? await turnArtifacts(tx,sessionId,row.turnId,check) : {snapshots: [], unconfirmed: []};
+    return {session,row,mounts};
   });
 }
 
 export async function serveSessionEvents(
   db: Db, sessionId: string, watchMounts: boolean, res: ServerResponse, projectRecall: RecallHttp['project'],
+  knownMounts: ReadonlySet<string> = new Set(),
 ) {
   const subscribers = subscriptions.get(db);
   if (res.destroyed) return;
@@ -228,6 +228,7 @@ export async function serveSessionEvents(
   let dirty = false;
   let notifiedSinceHeartbeat = false;
   let lastEventId: string | undefined;
+  const seen = new Set(knownMounts);
   const subscriber: Subscriber = {
     sessionId,
     refresh() {
@@ -270,17 +271,19 @@ export async function serveSessionEvents(
       while (dirty && !closed) {
         dirty = false;
         if (watchMounts) {
-          const authorizedMountIds = await sessionMountPermissions(db, sessionId);
+          const {authorizedMountIds, unconfirmed} = await sessionMountPermissions(db, sessionId);
           if (closed || dirty) continue;
-          const key = JSON.stringify(authorizedMountIds);
+          const permission = {sessionId, authorizedMountIds, ...mountPermissionFields(unconfirmed, seen)};
+          const key = JSON.stringify(permission);
           if (key !== lastEventId) {
             lastEventId = key;
-            await writeFrame(event('mount-permissions', undefined, { sessionId, authorizedMountIds }));
+            authorizedMountIds.forEach(id => seen.add(id));
+            await writeFrame(event('mount-permissions', undefined, permission));
           }
           continue;
         }
         const notion = notionReadScope(db, studioLearner);
-        const { session, row, artifacts } = await readSessionEvent(notion, sessionId);
+        const { session, row, mounts: {snapshots: artifacts, unconfirmed} } = await readSessionEvent(notion, sessionId);
         if (closed) return;
         if (dirty) continue;
         const { currentTurnId, status } = session;
@@ -295,7 +298,10 @@ export async function serveSessionEvents(
           }));
           return;
         }
-        const eventId = [currentTurnId,row.revision ?? 0,...artifacts.map(a => a.mountId+'-'+a.viewSeq)].join(':');
+        const partial = mountPermissionFields(unconfirmed, seen);
+        const eventId = [currentTurnId,row.revision ?? 0,Number(Boolean(row.draft)),
+          ...artifacts.map(a => a.mountId+'-'+a.viewSeq),
+          ...(partial.mountPermissionsPartial ? ['partial', ...partial.unconfirmedMountIds] : [])].join(':');
         if (eventId === lastEventId) continue;
         lastEventId = eventId;
         // Each event carries cumulative state, including on Last-Event-ID reattachment.
@@ -303,8 +309,10 @@ export async function serveSessionEvents(
           session,
           phase: row.phase ?? 'queued',
           authorizedMountIds: artifacts.map(artifact => artifact.mountId),
+          ...partial,
           ...(row.draft ? { message: row.draft } : {}),
         };
+        data.authorizedMountIds.forEach(id => seen.add(id));
         await writeFrame(event('progress', eventId, data) +
           artifacts.map(artifact => event('artifact-snapshot', eventId, artifact)).join(''));
       }

@@ -143,31 +143,46 @@ function notionPageKey({selection,pageId,watermark}: Awaited<ReturnType<typeof n
 
 export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<Basis>, recipient: NotionRecipient, check?: CheckNotionRead) {
   const pages = [];
+  let unconfirmed: NotionReadUnconfirmed | undefined;
   for (const witness of witnesses) {
     if (witness.type !== captureSourceType) continue;
     const fact = await createAuthorizedFactReader(tx,'teaching',recipient).reopen({...witness,id:factId(witness.id),
       accessEpoch:witness.epoch as FactSnapshot['accessEpoch'], mode:'pinned'});
     if (!await checkStudioNotionFact(tx,fact,'teaching',recipient)) continue;
-    if (check) await check(fact);
-    else pages.push(await notionPageAuthority(tx, sourceEnvelope(fact.value)));
+    if (!check) pages.push(await notionPageAuthority(tx, sourceEnvelope(fact.value)));
+    else try { await check(fact); }
+    catch (error) {
+      if (!(error instanceof NotionReadUnconfirmed)) throw error;
+      // A withdrawn witness takes precedence over another witness's transient failure.
+      unconfirmed = error;
+    }
   }
+  if (unconfirmed) throw unconfirmed;
   return pages;
 }
 
-export async function teachingResultAllowed(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
+export async function teachingResultAuthority(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
   rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead) {
   try {
     const manifest = parseManifest(rawManifest);
     if (manifest.purpose !== teaching || !await grantCurrent(turn) ||
-        (await revalidateManifest(tx, manifest)).kind !== 'valid') return false;
+        (await revalidateManifest(tx, manifest)).kind !== 'valid') return 'withdrawn';
     const recipient: NotionRecipient = () => true;
     if (turn.providerId && turn.protocol && turn.workspaceRevision)
       recipient.notionRecipientId = notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision);
     await notionSendBasis(tx, await savedNotionWitnesses(tx, manifest.inputs), recipient, check);
-    return true;
-  } catch {
-    return false;
+    return 'authorized';
+  } catch (error) {
+    return error instanceof NotionReadUnconfirmed ? 'unconfirmed' : 'withdrawn';
   }
+}
+
+export async function teachingResultAllowed(...args: Parameters<typeof teachingResultAuthority>) {
+  return (await teachingResultAuthority(...args)) === 'authorized';
+}
+
+export class NotionReadUnconfirmed extends FactReadDeniedError {
+  constructor() { super('recipient', '暂时无法确认 Notion 来源。'); }
 }
 
 export type CheckNotionRead = (fact: FactSnapshot) => Promise<void>;
@@ -177,8 +192,9 @@ type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => P
 // authority carries over to a later HTTP request, stream refresh, or model send.
 export function notionReadScope(db: Db, learner: LearnerId) {
   const {snapshot, locked, provider} = notionHost(db, {learner});
-  const pages = new Map<string, boolean>();
-  const allowed = new Set<string>();
+  type Authority = 'authorized' | 'withdrawn' | 'unconfirmed';
+  const pages = new Map<string, Authority>();
+  const witnesses = new Map<string, Authority>();
 
   async function pageFor(tx: ReadTransaction, fact: FactSnapshot) {
     if (fact.type !== captureSourceType) return;
@@ -191,7 +207,10 @@ export function notionReadScope(db: Db, learner: LearnerId) {
 
   const check = (tx: ReadTransaction): CheckNotionRead => async fact => {
     const page = await pageFor(tx, fact);
-    if (page && !allowed.has(page.witness)) throw new FactReadDeniedError('recipient', '未能确认 Notion 来源。');
+    if (!page) return;
+    const authority = witnesses.get(page.witness);
+    if (authority === 'withdrawn') throw new FactReadDeniedError('recipient', '未能确认 Notion 来源。');
+    if (authority !== 'authorized') throw new NotionReadUnconfirmed();
   };
 
   async function read<T>(project: Projection<T>): Promise<T>;
@@ -207,13 +226,13 @@ export function notionReadScope(db: Db, learner: LearnerId) {
       if (!pages.has(key)) {
         try {
           await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId);
-          pages.set(key, true);
+          pages.set(key, 'authorized');
         } catch (error) {
           if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
-          pages.set(key, false);
+          pages.set(key, error instanceof RequestError && error.status === 403 ? 'withdrawn' : 'unconfirmed');
         }
       }
-      if (pages.get(key)) allowed.add(witness);
+      witnesses.set(witness, pages.get(key)!);
     }
     return locked<P | T>(tx => publish ? publish(tx, check(tx)) : project(tx, check(tx)));
   }
