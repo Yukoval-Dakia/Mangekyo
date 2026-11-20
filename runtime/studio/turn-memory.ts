@@ -47,12 +47,6 @@ export function openTurnMemory(options: {
   const hypothesisTargets = new Set<string>();
   const targets = new Set<string>();
   let opened = false;
-  function rememberRetrieved(packet: Packet) {
-    opened = true;
-    for (const ref of packet.receipt.sent) {
-      if (ref.type === claimType || ref.type === memoryAssertionType) candidates.set(ref.id, ref);
-    }
-  }
   const managementReads = new Map<number, {packet: Packet; ranges: [number, number][]}>();
   function offerManagement(step: number, packet: Packet) {
     opened = true;
@@ -124,7 +118,7 @@ export function openTurnMemory(options: {
     try {
       if (name === 'retrieve_memory') {
         const packet = await options.retrieve(memoryRetrieveQuery(args), step);
-        rememberRetrieved(packet);
+        offerManagement(step, packet);
         return packet.context;
       }
       const explicit = !!options.belief;

@@ -37,6 +37,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   currentLearningObject?: string;
   learningMemory?: string;
   memoryTools?: (name: string, args: Record<string, unknown>, step: number) => Promise<string>;
+  onMemoryDelivered?: (range: DeliveredToolRange) => void;
   openMemoryRegion?: (input: Record<string, unknown>, step: number) => Promise<string>;
   maxCompletionTokens?: 4096 | 8192;
   tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
@@ -121,6 +122,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const tools = options.tools && createStudyTools(options.tools);
   const results = studyToolResults();
   const previews = new WeakMap<ToolResultMessage, string>();
+  const confirmDelivery = options.learningTools?.onDelivered ?? options.onMemoryDelivered;
   const deliveries = new WeakMap<ToolResultMessage, DeliveredToolRange>();
   const workspace = options.tools?.workspace;
   const { model, reasoningEffort } = profileFor(options.provider);
@@ -188,11 +190,11 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
     if (reply.reportedModel) verifyTeachingModel(reply.reportedModel, options.provider.apiKey, model);
     // Projected previews are new messages. Only acknowledge the original text after the
     // provider accepted this request, before executing any of its returned tool calls.
-    if (options.learningTools?.onDelivered) for (const message of context) {
+    if (confirmDelivery) for (const message of context) {
       if (message.role !== 'tool') continue;
       const range = deliveries.get(message);
       if (range) {
-        options.learningTools.onDelivered(range);
+        confirmDelivery(range);
         deliveries.delete(message);
       }
     }

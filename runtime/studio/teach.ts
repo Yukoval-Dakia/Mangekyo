@@ -710,7 +710,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         ...(evidenceMessage ? {classroomEvidence:evidenceMessage} : {}),
         ...(jit ? {jitContext: jit.context} : currentObject ? {currentLearningObject: JSON.stringify(currentObject.view)} : {}),
         ...(learningMemory?.context ? { learningMemory: learningMemory.context } : {}),
-        ...(turnMemory ? {memoryTools: turnMemory.execute, beliefTools} : {}),
+        ...(turnMemory ? {memoryTools: turnMemory.execute, onMemoryDelivered:turnMemory.onDelivered, beliefTools} : {}),
         ...(learningMemory?.bundle.omitted.some(item => item.reason === 'budget') ? {
           async openMemoryRegion(input: Record<string, unknown>, step: number) {
             if (expandedMemory) return JSON.stringify(learningToolError('budget_or_limit','region','本轮已使用一次记忆区域展开。'));
