@@ -49,8 +49,9 @@ try {
 }
 
 async function run({db,learner,stableId,load,send,assert}) {
-  const {createCommandReadContext} = await load('kernel/src/commands/reads.ts');
-  const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, paperIssuance, paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
+  const {createCommandReadContext, UnsupportedReadError} = await load('kernel/src/commands/reads.ts');
+  const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, projectNewPaper, paperIssuance,
+    paperIssuanceId, paperIssuanceType, paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
   const reads = (purpose, action) => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
   const read = id => reads('storage', context => context.fact(id, {mode:'following'}));
   const at = '2026-11-21T01:00:00.000Z';
@@ -158,12 +159,19 @@ async function run({db,learner,stableId,load,send,assert}) {
   await assert.rejects(reads('storage',ctx=>projectIssuedPaper(ctx,{...issue,epoch:'999'})), /用途已变更/);
   assert.doesNotMatch(JSON.stringify(projected),/hidden|blobRef|crop_ref|sha256/);
 
+  const prompt = '2 + 3 = ?';
   const questionId = stableId('textbook example'), pageId = stableId('textbook print');
   const written = await send('content.saveQuestion', { id: questionId, asset: {
     kind:'question', title:'应用题', promptBlockId:'statement', blocks:[
-      {id:'statement',parentId:null,body:{kind:'text',text:'2 + 3 = ?'}},
+      {id:'statement',parentId:null,body:{kind:'text',text:prompt}},
       {id:'solution',parentId:null,body:{kind:'text',text:'hidden solution'}},
     ],
+    response_schema: [{ slotId: 'answer', schemaVersion: '1', fields: [{ kind: 'numeric', path: '' }] }],
+    assessment_contract: [{
+      criterionId: 'sum', inputs: [{ slotId: 'answer', path: '' }], maximum: 1,
+      missingEvidence: 'insufficient-evidence', evaluator: { id: 'frozen-value-match', version: '1' },
+      parameters: { value: 5 },
+    }],
   } });
   await send('content.createTextbookPage', { id:pageId, clientEditSeq:1, page:{title:'教材应用题',blocks:[
     {id:'exposition',parentId:null,body:{kind:'text',text:'hidden commentary'}},
@@ -175,16 +183,60 @@ async function run({db,learner,stableId,load,send,assert}) {
   await assert.rejects(send('capture.issuePaper',textbook), /未授权教学用途/);
 
   const legacyId = stableId('legacy-workspace-question'), workbookId = stableId('legacy-workbook');
-  const prompt = '2 + 3 = ?';
-  await send('activity.saveWorkspaceEntry', { id: legacyId, entry: { kind: 'question', title: '旧题', body: prompt, answer: '5' }, basis: [] });
-  await send('activity.saveWorkbookPaper', { id: workbookId, data: { title: '旧卷', savedAt: at, materialId: null,
-    questions: [{ id: 'q1', kind: 'numeric', prompt, sourceQuestionRef: { id: legacyId, rev: 1 },
-      answer: 5, tolerance: 0, unit: null, explanation: null }],
+  const legacyEntry = { kind: 'question', title: '旧题', body: prompt, answer: '5' };
+  const legacyItem = { id: 'q1', kind: 'numeric', prompt, answer: 5, tolerance: 0, unit: null, explanation: null };
+  const legacyWorkbook = { title: '旧卷', savedAt: at, materialId: null };
+  await send('activity.saveWorkspaceEntry', { id: legacyId, entry: legacyEntry, basis: [] });
+  await send('activity.saveWorkbookPaper', { id: workbookId, data: {
+    ...legacyWorkbook, questions: [{ ...legacyItem, sourceQuestionRef: { id: legacyId, rev: 1 } }],
   } });
   const legacy = { ...issue, epoch: '0', source: { id: workbookId, rev: 1 } };
   assert.equal((await send('capture.issuePaper', legacy)).wrote.length, 1);
   await send('activity.setWorkspaceTeaching', { id: legacyId, expectedRev: 1, enabled: false });
   await assert.rejects(reads('storage', ctx => projectIssuedPaper(ctx, legacy)), /教学用途/);
+
+  const { freezeQuestionAssessment, questionAsset } = await load('modules/content/asset.ts');
+  const { questionVerificationKey, questionVerificationType } = await load('modules/content/question-state.ts');
+  await send('content.setQuestionTeaching', { id: questionId, expectedRev: 1, allowed: true });
+  const bank = await read(questionId);
+  const { id, rev } = bank.ref;
+  const wrapId = stableId('legacy-with-iqdb-basis');
+  await send('activity.saveWorkspaceEntry', {
+    id: wrapId, entry: legacyEntry, basis: [{ id, rev, epoch: bank.accessEpoch }],
+  });
+  const workbookRef = { id: stableId('legacy-contract-prompt'), rev: 1 };
+  const [assessmentItem] = freezeQuestionAssessment(questionAsset(bank.value), bank.ref).items;
+  await send('activity.saveWorkbookPaper', { id: workbookRef.id, data: {
+    ...legacyWorkbook,
+    questions: [legacyItem],
+    assessmentRelease: {
+      releaseRef: workbookRef,
+      items: [{ ...assessmentItem, itemId: legacyItem.id, promptRef: { id: wrapId, rev: 1 } }],
+    },
+  } });
+  const throughPrompt = { ...legacy, source: workbookRef };
+  await assert.rejects(send('capture.issuePaper', throughPrompt), UnsupportedReadError);
+  const missingReady = await gatherSnapshot(db, { learner, purpose: 'storage' }, async ({ read }) => ({
+    kind: 'input', data: await projectNewPaper(read, throughPrompt), effects: [],
+  }));
+  assert.deepEqual(missingReady.plan, {
+    kind: 'waiting',
+    targets: [{ kind: 'slot', ref: { learner, type: questionVerificationType, key: questionVerificationKey({ id, rev }) } }],
+  });
+
+  // Restore a previously issued paper without rerunning today's release checks.
+  const { applyFactWrites } = await load('kernel/src/commands/writes.ts');
+  const { default: issuanceDeclaration } = await load('modules/capture/facts/paper-issuance.ts');
+  const historicalId = await paperIssuanceId(throughPrompt);
+  await db.tx({ learner }, tx => tx.withLearnerWrite(tick => applyFactWrites(tx, tick, [
+    { kind: 'create', id: historicalId, factType: paperIssuanceType, data: throughPrompt, purpose: ['storage'] },
+  ], { actor: 'learner', purpose: 'storage', commandId: stableId('restore-historical-paper') },
+  type => type === paperIssuanceType ? issuanceDeclaration : undefined)));
+  const historical = await reads('storage', ctx => projectIssuedPaper(ctx, throughPrompt));
+  assert.equal(historical.issuanceId, historicalId);
+  assert.equal(historical.pages.flatMap(page => page.pieces).map(piece => piece.text).join(''), prompt);
+  await send('content.setQuestionTeaching', { id, expectedRev: rev, allowed: false });
+  await assert.rejects(reads('storage', ctx => projectIssuedPaper(ctx, throughPrompt)), /来源权限已变更/);
 
   const questionPages = projected.pages.filter(page=>page.pieces.some(piece=>piece.itemId==='q2')).map(page=>page.number);
   assert.ok(questionPages.length>1);
