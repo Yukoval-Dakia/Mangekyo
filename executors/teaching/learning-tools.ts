@@ -1,5 +1,5 @@
 import type {JsonObject, ToolError, ToolErrorCode} from '@mangekyo/kernel';
-import type {ReceiveStudyImage, WorkspaceWriteReceipt} from './workspace-tools.ts';
+import {workspaceDefinitions, type ReceiveStudyImage, type WorkspaceWriteReceipt} from './workspace-tools.ts';
 import type {PythonRead, PythonReadValue} from './python-sdk.ts';
 
 export const hostedReads = ['search_learning', 'open_learning', 'read_context'] as const;
@@ -122,4 +122,53 @@ export async function settledToolBatch<T>(calls: readonly (() => Promise<T>)[]):
     if (result.status === 'rejected') throw result.reason;
     return result.value;
   });
+}
+
+export const workspaceToolAliases = {search_learning:'search_workspace',open_learning:'open_learning',
+  save_page:'save_page',save_edge:'save_relation'} as const;
+function renamed<K extends keyof typeof workspaceToolAliases>(name: K) {
+  const definition = workspaceDefinitions.find(tool => tool.function.name === workspaceToolAliases[name])!;
+  return {...definition,function:{...definition.function,name}};
+}
+function tool<K extends string>(name: K, description: string, properties: object, required: string[] = []) {
+  return {type:'function',function:{name,description,parameters:{type:'object',additionalProperties:false,properties,required}}};
+}
+export const learningToolFallback = (name: string) => ({tool:'find_tools',args:{query:name}});
+export function adaptWorkspaceResult(raw: string, name: HostedTool): LearningResult {
+  const value = JSON.parse(raw);
+  if (value?.ok !== false) return {ok:true,data:value};
+  const code = value.code;
+  const next = value.next?.tool;
+  const redirect = next === 'read_workspace' ? 'open_learning' : next === 'search_workspace' ? 'search_learning' :
+    next === 'save_relation' ? 'save_edge' : next;
+  const args = next === 'read_workspace' ? {refs:value.next.args.id} : value.next?.args;
+  const retry = redirect && args && ['open_learning','search_learning','save_page','save_edge','save_belief'].includes(redirect)
+    ? {tool:redirect,args} : learningToolFallback(name);
+  return toolFailure(code === 'budget_or_limit' ? 'limit_exceeded' :
+    ['invalid_args','not_found','access_revoked','basis_stale','version_conflict','evidence_not_opened','limit_exceeded'].includes(code)
+      ? code : 'invalid_args',String(value.message ?? '工具无法完成。'),retry,value.field);
+}
+
+export function learningHostDefinitions(manageBeliefs: boolean, allowedIntents: readonly string[], artifact?: ToolDefinition): LearningTools['definitions'] {
+  return {
+    search_learning:renamed('search_learning'),open_learning:renamed('open_learning'),
+    read_context:tool('read_context','读取已授权学习上下文，intent 支持 radar、tutoring、conversation、planning、execution、history。从返回的 omitted.expand 可打开更多本轮已授权内容。当前只读当前视点。' +
+      (manageBeliefs ? '更正或忘记记忆前，用 management 和可选 query 查找原条目。' : ''),{
+      intent:{type:'string',enum:['radar','conversation',...allowedIntents]},
+      ...(manageBeliefs ? {query:{type:'string',minLength:1,maxLength:120}} : {}),horizon_hours:{type:'integer',minimum:1,maximum:168},
+      expand:{type:'object',additionalProperties:false,required:['region','start','basisDigest'],properties:{
+        region:{type:'string'},start:{type:'integer',minimum:0},basisDigest:{type:'string',pattern:'^[0-9a-f]{64}$'},
+      }},
+    },['intent']),
+    save_page:renamed('save_page'),save_edge:renamed('save_edge'),
+    save_question:tool('save_question','保存独立题面草稿。题库核验前不可发放。',{
+      title:{type:'string',maxLength:240},prompt:{type:'string',maxLength:8000},
+      response_schema:{type:'array',items:{type:'object'},maxItems:32},
+      assessment_contract:{type:'array',items:{type:'object'},maxItems:32},
+    },['title','prompt']),
+    manage_activity:tool('manage_activity','用正常挂载命令为当前回合发放作品。动作 mount_artifact。',{
+      action:{const:'mount_artifact'},...((artifact?.function.parameters.properties ?? {}) as object),
+    },['action','view']),
+    ...(artifact ? {mount_artifact:{...artifact,function:{...artifact.function,name:'mount_artifact' as const}}} : {}),
+  };
 }
