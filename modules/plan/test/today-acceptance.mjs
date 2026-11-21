@@ -33,9 +33,8 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
   const next = {...base,now:'2026-11-18T15:01:00Z',constraints:noLocks};
   const session = sessionRule(base.now,base.timeZone,3,'tired');
   assert.equal(session.expiresAt,'2026-11-18T15:00:00.000Z');
-  const expired = planToday({...next,candidates:[draft],rules:[session]});
-  assert.deepEqual(expired.protectedItems,[draft]);
-  assert.equal(expired.budgetMinutes,20);
+  const continued = planToday({...next,candidates:[draft],rules:[session]});
+  assert.deepEqual([continued.protectedItems,continued.budgetMinutes],[[draft],20]);
   const long = {...next,candidates:[make('forty-four',44,1),make('forty-five',45,1),make('hour',60,1,{input:'voice'})],
     constraints:{budget_min:60,locks:[],deadlines:[]},duration:'45min+'};
   for (const [mode,expected] of [['any',['forty-five','hour']],['voice',['hour']],['one-hand',[]]])
@@ -80,6 +79,13 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
   const localRules = [school,{kind:'defer',activityId:'graph',until:'2026-11-20'},
     {kind:'replace',activityId:'convert',replacementId:'units',date:before.day}];
   assert.deepEqual(ids(planToday({...base,candidates,rules:localRules})),['units']);
+  const completed = (topic,returnProbeResult) => make('probe-'+topic,3,0,{kind:'probe',state:'completed',date:before.day,topic,returnProbeResult});
+  for (const [topic,result,expected] of [['graph','unknown','convert'],['graph','incorrect','graph'],['convert','correct','graph']]) {
+    const view = planToday({...base,lastOpenedAt:returnInput.lastOpenedAt,candidates:[...candidates,completed(topic,result),completed('units','unknown')],
+      rules:[{...school,date:before.day,topic:'校内任务',minutes:8}]});
+    assert.deepEqual([ids(view),view.protectedItems[0],view.totalMinutes+view.schoolMinutes],[[expected],fixed,20]);
+    assert.equal(view.items[0].candidate.evidence.includes('fixture/probe-graph'),result==='incorrect');
+  }
 });
 
 test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重排及规则回执',async t=>{

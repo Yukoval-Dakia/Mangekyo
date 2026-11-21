@@ -25,6 +25,9 @@ export type PlanCandidate = {
   state?: 'in-progress' | 'completed';
   date?: string;
   draftRef?: string;
+  // Authorized result for this completed probe's frozen item in the current return round.
+  // For a known result, evidence includes the submission/result witness.
+  returnProbeResult?: 'correct' | 'incorrect' | 'unknown';
   // From authorized content/issuance witnesses in the same planning snapshot.
   examPrep?:
     | { kind: 'archetype'; coveredQuestionCount: number }
@@ -37,6 +40,7 @@ export type TodayInput = {
   candidates: readonly PlanCandidate[];
   goal?: { id: string; text: string | null; status: GoalStatus };
   rules?: readonly PlanRule[];
+  // Keep the pre-return visit timestamp stable across refreshes of the return round.
   lastOpenedAt?: string;
   mode?: 'one-hand' | 'voice' | 'any';
   duration?: TodayDuration;
@@ -142,6 +146,18 @@ function sprintPriority(candidate: PlanCandidate, inScope: boolean, scopeKnown: 
 
 const returnProbeLimit = 2;
 const isReturnProbe = (c: PlanCandidate) => c.kind === 'probe' || c.kind === 'counterexample';
+
+function witnessedProbeResults(completed: readonly PlanCandidate[]) {
+  const results = new Map<string, PlanCandidate | null>();
+  for (const probe of completed) {
+    const outcome = probe.returnProbeResult;
+    if ((outcome !== 'correct' && outcome !== 'incorrect') || !probe.evidence.length) continue;
+    const previous = results.get(probe.topic);
+    if (previous === undefined) results.set(probe.topic, probe);
+    else if (previous?.returnProbeResult !== outcome) results.set(probe.topic, null);
+  }
+  return results;
+}
 
 type Ranked = { candidate: PlanCandidate; score: number; why: string[] };
 
@@ -267,11 +283,14 @@ export function planToday(input: TodayInput) {
   );
   const protectedIds = new Set(protectedItems.map((c) => c.id));
   // A refresh with the same return timestamp must still account for submitted probes.
-  const checkedTopics = new Set(protectedItems
-    .filter((c) => returning && c.state === 'completed' && c.date === day && isReturnProbe(c))
-    .map((c) => c.topic));
+  const returnPlanning = returning && campaign !== 'recovery';
+  const completedProbes = returnPlanning
+    ? protectedItems.filter((c) => c.state === 'completed' && c.date === day && isReturnProbe(c))
+    : [];
+  const checkedTopics = new Set(completedProbes.map((c) => c.topic));
   const probesLeft = returnProbeLimit - checkedTopics.size;
-  const probing = returning && campaign !== 'recovery' && probesLeft > 0;
+  const probing = returnPlanning && probesLeft > 0;
+  const probeResults = returnPlanning && !probing ? witnessedProbeResults(completedProbes) : null;
   for (const rule of rules) {
     if (rule.kind === 'replace' && rule.date === day && protectedIds.has(rule.activityId))
       preferred.delete(rule.replacementId);
@@ -371,6 +390,14 @@ export function planToday(input: TodayInput) {
       score += 70 * info;
       why.push('长假后先摸底，再按结果重排。');
     }
+    const probe = probeResults?.get(c.topic);
+    if (probe?.returnProbeResult === 'incorrect') {
+      score += 30;
+      why.push('本轮摸底在「' + c.topic + '」答错，优先复查。');
+    } else if (probe?.returnProbeResult === 'correct') {
+      score -= 20;
+      why.push('本轮摸底已独立答对「' + c.topic + '」，可把时间先给其他主题。');
+    }
     if (c.open.kind === 'activity') score += 18;
     if (c.goalId) {
       score += 12;
@@ -425,7 +452,8 @@ export function planToday(input: TodayInput) {
     }
     const order = input.contentOrder?.indexOf(c.id) ?? -1;
     if (order >= 0) score += 10 / (order + 1);
-    pool.push({ candidate: c, score, why });
+    const candidate = probe ? { ...c, evidence: [...new Set([...c.evidence, ...probe.evidence])] } : c;
+    pool.push({ candidate, score, why });
   }
   // Starter material fills an empty feasible inventory. It must not displace prepared work.
   const feasible = pool.filter(
