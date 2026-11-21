@@ -68,10 +68,15 @@ function supportRows(value: unknown, basis: readonly BusWitness[]) {
   return cited;
 }
 
-function isCurrentSticky(fact: FactSnapshot, value: Readonly<Record<string, unknown>>) {
-  return fact.type === 'companion.claim' && value.version === 1 && value.authority === 'directive' &&
-    value.origin === 'learner' && value.sticky === true && value.category === 'claim' &&
-    (value.action === 'remember' || value.action === 'correct') && typeof value.text === 'string' && value.valid_until === null;
+function isCurrentSticky(fact: FactSnapshot, value: Readonly<Record<string, unknown>>, basis: readonly BusWitness[]) {
+  if (fact.type !== 'companion.claim' || value.version !== 1 || value.authority !== 'directive' ||
+      value.sticky !== true || value.category !== 'claim' || typeof value.text !== 'string' || value.valid_until !== null) return false;
+  if (value.origin === 'learner') return value.action === 'remember' || value.action === 'correct';
+  if (value.origin !== 'turn' || value.action !== 'correct' || !Array.isArray(value.evidence_refs) ||
+      value.evidence_refs.length !== 1) return false;
+  const quote = fields(value.evidence_refs[0]);
+  return quote !== undefined && basis.some(w => w.type === 'activity.studyTurn' &&
+    w.id === quote.id && w.rev === quote.rev && w.accessEpoch === quote.accessEpoch);
 }
 
 export async function projectPreSubmitPitfalls(read: PreSubmitPitfallRead, input: PreSubmitPitfallInput):
@@ -100,7 +105,7 @@ Promise<PreSubmitPitfall[]> {
     if (!fact || !value) return;
     const cited = rule.kind === 'sticky' ? null : supportRows(value.evidence_refs, rule.basis);
     if (rule.kind === 'sticky') {
-      if (!isCurrentSticky(fact, value)) return;
+      if (!isCurrentSticky(fact, value, rule.basis)) return;
     } else {
       if (fact.type !== 'companion.memoryAssertion' || !cited?.size) return;
       if (rule.kind === 'misconception' && value.kind !== 'misconception') return;
