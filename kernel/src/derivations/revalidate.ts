@@ -150,18 +150,33 @@ async function checkInput(
   return valid(behind);
 }
 
-export async function readEffectiveSlotVersion<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string, pinnedId?: string) {
+async function effectiveSlotRow<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, pinnedId?: string, rejectSlotError = false) {
   if (slot.learner !== tx.learner) return undefined;
   const { rows: [row] } = await tx.query<{ id: string; value: Outcome<Value>; manifest: unknown; gather_tick: string }>(
     `SELECT d.id,d.value,d.manifest,d.gather_tick::text
        FROM slot_state s JOIN derivations d USING (learner_id,slot_type,slot_key)
       WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3 AND d.deriver=$4
-        AND d.effective_tick>=d.gather_tick AND NOT d.is_shadow AND d.invalidated_tick IS NULL
+        AND (NOT $6 OR s.last_error IS NULL) AND d.effective_tick>=d.gather_tick AND NOT d.is_shadow AND d.invalidated_tick IS NULL
         AND (($5::text IS NULL AND d.id=s.current_id AND d.lifecycle='effective'
               AND d.freshness='current' AND d.selection_ended_tick IS NULL)
           OR ($5 IS NOT NULL AND d.id=$5 AND d.lifecycle IN ('effective','superseded')))`,
-    [slot.learner, slot.type, slot.key, deriver, pinnedId ?? null],
+    [slot.learner, slot.type, slot.key, deriver, pinnedId ?? null, rejectSlotError],
   );
+  return row;
+}
+
+/** Read the settled outcome of exactly this current, error-free slot and purpose. */
+export async function readCurrentSlotOutcome<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string) {
+  const row = await effectiveSlotRow<Value>(tx, slot, deriver, undefined, true);
+  if (!row) return undefined;
+  const manifest = parseManifest(row.manifest);
+  if (manifest.purpose !== use || manifest.gatherTick !== row.gather_tick ||
+      (await revalidateManifest(tx,manifest)).kind !== 'valid') return undefined;
+  return {id:derivationId(row.id),slot,outcome:row.value};
+}
+
+export async function readEffectiveSlotVersion<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string, pinnedId?: string) {
+  const row = await effectiveSlotRow<Value>(tx, slot, deriver, pinnedId);
   if (!row || row.value?.kind !== 'value') return undefined;
   const manifest = parseManifest(row.manifest);
   if (manifest.gatherTick !== row.gather_tick) return undefined;

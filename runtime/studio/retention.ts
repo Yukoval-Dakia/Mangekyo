@@ -20,7 +20,7 @@ import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
-import { failWork, readWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
+import { failWork, readWork, requestCatalogedWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { sameWorkbookJson, workbookGradingVersion } from '../../modules/activity/workbook-values.ts';
 import forecast from '../../modules/learner/derivers/retention-forecast.ts';
 import reconciliation from '../../modules/learner/derivers/retention-reconciliation.ts';
@@ -140,14 +140,8 @@ function requireIndependentPosttest(observation: RetentionObservation) {
 }
 
 async function enqueue(tx: DbTransaction, policy: CandidatePolicy, key: string, scopeKeys: JsonObject) {
-  await tx.withLearnerWrite(async tick => {
-    await tx.query(
-      `INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys, changed_tick)
-       VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-      [tx.learner, policy.slot.type, key, canonicalJsonString(scopeKeys), tick],
-    );
-    await requestWork(tx, tick, { slotType: policy.slot.type, slotKey: key, deriver: policy.deriver });
-  });
+  await tx.withLearnerWrite(tick => requestCatalogedWork(tx,tick,
+    {slotType:policy.slot.type,slotKey:key,deriver:policy.deriver},canonicalJsonString(scopeKeys),{reuseSlot:true}));
 }
 
 function sameTarget(actual: Awaited<ReturnType<typeof openRetentionTarget>>, expected: ForecastScope) {
