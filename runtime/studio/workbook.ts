@@ -1,5 +1,5 @@
 import { storeSettledValue } from '../../kernel/src/derivations/settled-value.ts';
-import { readable } from '../../kernel/src/commands/fact-collection.ts';
+import { readable, readFactType as factType } from '../../kernel/src/commands/fact-collection.ts';
 import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { projectWorkbookDetail, projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
@@ -90,14 +90,6 @@ function factIdOf(value: unknown, message: string): FactId {
   } catch {
     throw new RequestError(404, message);
   }
-}
-
-async function factType(tx: ReadTransaction, id: FactId): Promise<string | null> {
-  const result = await tx.query<{ type: string }>(
-    'SELECT type FROM facts WHERE learner_id=$1 AND id=$2',
-    [tx.learner, id],
-  );
-  return result.rows[0]?.type ?? null;
 }
 
 function mapReadFailure(error: unknown, missing: string, denied: string): never {
