@@ -8,13 +8,18 @@ export const correctionCheckSuggestedMs = 30_000;
 const dayMs = 86_400_000;
 const research = 'background-research';
 const teaching = 'teaching';
+const storage = 'storage';
 const retestGoal = '订正后补做一道同壳换数题';
+const retestPrefix = 'correction-retest:';
+export const isCorrectionRetest = (dedupKey: string) => dedupKey.startsWith(retestPrefix);
 
 // The host supplies the learner's recorded correction and the exact source question
 // from the original incorrect submission, using the same admission clock as Activity.
 export type RecordedCorrection = {
   source: BusWitness;
   originalQuestion: BusWitness;
+  researchAuthorization?: BusWitness;
+  frozenPaper?: BusWitness;
   admittedAt: Tick;
   correctedAt: string;
 };
@@ -44,19 +49,23 @@ function isFreshNumbersVariant(original: BusWitness, candidate: CorrectionVarian
 
 // Use the recipient-authorized reader in the learner transaction. Missing or
 // denied witnesses produce undefined. Transient failures propagate for retry.
-export type CorrectionReopen = (ref: BusWitness, purpose: typeof teaching | typeof research) => Promise<FactSnapshot | undefined>;
+export type CorrectionReopen = (ref: BusWitness, purpose: typeof teaching | typeof research | typeof storage) => Promise<FactSnapshot | undefined>;
 
 async function matchesCurrent(reopen: CorrectionReopen, learner: BusWitness['learner'], ref: BusWitness,
-  purpose: typeof teaching | typeof research) {
+  purpose: typeof teaching | typeof research | typeof storage) {
   if (ref.learner !== learner) return false;
   const opened = await reopen(ref, purpose);
   return opened?.ref.learner === learner && opened.type === ref.type && allows(opened.purpose, purpose) &&
     sameWitness({ ...opened.ref, accessEpoch: opened.accessEpoch }, ref);
 }
 
-async function current(reopen: CorrectionReopen, correction: RecordedCorrection, basis: readonly BusWitness[]) {
-  const { source, originalQuestion } = correction;
-  if (!await matchesCurrent(reopen, source.learner, { ...source, mode: 'following' }, research)) return false;
+async function current(reopen: CorrectionReopen, correction: RecordedCorrection, basis: readonly BusWitness[], scheduled = false) {
+  const { source, originalQuestion, researchAuthorization, frozenPaper } = correction;
+  const grant = scheduled ? researchAuthorization : undefined;
+  if (grant && (grant.learner !== source.learner || grant.mode !== 'following' ||
+      !await matchesCurrent(reopen, source.learner, grant, research))) return false;
+  if (!await matchesCurrent(reopen, source.learner, { ...source, mode: 'following' }, grant ? storage : research)) return false;
+  if (scheduled && frozenPaper && !await matchesCurrent(reopen, source.learner, frozenPaper, storage)) return false;
   for (const ref of [originalQuestion, ...basis])
     if (!await matchesCurrent(reopen, source.learner, ref, teaching)) return false;
   return true;
@@ -73,12 +82,13 @@ function todoSource({ id, rev, accessEpoch }: BusWitness) {
 function retestIntent(correction: RecordedCorrection, settingsRevision: number) {
   const fireAtMs = Date.parse(instant(correction.correctedAt)) + dayMs;
   return {
-    dedupKey: `correction-retest:${correction.source.id}:${correction.source.rev}`,
+    dedupKey: `${retestPrefix}${correction.source.id}:${correction.source.rev}`,
     goal: retestGoal,
     workerProfile: 'deterministic_compute' as const,
     trigger: { kind: 'scheduled' as const, fireAtMs },
     sourceFactRev: todoSource(correction.source),
-    refs: [todoSource(correction.originalQuestion)],
+    refs: [correction.originalQuestion, correction.researchAuthorization, correction.frozenPaper]
+      .filter(ref => ref !== undefined).map(todoSource),
     autonomyTier: 1 as const,
     budgetCap: 0,
     settingsRevision,
@@ -109,9 +119,15 @@ export async function planCorrectionCheck(reopen: CorrectionReopen, correction: 
       return { kind: 'offer' as const, variant: candidate, suggestedDurationMs: correctionCheckSuggestedMs };
     }
   }
+  return scheduleCorrectionRetest(reopen, correction, settingsRevision, nowMs);
+}
+
+export async function scheduleCorrectionRetest(reopen: CorrectionReopen, correction: RecordedCorrection,
+  settingsRevision: number, nowMs: number) {
   if (!Number.isSafeInteger(settingsRevision) || settingsRevision < 1) return null;
   const todo = retestIntent(correction, settingsRevision);
-  return nowMs < todo.expiresAtMs ? { kind: 'scheduled' as const, todo } : null;
+  return Number.isSafeInteger(nowMs) && nowMs >= todo.trigger.fireAtMs - dayMs && nowMs < todo.expiresAtMs &&
+    await current(reopen, correction, [], true) ? { kind: 'scheduled' as const, todo } : null;
 }
 
 // Run in the Todo trigger's eligibility callback and again before accepting
@@ -128,9 +144,9 @@ export async function correctionRetestDue(reopen: CorrectionReopen, correction: 
     spec.budgetCap === 0 && spec.settingsRevision === settingsRevision && spec.trigger.kind === 'scheduled' &&
     spec.trigger.fireAtMs === expected.trigger.fireAtMs && spec.expiresAtMs === expected.expiresAtMs &&
     Number.isSafeInteger(nowMs) && nowMs >= expected.trigger.fireAtMs && nowMs < expected.expiresAtMs &&
-    matches(spec.sourceFactRev, expected.sourceFactRev) && spec.refs.length === 1 &&
-    matches(spec.refs[0], todoSource(correction.originalQuestion)) &&
-    await current(reopen, correction, []);
+    matches(spec.sourceFactRev, expected.sourceFactRev) && spec.refs.length === expected.refs.length &&
+    expected.refs.every((ref, index) => matches(spec.refs[index], ref)) &&
+    await current(reopen, correction, [], true);
 }
 
 export type ActiveMisconception = ExistingBelief & {

@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from 'node:util';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -16,27 +15,20 @@ import { readRetentionRadar } from './learner-radar.ts';
 import { textSlice } from './reading.ts';
 import { readResearchForeground } from './research-foreground.ts';
 import { activeRetentionReview, independentScoutSource, reviewMaterialAvailable, readWorksheetById, researchReader, retentionReviewAnchor, whenAvailable, worksheetId } from './research-sources.ts';
-import {
-  parseTriageResponse, triagePromptBlock, TriageResponseError, type TriageSnapshot,
-} from './research-triage/index.ts';
+import type { TriageSnapshot } from './research-triage/snapshot.ts';
+import { coverage, noop, researchTriageRequest, response, reviewAction, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
+
+export { researchDecision, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
 
 export function scoutEffectIdentity(settingsId: FactId, dedupKey: string) {
   return { ownerKind: 'session', ownerId: settingsId, stepKey: dedupKey, label: 'background-research-scout-v1' } as const;
 }
-export const reviewGoal = '为一份正式错题作答准备复习单';
-const reviewTemplate = 'review_submitted_attempt';
 const retrySheetLifetimeMs = 24 * 60 * 60 * 1000;
 const recentWindow = 8;
 const detailLimit = 4;
-const noop = { kind: 'noop' } as const;
 
 export function reviewDedupKey({ id, revision, accessEpoch }: TodoSpec['sourceFactRev']) {
   return 'review-attempt:' + id + ':' + revision + ':' + accessEpoch;
-}
-
-function response(action: object) {
-  return { matched_skill: null, reason_brief: '按已启用的复习单菜单处理。',
-    actions: [action], memo_table: [], next_recheck_hint: null };
 }
 
 async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
@@ -86,11 +78,6 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
   }
   const completionRows = rows.filter(row => row.type === researchWorksheetType).length;
   return { events, discovery: discovery || completed > 0, coverage: coverage(completed, completionRows, detailLimit) };
-}
-
-function coverage(visible: number, candidates: number, limit: number) {
-  if (visible === 0) return candidates === 0 ? 'empty' : 'unavailable';
-  return candidates > limit || visible < candidates ? 'partial' : 'available';
 }
 
 async function readResearchInventory(tx: ReadTransaction) {
@@ -236,29 +223,17 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   const snapshot: TriageSnapshot = {
     ...prefix, events, facts: intent && olderCandidate ? { ...facts, [intent.sourceFactRev.id]: olderCandidate } : facts,
   };
-  const action = intent && { kind: 'emit_todo', template_id: reviewTemplate, source_fact_id: intent.sourceFactRev.id };
-  const wakeSource = Object.values(events).map(event => (event as { kind: string }).kind).join(' ');
-  const request = {
-    stablePrefix: JSON.stringify({ ...prefix, settings_revision: settingsRevision,
-      learning_overview: overview, retention,
-      installed_template: { id: reviewTemplate, goal: reviewGoal, worker_profile: 'deterministic_compute',
-        autonomy_tier: 1, budget_cap: 0 },
-      coverage: { recent_attempts: recentWindow, recent_todos: recentWindow,
-        todos: coverage(Object.keys(todos).length, rows.length, recentWindow), inventory: inventory.coverage,
-        inventory_usage: 'unknown', retention: retention.state, preferences: 'unavailable', forecasts: 'unavailable',
-        memos: 'unavailable', signals: 'unavailable', work: 'unavailable' } }),
-    deltaSuffix: JSON.stringify({ events, older_candidate: olderCandidate, skills: triagePromptBlock(wakeSource),
-      coverage: { foreground_digests: foreground.coverage, background_digests: background.coverage },
-      menu: action ? [noop, action] : [noop],
-      response_format: response(noop) }),
-  };
+  const action = intent && reviewAction(intent.sourceFactRev.id);
+  const request = researchTriageRequest({ prefix, events, olderCandidate, settingsRevision, overview, retention, recentWindow,
+    todoCoverage: coverage(Object.keys(todos).length, rows.length, recentWindow), inventoryCoverage: inventory.coverage,
+    foregroundCoverage: foreground.coverage, backgroundCoverage: background.coverage, action });
   return { snapshot, request, intent, action };
 }
 
 export async function preparePaidResearchTriage(tx: ReadTransaction, settingsId: FactId, settingsRevision: number, now: number) {
   const { facts, intent, paidCandidate } = await readReviewAttempts(tx, true, settingsRevision, now, 'paid', settingsId);
   if (!intent || !paidCandidate) return null;
-  const action = { kind: 'emit_todo', template_id: reviewTemplate, source_fact_id: intent.sourceFactRev.id };
+  const action = reviewAction(intent.sourceFactRev.id);
   const snapshot: TriageSnapshot = { facts, todos: {}, inventory: {}, forecasts: {}, memos: {}, work: {},
     signals: {}, events: {}, chain: null, budget: { remaining: 0 } };
   const { id, revision: rev, accessEpoch } = intent.sourceFactRev;
@@ -267,24 +242,4 @@ export async function preparePaidResearchTriage(tx: ReadTransaction, settingsId:
     gatherTick: clock!.gather_tick, inputs: [{ kind: 'fact', id, rev, accessEpoch, mode: 'following' }] });
   return { snapshot, intent, action, manifest,
     paidInput: { candidate: paidCandidate, menu: [noop, action], response_format: response(noop) } };
-}
-
-export function researchDecision(prepared: Pick<NonNullable<Awaited<ReturnType<typeof prepareResearchTriage>>>, 'snapshot' | 'action'>, raw?: string) {
-  const { snapshot, action } = prepared;
-  raw ??= JSON.stringify(response(action ?? noop));
-  try {
-    const envelope = JSON.parse(raw);
-    const selected = action && isDeepStrictEqual(envelope?.actions, [action]);
-    // The shared parser owns the envelope. The installed template is a single pre-bound action
-    // whose shape and source must match exactly before reducing it to the shared noop shape.
-    const parsed = parseTriageResponse(selected ? JSON.stringify({ ...envelope, actions: [noop] }) : raw,
-      snapshot);
-    if (parsed.matchedSkill === null && parsed.memoTable.length === 0 && parsed.nextRecheckHint === null) {
-      if (selected) return 'review';
-      if (isDeepStrictEqual(envelope?.actions, [noop])) return 'noop';
-    }
-  } catch (error) {
-    if (!(error instanceof SyntaxError || error instanceof TriageResponseError)) throw error;
-  }
-  return 'invalid_reply';
 }

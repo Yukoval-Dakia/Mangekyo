@@ -4,7 +4,7 @@ import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts'
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { consumePricedEffect, effectBudgetUsage } from '../../kernel/src/work/effects.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -16,11 +16,12 @@ import {
   readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec,
 } from '../../kernel/src/work/todos.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
+import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import {
-  allowRetentionReview, configureResearch, publishWorksheet, readResearchBasis, ResearchBasisChanged, researchOrder,
-  researchPurpose, researchScoutBudget, researchSettings, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType, worksheetDraft,
+  allowRetentionReview, configureResearch, deterministicReview, publishWorksheet, readResearchBasis, ResearchBasisChanged, researchOrder,
+  researchPurpose, retentionReviewDraft, researchScoutBudget, researchSettings, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType, worksheetDraft,
 } from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { readMissedPosttest } from './learner-radar.ts';
@@ -38,6 +39,8 @@ import { discoverUnderstandingTodos, eligibleExtraction, openUnderstandingExtrac
 import { activityEvidenceTypes, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';
 import { extractorProfile } from '../../modules/companion/understanding.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { isCorrectionRetest } from '../../modules/learner/correction-check.ts';
+import { eligibleCorrectionRetest, executeCorrectionRetest, registerCorrectionRetest, type CorrectionRetestAuthority } from './research-correction.ts';
 
 const scope = { learner: studioLearner };
 const settingsId = factId(stableId('research-settings', studioLearner));
@@ -48,26 +51,6 @@ const idleRecheckMs = 60_000;
 /** Local execution under the zero-cost policy. Pi transport needs effect and budget admission. */
 export type ResearchAgent = (source: ReviewEvidence) =>
   ReturnType<typeof worksheetDraft> | Promise<ReturnType<typeof worksheetDraft>>;
-
-const deterministicReview: ResearchAgent = ({ questionNumber, feedback }) => ({
-  title: `第 ${questionNumber} 题复习`,
-  steps: [
-    '这次原答与冻结卷面的判分规则不符。先盖住上次的答案和参考答案，独立重做一遍。',
-    feedback.expected.kind === 'numeric'
-      ? '写下用于求值的式子，再检查代入、运算和单位。'
-      : '写下决定答案的题干条件，再检查回答是否满足每一项。',
-    '做完后对照来源里的原答和参考答案，找出第一次出现差异的地方，记下一项下次要检查的内容。',
-  ],
-});
-
-const retentionReviewDraft = {
-  title: '后测复习单',
-  steps: [
-    '回想上次独立作答时卡住的位置，先用自己的话写出解题思路。',
-    '隔一段时间再做一道考查同一要点的题，先独立作答，再对照反馈。',
-    '回看这次预测与实际结果的差异，记下需要再练的一点。',
-  ],
-};
 
 async function settings(tx: ReadTransaction) {
   return whenAvailable(async () => {
@@ -122,7 +105,8 @@ async function updateSettings<T>(action: () => Promise<T>) {
 }
 
 export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule,
-  agent?: ResearchAgent, scoutHost?: ResearchScoutHost, understandingTransport?: UnderstandingTransport) {
+  agent?: ResearchAgent, scoutHost?: ResearchScoutHost, understandingTransport?: UnderstandingTransport,
+  correctionAuthority?: CorrectionRetestAuthority) {
   const extract = openUnderstandingExtraction(db, companion, understandingTransport);
   const settingsCurrent = async (tx: ReadTransaction, revision: number) => {
     const current = await settings(tx);
@@ -170,6 +154,12 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
   });
 
   const workbookChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
+    const correction = changes.find(change => change.factType === workbookCorrectionType && change.kind === 'create');
+    if (correction) {
+      const current = await settings(tx);
+      if (current?.enabled && await registerCorrectionRetest(tx, tick, correction.ref.id, current.revision))
+        await enqueueWork(tx, tick, wake);
+    }
     const created = changes.find(change => change.factType === workbookAttemptType && change.kind === 'create');
     if (!created || !(await settings(tx))?.enabled) return;
     const permitted = await tx.query(
@@ -205,7 +195,8 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       const now = Date.now();
       const eligible = async (spec: TodoSpec) => (await (extract && spec.workerProfile === extractorProfile
         ? eligibleExtraction(tx, spec, understandingTransport?.maySend) : eligibleBasis(tx, spec))) !== null;
-      const due = await checkTodoTriggers(tx, now, eligible);
+      const due = await checkTodoTriggers(tx, now, spec => isCorrectionRetest(spec.dedupKey)
+        ? eligibleCorrectionRetest(tx, spec, current.revision, now, correctionAuthority) : eligible(spec));
       if (due.advanced) return { status: 'advanced' } as const;
       const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
       const watermark = await newResearchWatermark(tx);
@@ -290,10 +281,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
         const resultId = allowed ? await readMissedPosttest(tx, key)
           : previous && retentionReviewPermission(previous.value).resultId;
         if (!resultId) throw new RequestError(409, '当前没有可授权的独立后测偏差。');
-        const handlePermission = createCommandHandler({ ...db, query: tx.query, tx: (commandScope, run) => {
-          if (commandScope.learner !== tx.learner) throw new Error('Research command learner mismatch');
-          return run(tx);
-        } }, { modules: [companion], hooks });
+        const handlePermission = createCommandHandler(withinLearnerTransaction(db, tx), { modules: [companion], hooks });
         await handlePermission({ ...scope, actor: 'learner', purpose: researchPurpose, type: allowRetentionReview,
           id: commandId(stableId('allow-retention-review', key, requestId)),
           input: { id: retentionReviewPermissionId(key), revision, permission: { key, resultId, allowed } } });
@@ -367,6 +355,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
         if (!(await readReadyWork(tx, ref))) return null;
         const todo = await readTodo(tx, todoId);
         if (!todo || todo.state !== 'dispatched') return todo?.state === 'completed' ? { status: 'completed' } as const : null;
+        if (isCorrectionRetest(todo.spec.dedupKey)) return { status: 'correction' } as const;
         const eligible = await eligibleBasis(tx, todo.spec);
         if (!eligible) return null;
         const { basis, evidence } = eligible;
@@ -377,6 +366,10 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       const cancel = () => cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
       if (!prepared) {
         await cancel();
+        return true;
+      }
+      if (prepared.status === 'correction') {
+        await executeCorrectionRetest(db, ref, todoId, settingsCurrent, correctionAuthority);
         return true;
       }
       if (prepared.status === 'ready') {

@@ -50,7 +50,8 @@ export type Todo = {
   registeredTick: string;
   resultId: string | null;
 };
-type Eligibility = (spec: TodoSpec) => Promise<boolean>;
+export type TodoDeferral = { status: 'not_dispatched'; reason: string; retryAtMs: number };
+type Eligibility = (spec: TodoSpec) => Promise<boolean | TodoDeferral>;
 
 export async function migrateWorkingState(tx: DbQuery) {
   await tx.query(`CREATE TABLE working_todos (
@@ -118,17 +119,45 @@ async function transition(tx: DbTransaction, todo: Todo, state: 'cancelled' | 'b
   return rowCount === 1;
 }
 
+async function rememberDeferral(tx: DbTransaction, todo: Todo, deferral: TodoDeferral, now: number) {
+  if (todo.spec.trigger.kind !== 'scheduled' || !Number.isSafeInteger(deferral.retryAtMs) || deferral.retryAtMs <= now)
+    throw new Error('Only scheduled Todo work can defer to a future check');
+  const retryAtMs = Math.min(todo.spec.expiresAtMs, deferral.retryAtMs);
+  await tx.query(`UPDATE slot_state SET pending='none', last_error=$3
+    WHERE learner_id=$1 AND slot_type='working.todo' AND slot_key=$2`,
+  [tx.learner, todo.id, JSON.stringify({ ...deferral, retryAtMs })]);
+  return retryAtMs;
+}
+
+function clearDeferral(tx: DbTransaction, todo: Todo) {
+  return tx.query(`UPDATE slot_state SET last_error=NULL WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3
+    AND last_error->>'status'='not_dispatched'`, [tx.learner, todoSlot, todo.id]);
+}
+
+/** A dispatched scheduled task can return to pending when a prerequisite is lost. */
+export async function deferDispatchedTodo(tx: DbTransaction, ref: WorkRef, todo: Todo, deferral: TodoDeferral, now: number) {
+  if (ref.learner !== tx.learner || todo.learner !== tx.learner || todo.state !== 'dispatched') return false;
+  const result = await tx.query(`UPDATE work SET state='pending', generation=generation+1, revision=revision+1, execution_ref=NULL
+    WHERE learner_id=$1 AND id=$2 AND generation=$3 AND slot_key=$4 AND revision=$5 AND family='todo' AND state='ready'`,
+  [ref.learner, ref.workId, ref.generation, todo.id, todo.revision]);
+  if (!result.rowCount) return false;
+  await rememberDeferral(tx, todo, deferral, now);
+  return true;
+}
+
 async function dispatch(tx: DbTransaction, tick: Tick, todo: Todo, now: number, eligible: Eligibility) {
-  if (todo.spec.expiresAtMs <= now || !await eligible(todo.spec)) {
-    await transition(tx, todo, 'cancelled');
-    return;
-  }
+  const decision = todo.spec.expiresAtMs > now && await eligible(todo.spec);
+  if (typeof decision !== 'boolean') return rememberDeferral(tx, todo, decision, now);
+  if (!decision) return transition(tx, todo, 'cancelled');
   const executionRef = newUlid();
   const { rows: [ref] } = await tx.query<{ workId: string; generation: string }>(
     `UPDATE work SET state='ready', execution_ref=$4, requested_tick=$5, revision=revision+1
      WHERE learner_id=$1 AND family='todo' AND slot_key=$2 AND revision=$3 AND state='pending'
      RETURNING id AS "workId", generation::text`, [tx.learner, todo.id, todo.revision, executionRef, tick]);
-  if (ref) await enqueueGeneration(tx, { slotType: todoSlot, slotKey: todo.id }, { learner: tx.learner, ...ref }, executionRef);
+  if (!ref) return false;
+  if (todo.spec.trigger.kind === 'scheduled') await clearDeferral(tx, todo);
+  await enqueueGeneration(tx, { slotType: todoSlot, slotKey: todo.id }, { learner: tx.learner, ...ref }, executionRef);
+  return true;
 }
 
 function eventParent(spec: TodoSpec) {
@@ -192,6 +221,7 @@ export async function updateOrCancelTodo(
   await tx.query(`UPDATE work SET spec = $3, revision = revision + 1, registered_tick = $4, deriver=$5, priority=$6
     WHERE family='todo' AND learner_id = $1 AND slot_key = $2`,
   [tx.learner, id, JSON.stringify(spec), registeredTick, spec.workerProfile, spec.priority ?? 0]);
+  if (previous.kind === 'scheduled') await clearDeferral(tx, todo);
   if (spec.trigger.kind === 'immediate') await dispatch(tx, tick, { ...todo, spec, revision: revision + 1 }, now, eligible);
   return true;
 }
@@ -231,28 +261,33 @@ export async function endDispatchedTodo(tx: DbTransaction, id: string, state: 'c
 
 export async function checkTodoTriggers(tx: DbTransaction, now: number, eligible: Eligibility) {
   await lockLearner(tx, tx.learner);
-  const { rows } = await tx.query<Todo & { noticed: boolean }>(
+  const { rows } = await tx.query<Todo & { noticed: boolean; retry: string | null }>(
     `SELECT ${columns}, EXISTS (
        SELECT 1 FROM working_todo_events e WHERE e.learner_id = t.learner_id
         AND e.event_type = t.event_match->>'type' AND e.subject = t.event_match->>'subject'
         AND e.seen_tick > t.registered_tick
-     ) AS noticed FROM work t WHERE family='todo' AND learner_id = $1 AND state = 'pending' ORDER BY priority,registered_tick,slot_key`, [tx.learner],
+     ) AS noticed, (SELECT s.last_error->>'retryAtMs' FROM slot_state s WHERE (s.learner_id,s.slot_type,s.slot_key)=
+       (t.learner_id,t.slot_type,t.slot_key) AND s.last_error->>'status'='not_dispatched') AS retry
+     FROM work t WHERE family='todo' AND learner_id = $1 AND state = 'pending' ORDER BY priority,registered_tick,slot_key`, [tx.learner],
   );
   const due: Todo[] = [];
   let nextAt: number | undefined;
   for (const row of rows) {
     const todo = parsed(row);
     const { trigger, expiresAtMs } = todo.spec;
-    const deadline = trigger.kind === 'scheduled' ? Math.min(trigger.fireAtMs, expiresAtMs) : expiresAtMs;
+    const deadline = trigger.kind === 'scheduled' ? Math.min(Math.max(trigger.fireAtMs, Number(row.retry ?? 0)), expiresAtMs) : expiresAtMs;
     if (deadline <= now || row.noticed) due.push(todo);
     else nextAt = Math.min(nextAt ?? deadline, deadline);
   }
-  if (due.length) {
-    await tx.withLearnerWrite(async tick => {
-      for (const todo of due) await dispatch(tx, tick, todo, now, eligible);
-    });
-  }
-  return { advanced: due.length > 0, nextAt };
+  let advanced = false;
+  if (due.length) await tx.withLearnerWrite(async tick => {
+    for (const todo of due) {
+      const outcome = await dispatch(tx, tick, todo, now, eligible);
+      if (typeof outcome === 'number') nextAt = Math.min(nextAt ?? outcome, outcome);
+      else advanced ||= outcome;
+    }
+  });
+  return { advanced, nextAt };
 }
 
 export async function newFactWatermark(tx: ReadTransaction) {

@@ -9,7 +9,7 @@ import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../sch
 import { eraseOriginal } from '../lifecycle.ts';
 import { newUlid } from './identity.ts';
 import {
-  checkTodoTriggers, completeTodo, emitTodo, maxTodoHops, newFactWatermark, readTodo, updateOrCancelTodo, type TodoInput,
+  checkTodoTriggers, completeTodo, deferDispatchedTodo, emitTodo, maxTodoHops, newFactWatermark, readTodo, updateOrCancelTodo, type TodoInput,
 } from './todos.ts';
 import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, registerWorkWait, relayPending, requestWork, runEffect, wakeWaitingWork,
@@ -313,6 +313,31 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect(await db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
       updateOrCancelTodo(tx, tick, tail.id, tail.revision, { kind: 'cancel' }, 8, eligible)))).toBe(true);
     expect((await inspect(tail.id))?.state).toBe('cancelled');
+  });
+
+  it('keeps a deferred scheduled Todo and fences a previous dispatch generation', async () => {
+    const write = <T>(fn: (tx: DbTransaction, tick: Parameters<typeof emitTodo>[1]) => Promise<T>) =>
+      db.tx({ learner }, tx => tx.withLearnerWrite(tick => fn(tx, tick)));
+    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const deferred = { status: 'not_dispatched', reason: 'unavailable', retryAtMs: 10 } as const;
+    const decide = vi.fn(async () => deferred);
+    const sweep = (now: number, eligible = async () => true) => db.tx({ learner }, tx => checkTodoTriggers(tx, now, eligible));
+    const root = (await write((tx, tick) => emitTodo(tx, tick, { dedupKey: 'deferred', goal: 'Review',
+      trigger: { kind: 'scheduled', fireAtMs: 5 }, workerProfile: 'deterministic_compute', budgetCap: 0,
+      refs: [], sourceFactRev: source, autonomyTier: 1, settingsRevision: 1, expiresAtMs: 50 }, 1, decide)))!;
+    expect(await db.tx({ learner }, tx => checkTodoTriggers(tx, 5, decide))).toEqual({ advanced: false, nextAt: 10 });
+    expect(await sweep(9)).toEqual({ advanced: false, nextAt: 10 });
+    expect((await db.query('SELECT intent_id FROM work_outbox')).rowCount).toBe(0);
+    expect(await sweep(10)).toMatchObject({ advanced: true });
+    const ref = { learner, workId: root.id, generation: '1' };
+    await write(async (tx, tick) => {
+      const dispatched = (await readTodo(tx, root.id))!;
+      expect(await deferDispatchedTodo(tx, ref, dispatched, { ...deferred, retryAtMs: 20 }, 11)).toBe(true);
+      expect(await completeTodo(tx, tick, ref, dispatched, source.id)).toBe(false);
+    });
+    expect(await sweep(20)).toMatchObject({ advanced: true });
+    expect((await db.query('SELECT generation::text FROM work_outbox ORDER BY generation')).rows)
+      .toEqual([{ generation: '1' }, { generation: '2' }]);
   });
 
   it('keeps v6 SQL on the same work row while old pinned workers drain', async () => {
