@@ -10,7 +10,7 @@ import { readActivitySubmissionBirth, workbookLinkCandidates } from '../../modul
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { posttestIssuanceType } from '../../modules/activity/retention-posttest.ts';
 import { openWorkbookCorrectionTarget, recordWorkbookCorrection, workbookCorrection, workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
-import { sameWorkbookJson, setWorkbookResearchUse, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, WorkbookSourceMismatch } from '../../modules/activity/workbook-values.ts';
+import { sameWorkbookJson, setWorkbookResearchUse, workbookAttemptType, workbookPaper, workbookPaperType, WorkbookSourceMismatch } from '../../modules/activity/workbook-values.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { correctionRetestDue, scheduleCorrectionRetest, type CorrectionReopen, type RecordedCorrection } from '../../modules/learner/correction-check.ts';
@@ -50,7 +50,7 @@ async function readCorrection(tx: ReadTransaction, id: FactId): Promise<Recorded
       if (!birth) return null;
       const submitted = await readActivitySubmissionBirth(tx, grant.ref, workbookAttemptType);
       if (!submitted?.unchanged || BigInt(submitted.tick) >= BigInt(birth.tick)) return null;
-      const attempt = workbookAttempt((await openWorkbookCorrectionTarget(read, correction)).value);
+      const { attempt } = await openWorkbookCorrectionTarget(read, correction);
       const release = attempt.paper.assessmentRelease?.releaseRef;
       const item = attempt.paper.questions.find(question => question.id === correction.itemId);
       if (release?.id !== correction.paperId || item?.kind !== 'bank') return null;
