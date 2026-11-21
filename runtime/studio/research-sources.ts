@@ -1,16 +1,14 @@
+import { projectWorksheet, type ReviewAccess } from '../../modules/companion/worksheet-policy.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { independentlyAuthoredPaper, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
-import {
-  readResearchSource, ResearchBasisChanged, researchOrder, researchOrderType, researchPurpose, researchWorksheet,
-  researchWorksheetType, retentionReviewPermission, retentionReviewPermissionType,
-  type ResearchOrder,
-} from '../../modules/companion/research.ts';
+import { ResearchBasisChanged, researchPurpose, retentionReviewPermission, retentionReviewPermissionType } from '../../modules/companion/research.ts';
 import { stableId } from './identity.ts';
+import { resolveWorkPublication } from '../../kernel/src/work/payload.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
 
@@ -26,19 +24,16 @@ export async function whenAvailable<T>(read: () => Promise<T>): Promise<T | null
   }
 }
 
-export function worksheetId(attemptId: FactId, revision: number, epoch: string) {
-  return factId(stableId('research-worksheet-v1', attemptId, String(revision), epoch));
+export function worksheetPublication(tx: ReadTransaction, attemptId: FactId, revision: number, epoch: string) {
+  return resolveWorkPublication(tx, factId(stableId('research-worksheet-v1', attemptId, String(revision), epoch)),
+    id => ({factId:id, commandId:commandId(stableId('publish-worksheet', id))}),
+    (id, generation) => factId(stableId('research-worksheet-after-erasure', id, generation)));
 }
 
 export async function workbookSource(tx: ReadTransaction, paperId: string, attemptId: string) {
-  const id = factId(attemptId);
-  const { rowCount } = await tx.query(
-    'SELECT id FROM facts WHERE learner_id = $1 AND type = $2 AND id = $3',
-    [tx.learner, workbookAttemptType, id],
-  );
-  if (!rowCount) throw new RequestError(404, '找不到这次作答。');
-  const fact = await whenAvailable(() => createCommandReadContext(tx, storagePurpose).fact(id, { mode: 'following' }));
-  if (!fact || workbookAttempt(fact.value).paperId !== paperId) throw new RequestError(404, '找不到这次作答。');
+  const fact = await whenAvailable(() => createCommandReadContext(tx, storagePurpose).fact(factId(attemptId), { mode: 'following' }));
+  if (fact?.type !== workbookAttemptType || workbookAttempt(fact.value).paperId !== paperId)
+    throw new RequestError(404, '找不到这次作答。');
   return fact;
 }
 
@@ -64,18 +59,7 @@ export async function reviewMaterialAvailable(tx: ReadTransaction, paper: Return
     .fact(factId(materialId), { mode: 'following' })));
 }
 
-export function reviewEvidence(data: unknown, questionId: string) {
-  const attempt = workbookAttempt(data);
-  const index = attempt.paper.questions.findIndex(question => question.id === questionId);
-  const question = attempt.paper.questions[index];
-  const feedback = attempt.feedback.find(item => item.questionId === questionId);
-  if (!question || question.sourceQuestionRef || feedback?.result !== 'incorrect' || !feedback.expected) throw new ResearchBasisChanged('原卷判题已变更。');
-  return { paperId: attempt.paperId, paperTitle: attempt.paper.title, submittedAt: attempt.submittedAt,
-    questionNumber: index + 1, questionId, prompt: question.prompt, feedback: { ...feedback, expected: feedback.expected } };
-}
-export type ReviewEvidence = ReturnType<typeof reviewEvidence>;
-
-export const retentionReviewAnchor = 'retention-posttest';
+export { reviewEvidence, retentionReviewAnchor, type ReviewEvidence } from '../../modules/companion/worksheet-policy.ts';
 
 export function retentionReviewPermissionId(key: string) {
   return factId(stableId('retention-review-permission', key));
@@ -89,39 +73,34 @@ export async function activeRetentionReview(tx: ReadTransaction, fact: FactSnaps
   return permission;
 }
 
-export async function readWorksheetById(tx: ReadTransaction, id: FactId) {
+export function reviewAccess(tx: ReadTransaction): ReviewAccess {
   const read = researchReader(tx);
-  return whenAvailable(async () => {
-    const fact = await read.fact(id, { mode: 'following' });
-    if (fact.type !== researchWorksheetType || !fact.purpose.includes(researchPurpose)) return null;
-    const result = researchWorksheet(fact.value);
-    const order = 'todoId' in result ? null : await read.fact(result.orderId, { mode: 'following' });
-    if (order && (order.type !== researchOrderType || !order.purpose.includes(researchPurpose))) return null;
-    const ref = 'todoId' in result ? result.source : researchOrder(order?.value).source;
-    const source = await readResearchSource(read, ref);
-    if (id !== worksheetId(ref.attemptId, ref.revision, ref.accessEpoch)) return null;
-    const retention = source.type === retentionReviewPermissionType && ref.questionId === retentionReviewAnchor
-      ? await activeRetentionReview(tx, source) : null;
-    if (source.type !== workbookAttemptType && !retention) return null;
-    if (!retention && !await reviewMaterialAvailable(tx, workbookAttempt(source.value).paper)) return null;
-    const evidence = retention ? null : reviewEvidence(source.value, ref.questionId);
-    if (evidence) await createCommandReadContext(tx, storagePurpose).fact(ref.attemptId, { mode: 'following' });
-    const href = retention ? `/api/retention/${retention.key}`
-      : `/api/papers/${evidence!.paperId}/attempts/${ref.attemptId}/research/${id}/source`;
-    return {
-      fact,
-      worksheet: {
-        id, ...result.draft, method: result.method, deliveredAt: result.deliveredAt, tier: 1, cost: 0,
-        ...('todoId' in result ? { todoId: result.todoId, digest: result.digest } : { orderId: result.orderId }),
-        source: { ...ref, href },
-      },
-      source: evidence && { ...ref, ...evidence },
-    };
-  });
+  return {read, open:id => whenAvailable(() => read.fact(id,{mode:'following'})),
+    independent:source => independentScoutSource(tx,source), retention:source => activeRetentionReview(tx,source),
+    material:paper => reviewMaterialAvailable(tx,paper)};
+}
+export function readWorksheetById(tx: ReadTransaction, id: FactId) {
+  return whenAvailable(() => projectWorksheet(reviewAccess(tx), id, async (...source) => (await worksheetPublication(tx, ...source)).factId,
+    key => createCommandReadContext(tx,storagePurpose).fact(key,{mode:'following'})));
 }
 
 export async function readWorksheet(tx: ReadTransaction, paperId: string, attemptId: string) {
   const attempt = await workbookSource(tx, paperId, attemptId);
   if (!attempt.purpose.includes(researchPurpose)) return null;
-  return readWorksheetById(tx, worksheetId(attempt.ref.id, attempt.ref.rev, attempt.accessEpoch));
+  return readWorksheetById(tx, (await worksheetPublication(tx, attempt.ref.id, attempt.ref.rev, attempt.accessEpoch)).factId);
+}
+
+export async function comparisonAttempts(tx: ReadTransaction) {
+  const {rows} = await tx.query<{id:string}>(`SELECT id FROM facts WHERE learner_id=$1 AND type=$2
+    AND $3=ANY(purpose) AND retracted_rev IS NULL ORDER BY changed_tick DESC, id LIMIT 50`,
+    [tx.learner, workbookAttemptType, researchPurpose]);
+  const attempts = [];
+  for (const row of rows) {
+    const source = await whenAvailable(() => researchReader(tx).fact(factId(row.id), {mode:'following'}));
+    if (!source || !await independentScoutSource(tx, source)) continue;
+    const attempt = workbookAttempt(source.value);
+    if (attempt.feedback.some(item => item.result === 'incorrect')) attempts.push({id:source.ref.id,
+      title:attempt.paper.title, submittedAt:attempt.submittedAt, revision:source.ref.rev, accessEpoch:source.accessEpoch});
+  }
+  return attempts;
 }

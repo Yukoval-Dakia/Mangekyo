@@ -2,6 +2,7 @@ import { lockLearner } from './db/learner.ts';
 import type { Db, DbQuery, LearnerScope, ReadTransaction } from './db/types.ts';
 import type { CommandId, FactId } from './declarations/ids.ts';
 import type { Actor } from './commands/contracts.ts';
+import { erasePayloads } from './work/payload-erasure.ts';
 
 // A rename preserves the catalog identity and requires every old connection to have left.
 export async function requireLifecycleCutover(tx: DbQuery) {
@@ -63,13 +64,17 @@ export async function migrateLifecycle(tx: DbQuery) {
   await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=8');
 }
 
-export async function installErasureFence(tx: DbQuery, priced: boolean) {
+export async function installErasureFence(tx: DbQuery, priced: boolean, comparisonKeys = false) {
   // Legacy effect completions carry a reservation tick even when their owner differs from the erased fact.
   await tx.query(`CREATE OR REPLACE FUNCTION reject_erased_identity() RETURNS trigger LANGUAGE plpgsql AS $$
     DECLARE target text;
     BEGIN
       IF TG_TABLE_NAME='effects' THEN
         target := NEW.owner_id;
+        ${comparisonKeys ? `IF TG_OP='INSERT' AND EXISTS (SELECT FROM erased_effect_receipts
+          WHERE (learner_id,owner_kind,owner_id,step_key,label)=(NEW.learner_id,NEW.owner_kind,target,NEW.step_key,NEW.label)) THEN
+          RAISE EXCEPTION 'Erased effect identity' USING ERRCODE='55000';
+        END IF;` : ''}
         ${priced ? `IF TG_OP='UPDATE' AND OLD.reserved_usd_micros IS NOT NULL
             AND OLD.actual_usd_micros IS NULL AND NEW.actual_usd_micros IS NOT NULL
             AND (to_jsonb(NEW)-'actual_usd_micros') = (to_jsonb(OLD)-'actual_usd_micros') THEN
@@ -151,24 +156,7 @@ export async function eraseOriginal(db: Db, scope: LearnerScope, request: Erasur
     return tx.withLearnerWrite(async tick => {
       await tx.insert('erasure_requests', {learner_id:tx.learner, request_id:request.requestId, root_id:request.root,
         expected_rev:request.expectedRev, generation:tick});
-      await tx.query(`INSERT INTO tombstones SELECT $1,id,'fact',$3::bigint FROM unnest($2::text[]) AS id`,
-        [tx.learner, ids, tick]);
-      await tx.query(`INSERT INTO tombstones
-        SELECT $1,c.id,'command',$3::bigint FROM commands c WHERE c.learner_id=$1 AND (
-          EXISTS (SELECT 1 FROM fact_revs r WHERE r.learner_id=$1 AND r.fact_id=ANY($2) AND r.command_id=c.id)
-          OR (c.type=ANY($4) AND (c.input #>> '{input,intakeId}'=ANY($2) OR c.input #>> '{input,materialId}'=ANY($2))))`,
-        [tx.learner, ids, tick, commandTypes]);
-      const commands = "SELECT id FROM tombstones WHERE learner_id=$1 AND kind='command' AND generation=$2";
-      await tx.query(`DELETE FROM proposals WHERE learner_id=$1 AND command_id IN (${commands})`, [tx.learner,tick]);
-      await tx.query(`DELETE FROM commands WHERE learner_id=$1 AND id IN (${commands})`, [tx.learner,tick]);
-      await tx.query('DELETE FROM fact_revs WHERE learner_id=$1 AND fact_id=ANY($2)', [tx.learner,ids]);
-      await tx.query('DELETE FROM facts WHERE learner_id=$1 AND id=ANY($2)', [tx.learner,ids]);
-      await tx.query(`INSERT INTO erased_effect_receipts(learner_id,provider_effect_id,owner_id,started_tick,erased_tick,settlement,
-        reserved_usd_micros,actual_usd_micros,budget_route)
-        SELECT learner_id,provider_effect_id,owner_id,started_tick,$3,CASE WHEN state='done' THEN 'done' ELSE 'unknown' END,
-          reserved_usd_micros,actual_usd_micros,budget_route
-        FROM effects WHERE learner_id=$1 AND owner_id=ANY($2) AND provider_effect_id IS NOT NULL`, [tx.learner,ids,tick]);
-      await tx.query('DELETE FROM effects WHERE learner_id=$1 AND owner_id=ANY($2)', [tx.learner,ids]);
+      await erasePayloads(tx, tx.learner, ids, tick, commandTypes);
       await tx.query(`UPDATE work SET state='cancelled',generation=generation+1,execution_ref=NULL,gather=NULL,gather_manifest=NULL
         WHERE learner_id=$1 AND slot_key=ANY($2) AND family='derivation'`, [tx.learner,ids]);
       await tx.query("UPDATE slot_state SET pending='none',last_error=NULL,changed_tick=$3 WHERE learner_id=$1 AND slot_key=ANY($2)",
