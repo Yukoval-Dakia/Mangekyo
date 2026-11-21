@@ -226,6 +226,11 @@ export function serve(
         const { requestId, clientEditSeq, page } = await body(req);
         return json(res, 201, await student.textbook.create({ learner: studioLearner, requestId, clientEditSeq, page }));
       }
+      const pulseClaim = /^\/api\/textbooks\/([0-9A-HJKMNP-TV-Z]{26})\/pulse\/questions$/.exec(path);
+      if (pulseClaim?.[1] && method === 'POST')
+        return await offlineSubmission(200, input => student.textbook.claim(
+          { learner: studioLearner, id: pulseClaim[1] }, input,
+        ));
       const textbookAction = /^\/api\/textbooks\/([0-9A-HJKMNP-TV-Z]{26})\/(proposals(?:\/([0-9A-HJKMNP-TV-Z]{26}))?|undo)$/.exec(path);
       if (textbookAction?.[1]) {
         const [,id,action,proposalId] = textbookAction;

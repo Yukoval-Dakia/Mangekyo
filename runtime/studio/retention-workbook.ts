@@ -51,7 +51,8 @@ async function trackSource(tx: ReadTransaction, read: PosttestFactReader, refere
   return source;
 }
 
-export const studioWorkbookEvidence = (as: string, maySend: WorkspaceSourceRecipient, readIssuance = readPosttestIssuance) => workbookEvidenceReader<ReadTransaction>({
+export const studioWorkbookEvidence = (as: string, maySend: WorkspaceSourceRecipient,
+  readIssuance = readPosttestIssuance, questionType: string | readonly string[] = workspaceEntryType) => workbookEvidenceReader<ReadTransaction>({
   trackSource: (tx,read,ref) => trackSource(tx,read,ref,as,maySend),
   async reopenCapsule(tx, read, basis) {
     const teaching = selectedWorkbookRead(tx,retentionPurpose,createCommandReadContext(tx,retentionPurpose));
@@ -65,7 +66,7 @@ export const studioWorkbookEvidence = (as: string, maySend: WorkspaceSourceRecip
   unavailableRelease: error => error instanceof RequestError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError,
   reject: (status,message) => new RequestError(status,message),
   edgeType: knowledgeEdgeType,
-  questionType: workspaceEntryType,
+  questionType,
 });
 
 export const retentionWorkbookEvidence = (readIssuance = readPosttestIssuance) =>

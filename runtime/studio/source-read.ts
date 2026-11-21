@@ -134,7 +134,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         })() : anchor;
         if (!project(text, originalAnchor, access.recipient)) return;
       } else if (original.type === assetType) {
-        if (!pinnedQuestion && !await openArithmeticPractice(reader,original.ref.id,original)) return;
+        if (!pinnedQuestion && anchor.kind === 'question' && anchor.itemId === 'question') {
+          const question = parseAsset(original.value);
+          if (question.kind !== 'question' || !questionPrompt(question)) return;
+        } else if (!pinnedQuestion && !await openArithmeticPractice(reader,original.ref.id,original)) return;
       } else if (!project(original, anchor, access.recipient)) return;
     }
     const fact = await visit(id, mode === 'pinned' ? rootRevision : undefined);
@@ -142,11 +145,17 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     if (fact.type === assetType && !pinnedQuestion) {
       if (anchor.kind !== 'whole' && (anchor.kind !== 'question' || anchor.itemId !== 'question')) return;
       const result = await openArithmeticPractice(reader,fact.ref.id,fact);
-      if (!result) return;
+      const question = result ?? (() => {
+        const asset = parseAsset(fact.value);
+        return asset.kind === 'question'
+          ? {source: fact, state: fact, title: asset.title, prompt: questionPrompt(asset), expected: undefined, practice: undefined}
+          : undefined;
+      })();
+      if (!question) return;
       access.track?.(fact, reference ? mode : 'following');
-      access.track?.(result.state,'following');
+      if (result) access.track?.(result.state,'following');
       return {id:fact.ref.id,rev:fact.ref.rev,sourceRef:sourceReference(fact,anchor),
-        kind:'question' as const,title:result.title,content:result.prompt};
+        kind:'question' as const,title:question.title,content:question.prompt};
     }
     let body = fact;
     let linkedMaterial: FactSnapshot | undefined;
