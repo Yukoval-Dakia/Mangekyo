@@ -1,8 +1,11 @@
 import { openClassrooms } from './classroom.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
-import { revokedReplyWriteReceipts, type WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
-import { projectArtifactMountTrace } from '../../executors/teaching/artifact-trace.ts';
+import { projectStaleWorkspaceWrite, revokedReplyWriteReceipts, workspaceWriteNeedsCurrentFact,
+  type WorkspaceWriteReceipt, type WorkspaceWriteView } from '../../executors/teaching/workspace-tools.ts';
+import { projectTeachingFeedback, unavailableReply, type TeachingFeedback } from '../../executors/teaching/session-feedback.ts';
+export type { WorkspaceWriteView } from '../../executors/teaching/workspace-tools.ts';
+export { unconfirmedReplyMessage, unavailableReplyMessage } from '../../executors/teaching/session-feedback.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -15,7 +18,8 @@ export { introductoryStudyCases as cases } from '../../executors/teaching/exampl
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
-import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchAccess, type StudyCurrentObjectSelection } from '../../modules/activity/values.ts';
+import { matchesStudyTurnReplay, studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchAccess,
+  type StudyTurnReplay } from '../../modules/activity/values.ts';
 import { attachmentCurrent, attachmentSources, readOwnStudyTurn } from './reading.ts';
 export { readOwnStudyTurn, readTeachingTurn } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
@@ -56,17 +60,10 @@ const requestedAccount = (route:unknown) => route && typeof route === 'object' &
   ? route.accountRevision : undefined;
 
 export type CaseId = (typeof cases)[number]['id'] | 'companion' | 'riding';
-type TurnRequest = {
+type TurnRequest = StudyTurnReplay & {
   selected?: CaseId;
-  session: string;
-  parent: string | null;
-  answer: string | null;
   req: string;
-  attachment?: ReturnType<typeof studyAttachment> | undefined;
-  grants: ReturnType<typeof studyMcpGrants>;
   requestedRoute: unknown;
-  currentObject: StudyCurrentObjectSelection | undefined;
-  allowBackgroundUnderstanding: boolean;
 };
 export function caseId(value: unknown): CaseId {
   if (value !== 'independent' && value !== 'workedExample' && value !== 'companion' && value !== 'riding')
@@ -78,31 +75,15 @@ export function clientRequest(value: unknown): string {
     throw new RequestError(400, '请求标识无效。');
   return value;
 }
-export type DisplayTurn = {
-  classroomPlan?: string[];
-  studyKit?: StudyKit;
-  trace?: string[];
-  completion?: 'receipts_only';
+export type DisplayTurn = TeachingFeedback & {
   writes?: WorkspaceWriteReceipt[];
   workspaceBasis?: WorkspaceWitness[];
   learningMemoryDigest?: string;
   memoryManagement?: true;
   foregroundDigest?: ForegroundDigest;
-  action: string;
-  rationale: string;
-  message: string;
-  model: string;
-  reasoningEffort?: string;
-  evidenceIds: readonly string[];
-  reportedModel?: string;
-  reads: readonly { id: string; title: string; text: string }[];
   answer?: string;
 };
 type Status = 'pending' | 'ready' | 'failed' | 'unknown';
-export const unconfirmedReplyMessage = '暂时无法核对本轮依据，旧回复已隐藏。';
-export const unavailableReplyMessage = '本轮已完成，依据已变更，旧回复已隐藏。';
-const unavailableReply = (model: string, unconfirmed = false): DisplayTurn => ({action: 'reply_unavailable', model,
-  rationale: '', message: unconfirmed ? unconfirmedReplyMessage : unavailableReplyMessage, reads: [], evidenceIds: []});
 type TurnView = {
   id: string;
   submission: ReturnType<typeof studyTurn>;
@@ -191,37 +172,20 @@ export function recentConversations(db: Db) {
     return result;
   });
 }
-type WriteState = {status: 'changed'} | {status: 'withdrawn'};
-export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page' | 'relation'> & {
-  observation?: NonNullable<WorkspaceWriteReceipt['observation']> | WriteState;
-  memory?: NonNullable<WorkspaceWriteReceipt['memory']> | WriteState;
-  page?: NonNullable<WorkspaceWriteReceipt['page']> | WriteState | {status:'reverted'};
-  relation?: NonNullable<WorkspaceWriteReceipt['relation']> | WriteState;
-};
-
 async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[]): Promise<WorkspaceWriteView[]> {
-  const ids = writes.filter(write => write.observation || write.memory ||
-    write.page?.status === 'saved' || write.relation?.status === 'saved').map(write => write.id);
+  const ids = writes.filter(workspaceWriteNeedsCurrentFact).map(write => write.id);
   if (!ids.length) return writes;
   const {rows} = await tx.query<{id: string; type: string; current_rev: number; retracted_rev: number | null}>(
     'SELECT id,type,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
   const facts = new Map(rows.map(row => [row.id, row]));
   return Promise.all(writes.map(async write => {
     const fact = facts.get(write.id);
-    if (write.page?.status === 'saved') {
-      if (fact && fact.retracted_rev === null && fact.current_rev === write.rev) return write;
-      const undone = await readRecordedCommand(tx,textbookUndoId(write.page.undo_token));
-      return {...write,page:{status:undone?.state === 'done' ? write.rev === 1 ? 'withdrawn' : 'reverted' : 'changed'}};
-    }
-    if (write.relation?.status === 'saved') {
-      if (fact && fact.retracted_rev === null && fact.current_rev === write.rev) return write;
-      return {...write,relation:{status:fact?.retracted_rev ? 'withdrawn' : 'changed'}};
-    }
-    if (!write.observation && !write.memory) return write;
+    const savedPage = write.page?.status === 'saved' ? write.page : undefined;
+    const checkMemory = write.memory && !savedPage && write.relation?.status !== 'saved';
     if (fact && fact.retracted_rev === null && fact.current_rev === write.rev &&
-        (!write.memory || await areMemoryClaimsCurrent(tx, [write.id], undefined, undefined, false, fact.type))) return write;
-    const state: WriteState = {status: fact?.retracted_rev ? 'withdrawn' : 'changed'};
-    return write.memory ? {...write, memory: state} : {...write, observation: state};
+        (!checkMemory || await areMemoryClaimsCurrent(tx, [write.id], undefined, undefined, false, fact.type))) return write;
+    const undone = savedPage && await readRecordedCommand(tx,textbookUndoId(savedPage.undo_token));
+    return projectStaleWorkspaceWrite(write, Boolean(fact?.retracted_rev), undone?.state === 'done');
   }));
 }
 
@@ -289,16 +253,13 @@ async function formatSession({turns,...view}: Awaited<ReturnType<typeof sessionP
   recall?: (turn: string, derivation: string, kit: StudyKit) => ReturnType<RecallHttp['project']>) {
   const projected = [];
   for (const { row, artifacts, writes, feedback: value } of turns) {
-    const { studyKit, classroomPlan: _plan, trace, ...feedback } = value;
+    const { studyKit } = value;
     const projectedRecall = row.derivationId && studyKit
       ? await recall?.(row.id,row.derivationId,studyKit)
       : undefined;
     projected.push({
-      ...feedback, ...(writes && {writes}), turnId: row.id, artifacts,
+      ...projectTeachingFeedback(value, projectedRecall), ...(writes && {writes}), turnId: row.id, artifacts,
       ...(row.backgroundUnderstanding ? {backgroundUnderstanding: row.backgroundUnderstanding} : {}),
-      ...(trace && { trace: trace.map(projectArtifactMountTrace) }),
-      ...(studyKit === undefined ? {} : { message: projectedRecall?.lesson ?? '' }),
-      ...(projectedRecall ? {recall:projectedRecall} : {}),
       ...(row.submission.answer ? { answer: row.submission.answer } : {}),
     });
   }
@@ -477,7 +438,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     return getSession(db, session, projectRecall);
   }
   async function replay(request: TurnRequest) {
-    const {req, session, selected, parent, answer, attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding} = request;
+    const {req, session, requestedRoute} = request;
     const {
       rows: [row],
     } = await db.query<{ id: string; data: unknown }>(
@@ -487,20 +448,10 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     if (!row) return null;
     const existing = studyTurn(row.data);
     if (existing.accountConfirmation && requestedAccount(requestedRoute) !== existing.accountRevision) throw confirmAccount();
-    if (
-      existing.sessionId !== session ||
-      existing.answer !== answer ||
-      !routeMatchesInput(requestedRoute, {activeProviderId: existing.providerId ?? 'default',
-        protocol: existing.protocol === 'anthropic' ? 'anthropic' : 'openai', baseUrl: existing.baseUrl,
-        model: existing.model, reasoningEffort: existing.reasoningEffort ?? 'high'}) ||
-      JSON.stringify(existing.mcpGrants ?? []) !== JSON.stringify(grants ?? []) ||
-      existing.parentId !== parent ||
-      (selected && existing.caseId !== selected) ||
-      existing.currentObject?.kind !== currentObject?.kind || existing.currentObject?.id !== currentObject?.id ||
-      existing.currentObject?.rev !== currentObject?.rev ||
-      JSON.stringify(existing.attachment) !== JSON.stringify(attachment) ||
-      (existing.allowBackgroundUnderstanding ?? false) !== allowBackgroundUnderstanding
-    ) {
+    if (!matchesStudyTurnReplay(existing, request) ||
+        !routeMatchesInput(requestedRoute, {activeProviderId: existing.providerId ?? 'default',
+          protocol: existing.protocol === 'anthropic' ? 'anthropic' : 'openai', baseUrl: existing.baseUrl,
+          model: existing.model, reasoningEffort: existing.reasoningEffort ?? 'high'})) {
       throw new RequestError(409, '同一个提交标识已经用于不同内容。');
     }
     return getSession(db, session, projectRecall);
