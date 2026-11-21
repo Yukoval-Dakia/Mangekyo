@@ -113,6 +113,12 @@ function purposeAllows(purposes: readonly string[], purpose: string): boolean {
   return purposes.includes(purposeAll) || purposes.includes(purpose);
 }
 
+const factColumns = `f.type, f.current_rev, f.access_epoch, f.purpose, f.retracted_rev,
+  r.rev, r.kind, r.purpose AS revision_purpose, r.data`;
+const factNotErased = `NOT EXISTS (
+  SELECT 1 FROM tombstones WHERE learner_id=f.learner_id AND kind='fact' AND id=f.id
+)`;
+
 async function readFact(
   tx: ReadTransaction,
   purpose: string,
@@ -123,17 +129,19 @@ async function readFact(
   const parsed = parseFactOptions(options);
 
   const factResult = await tx.query<FactRow>(
-    `SELECT f.type, f.current_rev, f.access_epoch, f.purpose, f.retracted_rev,
-            r.rev, r.kind, r.purpose AS revision_purpose, r.data,
+    `SELECT ${factColumns},
             CASE WHEN $3::integer IS NULL THEN ${followingRevisionFloor('f', '$4::text')}
               ELSE f.current_rev END AS equivalent_rev
      FROM facts f LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev) =
        (f.learner_id,f.id,COALESCE($3::integer, f.current_rev))
-     WHERE f.learner_id=$1 AND f.id=$2 AND NOT EXISTS
-       (SELECT 1 FROM tombstones WHERE learner_id=$1 AND kind='fact' AND id=$2)`,
+     WHERE f.learner_id=$1 AND f.id=$2 AND ${factNotErased}`,
     [tx.learner, factId, parsed.mode === 'pinned' ? parsed.rev : null, purpose],
   );
-  const fact = factResult.rows[0];
+  return projectFactRow(tx, purpose, factId, parsed, options, factResult.rows[0]);
+}
+
+function projectFactRow(tx: ReadTransaction, purpose: string, factId: FactId,
+  parsed: ParsedFactOptions, options: FactReadOptions, fact: FactRow | undefined): FactSnapshot {
   if (fact === undefined) {
     throw new FactNotFoundError(`Fact ${factId} does not exist for this learner`);
   }
@@ -268,13 +276,33 @@ export function createAuthorizedFactReader(tx: ReadTransaction, purpose: string,
 /** Use only during one read-only snapshot or the read portion of a locked transaction. */
 export function snapshotFactReaders(tx: ReadTransaction) {
   const reads = new Map<string,Promise<FactSnapshot>>();
+  const rowsByPurpose = new Map<string, Map<FactId, FactRow | undefined>>();
   const load: typeof readFact = (_tx,purpose,id,options) => {
     const key = JSON.stringify([purpose,id,options.mode,options.mode==='pinned' ? [options.rev, options.requirePurpose] : null]);
     const existing = reads.get(key);
     if (existing) return existing;
-    const result = readFact(tx,purpose,id,options);
+    const preloaded = options.mode === 'following' ? rowsByPurpose.get(purpose) : undefined;
+    const result = preloaded?.has(id)
+      ? Promise.resolve().then(() => projectFactRow(tx,purpose,id,{mode:'following'},options,preloaded.get(id)))
+      : readFact(tx,purpose,id,options);
     reads.set(key,result);
     return result;
   };
-  return (purpose: string, maySend: (fact: FactSnapshot) => boolean) => authorizedFactReader(tx,purpose,maySend,load);
+  return (purpose: string, maySend: (fact: FactSnapshot) => boolean) => ({
+    ...authorizedFactReader(tx,purpose,maySend,load),
+    /** Warms the following-row cache. Each subsequent read still checks purpose and recipient. */
+    async preloadFollowing(ids: readonly FactId[]) {
+      let cache = rowsByPurpose.get(purpose);
+      if (!cache) rowsByPurpose.set(purpose, cache = new Map());
+      const missing = [...new Set(ids.map(requireFactId))].filter(id => !cache.has(id));
+      if (!missing.length) return;
+      const result = await tx.query<FactRow & {id: FactId}>(`
+        SELECT f.id, ${factColumns}, ${followingRevisionFloor('f', '$3::text')} AS equivalent_rev
+        FROM facts f LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+        WHERE f.learner_id=$1 AND f.id=ANY($2::text[]) AND ${factNotErased}`,
+      [tx.learner,missing,purpose]);
+      for (const id of missing) cache.set(id,undefined);
+      for (const row of result.rows) cache.set(row.id,row);
+    },
+  });
 }
