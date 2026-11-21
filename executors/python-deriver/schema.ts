@@ -135,7 +135,7 @@ export type ItemPacingEvidence = {
 };
 type WireEvent = (EvidenceEventV1 & { readonly exam_pacing_item?: never }) |
   (Omit<EvidenceEventV1, 'help_level' | 'concept_ids' | 'outcome' | 'exam_pacing'> & {
-    readonly help_level: 'unknown'; readonly concept_ids: readonly []; readonly outcome: 'unknown';
+    readonly help_level: 'unknown'; readonly concept_ids: readonly []; readonly claim_ids: readonly []; readonly outcome: 'unknown';
     readonly exam_pacing_item: ItemPacingEvidence; readonly exam_pacing?: never;
   });
 export type WireSlice = Omit<CanonicalEvidenceSliceV1, 'events'> & { readonly events: readonly WireEvent[] };

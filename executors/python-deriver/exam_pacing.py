@@ -151,6 +151,7 @@ def _attempt_items(attempt, items, eligible):
     positions, ids, scores = {}, {}, {}
     process = []
     count = halfway = 0
+    process_ids = set()
     duplicate_score = False
     for event, item in items:
         if (item["attempt_ref"] != attempt_ref or item["paper_key"] != paper_key
@@ -176,6 +177,9 @@ def _attempt_items(attempt, items, eligible):
                   "occurred_at": occurred_at}
         estimate = item.get("estimated_duration_ms")
         if has_process:
+            if item_id in process_ids:
+                return {"attempt_ref": attempt_ref, "process": _read_items([]), "later_scores": _read_items([])}
+            process_ids.add(item_id)
             row = {**anchor, **{key: item[key] for key in ("skipped", "returned", "estimated_duration_ms") if key in item}}
             if _item_duration(elapsed):
                 row["effective_duration_ms"] = elapsed
@@ -186,6 +190,15 @@ def _attempt_items(attempt, items, eligible):
             duplicate_score = duplicate_score or position in scores
             scores[position] = {**anchor, "score": score}
     later = [scores[pos] for pos in sorted(scores)] if not duplicate_score and len(scores) == count - halfway else []
+    earned_later = any(row["score"]["earned"] > 0 for row in later)
+    missed_later = any(row["score"]["earned"] < row["score"]["maximum"] for row in later)
+    for row in process:
+        if row["position"] > halfway:
+            continue
+        if row.get("skipped") and row.get("over_estimate") is False and earned_later:
+            row["later_score_context"] = "timely-skip-with-later-credit"
+        if row.get("over_estimate") and missed_later:
+            row["later_score_context"] = "overrun-with-later-shortfall"
     return {"attempt_ref": attempt_ref, "process": _read_items(process), "later_scores": _read_items(later)}
 
 

@@ -13,6 +13,7 @@ type ItemAnchor = Pick<ItemPacingEvidence, 'item_id' | 'position'> & { evidence_
 type ProcessItem = ItemAnchor & Pick<ItemPacingEvidence, 'skipped' | 'returned' | 'estimated_duration_ms'> & {
   effective_duration_ms?: number;
   over_estimate?: boolean;
+  later_score_context?: 'timely-skip-with-later-credit' | 'overrun-with-later-shortfall';
 };
 type Observations<Item> = { kind: 'unknown' } | { kind: 'observed'; items: Item[] };
 type WithinAttempt = {
@@ -131,6 +132,7 @@ function withinAttempt(input: ExamPacingInput): WithinAttempt[] | undefined {
     const ids = new Map<string, number>();
     const process: ProcessItem[] = [];
     const scores = new Map<number, ItemAnchor & { score: Score }>();
+    const processIds = new Set<string>();
     let duplicateScore = false;
     const halfway = Math.ceil(count / 2);
     const attempt_ref = { id: attempt.ref, rev: attempt.rev };
@@ -145,6 +147,8 @@ function withinAttempt(input: ExamPacingInput): WithinAttempt[] | undefined {
       const elapsed = event.effective_duration_ms;
       const anchor = itemAnchor(event, item);
       if (hasProcess) {
+        if (processIds.has(item_id)) return {attempt_ref, process: {kind: 'unknown'}, later_scores: {kind: 'unknown'}};
+        processIds.add(item_id);
         process.push({ ...anchor, ...(skipped ? {skipped} : {}), ...(returned ? {returned} : {}),
           ...(estimate === undefined ? {} : {estimated_duration_ms: estimate}),
           ...(itemDuration(elapsed) ? {effective_duration_ms: elapsed,
@@ -157,6 +161,13 @@ function withinAttempt(input: ExamPacingInput): WithinAttempt[] | undefined {
     }
     const later = !duplicateScore && scores.size === count - halfway
       ? [...scores.values()].sort((a, b) => a.position - b.position) : [];
+    const earnedLater = later.some(row => row.score.earned > 0);
+    const missedLater = later.some(row => row.score.earned < row.score.maximum);
+    for (const row of process) {
+      if (row.position > halfway) continue;
+      if (row.skipped && row.over_estimate === false && earnedLater) row.later_score_context = 'timely-skip-with-later-credit';
+      if (row.over_estimate && missedLater) row.later_score_context = 'overrun-with-later-shortfall';
+    }
     return { attempt_ref, process: observations(process), later_scores: observations(later) };
   });
 }
