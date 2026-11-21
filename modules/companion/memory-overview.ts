@@ -1,5 +1,6 @@
 import { FactNotFoundError, factId, type FactId, type FactSnapshot, type LearnerId, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
-import type { CalibrationSummary, RefusalBoundary } from '@mangekyo/module-learner/facts/cognition';
+import type { RefusalBoundary } from '@mangekyo/module-learner/facts/cognition';
+import type { CalibrationSummary } from '@mangekyo/module-learner/facts/knowledge-mastery';
 import {
   hypothesisStatus, managedUnderstanding, saveBeliefCommand,
 } from './belief.ts';
