@@ -140,6 +140,9 @@ function sprintPriority(candidate: PlanCandidate, inScope: boolean, scopeKnown: 
   return null;
 }
 
+const returnProbeLimit = 2;
+const isReturnProbe = (c: PlanCandidate) => c.kind === 'probe' || c.kind === 'counterexample';
+
 type Ranked = { candidate: PlanCandidate; score: number; why: string[] };
 
 // At most three slots. Track the highest value bundle for each occupied time and count.
@@ -263,6 +266,12 @@ export function planToday(input: TodayInput) {
     (c) => locked.has(c.id) || c.state === 'in-progress' || (c.state === 'completed' && c.date === day),
   );
   const protectedIds = new Set(protectedItems.map((c) => c.id));
+  // A refresh with the same return timestamp must still account for submitted probes.
+  const checkedTopics = new Set(protectedItems
+    .filter((c) => returning && c.state === 'completed' && c.date === day && isReturnProbe(c))
+    .map((c) => c.topic));
+  const probesLeft = returnProbeLimit - checkedTopics.size;
+  const probing = returning && campaign !== 'recovery' && probesLeft > 0;
   for (const rule of rules) {
     if (rule.kind === 'replace' && rule.date === day && protectedIds.has(rule.activityId))
       preferred.delete(rule.replacementId);
@@ -330,7 +339,7 @@ export function planToday(input: TodayInput) {
       continue;
     if (duration === '45min+' && c.minutes < durationMinutes[duration]) continue;
     if ((campaign === 'recovery') !== (c.kind === 'recovery')) continue;
-    if (returning && campaign !== 'recovery' && c.kind !== 'probe' && c.kind !== 'counterexample') continue;
+    if (probing && (!isReturnProbe(c) || checkedTopics.has(c.topic))) continue;
     const info = c.information ?? (c.retention === undefined ? 0 : 4 * c.retention * (1 - c.retention));
     const why = [c.reason];
     let score = 20 + 30 * info + (1 - (c.retention ?? 1)) * 12;
@@ -339,7 +348,7 @@ export function planToday(input: TodayInput) {
       score += 45;
       why.push('高信心错答后先做最小反例。');
     }
-    if (returning && campaign !== 'recovery') {
+    if (probing) {
       score += 70 * info;
       why.push('长假后先摸底，再按结果重排。');
     }
@@ -364,12 +373,12 @@ export function planToday(input: TodayInput) {
       score += 8;
       why.push('衔接当前校内进度或本人预习安排。');
     }
-    const inScope = exam?.scope.includes(c.topic) ?? false;
-    if (inScope && campaign === 'sprint') {
-      score += 10 + (exam?.weights.find((w) => w.topic === c.topic)?.weight ?? 0) / 4;
-      why.push('属于考试范围。');
-    }
-    if (campaign === 'sprint') {
+    if (campaign === 'sprint' && !probing) {
+      const inScope = exam?.scope.includes(c.topic) ?? false;
+      if (inScope) {
+        score += 10 + (exam?.weights.find((w) => w.topic === c.topic)?.weight ?? 0) / 4;
+        why.push('属于考试范围。');
+      }
       const priority = sprintPriority(c, inScope, !!exam?.scope.length);
       if (priority) {
         score += priority.boost;
@@ -406,10 +415,9 @@ export function planToday(input: TodayInput) {
   const prepared = feasible.filter(
     (p) => p.candidate.open?.kind === 'activity' || preferred.has(p.candidate.id),
   );
-  const limit = Math.max(
-    0,
-    (campaign === 'recovery' ? 1 : returning ? 2 : 3) - pendingProtected.length,
-  );
+  const slots = campaign === 'recovery' ? 1 : probing ? returnProbeLimit : 3;
+  const freeSlots = Math.max(0, slots - pendingProtected.length);
+  const limit = probing ? Math.min(probesLeft, freeSlots) : freeSlots;
   const selected = bundle(prepared.length ? prepared : feasible, remaining, limit, freeWindows);
   for (const id of preferred)
     if (!selected.some((i) => i.candidate.id === id) && !protectedIds.has(id))
