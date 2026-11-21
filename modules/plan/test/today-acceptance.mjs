@@ -182,6 +182,9 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
     assert.deepEqual(await isPinned(),[]);
     t.mock.timers.setTime(Date.parse(date+'T05:00:00Z'));
     assert.deepEqual(await isPinned({timeZone:'UTC'}),[pinned]);
+    const split = planToday({...base,now:new Date().toISOString(),timeZone,candidates:[{...fixed,id:paper,minutes:3,open}],
+      constraints:{...noLocks,locks:[paper]}, rules:[warmup, ...[[900,901],[920,922]].map(([start,end])=>({kind:'window',weekday:null,start,end}))]});
+    assert.deepEqual([split.warmup, split.protectedItems.map(c=>c.id)], [null, [paper]]);
     const tomorrow = await today();
     assert.deepEqual(tomorrow.protectedItems.map(c=>c.id),[paper,pinned]);
     assert.ok(!tomorrow.shortlist.includes(paper));

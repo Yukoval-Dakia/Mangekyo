@@ -331,7 +331,7 @@ export function planToday(input: TodayInput) {
   const anchor = requestedWarmup ? catalog.get(requestedWarmup) : undefined;
   let warmup: string | null = null;
   if (anchor?.open && !anchor.state && !deferred.has(anchor.id) && (!anchor.goalId || anchor.goalId === activeGoal) &&
-      !unresolvedLock && budgetMinutes >= reserved + schoolMinutes && budgetMinutes > 0) {
+      !unresolvedLock && freeWindows.length > 0 && budgetMinutes >= reserved + schoolMinutes && budgetMinutes > 0) {
     const heldIndex = protectedItems.findIndex(item => item.id === anchor.id);
     const window = freeWindows.findIndex(minutes => minutes >= anchor.minutes);
     if (heldIndex >= 0 || (window >= 0 && reserved + schoolMinutes + anchor.minutes <= budgetMinutes)) {
