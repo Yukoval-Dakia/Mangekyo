@@ -97,6 +97,7 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'retrieve_memory': return '查找已获准的记忆';
     case 'save_memory': return '登记本轮记忆操作';
     case 'mount_artifact': return artifactMountTrace(output);
+    // agentVersion 1 legacy replay only; agentVersion 2 turns never offer this name.
     case 'save_workspace': return '保存学习记录 · ' + String(args.title) + '\n' + output.slice(0, 500);
     default: return '工具不可用';
   }

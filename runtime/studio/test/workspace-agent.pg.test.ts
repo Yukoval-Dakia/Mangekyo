@@ -24,8 +24,10 @@ import { loadStudioTestModule } from './modules.ts';
 it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches directed knowledge links in PostgreSQL', () =>
   withLearnerDatabase(studioLearner, async db => {
     const body = '画出已知两段🧭：计时，再计时';
+    const makeHost = (turn:string, options:Partial<Parameters<typeof openWorkspaceTools>[0]> = {}) =>
+      openWorkspaceTools({db,turn,prior:[],authorize:async()=>{},track(){},maySend:()=>true,...options});
     function turn(name:string) {
-      const host = openWorkspaceTools({db, turn:stableId(name), prior:[], authorize:async () => {}, track() {}, maySend:() => true});
+      const host = makeHost(stableId(name));
       return async (tool:string, args:Record<string,unknown>, step:number) => JSON.parse(await host.execute(tool,args,step));
     }
     async function author() {
@@ -55,8 +57,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     });
     await db.snapshot({learner:learnerId(stableId('other learner'))}, async tx =>
       expect(await resolveSource(tx,ref,{recipient:'learner'})).toBeUndefined());
-    const privateHost = openWorkspaceTools({db,turn:stableId('another provider'),prior:[],authorize:async () => {},track() {},
-      maySend:fact => fact.ref.id !== first.source.id});
+    const privateHost = makeHost(stableId('another provider'),{maySend:fact => fact.ref.id !== first.source.id});
     const hidden = JSON.parse(await privateHost.execute('read_workspace',{id:first.page.id},1));
     expect(hidden).toMatchObject({ok:false, code:'not_found'});
     expect(hidden.content).toBeUndefined();
@@ -72,8 +73,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     await submitTurn({learner:studioLearner,actor:'learner',purpose:'teaching',type:'activity.submitTurn',
       id:commandId(turnId),input:{id:turnId,data:{caseId:'companion',sessionId:turnId,parentId:null,
         answer:'这段对话用于本轮教学。',model:'local-test',baseUrl:'http://127.0.0.1'}}});
-    const pageWriter = openWorkspaceTools({db,turn:turnId,prior:[],authorize:async () => {},track() {},maySend:() => true,
-      pageBasis:[{id:turnId,type:'activity.studyTurn',rev:1,epoch:'0'}]});
+    const pageWriter = makeHost(turnId,{pageBasis:[{id:turnId,type:'activity.studyTurn',rev:1,epoch:'0'}]});
     const byCompanion = JSON.parse(await pageWriter.execute('save_page',{title:'伴学方法',content:'先找已知条件。'},1));
     expect(byCompanion).toMatchObject({ok:true,status:'saved'});
     expect(await textbook.get({learner:studioLearner,id:byCompanion.ref})).toMatchObject({title:'伴学方法'});
@@ -174,8 +174,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
       id:commandId(stableId('paired correction')), input:{materialId,intakeId,expectedRev:2,text:'更正后的正文。'}});
     expect(await scoped()).toMatchObject({content:'更正后的正文。',sourceRef:{textFact:{rev:3}}});
     const seen: WorkspaceWitness[] = [];
-    const pinnedHost = openWorkspaceTools({db,turn:stableId('pinned material reread'),prior:[],authorize:async () => {},
-      track: item => seen.push(item), maySend:() => true});
+    const pinnedHost = makeHost(stableId('pinned material reread'),{track:item => seen.push(item)});
     const pinned = JSON.parse(await pinnedHost.execute('read_workspace',{id:JSON.stringify(captured?.sourceRef)},1));
     expect(pinned).toMatchObject({content:capturedText.slice(0,4000),sourceRef:captured?.sourceRef});
     expect(seen).toEqual(expect.arrayContaining([expect.objectContaining({id:intakeId,rev:2,mode:'pinned'})]));
@@ -232,8 +231,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     expect(JSON.stringify(opened)).not.toContain('参考答案独有字样');
     const currentAttempt = await bind('attempt',attempt.id,opened.rev);
     expect(currentAttempt?.openedAnswer).toBe(true);
-    const bound = openWorkspaceTools({db,turn:stableId('bound observation'),prior:[],authorize:async () => {},
-      track() {},maySend:() => true,currentObject:currentAttempt});
+    const bound = makeHost(stableId('bound observation'),{currentObject:currentAttempt});
     const observation = JSON.parse(await bound.execute('record_observation',evidence,1));
     expect(observation).toMatchObject({ok:true});
     const timedInput = {requestId:'timed-attempt',answers:{[question.id]:'实测东北风'},effectiveDurationMs:3200};
@@ -339,7 +337,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     expect(await graph('search_workspace',{...filters,edgeKinds:['prereq_of']},14)).toMatchObject({results:[],edges:[]});
 
     const witness: WorkspaceWitness[] = [];
-    const batchHost = openWorkspaceTools({db,turn:stableId('batch opens'),prior:[],authorize:async () => {},track:item => witness.push(item),maySend:() => true});
+    const batchHost = makeHost(stableId('batch opens'),{track:item => witness.push(item)});
     const batch = JSON.parse(await batchHost.execute('open_learning',{
       refs:[JSON.stringify(ref),originalQuestion.id,JSON.stringify(chain.edges[1].sourceRef),stableId('missing object')],
     },20));
@@ -351,8 +349,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     const part = JSON.parse(await batchHost.execute('open_learning',{refs:privatePaper.id,part:'question:2'},21)).items[0];
     expect(part).toMatchObject({content:'解释全程速度。',sourceRef:{anchor:{kind:'question'}}});
     expect(JSON.parse(await batchHost.execute('open_learning',{refs:JSON.stringify(part.sourceRef)},22)).items[0].content).toBe(part.content);
-    const revokedHost = openWorkspaceTools({db,turn:stableId('batch revoked'),prior:witness,authorize:async () => {},track() {},
-      maySend:fact => fact.ref.id !== originalQuestion.id});
+    const revokedHost = makeHost(stableId('batch revoked'),{prior:witness,maySend:fact => fact.ref.id !== originalQuestion.id});
     const mixed = JSON.parse(await revokedHost.execute('open_learning',{refs:[originalQuestion.id,variant.id]},24));
     expect(mixed.items).toMatchObject([{ok:false,code:'access_revoked'},{id:variant.id}]);
     const indexed = {learner:studioLearner,id:variant.id,rev:1,accessEpoch:'0',type:'activity.workspaceEntry'};
@@ -392,6 +389,11 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     await access.setTeaching(compound.id,{enabled:false,expectedRev:1});
     expect(await relation('save_relation',draft,6)).toMatchObject({code:'access_revoked',next:{tool:'search_workspace'}});
 
+    // agentVersion 2 narrowSaves turns reject the retired names before any write runs.
+    const narrow = makeHost(stableId('narrow saves'),{narrowSaves:true});
+    for (const name of ['save_workspace','save_relation'])
+      expect(JSON.parse(await narrow.execute(name,{},1))).toMatchObject({ok:false,code:'tool_unavailable'});
+
     // Simulate a previously graded rubric slot; the two source grants and Studio calls use live entry points.
     const gradedQuestion = privatePaper.questions[1]!;
     const gradedAnswer = '路程除以时间';
@@ -417,8 +419,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     }));
     async function openGradedAttempt(name:string, denyPaper:boolean) {
       const bases: unknown[] = [];
-      const tools = openWorkspaceTools({db,turn:stableId(name),prior:[],authorize:async () => {},track() {},
-        trackAssessment:basis => bases.push(basis),maySend:fact => !denyPaper || fact.ref.id !== privatePaper.id});
+      const tools = makeHost(stableId(name),{trackAssessment:basis => bases.push(basis),maySend:fact => !denyPaper || fact.ref.id !== privatePaper.id});
       return {result:JSON.parse(await tools.execute('read_workspace',{id:gradedAttemptId},1)),bases};
     }
     const grade = await openGradedAttempt('bus-allowed',false);
@@ -433,7 +434,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     let allowPaper = true;
     const maySend: WorkspaceSourceRecipient = fact => allowPaper || fact.ref.id !== privatePaper.id;
     const authorize = async () => {}, track = () => {};
-    const workspace = openWorkspaceTools({db,turn:runId,prior:[],authorize,track,maySend});
+    const workspace = makeHost(runId,{authorize,track,maySend});
     const sdk = openLearningTools({db,turn:runId,workspace,authorize,track,maySend,manageBeliefs:false,trackRetention:track,
       authorizeRemote:async()=>true,readContext:async()=>undefined,saveBelief:async()=>'',onDelivered:async()=>{}});
     const reads = pythonReads([{method:'evidence_slice',args:{exam_pacing:true,paper_ids:[privatePaper.id]}}]);

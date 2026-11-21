@@ -131,7 +131,7 @@ function renamed<K extends keyof typeof workspaceToolAliases>(name: K) {
   const definition = workspaceDefinitions.find(tool => tool.function.name === workspaceToolAliases[name])!;
   return {...definition,function:{...definition.function,name}};
 }
-function tool<K extends string>(name: K, description: string, properties: object, required: string[] = []) {
+function tool<K extends string>(name: K, description: string, properties: Record<string, unknown>, required: string[] = []) {
   return {type:'function',function:{name,description,parameters:{type:'object',additionalProperties:false,properties,required}}};
 }
 export const learningToolFallback = (name: string) => ({tool:'find_tools',args:{query:name}});
@@ -182,14 +182,13 @@ const saveQuestionDefinition = tool('save_question','保存独立题面草稿。
   assessment_contract:{type:'array',items:{type:'object'},maxItems:32},
 },['title','prompt']);
 
-// Serve the v2 workspace catalog only on newly versioned turns.
-export const narrowWorkspaceDefinitions = workspaceDefinitions.map<ToolDefinition>(definition => {
-  switch (definition.function.name) {
-    case 'save_workspace': return saveQuestionDefinition;
-    case 'save_relation': return renamed('save_edge');
-    default: return definition;
-  }
-});
+const workspaceDefinitionByName = new Map(workspaceDefinitions.map(definition => [definition.function.name, definition]));
+// The agentVersion 2 catalog names its narrow saves directly. The retired six-in-one
+// save_workspace stays only in the versioned agentVersion 1 catalog for replayed turns.
+export const narrowWorkspaceDefinitions: ToolDefinition[] = [
+  'read_learner_radar','open_learning','search_workspace','read_workspace','record_observation','save_page',
+].map(name => workspaceDefinitionByName.get(name)!)
+  .concat(renamed('save_edge'), saveQuestionDefinition);
 
 export function learningHostDefinitions(manageBeliefs: boolean, allowedIntents: readonly string[], artifact?: ToolDefinition): LearningTools['definitions'] {
   return {
