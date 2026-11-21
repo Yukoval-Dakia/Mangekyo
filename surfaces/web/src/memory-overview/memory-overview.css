@@ -409,7 +409,7 @@
   }
 }
 
-body[data-theme='dark'] .memory-overview {
+[data-theme='dark'] .memory-overview {
   --mo-surface: #121a15;
   --mo-ink: #f0f6ef;
   --mo-muted: #9fb2a6;
@@ -428,53 +428,53 @@ body[data-theme='dark'] .memory-overview {
   --mo-sticky-ink: #eaf5ec;
 }
 
-body[data-theme='dark'] .memory-category-card:hover {
+[data-theme='dark'] .memory-category-card:hover {
   background: #1d2b22;
 }
 
-body[data-theme='dark'] .memory-category-card.is-active {
+[data-theme='dark'] .memory-category-card.is-active {
   border-color: #4a6b56;
   box-shadow: inset 0 0 0 1px rgba(221, 235, 220, 0.08);
 }
 
-body[data-theme='dark'] .memory-state.is-sticky {
+[data-theme='dark'] .memory-state.is-sticky {
   border-color: #4b6c58;
 }
 
-body[data-theme='dark'] .memory-overview .tonal-button {
+[data-theme='dark'] .memory-overview .tonal-button {
   background: #1c2b22;
   color: #d7e6dc;
 }
 
-body[data-theme='dark'] .memory-overview .tonal-button:hover {
+[data-theme='dark'] .memory-overview .tonal-button:hover {
   background: #243a2c;
 }
 
-body[data-theme='dark'] .memory-overview .primary-button {
+[data-theme='dark'] .memory-overview .primary-button {
   background: #38684c;
   color: #eef7ee;
 }
 
-body[data-theme='dark'] .memory-overview .primary-button:hover {
+[data-theme='dark'] .memory-overview .primary-button:hover {
   background: #46795a;
 }
 
-body[data-theme='dark'] .memory-overview .primary-button.danger {
+[data-theme='dark'] .memory-overview .primary-button.danger {
   background: #6d3a3a;
 }
 
-body[data-theme='dark'] .memory-overview .text-button {
+[data-theme='dark'] .memory-overview .text-button {
   color: #a9d3b6;
 }
 
-body[data-theme='dark'] .memory-overview .text-button.danger {
+[data-theme='dark'] .memory-overview .text-button.danger {
   color: #d98080;
 }
 
-body[data-theme='dark'] .memory-overview .text-button:hover {
+[data-theme='dark'] .memory-overview .text-button:hover {
   background: #1c2b22;
 }
 
-body[data-theme='dark'] .memory-edit-form textarea {
+[data-theme='dark'] .memory-edit-form textarea {
   border-color: #3a4d40;
 }

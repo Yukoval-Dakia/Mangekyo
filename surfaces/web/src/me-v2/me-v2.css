@@ -214,6 +214,21 @@
 }
 .me-v2-pause svg { flex: none; color: #7a5a1f; }
 
+/* 危机支持卡（card） */
+.me-v2-care-card {
+  background: #eef4ea;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid #dbe6d3;
+}
+.me-v2-care-card p {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.me-v2-care-card p:last-child { margin-bottom: 0; }
+
 /* 模型与预算 */
 .me-v2-check {
   display: flex;
@@ -300,3 +315,67 @@
 
 /* Ensure card heads wrap instead of clipping action buttons on narrow viewports */
 .me-v2-card-head { flex-wrap: wrap; }
+
+/* 暗色森绿适配：变量切换到 tokens.css 中的 dark palette。 */
+[data-theme='dark'] .me-v2 {
+  --me-card: #1b2620;
+  --me-card-ink: #edf4ee;
+  --me-line: #31453a;
+  --me-accent: #a5cfb3;
+  --me-soft: #25382e;
+  --me-tonal: #202d25;
+}
+
+[data-theme='dark'] .me-v2-tabs button { color: #a9bcad; }
+[data-theme='dark'] .me-v2-tabs button:hover { background: #27372d; }
+[data-theme='dark'] .me-v2-tabs button[aria-pressed='true'] {
+  background: var(--me-accent);
+  color: #10211a;
+}
+
+[data-theme='dark'] .me-v2-goal-text,
+[data-theme='dark'] .me-v2-empty {
+  background: #1f2f25;
+}
+
+[data-theme='dark'] .me-v2-empty-inline code {
+  background: #27372d;
+}
+
+[data-theme='dark'] .me-v2-pill-button {
+  background: var(--me-accent);
+  color: #10211a;
+}
+[data-theme='dark'] .me-v2-pill-button:hover { background: #b8dcc4; }
+
+[data-theme='dark'] .me-v2-tonal {
+  background: #2a4034;
+  color: #dcefe1;
+}
+[data-theme='dark'] .me-v2-tonal:hover { background: #35513f; }
+
+[data-theme='dark'] .me-v2-pause {
+  background: #2f2a1a;
+  border-color: #54491f;
+}
+[data-theme='dark'] .me-v2-pause svg { color: #d7b45c; }
+
+[data-theme='dark'] .me-v2-routes li,
+[data-theme='dark'] .me-v2-budget-detail div {
+  background: #1f2f25;
+}
+
+[data-theme='dark'] .me-v2-check input { accent-color: var(--me-accent); }
+
+[data-theme='dark'] .me-v2-care-card {
+  background: #1f2f25;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+[data-theme='dark'] .me-v2-care-card p {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.6;
+}

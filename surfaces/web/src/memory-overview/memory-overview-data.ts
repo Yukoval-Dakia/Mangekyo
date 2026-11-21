@@ -1,8 +1,18 @@
-import { requestId } from '../api';
-import type { MemoryItem, MemoryItemInput, MemoryOverviewResponse } from './types';
+import type {
+  CalibrationRecord,
+  CalibrationSummary,
+  MemoryActionRequest,
+  MemoryActionSpec,
+  MemoryBasisEntry,
+  MemoryCategoryKey,
+  MemoryHypothesisItem,
+  MemoryItemActions,
+  MemoryOverviewItem,
+  MemoryOverviewResponse,
+  MemoryRevokeSourceAction,
+} from './types';
 
 const memoryOverviewPath = '/memory/overview';
-const claimsPath = '/memory/claims/';
 
 export async function fetchMemoryOverview(path = memoryOverviewPath): Promise<MemoryOverviewResponse> {
   const response = await fetch(`/api${path}`, { cache: 'no-store' });
@@ -18,139 +28,225 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function countOf(value: unknown): number {
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
-  if (Array.isArray(value)) return value.length;
-  return 0;
+function textOf(value: unknown, fallback = ''): string {
+  return typeof value === 'string' && value.trim() ? value : fallback;
 }
 
-function textValue(value: unknown, fallback = ''): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+function intOf(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : fallback;
 }
 
-function validBasis(value: unknown): readonly unknown[] {
-  if (Array.isArray(value)) return value;
-  return [];
+function boolOf(value: unknown, fallback = false): boolean {
+  return typeof value === 'boolean' ? value : fallback;
 }
 
-function validActions(value: unknown): readonly string[] {
+const CATEGORY_KEYS: readonly MemoryCategoryKey[] = ['preference', 'claim', 'state', 'refusal'];
+
+function isCategoryKey(value: unknown): value is MemoryCategoryKey {
+  return typeof value === 'string' && (CATEGORY_KEYS as readonly string[]).includes(value);
+}
+
+function normalizeBasisEntry(value: unknown): MemoryBasisEntry | undefined {
+  if (!isRecord(value)) return undefined;
+  const kind = textOf(value.kind);
+  const id = textOf(value.id);
+  const rev = intOf(value.rev);
+  const accessEpoch = textOf(value.accessEpoch);
+  if (!id) return undefined;
+  switch (kind) {
+    case 'turn-quote':
+      return {
+        kind, id, rev, accessEpoch,
+        excerpt: textOf(value.excerpt),
+        start: intOf(value.start),
+      };
+    case 'scope-object':
+      return {
+        kind, id, rev, accessEpoch,
+        ...(typeof value.type === 'string' ? { type: value.type } : {}),
+      };
+    case 'activity-citation': {
+      const direction = value.direction === 'support' || value.direction === 'contradict' || value.direction === 'unresolved'
+        ? value.direction
+        : 'unresolved';
+      return {
+        kind, id, rev, accessEpoch,
+        anchor: textOf(value.anchor),
+        direction,
+        excerpt: textOf(value.excerpt),
+      };
+    }
+    case 'learner-declaration':
+      return { kind, id, rev, accessEpoch };
+    default:
+      return undefined;
+  }
+}
+
+function normalizeBasis(value: unknown): readonly MemoryBasisEntry[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === 'string' && !!item.trim());
+  return value.map(normalizeBasisEntry).filter((entry): entry is MemoryBasisEntry => !!entry);
 }
 
-type DirectiveItem = MemoryOverviewResponse['stickyDirectives'][number];
-type HypothesisItem = MemoryOverviewResponse['hypotheses'][number];
+function isActionSpec(value: unknown): value is MemoryActionSpec {
+  return (
+    isRecord(value) &&
+    value.method === 'POST' &&
+    typeof value.path === 'string' && !!value.path &&
+    isRecord(value.body)
+  );
+}
 
-function normalizeDirective(value: unknown): DirectiveItem | undefined {
+function normalizeRevokeSources(value: unknown): readonly MemoryRevokeSourceAction[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (!isActionSpec(entry) || typeof (entry as { sourceId?: unknown }).sourceId !== 'string') return undefined;
+      return entry as MemoryRevokeSourceAction;
+    })
+    .filter((entry): entry is MemoryRevokeSourceAction => !!entry);
+}
+
+function normalizeActions(value: unknown): MemoryItemActions {
+  if (!isRecord(value)) return {};
+  const actions: MemoryItemActions = {};
+  if (isActionSpec(value.correct)) actions.correct = value.correct;
+  if (isActionSpec(value.forget)) actions.forget = value.forget;
+  if (isActionSpec(value.undo)) actions.undo = value.undo;
+  const revokeSources = normalizeRevokeSources(value.revokeSources);
+  if (revokeSources.length) actions.revokeSources = revokeSources;
+  return actions;
+}
+
+function normalizeOverviewItem(value: unknown, fallbackCategory: MemoryCategoryKey): MemoryOverviewItem | undefined {
   if (!isRecord(value)) return undefined;
-  const id = textValue(value.id);
-  const kind = textValue(value.kind, 'learning');
-  const rev = typeof value.rev === 'number' && Number.isSafeInteger(value.rev) ? value.rev : 0;
-  const basis = validBasis(value.basis);
-  const actions = validActions(value.actions);
+  const id = textOf(value.id);
   if (!id) return undefined;
-  const text = textValue(value.text, '未提供文字说明。');
-  return { id, rev, kind, text, sticky: true, basis, actions };
+  const category = isCategoryKey(value.category) ? value.category : fallbackCategory;
+  const origin = value.origin === 'learner' ? 'learner' : 'turn';
+  const authority = value.authority === 'directive' ? 'directive' : null;
+  const validUntil = typeof value.validUntil === 'string' && value.validUntil ? value.validUntil : null;
+  return {
+    id,
+    rev: intOf(value.rev),
+    accessEpoch: textOf(value.accessEpoch),
+    factType: textOf(value.factType),
+    category,
+    text: textOf(value.text, '未提供文字说明。'),
+    origin,
+    authority,
+    sticky: boolOf(value.sticky),
+    scope: value.scope ?? null,
+    validUntil,
+    expired: boolOf(value.expired),
+    refusal: value.refusal ?? null,
+    recordedTick: textOf(value.recordedTick),
+    basis: normalizeBasis(value.basis),
+    actions: normalizeActions(value.actions),
+  };
 }
 
-function normalizeHypothesis(value: unknown): HypothesisItem | undefined {
+function normalizeHypothesis(value: unknown): MemoryHypothesisItem | undefined {
   if (!isRecord(value)) return undefined;
-  const id = textValue(value.id);
-  const kind = textValue(value.kind, 'learning');
-  const rev = typeof value.rev === 'number' && Number.isSafeInteger(value.rev) ? value.rev : 0;
-  const basis = validBasis(value.basis);
-  const actions = validActions(value.actions);
+  const id = textOf(value.id);
   if (!id) return undefined;
-  const summary = textValue(value.summary, textValue(value.text, '未提供文字说明。'));
-  const status = textValue(value.status, 'unknown');
-  return { id, rev, kind, summary, status, basis, actions };
+  const review =
+    value.review === 'supported' || value.review === 'contradicted' || value.review === 'unresolved'
+      ? value.review
+      : 'unknown';
+  const ttl = typeof value.ttl === 'string' && value.ttl ? value.ttl : null;
+  return {
+    id,
+    rev: intOf(value.rev),
+    accessEpoch: textOf(value.accessEpoch),
+    factType: textOf(value.factType),
+    kind: textOf(value.kind, 'learning'),
+    status: textOf(value.status, 'unknown'),
+    text: textOf(value.text, textOf(value.summary, '未提供文字说明。')),
+    scope: value.scope ?? null,
+    sticky: boolOf(value.sticky),
+    ttl,
+    review,
+    basis: normalizeBasis(value.basis),
+    actions: normalizeActions(value.actions),
+  };
 }
 
-function present<T>(value: T | undefined): value is T {
-  return !!value;
+function normalizeCalibrationRecord(value: unknown, index: number): CalibrationRecord | undefined {
+  if (!isRecord(value)) return undefined;
+  const conceptId = typeof value.conceptId === 'string' && value.conceptId ? value.conceptId : null;
+  const occurredAt = textOf(value.occurredAt);
+  const key = textOf(value.key, `reconciliation-${index}`);
+  const status = textOf(value.status, 'unknown');
+  return { key, status, conceptId, occurredAt };
+}
+
+function normalizeCalibration(value: unknown): CalibrationSummary {
+  if (!isRecord(value)) {
+    return { status: 'unknown', totalReconciliations: 0, confirmed: 0, missed: 0, recent: [] };
+  }
+  const recent = Array.isArray(value.recent)
+    ? value.recent.map(normalizeCalibrationRecord).filter((entry): entry is CalibrationRecord => !!entry)
+    : [];
+  const totalReconciliations = intOf(value.totalReconciliations, recent.length);
+  const confirmed = intOf(value.confirmed, recent.filter(item => item.status === 'confirmed').length);
+  const missed = intOf(value.missed, Math.max(0, totalReconciliations - confirmed));
+  const status = value.status === 'available' ? 'available' : 'unknown';
+  return { status, totalReconciliations, confirmed, missed, recent };
+}
+
+function normalizeCategoryArray(value: unknown, key: MemoryCategoryKey): readonly MemoryOverviewItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(entry => normalizeOverviewItem(entry, key)).filter((entry): entry is MemoryOverviewItem => !!entry);
 }
 
 export function normalizeOverview(value: unknown): MemoryOverviewResponse {
   if (!isRecord(value)) throw new Error('记忆总览格式无效。');
   const categories = isRecord(value.categories) ? value.categories : {};
   const stickyDirectives = Array.isArray(value.stickyDirectives)
-    ? value.stickyDirectives.map(normalizeDirective).filter(present)
+    ? value.stickyDirectives.map(entry => normalizeOverviewItem(entry, 'claim')).filter((entry): entry is MemoryOverviewItem => !!entry)
     : [];
   const hypotheses = Array.isArray(value.hypotheses)
-    ? value.hypotheses.map(normalizeHypothesis).filter(present)
+    ? value.hypotheses.map(normalizeHypothesis).filter((entry): entry is MemoryHypothesisItem => !!entry)
     : [];
-  const calibration = isRecord(value.calibration) ? value.calibration : {};
-  const recent = Array.isArray(calibration.recent)
-    ? calibration.recent
-        .map((item) => {
-          if (!isRecord(item)) return undefined;
-          const key = textValue(item.key);
-          const status = textValue(item.status, 'unknown');
-          const occurredAt = textValue(item.occurredAt);
-          const conceptId = typeof item.conceptId === 'string' ? item.conceptId : null;
-          return key ? { key, status, conceptId, occurredAt } : undefined;
-        })
-        .filter(present)
-    : [];
-  const total = typeof calibration.totalReconciliations === 'number' && Number.isSafeInteger(calibration.totalReconciliations)
-    ? calibration.totalReconciliations
-    : recent.length;
-  const confirmed = typeof calibration.confirmed === 'number' && Number.isSafeInteger(calibration.confirmed)
-    ? calibration.confirmed
-    : recent.filter((item) => item.status === 'confirmed').length;
-  const missed = typeof calibration.missed === 'number' && Number.isSafeInteger(calibration.missed)
-    ? calibration.missed
-    : Math.max(0, total - confirmed);
-  const status = calibration.status === 'available' ? 'available' : 'unknown';
   return {
-    asOf: textValue(value.asOf, new Date().toISOString()),
+    asOf: textOf(value.asOf, new Date().toISOString()),
     categories: {
-      preference: countOf(categories.preference),
-      claim: countOf(categories.claim),
-      state: countOf(categories.state),
-      refusal: countOf(categories.refusal),
+      preference: normalizeCategoryArray(categories.preference, 'preference'),
+      claim: normalizeCategoryArray(categories.claim, 'claim'),
+      state: normalizeCategoryArray(categories.state, 'state'),
+      refusal: normalizeCategoryArray(categories.refusal, 'refusal'),
     },
     stickyDirectives,
     hypotheses,
-    calibration: { status, totalReconciliations: total, confirmed, missed, recent },
+    calibration: normalizeCalibration(value.calibration),
   };
 }
 
-async function postMemory(path: string, body: Record<string, unknown>) {
-  const response = await fetch(`/api${path}`, {
-    method: 'POST',
+async function runActionSpec(spec: MemoryActionSpec): Promise<void> {
+  const response = await fetch(spec.path, {
+    method: spec.method,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(spec.body),
   });
   if (!response.ok) {
-    const error = new Error(response.status === 404 ? '当前记忆管理服务暂不可用。' : '记忆保存失败。');
+    const failure = await response.json().catch(() => null) as { error?: string } | null;
+    const message = failure?.error ?? (response.status === 404 ? '该记忆已不存在。' : '操作未完成。');
+    const error = new Error(message);
     (error as Error & { status?: number }).status = response.status;
     throw error;
   }
-  return response.json().catch(() => null);
 }
 
-function defaultUpdateItem(input: MemoryItemInput) {
-  const { item, text } = input;
-  if (!text?.trim()) throw new Error('请先填写修改内容。');
-  if (!input.accessEpoch) throw new Error('暂缺少版本见证，无法安全修改。');
-  return postMemory(`${claimsPath}${encodeURIComponent(item.id)}`, {
-    requestId: requestId(),
-    action: 'correct',
-    rev: item.rev,
-    accessEpoch: input.accessEpoch,
-    text: text.trim(),
-  });
-}
-
-function defaultWithdrawItem(input: MemoryItemInput) {
-  const { item } = input;
-  if (!input.undoToken) throw new Error('暂缺少撤回凭据，无法安全撤回。');
-  return postMemory(`${claimsPath}${encodeURIComponent(item.id)}/undo`, { undo_token: input.undoToken });
+async function defaultRunAction(request: MemoryActionRequest): Promise<void> {
+  const spec = { ...request.spec };
+  if (request.kind === 'correct' && request.text) {
+    spec.body = { ...spec.body, text: request.text };
+  }
+  await runActionSpec(spec);
 }
 
 export const memoryOverviewDefaults = {
   fetchOverview: fetchMemoryOverview,
-  updateItem: defaultUpdateItem,
-  withdrawItem: defaultWithdrawItem,
+  runAction: defaultRunAction,
 };

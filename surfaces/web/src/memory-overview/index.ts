@@ -1,3 +1,5 @@
+import './memory-overview.css';
+
 export { MemoryOverviewPanel } from './MemoryOverviewPanel';
 export { CalibrationCard } from './CalibrationCard';
 export { MemoryItemCard } from './MemoryItemCard';
@@ -7,11 +9,20 @@ export {
   normalizeOverview,
 } from './memory-overview-data';
 export type {
+  CalibrationRecord,
+  CalibrationSummary,
+  MemoryActionKind,
+  MemoryActionRequest,
+  MemoryActionSpec,
+  MemoryBasisEntry,
   MemoryCategoryKey,
+  MemoryHypothesisItem,
   MemoryItem,
-  MemoryItemInput,
+  MemoryItemActions,
   MemoryOverviewHandlers,
+  MemoryOverviewItem,
   MemoryOverviewPanelProps,
   MemoryOverviewResponse,
   MemoryOverviewState,
+  MemoryRevokeSourceAction,
 } from './types';

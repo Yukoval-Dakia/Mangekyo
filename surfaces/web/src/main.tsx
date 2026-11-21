@@ -20,13 +20,16 @@ import {
   ReadState,
   Materials,
   SavedMaterial,
-  Me,
   EditDialog,
   materialPath,
   useResource,
   type Workspace,
   type ChatLink,
 } from './workspace';
+import { MeSurface } from './me-v2';
+import { MemoryOverviewPanel } from './memory-overview';
+import { NotionSettings } from './notion-settings';
+import { pendingErasures } from './erasure';
 import { Today } from './today';
 import { AppShell, destinations } from './shell/AppShell';
 import { IntakeSurface, TodaySurface } from './today-v2';
@@ -271,7 +274,40 @@ function App() {
     content = <>{!preview && <div className="classroom-screen"><ClassroomRoom id={id} /></div>}<ClassroomPrint id={id} preview={preview} /></>;
   }
   else if (path === '/companion') content = <Companion key={routeKey} chats={chats} settings={settings.data} />;
-  else if (path === '/me') content = <Me library={library} chats={chats} settings={settings.data && forTask(settings.data, 'companion')} editGoal={() => open('goal')} />;
+  else if (path === '/me') {
+    const erasureIds = pendingErasures();
+    content = (
+      <MeSurface
+        key={routeKey}
+        library={library}
+        settings={settings.data && forTask(settings.data, 'companion')}
+        onOpenGoalEditor={() => open('goal')}
+        onOpenSettings={() => open('settings')}
+        renderMemoryOverview={() => <MemoryOverviewPanel />}
+        renderNotionSettings={() => <NotionSettings />}
+        renderErasure={() => (
+          <div className="me-v2-stack">
+            {erasureIds.length ? (
+              <ul className="me-v2-erasure-list">
+                {erasureIds.map(id => (
+                  <li key={id}>
+                    <a className="text-button" href={materialPath(id)}>
+                      查看待核对的原件删除请求 · {id.slice(-6)}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="me-v2-empty-inline">暂无待核对的删除请求。</p>
+            )}
+            <p className="me-v2-foot">
+              永久删除原件请前往具体材料页操作；导出与更多数据权利在「学习设置 → 访问与授权」中说明。
+            </p>
+          </div>
+        )}
+      />
+    );
+  }
   else content = <Today key={routeKey} />;
   return (
     <>

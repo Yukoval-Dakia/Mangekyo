@@ -3,10 +3,28 @@ import { api, ApiError } from '../api';
 import { Icon } from '../icons';
 import type { DataSovereigntyPanelProps } from './types';
 
+type CarePauseState = {
+  active: boolean;
+  scope: string;
+  expiresAt: string | null;
+  revision?: number;
+};
+
+type CrisisSupportCard = {
+  version?: string;
+  title?: string;
+  safetyQuestion?: string;
+  trustedContact?: string;
+  localEmergencyGuidance?: string;
+  regionQuestion?: string;
+  noAutomaticThirdPartyContact?: boolean;
+  noPermanentProfile?: boolean;
+  noHarmContent?: boolean;
+};
+
 type CareSupport = {
-  paused?: boolean;
-  pausedUntil?: string | null;
-  reason?: string | null;
+  card?: CrisisSupportCard;
+  pause?: CarePauseState;
 };
 
 function useCareSupport() {
@@ -99,11 +117,23 @@ function ErasureCard({ render }: { render?: (() => React.ReactNode) | undefined 
           <p className="me-v2-card-sub">你可随时导出全部数据、发起不可逆永久删除，或安心暂停后台教研。</p>
         </div>
       </div>
-      {state === 'ready' && support?.paused && (
+      {state === 'ready' && support?.card && (
+        <div className="me-v2-care-card">
+          <p>
+            <Icon name="lock" /> <strong>{support.card.title ?? '需要帮助'}</strong>
+          </p>
+          {support.card.safetyQuestion && <p className="me-v2-copy">{support.card.safetyQuestion}</p>}
+          {support.card.trustedContact && <p className="me-v2-copy">{support.card.trustedContact}</p>}
+          {support.card.localEmergencyGuidance && (
+            <p className="me-v2-copy">{support.card.localEmergencyGuidance}</p>
+          )}
+        </div>
+      )}
+      {state === 'ready' && support?.pause?.active && (
         <div className="me-v2-pause" role="status">
           <p>
             <Icon name="lock" /> 当前处于「安心暂停」状态，后台教研与催练已停止。
-            {support.pausedUntil && ` 预计至 ${new Date(support.pausedUntil).toLocaleString()}。`}
+            {support.pause.expiresAt && ` 预计至 ${new Date(support.pause.expiresAt).toLocaleString()}。`}
           </p>
           <button type="button" className="me-v2-tonal" disabled={busy} onClick={() => void resume()}>
             {busy ? '正在恢复…' : '恢复后台教研与催练'}

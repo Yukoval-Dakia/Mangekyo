@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { MemoryCategoryKey, MemoryItem, MemoryOverviewPanelProps, MemoryOverviewState } from './types';
+import type {
+  MemoryCategoryKey,
+  MemoryItem,
+  MemoryOverviewPanelProps,
+  MemoryOverviewState,
+} from './types';
 import { memoryOverviewDefaults } from './memory-overview-data';
 import { CalibrationCard } from './CalibrationCard';
 import { MemoryItemCard } from './MemoryItemCard';
-import './memory-overview.css';
 
 const categoryCards: { key: MemoryCategoryKey; title: string; copy: string }[] = [
   { key: 'preference', title: '学习偏好', copy: '你对讲解方式、节奏和例子偏好的长期选择' },
@@ -14,25 +18,26 @@ const categoryCards: { key: MemoryCategoryKey; title: string; copy: string }[] =
 
 const categoryKeys = new Set<MemoryCategoryKey>(categoryCards.map((card) => card.key));
 
-function categoryOf(kind: string): MemoryCategoryKey {
+function hypothesisCategory(kind: string): MemoryCategoryKey {
   return categoryKeys.has(kind as MemoryCategoryKey) ? (kind as MemoryCategoryKey) : 'claim';
 }
 
-function filterFor(item: MemoryItem): MemoryCategoryKey {
-  if (item.section === 'directive') return item.kind === 'directive' ? 'refusal' : categoryOf(item.kind);
-  return categoryOf(item.kind);
+function itemCategory(item: MemoryItem): MemoryCategoryKey {
+  if (item.section === 'directive') return item.category;
+  return hypothesisCategory(item.kind);
 }
 
 export function MemoryOverviewPanel({
   fetchJson = memoryOverviewDefaults.fetchOverview,
-  onUpdateItem = memoryOverviewDefaults.updateItem,
-  onWithdrawItem = memoryOverviewDefaults.withdrawItem,
+  onRunAction = memoryOverviewDefaults.runAction,
   initialOverview,
+  renderHeaderExtra,
 }: MemoryOverviewPanelProps) {
   const [state, setState] = useState<MemoryOverviewState>(
     initialOverview ? { status: 'ready', data: initialOverview } : { status: 'loading' },
   );
   const [category, setCategory] = useState<MemoryCategoryKey>('preference');
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (initialOverview) return;
@@ -54,19 +59,29 @@ export function MemoryOverviewPanel({
     return () => {
       cancelled = true;
     };
-  }, [fetchJson, initialOverview]);
+  }, [fetchJson, initialOverview, reloadKey]);
 
   const items = useMemo(() => {
     if (state.status !== 'ready') return [] as MemoryItem[];
-    const directives: MemoryItem[] = state.data.stickyDirectives.map((item) => ({ ...item, section: 'directive' as const }));
-    const hypotheses: MemoryItem[] = state.data.hypotheses.map((item) => ({ ...item, section: 'hypothesis' as const }));
+    const directives: MemoryItem[] = state.data.stickyDirectives.map((item) => ({
+      ...item, section: 'directive' as const,
+    }));
+    const hypotheses: MemoryItem[] = state.data.hypotheses.map((item) => ({
+      ...item, section: 'hypothesis' as const,
+    }));
     return [...directives, ...hypotheses];
   }, [state]);
 
   const directiveItems = items.filter((item) => item.section === 'directive');
   const hypothesisItems = items.filter((item) => item.section === 'hypothesis');
-  const visibleDirectives = directiveItems.filter((item) => filterFor(item) === category);
-  const visibleHypotheses = hypothesisItems.filter((item) => filterFor(item) === category);
+  const visibleDirectives = directiveItems.filter((item) => itemCategory(item) === category);
+  const visibleHypotheses = hypothesisItems.filter((item) => itemCategory(item) === category);
+
+  async function runActionAndRefresh(request: Parameters<NonNullable<typeof onRunAction>>[0]) {
+    if (!onRunAction) return;
+    await onRunAction(request);
+    setReloadKey((key) => key + 1);
+  }
 
   return (
     <section className="memory-overview" aria-labelledby="memory-overview-title">
@@ -77,13 +92,15 @@ export function MemoryOverviewPanel({
         </div>
       </div>
 
+      {renderHeaderExtra?.()}
+
       {state.status === 'loading' && <p className="memory-panel-notice">正在读取你的记忆画像…</p>}
 
       {state.status === 'error' && (
         <div className="memory-panel-notice is-error" role="alert">
           <p>{state.message}</p>
           <p className="memory-muted">如果是首次启用或网络暂不可达，请稍后重试。</p>
-          <button type="button" className="tonal-button" onClick={() => window.location.reload()}>
+          <button type="button" className="tonal-button" onClick={() => setReloadKey(k => k + 1)}>
             重新加载
           </button>
         </div>
@@ -94,7 +111,7 @@ export function MemoryOverviewPanel({
           <div className="memory-category-grid" role="tablist" aria-label="记忆类别">
             {categoryCards.map((card) => {
               const active = category === card.key;
-              const count = state.data.categories[card.key];
+              const count = state.data.categories[card.key].length;
               return (
                 <button
                   key={card.key}
@@ -120,9 +137,15 @@ export function MemoryOverviewPanel({
               </div>
               <div className="memory-stack">
                 {visibleDirectives.length ? (
-                  visibleDirectives.map((item) => <MemoryItemCard key={item.id} item={item} onUpdateItem={onUpdateItem} onWithdrawItem={onWithdrawItem} />)
+                  visibleDirectives.map((item) => (
+                    <MemoryItemCard
+                      key={`${item.id}:${item.rev}`}
+                      item={item}
+                      onRunAction={runActionAndRefresh}
+                    />
+                  ))
                 ) : (
-                  <p className="memory-empty">当前没有始终生效的记忆指令。</p>
+                  <p className="memory-empty">当前类别下没有始终生效的记忆指令。</p>
                 )}
               </div>
             </section>
@@ -134,7 +157,13 @@ export function MemoryOverviewPanel({
               </div>
               <div className="memory-stack">
                 {visibleHypotheses.length ? (
-                  visibleHypotheses.map((item) => <MemoryItemCard key={item.id} item={item} onUpdateItem={onUpdateItem} onWithdrawItem={onWithdrawItem} />)
+                  visibleHypotheses.map((item) => (
+                    <MemoryItemCard
+                      key={`${item.id}:${item.rev}`}
+                      item={item}
+                      onRunAction={runActionAndRefresh}
+                    />
+                  ))
                 ) : (
                   <p className="memory-empty">当前类别下没有学习理解记录。</p>
                 )}
