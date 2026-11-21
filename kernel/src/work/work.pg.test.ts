@@ -486,6 +486,53 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
   });
 });
 
+it.skipIf(!testDatabaseUrl)('backfills the v13 correction route without reissuing legacy work', () =>
+  withLearnerDatabase(learner, async db => {
+    const settings = newUlid(), original = newUlid(), source = newUlid();
+    const correction = newUlid(), execution = newUlid(), ordinary = newUlid();
+    const spec = {
+      goal: 'Review', workerProfile: 'deterministic_compute', trigger: { kind: 'scheduled', fireAtMs: 10 },
+      sourceFactRev: { id: correction, revision: 1, accessEpoch: '0' },
+      refs: [{ id: original, revision: 1, accessEpoch: '0' }],
+      autonomyTier: 1, budgetCap: 0, settingsRevision: 1, expiresAtMs: 50,
+    };
+    // Insert the draft rows with the actual v13 constraints, before applying v14.
+    const schemaTransaction: Db['schemaTransaction'] = run => db.schemaTransaction(tx => run({
+      async query<Row>(...args: Parameters<Db['query']>) {
+        const result = await tx.query<Row>(...args);
+        if (args[0] !== 'INSERT INTO kernel_schema_migrations (version) VALUES ($1)' || args[1]?.[0] !== 13) return result;
+        await tx.query(`INSERT INTO facts (learner_id,id,type,current_rev,created_tick,changed_tick)
+          VALUES ($1,$2,'content.asset',1,1,1)`, [learner, original]);
+        await tx.query(`INSERT INTO fact_revs (learner_id,fact_id,rev,data,purpose,sticky,kind,author,command_id,tick)
+          VALUES ($1,$2,1,$3,'{teaching}',false,'value','learner',$2,1)`,
+        [learner, original, JSON.stringify({ basis: [{ id: source, rev: 1 }] })]);
+        await tx.query(`INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys) VALUES
+          ($1,'companion.researchWake',$2,'{}'),($1,'working.todo',$3,'{}'),($1,'working.todo',$4,'{}')`,
+        [learner, settings, correction, ordinary]);
+        await tx.query(`INSERT INTO work (learner_id,id,slot_type,slot_key,deriver,state,execution_ref) VALUES
+          ($1,$2,'companion.researchWake',$2,'studio/research-wake-v1','satisfied',NULL)`, [learner, settings]);
+        await tx.query(`INSERT INTO work (learner_id,id,slot_type,slot_key,deriver,state,execution_ref,family,spec,chain_id,hop_count,registered_tick) VALUES
+          ($1,$2,'working.todo',$2,'deterministic_compute','ready',$3,'todo',$4,$2,0,1),
+          ($1,$5,'working.todo',$5,'deterministic_compute','pending',NULL,'todo',$6,$5,0,1)`,
+        [learner, correction, execution, JSON.stringify({ ...spec, dedupKey: `correction-retest:${correction}:1` }), ordinary,
+          JSON.stringify({ ...spec, dedupKey: `review-attempt:${correction}:1:0` })]);
+        await tx.query("INSERT INTO work_outbox VALUES ($1,$2,$3,1,'delivered')", [learner, execution, correction]);
+        return result;
+      },
+    }));
+    await applyKernelSchema({ ...db, schemaTransaction });
+    expect(await db.snapshot({ learner }, tx => readTodo(tx, correction))).toMatchObject({
+      id: correction, spec, state: 'dispatched', revision: 1, route: 'studio/correction-retest-v1',
+    });
+    expect(await db.snapshot({ learner }, tx => readTodo(tx, ordinary))).toMatchObject({ state: 'pending', route: null });
+    expect(await acknowledgeStartedWork(db, execution)).toEqual({ learner, workId: correction, generation: '1' });
+    await db.tx({ learner }, tx => tx.withLearnerWrite(tick => tx.insert('tombstones', {
+      learner_id: learner, id: source, kind: 'fact', generation: tick,
+    })));
+    expect(await db.snapshot({ learner }, tx => readTodo(tx, correction))).toMatchObject({ state: 'cancelled' });
+    expect(await acknowledgeStartedWork(db, execution)).toBeNull();
+  }, { initialize: legacyWorkSchema }));
+
 it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concurrent migration of legacy work', () =>
   withLearnerDatabase(learner, async db => {
     await db.query(`INSERT INTO slot_state (learner_id, slot_type, slot_key, pending, scope_keys)
