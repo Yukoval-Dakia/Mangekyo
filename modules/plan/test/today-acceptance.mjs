@@ -23,10 +23,9 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
   assert.equal(planToday({...base,constraints:{...noLocks,budget_min:0},candidates:[]}).items.length,0);
   const before = planToday({...base,candidates,rules:[school]});
   const after = planToday({...base,candidates});
-  assert.deepEqual(ids(before),['graph','units']);
-  assert.deepEqual(ids(after),['convert','graph']);
-  const screened = applyCandidateInformation(candidates, [], [{ref:'convert'}, {ref:'fixed'}]);
-  assert.deepEqual(ids(planToday({...base,candidates:screened})),['graph','units']);
+  const screened = planToday({...base,candidates:applyCandidateInformation(candidates, [], [{ref:'convert'}, {ref:'fixed'}])});
+  for (const [plan, expected] of [[before, ['graph','units']], [after, ['convert','graph']], [screened, ['graph','units']]])
+    assert.deepEqual(ids(plan),expected);
   assert.deepEqual(before.protectedItems,after.protectedItems);
   assert.equal(before.totalMinutes,20);
   assert.equal(before.tradeoffs[0].activityId,'convert');
@@ -60,13 +59,13 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
       make('long-review',11,1,{kind:'recovery'}),make('review',6,0,{kind:'recovery'}),make('second',5,0,{kind:'recovery'})]};
   const examScore = {submission:{id:'submitted',rev:1},forecastAssessment:forecast.assessment,
     submittedAt:'2026-11-25T11:00:00Z',score:{earned:65,maximum:100}};
-  const afterExam = planToday({...recovery,examScore});
+  const scoredPlan = change => planToday({...recovery,examScore:{...examScore,...change}});
+  const afterExam = scoredPlan({});
   assert.equal(afterExam.items.length,1);
   assert.ok(!afterExam.shortlist.includes('probe') && !afterExam.shortlist.includes('long-review'));
   assert.equal(afterExam.scoreReview.status,'below-expected-range');
-  const review = change => planToday({...recovery,examScore:{...examScore,...change}}).scoreReview;
-  assert.equal(review({score:{earned:75,maximum:100}}).status,'within-expected-range');
-  assert.equal(review({forecastAssessment:{...forecast.assessment,rev:1}}).kind,'unknown');
+  assert.equal(scoredPlan({score:{earned:75,maximum:100}}).scoreReview.status,'within-expected-range');
+  assert.equal(scoredPlan({forecastAssessment:{...forecast.assessment,rev:1}}).scoreReview.kind,'unknown');
   const returnInput = {...campaignInput,...next,lastOpenedAt:'2026-10-27T11:00:00Z'};
   const returning = planToday(returnInput);
   assert.deepEqual(ids(returning),['uncertain','weak']);
@@ -161,9 +160,8 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
     const rest = await save('rest',{kind:'rest',date:oneHand.day});
     const rested = await returning();
     assert.deepEqual([ids(rested),rested.protectedItems,rested.conflicts.length],[[],resumed.protectedItems,1]);
-    await save('clear-rest',null,rest);
-    await save('clear-homework',null,homework);
-    await save('clear-lock',null,lock);
+    for (const [name, receipt] of [['rest', rest], ['homework', homework], ['lock', lock]])
+      await save('clear-' + name, null, receipt);
     for (const [date,campaign,expected] of [['26','recovery',['pack/reflection']],['28','steady',[paper,pinned]]]) {
       t.mock.timers.setTime(Date.parse('2026-11-'+date+'T05:00:00Z'));
       const view = await today();

@@ -33,12 +33,11 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
   } } });
 
   const invalid = { ...sample, as_of_at: '2026-02-29T00:00:00Z' };
-  expect(await host.derive(cognition, invalid)).toEqual({ kind: 'failed', reason: 'invalid CanonicalEvidenceSlice@v1' });
+  const invalidSlice = 'invalid CanonicalEvidenceSlice@v1';
+  expect(await host.derive(cognition, invalid)).toEqual({kind: 'failed', reason: invalidSlice});
   const requests = [sample, invalid].map((input, i) => ({id: String(i), deriver: cognition, input}));
-  const [valid, rejected] = pythonLines(['worker.py'], requests);
-  expect(initial.kind).toBe('ok');
-  if (initial.kind === 'ok') expect(valid).toEqual({id: '0', value: initial.outcome});
-  expect(rejected).toEqual({ id: '1', error: 'invalid CanonicalEvidenceSlice@v1' });
+  if (initial.kind !== 'ok') throw new Error('Missing initial result');
+  expect(pythonLines(['worker.py'], requests)).toEqual([{id: '0', value: initial.outcome}, {id: '1', error: invalidSlice}]);
 
   const noIndependent = { ...sample, events: sample.events.map(event => ({ ...event, help_level: 'hinted' })) };
   const uncertainty = {kind: 'unknown', reason: 'missing-independent-scored-evidence'};

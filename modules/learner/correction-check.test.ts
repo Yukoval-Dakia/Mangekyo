@@ -1,8 +1,7 @@
-import { commandId, type BusWitness, type FactWrite, type Json, type Revision, type Tick } from '@mangekyo/kernel';
+import { type BusWitness, type Revision, type Tick } from '@mangekyo/kernel';
 import { expect, it } from 'vitest';
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
 import { createAuthorizedFactReader } from '../../kernel/src/commands/reads.ts';
-import { applyFactWrites } from '../../kernel/src/commands/writes.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../kernel/test/learner-database.ts';
 import { activityEvidenceSlice, controlledWorkbookHelp } from '../activity/evidence-slice.ts';
@@ -12,7 +11,7 @@ import {
   correctionContradictions, correctionRetestDue, planCorrectionCheck, type ActiveMisconception, type CorrectionObservation,
   type CorrectionReopen, type CorrectionVariant,
 } from './correction-check.ts';
-import { id, learner, snapshot, use as ref } from './test/facts.ts';
+import { factWriter, learner, snapshot, use as ref } from './test/facts.ts';
 
 const day = 86_400_000;
 const now = Date.parse('2026-11-21T05:00:00.000Z');
@@ -93,9 +92,7 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
 it('rechecks the 24h reservation against the pinned question and current authorization', { timeout: 20_000 }, () =>
   withLearnerDatabase(learner, async db => {
     const { source, originalQuestion } = correction;
-    const apply = (writes: readonly FactWrite[], n: number) => db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
-      applyFactWrites(tx, tick, writes, { actor: 'learner', purpose: 'storage', commandId: commandId(id(n)) },
-        type => ({ type, schema: { parse: (value: Json) => value } }))));
+    const apply = factWriter(db, {learner, purpose: 'storage'});
     await apply([
       { kind: 'create', id: source.id, factType: source.type, data: {}, purpose: ['storage', 'background-research'] },
       { kind: 'create', id: originalQuestion.id, factType: originalQuestion.type, data: {}, purpose: ['storage', 'teaching'] },
@@ -114,8 +111,8 @@ it('rechecks the 24h reservation against the pinned question and current authori
     expect(await due(dueAt)).toBe(true);
     expect(await due(dueAt, 1, correction)).toBe(false);
     expect(await due(dueAt, 2)).toBe(false);
-    await apply([{ kind: 'set_purpose', id: originalQuestion.id, expectedRev: 2 as Revision, purpose: ['storage'] }], 22);
-    expect(await due(dueAt)).toBe(false);
-    await apply([{ kind: 'set_purpose', id: originalQuestion.id, expectedRev: 3 as Revision, purpose: ['storage', 'teaching'] }], 23);
-    expect(await due(dueAt)).toBe(false);
+    for (const [rev, purpose] of [[2, ['storage']], [3, ['storage', 'teaching']]] as const) {
+      await apply([{kind: 'set_purpose', id: originalQuestion.id, expectedRev: rev as Revision, purpose}], 20 + rev);
+      expect(await due(dueAt), 'authorization loss or an old epoch').toBe(false);
+    }
   }, { postgres: Boolean(testDatabaseUrl) }));
