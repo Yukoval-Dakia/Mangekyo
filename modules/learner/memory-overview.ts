@@ -194,7 +194,9 @@ function summary(change: MemoryAuthorizedRecentChange) {
 
 function orderedChanges(rows: readonly MemoryAuthorizedRecentChange[]) {
   return rows
-    .filter(change => Number.isFinite(evidenceTime(change.occurredAt)))
+    .filter(change => Number.isFinite(evidenceTime(change.occurredAt)) &&
+      (change.reasonKind === 'correction' || change.reasonKind === 'independent-evidence' ||
+        change.reasonKind === 'revocation' || change.reasonKind === 'plan-adjustment'))
     .toSorted((a, b) => evidenceTime(b.occurredAt) - evidenceTime(a.occurredAt) ||
       a.reasonKind.localeCompare(b.reasonKind))
     .slice(0, 5)

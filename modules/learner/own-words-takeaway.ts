@@ -100,7 +100,8 @@ function takeawayText(fact: FactSnapshot | undefined, concept: BusWitness): stri
   if (!fact || (fact.type !== 'activity.ownWordsTakeaway' && fact.type !== 'companion.claim') || !value || !object || !basis ||
       value.version !== 1 || value.authority !== 'directive' || value.category !== 'claim' ||
       value.sticky !== true || value.valid_until !== null || typeof value.text !== 'string' ||
-      !value.text.trim() || value.text.length > 60 || !value.text.isWellFormed() || value.text.includes('\0') ||
+      value.supersedes !== null || !value.text.trim() || value.text.length > 60 ||
+      !value.text.isWellFormed() || value.text.includes('\0') ||
       object.kind !== 'object' || object.object !== concept.id ||
       !basis.some(ref => ref.id === concept.id && Number(ref.rev) === concept.rev &&
         ref.accessEpoch === concept.accessEpoch)) return undefined;
@@ -158,7 +159,7 @@ export async function projectOwnWordsTakeaway(read: OwnWordsTakeawayRead, input:
   const scope = input.scope ?? read.scope;
   const watermark = input.phase === 'during-attempt' ? input.clockWatermark : input.slice.clock_watermark;
   if (scope.learner !== read.scope.learner || !scope.purpose.trim() || !scope.recipient.trim() ||
-      !validTick(input.takeawayAdmittedAt) || BigInt(input.takeawayAdmittedAt) > BigInt(watermark) ||
+      !validTick(watermark) || !validTick(input.takeawayAdmittedAt) || BigInt(input.takeawayAdmittedAt) > BigInt(watermark) ||
       !atWatermark(input.takeaway, watermark) || !atWatermark(input.concept, watermark) ||
       (input.phase === 'post-submit' && (!validTick(input.submissionAdmittedAt) || !atWatermark(input.submission, watermark) ||
         BigInt(input.submissionAdmittedAt) > BigInt(watermark) || !Number.isFinite(evidenceTime(input.slice.as_of_at)))))
