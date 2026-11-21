@@ -1,4 +1,4 @@
-import { migrateLifecycle, requireLifecycleCutover } from './lifecycle.ts';
+import { installErasureFence, migrateLifecycle, requireLifecycleCutover } from './lifecycle.ts';
 import type { Db, DbQuery } from './db/types.ts';
 import { newUlid } from './work/identity.ts';
 import { migrateTodoWork } from './work/migrate-todos.ts';
@@ -241,6 +241,32 @@ const migrations = [
     await tx.query(`ALTER TABLE work_outbox DROP CONSTRAINT work_outbox_state_check,
       ADD CHECK (state IN ('pending', 'capability_pending', 'delivered', 'routed_pending', 'routed_delivered'))`);
     await tx.query("CREATE INDEX work_outbox_routed_pending_idx ON work_outbox(intent_id) WHERE state='routed_pending'");
+  },
+  async (tx: DbQuery) => {
+    for (const ledger of ['effects', 'erased_effect_receipts']) {
+      await tx.query(`ALTER TABLE ${ledger}
+        ADD COLUMN reserved_usd_micros bigint CHECK (reserved_usd_micros > 0),
+        ADD COLUMN actual_usd_micros bigint CHECK (actual_usd_micros IS NULL OR (actual_usd_micros >= 0 AND reserved_usd_micros IS NOT NULL)),
+        ADD COLUMN budget_route text,
+        ADD CHECK ((budget_route IS NULL) = (reserved_usd_micros IS NULL))`);
+      await tx.query(`CREATE INDEX ${ledger}_budget_idx ON ${ledger}(learner_id) WHERE reserved_usd_micros IS NOT NULL`);
+    }
+    // An older erasure writer would discard the monetary fields during compaction.
+    await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=11');
+  },
+  async (tx: DbQuery) => {
+    await tx.query(`ALTER TABLE effects
+      ADD COLUMN consumed_tick bigint,
+      ADD COLUMN consumer_todo_id text,
+      ADD CHECK (consumed_tick IS NULL OR (reserved_usd_micros IS NOT NULL AND state<>'started')),
+      ADD CHECK (consumer_todo_id IS NULL OR (consumed_tick IS NOT NULL AND state='done'))`);
+    await installErasureFence(tx, true);
+    await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=12');
+  },
+  async (tx: DbQuery) => {
+    await tx.query(`ALTER TABLE effects ADD CHECK (state <> 'started' OR result IS NULL OR reserved_usd_micros IS NOT NULL)`);
+    // Workers must be able to publish a paid response staged before their predecessor stopped.
+    await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=13');
   },
 ] as const;
 

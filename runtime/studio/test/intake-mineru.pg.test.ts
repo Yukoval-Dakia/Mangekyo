@@ -206,7 +206,8 @@ describe.skipIf(!testDatabaseUrl)('MinerU intake in PostgreSQL', () => {
       expect(await stale.json()).toMatchObject({code:'deletion_watermark_stale'});
     } finally { release.resolve('private-late-result'); await running; }
     expect((await db.query('SELECT * FROM erased_effect_receipts WHERE learner_id=$1 AND owner_id=$2', [studioLearner,documentId])).rows)
-      .toEqual([{learner_id:studioLearner,owner_id:documentId,...sent,erased_tick:(await state()).watermark,settlement:'unknown'}]);
+      .toEqual([{learner_id:studioLearner,owner_id:documentId,...sent,
+        budget_route:null,reserved_usd_micros:null,actual_usd_micros:null,erased_tick:(await state()).watermark,settlement:'unknown'}]);
     // A worker that loaded v7 before migration cannot reinstall the identity.
     await expect(db.query(`INSERT INTO facts(learner_id,id,type,current_rev,created_tick,changed_tick)
       VALUES ($1,$2,'legacy',1,1,1)`,[studioLearner,prior.id])).rejects.toThrow('Erased identity');
