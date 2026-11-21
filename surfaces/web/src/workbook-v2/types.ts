@@ -103,6 +103,41 @@ export type WorkbookV2Detail = {
   attempts?: WorkbookV2Attempt[];
 };
 
+export type ExamTimeValueState = 'steady' | 'fast-slip' | 'time-sink' | 'recovered-skip' | 'unknown';
+
+export type ExamTimeValueItem = {
+  readonly item_id: string;
+  readonly position: number;
+  readonly effective_duration_ms: number;
+  readonly state: ExamTimeValueState;
+};
+
+export type ExamTimeValueView = {
+  readonly paper: { readonly id: string; readonly rev: number };
+  readonly attempt_ref: { readonly id: string; readonly rev: number };
+  readonly method_version: 'plan/exam-pacing@2';
+} & (
+  | { readonly kind: 'unknown' }
+  | {
+      readonly kind: 'observed';
+      readonly total_duration_ms: number;
+      readonly items: readonly ExamTimeValueItem[];
+      readonly summary: string;
+    }
+);
+
+export type PreSubmitPitfall = {
+  readonly text: string;
+  readonly anchors: readonly { readonly itemId: string; readonly number: number }[];
+};
+
+export type PreSubmitRevisionPayload = {
+  readonly draftRequestId: string;
+  readonly paperRev: number;
+  readonly itemId: string;
+  readonly originalAnswer: string | readonly unknown[] | null;
+};
+
 export type WorkbookV2Attempt = {
   id: string;
   rev?: number;
@@ -113,6 +148,8 @@ export type WorkbookV2Attempt = {
   answers?: Record<string, unknown>;
   feedback?: readonly WorkbookV2Feedback[];
   questionAttachments?: ReviewAttachmentsMap;
+  examTimeValue?: ExamTimeValueView;
+  preSubmitRevised?: true;
 };
 
 export type WorkbookV2Expected =

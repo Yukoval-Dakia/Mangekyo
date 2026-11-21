@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { deletedSubmission, submissionId } from '../api.ts';
-import { isNotFound, loadPaper, submitAttempt } from './api.ts';
+import { isNotFound, loadPaper, loadPreSubmitPitfalls, submitAttempt } from './api.ts';
 import type {
   CompanionCitation,
   Confidence,
@@ -8,15 +8,24 @@ import type {
   OpenedHintState,
   QuestionAttachmentsPayload,
   SavedTakeawayState,
+  PreSubmitPitfall,
+  PreSubmitRevisionPayload,
   WorkbookV2Attempt,
   WorkbookV2Detail,
 } from './types.ts';
 import { usePaperAttachments } from './QuestionAttachmentUploader.tsx';
 import { FocusedQuestionCard } from './FocusedQuestionCard.tsx';
+import { ExamTimeValueBar } from './ExamTimeValueBar.tsx';
+import { PreSubmitCheckCard } from './PreSubmitCheckCard.tsx';
 
 type ItemState = {
   answer: string;
   confidence: Confidence | null;
+};
+
+type PreSubmitAnchorState = {
+  readonly paperRev: number;
+  readonly originalAnswer: string;
 };
 
 const emptyItem = (): ItemState => ({ answer: '', confidence: null });
@@ -48,6 +57,11 @@ export function WorkbookSurface({
   const [error, setError] = useState('');
   const [submittedAttempt, setSubmittedAttempt] = useState<WorkbookV2Attempt | null>(null);
   const requestRef = useRef(submissionId());
+  const [pitfalls, setPitfalls] = useState<readonly PreSubmitPitfall[]>([]);
+  const [preSubmitCardOpen, setPreSubmitCardOpen] = useState(false);
+  const [preSubmitAcknowledged, setPreSubmitAcknowledged] = useState(false);
+  const [preSubmitAnchors, setPreSubmitAnchors] = useState<Record<string, PreSubmitAnchorState>>({});
+  const [focusItemId, setFocusItemId] = useState<string | null>(null);
   const attachments = usePaperAttachments(paperId);
 
   const questions = paper?.questions ?? [];
@@ -62,25 +76,39 @@ export function WorkbookSurface({
     setSavedTakeaways({});
     setSubmittedAttempt(null);
     requestRef.current = submissionId();
+    setPitfalls([]);
+    setPreSubmitCardOpen(false);
+    setPreSubmitAcknowledged(false);
+    setPreSubmitAnchors({});
     attachments.resetAll();
 
     if (initialPaper && initialPaper.id === paperId) {
       setPaper(initialPaper);
       setItems(seedItemsFor(initialPaper));
-      return;
+    } else {
+      setPaper(null);
     }
 
-    setPaper(null);
     const controller = new AbortController();
-    loadPaper(paperId, controller.signal)
+    loadPreSubmitPitfalls(paperId, controller.signal)
       .then((loaded) => {
-        if (controller.signal.aborted) return;
-        setPaper(loaded);
-        setItems(seedItemsFor(loaded));
+        if (!controller.signal.aborted) setPitfalls(loaded);
       })
-      .catch((caught: unknown) => {
-        if (!controller.signal.aborted) setLoadError(caught instanceof Error ? caught.message : '无法打开试卷。');
+      .catch(() => {
+        if (!controller.signal.aborted) setPitfalls([]);
       });
+
+    if (!initialPaper || initialPaper.id !== paperId) {
+      loadPaper(paperId, controller.signal)
+        .then((loaded) => {
+          if (controller.signal.aborted) return;
+          setPaper(loaded);
+          setItems(seedItemsFor(loaded));
+        })
+        .catch((caught: unknown) => {
+          if (!controller.signal.aborted) setLoadError(caught instanceof Error ? caught.message : '无法打开试卷。');
+        });
+    }
     return () => controller.abort();
   }, [paperId, initialPaper, attachments.resetAll]);
 
@@ -157,16 +185,32 @@ export function WorkbookSurface({
         ...(Object.keys(questionAttachments).length ? { questionAttachments } : {}),
         ...(paper.revision !== undefined ? { paperRev: paper.revision } : {}),
       };
-      const next = await submitAttempt(paperId, body);
+      const paperRev = paper.revision;
+      const preSubmitRevisions = paperRev === undefined ? [] : Object.entries(preSubmitAnchors)
+        .filter(([itemId, anchor]) => paperRev === anchor.paperRev && (items[itemId]?.answer ?? '').trim() !== anchor.originalAnswer)
+        .map(([itemId, anchor]): PreSubmitRevisionPayload => ({
+          draftRequestId: requestRef.current,
+          paperRev,
+          itemId,
+          originalAnswer: anchor.originalAnswer,
+        }));
+      const requestBody = preSubmitRevisions.length ? { ...body, preSubmitRevisions } : body;
+      const next = await submitAttempt(paperId, requestBody);
       const received = next?.attempts?.find((attempt) => attempt.requestId === requestRef.current);
       if (!received) throw new Error('未收到与原提交相符的交卷回执，可重试原提交。');
       setSubmittedAttempt(received);
       setPaper(next);
+      requestRef.current = submissionId();
+      setPreSubmitAnchors({});
+      setPreSubmitCardOpen(false);
+      setPreSubmitAcknowledged(false);
     } catch (caught: unknown) {
       if (isNotFound(caught)) {
         setError('当前后端暂不支持交卷接口，请稍后再试。');
       } else if (deletedSubmission(caught)) {
         requestRef.current = submissionId();
+        setPreSubmitAnchors({});
+        setPreSubmitAcknowledged(false);
         setError('删除状态已变化，旧作答标识已更新，请核对后重新交卷。');
       } else {
         setError(caught instanceof Error ? caught.message : '交卷失败，请重试。');
@@ -174,7 +218,44 @@ export function WorkbookSurface({
     } finally {
       setBusy(false);
     }
-  }, [paper, attachments.lock.locked, attachments.summariesByQuestion, attachments.itemsByQuestion, busy, submittedAttempt, questions, items, paperId]);
+  }, [paper, attachments.lock.locked, attachments.summariesByQuestion, attachments.itemsByQuestion, busy, submittedAttempt, questions, items, paperId, preSubmitAnchors]);
+
+  const beginSubmit = useCallback(() => {
+    if (pitfalls.length > 0 && !preSubmitAcknowledged) {
+      setPreSubmitCardOpen(true);
+      return;
+    }
+    void submit();
+  }, [pitfalls, preSubmitAcknowledged, submit]);
+
+  const closePreSubmitCard = useCallback(() => setPreSubmitCardOpen(false), []);
+
+  const confirmPreSubmit = useCallback(() => {
+    setPreSubmitAcknowledged(true);
+    setPreSubmitCardOpen(false);
+  }, []);
+
+  const jumpToQuestion = useCallback((itemId: string) => {
+    const nextIndex = questions.findIndex((question) => question.id === itemId);
+    if (nextIndex < 0) return;
+    setPreSubmitCardOpen(false);
+    go(nextIndex);
+    setFocusItemId(itemId);
+  }, [questions, go]);
+
+  const inspectPreSubmitAnchor = useCallback((itemId: string) => {
+    const paperRev = paper?.revision;
+    if (paperRev !== undefined && preSubmitAnchors[itemId] === undefined && (items[itemId]?.answer ?? '').trim() !== '') {
+      setPreSubmitAnchors((previous) => {
+        if (previous[itemId] !== undefined) return previous;
+        return {
+          ...previous,
+          [itemId]: { paperRev, originalAnswer: (items[itemId]?.answer ?? '').trim() },
+        };
+      });
+    }
+    jumpToQuestion(itemId);
+  }, [paper?.revision, preSubmitAnchors, items, jumpToQuestion]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -195,12 +276,24 @@ export function WorkbookSurface({
       }
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !attachments.lock.locked && !submittedAttempt) {
         event.preventDefault();
-        void submit();
+        beginSubmit();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [index, total, attachments.lock.locked, submittedAttempt, go, submit]);
+  }, [index, total, attachments.lock.locked, submittedAttempt, go, beginSubmit]);
+
+  useEffect(() => {
+    if (preSubmitAcknowledged && !preSubmitCardOpen && !busy && !submittedAttempt) void submit();
+  }, [preSubmitAcknowledged, preSubmitCardOpen, busy, submittedAttempt, submit]);
+
+  useEffect(() => {
+    if (!focusItemId) return;
+    const element = document.querySelector<HTMLElement>(`[data-wbv2-question-id="${CSS.escape(focusItemId)}"]`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    element?.focus({ preventScroll: true });
+    setFocusItemId(null);
+  }, [focusItemId]);
 
   if (loadError) {
     return <div className="wbv2"><p className="wbv2-error">{loadError}</p></div>;
@@ -221,6 +314,7 @@ export function WorkbookSurface({
     current && attachments.lock.locked
       ? questions.findIndex((question) => question.id !== current.id && attachments.lock.blockedItemIds.includes(question.id))
       : -1;
+  const reviewExamTimeValue = submittedAttempt?.examTimeValue;
 
   return (
     <div className="wbv2">
@@ -230,7 +324,17 @@ export function WorkbookSurface({
           <span className="wbv2-progress">
             {submittedAttempt ? `复盘模式 · 共 ${total} 题` : `${answered.size}/${total} 已作答`}
           </span>
+          {submittedAttempt?.preSubmitRevised === true && (
+            <span className="wbv2-pre-submit-badge">交卷前自检已修改</span>
+          )}
         </header>
+      )}
+      {submittedAttempt && (
+        <ExamTimeValueBar
+          value={reviewExamTimeValue}
+          focusedItemId={current?.id}
+          onJump={jumpToQuestion}
+        />
       )}
       <div className="wbv2-topbar">
         <button type="button" className="wbv2-arrow" aria-label="上一题" disabled={index === 0} onClick={() => go(index - 1)}>
@@ -312,6 +416,15 @@ export function WorkbookSurface({
         />
       )}
 
+      {preSubmitCardOpen && pitfalls.length > 0 && (
+        <PreSubmitCheckCard
+          pitfalls={pitfalls}
+          onAnchor={inspectPreSubmitAnchor}
+          onContinue={closePreSubmitCard}
+          onConfirm={confirmPreSubmit}
+        />
+      )}
+
       {!submittedAttempt && (
         <div className="wbv2-submitbar">
           {attachments.lock.uploading > 0 && (
@@ -340,7 +453,7 @@ export function WorkbookSurface({
               type="button"
               className="wbv2-submit"
               disabled={attachments.lock.locked || busy}
-              onClick={() => void submit()}
+              onClick={beginSubmit}
             >
               {busy ? '交卷中…' : '交卷'}
             </button>
