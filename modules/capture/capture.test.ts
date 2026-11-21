@@ -1,7 +1,8 @@
-import { expect, it } from 'vitest';
-import { factId } from '@mangekyo/kernel';
+import { expect, it, vi } from 'vitest';
+import { commandId, factId, learnerId } from '@mangekyo/kernel';
 import { archivedIntake, intakeDocument } from './intake-values.ts';
 import { voiceTranscriptionRequest, voiceTranscriptionResult } from './extraction.ts';
+import { consumePublicLink, openPublicLink, publicLinkEffect, publicLinkVersion, type PublicLinkReadRequest } from './public-link.ts';
 
 it('keeps the original private intake record readable after projecting its content blocks', () => {
   const id = factId('01KFS4AAA00000000000000001');
@@ -22,6 +23,20 @@ it('binds editable voice transcription to the requested recording', () => {
   expect(voiceTranscriptionResult(voice, [receipt])).toEqual({
     kind: 'value', value: '待我确认',
   });
+});
+
+it('requires a current explicit grant before dispatching or reopening a link', async () => {
+  const id = '01KFS4AAA00000000000000001';
+  const basis = { learner: learnerId(id), requestId: commandId(id), target: { id: factId(id), rev: 1 },
+    accessEpoch: '0', purpose: 'learning', recipient: 'public-reader', intent: 'read-link' } as PublicLinkReadRequest;
+  const resolve = async () => null;
+  const readPublicText = vi.fn();
+  const read = { fact: vi.fn(), range: vi.fn(), slot: vi.fn() };
+  expect(await consumePublicLink({ label: publicLinkEffect, stepKey: publicLinkVersion, input: basis }, resolve,
+    { recipient: basis.recipient, readPublicText })).toEqual({ status: 'unauthorized' });
+  await expect(openPublicLink(read, basis, resolve)).rejects.toThrow('当前授权');
+  expect(readPublicText).not.toHaveBeenCalled();
+  expect(read.slot).not.toHaveBeenCalled();
 });
 
 it('runs layered capture, paper return, Notion, textbook and graph workflows through the command handler', { timeout: 45_000 }, async () => {
