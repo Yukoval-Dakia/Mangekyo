@@ -5,7 +5,7 @@ import { applyFactWrites } from '../../kernel/src/commands/writes.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { relayPending } from '../../kernel/src/work/index.ts';
 import { checkTodoTriggers, completeTodo, emitTodo, readTodo, updateOrCancelTodo, type TodoSpec } from '../../kernel/src/work/todos.ts';
-import { withLearnerDatabase } from '../../kernel/test/learner-database.ts';
+import { testDatabaseUrl, withLearnerDatabase } from '../../kernel/test/learner-database.ts';
 import { activityEvidenceSlice, controlledWorkbookHelp } from '../activity/evidence-slice.ts';
 import type { AdmittedHelpEvent } from '../activity/help-exposure.ts';
 import {
@@ -94,7 +94,8 @@ it('persists the 24h reservation through Work and blocks revoked or cancelled re
       [ref(12, correction.source.type), research], [ref(13, correction.source.type), research],
     ] as const;
     const reopen = (tx: ReadTransaction): CorrectionReopen => async (ref, purpose) => {
-      try { return await createCommandReadContext(tx, purpose).fact(ref.id, { mode: 'following' }); }
+      try { return await createCommandReadContext(tx, purpose).fact(ref.id,
+        ref.mode === 'pinned' ? { mode: 'pinned', rev: ref.rev } : { mode: 'following' }); }
       catch (error) {
         if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return undefined;
         throw error;
@@ -104,8 +105,9 @@ it('persists the 24h reservation through Work and blocks revoked or cancelled re
       applyFactWrites(tx, tick, writes, { actor: 'learner', purpose: 'storage', commandId: commandId(id(n)) },
         type => ({ type, schema: { parse: (value: Json) => value } }))));
     await apply(sources.map(([ref, purpose]) => ({ kind: 'create', id: ref.id, factType: ref.type, data: {}, purpose })), 20);
-    const second = { ...correction, source: sources[2][0] };
-    const third = { ...correction, source: sources[3][0] };
+    const recorded = { ...correction, originalQuestion: { ...correction.originalQuestion, mode: 'pinned' as const } };
+    const second = { ...recorded, source: sources[2][0] };
+    const third = { ...recorded, source: sources[3][0] };
     const emit = (source: typeof correction) => db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
       const plan = await planCorrectionCheck(reopen(tx), source, [], 1, now);
       if (plan?.kind !== 'scheduled') throw new Error('Missing scheduled Work');
@@ -115,18 +117,22 @@ it('persists the 24h reservation through Work and blocks revoked or cancelled re
       return todo;
     }));
 
-    const first = await emit(correction);
-    expect((await emit(correction)).id).toBe(first.id);
+    const first = await emit(recorded);
+    expect((await emit(recorded)).id).toBe(first.id);
     const cancelled = await emit(second);
     const revoked = await emit(third);
     const dueAt = Date.parse(at(86_400_000));
     const sweep = (ms: number) => db.tx({ learner }, tx => checkTodoTriggers(tx, ms, (spec: TodoSpec) => {
-      const subject = [correction, second, third].find(value => value.source.id === spec.sourceFactRev.id);
+      const subject = [recorded, second, third].find(value => value.source.id === spec.sourceFactRev.id);
       return subject ? correctionRetestDue(reopen(tx), subject, spec, 1, ms) : Promise.resolve(false);
     }));
     expect(await sweep(dueAt - 1)).toEqual({ advanced: false, nextAt: dueAt });
     expect(await relayPending(db, async () => {})).toBe(0);
     await apply([{ kind: 'set_purpose', id: third.source.id, expectedRev: third.source.rev, purpose: ['storage'] }], 21);
+    await apply([{ kind: 'correct', id: recorded.originalQuestion.id, expectedRev: recorded.originalQuestion.rev, data: { title: '更正标题' } }], 22);
+    expect(await db.snapshot({ learner }, tx => correctionRetestDue(reopen(tx), recorded, first.spec, 1, dueAt))).toBe(true);
+    expect(await db.snapshot({ learner }, tx => correctionRetestDue(reopen(tx), correction, first.spec, 1, dueAt))).toBe(false);
+    expect(await db.snapshot({ learner }, tx => correctionRetestDue(reopen(tx), recorded, first.spec, 2, dueAt))).toBe(false);
     expect(await sweep(dueAt)).toMatchObject({ advanced: true });
     const inspect = (todoId: string) => db.snapshot({ learner }, tx => readTodo(tx, todoId));
     expect((await inspect(revoked.id))?.state).toBe('cancelled');
@@ -140,5 +146,11 @@ it('persists the 24h reservation through Work and blocks revoked or cancelled re
     }));
     expect(await relayPending(db, async work => { expect(work.workId).toBe(first.id); })).toBe(1);
     expect(await sweep(dueAt + 1)).toMatchObject({ advanced: false });
-  }, { postgres: false });
+    const changePurpose = (rev: number, purpose: string[], command: number) =>
+      apply([{ kind: 'set_purpose', id: recorded.originalQuestion.id, expectedRev: rev as Revision, purpose }], command);
+    await changePurpose(2, ['storage'], 24);
+    expect(await db.snapshot({ learner }, tx => correctionRetestDue(reopen(tx), recorded, first.spec, 1, dueAt))).toBe(false);
+    await changePurpose(3, teaching, 25);
+    expect(await db.snapshot({ learner }, tx => correctionRetestDue(reopen(tx), recorded, first.spec, 1, dueAt))).toBe(false);
+  }, { postgres: Boolean(testDatabaseUrl) });
 });
