@@ -5,7 +5,7 @@
 # 启动：cd deploy && docker compose --env-file .env up -d --build
 # 说明：docs/deploy/self-hosted.md
 
-name: mangekyō
+name: mangekyo
 
 services:
   postgres:
