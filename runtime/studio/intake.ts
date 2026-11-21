@@ -9,34 +9,26 @@ import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
-import { materialType, textMaterial } from '../../modules/content/text-material.ts';
+import { materialType } from '../../modules/content/text-material.ts';
 import {
   captureIntakeCommand,
   completeCloudIntakeCommand,
   correctIntakeCommand,
-  correctIntakeInput,
-  intakeDocument,
-  intakeFileLimit,
-  intakeFilename,
-  intakeTitle,
   pendingMineruExtraction,
-  intakeOriginal,
   intakePurpose,
-  IntakeResearchConflict,
-  intakeResearchPermission,
   intakeTextLimit,
   setIntakeResearchCommand,
   type IntakeExtraction,
-  type IntakeOriginal,
 } from '../../modules/capture/intake-values.ts';
-import { projectIntakeMetadata, type IntakeMetadata } from '../../modules/capture/intake-view.ts';
+import * as intakeOps from '../../modules/capture/intake-operations.ts';
+import type { IntakeCaptureInput, IntakeCorrectInput } from '../../modules/capture/intake-operations.ts';
+import type { IntakeMetadata } from '../../modules/capture/intake-view.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
-import { clientRequest, RequestError } from './sessions.ts';
+import { RequestError } from './sessions.ts';
 import { cloudIntakeSlot, enqueueCloudIntake, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
-
-import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
-import { paperReturnSelection } from '../../modules/capture/paper.ts';
+import { captureSourceType } from '../../modules/capture/source.ts';
+import type { paperReturnSelection } from '../../modules/capture/paper.ts';
 import type { openCapturePapers } from './capture-papers.ts';
 import { intakeCaptureId, intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
@@ -46,36 +38,7 @@ export { intakeSwiftTimeoutMs } from '@mangekyo/executor-document-extraction/loc
 
 export type { IntakeMetadata } from '../../modules/capture/intake-view.ts';
 
-type CaptureInput = {
-  readonly requestId: unknown;
-  readonly title?: unknown;
-  readonly filename?: unknown;
-  readonly declaredType?: unknown;
-  readonly extraction?: unknown;
-  readonly deletionWatermark?: unknown;
-  readonly bytes: Buffer;
-};
-
-type CorrectInput = { readonly expectedRev: unknown; readonly materialId: unknown; readonly requestId: unknown; readonly text: unknown };
-
-function asciiFilename(name: string) {
-  const value = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_').replace(/\.+$/g, '_');
-  return (value || 'document').slice(0, 120);
-}
-
-function encodeRfc5987(value: string) {
-  return encodeURIComponent(value).replace(/['()*]/g, (character) => '%' + character.charCodeAt(0).toString(16).toUpperCase());
-}
-
-function extensionOf(name: string) {
-  return /\.([A-Za-z0-9]{1,10})$/.exec(name)?.[1]?.toLowerCase() ?? '';
-}
-
-function detect(bytes: Buffer, filename: string, declaredType: unknown) {
-  const detected = identifyLocalDocument(bytes, extensionOf(intakeFilename(filename)), declaredType);
-  if (detected) return detected;
-  throw new RequestError(415, '只支持 PDF、照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF）和 UTF-8 的 txt/Markdown。');
-}
+type CaptureInput = Omit<IntakeCaptureInput, 'bytes'> & { readonly bytes: Buffer };
 
 export const intakeWriteTargets = {
   [captureIntakeCommand]: { create: [materialType] },
@@ -105,20 +68,12 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   }
 
   async function metadataFor(materialId: string, watermark?: string): Promise<IntakeMetadata> {
-    let facts;
     try {
-      facts = await factsFor(materialId,watermark);
+      const facts = await factsFor(materialId, watermark);
+      return intakeOps.projectIntakeFacts(facts.id, facts.material.value, facts.document.value, facts.document.ref.rev, facts.document.purpose);
     } catch (error) {
-      if (error instanceof LifecycleError || error instanceof RequestError) throw error;
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) {
-        throw new RequestError(404, '这份材料或它的交入记录不存在。');
-      }
-      throw new RequestError(500, '这份材料的交入记录无法读取。');
+      throw intakeOps.translateIntakeReadError(error, error instanceof LifecycleError, error instanceof FactReadDeniedError);
     }
-    const material = textMaterial(facts.material.value);
-    const document = intakeDocument(facts.document.value);
-    if (document.materialId.toString() !== facts.id) throw new RequestError(404, '这份材料的交入记录不匹配。');
-    return projectIntakeMetadata(document, material, facts.document.ref.rev, facts.document.purpose);
   }
 
   async function metadataOrNull(materialId: string, watermark: string) {
@@ -132,15 +87,10 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
 
   async function originalFor(materialId: string) {
     const id = factId(materialId);
-    const original = await db.snapshot({learner:studioLearner},async tx => {
-      const read = createCommandReadContext(tx,intakePurpose);
+    const original = await db.snapshot({ learner: studioLearner }, async (tx) => {
+      const read = createCommandReadContext(tx, intakePurpose);
       try {
-        const source = await read.fact(id,{mode:'following'});
-        if (source.type === captureSourceType) {
-          const envelope = sourceEnvelope(source.value);
-          if (envelope.kind === 'paper-return' && envelope.originals[0]?.blobRef === id)
-            return envelope.originals[0];
-        }
+        return intakeOps.extractPaperReturnOriginal(await read.fact(id, { mode: 'following' }), id);
       } catch (error) {
         if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
       }
@@ -152,36 +102,20 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   }
 
   function prepareCapture(input: CaptureInput) {
-    const requestId = clientRequest(input.requestId);
-    if (!Buffer.isBuffer(input.bytes) || input.bytes.length === 0) throw new RequestError(400, '请选择要交入的文件。');
-    if (input.bytes.length > intakeFileLimit) throw new RequestError(413, '文件超过 25 MB。');
-    const materialId = factId(stableId('intake-material', requestId));
-    const deletionWatermark = submittedWatermark(input);
-    const filename = intakeFilename(input.filename);
-    const detected = detect(input.bytes, filename, input.declaredType);
-    const name = filename || '材料原件';
-    const title = intakeTitle(input.title, name.replace(/\.[^.]+$/, '') || '材料原件');
-    const sha256 = digest(input.bytes);
-    let original: IntakeOriginal;
-    try {
-      original = intakeOriginal({ name, mediaType: detected.mediaType, size: input.bytes.length, sha256 });
-      textMaterial({ title, text: '原件' });
-    } catch (error) {
-      throw new RequestError(400, error instanceof Error ? error.message : '交入材料无效。');
-    }
-    return {requestId,materialId,deletionWatermark,detected,title,original};
+    return intakeOps.prepareIntakeCapture(input, {
+      isBuffer: Buffer.isBuffer,
+      materialIdFor: (requestId) => factId(stableId('intake-material', requestId)),
+      parseWatermark: submittedWatermark,
+      identify: (bytes, ext, declaredType) => identifyLocalDocument(bytes as Buffer, ext, declaredType),
+      sha256: (bytes) => digest(bytes as Buffer),
+    });
   }
 
   async function capture(input: CaptureInput) {
-    const {requestId,materialId,deletionWatermark,detected,title,original} = prepareCapture(input);
+    const { requestId, materialId, deletionWatermark, detected, title, original } = prepareCapture(input);
     const intakeId = intakeIdFor(materialId);
-    const requested = input.extraction ?? 'local';
-    if (requested !== 'local' && requested !== 'mineru') throw new RequestError(400, '请选择有效的识别方式。');
-    const cloud = requested === 'mineru';
-    if (cloud && !mineruSupports(detected.mediaType)) throw new RequestError(415, 'MinerU 支持 PDF、PNG 和 JPEG。');
-    const matches = (prior: IntakeMetadata) => prior.original.sha256 === original.sha256 && prior.original.name === original.name &&
-      prior.title === title && prior.original.mediaType === detected.mediaType &&
-      (prior.requestedExtraction ?? 'local') === requested;
+    const { requested, cloud } = intakeOps.resolveCaptureExtraction(input.extraction, detected.mediaType, mineruSupports);
+    const matches = (prior: IntakeMetadata) => intakeOps.matchesCaptureReplay(prior, original, title, detected.mediaType, requested);
     const prior = await metadataOrNull(materialId.toString(), deletionWatermark);
     if (prior) {
       if (!matches(prior)) throw new RequestError(409, '同一个请求标识已经用于不同文件或标题。');
@@ -227,14 +161,9 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   async function paperReturn(input: CaptureInput & Parameters<typeof paperReturnSelection>[0],
     papers: ReturnType<typeof openCapturePapers>) {
     const {requestId,materialId,deletionWatermark,detected,title,original} = prepareCapture(input);
-    if (detected.kind === 'text') throw new RequestError(415,'纸卷拍回需要照片或 PDF。');
-    if (input.extraction !== undefined) throw new RequestError(400,'纸卷拍回只保存原件，请移除识别选项。');
-    let selection;
-    try { selection = paperReturnSelection(input,materialId); }
-    catch { throw new RequestError(400,'请选择已发行纸卷、页码和原件用途。'); }
-    return objects.withOriginal(materialId,input.bytes,original,(_,install) => papers.upload(selection,{
-      command:intakeCaptureId(requestId),deletionWatermark,title,original,install,
-    }));
+    const selection = intakeOps.resolvePaperReturnSelection(input, materialId, detected.kind);
+    return objects.withOriginal(materialId, input.bytes, original, (_, install) =>
+      papers.upload(selection, { command: intakeCaptureId(requestId), deletionWatermark, title, original, install }));
   }
 
   async function cloudOriginal(materialId: string, expectedSha256: string) {
@@ -249,10 +178,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
         ...hooks,
         async onFactsChanged(tx, tick, changes) {
           const work = await readReadyWork(tx, ref);
-          if (work?.slotType !== cloudIntakeSlot || work.slotKey !== document.ref.id ||
-              ![document,material].every(({ref}) => changes.some(change => change.kind === 'correct' &&
-                change.ref.id === ref.id && change.ref.rev === ref.rev + 1)))
-            throw new RequestError(409, '交入工作已更改。');
+          if (!intakeOps.isExpectedCloudCompletion(work, cloudIntakeSlot, document.ref, material.ref, changes)) throw new RequestError(409, '交入工作已更改。');
           await hooks.onFactsChanged(tx, tick, changes);
         },
       },
@@ -264,47 +190,30 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     });
   }
 
-  async function correct(input: CorrectInput) {
-    const materialId = factId(input.materialId as string);
-    const requestId = clientRequest(input.requestId);
-    let data;
-    try { data = correctIntakeInput({ materialId, intakeId: intakeIdFor(materialId), expectedRev: input.expectedRev, text: input.text }); }
-    catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '更正无效。'); }
+  async function correct(input: IntakeCorrectInput) {
+    const { materialId, requestId, data } = intakeOps.prepareIntakeCorrection(input, intakeIdFor);
     try {
       await handle({
-        learner: studioLearner,
-        actor: 'learner',
-        purpose: intakePurpose,
-        type: correctIntakeCommand,
-        id: commandId(stableId('intake-correction', requestId)),
-        input: data,
+        learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: correctIntakeCommand,
+        id: commandId(stableId('intake-correction', requestId)), input: data,
       });
     } catch (error) {
-      if (error instanceof Error && (error.message === '原文版本已经变更。' || error.message.startsWith('Fact revision conflict'))) throw new RequestError(409, '这份文字已有新版本，请打开原文核对后再保存。');
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw new RequestError(404, '找不到这份原件。');
-      if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-        throw new RequestError(409, '同一个更正标识已经用于不同文字。');
-      }
-      throw error;
+      throw intakeOps.translateIntakeCorrectionError(error, error instanceof FactReadDeniedError);
     }
     return metadataFor(materialId.toString());
   }
 
   return {
-    lifecycle, capture,
-    correct,
+    lifecycle, capture, correct,
     async setResearch(materialId: string, input: unknown) {
-      const id = factId(materialId);
-      let data;
-      try { data = intakeResearchPermission({ ...(input as object), materialId, intakeId: intakeIdFor(id) }); }
-      catch { throw new RequestError(400, '原件版本或后台用途无效。'); }
+      const { id, data } = intakeOps.prepareIntakeResearchPermission(materialId, input, intakeIdFor);
       try {
-        await handle({learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: setIntakeResearchCommand,
-          id: commandId(stableId('intake-research', id, String(data.expectedRev), String(data.enabled))), input: data});
+        await handle({
+          learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: setIntakeResearchCommand,
+          id: commandId(stableId('intake-research', id, String(data.expectedRev), String(data.enabled))), input: data,
+        });
       } catch (error) {
-        if (error instanceof IntakeResearchConflict) throw new RequestError(409, error.message);
-        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw new RequestError(404, '找不到这份原件。');
-        throw error;
+        throw intakeOps.translateIntakeResearchError(error, error instanceof FactReadDeniedError);
       }
       return metadataFor(id);
     },
@@ -335,30 +244,6 @@ async function readBody(request: IncomingMessage, limit: number) {
   return Buffer.concat(chunks);
 }
 
-function decodeUtf8(value: string) {
-  return Buffer.from(value, 'latin1').toString('utf8');
-}
-
-function intakeFormText(form: FormData, field: string) {
-  const values = form.getAll(field);
-  if (values.length === 0) return undefined;
-  if (values.length !== 1 || typeof values[0] !== 'string') {
-    throw new RequestError(400, '交入表单包含重复或无效的字段：' + field);
-  }
-  return values[0];
-}
-
-function sendOriginal(response: ServerResponse, metadata: Pick<IntakeMetadata,'original'>, bytes: Buffer) {
-  response.writeHead(200, {
-    'Content-Type': metadata.original.mediaType,
-    'Content-Disposition': `attachment; filename="${asciiFilename(metadata.original.name)}"; filename*=UTF-8''${encodeRfc5987(metadata.original.name)}`,
-    'X-Content-Type-Options': 'nosniff',
-    'Cache-Control': 'private, no-store',
-    'Content-Length': String(bytes.length),
-  });
-  response.end(bytes);
-}
-
 export async function handleIntakeRequest(
   intake: ReturnType<typeof openIntake>,
   request: IncomingMessage,
@@ -367,172 +252,32 @@ export async function handleIntakeRequest(
   method: string | undefined,
   papers?: ReturnType<typeof openCapturePapers>,
 ): Promise<boolean> {
-  if (pathname === '/api/lifecycle' && method === 'GET') {
-    const state = await intake.lifecycle.state();
-    response.setHeader('X-Deletion-Watermark',state.watermark);
-    return json(response,200,state), true;
+  const outcome = await intakeOps.dispatchIntakeHttp(pathname, method, {
+    headers: request.headers,
+    readBody: (limit) => readBody(request, limit),
+    fromArrayBuffer: (buffer) => Buffer.from(buffer),
+    decodeUtf8Bytes: (bytes) => bytes.toString('utf8'),
+    parseWatermark: submittedWatermark,
+    readLifecycleError: (error, includeCode) => error instanceof LifecycleError
+      ? { status: error.status, message: error.message, ...(includeCode ? { code: error.code } : {}) } : null,
+    mineruEnabled: () => Boolean(mineruToken()),
+    hasPapers: Boolean(papers),
+    lifecycleState: () => intake.lifecycle.state(),
+    erase: (id, input) => intake.lifecycle.erase(id, input),
+    metadata: (id) => intake.metadata(id),
+    original: (id) => intake.original(id),
+    capture: (input) => intake.capture(input),
+    paperReturn: (input) => intake.paperReturn(input, papers!),
+    correct: (input) => intake.correct(input),
+    setResearch: (id, input) => intake.setResearch(id, input),
+  });
+  if (!outcome) return false;
+  if (outcome.kind === 'bytes') {
+    response.writeHead(outcome.status, outcome.headers);
+    return response.end(outcome.bytes), true;
   }
-  const match = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction|research-permission|erasure))?$/.exec(pathname);
-  if (pathname === '/api/intake/options' && method === 'GET')
-    return json(response, 200, { mineru: Boolean(mineruToken()) }), true;
-  if (pathname === '/api/intake') {
-    if (method !== 'POST') {
-      json(response, 405, { error: '这个入口只接受交入请求。' });
-      return true;
-    }
-    try {
-      const contentType = request.headers['content-type']?.split(';')[0]?.toLowerCase() ?? '';
-      let result;
-      let watermark: string;
-      if (contentType === 'multipart/form-data') {
-        const bytes = await readBody(request, intakeFileLimit + 512 * 1024);
-        let form: FormData;
-        try { form = await new Response(new Uint8Array(bytes), {headers: {'Content-Type': request.headers['content-type']!}}).formData(); }
-        catch { throw new RequestError(400, '文件表单无法读取。'); }
-        const file = form.get('file');
-        if (!file || typeof file === 'string' || form.getAll('file').length !== 1)
-          throw new RequestError(400, '请选择一个文件。');
-        watermark = submittedWatermark({deletionWatermark:intakeFormText(form,'deletionWatermark')});
-        const intent = intakeFormText(form,'intent');
-        const upload = {
-          deletionWatermark:watermark,
-          requestId: intakeFormText(form, 'requestId'),
-          title: intakeFormText(form, 'title'),
-          extraction: intakeFormText(form, 'extraction'),
-          filename: file.name, declaredType: file.type, bytes: Buffer.from(await file.arrayBuffer()),
-        };
-        if (intent === 'paper-return' && papers) result = await intake.paperReturn({
-          ...upload, issuanceId:intakeFormText(form,'issuanceId'), page:intakeFormText(form,'page'),
-          purpose:intakeFormText(form,'purpose'), retryId:intakeFormText(form,'retryId'),
-        },papers);
-        else if (intent === undefined) result = await intake.capture(upload);
-        else throw new RequestError(400,'交入用途无效。');
-      } else {
-        const requestId = request.headers['x-request-id'];
-        if (typeof requestId !== 'string' || requestId.trim() === '') throw new RequestError(400, '请求标识无效。');
-        const bytes = await readBody(request, intakeFileLimit);
-        watermark = submittedWatermark({deletionWatermark:request.headers['x-deletion-watermark']});
-        result = await intake.capture({
-          requestId, deletionWatermark:watermark,
-          title:
-            typeof request.headers['x-title'] === 'string'
-              ? decodeUtf8(request.headers['x-title'])
-              : undefined,
-          filename:
-            typeof request.headers['x-filename'] === 'string'
-              ? decodeUtf8(request.headers['x-filename'])
-              : undefined,
-          declaredType: contentType,
-          extraction: request.headers['x-intake-extraction'],
-          bytes,
-        });
-      }
-      response.setHeader('X-Deletion-Watermark',watermark);
-      return json(response, 201, result), true;
-    } catch (error) {
-      json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
-        error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '交入未能完成。',
-        ...(error instanceof LifecycleError && error.code ? {code:error.code} : {}),
-      });
-      return true;
-    }
+  if (outcome.headers) {
+    for (const [name, value] of Object.entries(outcome.headers)) response.setHeader(name, value);
   }
-  if (match?.[1]) {
-    const id = match[1];
-    const action = match[2];
-    if (!action) {
-      if (method === 'GET') {
-        try {
-          return json(response, 200, await intake.metadata(id)), true;
-        } catch (error) {
-          json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
-            error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '这份材料的交入记录无法读取。',
-          });
-          return true;
-        }
-      }
-      json(response, 405, { error: '这个材料入口只接受读取。' });
-      return true;
-    }
-    if (action === 'import') {
-      if (method === 'GET') {
-        try {
-          return json(response, 200, await intake.metadata(id)), true;
-        } catch (error) {
-          json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
-            error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '这份材料的交入记录无法读取。',
-          });
-          return true;
-        }
-      }
-      json(response, 405, { error: '这份材料的元数据只接受读取。' });
-      return true;
-    }
-    if (action === 'erasure' && method === 'POST') {
-      if (request.headers['content-type']?.split(';')[0] !== 'application/json')
-        return json(response,415,{error:'需要 JSON 请求。'}), true;
-      try {
-        const input = JSON.parse((await readBody(request,4096)).toString('utf8'));
-        if (!input || typeof input !== 'object' || Array.isArray(input)) throw new RequestError(400,'删除请求格式无效。');
-        return json(response,200,await intake.lifecycle.erase(id,input)), true;
-      } catch (error) {
-        const status = error instanceof LifecycleError || error instanceof RequestError ? error.status :
-          error instanceof SyntaxError ? 400 : error instanceof FactNotFoundError ? 404 : 500;
-        return json(response,status,{error:status === 500 ? '删除未能完成。' : error instanceof Error ? error.message : '无效请求。'}), true;
-      }
-    }
-    if (action === 'original') {
-      if (method === 'GET') {
-        try {
-          const { metadata, bytes } = await intake.original(id);
-          sendOriginal(response, metadata, bytes);
-          return true;
-        } catch (error) {
-          if (!response.headersSent) {
-            json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
-              error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '原件未能读取。',
-            });
-          } else response.destroy();
-          return true;
-        }
-      }
-      json(response, 405, { error: '原件只接受下载。' });
-      return true;
-    }
-    if (action === 'correction' && method === 'POST') {
-      try {
-        const bytes = await readBody(request, intakeTextLimit * 4 + 4096);
-        const value = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
-        const result = await intake.correct({ materialId: id, requestId: value.requestId, expectedRev: value.expectedRev, text: value.text });
-        return json(response, 200, result), true;
-      } catch (error) {
-        if (error instanceof SyntaxError) {
-          json(response, 400, { error: '更正请求格式无效。' });
-          return true;
-        }
-        json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
-          error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '更正未能保存。',
-        });
-        return true;
-      }
-    }
-    if (action === 'correction') {
-      json(response, 405, { error: '更正只接受提交。' });
-      return true;
-    }
-    if (action === 'research-permission') {
-      if (method !== 'PUT') return json(response, 405, { error: '这个入口只接受用途设置。' }), true;
-      try {
-        const value: unknown = JSON.parse((await readBody(request, 4096)).toString('utf8'));
-        return json(response, 200, await intake.setResearch(id, value)), true;
-      } catch (error) {
-        if (error instanceof SyntaxError) return json(response, 400, { error: '用途请求格式无效。' }), true;
-        json(response, error instanceof RequestError || error instanceof LifecycleError ? error.status : 500, {
-          error: error instanceof RequestError || error instanceof LifecycleError ? error.message : '原件用途未能更新。',
-        });
-        return true;
-      }
-    }
-  }
-  return false;
+  return json(response, outcome.status, outcome.body), true;
 }
