@@ -163,7 +163,8 @@ export function questionMetaDraftId(question: FactSnapshot['ref']) {
   return contentStableId(questionMetaDraftType, question.id, String(question.rev));
 }
 
-export async function openQuestionMetaDraft(read: AssetReadContext['read'], question: FactSnapshot['ref']) {
+/** The update command validates the resulting hint anchor before retaining or replacing the ladder. */
+export async function readQuestionMetaForUpdate(read: AssetReadContext['read'], question: FactSnapshot['ref']) {
   const target = await read.fact(question.id, { mode: 'pinned', rev: question.rev });
   if (target.ref.learner !== question.learner || target.type !== assetType) throw new Error('请选择授权的题版。');
   await checkTextbookBasis(read, questionAsset(target.value).basis ?? []);
@@ -174,6 +175,11 @@ export async function openQuestionMetaDraft(read: AssetReadContext['read'], ques
   const draft = parseQuestionMetaDraft(snapshot.value);
   if (draft.id !== question.id || draft.expectedRev !== question.rev) throw new Error('活元信息与题版不匹配。');
   await checkTextbookBasis(read, draft.basis);
+  return { snapshot, draft };
+}
+
+export async function openQuestionMetaDraft(read: AssetReadContext['read'], question: FactSnapshot['ref']) {
+  const { snapshot, draft } = await readQuestionMetaForUpdate(read, question);
   const ladder = draft.append_metadata?.hint_ladder;
   if (ladder) await checkQuestionHintSource({ learner: question.learner, read }, ladder.source_ref, draft.basis);
   return { snapshot, draft };

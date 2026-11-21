@@ -3,7 +3,7 @@ import { assetType, checkQuestionTeachingSources, checkTextbookBasis, mergeTextb
 import { sameEffectInput } from '../question-effects.ts';
 import { checkQuestionHintSource } from '../question-meta-source.ts';
 import { parseQuestionMetaProposal, proposeQuestionMetaCommand } from '../question-writes.ts';
-import { openQuestionMetaDraft, questionSolutionKey, questionTagKey, validateQuestionMetaReferences } from '../question-state.ts';
+import { readQuestionMetaForUpdate, questionSolutionKey, questionTagKey, validateQuestionMetaReferences } from '../question-state.ts';
 
 export default defineCommand({
   type: proposeQuestionMetaCommand, destructive: true, schema: { parse: parseQuestionMetaProposal },
@@ -13,7 +13,7 @@ export default defineCommand({
     if (target.type !== assetType) throw new Error('请选择题目资产。');
     await checkTextbookBasis(ctx.read, basis);
     validateQuestionMetaReferences({ id, expectedRev, append_metadata, basis, sticky: true });
-    const { snapshot, draft: previous } = await openQuestionMetaDraft(ctx.read, target.ref);
+    const { snapshot, draft: previous } = await readQuestionMetaForUpdate(ctx.read, target.ref);
     if (expectedMetaRev !== undefined && snapshot.ref.rev !== expectedMetaRev) {
       throw new Error(`Fact revision conflict: ${snapshot.ref.id}`);
     }
@@ -42,6 +42,7 @@ export default defineCommand({
       await checkQuestionTeachingSources(ctx.read, { basis });
       await checkQuestionHintSource(ctx, proposedLadder.source_ref, basis);
     }
+    if (!proposedLadder && previousLadder) await checkQuestionHintSource(ctx, previousLadder.source_ref, previous.basis);
     const ladder = proposedLadder ?? previousLadder;
     return [{
       kind: 'correct', id: snapshot.ref.id, expectedRev: snapshot.ref.rev,

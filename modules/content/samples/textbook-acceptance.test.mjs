@@ -269,18 +269,19 @@ async function exerciseGraphEvolution({ db, learner, send, stableId, assert, rea
   assert.equal(savedQuestion.ref.rev, 1);
   assert.deepEqual(savedQuestion.value, questionWithSolution);
   // Simulate an already-published pre-fix draft and matching overlay.
-  const setLegacyAnchor = async sourceRef => {
-    await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
-      [learner, draft.snapshot.ref.id, draft.snapshot.ref.rev, sourceRef]);
-    await db.query("UPDATE derivations SET value=jsonb_set(value,'{value,hint_ladder,source_ref}',to_jsonb($3::text)) WHERE learner_id=$1 AND id=$2",
-      [learner, derivationId, sourceRef]);
-  };
-  await setLegacyAnchor(anchor('NONEXISTENT-AUDIT-BLOCK'));
+  const legacyAnchor = anchor('NONEXISTENT-AUDIT-BLOCK');
+  await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
+    [learner, draft.snapshot.ref.id, draft.snapshot.ref.rev, legacyAnchor]);
+  await db.query("UPDATE derivations SET value=jsonb_set(value,'{value,hint_ladder,source_ref}',to_jsonb($3::text)) WHERE learner_id=$1 AND id=$2",
+    [learner, derivationId, legacyAnchor]);
   await assert.rejects(read(context => openQuestionMetaDraft(context, frozen)), /固定公开锚点/);
   assert.equal(await hint(1, derivationId), undefined);
-  await setLegacyAnchor(hint_ladder.source_ref);
-  assert.deepEqual(await hint(1, derivationId), opened[0]);
-  console.log(JSON.stringify({ hintAnchorAcceptance: { command: ['missing denied', 'private denied'], legacy: 'denied', restored: opened[0].text } }));
+  const repair = await propose(proposeQuestionMetaCommand, { ...withLadder, expectedMetaRev: draft.snapshot.ref.rev });
+  await decide(proposeQuestionMetaCommand, repair.commandId);
+  const repaired = await read(context => openQuestionMetaDraft(context, frozen));
+  assert.equal(repaired.draft.append_metadata.hint_ladder.source_ref, hint_ladder.source_ref);
+  assert.equal(await hint(1, derivationId), undefined);
+  console.log(JSON.stringify({ hintAnchorAcceptance: { command: ['missing denied', 'private denied'], legacy: 'denied', repairedDraftRev: repaired.snapshot.ref.rev } }));
   await send('content.setQuestionTeaching', { id: question, expectedRev: 1, allowed: false });
   assert.equal(await hint(1, derivationId), undefined);
   console.log(JSON.stringify({ questionHintAcceptance: { opened, elapsedMs, afterRevocation: null, coldRevision: savedQuestion.ref.rev } }));
