@@ -21,6 +21,7 @@
     "./facts/prerequisite-radar": "./prerequisite-radar.ts",
     "./facts/textbook-distillation": "./textbook-distillation.ts",
     "./facts/correction-micro-variant": "./correction-micro-variant-read.ts",
+    "./facts/thought-pin": "./thought-pin.ts",
     "./facts/question-release": "./question-release.ts",
     "./facts/arithmetic-practice": "./arithmetic-practice.ts",
     "./facts/assessment": "./assessment-values.ts",
