@@ -513,7 +513,7 @@ function renderSearch(value: unknown): string {
   return lines.length ? clip(lines.join('\n\n'), MAX_SEARCH_RESULT_CHARS) : 'no results';
 }
 
-export function createStudyTools(options: { exaApiKey?: string; allowSearch?: boolean } = {}): StudyTools {
+export function createStudyTools(options: { exaApiKey?: string; allowSearch?: boolean; pythonOnly?: boolean } = {}): StudyTools {
   const workspace = new Map<string, string>();
   const candidateKey = typeof options?.exaApiKey === 'string' ? options.exaApiKey.trim() : '';
   const exaApiKey = candidateKey.length > 0 && candidateKey.length <= 512 &&
@@ -521,7 +521,9 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
     ? candidateKey
     : undefined;
   const searchEnabled = options?.allowSearch === true;
-  const names = Object.freeze(searchEnabled ? [...baseNames, 'exa_search'] : [...baseNames]);
+  const names = Object.freeze(options.pythonOnly
+    ? searchEnabled ? ['python', 'exa_search'] as const : ['python'] as const
+    : searchEnabled ? [...baseNames, 'exa_search'] : [...baseNames]);
 
   async function readFile(args: unknown): Promise<string | ToolError> {
     const value = record(args);

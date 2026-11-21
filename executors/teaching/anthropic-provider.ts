@@ -1,6 +1,7 @@
 import {readBoundedText} from './bounded-response.ts';
 import { TeachingError } from './provider.ts';
 import {
+  type CompletionUsage,
   readSseData,
   type Completion,
   type FunctionCall,
@@ -200,8 +201,10 @@ function readAnthropicMessage(value: unknown, hooks: ProviderHooks): Completion 
   const model = message.model;
   if (model !== undefined && model !== null) hooks.model?.(model);
   if (!Array.isArray(message.content) || message.content.length > maximumBlocks) throw new Error('Invalid completion');
+  const rawUsage = record(message.usage);
+  const usage = anthropicUsage(rawUsage?.input_tokens, rawUsage?.output_tokens);
   const stop = message.stop_reason;
-  if (stop === 'max_tokens') return { id: message.id, model, truncated: true };
+  if (stop === 'max_tokens') return { id: message.id, model, truncated: true, ...(usage ? { usage } : {}) };
 
   let content = '';
   const calls: FunctionCall[] = [];
@@ -235,6 +238,7 @@ function readAnthropicMessage(value: unknown, hooks: ProviderHooks): Completion 
       model,
       toolCalls: calls,
       providerTurn: { protocol: 'anthropic', content: message.content as unknown[] },
+      ...(usage ? { usage } : {}),
     };
   }
   if (stop === 'end_turn' || stop === 'stop_sequence' || stop === 'refusal') {
@@ -244,9 +248,28 @@ function readAnthropicMessage(value: unknown, hooks: ProviderHooks): Completion 
       model,
       content,
       providerTurn: { protocol: 'anthropic', content: message.content as unknown[] },
+      ...(usage ? { usage } : {}),
     };
   }
   throw new Error('Unusable completion');
+}
+
+function tokenCount(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || !Number.isFinite(value) || value < 0)
+    throw new Error('Invalid completion usage');
+  return value;
+}
+
+function anthropicUsage(input: unknown, output: unknown): CompletionUsage | undefined {
+  const prompt_tokens = tokenCount(input);
+  const completion_tokens = tokenCount(output);
+  if (prompt_tokens === undefined && completion_tokens === undefined) return undefined;
+  return {
+    ...(prompt_tokens === undefined ? {} : { prompt_tokens }),
+    ...(completion_tokens === undefined ? {} : { completion_tokens }),
+    ...(prompt_tokens === undefined || completion_tokens === undefined ? {} : { total_tokens: prompt_tokens + completion_tokens }),
+  };
 }
 
 function blockIndex(value: unknown): number {
@@ -274,6 +297,7 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
   let finished = false;
   let stopReason: string | undefined;
   let truncated = false;
+  let usage: CompletionUsage | undefined;
   let sawToolBlock = false;
   const calls: FunctionCall[] = [];
   const blocks: (StreamBlock | undefined)[] = [];
@@ -306,6 +330,8 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
           model = message.model;
         }
         id ??= message.id;
+        const rawUsage = record(message.usage);
+        usage = anthropicUsage(rawUsage?.input_tokens, undefined) ?? usage;
         return false;
       }
       case 'content_block_start': {
@@ -395,6 +421,10 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
       case 'message_delta': {
         const delta = record(event.delta);
         if (typeof delta?.stop_reason === 'string') stopReason = delta.stop_reason;
+        const rawUsage = record(event.usage);
+        const previous = usage ?? {};
+        const output = tokenCount(rawUsage?.output_tokens);
+        usage = anthropicUsage(previous.prompt_tokens, output);
         if (stopReason === 'max_tokens') truncated = true;
         return false;
       }
@@ -412,7 +442,7 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
   });
 
   if (!finished) throw new Error('Incomplete completion stream');
-  if (truncated) return { id, model, truncated: true };
+  if (truncated) return { id, model, truncated: true, ...(usage ? { usage } : {}) };
   if (!stopReason) throw new Error('Incomplete completion stream');
   if (blocks.some(block => block?.type === 'tool_use' && !block.complete)) throw new Error('Incomplete tool call');
   const providerContent = rawContent.filter((block): block is AnthropicBlock => block !== undefined);
@@ -424,6 +454,7 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
       model,
       toolCalls: calls,
       providerTurn: { protocol: 'anthropic', content: providerContent as unknown[] },
+      ...(usage ? { usage } : {}),
     };
   }
   if (calls.length) throw new Error('Incomplete tool call');
@@ -433,6 +464,7 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
       model,
       content,
       providerTurn: { protocol: 'anthropic', content: providerContent as unknown[] },
+      ...(usage ? { usage } : {}),
     };
   }
   throw new Error('Unusable completion');

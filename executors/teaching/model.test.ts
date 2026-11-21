@@ -5,14 +5,27 @@ import {bodyOf, deps, model, providerModel, responseFrame, sseResponse, watchFet
 it('requests DeepSeek Flash at high effort for reading, repair and teaching', async () => {
   const decisions = [{type: 'read_evidence', id: 'work'}, null,
     {type: 'teach', action: 'transfer_question', rationale: '已独立完成', nextStep: '换个条件试试。', evidenceIds: ['work']}];
+  const usage = {prompt_tokens: 8, completion_tokens: 6, total_tokens: 14};
+  const effects: object[] = [];
   const send = watchFetch().mockImplementation(async (_url, init) => {
     const body = bodyOf(init);
     expect(body.model).toBe(model); expect(body.reasoning_effort).toBe('high'); expect(body.stream).toBe(true);
-    return Response.json({model: providerModel, choices: [{message: {content: JSON.stringify(decisions.shift())}}]});
+    expect(body.stream_options).toEqual({include_usage: true});
+    return Response.json({model: providerModel, usage, choices: [{message: {content: JSON.stringify(decisions.shift())}}]});
   });
   const result = await runTeachingTurn({question: '平均速度？', answer: '45',
-    evidenceCatalog: [{id: 'work', title: '行程'}]}, {...deps, readEvidence: async () => '独立列式'});
+    evidenceCatalog: [{id: 'work', title: '行程'}]}, {
+      ...deps,
+      readEvidence: async () => '独立列式',
+      runEffect: async (step, invoke) => {
+        const raw = await invoke(String(step.index));
+        effects.push(JSON.parse(raw));
+        return raw;
+      },
+    });
   expect(result.action).toBe('transfer_question'); expect(send).toHaveBeenCalledTimes(3);
+  expect(result.usage).toEqual(usage);
+  expect(effects.map((effect: {usage?: unknown}) => effect.usage)).toEqual([usage, usage, usage]);
 });
 
 it('streams only public companion content before the provider completes', async () => {
