@@ -134,6 +134,9 @@ function cleanList(value: unknown, label: string, limit: number, max = maxWarnin
 const unclearMarkers = /^(?:看不清|无法辨认|无法识别|看不清楚|无法看清|模糊不清|辨认不清|难以辨认|无法确认|无法判断|unclear|illegible|unreadable|unrecognizable|\?+)$/i;
 
 function normalizeStudentAnswer(value: unknown): StructuredPaperStudentAnswer {
+  if (value === undefined || value === null) {
+    return { status: 'absent', text: null };
+  }
   const row = object(value);
   const status = row.status;
   if (status !== 'present' && status !== 'unclear' && status !== 'absent')
@@ -193,9 +196,18 @@ function normalizeOption(value: unknown): StructuredPaperOption {
   return { label: label ?? '', text: optionText ?? '' };
 }
 
+const questionTypeAliases: Readonly<Record<string, StructuredPaperQuestionType>> = {
+  choice: 'single_choice',
+  multi_choice: 'multiple_choice',
+  essay: 'short_answer',
+};
+
 function normalizeQuestion(value: unknown, index: number): StructuredPaperQuestion {
   const row = object(value);
-  const questionType = row.questionType;
+  const rawType = typeof row.questionType === 'string' ? row.questionType.trim() : row.questionType;
+  const questionType = typeof rawType === 'string' && rawType in questionTypeAliases
+    ? questionTypeAliases[rawType]
+    : rawType;
   if (!(questionTypes as readonly unknown[]).includes(questionType))
     throw new Error(`第 ${index} 题题型无效。`);
   const stem = clean(row.stem, stemLimit);
@@ -286,11 +298,6 @@ export function parseStructuredPaperOcr(raw: unknown): StructuredPaperOcr {
       (!Array.isArray(rawQuestions) || rawQuestions.length > maxQuestions))
     throw new Error('题目数量超过上限。');
   const questions = (rawQuestions ?? []).map((question, index) => normalizeQuestion(question, index + 1));
-  const seenNumbers = new Set<string>();
-  for (const question of questions) {
-    if (seenNumbers.has(question.number)) throw new Error(`题号「${question.number}」重复。`);
-    seenNumbers.add(question.number);
-  }
   const freeformText = clean(row.freeformText, freeformLimit);
   if (questions.length === 0 && freeformText === null)
     throw new Error('识别结果既无题目也无正文内容。');

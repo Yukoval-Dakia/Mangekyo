@@ -114,31 +114,48 @@ export async function normalizeImageForVisionOcr(
   const maxOutputBytes = clampInteger(options?.maxOutputBytes, visionMaxOutputBytesDefault, 1, Number.MAX_SAFE_INTEGER);
   const qualityFirst = clampInteger(options?.quality, visionQualityDefault, visionQualityMin, visionQualityMax);
 
+  let usedSips = false;
   let source = bytes;
   let originalWidth: number | null = null;
   let originalHeight: number | null = null;
   let originalOrientation: number | null = null;
   const readMeta = async (input: Buffer) =>
     sharp(input, { limitInputPixels: maxInputPixels, failOn: 'error' }).metadata();
-  try {
-    const meta = await readMeta(source);
-    originalWidth = typeof meta.width === 'number' ? meta.width : null;
-    originalHeight = typeof meta.height === 'number' ? meta.height : null;
-    originalOrientation = typeof meta.orientation === 'number' ? meta.orientation : null;
-  } catch (error) {
+  const isPixelLimitError = (error: unknown) =>
+    error instanceof Error && /pixel limit/i.test(error.message);
+  const convertWithSips = async (originalError: unknown, stageLabel: string) => {
+    if (usedSips || isPixelLimitError(originalError)) {
+      const message = originalError instanceof Error ? originalError.message : String(originalError);
+      throw new Error(`${stageLabel}：${message}`);
+    }
+    usedSips = true;
     const converted = await transcodeToJpegWithSips(source);
     if (!converted) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`无法读取图像（可能是不支持的编码或文件损坏）：${message}`);
+      const message = originalError instanceof Error ? originalError.message : String(originalError);
+      throw new Error(`${stageLabel}（可能是不支持的编码或文件损坏）：${message}`);
     }
     source = converted;
     const meta = await readMeta(source).catch((retryError) => {
       const message = retryError instanceof Error ? retryError.message : String(retryError);
       throw new Error(`sips 转码后仍无法读取图像：${message}`);
     });
+    if (typeof meta.width === 'number' && typeof meta.height === 'number' && meta.width * meta.height > maxInputPixels) {
+      throw new Error('图像像素数超过安全上限。');
+    }
+    originalWidth ??= typeof meta.width === 'number' ? meta.width : null;
+    originalHeight ??= typeof meta.height === 'number' ? meta.height : null;
+    originalOrientation ??= typeof meta.orientation === 'number' ? meta.orientation : null;
+  };
+  try {
+    const meta = await readMeta(source);
     originalWidth = typeof meta.width === 'number' ? meta.width : null;
     originalHeight = typeof meta.height === 'number' ? meta.height : null;
     originalOrientation = typeof meta.orientation === 'number' ? meta.orientation : null;
+    if (originalWidth !== null && originalHeight !== null && originalWidth * originalHeight > maxInputPixels) {
+      throw new Error('Input image exceeds pixel limit');
+    }
+  } catch (error) {
+    await convertWithSips(error, '无法读取图像');
   }
 
   const rotatedByExif =
@@ -151,7 +168,13 @@ export async function normalizeImageForVisionOcr(
       .jpeg({ quality, mozjpeg: true })
       .toBuffer({ resolveWithObject: true });
 
-  let out = await encode(qualityFirst);
+  let out;
+  try {
+    out = await encode(qualityFirst);
+  } catch (error) {
+    await convertWithSips(error, '图像解码失败');
+    out = await encode(qualityFirst);
+  }
   if (out.info.size > maxOutputBytes && qualityFirst > visionQualityRetry) {
     out = await encode(visionQualityRetry);
   }

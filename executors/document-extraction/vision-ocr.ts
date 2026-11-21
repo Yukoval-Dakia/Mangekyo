@@ -98,37 +98,37 @@ export type VisionPaperLlmCallResult = {
     | undefined;
 };
 
-const defaultTimeoutMs = 90_000;
+const defaultTimeoutMs = 120_000;
 
 const defaultVisionSystemPrompt =
-  '你是一位严谨的试卷图像结构化识别引擎。你的任务是逐题还原试卷照片里的全部内容，输出严格 JSON，不输出任何 JSON 以外的文字。';
+  '你是一位严谨的试卷图像结构化识别引擎。你的任务是逐题还原试卷照片里的全部内容，仅输出一个严格的 JSON 对象，不要输出任何 JSON 以外的文字或 Markdown 围栏。';
 
-const defaultVisionUserPrompt = `请把这张试卷照片结构化识别为 JSON。要求：
+const defaultVisionUserPrompt = `请把这张试卷照片结构化识别为严格 JSON。要求：
 1. 输出单个 JSON 对象，禁止 Markdown 代码块围栏、禁止任何解释性文字。
 2. JSON 结构：
 {
-  "title": string | null,
+  "version": "vision-paper-ocr-v1",
+  "paperTitle": string | null,
   "subject": string | null,
-  "page": { "index": number | null, "total": number | null } | null,
+  "pageNote": string | null,
   "questions": [
     {
       "number": string,
-      "type": "choice" | "multi_choice" | "fill_blank" | "essay" | "other",
+      "questionType": "single_choice" | "multiple_choice" | "fill_blank" | "short_answer" | "calculation" | "proof" | "code" | "other",
       "stem": string,
-      "options": [{ "label": string, "text": string }] | null,
-      "figures": [{ "description": string }] | null,
-      "provenance": string | null,
-      "handwritten_answer": { "ink": "black" | "blue" | "pencil" | "unclear", "text": string } | null,
-      "grading_marks": [{ "ink": "red" | "other", "kind": "check" | "cross" | "circle" | "score" | "comment" | "correction", "text": string | null }] | null,
-      "unclear": [string] | null
+      "options": [{ "label": string, "text": string }],
+      "studentAnswer": { "status": "present" | "unclear" | "absent", "text": string | null, "note"?: string },
+      "redInk": { "verdict": "correct" | "wrong" | "partial" | "none" | "unclear", "marks": string[], "correction": string | null, "score": string | null },
+      "unclearSegments": string[]
     }
   ],
-  "unclear": [string] | null
+  "freeformText": string | null,
+  "warnings": string[]
 }
-3. 所有数学与物理公式一律用精确 LaTeX（行内 $...$，独立公式 $$...$$），例如 $y^2 = 2px$、$x^2 = -4y$，绝不允许乱码或图片占位符。
-4. 黑色/蓝色手写作答与红色批改、订正、分数、对错符号必须分开记录在 handwritten_answer 与 grading_marks 中，不得混写。
-5. 看不清、被遮挡或不确定的内容如实写入 unclear 数组或对应字段标 null，严禁编造。
-6. 试题来源标记（如「2023·浙江1月选考」）放入 provenance。`;
+3. 所有数学、物理、化学公式一律用精确 LaTeX（行内 $...$，独立公式 $$...$$），Python/代码与流程图逻辑逐字保留（代码块用三重反引号）。
+4. 黑色/蓝色手写作答（studentAnswer）与红色批改/订正/分数/对错符号（redInk）必须严格分离，不得混写。
+5. 看不清、反光或被遮挡的内容严禁编造，学生作答看不清必须如实标 {"status":"unclear","text":null} 并写入 unclearSegments；红笔看不清把 redInk.verdict 标为 "unclear"。
+6. 若为纯讲义/非题目材料，正文放 freeformText，questions 放空数组；两者至少其一非空。`;
 
 function clampNumber(value: number | undefined, fallback: number, min: number, max: number) {
   if (value === undefined) return fallback;
