@@ -11,6 +11,8 @@ import {
   masteryHint,
   masteryLabel,
   masterySummary,
+  NODE_HEIGHT,
+  NODE_WIDTH,
   nodeIdOfEdgeEndpoint,
   relatedEdges,
   type LayoutEdge,
@@ -93,20 +95,73 @@ function nodeToneClass(status: MasteryStatus): string {
   return STATUS_CLASS[status];
 }
 
-function EdgePath({edge, nodes}: {edge: LayoutEdge; nodes: Map<string, LayoutNode>}) {
+function EdgePath({
+  edge,
+  nodes,
+  active,
+  fontScale,
+  edgeIndex,
+}: {
+  edge: LayoutEdge;
+  nodes: Map<string, LayoutNode>;
+  active: boolean;
+  fontScale: number;
+  edgeIndex: number;
+}) {
   const from = nodes.get(edge.fromId);
   const to = nodes.get(edge.toId);
   if (!from || !to) return null;
-  const midY = (from.y + to.y) / 2;
-  const d = `M ${from.x} ${from.y} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${to.y}`;
+  const deltaX = to.x - from.x;
+  const deltaY = to.y - from.y;
+  const distance = Math.hypot(deltaX, deltaY) || 1;
+  const unitX = deltaX / distance;
+  const unitY = deltaY / distance;
+  const fromScale = Math.min(NODE_WIDTH / 2 / Math.abs(unitX || Infinity), NODE_HEIGHT / 2 / Math.abs(unitY || Infinity));
+  const toScale = Math.min(
+    (NODE_WIDTH / 2 + 10) / Math.abs(unitX || Infinity),
+    (NODE_HEIGHT / 2 + 10) / Math.abs(unitY || Infinity),
+  );
+  const startX = from.x + unitX * (fromScale + 3);
+  const startY = from.y + unitY * (fromScale + 3);
+  const endX = to.x - unitX * toScale;
+  const endY = to.y - unitY * toScale;
+  const curvature = Math.max(22, Math.min(56, distance * 0.1));
+  const normalX = -unitY * curvature;
+  const normalY = unitX * curvature;
+  const control1X = startX + deltaX * 0.24 + normalX;
+  const control1Y = startY + deltaY * 0.24 + normalY;
+  const control2X = endX - deltaX * 0.24 + normalX;
+  const control2Y = endY - deltaY * 0.24 + normalY;
+  const d = `M ${startX} ${startY} C ${control1X} ${control1Y}, ${control2X} ${control2Y}, ${endX} ${endY}`;
+  const labelT = 0.35 + (edgeIndex % 3) * 0.15;
+  const inverseLabelT = 1 - labelT;
+  const labelX =
+    inverseLabelT ** 3 * startX +
+    3 * inverseLabelT ** 2 * labelT * control1X +
+    3 * inverseLabelT * labelT ** 2 * control2X +
+    labelT ** 3 * endX;
+  const labelY =
+    inverseLabelT ** 3 * startY +
+    3 * inverseLabelT ** 2 * labelT * control1Y +
+    3 * inverseLabelT * labelT ** 2 * control2Y +
+    labelT ** 3 * endY;
+  const label = edge.pending ? `待核对 · ${edgeKindLabel(edge.kind)}` : edgeKindLabel(edge.kind);
+  const labelFontSize = Math.round(15 * fontScale);
+  const labelHeight = labelFontSize > 14 ? 28 : 24;
+  const labelWidth = label.length * labelFontSize + 20;
   return (
-    <path
-      className={edge.pending ? 'kg-edge kg-edge-pending' : 'kg-edge'}
-      d={d}
-      markerEnd={edge.pending ? undefined : 'url(#kg-arrow)'}
-    >
-      {edge.pending && edge.summary ? <title>{edge.summary}</title> : <title>{edgeKindLabel(edge.kind)}</title>}
-    </path>
+    <g className={`${edge.pending ? 'kg-edge-pending' : 'kg-edge'}${active ? ' kg-edge-active' : ' kg-edge-dim'}`}>
+      <path
+        d={d}
+        markerEnd={`url(#${edge.pending ? 'kg-arrow-pending' : 'kg-arrow'})`}
+      >
+        <title>{edge.pending && edge.summary ? `${edge.summary}（待核对）` : label}</title>
+      </path>
+      <g className="kg-edge-label" pointerEvents="none">
+        <rect x={labelX - labelWidth / 2} y={labelY - labelHeight / 2} width={labelWidth} height={labelHeight} rx={labelHeight / 2} />
+        <text x={labelX} y={labelY} textAnchor="middle" style={{fontSize: `${labelFontSize}px`}}>{label}</text>
+      </g>
+    </g>
   );
 }
 
@@ -119,13 +174,45 @@ function GraphCanvas({
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
-  const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState({x: 0, y: 0, scale: 1});
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [canvasWidth, setCanvasWidth] = useState(960);
+  const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<{startX: number; startY: number; baseX: number; baseY: number} | null>(null);
   const nodeMap = useMemo(() => new Map(layout.nodes.map(item => [item.node.id, item])), [layout]);
   const [focusIndex, setFocusIndex] = useState(-1);
 
   const ordered = useMemo(() => [...layout.nodes].sort((a, b) => a.y - b.y || a.x - b.x), [layout]);
+  const fontScale = Math.max(1, Math.min(1.5, layout.width / Math.max(canvasWidth, 1)));
+  const titleFontSize = Math.round(14 * fontScale);
+  const metaFontSize = Math.round(12 * fontScale);
+  const activeId = hoveredId ?? selectedId;
+  const activeNodeIds = useMemo(() => {
+    const active = new Set<string>();
+    if (activeId) {
+      active.add(activeId);
+      for (const edge of layout.edges) {
+        if (edge.fromId === activeId) active.add(edge.toId);
+        if (edge.toId === activeId) active.add(edge.fromId);
+      }
+    }
+    return active;
+  }, [activeId, layout.edges]);
+
+  useEffect(() => {
+    setView({x: 0, y: 0, scale: 1});
+  }, [layout.width, layout.height]);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width;
+      if (width) setCanvasWidth(width);
+    });
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, []);
 
   const zoom = useCallback((delta: number) => {
     setView(current => ({...current, scale: Math.min(2.4, Math.max(0.4, current.scale + delta))}));
@@ -183,6 +270,7 @@ function GraphCanvas({
         ref={svgRef}
         className="kg-canvas"
         viewBox={`0 0 ${layout.width} ${layout.height}`}
+        preserveAspectRatio="xMidYMid meet"
         role="list"
         aria-label="知识图谱"
         tabIndex={0}
@@ -196,23 +284,36 @@ function GraphCanvas({
           <marker id="kg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--kg-edge)" strokeWidth="1.6" strokeLinecap="round" />
           </marker>
+          <marker id="kg-arrow-pending" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="var(--kg-edge-pending)" strokeWidth="1.6" strokeLinecap="round" />
+          </marker>
         </defs>
         <g transform={`translate(${view.x},${view.y}) scale(${view.scale})`}>
-          {layout.edges.map(edge => (
-            <EdgePath key={edge.id} edge={edge} nodes={nodeMap} />
+          {layout.edges.map((edge, edgeIndex) => (
+            <EdgePath
+              key={edge.id}
+              edge={edge}
+              nodes={nodeMap}
+              active={Boolean(activeId) && (edge.fromId === activeId || edge.toId === activeId)}
+              fontScale={fontScale}
+              edgeIndex={edgeIndex}
+            />
           ))}
           {layout.nodes.map(item => {
             const {node} = item;
             const selected = node.id === selectedId;
             const focused = ordered[focusIndex]?.node.id === node.id;
+            const related = activeNodeIds.size === 0 || activeNodeIds.has(node.id);
             return (
               <g
                 key={node.id}
-                className={`kg-node ${nodeToneClass(node.mastery.status)}${selected ? ' kg-node-selected' : ''}${focused ? ' kg-node-focused' : ''}`}
+                className={`kg-node ${nodeToneClass(node.mastery.status)}${selected ? ' kg-node-selected' : ''}${focused ? ' kg-node-focused' : ''}${related ? '' : ' kg-node-dim'}`}
                 transform={`translate(${item.x},${item.y})`}
                 role="listitem"
                 aria-label={`${node.title}，${masterySummary(node)}`}
                 onClick={() => onSelect(node.id)}
+                onMouseEnter={() => setHoveredId(node.id)}
+                onMouseLeave={() => setHoveredId(current => current === node.id ? null : current)}
                 onKeyDown={event => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
@@ -221,15 +322,24 @@ function GraphCanvas({
                 }}
                 tabIndex={-1}
               >
-                <rect className="kg-node-card" x="-88" y="-34" width="176" height="68" rx="20" />
-                <circle className="kg-node-dot" cx="-66" cy="-12" r="6" />
-                <text className="kg-node-title" x="-52" y="-8" textAnchor="start">
-                  {node.title.length > 10 ? `${node.title.slice(0, 10)}…` : node.title}
+                <title>{node.title}</title>
+                <rect className="kg-node-card" x={-NODE_WIDTH / 2} y={-NODE_HEIGHT / 2} width={NODE_WIDTH} height={NODE_HEIGHT} rx={22} />
+                <circle className="kg-node-dot" cx={-NODE_WIDTH / 2 + 22} cy={-14} r={6} />
+                <text
+                  className="kg-node-title"
+                  x={-NODE_WIDTH / 2 + 38}
+                  y={-10}
+                  textAnchor="start"
+                  style={{fontSize: `${titleFontSize}px`}}
+                >
+                  {node.title.length > Math.max(7, Math.floor((NODE_WIDTH - 58) / titleFontSize))
+                    ? `${node.title.slice(0, Math.max(7, Math.floor((NODE_WIDTH - 58) / titleFontSize)))}…`
+                    : node.title}
                 </text>
-                <text className="kg-node-meta" x="-52" y="14" textAnchor="start">
+                <text className="kg-node-meta" x={-NODE_WIDTH / 2 + 38} y={16} textAnchor="start" style={{fontSize: `${metaFontSize}px`}}>
                   {masteryLabel(node.mastery.status)}
                 </text>
-                <text className="kg-node-count" x="66" y="14" textAnchor="end">
+                <text className="kg-node-count" x={NODE_WIDTH / 2 - 18} y={16} textAnchor="end">
                   {node.counts.questions > 0 ? `${node.counts.questions} 题` : ''}
                 </text>
               </g>

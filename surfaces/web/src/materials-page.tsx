@@ -1,6 +1,6 @@
 import {Suspense, lazy, useCallback} from 'react';
 import {MaterialsSurface} from './materials-v2/MaterialsSurface';
-import type {CompanionCitationPayload, PracticeQuestionPayload} from './materials-v2/types';
+import type {CompanionCitationPayload, NormalizedMasteryState, PracticeQuestionPayload} from './materials-v2/types';
 import {KnowledgeGraphView} from './knowledge-graph/KnowledgeGraphView';
 import type {KnowledgeGraphNode} from './knowledge-graph/types';
 import IssuedPapers from './issued-papers';
@@ -12,11 +12,20 @@ const StudioTextbooks = lazy(() => import('./textbook/StudioTextbooks'));
 
 export type CiteToCompanion = (citation: CompanionCitation) => void;
 
+function masteryStatusLabel(status: KnowledgeGraphNode['mastery']['status'] | NormalizedMasteryState | 'solid' | 'fading'): string {
+  switch (status) {
+    case 'steady': case 'solid': return '已稳';
+    case 'fading': case 'due': return '待固';
+    case 'fragile': case 'weak': return '薄弱';
+    default: return '尚待核对';
+  }
+}
+
 function formatGraphCitation(node: KnowledgeGraphNode): CompanionCitation {
   const mastery = node.mastery;
   const lines = [
     `知识图谱节点：${node.title}`,
-    `掌握状态：${mastery.status}；独立作答 ${mastery.independentCount} 次；关联题 ${node.counts.questions}、教材 ${node.counts.textbooks}、笔记 ${node.counts.notes}`,
+    `掌握状态：${masteryStatusLabel(mastery.status)}；独立作答 ${mastery.independentCount} 次；关联题 ${node.counts.questions}、教材 ${node.counts.textbooks}、笔记 ${node.counts.notes}`,
   ];
   if (mastery.retrievability !== null) lines.push(`可提取性估计：${Math.round(mastery.retrievability * 100)}%`);
   return { title: node.title, text: lines.join('\n'), topic: '知识图谱' };
@@ -27,7 +36,7 @@ function formatBankCitation(payload: CompanionCitationPayload): CompanionCitatio
   const lines = [`${kindLabel}：${payload.title}`];
   if (payload.archetypeTitle) lines.push(`所属母题：${payload.archetypeTitle}`);
   if (payload.sourceLabel) lines.push(`出处：${payload.sourceLabel}`);
-  if (payload.mastery) lines.push(`掌握状态：${payload.mastery}`);
+  if (payload.mastery) lines.push(`掌握状态：${masteryStatusLabel(payload.mastery)}`);
   if (payload.prompt) lines.push(`题干：${payload.prompt.slice(0, 600)}`);
   if (payload.lastAnswer) lines.push(`上次作答：${payload.lastAnswer.slice(0, 300)}`);
   if (payload.expected) lines.push(`参考结果：${payload.expected.slice(0, 300)}`);
