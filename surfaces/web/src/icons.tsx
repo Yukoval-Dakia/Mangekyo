@@ -1,4 +1,4 @@
-export type IconName = "settings" | "plus" | "send" | "chevron" | "close" | "history" | "document" | "arrow" | "today" | "book" | "chat" | "person" | "practice" | "lock" | "search";
+export type IconName = "settings" | "plus" | "send" | "chevron" | "close" | "history" | "document" | "arrow" | "today" | "book" | "chat" | "person" | "practice" | "lock" | "search" | "activity" | "theme" | "sun" | "help";
 
 const paths: Record<IconName, React.ReactNode> = {
   today: <><rect x="3.5" y="5" width="17" height="16" rx="3" /><path d="M7.5 3v4m9-4v4m-13 3.5h17M8 14h4" /></>,
@@ -16,6 +16,10 @@ const paths: Record<IconName, React.ReactNode> = {
   history: <><path d="M3 9a9 9 0 1 1 .8 6M3 4v5h5" /><path d="M12 7v5l3 2" /></>,
   document: <><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6" /></>,
   arrow: <path d="M4 12h15m-6-6 6 6-6 6" />,
+  activity: <><path d="M3 13h4l2.5-6 4 12 2.5-6H21" /></>,
+  theme: <path d="M20 13.5A8.2 8.2 0 0 1 10.5 4 8.5 8.5 0 1 0 20 13.5Z" />,
+  sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2.5v2.2m0 14.6v2.2M4.7 4.7l1.6 1.6m11.4 11.4 1.6 1.6M2.5 12h2.2m14.6 0h2.2M4.7 19.3l1.6-1.6m11.4-11.4 1.6-1.6" /></>,
+  help: <><circle cx="12" cy="12" r="9" /><path d="M9.4 9.2a2.7 2.7 0 1 1 3.8 2.8c-.8.5-1.2 1-1.2 2M12 17h.01" /></>,
 };
 
 export function Icon({ name }: { name: IconName }) {
