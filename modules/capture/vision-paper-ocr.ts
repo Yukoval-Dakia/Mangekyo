@@ -474,44 +474,25 @@ export function buildVisionPaperOcrPrompt(options?: VisionPaperOcrPromptOptions)
   readonly userPrompt: string;
 } {
   const systemPrompt = [
-    '你是一名严谨的试卷扫描识别员，负责把学习者拍的试卷/作业照片转成结构化数据。',
+    '你是严谨的试卷结构化OCR引擎。只输出一个严格JSON对象，禁止Markdown围栏与多余文字；直接忠实转写，不要冗长思考。',
     '规则：',
-    '1. 仅输出一个严格的 JSON 对象，不要输出任何额外解释、前言或 Markdown 围栏。',
-    '2. 印刷题干与选项中的数学、物理、化学公式必须使用标准 LaTeX：行内公式用 $...$，独立成行的公式用 $$...$$；代码、伪代码与流程图逻辑必须逐字准确保留，代码块使用三重反引号。',
-    '3. 学生的黑笔作答与教师的红笔批改/订正必须严格分字段输出，绝不混淆。',
-    '4. 对反光、遮挡、潦草等看不清的内容绝对禁止猜测或编造：学生作答看不清时把 studentAnswer 标为 {"status":"unclear","text":null}，必要时附 note 说明哪一处模糊，并把位置描述加入该题的 unclearSegments；红笔批改看不清时把 redInk.verdict 标为 "unclear"。',
-    '5. 逐题切分，按试卷从上到下的顺序输出 questions 数组；每题给出印刷题号 number（如 "1"、"2(1)"）。',
-    '6. 如果图片是纯讲义、知识点材料而非题目，把正文放入 freeformText，questions 输出空数组；两者至少要有一个非空。',
-    '',
-    '输出 JSON 结构：',
-    '{',
-    '  "version": "vision-paper-ocr-v1",',
-    '  "paperTitle": string|null,',
-    '  "subject": string|null,',
-    '  "pageNote": string|null,',
-    '  "questions": [{',
-    '    "number": string,',
-    '    "questionType": "single_choice"|"multiple_choice"|"fill_blank"|"short_answer"|"calculation"|"proof"|"code"|"other",',
-    '    "stem": string,',
-    '    "options": [{"label": string, "text": string}],',
-    '    "studentAnswer": {"status":"present"|"unclear"|"absent","text":string|null,"note"?:string},',
-    '    "redInk": {"verdict":"correct"|"wrong"|"partial"|"none"|"unclear","marks":string[],"correction":string|null,"score":string|null},',
-    '    "unclearSegments": string[]',
-    '  }],',
-    '  "freeformText": string|null,',
-    '  "warnings": string[]',
-    '}',
+    '1. 仔细扫描整张图片（尤其注意双栏排版：先左栏从上到下，再右栏从上到下；左栏末题的选项可能跨到右栏顶部），完整逐题输出所有可见题目，不遗漏也不编造被裁切的题。',
+    '2. 印刷题干与选项中的公式必须用标准LaTeX（行内$...$，独立公式$$...$$）；代码、伪代码与流程图逻辑用三重反引号逐字保留。',
+    '3. 严格分离学生黑笔/铅笔作答（studentAnswer）与教师红笔批改/订正（redInk），绝不混淆。',
+    '4. 反光、遮挡或潦草看不清处严禁猜测：学生作答标{"status":"unclear","text":null}并写入unclearSegments；红笔批改看不清把redInk.verdict标为"unclear"。',
+    '5. 若为纯讲义/非题目材料，正文放freeformText，questions放空数组；两者至少其一非空。',
+    'JSON结构：{"version":"vision-paper-ocr-v1","paperTitle":string|null,"subject":string|null,"pageNote":string|null,"questions":[{"number":string,"questionType":"single_choice"|"multiple_choice"|"fill_blank"|"short_answer"|"calculation"|"proof"|"code"|"other","stem":string,"options":[{"label":string,"text":string}],"studentAnswer":{"status":"present"|"unclear"|"absent","text":string|null,"note"?:string},"redInk":{"verdict":"correct"|"wrong"|"partial"|"none"|"unclear","marks":string[],"correction":string|null,"score":string|null},"unclearSegments":string[]}],"freeformText":string|null,"warnings":string[]}',
   ].join('\n');
   const hints: string[] = [];
   const filename = clean(options?.filename, 180);
   const titleHint = clean(options?.titleHint, titleLimit);
   const redInkMeaning = clean(options?.redInkMeaning, 400);
   if (filename) hints.push(`文件名：${filename}`);
-  if (titleHint) hints.push(`学习者给的标题提示：${titleHint}`);
-  if (redInkMeaning) hints.push(`红笔含义说明：${redInkMeaning}`);
+  if (titleHint) hints.push(`标题提示：${titleHint}`);
+  if (redInkMeaning) hints.push(`红笔说明：${redInkMeaning}`);
   const userPrompt = hints.length
-    ? `请识别这张试卷照片。\n${hints.join('\n')}`
-    : '请识别这张试卷照片。';
+    ? `请按双栏顺序完整识别这张试卷照片，直接输出JSON。\n${hints.join('\n')}`
+    : '请按双栏顺序完整识别这张试卷照片，直接输出JSON。';
   return { systemPrompt, userPrompt };
 }
 
