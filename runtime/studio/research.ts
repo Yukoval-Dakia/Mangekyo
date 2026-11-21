@@ -31,8 +31,9 @@ import {
 } from './research-sources.ts';
 import {
   preparePaidResearchTriage, prepareResearchTriage, reviewDedupKey, reviewGoal, researchDecision,
+  scoutEffectIdentity,
 } from './research-triage-host.ts';
-import { sampleResearchScout, ScoutAuthorizationChanged, scoutEffectIdentity, type ResearchScoutHost } from './research-scout.ts';
+import { sampleResearchScout, ScoutAuthorizationChanged, type ResearchScoutHost } from './research-scout.ts';
 import { discoverUnderstandingTodos, eligibleExtraction, openUnderstandingExtraction, type UnderstandingTransport } from './research-understanding.ts';
 import { activityEvidenceTypes, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';
 import { extractorProfile } from '../../modules/companion/understanding.ts';

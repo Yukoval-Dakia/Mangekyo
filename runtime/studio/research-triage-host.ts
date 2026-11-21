@@ -3,6 +3,7 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
+import { canProcessPricedEffect } from '../../kernel/src/work/effects.ts';
 import { readTodo, type TodoSpec } from '../../kernel/src/work/todos.ts';
 import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
@@ -19,7 +20,9 @@ import {
   parseTriageResponse, triagePromptBlock, TriageResponseError, type TriageSnapshot,
 } from './research-triage/index.ts';
 
-export const scoutEffectLabel = 'background-research-scout-v1';
+export function scoutEffectIdentity(settingsId: FactId, dedupKey: string) {
+  return { ownerKind: 'session', ownerId: settingsId, stepKey: dedupKey, label: 'background-research-scout-v1' } as const;
+}
 export const reviewGoal = '为一份正式错题作答准备复习单';
 const reviewTemplate = 'review_submitted_attempt';
 const retrySheetLifetimeMs = 24 * 60 * 60 * 1000;
@@ -170,14 +173,11 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
       const known = await tx.query(
         `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
          UNION ALL SELECT 1 FROM work WHERE family='todo' AND learner_id = $1 AND dedup_key = $3
-          AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5
-         UNION ALL SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$6 AND label=$7
-          AND step_key=$3 AND ((state='started' AND result IS NULL) OR consumed_tick IS NOT NULL OR
-            NOT effect_may_settle(learner_id, owner_id, started_tick, input_basis)) LIMIT 1`,
+          AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5 LIMIT 1`,
         [tx.learner, worksheetId(id, fact.ref.rev, fact.accessEpoch), dedupKey,
-          JSON.stringify(sourceFactRev), String(settingsRevision), settingsId ?? null, scoutEffectLabel],
+          JSON.stringify(sourceFactRev), String(settingsRevision)],
       );
-      if (!known.rowCount) intent = {
+      if (!known.rowCount && (!settingsId || await canProcessPricedEffect(tx, scoutEffectIdentity(settingsId, dedupKey)))) intent = {
         dedupKey, workerProfile: 'deterministic_compute', trigger: { kind: 'immediate' },
         goal: reviewGoal, refs: [], sourceFactRev, settingsRevision, autonomyTier: 1, budgetCap: 0,
         expiresAtMs: now + retrySheetLifetimeMs,

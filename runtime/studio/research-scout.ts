@@ -6,7 +6,7 @@ import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { EffectBudgetExceeded, EffectIdentityMismatch, runEffect } from '../../kernel/src/work/effects.ts';
 import type { researchScoutBudget } from '../../modules/companion/research.ts';
 import { studioLearner } from './identity.ts';
-import { scoutEffectLabel, researchDecision, type preparePaidResearchTriage } from './research-triage-host.ts';
+import { scoutEffectIdentity, researchDecision, type preparePaidResearchTriage } from './research-triage-host.ts';
 
 const scope = { learner: studioLearner };
 const maxReplyBytes = 8192;
@@ -39,10 +39,6 @@ export function validateResearchScoutHost(host: ResearchScoutHost) {
 }
 
 export class ScoutAuthorizationChanged extends Error {}
-
-export function scoutEffectIdentity(settingsId: FactId, dedupKey: string) {
-  return { ownerKind: 'session', ownerId: settingsId, stepKey: dedupKey, label: scoutEffectLabel } as const;
-}
 
 export async function sampleResearchScout(db: Db, settingsId: FactId, revision: number,
   budget: NonNullable<ReturnType<typeof researchScoutBudget>>, host: ResearchScoutHost,

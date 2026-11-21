@@ -231,6 +231,18 @@ export async function runEffect(
   }));
 }
 
+/** Discovery may schedule a new request or resume its receipt, but cannot resend a pending request. */
+export async function canProcessPricedEffect(tx: ReadTransaction,
+  { ownerKind, ownerId, stepKey, label }: Omit<EffectRequest, 'learner' | 'input'>) {
+  const { rowCount } = await tx.query(
+    `SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5
+      AND ((state='started' AND result IS NULL) OR consumed_tick IS NOT NULL OR
+        NOT effect_may_settle(learner_id, owner_id, started_tick, input_basis))`,
+    [tx.learner, ownerKind, ownerId, stepKey, label],
+  );
+  return rowCount === 0;
+}
+
 /** Consume a terminal paid receipt and register its business outcome in the same learner transaction. */
 export async function consumePricedEffect(tx: DbTransaction,
   { ownerKind, ownerId, stepKey, label }: Omit<EffectRequest, 'learner' | 'input'>,

@@ -39,3 +39,17 @@ Web 和 Worker 的 `MANGEKYO_RESEARCH_SCOUT_MODULE` 载入可信服务端模块�
 切换 schema 13 前应停止旧 Studio/Worker，再由新版本接管。结束于旧版本的
 `started` 空结果行继续遵守原有无重发规则。若旧行只有实付，金额仍计入账本，
 没有可恢复的分诊决定；若旧行连实付也没有，继续保留预留。迁移不会推断或补造回执。
+
+研究协调器可能长期处于等待状态。若升级时将退出旧构建，先核对该学习者的
+`mangekyoCoordinator` 工作流及在途前哨效果，再确认新 Worker 已在原任务队列注册。
+已绑定旧构建的协调器可按原 workflow ID 定向接续。下例保留原 run 和已结算效果。
+
+```sh
+temporal workflow update-options --workflow-id "$coordinator_id" \
+  --versioning-override-behavior one_time \
+  --versioning-override-deployment-name "$deployment_name" \
+  --versioning-override-build-id "$new_build_id"
+```
+
+以 `temporal workflow describe` 核对原 run 已绑定目标构建，并用获准作答核对下一次唤醒。
+旧试验设置缺少留存或单次价格授权，升级后仍可查账，恢复付费需由本人重新授权。
