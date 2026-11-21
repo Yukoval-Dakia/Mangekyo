@@ -296,9 +296,11 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
     { explanation: '改成另一种说法。', verification: 'unverified' },
   ]);
   assert.deepEqual((await read(context => context.fact(question, pin))).value, questionWithSolution);
+  const seedLegacyHintAnchor = ({ id, rev }, anchor) => db.query(
+    "UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
+    [learner, id, rev, anchor]);
   // Simulate an already-published pre-fix draft and matching overlay.
-  await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
-    [learner, draft.snapshot.ref.id, draft.snapshot.ref.rev, missingAnchor]);
+  await seedLegacyHintAnchor(draft.snapshot.ref, missingAnchor);
   await db.query("UPDATE derivations SET value=jsonb_set(value,'{value,hint_ladder,source_ref}',to_jsonb($3::text)) WHERE learner_id=$1 AND id=$2",
     [learner, derivationId, missingAnchor]);
   await assert.rejects(openDraft(), /固定公开锚点/);
@@ -313,8 +315,7 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
   const { wrote: [before] } = await confirmMeta({ expectedMetaRev: repaired.snapshot.ref.rev,
     append_metadata: { hint_ladder: { ...hint_ladder, source_ref: sourceId } }, basis: [sourceUse(1)] });
   assert.deepEqual(JSON.parse((await openDraft()).draft.append_metadata.hint_ladder.source_ref), refOf(sourceUse(1)));
-  await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
-    [learner, before.id, before.rev, sourceId]);
+  await seedLegacyHintAnchor(before, sourceId);
   await send('content.correctQuestion', { id: sourceId, expectedRev: 1, patch: {
     prompt: { block_id: 'prompt', anchor: '平均速度', replacement: '全程用时' },
   } });
