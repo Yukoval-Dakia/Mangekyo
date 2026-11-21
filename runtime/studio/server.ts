@@ -20,6 +20,7 @@ import { openCapturePapers } from './capture-papers.ts';
 import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
+import { openTakeaway } from './takeaway.ts';
 import { workbookBacktrace } from './workbook-backtrace.ts';
 import { openPracticeAdmission } from './sealed-practice.ts';
 import {
@@ -119,9 +120,10 @@ async function openWeb() {
     context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
     onResearchFactsChanged: research.workbookChanged,
   });
+  const takeaways = openTakeaway(db, activity);
   const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank);
   const student = { notion:openStudioNotion(db,capture), textbook, relationReview:openRelationReview(db,content),
-    workbook, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),
+    workbook, takeaways, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),
     organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),

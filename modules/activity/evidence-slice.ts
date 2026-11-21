@@ -101,7 +101,8 @@ export function activityHelpProcess(observed: HelpExposureEvidence, events: read
   const displayed = new Set(events.flatMap(({ ref, value }) => value.kind === 'displayed' &&
     observed.evidenceRefs.some(use => use.learner === ref.learner && use.id === ref.id && use.rev === ref.rev)
     ? [value.step.kind] : []));
-  const ungraded = displayed.has('hint') || displayed.has('explanation') || displayed.has('worked-example');
+  const ungraded = displayed.has('hint') || displayed.has('hint_l0') ||
+    displayed.has('explanation') || displayed.has('worked-example');
   const level = ungraded || displayed.has('solution') ? undefined
     : displayed.has('hint_l2') ? 'hint_l2' : displayed.has('hint_l1') ? 'hint_l1' : undefined;
   const helpLevel: ActivityEvidenceObservation['helpLevel'] = observed.kind === 'unexposed' ? 'independent'
