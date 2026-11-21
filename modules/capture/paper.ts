@@ -8,6 +8,7 @@ import { openQuestionForRelease, questionVerificationType } from '@mangekyo/modu
 import { captureObject as object, captureRef, captureText as text, sha256 } from './parse.ts';
 import { captureSourceType, sourceEnvelope, type Block } from './source.ts';
 import { layeredExtractionDeriver, layeredExtractionSlot, mergeLayeredSource, type LayeredExtractionValue } from './extraction.ts';
+import { paperInteger as integer, paperMarker } from './paper-anchor.ts';
 
 export const paperIssuanceType = 'capture.paperIssuance';
 export const paperRunType = 'capture.paperRun';
@@ -15,12 +16,6 @@ export const paperRunType = 'capture.paperRun';
 type SourceRef = ReturnType<typeof captureRef>;
 type PrintPiece = { readonly blockId: string; readonly itemId: string | null; readonly text: string };
 type PrintPage = { readonly number: number; readonly pieces: readonly PrintPiece[] };
-
-function integer(value: unknown, min: number, max: number, label: string) {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max)
-    throw new Error(`${label}无效。`);
-  return value;
-}
 
 export function printLayout(input: unknown) {
   const { lines, columns } = object(input);
@@ -386,7 +381,8 @@ async function projectPaper(
   const { title, pieces } = issuance.extraction
     ? await frozenExtractionParts(fact, issuance, mode, readExtraction)
     : await frozenPrintParts(read, fact, mode === 'current');
-  return { issuanceId: await paperIssuanceId(issuance), title, pages: paginate(pieces, issuance.layout) };
+  const pages = paginate(pieces, issuance.layout);
+  return { issuanceId: await paperIssuanceId(issuance), title, pages, questionAnchors: paperQuestionAnchors(pages) };
 }
 
 async function checkedPaperIssuance(fact: FactSnapshot, id: ReturnType<typeof factId>) {
@@ -405,6 +401,11 @@ async function storedPaperIssuance(read: ReadContext, id: ReturnType<typeof fact
     throw error;
   }
   return checkedPaperIssuance(fact, id);
+}
+
+export async function openIssuedPaper(read: ReadContext, id: FactId, readExtraction?: PaperExtractionReader) {
+  const issuance = await read.fact(id, { mode: 'following' });
+  return projectPaper(read, await checkedPaperIssuance(issuance, id), 'pinned', readExtraction);
 }
 
 /** Evaluate a new release even when the same source and layout were issued before. */
@@ -450,11 +451,13 @@ export function paperRun(input: unknown) {
 
 export function collectPaperInput(input: unknown) {
   const row = object(input);
+  const marker = row.marker === undefined ? undefined : paperMarker(row.marker);
   return {
-    issuanceId: factId(text(row.issuanceId, '发卷标识', 26)),
+    issuanceId: row.issuanceId === undefined && marker ? marker.issuanceId : factId(text(row.issuanceId, '发卷标识', 26)),
     source: captureRef(row.source),
-    page: row.page,
+    page: row.page === undefined ? marker?.page : row.page,
     original: row.original,
+    ...(marker === undefined ? {} : { marker }),
     ...(row.retryId === undefined ? {} : { retryId: factId(text(row.retryId, '再做标识', 26)) }),
   };
 }
@@ -494,17 +497,22 @@ export function readPaperDisplayInput(body: Record<string, unknown>) {
 }
 
 export async function collectPaperWrites(
-  read: ReadContext, { issuanceId, source, page, original, retryId }: ReturnType<typeof collectPaperInput>,
+  read: ReadContext, { issuanceId, source, page, original, retryId, marker }: ReturnType<typeof collectPaperInput>,
   readExtraction?: PaperExtractionReader,
 ): Promise<readonly FactWrite[]> {
-  const issuance = await read.fact(issuanceId, { mode: 'following' });
-  const printed = await projectPaper(read, await checkedPaperIssuance(issuance, issuanceId), 'pinned', readExtraction);
+  if (marker && (marker.issuanceId !== issuanceId || marker.page !== page))
+    throw new Error('照片定位与所选发卷或页码不符。');
+  const printed = await openIssuedPaper(read, issuanceId, readExtraction);
   const fact = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
   if (fact.type !== captureSourceType) throw new Error('回收图片必须来自原件。');
   const captured = sourceEnvelope(fact.value);
   if (captured.kind !== 'paper-return' || !printed.pages.some(p => p.number === page) ||
       typeof original !== 'number' || !Number.isSafeInteger(original) || original < 0 || !captured.originals[original])
     throw new Error('回收图片或页码无效。');
+  const assignment = captured.paperReturn;
+  if (assignment && (assignment.issuanceId !== issuanceId || assignment.page !== page ||
+      assignment.original !== original || assignment.retryId !== retryId))
+    throw new Error('回收与原件确认的发卷、页码或作答不匹配。');
   const hash = captured.originals[original].sha256;
   const entry = { number: page, source, original, hash };
   const defaultId = await defaultPaperRunId(issuanceId);
@@ -526,8 +534,7 @@ export async function collectPaperWrites(
   return [{ kind: 'correct', id, expectedRev: run.ref.rev, data: paperRun({ issuanceId, pages: [...prior.pages, entry] }) }];
 }
 
-export function paperReturnCoverage(pages: readonly PrintPage[], returned: readonly number[]) {
-  const present = new Set(returned);
+function paperQuestionAnchors(pages: readonly PrintPage[]) {
   const required = new Map<string, Set<number>>();
   for (const page of pages) {
     for (const { itemId } of page.pieces) {
@@ -537,9 +544,15 @@ export function paperReturnCoverage(pages: readonly PrintPage[], returned: reado
       required.set(itemId, seen);
     }
   }
-  return [...required].map(([itemId, pageNumbers]) => ({
-    itemId,
-    status: [...pageNumbers].every(page => present.has(page)) ? 'pages-received' as const : 'unsubmitted' as const,
+  return [...required].map(([itemId, pageNumbers], index) => ({
+    itemId, number: index + 1, pages: [...pageNumbers],
+  }));
+}
+
+export function paperReturnCoverage(pages: readonly PrintPage[], returned: readonly number[]) {
+  const present = new Set(returned);
+  return paperQuestionAnchors(pages).map(({ itemId, pages }) => ({
+    itemId, status: pages.every(page => present.has(page)) ? 'pages-received' as const : 'unsubmitted' as const,
   }));
 }
 

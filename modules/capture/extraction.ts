@@ -274,20 +274,24 @@ export function clarificationRegions(fact: FactSnapshot, outcome: Outcome<Layere
   const seen = new Set<string>();
   const blocks = candidate ? mergeExtraction(source, candidate) : source.unit.blocks;
   return blocks.flatMap(block => {
-    const { id, body } = block;
+    const { body } = block;
     if (body.status !== 'unknown') return [];
     const key = cropKey(block)!;
     if (seen.has(key)) return [];
     seen.add(key);
-    const { original, page, bbox: [left, top, right, bottom] } = body.crop_ref;
-    const blob = source.originals[original];
-    if (!blob) return [];
-    return [{
-      id, origin: 'ocr' as const, sourceId: fact.ref.id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch,
-      originalSha256: blob.sha256, page, crop: { left, top, width: right - left, height: bottom - top },
-      clarification: body.clarification, candidates: body.candidates,
-    }];
+    return [clarificationRegion(fact, source, { id: block.id, body })];
   });
+}
+
+export function clarificationRegion(fact: FactSnapshot, source: SourceEnvelope, { id, body }: {
+  id: string; body: Extract<Block['body'], { status: 'unknown' }>;
+}) {
+  const { original, page, bbox: [left, top, right, bottom] } = body.crop_ref;
+  return {
+    id, origin: 'ocr' as const, sourceId: fact.ref.id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch,
+    originalSha256: source.originals[original]!.sha256, page, crop: { left, top, width: right - left, height: bottom - top },
+    clarification: body.clarification, candidates: body.candidates,
+  };
 }
 
 function questionBlocks(blocks: readonly Block[], itemId: string) {
@@ -318,13 +322,15 @@ function questionBlocks(blocks: readonly Block[], itemId: string) {
   });
 }
 
-function firstAnswerBlocks(blocks: readonly Block[], itemId: string) {
-  const allowed = new Set<string>();
+export function firstAnswerBlocks(blocks: readonly Block[], itemId?: string) {
+  const allowed = new Map<string, string | undefined>();
   return blocks.filter(({ id, body, parentId }) => {
-    const handwriting = body.layer === 'handwriting' && body.itemId === itemId;
+    const handwriting = body.layer === 'handwriting' && (itemId === undefined || body.itemId === itemId);
     if ((body.layer !== 'material' && body.layer !== 'prompt' && !handwriting) ||
         (parentId !== null && !allowed.has(parentId))) return false;
-    allowed.add(id);
+    const owner = parentId === null ? undefined : allowed.get(parentId);
+    if (itemId === undefined && handwriting && owner && owner !== body.itemId) return false;
+    allowed.set(id, body.itemId ?? owner);
     return handwriting;
   });
 }

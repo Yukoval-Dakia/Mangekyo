@@ -11,6 +11,7 @@
     "./notion-selection": "./notion-selection.ts",
     "./notion-source": "./notion-source.ts",
     "./paper": "./paper.ts",
+    "./paper-answers": "./paper-answers.ts",
     "./facts/intake-document": "./intake-values.ts",
     "./facts/*": "./facts/*.ts"
   },
