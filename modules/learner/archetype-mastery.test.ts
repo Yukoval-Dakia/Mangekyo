@@ -40,13 +40,20 @@ const run = (clusters: readonly ArchetypeFoldingCluster[], over: Partial<Archety
   projectArchetypeMastery({ ...scope, clusters }, sources(over));
 
 it('covers archetype mastery authorization, anchoring, conflicts, paths, states, and practice', async () => {
+  const callOrder: string[] = [];
+  const preparedConcepts: string[][] = [];
   const stateView = await run([cluster([
     { question: first, basis: [edgeOf('e1')], practiceBasis: [attemptOf('p1')] },
     { question: second, proof: { membership: edgeOf('m2'), basis: [] }, practiceBasis: [attemptOf('p2')] },
     { question: third, proof: { memberships: [edgeOf('m3')], basis: [] } },
     { question: fourth, basis: [edgeOf('e4')] },
-  ])], { readEvidence: async () => batchFor([first, second, third, fourth],
-    [eventFor(first), eventFor(second, 'incorrect'), eventFor(third)]) });
+  ])], {
+    prepareEvidence: (_scope, conceptIds) => { callOrder.push('prepare'); preparedConcepts.push([...conceptIds]); },
+    readEvidence: async () => { callOrder.push('read'); return batchFor([first, second, third, fourth],
+      [eventFor(first), eventFor(second, 'incorrect'), eventFor(third)]); },
+  });
+  expect(callOrder).toEqual(['prepare', 'read']);
+  expect(preparedConcepts).toEqual([[first, second, third, fourth].map(archetypeQuestionConceptId)]);
   expect(stateView.clusters[0]).toMatchObject({ title: '一元二次方程', coveredQuestionCount: 4,
     counts: { steady: 1, due: 1, weak: 1, unknown: 1 }, representative: { question: second, state: 'weak' } });
   expect(stateView.clusters[0]?.members.map(({ question, state }) => [question.id, state]))
@@ -90,4 +97,8 @@ it('covers archetype mastery authorization, anchoring, conflicts, paths, states,
     reopen: async (_scope, witnesses) => witnesses.filter(ref => !['revoked-edge', 'revoked-practice'].includes(ref.id)) });
   expect(alternate.clusters[0]).toEqual({ archetype, coveredQuestionCount: 2, counts:
     { steady: 0, due: 0, weak: 1, unknown: 1 }, members: [{ question: first, state: 'weak' }, { question: second, state: 'unknown' }] });
+  let skippedPrepare = 0;
+  await run([cluster([{ question: first, basis: [edgeOf('e1')] }])], { methodVersion: 'unknown@0', prepareEvidence: () => { skippedPrepare++; } });
+  await run([], { prepareEvidence: () => { skippedPrepare++; } });
+  expect(skippedPrepare).toBe(0);
 });
