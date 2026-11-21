@@ -1,5 +1,5 @@
 import type { BeliefTime, BusWitness, CanonicalEvidenceSliceV1, Directive, FactReadOptions, FactSnapshot,
-  Hypothesis, LearnerId, RefusalBoundary } from '@mangekyo/kernel';
+  Hypothesis, LearnerId, RefusalBoundary, Tick } from '@mangekyo/kernel';
 export type { RefusalBoundary } from '@mangekyo/kernel';
 import { allows, instant, isAttemptEvidenceType, record, text, witness, witnessIdentity, type Witness } from './memory-evidence.ts';
 import { preSubmitRevisionWitness } from './pre-submit-process.ts';
@@ -190,7 +190,8 @@ export type MetacognitiveRead = {
   } | undefined>;
 };
 
-async function supportsAcrossDisciplines(evidence: readonly unknown[], read: MetacognitiveRead, when: AsOf) {
+export async function supportsAcrossDisciplines(evidence: readonly unknown[], read: MetacognitiveRead, when: AsOf,
+  observedThrough?: Tick) {
   async function open(ref: Witness, mode: BusWitness['mode'] = 'following') {
     const fact = await read.reopen(ref, mode === 'following' ? {mode} : {mode, rev: ref.rev}, read.purpose);
     if (fact?.ref.learner === read.learner && allows(fact.purpose, read.purpose) &&
@@ -212,6 +213,7 @@ async function supportsAcrossDisciplines(evidence: readonly unknown[], read: Met
     const observation = await read.observe(source, {...citation, ...ref});
     if (!observation || !observation.basis.length) return false;
     const {slice, discipline, basis} = observation;
+    if (observedThrough !== undefined && slice.clock_watermark !== observedThrough) return false;
     if (discipline.learner !== read.learner || discipline.type !== 'content.asset') return false;
     for (const ref of basis) {
       if (ref.learner !== read.learner || (await open(ref, ref.mode))?.type !== ref.type) return false;

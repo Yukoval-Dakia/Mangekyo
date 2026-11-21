@@ -1,5 +1,5 @@
 import type { BusWitness, EvidenceEventV1, FactSnapshot } from '@mangekyo/kernel';
-import type { HypothesisStage } from './belief-view.ts';
+import { supportsAcrossDisciplines, type HypothesisStage, type MetacognitiveRead } from './belief-view.ts';
 import { busWitnessKey, evidenceTime, isAttemptEvidenceType, scopedWitnessReader, witnessIdentity } from './memory-evidence.ts';
 import type { RecurringErrorEvidence, RecurringErrorItemRef, RecurringErrorRead } from './recurring-error-cluster.ts';
 
@@ -15,6 +15,9 @@ type PitfallRule = {
    | { readonly kind: 'sticky' });
 
 export type PreSubmitPitfallRead = RecurringErrorRead & {
+  // Open the cited frozen item, its independent observation and its discipline
+  // in this reader's recipient snapshot. All dependencies must occur in rule.basis.
+  observeDiscipline?: MetacognitiveRead['observe'];
   // Activity opens the current frozen practice/mock edition with its full source basis.
   openPaper(scope: RecurringErrorRead['scope'], paper: BusWitness): Promise<{
     readonly ref: BusWitness;
@@ -96,8 +99,28 @@ Promise<PreSubmitPitfall[]> {
     const value = fields(fact?.value);
     if (!fact || !value) return;
     const cited = rule.kind === 'sticky' ? null : supportRows(value.evidence_refs, rule.basis);
-    if (rule.kind === 'sticky' ? !isCurrentSticky(fact, value)
-      : fact.type !== 'companion.memoryAssertion' || value.kind !== rule.kind || !cited?.size) return;
+    if (rule.kind === 'sticky') {
+      if (!isCurrentSticky(fact, value)) return;
+    } else {
+      if (fact.type !== 'companion.memoryAssertion' || !cited?.size) return;
+      if (rule.kind === 'misconception' && value.kind !== 'misconception') return;
+      if (rule.kind === 'metacognitive_habit') {
+        // Companion persists an objective hypothesis as a v2 observation.
+        // The cross-discipline qualification belongs to the learner read model.
+        if (value.version !== 2 || value.kind !== 'observation' || fields(value.belief)?.forgotten !== false ||
+            !Array.isArray(value.evidence_refs) ||
+            !read.observeDiscipline || (scope.purpose !== 'teaching' && scope.purpose !== 'background-research')) return;
+        const refs = new Map(rule.basis.map(w => [JSON.stringify([witnessIdentity(w), w.mode]), w]));
+        const qualifies = await supportsAcrossDisciplines(value.evidence_refs, {
+          learner: scope.learner, purpose: scope.purpose, observe: read.observeDiscipline.bind(read),
+          async reopen(ref, options) {
+            const witness = refs.get(JSON.stringify([witnessIdentity(ref), options.mode]));
+            return witness && open(witness);
+          },
+        }, {validAt: asOfAt, knownAt: asOfAt}, observedThrough);
+        if (!qualifies) return;
+      }
+    }
     if (value.ttl != null && (typeof value.ttl !== 'string' || !(asOf < evidenceTime(value.ttl)))) return;
     if (!await canOpen(rule.basis)) return;
     return {rule, concepts, cited, activities: new Set<string>(), submissions: new Set<string>(), matched: new Set<string>()};
@@ -132,7 +155,13 @@ Promise<PreSubmitPitfall[]> {
       const support = JSON.stringify([witnessIdentity(row.submission), row.itemId]);
       for (const candidate of rules) {
         const {rule, concepts, cited, submissions, activities, matched} = candidate;
-        if (!concepts.has(concept) || rule.errorStage !== row.event.error_stage || (cited && !cited.has(support))) continue;
+        if (!concepts.has(concept) || rule.errorStage !== row.event.error_stage) continue;
+        if (rule.kind === 'sticky') {
+          // The item-level assignment names the directive, and its basis fixes
+          // the directive revision and epoch used when the error was observed.
+          if (!row.event.claim_ids.includes(rule.ref.id) ||
+              !row.basis.some(w => busWitnessKey(w) === busWitnessKey(rule.ref))) continue;
+        } else if (!cited?.has(support)) continue;
         matched.add(concept);
         if (submissions.has(row.submission.id)) continue;
         submissions.add(row.submission.id);
