@@ -1,8 +1,9 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { openNotionReadTransport } from '../../executors/document-extraction/notion.ts';
 import { expect, it, vi } from 'vitest';
 import { learnerId } from '@mangekyo/kernel';
-import { NotionChildUnavailable, NotionSourceUnconfirmed, notionReadPage, notionReadRows, notionVersion, type NotionReadRequest, type NotionReadResponse } from './notion-api.ts';
+import { NotionChildUnavailable, NotionSourceUnconfirmed, notionReadPage, notionReadRows, notionVersion } from './notion-api.ts';
 import { applyNotionSourceInvalidation, notionBoundedSnapshotForSend, openNotionBoundedSnapshot, prepareNotionBoundedSnapshot, type NotionBoundedSnapshot, type NotionBoundedUse } from './notion-source.ts';
 import { notionSourceProjection } from './notion-values.ts';
 
@@ -17,13 +18,6 @@ const row = (n: number) => ({ object: 'page', id: id(n), last_edited_time: times
     Name: { id: 'title', type: 'title', title: [{ plain_text: '滴定' }] }, Due: { id: 'due', type: 'date', date: { start: '2026-11-25' } },
     Related: { id: 'relation', type: 'relation', relation: [{ id: id(21) }], has_more: true },
   } });
-
-async function run<T>(stream: AsyncGenerator<NotionReadRequest, T, NotionReadResponse> | Generator<NotionReadRequest, T, NotionReadResponse>,
-  request: (value: NotionReadRequest) => Promise<NotionReadResponse>): Promise<T> {
-  let step = await stream.next();
-  while (!step.done) step = await stream.next(await request(step.value));
-  return step.value;
-}
 
 it('reads paginated sources and closes bounded handles at the scope of remote access loss', async ({ onTestFinished }) => {
   type Failure = { scope: 'root' | 'child' | 'page' | 'moved'; status: number; after?: Failure };
@@ -69,17 +63,13 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
   onTestFinished(() => server[Symbol.asyncDispose]());
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('missing test listener');
-  const request = async (input: NotionReadRequest) => {
-    const response = await fetch(`http://127.0.0.1:${address.port}${input.path}`, {
-      method: input.method, headers: { authorization: 'Bearer isolated-token', 'notion-version': notionVersion },
-      ...(input.method === 'POST' ? { body: JSON.stringify(input.body) } : {}),
-    });
-    return { status: response.status, body: response.ok ? await response.json() : null };
-  };
+  const transport = openNotionReadTransport(`http://127.0.0.1:${address.port}`, 'isolated-token', notionVersion,
+    (_status, message) => new Error(message));
+  const run = <T>(requests: Parameters<typeof transport.read<T>>[0]) => transport.read(requests, async () => {});
   const previous = { pageId: id(3), lastEditedTime: timestamp };
-  const rows = await run(notionReadRows(root, previous), request);
+  const rows = await run(notionReadRows(root, previous));
   expect(rows).toEqual([previous, { pageId: id(2), lastEditedTime: timestamp }]);
-  const page = await run(notionReadPage(root, id(2)), request);
+  const page = await run(notionReadPage(root, id(2)));
   const envelope = await notionSourceProjection(page);
   expect(envelope.unit.blocks.slice(-4).map(item => [item.parentId, item.body.text])).toEqual([
     [null, '块 4'], [id(4), '块 5'], [null, '块 7'], [null, '[Notion file]'],
@@ -92,9 +82,9 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
   expect(attachment?.notionBody).toMatchObject({ data: { file: { origin: 'https://example.org', path: '/doc' } } });
   expect(JSON.stringify(attachment)).not.toMatch(/signature|expiry_time/);
   signature = 'second-test-signature';
-  const reordered = await notionSourceProjection(await run(notionReadPage(root, id(2)), request));
+  const reordered = await notionSourceProjection(await run(notionReadPage(root, id(2))));
   expect(reordered.unit.blocks.at(-1)?.body.contentHash).toBe(attachment?.contentHash);
-  const readError = (selected: NotionBoundedUse['selection']['root']) => run(notionReadPage(selected, id(2)), request).catch(error => error);
+  const readError = (selected: NotionBoundedUse['selection']['root']) => run(notionReadPage(selected, id(2))).catch(error => error);
   for (const [selected, status, preset, target, recheck] of [
     [root, 403, 'temporary', { kind: 'page', pageId: id(2) }, { scope: 'page', status: 404 }],
     [{ kind: 'page', id: id(2) }, 404, 'turn-only', { kind: 'selection' }, { scope: 'page', status: 403 }],
@@ -104,7 +94,7 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
     const use = { preset, selection, pageId: id(2), conversationId: 'chat', turnId: 'turn', authorizationEpoch: '0',
       recipient: { purpose: 'turn-tool', id: 'tool' }, authorizedAt: timestamp, expiresAt: '2026-11-21T12:00:00.000Z' } satisfies NotionBoundedUse;
     const fresh = { ...use, selection: { ...selection, selectionEpoch: '2' } };
-    const pull = (scope: typeof selection) => run(notionReadPage(selected, id(2), scope), request);
+    const pull = (scope: typeof selection) => run(notionReadPage(selected, id(2), scope));
     const first = await pull(selection);
     await expect(prepareNotionBoundedSnapshot(fresh, fresh, first, timestamp)).rejects.toThrow('拉取见证已变更');
     let saved: NotionBoundedSnapshot | undefined = await prepareNotionBoundedSnapshot(use, use, first, timestamp);
@@ -122,7 +112,7 @@ it('reads paginated sources and closes bounded handles at the scope of remote ac
     denied = { scope: 'child', status };
     expect(await readError(selected)).toBeInstanceOf(NotionChildUnavailable);
     const outbound = (snapshot = saved!, current = use) =>
-      run(notionBoundedSnapshotForSend(snapshot, async () => ({ use: current, now: timestamp })), request);
+      run(notionBoundedSnapshotForSend(snapshot, async () => ({ use: current, now: timestamp })));
     denied = { scope: 'child', status, after: { scope: 'page', status: 503 } };
     const unconfirmed = await readError(selected);
     expect(unconfirmed).toBeInstanceOf(NotionSourceUnconfirmed);

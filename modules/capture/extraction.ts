@@ -1,4 +1,6 @@
-import type { EffectReceipt, EffectRequest, FactSnapshot, GatherContext, GatherInput, Outcome, ReadContext } from '@mangekyo/kernel';
+import type { EffectReceipt, EffectRequest, FactId, FactSnapshot, GatherContext, GatherInput, Outcome, ReadContext } from '@mangekyo/kernel';
+import { questionPrompt, type QuestionAsset } from '@mangekyo/module-content/facts/asset-contract';
+import { openQuestionForRelease } from '@mangekyo/module-content/facts/question-release';
 import { captureObject, captureRef, captureText } from './parse.ts';
 import { captureSourceType, sourceEnvelope, sourceBlocks, type Block, type SourceEnvelope } from './source.ts';
 
@@ -54,7 +56,7 @@ export async function gatherLayeredExtraction(ctx: GatherContext, key: LayeredEx
   const target = captureRef(key.target);
   const fact = await ctx.read.fact(target.id, { mode: 'pinned', rev: target.rev });
   if (fact.type !== captureSourceType || fact.accessEpoch !== key.accessEpoch ||
-      !fact.purpose.some(purpose => purpose === 'teaching' || purpose === 'learning'))
+      !mayExtract(fact))
     throw new Error('原件版本或识别用途已变更。');
   const { kind, originals } = sourceEnvelope(fact.value);
   const source = { kind, originals };
@@ -87,9 +89,13 @@ function sameJson(left: unknown, right: unknown): boolean {
 function extractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue> | null) {
   if (outcome?.kind !== 'value') return null;
   const { basis, originals, blocks } = outcome.value;
-  if (basis.target.id !== fact.ref.id || basis.learner !== fact.ref.learner || basis.target.rev > fact.ref.rev ||
+  if (!mayExtract(fact) || basis.target.id !== fact.ref.id || basis.learner !== fact.ref.learner || basis.target.rev > fact.ref.rev ||
       basis.accessEpoch !== fact.accessEpoch || !sameJson(originals, source.originals)) return null;
   return extractedBlocks(source, blocks);
+}
+
+export function mayExtract(fact: FactSnapshot) {
+  return fact.purpose.includes('teaching') || fact.purpose.includes('learning');
 }
 
 export function mergeLayeredSource(fact: FactSnapshot, outcome: Outcome<LayeredExtractionValue> | null) {
@@ -103,7 +109,8 @@ export function mergeLayeredSource(fact: FactSnapshot, outcome: Outcome<LayeredE
     if (previous.body.status !== 'known' || !previous.body.sticky) return [];
     const key = cropKey(previous);
     const next = byId.get(previous.id) ?? (key ? byCrop.get(key) : undefined);
-    if (next?.body.status === 'known' && next.body.text === previous.body.text && next.body.layer === previous.body.layer)
+    if (next?.body.status === 'known' && next.body.text === previous.body.text && next.body.layer === previous.body.layer &&
+        next.body.itemId === previous.body.itemId && next.body.slotId === previous.body.slotId)
       return [];
     return [{ blockId: previous.id, candidate: next?.body ?? null }];
   });
@@ -178,7 +185,8 @@ export function extractionAnchor(source: SourceEnvelope, blockId: string, input:
   if (!block || block.id !== blockId || !block.body.crop_ref ||
       (block.body.status === 'unknown' ? block.body.clarification !== 'pending' : block.body.sticky))
     throw new Error('请先打开原件的抽取位置。');
-  return block;
+  const key = cropKey(block);
+  return source.unit.blocks.find(entry => cropKey(entry) === key && keepLearnerState(entry)) ?? block;
 }
 
 export function extractionInput(input: unknown) {
@@ -191,7 +199,7 @@ export async function extractionRevision(read: ReadContext, input: ReturnType<ty
   const { id, rev } = input.target;
   const fact = await read.fact(id, { mode: 'following' });
   if (fact.type !== captureSourceType || fact.ref.rev !== rev) throw new Error('原件版本已变更。');
-  if (!fact.purpose.some(purpose => purpose === 'teaching' || purpose === 'learning'))
+  if (!mayExtract(fact))
     throw new Error('原件未获准学习使用。');
   const source = sourceEnvelope(fact.value);
   if (source.kind !== 'photo' && source.kind !== 'pdf' && source.kind !== 'paper-return')
@@ -222,6 +230,10 @@ export function mergeExtraction(original: SourceEnvelope, candidate: readonly Bl
   for (const block of candidate) {
     const old = prior.get(block.id);
     const key = cropKey(block);
+    if (old && keepLearnerState(old) &&
+        (old.body.crop_ref?.original !== block.body.crop_ref?.original || old.body.crop_ref?.page !== block.body.crop_ref?.page)) {
+      throw new Error('重抽取将本人保留的块标识改指到另一页。');
+    }
     const preserved = old && keepLearnerState(old) ? old : key ? protectedAtCrop.get(key) : undefined;
     if (preserved) aliases.set(block.id, preserved.id);
     blocks.set(preserved?.id ?? block.id, preserved ? { ...preserved, parentId: preserved.parentId ?? block.parentId } : block);
@@ -256,21 +268,139 @@ export function waitingAnswerSlots(blocks: readonly Block[]) {
 
 /** Call with the recipient-authorized original and slot. Region coordinates are normalized to one source page. */
 export function clarificationRegions(fact: FactSnapshot, outcome: Outcome<LayeredExtractionValue> | null) {
-  if (fact.type !== captureSourceType) return [];
+  if (fact.type !== captureSourceType || !mayExtract(fact)) return [];
   const source = sourceEnvelope(fact.value);
   const candidate = extractionForSource(fact, source, outcome);
-  if (!candidate) return [];
-  const locations = new Set(candidate.filter(block => block.body.status === 'unknown').map(cropKey));
-  return mergeExtraction(source, candidate).flatMap(block => {
+  const seen = new Set<string>();
+  const blocks = candidate ? mergeExtraction(source, candidate) : source.unit.blocks;
+  return blocks.flatMap(block => {
     const { id, body } = block;
-    if (body.status !== 'unknown' || !locations.has(cropKey(block))) return [];
+    if (body.status !== 'unknown') return [];
+    const key = cropKey(block)!;
+    if (seen.has(key)) return [];
+    seen.add(key);
     const { original, page, bbox: [left, top, right, bottom] } = body.crop_ref;
     const blob = source.originals[original];
     if (!blob) return [];
     return [{
       id, origin: 'ocr' as const, sourceId: fact.ref.id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch,
       originalSha256: blob.sha256, page, crop: { left, top, width: right - left, height: bottom - top },
-      clarification: body.clarification,
+      clarification: body.clarification, candidates: body.candidates,
     }];
   });
+}
+
+function questionBlocks(blocks: readonly Block[], itemId: string) {
+  const publicBlocks = new Map<string, { block: Block; owner: string | undefined }>();
+  const ancestors = new Set<string>();
+  const itemIds = new Set<string>();
+  for (const block of blocks) {
+    const { id, parentId, body } = block;
+    if (body.layer !== 'material' && body.layer !== 'prompt') continue;
+    const parent = parentId === null ? undefined : publicBlocks.get(parentId);
+    if (parentId !== null && !parent) continue;
+    const owner = body.itemId ?? parent?.owner;
+    publicBlocks.set(id, { block, owner });
+    if (body.layer !== 'prompt' || !owner) continue;
+    itemIds.add(owner);
+    if (owner !== itemId) continue;
+    let ancestor = parent;
+    while (ancestor && !ancestors.has(ancestor.block.id)) {
+      ancestors.add(ancestor.block.id);
+      ancestor = ancestor.block.parentId === null ? undefined : publicBlocks.get(ancestor.block.parentId);
+    }
+  }
+  return Array.from(publicBlocks.values()).flatMap(({ block, owner }) => {
+    if (owner === itemId || ancestors.has(block.id)) return [block];
+    // A single-item paper may supply its passage as a separate top-level material.
+    if (itemIds.size === 1 && !owner && block.body.layer === 'material') return [block];
+    return [];
+  });
+}
+
+function firstAnswerBlocks(blocks: readonly Block[], itemId: string) {
+  const allowed = new Set<string>();
+  return blocks.filter(({ id, body, parentId }) => {
+    const handwriting = body.layer === 'handwriting' && body.itemId === itemId;
+    if ((body.layer !== 'material' && body.layer !== 'prompt' && !handwriting) ||
+        (parentId !== null && !allowed.has(parentId))) return false;
+    allowed.add(id);
+    return handwriting;
+  });
+}
+
+type AssessmentSource = {
+  readonly sourceId: FactId;
+  readonly itemId: string;
+  readonly extraction?: 'saved' | 'layered';
+  readonly questionId?: FactId;
+};
+
+async function matchesCapturedPassages(
+  read: ReadContext, source: FactSnapshot['ref'], saved: readonly Block[], asset: QuestionAsset,
+  passages: readonly { blockId: string; text: string }[],
+) {
+  const materials = asset.blocks.flatMap(({ body }) => body.kind === 'sharedMaterial' ? [body.source] : []);
+  if (materials.length !== passages.length) return false;
+  const revisions = new Map([[source.rev, saved]]);
+  for (const [index, { fact, type, anchor }] of materials.entries()) {
+    const passage = passages[index]!;
+    if (type !== captureSourceType || fact.id !== source.id || anchor.kind !== 'block' || anchor.blockId !== passage.blockId)
+      return false;
+    let blocks = revisions.get(fact.rev);
+    if (!blocks) {
+      const pinned = await read.fact(fact.id, { mode: 'pinned', rev: fact.rev });
+      blocks = sourceEnvelope(pinned.value).unit.blocks;
+      revisions.set(fact.rev, blocks);
+    }
+    const original = blocks.find(block => block.id === anchor.blockId)?.body;
+    if (original?.layer !== 'material' || original.status !== 'known' || original.text !== passage.text) return false;
+  }
+  return true;
+}
+
+/** Server-side grading input. Keep the ready result within the authorized assessment host. */
+export async function openCapturedAssessment(read: ReadContext, request: AssessmentSource) {
+  const { sourceId, itemId, questionId } = request;
+  const fact = await read.fact(sourceId, { mode: 'following' });
+  if (fact.type !== captureSourceType || !mayExtract(fact)) throw new Error('卷面原件未获准学习使用。');
+  const source = sourceEnvelope(fact.value);
+  if (source.kind !== 'photo' && source.kind !== 'pdf' && source.kind !== 'paper-return')
+    throw new Error('需要照片或 PDF 卷面。');
+  const waiting = (reason: string) => ({ kind: 'waiting' as const, reason });
+  const outcome = request.extraction === 'layered' ? (await read.slot<LayeredExtractionValue>(
+    { learner: fact.ref.learner, type: layeredExtractionSlot, key: sourceId }, { mode: 'following' },
+  )).outcome : null;
+  if (outcome?.kind === 'unknown') return waiting(outcome.reason);
+  const candidate = extractionForSource(fact, source, outcome);
+  if (outcome && !candidate) return waiting('分层识别与当前原件或授权不匹配。');
+  const { blocks: saved } = source.unit;
+  const blocks = candidate ? mergeExtraction(source, candidate) : saved;
+  const visible = questionBlocks(blocks, itemId);
+  if (!visible.some(({ body }) => body.layer === 'prompt' && body.itemId === itemId))
+    return waiting('尚未识别到此题的题干。');
+  const passages = [];
+  const prompts = [];
+  for (const { id, body } of visible) {
+    if (body.status === 'unknown' || !body.text.trim()) return waiting('题干或共享材料尚待澄清。');
+    if (body.layer === 'material') passages.push({ blockId: id, text: body.text });
+    else prompts.push(body.text);
+  }
+  const prompt = prompts.join('\n');
+  if (!questionId) return { kind: 'question-gap' as const, source: fact.ref, accessEpoch: fact.accessEpoch, itemId, prompt, passages };
+
+  const answers = firstAnswerBlocks(blocks, itemId);
+  const unresolved = waitingAnswerSlots(answers);
+  if (unresolved.length) return { ...waiting('首次手写作答尚待澄清。'), slots: unresolved };
+  const question = await openQuestionForRelease(read, questionId, 'assessment');
+  const slots = question.contract.items[0]!.slots;
+  if (questionPrompt(question.asset) !== prompt || !await matchesCapturedPassages(read, fact.ref, saved, question.asset, passages)) {
+    throw new Error('核验题目的题干或共享材料与拍卷题位不符。');
+  }
+  const slotIds = new Set(slots.map(slot => slot.slotId));
+  if (answers.some(({ body }) => !body.slotId || !slotIds.has(body.slotId)))
+    return waiting('手写位置尚未与已核验作答位对应。');
+  const submitted = new Set(answers.filter(({ body }) => body.status === 'known' && body.text.trim()).map(({ body }) => body.slotId));
+  if (slots.some(slot => !submitted.has(slot.slotId))) return waiting('有作答位尚未收到首次作答。');
+  return { kind: 'ready' as const, source: fact.ref, itemId, answers, question: question.ref, contract: question.contract };
 }

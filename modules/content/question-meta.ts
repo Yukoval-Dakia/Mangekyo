@@ -1,14 +1,14 @@
 import { type FactId, type FactSnapshot, type GatherContext, type GatherInput, type Json, type JsonObject, type Revision } from '@mangekyo/kernel';
-import { assetType, checkQuestionTeachingSources, freezeQuestionAssessment, checkTextbookBasis, questionAsset, type AssetBasis } from './asset.ts';
+import { assetType, checkQuestionTeachingSources, freezeQuestionAssessment, questionAsset, type AssetBasis } from './asset.ts';
 import { record } from './parse.ts';
 import { parseQuestionMetadata } from './question-authoring.ts';
 import { jsonObject, readQuestionEffect, sameEffectInput, type QuestionEffectReceipt, type SealedQuestionEffects } from './question-effects.ts';
 import {
-  parseQuestionMetaDraft, questionMetaDraftId, questionMetaDraftType, questionSolutionKey, questionTagKey, type QuestionMetaDraft,
+  openQuestionMetaDraft, parseQuestionMetaDraft, questionSolutionKey, questionTagKey, type QuestionMetaDraft,
 } from './question-state.ts';
 import { projectQuestionPrompt } from './question-verification.ts';
 
-export { questionKey, questionMetaType } from './question-state.ts';
+export { openQuestionMetaDraft, questionKey, questionMetaType } from './question-state.ts';
 export { questionEffectResult as questionMetaEffectResult } from './question-effects.ts';
 export type { QuestionEffectReceipt as QuestionMetaEffectReceipt } from './question-effects.ts';
 
@@ -40,12 +40,7 @@ export async function gather(ctx: GatherContext, { id, rev }: { id: FactId; rev:
   const question = await ctx.read.fact(id, { mode: 'pinned', rev });
   if (question.type !== assetType) throw new Error('目标不是题目资产。');
   const asset = questionAsset(question.value);
-  await checkTextbookBasis(ctx.read, asset.basis ?? []);
-  const metadata = await ctx.read.fact(await questionMetaDraftId(question.ref), { mode: 'following' });
-  if (metadata.type !== questionMetaDraftType) throw new Error('活元信息记录类型不匹配。');
-  const draft = parseQuestionMetaDraft(metadata.value);
-  if (draft.id !== id || draft.expectedRev !== rev) throw new Error('活元信息与题版不匹配。');
-  await checkTextbookBasis(ctx.read, draft.basis);
+  const { snapshot: metadata, draft } = await openQuestionMetaDraft(ctx.read, question.ref);
 
   const skip = (reason: string): GatherInput<PlanData> => ({ kind: 'input', data: { draft, reason }, effects: [] });
   const current = await ctx.read.fact(id, { mode: 'following' });

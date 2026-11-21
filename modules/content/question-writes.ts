@@ -156,9 +156,10 @@ export async function undoQuestion(ctx: CommandContext, { id, expectedRev, prior
 
 export function parseQuestionMetaProposal(input: unknown) {
   const value = record(input);
-  fields(value, 'id', 'expectedRev', 'append_metadata', 'basis');
+  fields(value, 'id', 'expectedRev', 'expectedMetaRev', 'append_metadata', 'basis');
   const id = pageId(value.id), expectedRev = revision(value.expectedRev);
   const parsed = parseSaveQuestion({ ref: id, expected_rev: expectedRev, append_metadata: value.append_metadata });
   if (!parsed.append_metadata) throw new Error('题目元信息提议为空。');
-  return { id, expectedRev, append_metadata: parsed.append_metadata, basis: parseTextbookBasis(value.basis) };
+  const expectedMetaRev = value.expectedMetaRev === undefined ? undefined : revision(value.expectedMetaRev);
+  return { id, expectedRev, expectedMetaRev, append_metadata: parsed.append_metadata, basis: parseTextbookBasis(value.basis) };
 }

@@ -1,11 +1,15 @@
 import { factId, type CommandContext, type FactId, type FactSnapshot, type LearnerId, type Revision } from '@mangekyo/kernel';
 import { captureSourceType, sourceEnvelope, type SourceEnvelope } from './source.ts';
 import { notionConfirmPageAccess, NotionSourceUnavailable, type NotionReadRequest, type NotionReadResponse, type NotionRoot, type NotionSelectionWitness } from './notion-api.ts';
-import { diffNotionBlocks } from './notion-diff.ts';
+import { notionRevisionDiff } from './notion-diff.ts';
 import { notionId, notionRecord, notionSelectionId, notionSourceId, notionSourceProjection, notionTimestamp } from './notion-values.ts';
-
 import { notionRetainedPurposes, notionSelectionWitness, notionRoot, readNotionSelection, selectionAllows,
   type NotionFactReader, type NotionReadOptions, type NotionSelection } from './notion-selection.ts';
+
+export { openCurrentNotionBlock, openPinnedNotionBlock, planNotionBlockWork, notionBlockWitness,
+  type NotionBlockWitness, type NotionBlockPurpose } from './notion-blocks.ts';
+export { consumeNotionBlockLink, notionBlockDeriver, notionBlockSlot, notionBlockWorkKey, notionBlockLinkEffect,
+  verifyNotionBlockEdges } from './notion-block-work.ts';
 export { notionRetainedPurposes, selectionAllows as notionRecipientAllowed } from './notion-selection.ts';
 export type { NotionPreset, NotionRetainedPreset, NotionSelection } from './notion-selection.ts';
 
@@ -268,13 +272,7 @@ export async function readNotionSourceTarget(ctx: CommandContext, target: Return
   return { current, source };
 }
 
-export function notionRevisionDiff(previous: SourceEnvelope, next: SourceEnvelope) {
-  const blocks = (source: SourceEnvelope) => source.unit.blocks.map(({ id, parentId, body }) => {
-    if (source.kind !== 'notion' || !body.contentHash) throw new Error('Notion 原件块缺少内容哈希。');
-    return { id, parentId, contentHash: body.contentHash };
-  });
-  return diffNotionBlocks(blocks(previous), blocks(next));
-}
+export { notionRevisionDiff };
 
 export type { NotionRefreshInput, NotionRefreshTarget, NotionObservation } from './notion-observation.ts';
 export { prepareNotionRefreshInput, notionPageObservationId, notionPageObservationType, UnchangedNotionSourceError } from './notion-observation.ts';

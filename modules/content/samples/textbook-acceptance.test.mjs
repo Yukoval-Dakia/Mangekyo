@@ -1,4 +1,12 @@
-export default async function ({ db, learner, load, send, stableId, assert, read, current, content, hooks }) {
+import { evolveGraphCommand, splitConceptHierarchyEdgeId } from '@mangekyo/module-content/graph-evolution';
+import { createKnowledgeEdgeCommand, openKnowledgeEdgeRevision, walkKnowledgeEdges } from '@mangekyo/module-content/knowledge-edge';
+import { openKnowledgeEntity, openKnowledgeName } from '@mangekyo/module-content/knowledge-entity';
+import { gather, openQuestionMetaDraft, questionMetaEffectResult, questionMetaType, settle } from '@mangekyo/module-content/question-meta';
+import { proposeQuestionMetaCommand, saveQuestionCommand } from '../question-writes.ts';
+import graph from './graph-evolution.json' with { type: 'json' };
+
+export default async function exerciseContent(fixture, decideProposal) {
+  const { db, learner, load, send, stableId, assert, read, current, content, hooks } = fixture;
   const { openTextbookBlock } = await load('modules/content/textbook-page.ts');
   const { openTextbookConflict } = await load('modules/content/textbook-conflict.ts');
   const { previewTextbookRevision, selectTextbookEdits } = await load('modules/content/textbook-edits.ts');
@@ -111,4 +119,109 @@ export default async function ({ db, learner, load, send, stableId, assert, read
   assert.equal(discipline.type, 'content.asset');
   assert.equal(discipline.value.kind, 'discipline');
   assert.deepEqual(discipline.value.discipline_context, discipline_context);
+
+  await exerciseGraphEvolution(fixture, decideProposal);
+}
+
+async function exerciseGraphEvolution({ learner, send, stableId, assert, read, content }, decideProposal) {
+  const question = graph.question.id;
+  const parent = graph.split.id;
+  const child = graph.split.children[1].id;
+  const edgeId = graph.edge.id;
+  const propose = (type, input) => send(type, input, { actor: 'companion' });
+  const decide = (type, proposalId, accept = true) => decideProposal({
+    learner, purpose: 'storage', type, id: stableId('graph-evolution-decision', proposalId), proposalId,
+    selection: accept ? 'accept' : 'reject',
+  }, async (_, input) => accept ? input : null);
+  const name = term => read(async context => (await openKnowledgeName(context, 'concept', term))?.snapshot.ref);
+  const openEdge = mode => read(read => openKnowledgeEdgeRevision({ learner, read }, edgeId,
+    mode === 'pinned' ? { mode, rev: 1 } : { mode }));
+  await send(saveQuestionCommand, graph.question);
+  for (const concept of graph.concepts) await send('content.createKnowledgeEntity', concept);
+  await send(createKnowledgeEdgeCommand, graph.edge);
+
+  const rejected = await propose(evolveGraphCommand, graph.split);
+  assert.equal(rejected.state, 'proposed');
+  assert.deepEqual(rejected.wrote, []);
+  assert.equal((await decide(evolveGraphCommand, rejected.commandId, false)).state, 'rejected');
+  assert.equal(await name('时间加权均速'), undefined);
+
+  const wrongPurpose = await propose(evolveGraphCommand, { ...graph.split, purpose: 'storage' });
+  await assert.rejects(decide(evolveGraphCommand, wrongPurpose.commandId), /用途/);
+  assert.equal(await name('等时均速'), undefined);
+
+  const accept = await propose(evolveGraphCommand, graph.split);
+  const competing = await propose(evolveGraphCommand, graph.split);
+  assert.equal((await openEdge('following')).edge.to.sourceUse.id, parent);
+  const results = await Promise.allSettled([accept, competing].map(receipt =>
+    decide(evolveGraphCommand, receipt.commandId)));
+  assert.deepEqual(results.map(result => result.status).sort(), ['fulfilled', 'rejected']);
+  assert.deepEqual(await name('时间加权均速'), { learner, id: child, rev: 1 });
+  assert.deepEqual(await name('均速'), { learner, id: parent, rev: 1 });
+  assert.equal((await openEdge('pinned')).edge.to.sourceUse.id, parent);
+  assert.equal((await openEdge('following')).edge.to.sourceUse.id, child);
+
+  const conflictingChildren = graph.split.children.map((entry, index) => ({
+    ...entry, id: index === 0 ? '01KFS4AAA00000000000000007' : '01KFS4AAA00000000000000008',
+    entity: { ...entry.entity, canonicalName: index === 0 ? '等时段概念' : '变时段概念',
+      aliases: index === 0 ? ['等时段'] : ['时间加权均速'] },
+  }));
+  const collision = await propose(evolveGraphCommand, {
+    ...graph.split, children: conflictingChildren, reattachments: [],
+  });
+  await assert.rejects(decide(evolveGraphCommand, collision.commandId), /已有同名实体/);
+  assert.equal(await name('等时段'), undefined);
+
+  const hierarchy = await splitConceptHierarchyEdgeId(child, parent);
+  const evolved = await read(async read => walkKnowledgeEdges({ learner, read }, {
+    root: (await openKnowledgeEdgeRevision({ learner, read }, edgeId, { mode: 'following' })).edge.from,
+    edgeIds: [edgeId, hierarchy], mode: 'following', hops: 2, direction: 'outbound',
+  }), 'teaching');
+  assert.deepEqual(evolved.paths.map(step => step.endpoint.sourceUse.id), [child, parent]);
+
+  const merge = await propose(evolveGraphCommand, graph.merge);
+  assert.equal((await name('均速'))?.id, parent);
+  await decide(evolveGraphCommand, merge.commandId);
+  assert.equal((await name('均速'))?.id, graph.merge.into);
+  const prior = await read(context => openKnowledgeEntity(context, parent, 1));
+  assert.deepEqual(prior.snapshot.ref, { learner, id: parent, rev: 1 });
+  assert.equal(prior.entity.merged_into, null);
+  assert.equal((await openEdge('pinned')).edge.to.sourceUse.id, parent);
+
+  assert.equal(content.slots.get(questionMetaType)?.policy, 'lazy');
+  const proposed = await propose(proposeQuestionMetaCommand, graph.questionMeta);
+  const alternative = { ...graph.questionMeta.append_metadata.solutions[0], explanation: '改成另一种说法。' };
+  const otherMetadata = { ...graph.questionMeta, append_metadata: { solutions: [alternative] } };
+  const stale = await propose(proposeQuestionMetaCommand, otherMetadata);
+  assert.deepEqual(proposed.wrote, []);
+  await decide(proposeQuestionMetaCommand, proposed.commandId);
+  await assert.rejects(decide(proposeQuestionMetaCommand, stale.commandId), /Fact revision conflict/);
+  const { expectedMetaRev: _, ...legacy } = otherMetadata;
+  await assert.rejects(send(proposeQuestionMetaCommand, legacy), /Fact revision conflict/);
+  const draft = await read(context => openQuestionMetaDraft(context, { learner, id: question, rev: 1 }));
+  assert.equal(draft.snapshot.ref.rev, 2);
+  assert.equal(draft.draft.sticky, true);
+  const plan = await read(read => gather({ learner, read, snapshotTick: '0' }, { id: question, rev: 1 }), 'teaching');
+  const gardening = plan.data.gardening;
+  const sealed = { id: '01KFS4AAA00000000000000010', plan };
+  const outcome = settle(sealed, [{
+    ownerId: sealed.id, request: plan.effects[0], state: 'done',
+    result: questionMetaEffectResult('01KFS4AAA00000000000000011', {
+      solutions: [{ ...alternative, source_ref: gardening.sources[0].ref }],
+    }),
+  }]);
+  const solutionEvidence = ({ explanation, verification }) => ({ explanation, verification });
+  assert.equal(outcome.value.sticky, true);
+  assert.deepEqual(outcome.value.solutions.map(solutionEvidence), [
+    { explanation: '用总路程除以总用时。', verification: 'learner-reviewed' },
+  ]);
+  assert.deepEqual(outcome.value.proposals.solutions.map(solutionEvidence), [
+    { explanation: '改成另一种说法。', verification: 'unverified' },
+  ]);
+  const savedQuestion = await read(context => context.fact(question, { mode: 'pinned', rev: 1 }));
+  assert.equal(savedQuestion.ref.rev, 1);
+  assert.deepEqual(savedQuestion.value, graph.question.asset);
+  await send('content.setQuestionTeaching', { id: question, expectedRev: 1, allowed: false });
+  await assert.rejects(openEdge('pinned'), /访问代次/);
+  await assert.rejects(openEdge('following'), /访问代次/);
 }

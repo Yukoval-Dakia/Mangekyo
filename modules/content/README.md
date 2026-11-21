@@ -19,3 +19,19 @@
 `selectTextbookEdits` 从已审查候选按块 ID 生成选中的命令载荷，保留原 `expectedRev`。写命令在内核事务中重读当前页，复核基版、编辑放置和所选项的引用用途。结构改动依赖其他选项时，所选批次必须仍能形成有效的树。
 
 待内核及宿主接入提议读取、分项确认与拒绝、撤销和作者依据复验。草稿槽位采纳、新版显示、离线草稿恢复、来源所有者的展示、检索和反引入口由后续接线覆盖。
+
+## 知识图谱演化
+
+宿主从 `@mangekyo/module-content/graph-evolution` 导入 `evolveGraphCommand` 和 `parseGraphEvolution`。同伴以 `actor: 'companion'` 提交 `content.evolveGraph`。内核返回 `state: 'proposed'` 和提议 ID。本人确认时使用同一命令类型调用 `decideProposal`，选择函数返回原始提议输入。拒绝时返回 `null`。一次确认应用整条提议，事务内复验版本、用途、出处及别名。
+
+| 动作 | 命令输入 |
+| --- | --- |
+| 合并 | `{ action: 'merge', id, expectedRev, into, targetRev }`。源身份及别名沿 `merged_into` 跟随目标。 |
+| 拆分 | `{ action: 'split', id, expectedRev, reason, purpose?, children, reattachments? }`。`children` 须与原实体同类（概念、方法或母题），采用既有实体创建命令的 `{ id, entity, resolution }`。用途由外层声明，缺省为 `storage`。 |
+| 拆分内重挂一条关系 | `{ edge: { id, rev, accessEpoch }, childId, evidence: [{ id, rev, accessEpoch }] }`。逐条指定同批新子概念和细分依据，支持题目考查、母题归属、题目或作答关联。首版关系可重挂。已有修订的关系保留供单独审查。 |
+
+拆分产生的 `part_of` 边从子概念指向原粗概念，可用 `splitConceptHierarchyEdgeId(childId, parentId)` 定位。未指定重挂的边仍引用原概念。重挂为同一边身份追加修订，保留旧边的来源并附上细分依据。旧核验若存在，仅作为来源保留。借助 `@mangekyo/module-content/knowledge-edge` 的 `openKnowledgeEdgeRevision(ctx, id, { mode: 'following' })` 重开当前边，或以 `{ mode: 'pinned', rev }` 重开历史边。两种读法都复验来源权限和访问代次。跟随查询可继续用 `walkKnowledgeEdges` 解析实体重定向。
+
+`content.proposeQuestionMeta` 可携带 `expectedMetaRev`，其中 `expectedRev` 为题版，`expectedMetaRev` 为本题版活元信息草稿的当前修订号。宿主先授权打开题版，再通过 `@mangekyo/module-content/question-meta` 的 `openQuestionMetaDraft(read, questionRef)` 读取草稿基版。缺少草稿基版的老提议仅能追加或重复同值条目。重算所得的同键差异继续由 lazy `overlay.question_meta` 投影，本人确认后更新 sticky 草稿。
+
+[graph-evolution.json](samples/graph-evolution.json) 提供联调载荷。依次创建 `question`、`concepts`、`edge`，再提议与确认 `split`、`merge` 或 `questionMeta`。拆分前原边指向「平均速度」。确认后重开当前边指向「不等时平均速度」，固定版仍指向「平均速度」。

@@ -45,6 +45,7 @@ export type SourceEnvelope = {
   readonly sourceSelectionId?: string;
   readonly sourceSelectionEpoch?: string;
   readonly sourceRoot?: NotionRoot;
+  readonly notionBlockRevisions?: Readonly<Record<string, number>>;
   readonly occurredAt: string | null;
   readonly recordedAt: string | null;
   readonly retentionPolicy: 'retained';
@@ -153,6 +154,12 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
   if ((sourceSelectionEpoch === undefined) !== (sourceRoot === undefined) ||
       (sourceRoot && kind !== 'notion')) throw new Error('原件选源见证无效。');
   if (kind === 'notion' && (!externalId || !sourceSelectionId)) throw new Error('外部快照缺少获准来源标识。');
+  const notionBlockRevisions = row.notionBlockRevisions === undefined ? undefined : object(row.notionBlockRevisions);
+  if (notionBlockRevisions && (kind !== 'notion' || Object.keys(notionBlockRevisions).length !== unit.blocks.length ||
+      unit.blocks.some(({ id }) => {
+        const rev = notionBlockRevisions[id];
+        return typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 1;
+      }))) throw new Error('Notion 块版本见证无效。');
   if (['photo', 'pdf', 'document', 'paper-return'].includes(kind) && originals.length === 0) throw new Error('没有保存原件。');
   if (kind === 'voice') {
     if (row.transcriptConfirmed !== true || !unit.blocks.some(({ body: block }) => block.status === 'known' && block.layer === 'source' && block.text.trim()))
@@ -173,6 +180,7 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
     ...(externalId === undefined ? {} : { externalId }),
     ...(sourceRoot && sourceSelectionEpoch ? { sourceRoot, sourceSelectionEpoch } : {}),
     ...(sourceSelectionId === undefined ? {} : { sourceSelectionId }),
+    ...(notionBlockRevisions === undefined ? {} : { notionBlockRevisions: notionBlockRevisions as Record<string, number> }),
     ...(url === undefined ? {} : { url }),
     ...(kind === 'voice' ? { transcriptConfirmed: true } : {}),
     ...(kind === 'voice' && row.retainAudio === true ? { retainAudio: true } : {}),
@@ -182,6 +190,7 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
 
 export function createSourceWrite(id: string, envelope: unknown, purpose: readonly string[] = ['storage']) {
   const data = sourceEnvelope(envelope);
+  if (data.notionBlockRevisions !== undefined) throw new Error('初次交入不能指定 Notion 块版本。');
   if (!purpose.includes('storage') || purpose.includes('all')) throw new Error('原件用途须显式指定。');
   if (data.kind === 'url' && data.urlReadConfirmed && !purpose.includes('learning') && !purpose.includes('teaching'))
     throw new Error('仅保存的链接不能抓取正文。');
