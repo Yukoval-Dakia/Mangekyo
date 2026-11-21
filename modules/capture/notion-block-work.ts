@@ -1,17 +1,57 @@
-import { type EffectReceipt, type EffectRequest, type GatherContext, type GatherInput } from '@mangekyo/kernel';
-import { isNotionBlockPurpose, notionBlockWitness, openCurrentNotionBlock, type NotionBlockWitness } from './notion-blocks.ts';
+import type { EffectReceipt, EffectRequest, FactId, FactRef, GatherContext, GatherInput } from '@mangekyo/kernel';
+import { isNotionBlockPurpose, notionBlockWitness, openCurrentNotionBlock, planNotionBlockWork, type NotionBlockPurpose, type NotionBlockWitness } from './notion-blocks.ts';
 import type { SelectedNotionAccess } from './notion-source.ts';
 import { captureRef } from './parse.ts';
-import { notionEpoch } from './notion-selection.ts';
+import { notionEpoch, type NotionFactReader } from './notion-selection.ts';
 import { notionRecord } from './notion-values.ts';
 import { captureSourceType, sourceEnvelope } from './source.ts';
 
 export const notionBlockSlot = 'capture.notionBlock';
 export const notionBlockDeriver = 'capture/notion-block';
 export const notionBlockLinkEffect = 'resolve-notion-block-links';
+export class NotionBlockResolverUnavailable extends Error {
+  constructor() { super('尚无获准的 Notion 概念解析器及连边核验回执。'); }
+}
+
+export function notionBlockLinkRequest(basis: NotionBlockWitness) {
+  return { stepKey: 'links', label: notionBlockLinkEffect, input: basis };
+}
 
 export function notionBlockWorkKey(ref: NotionBlockWitness) {
   return JSON.stringify(notionBlockWitness(ref));
+}
+
+export function parseNotionBlockWorkKey(key: string) {
+  return notionBlockWitness(JSON.parse(key));
+}
+
+export async function* changedNotionBlockWork(read: NotionFactReader, purpose: NotionBlockPurpose,
+  changes: readonly {ref: FactRef; factType: string; kind: string}[]) {
+  for (const {ref, factType, kind} of changes) {
+    if (factType !== captureSourceType || (kind !== 'create' && kind !== 'revise')) continue;
+    const current = await read.fact(ref.id, {mode:'pinned', rev:ref.rev});
+    const previous = kind === 'create' ? null : await read.fact(ref.id, {mode:'pinned', rev:(ref.rev - 1) as typeof ref.rev});
+    yield* planNotionBlockWork(previous, current, purpose).rebuild;
+  }
+}
+
+export function notionBlockRecoveryPages(sources: readonly {id: FactId; pageId: string}[], work: readonly {slotKey: string}[]) {
+  const blockedSources = new Set(work.map(({slotKey}) => parseNotionBlockWorkKey(slotKey).id));
+  return sources.filter(source => blockedSources.has(source.id)).map(source => source.pageId);
+}
+
+export function planNotionBlockRecovery(access: SelectedNotionAccess, confirmed: ReadonlySet<FactId>, withdrawn: (error: unknown) => boolean) {
+  return async (slotKey: string) => {
+    const basis = parseNotionBlockWorkKey(slotKey);
+    if (!confirmed.has(basis.id)) return;
+    try {
+      await openCurrentNotionBlock(access,basis);
+      return 'retry' as const;
+    } catch (error) {
+      if (withdrawn(error)) return 'cancel' as const;
+      throw error;
+    }
+  };
 }
 
 type Slice = { readonly basis: NotionBlockWitness; readonly contentHash: string; readonly parentId: string | null };
@@ -26,7 +66,7 @@ function targetWitness(input: unknown) {
 }
 
 export async function gatherNotionBlock(ctx: GatherContext, rawKey: string): Promise<GatherInput<Slice>> {
-  const basis = notionBlockWitness(JSON.parse(rawKey));
+  const basis = parseNotionBlockWorkKey(rawKey);
   const fact = await ctx.read.fact(basis.id, { mode: 'pinned', rev: basis.rev });
   const source = sourceEnvelope(fact.value);
   const block = source.unit.blocks.find(({ id }) => id === basis.blockId);
@@ -36,7 +76,7 @@ export async function gatherNotionBlock(ctx: GatherContext, rawKey: string): Pro
     throw new Error('Notion 块版本或抽取用途已变更。');
   }
   return { kind: 'input', data: { basis, contentHash: block.body.contentHash, parentId: block.parentId },
-    effects: [{ stepKey: 'links', label: notionBlockLinkEffect, input: basis }] };
+    effects: [notionBlockLinkRequest(basis)] };
 }
 
 function parseLinks(input: unknown): Link[] {
@@ -60,14 +100,15 @@ function parseLinks(input: unknown): Link[] {
  * Its egress must also re-open using the live actual-recipient access.
  */
 export async function consumeNotionBlockLink(
-  request: EffectRequest,
+  request: Pick<EffectRequest, 'label' | 'stepKey' | 'input'>,
   access: SelectedNotionAccess,
-  resolveConcepts: (input: { readonly basis: NotionBlockWitness; readonly text: string }) => Promise<readonly Link[]>,
+  resolveConcepts?: (input: { readonly basis: NotionBlockWitness; readonly text: string }) => Promise<readonly Link[]>,
 ) {
   if (request.label !== notionBlockLinkEffect || request.stepKey !== 'links' ||
       !isNotionBlockPurpose(access.purpose)) throw new Error('Notion 连边用途或效果无效。');
   const basis = notionBlockWitness(request.input);
   const block = await openCurrentNotionBlock(access, basis);
+  if (!resolveConcepts) throw new NotionBlockResolverUnavailable();
   return block.text.trim() ? parseLinks(await resolveConcepts({ basis, text: block.text })) : [];
 }
 

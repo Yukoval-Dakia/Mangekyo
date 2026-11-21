@@ -18,16 +18,14 @@ export function openNotionReadTransport(origin: string, token: string | undefine
         if (url.origin !== origin || !url.pathname.startsWith('/v1/')) throw new Error('Invalid Notion read destination');
         await authorize();
         let reply: DocumentResponse;
+        const headers = new Headers({authorization: 'Bearer ' + token, 'Notion-Version': version, 'Content-Type':'application/json'});
         try {
           const timeout = AbortSignal.timeout(15_000);
           const signal = cancelled ? AbortSignal.any([cancelled, timeout]) : timeout;
-          const response = await fetch(url, {method: request.method, redirect: 'error', signal,
-            headers: {authorization: 'Bearer ' + token, 'Notion-Version': version, 'Content-Type':'application/json'},
+          const response = await fetch(url, {method: request.method, redirect: 'manual', signal, headers,
             ...(request.method === 'POST' ? {body: JSON.stringify(request.body)} : {})});
           if (response.ok) {
-            const body: unknown = await response.json();
-            if (JSON.stringify(body).includes(token)) throw new Error('Invalid Notion response');
-            reply = {status: response.status, body};
+            reply = {status: response.status, body: await response.text()};
           } else {
             await response.body?.cancel();
             reply = {status: response.status, body: null};
@@ -36,6 +34,11 @@ export function openNotionReadTransport(origin: string, token: string | undefine
           cancelled?.throwIfAborted();
           step = await requests.throw(unavailable(502, '未能确认 Notion 来源。'));
           continue;
+        }
+        if (typeof reply.body === 'string') {
+          const body: unknown = JSON.parse(reply.body);
+          if (JSON.stringify(body).includes(token)) throw new Error('Invalid Notion response');
+          reply = {status: reply.status, body};
         }
         step = await requests.next(reply);
       }

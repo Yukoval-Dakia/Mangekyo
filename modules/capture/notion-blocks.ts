@@ -8,6 +8,7 @@ import { captureSourceType, sourceEnvelope, type SourceEnvelope } from './source
 
 export type NotionBlockWitness = ReturnType<typeof notionBlockWitness>;
 export type NotionBlockPurpose = 'learning' | 'teaching' | 'background-research';
+export class NotionBlockUnavailable extends Error {}
 
 export function isNotionBlockPurpose(purpose: string): purpose is NotionBlockPurpose {
   return purpose === 'learning' || purpose === 'teaching' || purpose === 'background-research';
@@ -77,43 +78,47 @@ export function planNotionBlockWork(
 
 function atBlock(source: SourceEnvelope, blockId: string) {
   const block = source.unit.blocks.find(({ id }) => id === blockId);
-  if (!block || block.body.status !== 'known' || !block.body.contentHash) throw new Error('Notion 块不可用或已移除。');
+  if (!block || block.body.status !== 'known' || !block.body.contentHash) throw new NotionBlockUnavailable('Notion 块不可用或已移除。');
   return { id: block.id, parentId: block.parentId, contentHash: block.body.contentHash, text: block.body.text };
 }
 
-async function readBlockSource(access: SelectedNotionAccess, ref: NotionBlockWitness, rev = ref.rev) {
+async function readBlockFact(access: SelectedNotionAccess, ref: NotionBlockWitness, rev = ref.rev) {
   const fact = await openSelectedNotionSource(access, ref.id, { mode: 'pinned', rev });
-  if (fact.accessEpoch !== ref.accessEpoch) throw new Error('Notion 块访问代次已变更。');
-  return sourceEnvelope(fact.value);
+  if (fact.accessEpoch !== ref.accessEpoch) throw new NotionBlockUnavailable('Notion 块访问代次已变更。');
+  return fact;
 }
 
 /** Historical mode preserves the exact block version, subject to live authorization. */
 export async function openPinnedNotionBlock(access: SelectedNotionAccess, ref: NotionBlockWitness) {
-  return atBlock(await readBlockSource(access, ref), ref.blockId);
+  return atBlock(sourceEnvelope((await readBlockFact(access, ref)).value), ref.blockId);
 }
 
 /** Reopen an existing slice/edge basis for current use. Legacy source revisions
  * have no per-block stamp, so compare the intervening transitions to catch ABA.
  */
-export async function openCurrentNotionBlock(access: SelectedNotionAccess, ref: NotionBlockWitness) {
+export async function openCurrentNotionBlock(access: SelectedNotionAccess, ref: NotionBlockWitness,
+  check?: (fact: FactSnapshot) => Promise<void>) {
   const current = await openSelectedNotionSource(access, ref.id, { mode: 'following' });
-  if (current.accessEpoch !== ref.accessEpoch || ref.rev > current.ref.rev) throw new Error('Notion 块访问代次或版本已变更。');
+  if (current.accessEpoch !== ref.accessEpoch || ref.rev > current.ref.rev) throw new NotionBlockUnavailable('Notion 块访问代次或版本已变更。');
   const source = sourceEnvelope(current.value);
   const block = atBlock(source, ref.blockId);
   const stamp = source.notionBlockRevisions?.[ref.blockId] ?? current.ref.rev;
   if (stamp > current.ref.rev) throw new Error('Notion 块版本见证无效。');
-  const pinned = ref.rev === current.ref.rev ? source : await readBlockSource(access, ref);
+  const proof = ref.rev === current.ref.rev ? current : await readBlockFact(access, ref);
+  const pinned = sourceEnvelope(proof.value);
   const old = atBlock(pinned, ref.blockId);
-  if (block.contentHash !== old.contentHash || block.parentId !== old.parentId) throw new Error('Notion 块已变更。');
+  if (block.contentHash !== old.contentHash || block.parentId !== old.parentId) throw new NotionBlockUnavailable('Notion 块已变更。');
   if (stamp > ref.rev) {
-    let newer = stamp === current.ref.rev ? source : await readBlockSource(access, ref, stamp as Revision);
-    if (newer.notionBlockRevisions) throw new Error('Notion 块已变更。');
+    let newer = stamp === current.ref.rev ? source : sourceEnvelope((await readBlockFact(access, ref, stamp as Revision)).value);
+    if (newer.notionBlockRevisions) throw new NotionBlockUnavailable('Notion 块已变更。');
     for (let rev = stamp - 1; rev >= ref.rev; rev--) {
-      const older = rev === ref.rev ? pinned : await readBlockSource(access, ref, rev as Revision);
+      const older = rev === ref.rev ? pinned : sourceEnvelope((await readBlockFact(access, ref, rev as Revision)).value);
       const diff = notionRevisionDiff(older, newer);
-      if (changedNotionBlocks(diff).has(ref.blockId) || diff.removed.includes(ref.blockId)) throw new Error('Notion 块已变更。');
+      if (changedNotionBlocks(diff).has(ref.blockId) || diff.removed.includes(ref.blockId)) throw new NotionBlockUnavailable('Notion 块已变更。');
       newer = older;
     }
   }
+  // The exact block survives unrelated page edits. Check its stable pin after the live block fence.
+  await check?.(proof);
   return block;
 }

@@ -27,6 +27,9 @@ export class NotionSourceUnavailable extends Error {
 }
 export class NotionSourceChanged extends Error {}
 export class NotionSourceUnconfirmed extends Error {}
+export class NotionTemporaryFailure extends NotionSourceUnconfirmed {
+  constructor(readonly status: number) { super(`Notion 暂时不可读（HTTP ${status}）。`); }
+}
 export class NotionChildUnavailable extends Error {}
 
 function response({ status, body }: NotionReadResponse, sourceBoundary?: NotionInvalidatedSource) {
@@ -35,6 +38,7 @@ function response({ status, body }: NotionReadResponse, sourceBoundary?: NotionI
   if (invalidated) {
     throw new NotionSourceUnavailable('Notion 来源已不可用。', invalidated);
   }
+  if (status === 408 || status === 429 || (status >= 500 && status < 600)) throw new NotionTemporaryFailure(status);
   if (status !== 200) throw new Error(`Notion 读取失败（HTTP ${status}）。`);
   return notionRecord(body);
 }
@@ -227,7 +231,7 @@ export function* notionConfirmPageAccess(root: NotionRoot, requestedPage: string
     const reply = yield { method: 'GET', path: `/v1/pages/${pageId}` };
     return pageMetadata(response(reply, pageBoundary(selected, pageId)), selected, pageId);
   } catch (error) {
-    if (error instanceof NotionSourceUnavailable) throw error;
+    if (error instanceof NotionSourceUnavailable || error instanceof NotionTemporaryFailure) throw error;
     throw new NotionSourceUnconfirmed('无法确认 Notion 页面授权。', { cause: error });
   }
 }

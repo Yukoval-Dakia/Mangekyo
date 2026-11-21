@@ -3,19 +3,27 @@ import { teachingMemoryBasis } from './memory-claims.ts';
 import type { studyTurn } from '../../modules/activity/values.ts';
 import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
+import { withLearnerLock, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createAuthorizedFactReader, createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId, type LearnerId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { assertDeletionWatermark, deletionWatermark, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
-import { notionReadPlan, type CheckNotionRead } from '../../modules/capture/notion-read-plan.ts';
-import { notionReadPage, notionReadRows, notionConfirmPageAccess, NotionSourceUnavailable } from '../../modules/capture/notion-api.ts';
-import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, notionSelectionWitness, selectionChange, selectionGrant,
+import type { WorkFailureCause } from '../../executors/temporal/src/work-failure.ts';
+import { blockRoutedWork, cancelWork, readReadyWork, requestCatalogedWork, type WorkRef } from '../../kernel/src/work/index.ts';
+import { readRoutedWorkForRecovery, reconcileRoutedWork } from '../../kernel/src/work/route-recovery.ts';
+import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
+import { sealCandidate, submitCandidate } from '../../kernel/src/derivations/candidate.ts';
+import { notionPageKey, notionPageReadFence, type CheckNotionRead } from '../../modules/capture/notion-read-plan.ts';
+import { notionConfirmPageAccess, NotionSourceChanged, NotionSourceUnavailable, NotionTemporaryFailure } from '../../modules/capture/notion-api.ts';
+import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, selectionChange, selectionGrant,
   readNotionSelection, type NotionSelection, type NotionReadOptions } from '../../modules/capture/notion-selection.ts';
-import { openSelectedNotionSource, notionSourceTarget, setNotionPurposeCommand, notionPageObservationType, prepareNotionRefreshInput, prepareNotionIngest, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
+import { NotionSelectionUnavailable, openSelectedNotionSource, notionSourceTarget, setNotionPurposeCommand, notionPageObservationType, prepareNotionRefreshInput, prepareSelectedNotionPages, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
+import { NotionBlockUnavailable, openCurrentNotionBlock } from '../../modules/capture/notion-blocks.ts';
+import { changedNotionBlockWork, gatherNotionBlock, notionBlockDeriver, notionBlockRecoveryPages, NotionBlockResolverUnavailable,
+  notionBlockSlot, notionBlockWorkKey, parseNotionBlockWorkKey, planNotionBlockRecovery } from '../../modules/capture/notion-block-work.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { notionModelRecipient, purpose as teaching, stableId, studioLearner } from './identity.ts';
@@ -27,7 +35,7 @@ import { notionConnection } from './notion-transport.ts';
 import { questionReceiptsCurrent } from './question-exposure.ts';
 
 const learnerScope = {learner: studioLearner};
-const learningReader = {id: 'studio:learning-reader', purpose: 'learning', label: '本机学习阅读器'};
+const learningReader = {id: 'studio:learning-reader', purpose: 'learning', label: '本机学习阅读器'} as const;
 const availablePresets = async () => [
   {id: 'storage', available: true, allowedRecipients: []},
   {id: 'learning', available: true, allowedRecipients: [learningReader, ...await notionTeachingRecipients()]},
@@ -47,16 +55,20 @@ async function checkDenial(tx: ReadTransaction, id: string, epoch: string, page?
   if (rowCount) throw new RequestError(403, 'Notion 已撤回该来源的访问。请重新确认选源。');
 }
 
-export async function readStudioNotionSource(tx: ReadTransaction, sourceId: FactId, options: NotionReadOptions, access: Access) {
-  const source = await openSelectedNotionSource({
+function selectedAccess(tx: ReadTransaction, access: Access, requireCurrentSelection = false) {
+  return {
     learner: tx.learner, purpose: access.purpose, recipientId: access.recipientId,
     selectionRead: createCommandReadContext(tx, 'storage'),
     sourceRead: createAuthorizedFactReader(tx, access.purpose, access.maySend),
-  },sourceId,options);
-  const value = sourceEnvelope(source.value);
-  const current = (await selectionAt(tx, value.sourceSelectionId!))!;
-  await checkDenial(tx, current.id, current.selectionEpoch, value.externalId!, value.sourceSelectionEpoch!);
-  return source;
+    async checkSelection(selection: NotionSelection, source: ReturnType<typeof sourceEnvelope>) {
+      if (requireCurrentSelection && selection.selectionEpoch !== source.sourceSelectionEpoch) throw new NotionSelectionUnavailable();
+      await checkDenial(tx, selection.id, selection.selectionEpoch, source.externalId, source.sourceSelectionEpoch);
+    },
+  };
+}
+
+export function readStudioNotionSource(tx: ReadTransaction, sourceId: FactId, options: NotionReadOptions, access: Access) {
+  return openSelectedNotionSource(selectedAccess(tx, access), sourceId, options);
 }
 
 export type NotionRecipient = ((fact: FactSnapshot) => boolean) & {notionRecipientId?: string};
@@ -91,10 +103,7 @@ function parseSettings<T>(read: () => T) {
 function notionHost(db: Db, scope = learnerScope) {
   const connection = notionConnection();
   const snapshot = <T>(read: (tx: ReadTransaction) => Promise<T>) => db.snapshot(scope, read);
-  const locked = <T>(action: (tx: DbTransaction) => Promise<T>) => db.tx(scope, async tx => {
-    await lockLearner(tx, tx.learner);
-    return action(tx);
-  });
+  const locked = <T>(action: (tx: DbTransaction) => Promise<T>) => withLearnerLock(db, scope, action);
 
   async function live(tx: ReadTransaction, id: string, epoch: string, watermark: string, page?: string) {
     await assertDeletionWatermark(tx, watermark);
@@ -105,7 +114,7 @@ function notionHost(db: Db, scope = learnerScope) {
   }
 
   async function provider<T>(selection: NotionSelection, watermark: string, stream: Parameters<typeof connection.read<T>>[0],
-    page?: string, signal?: AbortSignal, rememberDenial = true) {
+    page?: string, signal?: AbortSignal, rememberDenial = true, preserveTemporary = false) {
     const {id, selectionEpoch: epoch} = selection;
     try {
       return await connection.read(stream, () => snapshot(tx => live(tx, id, epoch, watermark, page)), signal);
@@ -121,7 +130,8 @@ function notionHost(db: Db, scope = learnerScope) {
         });
         throw new RequestError(403, 'Notion 已撤回该来源的访问。');
       }
-      if (error instanceof RequestError || error instanceof LifecycleError) throw error;
+      if (preserveTemporary && error instanceof NotionTemporaryFailure) throw error;
+      if (error instanceof RequestError || error instanceof LifecycleError || error instanceof NotionSourceChanged) throw error;
       throw new RequestError(502, '未能完整核实 Notion 来源，请重试。');
     }
   }
@@ -143,10 +153,6 @@ export async function savedNotionWitnesses(tx: ReadTransaction, inputs: Manifest
 
 async function notionPageAuthority(tx: ReadTransaction, source: ReturnType<typeof sourceEnvelope>) {
   return {selection:(await selectionAt(tx,source.sourceSelectionId!))!, pageId:source.externalId!, watermark:await deletionWatermark(tx)};
-}
-
-function notionPageKey({selection,pageId,watermark}: Awaited<ReturnType<typeof notionPageAuthority>>) {
-  return JSON.stringify([selection.id, selection.selectionEpoch, pageId, watermark]);
 }
 
 export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<Basis>, recipient: NotionRecipient, check?: CheckNotionRead) {
@@ -189,11 +195,13 @@ export async function teachingResultAuthority(tx: ReadTransaction, turnId: strin
   }
 }
 
+const notionUnconfirmedReason = '暂时无法确认 Notion 来源。';
 export class NotionReadUnconfirmed extends FactReadDeniedError {
-  constructor() { super('recipient', '暂时无法确认 Notion 来源。'); }
+  constructor() { super('recipient', notionUnconfirmedReason); }
 }
 
 export class NotionReadUnchecked extends NotionReadUnconfirmed {}
+export class NotionReadTemporaryFailure extends NotionReadUnconfirmed {}
 
 export type { CheckNotionRead } from '../../modules/capture/notion-read-plan.ts';
 type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => Promise<T>;
@@ -202,80 +210,24 @@ type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => P
 // authority carries over to a later HTTP request, stream refresh, or model send.
 export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false, signal}: {readOnly?: boolean; signal?: AbortSignal} = {}) {
   const {snapshot, locked, provider} = notionHost(db, {learner});
-  async function pageFor(tx: ReadTransaction, fact: FactSnapshot) {
-    if (fact.type !== captureSourceType) return;
-    const source = sourceEnvelope(fact.value);
-    if (source.kind !== 'notion') return;
-    const page = await notionPageAuthority(tx, source);
-    const key = notionPageKey(page);
-    const selectionKey = JSON.stringify([page.selection.id, page.selection.selectionEpoch]);
-    return {...page, key, selectionKey, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
-  }
-  const planner = notionReadPlan<NonNullable<Awaited<ReturnType<typeof pageFor>>>>(async ({selection,pageId,watermark},abort) => {
-    try {
-      await provider(selection,watermark,notionConfirmPageAccess(selection.root,pageId),pageId,abort,!readOnly);
-      return 'authorized';
-    } catch (error) {
-      abort.throwIfAborted();
-      if (error instanceof NotionSourceUnavailable && error.invalidated)
-        return error.invalidated.kind === 'selection' ? 'selection-withdrawn' : 'withdrawn';
-      if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
-      return error instanceof RequestError && error.status===403 ? 'withdrawn' : 'unconfirmed';
+  const lockedReadOnly = readOnly ? async <T>(project: (tx: ReadTransaction) => Promise<T>) => {
+    try { return await db.snapshot({learner}, project, {lockLearner:true}); }
+    catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === '40001')
+        throw new RequestError(503, '课堂依据正在更新，请重试。');
+      throw error;
     }
-  }, status => status === undefined ? new NotionReadUnchecked() : status === 'withdrawn'
-    ? new FactReadDeniedError('recipient','未能确认 Notion 来源。') : new NotionReadUnconfirmed(),signal);
-  const check = (tx: ReadTransaction) => planner.reader(fact=>pageFor(tx,fact));
-  async function read<T>(project: Projection<T>): Promise<T>;
-  async function read<P, T>(project: Projection<P>, publish: Projection<T, DbTransaction>): Promise<T>;
-  async function read<P, T>(project: Projection<P>, publish?: Projection<T, DbTransaction>): Promise<P | T> {
-    if (readOnly && publish) throw new Error('A read-only Notion scope cannot publish');
-    signal?.throwIfAborted();
-    const {initial,prepared} = await snapshot(async tx=>{
-      const prepared = planner.prepare(fact=>pageFor(tx,fact));
-      return {initial:await project(tx,prepared.collect),prepared};
-    });
-    signal?.throwIfAborted();
-    if (prepared.empty() && !publish) return initial;
-    await prepared.resolve();
-    if (readOnly) {
-      try {
-        return await db.snapshot({learner},tx => project(tx,check(tx)),{lockLearner:true});
-      } catch (error) {
-        if (error instanceof Error && 'code' in error && error.code === '40001')
-          throw new RequestError(503, '课堂依据正在更新，请重试。');
-        throw error;
-      }
-    }
-    return locked<P | T>(tx => {
-      signal?.throwIfAborted();
-      return publish ? publish(tx,check(tx)) : project(tx,check(tx));
-    });
-  }
-
-  async function publishAfterChecks<P,T>(
-    project: (tx: DbTransaction, check: CheckNotionRead, collect: boolean) => Promise<P>,
-    publish: (tx: DbTransaction, prepared: P) => Promise<T>,
-  ): Promise<T> {
-    if (readOnly) throw new Error('A read-only Notion scope cannot publish');
-    signal?.throwIfAborted();
-    const first = await locked(async tx => {
-      signal?.throwIfAborted();
-      const plan = planner.prepare(fact=>pageFor(tx,fact));
-      const prepared = await project(tx,plan.collect,true);
-      if (!plan.empty()) return {plan};
-      return {response:await publish(tx,prepared)};
-    });
-    if (!first.plan) return first.response;
-    // A remote check runs with no learner transaction or pool connection held.
-    signal?.throwIfAborted();
-    await first.plan.resolve();
-    return locked(async tx => {
-      signal?.throwIfAborted();
-      return publish(tx,await project(tx,check(tx),false));
-    });
-  }
-
-  return {read,check,publishAfterChecks};
+  } : undefined;
+  return notionPageReadFence<ReadTransaction, DbTransaction>(notionPageAuthority,
+    ({selection,pageId,watermark},stream,abort) => provider(selection,watermark,stream,pageId,abort,!readOnly,true),
+    error => {
+      if (error instanceof RequestError) return error.status === 403 ? 'withdrawn' : 'unconfirmed';
+      return error instanceof LifecycleError ? 'unconfirmed' : undefined;
+    },
+    status => status === undefined ? new NotionReadUnchecked() : status === 'withdrawn'
+      ? new FactReadDeniedError('recipient','未能确认 Notion 来源。')
+      : status === 'temporary-failure' ? new NotionReadTemporaryFailure() : new NotionReadUnconfirmed(),
+    {snapshot, locked, lockedReadOnly, signal});
 }
 
 export type NotionReadScope = ReturnType<typeof notionReadScope>;
@@ -292,9 +244,56 @@ export async function confirmNotionDispatch(db: Db, pages: Awaited<ReturnType<ty
   }
 }
 
+const blockPolicy = { slot: { type: notionBlockSlot }, deriver: notionBlockDeriver, purpose: learningReader.purpose };
+export const notionBlockRoute = { deriver: notionBlockDeriver };
+const blockRecovery = {slotType:notionBlockSlot,deriver:notionBlockDeriver,code:'notion-remote-unconfirmed',migrateDefaultLane:true};
+const blockAccess = (tx: ReadTransaction) => selectedAccess(tx, {purpose:learningReader.purpose, recipientId:learningReader.id, maySend:() => true}, true);
+const exhaustBlock = (db: Db, ref: WorkRef, remote: boolean) => remote
+  ? blockRoutedWork(db,ref,blockRecovery.code,notionUnconfirmedReason)
+  : blockRoutedWork(db,ref,'notion-execution-exhausted','Notion 块处理重试已耗尽。');
+
+function blockWithdrawn(error: unknown) {
+  return !(error instanceof NotionReadUnconfirmed) &&
+    (error instanceof NotionBlockUnavailable || error instanceof NotionSelectionUnavailable || error instanceof FactNotFoundError ||
+      error instanceof FactReadDeniedError || (error instanceof RequestError && error.status === 403));
+}
+
+const notionHooks = createStudioCommandHooks({async afterFactsChanged(tx, tick, changes) {
+  const read = createCommandReadContext(tx, 'storage');
+  for await (const basis of changedNotionBlockWork(read, blockPolicy.purpose, changes)) await requestCatalogedWork(tx, tick,
+    {slotType:notionBlockSlot, slotKey:notionBlockWorkKey(basis), deriver:notionBlockDeriver}, '{}', {pendingState:'routed_pending'});
+}});
+
+export async function executeNotionBlockWork(db: Db, ref: WorkRef, terminal: boolean, cause?: WorkFailureCause) {
+  const prepare = async (tx: DbTransaction, check: CheckNotionRead) => {
+    const work = await readReadyWork(tx, ref);
+    if (!work || work.slotType !== notionBlockSlot || work.deriver !== notionBlockDeriver) return;
+    try {
+      await openCurrentNotionBlock(blockAccess(tx), parseNotionBlockWorkKey(work.slotKey), check);
+      return work;
+    } catch (error) {
+      const bound = withinLearnerTransaction(db, tx);
+      if (blockWithdrawn(error)) await cancelWork(bound, ref);
+      else if (terminal && error instanceof NotionReadUnconfirmed)
+        await exhaustBlock(bound,ref,cause === 'remote-unavailable' && error instanceof NotionReadTemporaryFailure);
+      else throw error;
+      return;
+    }
+  };
+  await notionReadScope(db, studioLearner).publishAfterChecks(prepare, async (tx, work) => {
+    if (!work) return;
+    const bound = withinLearnerTransaction(db, tx);
+    if (terminal) { await exhaustBlock(bound,ref,cause === 'remote-unavailable'); return; }
+    const snapshot = await gatherSnapshot(bound, {learner:tx.learner, purpose:blockPolicy.purpose}, ctx => gatherNotionBlock(ctx, work.slotKey));
+    const sealed = await sealCandidate(bound, ref, blockPolicy, snapshot);
+    if (sealed.kind === 'sealed') await submitCandidate(bound, ref, blockPolicy, sealed.id,
+      {kind:'failed', reason:new NotionBlockResolverUnavailable().message}, notionHooks);
+  });
+}
+
 export function openStudioNotion(db: Db, capture: LoadedModule) {
   const {connection, snapshot, locked, live, provider} = notionHost(db);
-  const handle = (tx: DbTransaction) => createCommandHandler(withinLearnerTransaction(db, tx), {modules:[capture], hooks:createStudioCommandHooks()});
+  const handle = (tx: DbTransaction) => createCommandHandler(withinLearnerTransaction(db, tx), {modules:[capture], hooks:notionHooks});
 
   async function settings() {
     return snapshot(async tx => {
@@ -395,24 +394,22 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
     }
     try { return await locked(tx => receipt(tx, async () => { throw new FetchRequired(); })); }
     catch (error) { if (!(error instanceof FetchRequired)) throw error; }
-    const {selection, before, deniedPages} = await snapshot(async tx => {
+    const {selection, before, deniedPages, recoveryPages} = await snapshot(async tx => {
       const selection = await live(tx, selectionId, epoch, watermark);
       if (selection.preset !== 'storage' && selection.preset !== 'learning') throw new RequestError(422,'短期材料不能同步为长期原件。');
       const denied = await tx.query<{step_key:string}>(`SELECT step_key FROM effects WHERE learner_id=$1
         AND owner_kind='session' AND owner_id=$2 AND label='notion-access-denial'`, [tx.learner, denialOwner(selectionId, epoch)]);
-      return {selection, before:await sources(tx,selection), deniedPages:new Set(denied.rows.map(row => row.step_key))};
+      const before = await sources(tx,selection);
+      return {selection, before, deniedPages:new Set(denied.rows.map(row => row.step_key)),
+        recoveryPages:selection.root.kind === 'data-source'
+          ? notionBlockRecoveryPages(before, await readRoutedWorkForRecovery(tx,blockRecovery)) : []};
     });
-    const {root} = selection;
-    const dispatch = notionSelectionWitness(selection);
-    const rows = root.kind === 'page' ? [{pageId:root.id, lastEditedTime:null}]
-      : await provider(selection,watermark,notionReadRows(root, before[0]));
-    const prepared: Awaited<ReturnType<typeof prepareNotionIngest>>[] = [];
-    for (const {pageId, lastEditedTime} of rows) {
-      if (deniedPages.has(pageId)) continue;
-      const page = await provider(selection, watermark, notionReadPage(root,pageId,dispatch), pageId);
-      if (lastEditedTime && page.lastEditedTime !== lastEditedTime) throw stale();
-      prepared.push(await prepareNotionIngest(selection,page,new Date().toISOString()));
-    }
+    const prepared = await prepareSelectedNotionPages(selection, before[0], deniedPages, () => new Date().toISOString(),
+      (stream, pageId, supplemental) => provider(selection, watermark, stream, pageId, undefined, true, supplemental),
+      {pages:recoveryPages, defer:reason => console.warn('Notion 补查延后', reason)}).catch(error => {
+      if (error instanceof NotionSourceChanged) throw stale();
+      throw error;
+    });
     return locked(tx => receipt(tx, async () => {
       const refs = [];
       const current = await sources(tx, selection);
@@ -432,6 +429,8 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
           });
         refs.push({id:item.id, rev:saved.wrote.find(row => row.id === item.id)?.rev ?? fact!.ref.rev});
       }
+      const confirmed = new Set(refs.map(ref => ref.id));
+      await reconcileRoutedWork(tx, blockRecovery, planNotionBlockRecovery(blockAccess(tx),confirmed,blockWithdrawn));
       return {selectionId, epoch, sources:refs};
     }));
   }

@@ -44,14 +44,14 @@ export async function requestWork(tx: DbTransaction, tick: Tick, request: WorkRe
 /** Create the catalog entry and enqueue demand in the caller's learner write. */
 export async function requestCatalogedWork(
   tx: DbTransaction, tick: Tick, request: WorkRequest, scope: string,
-  options: { reuseSlot?: true } = {},
+  options: { reuseSlot?: true; pendingState?: OutboxPendingState } = {},
 ): Promise<void> {
   const inserted = await tx.query(
     `INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys,changed_tick)
      VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
     [tx.learner, request.slotType, request.slotKey, scope, tick],
   );
-  if (inserted.rowCount || options.reuseSlot) await requestWork(tx, tick, request);
+  if (inserted.rowCount || options.reuseSlot) await requestWork(tx, tick, request, options.pendingState);
 }
 
 /** Enqueue a new execution after the caller has fenced the prior generation under the learner lock. */

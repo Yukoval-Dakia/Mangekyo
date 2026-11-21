@@ -1,4 +1,4 @@
-import type { Db, DbTransaction, DbQuery, LearnerId, Tick } from './types.ts';
+import type { Db, DbTransaction, DbQuery, LearnerId, LearnerScope, Tick } from './types.ts';
 
 export async function lockLearner(tx: DbQuery, learner: LearnerId): Promise<void> {
   const result = await tx.query<{ id: string }>(
@@ -8,6 +8,13 @@ export async function lockLearner(tx: DbQuery, learner: LearnerId): Promise<void
   if (result.rows.length !== 1) {
     throw new Error('Learner does not exist');
   }
+}
+
+export function withLearnerLock<T>(db: Db, scope: LearnerScope, run: (tx: DbTransaction) => Promise<T>): Promise<T> {
+  return db.tx(scope, async tx => {
+    await lockLearner(tx, tx.learner);
+    return run(tx);
+  });
 }
 
 export async function nextTick(tx: DbQuery, learner: LearnerId): Promise<Tick> {
