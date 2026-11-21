@@ -9,7 +9,6 @@ import { studioLearner } from '../../../runtime/studio/identity.ts';
 import { loadStudioTestModule } from '../../../runtime/studio/test/modules.ts';
 import { planToday, sessionRule } from '../today.ts';
 import { checkPack } from '../offline-pack.ts';
-import { studyGoal } from '../goal-values.ts';
 
 const base = {now:'2026-11-18T11:00:00Z', timeZone:'Asia/Tokyo', constraints:{budget_min:20,locks:['fixed'],deadlines:[]}};
 const noLocks = {...base.constraints, locks:[]};
@@ -33,23 +32,23 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
   const next = {...base,now:'2026-11-18T15:01:00Z',constraints:noLocks};
   const session = sessionRule(base.now,base.timeZone,3,'tired');
   assert.equal(session.expiresAt,'2026-11-18T15:00:00.000Z');
-  const continued = planToday({...next,candidates:[draft],rules:[session]});
-  assert.deepEqual([continued.protectedItems,continued.budgetMinutes],[[draft],20]);
   const long = {...next,candidates:[make('forty-four',44,1),make('forty-five',45,1),make('hour',60,1,{input:'voice'})],
     constraints:{budget_min:60,locks:[],deadlines:[]},duration:'45min+'};
   for (const [mode,expected] of [['any',['forty-five','hour']],['voice',['hour']],['one-hand',[]]])
     assert.deepEqual(planToday({...long,mode}).shortlist,expected);
-  const examScope = {kind:'exam',date:'2026-11-25',scope:['graph','formula'],weights:[{topic:'graph',weight:50},{topic:'formula',weight:50}]};
-  const sprintCandidates = [make('ordinary',4,1),make('ordinary-short',3,1),
-    make('archetype',4,0,{topic:'graph',examPrep:{kind:'archetype',coveredQuestionCount:5}}),
-    make('card',3,0,{topic:'formula',examPrep:{kind:'first-aid'}})];
-  const campaignInput = {...next,now:base.now,candidates:sprintCandidates,rules:[examScope],
-    constraints:{budget_min:7,locks:[],deadlines:[]}};
+  const examScope = {kind:'exam',date:'2026-11-25',scope:['weak','formula'],weights:[{topic:'weak',weight:50},{topic:'formula',weight:50}]};
+  const examCandidates = [
+    make('weak',4,.2,{kind:'probe',retention:.2,examPrep:{kind:'archetype',coveredQuestionCount:12}}),
+    make('uncertain',6,1,{kind:'probe'}),make('stable',3,1,{retention:.9}),
+    make('card',3,0,{topic:'formula',examPrep:{kind:'first-aid'}}),
+  ];
+  const campaignInput = {...base,candidates:examCandidates,rules:[examScope],
+    constraints:{...noLocks,budget_min:9}};
   const sprint = planToday(campaignInput);
-  assert.deepEqual(ids(sprint),['archetype','card']);
-  assert.match(sprint.items[0].why.join(' '),/5 道原卷题/);
+  assert.deepEqual(ids(sprint),['weak','card']);
+  assert.match(sprint.items[0].why.join(' '),/12 道原卷题/);
   assert.deepEqual(ids(planToday({...campaignInput,rules:[examScope,{kind:'campaign',campaign:'steady'}]})),
-    ['ordinary','ordinary-short']);
+    ['stable','uncertain']);
   const forecast = {exam:examScope,frozenAt:base.now,low:70,high:85,maximum:100,assessment:{id:'assess',rev:2},
     calibration:{id:'calibrate',rev:1},methodVersion:'calibrated@1',absoluteError:8};
   const recovery = {...next,now:'2026-11-26T11:00:00Z',rules:[examScope],frozenExamForecast:forecast,
@@ -64,18 +63,14 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
   const review = change => planToday({...recovery,examScore:{...examScore,...change}}).scoreReview;
   assert.equal(review({score:{earned:75,maximum:100}}).status,'within-expected-range');
   assert.equal(review({forecastAssessment:{...forecast.assessment,rev:1}}).kind,'unknown');
-  const returnInput = {...next,lastOpenedAt:'2026-10-27T11:00:00Z',rules:[
-    {...examScope,scope:['weak'],weights:[{topic:'weak',weight:100}]}
-  ],candidates:[
-    make('weak',4,.2,{kind:'probe',retention:.2,examPrep:{kind:'archetype',coveredQuestionCount:12}}),
-    make('uncertain',6,1,{kind:'probe'}),make('stable',6,0,{retention:.9})
-  ]};
+  const returnInput = {...campaignInput,...next,lastOpenedAt:'2026-10-27T11:00:00Z'};
   const returning = planToday(returnInput);
   assert.deepEqual(ids(returning),['uncertain','weak']);
-  assert.deepEqual(returning.overview,{retained:['stable'],faded:['weak'],unknown:['uncertain']});
+  assert.deepEqual(returning.overview,{retained:['stable'],faded:['weak'],unknown:['uncertain','formula']});
   const protectedReturn = planToday({...returnInput,candidates:[...returnInput.candidates,draft,fixed],
-    constraints:base.constraints});
+    constraints:base.constraints,rules:[...returnInput.rules,session]});
   assert.deepEqual([ids(protectedReturn),protectedReturn.protectedItems],[[],[draft,fixed]]);
+  assert.equal(protectedReturn.budgetMinutes,20);
   const localRules = [school,{kind:'defer',activityId:'graph',until:'2026-11-20'},
     {kind:'replace',activityId:'convert',replacementId:'units',date:before.day}];
   assert.deepEqual(ids(planToday({...base,candidates,rules:localRules})),['units']);
@@ -172,51 +167,50 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
       assert.deepEqual(ids(view).sort(),expected.sort());
       if (campaign==='recovery') assert.equal(view.scoreReview.kind,'unknown');
     }
-    const date = '2026-11-29', timeZone = 'Asia/Tokyo';
-    const open = (await today()).items.find(i=>i.candidate.id===paper).candidate.open;
-    const warmup = {kind:'lock',date,activityId:paper,warmup:{timeZone,open}};
+    const date = '2026-11-29', {timeZone} = base;
+    const paperCandidate = resumed.items[0].candidate;
+    const warmup = {kind:'lock',date,activityId:paper,warmup:{timeZone,open:paperCandidate.open}};
     await save('next-ordinary-lock',{kind:'lock',date,activityId:pinned});
     const anchor = await save('next-warmup',warmup);
-    await assert.rejects(save('warmup-stale',{...warmup,warmup:{timeZone,open:{...open,rev:2}}},anchor), /热身活动版本已变化/);
-    const isPinned = async params => (await today(params)).protectedItems.map(c=>c.id);
-    assert.deepEqual(await isPinned(),[]);
+    await assert.rejects(save('warmup-stale',{...warmup,warmup:{timeZone,open:{...paperCandidate.open,rev:2}}},anchor), /热身活动版本已变化/);
+    const protectedIds = async params => (await today(params)).protectedItems.map(c=>c.id);
+    assert.deepEqual(await protectedIds(),[]);
     t.mock.timers.setTime(Date.parse(date+'T05:00:00Z'));
-    assert.deepEqual(await isPinned({timeZone:'UTC'}),[pinned]);
-    const split = planToday({...base,now:new Date().toISOString(),timeZone,candidates:[{...fixed,id:paper,minutes:3,open}],
+    assert.deepEqual(await protectedIds({timeZone:'UTC'}),[pinned]);
+    const split = planToday({...base,now:new Date().toISOString(),candidates:[paperCandidate],
       constraints:{...noLocks,locks:[paper]}, rules:[warmup, ...[[900,901],[920,922]].map(([start,end])=>({kind:'window',weekday:null,start,end}))]});
     assert.deepEqual([split.warmup, split.protectedItems.map(c=>c.id)], [null, [paper]]);
     const tomorrow = await today();
     assert.deepEqual(tomorrow.protectedItems.map(c=>c.id),[paper,pinned]);
     assert.ok(!tomorrow.shortlist.includes(paper));
     const restDay = await save('next-rest',{kind:'rest',date});
-    assert.deepEqual(await isPinned(),[pinned]);
+    assert.deepEqual(await protectedIds(),[pinned]);
     await assert.rejects(save('warmup-late',warmup,anchor), /热身日期已变化/);
     await save('resume-next-day', null, restDay);
-    assert.deepEqual(await isPinned(),[paper,pinned]);
+    assert.deepEqual(await protectedIds(),[paper,pinned]);
     await save('warmup-clear',null,anchor);
-    assert.deepEqual(await isPinned(),[pinned]);
-    const deriver = modules[1].derivers.get('plan/today');
-    const input = {...base,constraints:noLocks,candidates:[]};
-    assert.equal(studyGoal({text:'历史目标'}).status,'active');
+    assert.deepEqual(await protectedIds(),[pinned]);
     await handle(req('activity.setStudyGoal',{id:goalId,data:{text:'读图'}}));
     const proposed = req('plan.setGoalStatus',{id:goalId,expectedRev:1,status:'paused'},'companion');
     assert.equal((await handle(proposed)).state,'proposed');
     assert.equal((await read(goalId)).value.status,'active');
     await handle.decideProposal({...req(proposed.type,{}),proposalId:proposed.id,selection:true},(_,input)=>input);
     assert.equal((await read(goalId)).value.status,'paused');
+    const deriver = modules[1].derivers.get('plan/today');
+    const input = {...base,constraints:noLocks,candidates:[make('graph',8,.9,{goalId})]};
     for (const [i,status] of ['active','completed','exited'].entries()) {
       await handle(req('plan.setGoalStatus',{id:goalId,expectedRev:i+2,status}));
-      const goal = {id:goalId,...(await read(goalId)).value};
-      assert.equal(planToday({...input,goal,candidates:[make('graph',8,.9,{goalId})]}).shortlist.includes('graph'),status==='active');
+      const fromFacts = await gatherSnapshot(db,{learner,purpose:'storage'},ctx=>deriver.gather(ctx,async ({read})=>{
+        const [goal,rule] = await Promise.all([goalId,exam.id].map(id=>read.fact(id,{mode:'following'})));
+        return {...input,goal:{id:goalId,...goal.value},rules:[rule.value]};
+      }));
+      assert.deepEqual(fromFacts.plan.effects,[]);
+      assert.deepEqual(fromFacts.manifest.inputs.map(w=>w.id).sort(),[goalId,exam.id].sort());
+      assert.deepEqual(fromFacts.manifest.inputs.map(w=>w.mode),['following','following']);
+      const plan = deriver.derive(fromFacts.plan.data).value;
+      assert.equal(plan.activeGoal,status==='active' ? goalId : null);
+      assert.equal(plan.shortlist.includes('graph'),status==='active');
     }
-    const fromFacts = await gatherSnapshot(db,{learner,purpose:'storage'},ctx=>deriver.gather(ctx,async ctx=>{
-      const [goal,rule] = await Promise.all([goalId,exam.id].map(id=>ctx.read.fact(id,{mode:'following'})));
-      return {...input,goal:{id:goalId,...goal.value},rules:[rule.value],candidates};
-    }));
-    assert.deepEqual(fromFacts.plan.effects,[]);
-    assert.deepEqual(fromFacts.manifest.inputs.map(w=>w.id).sort(),[goalId,exam.id].sort());
-    assert.deepEqual(fromFacts.manifest.inputs.map(w=>w.mode),['following','following']);
-    assert.equal(deriver.derive(fromFacts.plan.data).value.activeGoal,null);
     await assert.rejects(()=>handle(req('plan.saveRule',{id:exam.id,expectedRev:exam.rev,data:null})),/revision conflict/);
     await save('clear-exam',null,correctedExam);
     await assert.rejects(()=>read(exam.id));
