@@ -283,6 +283,10 @@ const migrations = [
         AND input_digest='' AND result IS NULL AND ended_tick IS NULL))`);
     await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=17');
   },
+  async (tx: DbQuery) => {
+    await tx.query("CREATE INDEX derivations_manifest_inputs_idx ON derivations USING gin ((manifest->'inputs') jsonb_path_ops)");
+    await tx.query('CREATE INDEX derivations_slot_history_idx ON derivations(learner_id,slot_type,slot_key)');
+  },
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */

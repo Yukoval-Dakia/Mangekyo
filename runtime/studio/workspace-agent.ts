@@ -138,6 +138,7 @@ export function openWorkspaceTools(options: {
       const trackAssessment = options.trackAssessment ? (basis: WorkspaceAssessmentBasis) => assessmentBasis.push(basis) : undefined;
       let text: string;
       let intakeImage: IntakeImage | undefined;
+      let todoBasis: Awaited<ReturnType<typeof readLearnerRadar>>['todoBasis'];
       if (name === 'open_learning') {
         const parsed = parseOpenLearningArgs(args);
         const access = {known:(id: string) => sources.has(id), maySend:options.maySend, track, trackAssessment};
@@ -170,21 +171,23 @@ export function openWorkspaceTools(options: {
       } else if (name === 'read_workspace') {
         text = await workspaceRead(tx,args,track,options.maySend,trackAssessment);
       } else if (name === 'read_learner_radar') {
-        text = JSON.stringify(await readLearnerRadar(tx,args,options.maySend,track,
-          options.trackRetention ? basis => retentionBasis.push(basis) : undefined));
+        const radar = await readLearnerRadar(tx,args,options.maySend,track,
+          options.trackRetention ? basis => retentionBasis.push(basis) : undefined);
+        text = JSON.stringify(radar.view);
+        todoBasis = radar.todoBasis;
       } else if (pythonAttempts) {
         text = JSON.stringify(await readPythonAttempts(tx,args,{known:id => sources.has(id), maySend:options.maySend, track}));
       } else text = await workspaceSearch(tx,args,track,options.maySend);
-      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,intakeImage,sourceProjection:1,
+      return JSON.stringify({text,witnesses:[...witnesses.values()],assessmentBasis,intakeImage,todoBasis,sourceProjection:1,
         ...(pythonAttempts ? {pythonAttemptsProjection: 1} : {}),
         ...(name === 'read_workspace' ? {workbookProjection: 1} : {}),
         ...(name === 'read_learner_radar' ? {retentionBasis} : {})});
     },options.authorize);
     if (priorRead) await priorRead;
-    const {text:storedText, witnesses, assessmentBasis, workbookProjection, sourceProjection, pythonAttemptsProjection,
+    const {text:storedText, witnesses, assessmentBasis, workbookProjection, sourceProjection, pythonAttemptsProjection, todoBasis,
       retentionBasis = [], intakeImage} = JSON.parse(raw) as {
       text:string; witnesses:WorkspaceWitness[]; assessmentBasis?: WorkspaceAssessmentBasis[]; workbookProjection?: number;
-      sourceProjection?: number; pythonAttemptsProjection?: number; retentionBasis?: RetentionBasis[]; intakeImage?: IntakeImage;
+      sourceProjection?: number; pythonAttemptsProjection?: number; retentionBasis?: RetentionBasis[]; intakeImage?: IntakeImage; todoBasis?: {source:{id:string}};
     };
     let text = storedText;
     let value = JSON.parse(text);
@@ -230,7 +233,8 @@ export function openWorkspaceTools(options: {
         if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) return false;
       }
       const directOpen = name === 'open_learning' || (name === 'read_workspace' && value.sourceRef);
-      for (const witness of witnesses) options.track(witness, pythonAttempts || derivedSource || intakeImage || directOpen ? true : undefined);
+      for (const witness of witnesses) options.track(witness,
+        witness.id === todoBasis?.source.id || pythonAttempts || derivedSource || intakeImage || directOpen ? true : undefined);
       for (const witness of bankWitnesses) options.track(witness, true);
       for (const basis of trackedBasis) options.trackAssessment?.(basis);
       for (const basis of retentionBasis) options.trackRetention?.(basis);
@@ -297,7 +301,7 @@ export function openWorkspaceTools(options: {
     if (name === 'read_workspace' && args.id === 'learner') {
       for (const w of witnesses) if (w.type === goalType || w.type === organizerTaskType) overviewBasis.set(w.id, w);
     }
-    if (name === 'read_learner_radar') for (const w of witnesses) overviewBasis.set(w.id,w);
+    if (name === 'read_learner_radar') for (const w of witnesses) if (w.id !== todoBasis?.source?.id) overviewBasis.set(w.id,w);
     for (const item of name === 'search_workspace' || name === 'read_learner_radar' ? [] : values) {
       if (typeof item?.id === 'string' && witnesses.some(w => w.id === item.id)) {
         opened.set(item.id, {id:item.id, workspace:true, title:String(item.title ?? item.kind ?? '学习记录'), text:String(item.content ?? JSON.stringify(item)).slice(0,3000)});

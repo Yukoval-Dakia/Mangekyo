@@ -3,6 +3,7 @@ import type { Db, DbQuery, LearnerScope, ReadTransaction } from './db/types.ts';
 import type { CommandId, FactId } from './declarations/ids.ts';
 import type { Actor } from './commands/contracts.ts';
 import { erasePayloads } from './work/payload-erasure.ts';
+import type { SessionErasure } from './work/session-erasure.ts';
 
 // A rename preserves the catalog identity and requires every old connection to have left.
 export async function requireLifecycleCutover(tx: DbQuery) {
@@ -139,7 +140,7 @@ export type ErasureRequest = {
 // The trusted host resolves the owned aggregate and verifies its revision while the learner is locked.
 export async function eraseOriginal(db: Db, scope: LearnerScope, request: ErasureRequest,
   resolve: (tx: ReadTransaction) => Promise<{ids: readonly FactId[]; commandTypes: readonly string[]}>,
-  unlinkOriginal: () => Promise<void>) {
+  unlinkOriginal: () => Promise<void>, sessionErasure?: SessionErasure) {
   if (request.actor !== 'learner' || request.confirmed !== true) throw new LifecycleError(403, '须由学习者明确确认永久删除。');
   const keys = [scope.learner, request.requestId, request.root] as const;
   const saved = await db.tx(scope, async tx => {
@@ -156,7 +157,7 @@ export async function eraseOriginal(db: Db, scope: LearnerScope, request: Erasur
     return tx.withLearnerWrite(async tick => {
       await tx.insert('erasure_requests', {learner_id:tx.learner, request_id:request.requestId, root_id:request.root,
         expected_rev:request.expectedRev, generation:tick});
-      await erasePayloads(tx, tx.learner, ids, tick, commandTypes);
+      await erasePayloads(tx, tx.learner, ids, tick, commandTypes, sessionErasure);
       await tx.query(`UPDATE work SET state='cancelled',generation=generation+1,execution_ref=NULL,gather=NULL,gather_manifest=NULL
         WHERE learner_id=$1 AND slot_key=ANY($2) AND family='derivation'`, [tx.learner,ids]);
       await tx.query("UPDATE slot_state SET pending='none',last_error=NULL,changed_tick=$3 WHERE learner_id=$1 AND slot_key=ANY($2)",

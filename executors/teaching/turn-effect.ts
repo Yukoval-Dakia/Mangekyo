@@ -30,7 +30,8 @@ export function createTeachingModelEffect<TReadTx, TWriteTx extends TReadTx = TR
   getLearningMemoryContext: () => string | undefined;
   loadSelected: () => Promise<readonly SelectedNotionPage[]>;
   confirmPages: (pages: readonly SelectedNotionPage[]) => Promise<void>;
-  validWorkInputs: (tx: TReadTx, use?: 'publish' | 'dispatch') => Promise<{ pages: readonly SelectedNotionPage[] }>;
+  validWorkInputs: (tx: TReadTx, use?: 'publish' | 'dispatch') => Promise<{ manifest: { inputs: readonly unknown[] }; pages: readonly SelectedNotionPage[]; usesRadarTodo?: boolean }>;
+  bindSources: (tx: TWriteTx, manifest: { inputs: readonly unknown[] }) => Promise<void>;
   loadSettings: () => Promise<ProviderSettings>;
   jitCounterFor: (current: ProviderSettings) => { id: string; endpoint: string; model: string } | undefined;
   checkWorkspaceRoute: (current: ProviderSettings) => Promise<void>;
@@ -38,7 +39,7 @@ export function createTeachingModelEffect<TReadTx, TWriteTx extends TReadTx = TR
   runEffect: (
     request: { stepKey: string; label: string; input: JsonObject },
     execute: (requestId: string, checkDispatch: (tx: TWriteTx) => Promise<void>) => Promise<Json>,
-    authorize: (tx: TReadTx) => Promise<void>,
+    authorize: (tx: TWriteTx) => Promise<void>,
   ) => Promise<{ readonly kind: 'unknown'; readonly providerEffectId: string | null } | { readonly kind: 'done'; readonly result: Json }>;
   runDispatchTx: <T>(fn: (tx: TWriteTx) => Promise<T>) => Promise<T>;
   checkFreshEvidence: () => Promise<void>;
@@ -64,14 +65,14 @@ export function createTeachingModelEffect<TReadTx, TWriteTx extends TReadTx = TR
       workspaceRevision: params.submission.workspaceRevision,
     });
     const authorize = async (tx: TReadTx, current?: ProviderSettings, use: 'publish' | 'dispatch' = 'publish') => {
-      const { pages } = await params.validWorkInputs(tx, use);
+      const { manifest, pages, usesRadarTodo } = await params.validWorkInputs(tx, use);
       current ??= await params.loadSettings();
       const jit = params.getJit();
       validateStepDispatchRules({
         step,
         learningV1: params.learningV1,
         hasRetention: ledger.retention.size > 0,
-        hasSelected: selected.length > 0,
+        hasSelected: selected.length > 0 || usesRadarTodo === true,
         selectedUnchanged: JSON.stringify(selected) === JSON.stringify(pages),
         settings: params.settings,
         current,
@@ -81,6 +82,7 @@ export function createTeachingModelEffect<TReadTx, TWriteTx extends TReadTx = TR
         grants: params.grants,
       });
       if (params.submission.workspaceRevision) await params.checkWorkspaceRoute(current);
+      return manifest;
     };
     let dispatchDenied: unknown;
     const jit = params.getJit();
@@ -122,7 +124,10 @@ export function createTeachingModelEffect<TReadTx, TWriteTx extends TReadTx = TR
           };
           return recorded.invoke(requestId, dispatch);
         },
-        authorize,
+        async tx => {
+          const manifest = await authorize(tx);
+          await params.bindSources(tx, manifest);
+        },
       )
       .catch(error => {
         if (params.isLifecycleError(error)) throw new ChangedEvidence();
