@@ -43,11 +43,13 @@ function references(value: unknown, field: string) {
 
 function parseHintLadder(input: unknown) {
   const value = record(input);
-  fields(value, 'l1', 'l2', 'l3', 'source_ref');
+  fields(value, 'l1', 'l2', 'l3', 'worked_example', 'source_ref');
   const l1 = bounded(value.l1, 'L1 方向轻推', 25);
   if (/[\r\n\u2028\u2029]/u.test(l1)) throw new Error('L1 方向轻推须为单行。');
+  const workedExample = value.worked_example === undefined ? undefined : bounded(value.worked_example, 'L3 局部示范', 1600);
   return {
     l1, l2: bounded(value.l2, 'L2 关键第一步', 1600), l3: bounded(value.l3, 'L3 完整思路与参考解', 4000),
+    ...(workedExample === undefined ? {} : { worked_example: workedExample }),
     source_ref: source(value.source_ref),
   };
 }

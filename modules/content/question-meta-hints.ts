@@ -10,17 +10,23 @@ export type QuestionHintAccess = Pick<AssetReadContext, 'learner'> & {
   readonly purpose: string;
   readonly recipient: string;
   readonly isUnavailable: (error: unknown) => boolean;
+  /** The host checks an answer permit for this issuance/item under the same transaction. */
+  readonly authorizeSolution?: (scope: {
+    readonly question: QuestionHintInput['question'];
+    readonly purpose: string;
+    readonly recipient: string;
+  }) => boolean | Promise<boolean>;
 };
 
 const steps = {
   1: { kind: 'hint_l1', order: 1 },
   2: { kind: 'hint_l2', order: 2 },
-  3: { kind: 'solution', order: 3 },
 } as const;
 
 export type QuestionHintInput = {
   readonly question: FactRef & { readonly accessEpoch: Tick };
-  readonly level: keyof typeof steps;
+  readonly level: 1 | 2 | 3;
+  readonly reveal?: 'worked-example' | 'solution';
   readonly expectedDerivationId?: DerivationId;
 };
 
@@ -32,10 +38,11 @@ class QuestionHintUnavailable extends Error {}
  * issuance, item, level, purpose and recipient, and supplies the original derivation ID.
  * Keep the witness server-side and project only the selected text and level.
  */
-export async function readQuestionHintLevel(access: QuestionHintAccess, { question, level, expectedDerivationId }: QuestionHintInput) {
+export async function readQuestionHintLevel(access: QuestionHintAccess, { question, level, reveal, expectedDerivationId }: QuestionHintInput) {
   if ((level !== 1 && level !== 2 && level !== 3) || question.learner !== access.learner ||
       typeof access.recipient !== 'string' || !access.recipient.trim() ||
       typeof access.purpose !== 'string' || !access.purpose.trim()) return undefined;
+  if (level === 3 ? reveal !== 'worked-example' && reveal !== 'solution' : reveal !== undefined) return undefined;
 
   const snapshots = new Map<string, ReturnType<AssetReadContext['read']['fact']>>();
   const read: AssetReadContext['read'] = {
@@ -75,10 +82,16 @@ export async function readQuestionHintLevel(access: QuestionHintAccess, { questi
     if (!jsonObject(value) || value.sticky !== true || !value.hint_ladder || !sameEffectInput(value.hint_ladder, {
       ...ladder, verification: 'learner-reviewed',
     }) || !value.basis || !sameEffectInput(value.basis, draft.basis)) return undefined;
-    return { level, text: ladder[`l${level}`], step: steps[level], witness: {
-      question: { ...frozen.ref, accessEpoch: frozen.accessEpoch },
-      overlay: { slot, derivationId: overlay.id }, purpose: access.purpose, recipient: access.recipient,
-    } };
+    const scope = { question: { ...frozen.ref, accessEpoch: frozen.accessEpoch }, purpose: access.purpose, recipient: access.recipient };
+    const witness = { ...scope, overlay: { slot, derivationId: overlay.id } };
+    if (level !== 3) return { level, text: ladder[`l${level}`], step: steps[level], witness };
+    if (reveal === 'worked-example' && ladder.worked_example) {
+      return { level, text: ladder.worked_example, step: { kind: reveal, order: 3 } as const, witness };
+    }
+    if (reveal === 'solution' && await access.authorizeSolution?.(scope) === true) {
+      return { level, text: ladder.l3, step: { kind: reveal, order: 3 } as const, witness };
+    }
+    return undefined;
   } catch (error) {
     if (error instanceof FactNotFoundError || error instanceof AssetBasisError ||
         error instanceof QuestionHintUnavailable || access.isUnavailable(error)) return undefined;

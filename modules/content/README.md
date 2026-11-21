@@ -34,8 +34,10 @@
 
 `content.proposeQuestionMeta` 可携带 `expectedMetaRev`，其中 `expectedRev` 为题版，`expectedMetaRev` 为本题版活元信息草稿的当前修订号。宿主先授权打开题版，再通过 `@mangekyo/module-content/question-meta` 的 `openQuestionMetaDraft(read, questionRef)` 读取草稿基版。缺少草稿基版的老提议仅能追加或重复同值条目。重算所得的同键差异继续由 lazy `overlay.question_meta` 投影，本人确认后更新 sticky 草稿。
 
-三阶提示提议使用 `append_metadata.hint_ladder`，填写 `l1`、`l2`、`l3` 和已打开的 `source_ref`。确认人核对 L1 只提示条件或工具，L2 只给第一步，L3 给完整思路与参考解。L1 限单行 25 字。旧解法里的 `hints` 保留原义。园艺候选由提议区待审。
+三阶提示提议使用 `append_metadata.hint_ladder`，填写 `l1`、`l2`、`l3` 和已打开的 `source_ref`。确认人核对 L1 只提示条件或工具，L2 只给第一步，`l3` 给完整思路与参考解。可选 `worked_example` 只给局部示范。L1 限单行 25 字。旧解法里的 `hints` 保留原义。园艺候选由提议区待审。
 
 宿主从本次授权发放获取固定题版及授权代次，通过同一事务绑定真实接收人的事实读与当前有效槽读，再调用 `readQuestionHintLevel(access, { question, level, expectedDerivationId })`。槽读要复验 manifest 及其来源对该接收人的授权。返回值只含当档正文、档次、曝光阶次和服务端见证。宿主把见证绑定到发放、题项与档次，在展示确认或重放时复验绑定并传原 derivation ID。展示确认经 Activity 记录，作答框与草稿为空时的「先写一句」由宿主处理。
+
+L3 要求显式传入 `reveal`。选 `worked-example` 只读已有局部示范，记 `worked-example / 3`。选 `solution` 时，宿主必须以 `authorizeSolution` 核对本次发放、固定题项、用途与真实接收人的答案许可，获准才读完整解，记 `solution / 3`。宿主签名票据还应绑定具体揭晓类型，展示确认或重放时重新核对许可。
 
 [graph-evolution.json](samples/graph-evolution.json) 提供联调载荷。依次创建 `question`、`concepts`、`edge`，再提议与确认 `split`、`merge` 或 `questionMeta`。拆分前原边指向「平均速度」。确认后重开当前边指向「不等时平均速度」，固定版仍指向「平均速度」。

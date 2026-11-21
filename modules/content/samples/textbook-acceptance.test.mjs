@@ -198,11 +198,13 @@ async function exerciseGraphEvolution({ db, learner, send, stableId, assert, rea
   const hint_ladder = { l1: '留意分段用时。', l2: '先写出每段的路程表达式。', l3: '设两段速度为 v₁、v₂，总路程为 v₁×1+v₂×2。用总路程除以总时间 3，得到 (v₁+2v₂)/3。', source_ref: anchor('prompt') };
   const withLadder = { ...graph.questionMeta, append_metadata: { ...graph.questionMeta.append_metadata, hint_ladder } };
   const frozen = { learner, id: question, rev: 1, accessEpoch: '0' };
-  const hint = (level, expectedDerivationId, { recipient = learner, permits = true, ref = frozen } = {}) => db.snapshot({ learner }, tx =>
+  const hint = (level, expectedDerivationId, { recipient = learner, permits = true, ref = frozen, reveal, authorizeSolution } = {}) => db.snapshot({ learner }, tx =>
     readQuestionHintLevel({ learner, recipient, purpose: 'teaching', isUnavailable: error => error instanceof FactReadDeniedError,
+      authorizeSolution,
       read: { ...createAuthorizedFactReader(tx, 'teaching', () => permits && recipient === learner),
         slot: slot => readCurrentSlotOutcome(tx, slot, questionMetaDeriver, 'teaching') },
-    }, { question: ref, level, expectedDerivationId }));
+    }, { question: ref, level, reveal, expectedDerivationId }));
+  hint_ladder.worked_example = '例如，先把第一段路程写成 v₁×1。';
   await assert.rejects(propose(proposeQuestionMetaCommand, { ...withLadder, append_metadata: { hint_ladder: { ...hint_ladder, l1: '字'.repeat(26) } } }), /25 字/);
   const proposed = await propose(proposeQuestionMetaCommand, withLadder);
   for (const blockId of ['NONEXISTENT-AUDIT-BLOCK', 'private-solution']) {
@@ -231,12 +233,22 @@ async function exerciseGraphEvolution({ db, learner, send, stableId, assert, rea
     }),
   });
   const started = performance.now();
-  const opened = await Promise.all([1, 2, 3].map(level => hint(level)));
+  const opened = await Promise.all([hint(1), hint(2), hint(3, derivationId, { reveal: 'solution', authorizeSolution(scope) {
+    assert.deepEqual(scope, { question: frozen, purpose: 'teaching', recipient: learner });
+    return true;
+  } })]);
   const elapsedMs = performance.now() - started;
   const witness = { question: frozen, overlay: { slot: { learner, type: questionMetaType, key: questionKey(frozen) }, derivationId },
     purpose: 'teaching', recipient: learner };
   assert.deepEqual(opened, [1, 2, 3].map(level => ({ level, text: hint_ladder[`l${level}`],
     step: { kind: ['hint_l1', 'hint_l2', 'solution'][level - 1], order: level }, witness })));
+  const worked = await hint(3, derivationId, { reveal: 'worked-example', authorizeSolution: assert.fail });
+  assert.deepEqual(worked, { level: 3, text: hint_ladder.worked_example, step: { kind: 'worked-example', order: 3 }, witness });
+  assert.equal(await hint(3, derivationId, { authorizeSolution: assert.fail }), undefined);
+  assert.equal(await hint(3, derivationId, { reveal: 'solution' }), undefined);
+  assert.equal(await hint(3, derivationId, { reveal: 'solution', authorizeSolution: async () => false }), undefined);
+  assert.equal(await hint(2, derivationId, { reveal: 'solution', authorizeSolution: assert.fail }), undefined);
+  console.log(JSON.stringify({ hintRevealAcceptance: { worked, solution: opened[2], implicit: 'denied', missingPermit: 'denied', refusedPermit: 'denied' } }));
   assert.deepEqual(await hint(1, derivationId), opened[0]);
   assert.equal(await hint(1, stableId('stale-hint-overlay')), undefined);
   assert.equal(await hint(1, derivationId, { recipient: 'other-recipient' }), undefined);
