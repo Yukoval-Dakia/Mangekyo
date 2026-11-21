@@ -9,6 +9,7 @@ import type { Manifest } from '../derivations/manifest.ts';
 import type { WorkRef, WorkRequest } from './demand.ts';
 import type { Json } from '../declarations/types.ts';
 import { newUlid } from './identity.ts';
+import { assertPayloadWork } from './payload.ts';
 
 export type EffectRequest = {
   readonly learner: string;
@@ -17,6 +18,7 @@ export type EffectRequest = {
   readonly stepKey: string;
   readonly label: string;
   readonly input: Json;
+  readonly payloadWork?: WorkRef;
 };
 export type EffectResult =
   | { readonly kind: 'done'; readonly result: Json }
@@ -41,7 +43,7 @@ const json = z.json();
 export class EffectBudgetExceeded extends Error {}
 export class EffectIdentityMismatch extends Error {}
 
-type EffectBudget = {
+export type EffectBudget = {
   readonly route: string;
   readonly limitUsdMicros: number;
   readonly reserveUsdMicros: number;
@@ -61,6 +63,13 @@ export async function effectBudgetUsage(tx: ReadTransaction) {
       ) charges`, [tx.learner],
   );
   return { settled: BigInt(row!.settled), held: BigInt(row!.held) };
+}
+
+async function erasedProviderEffect(tx: ReadTransaction, identity: EffectIdentity) {
+  const {rows: [receipt]} = await tx.query<{provider_effect_id: string}>(
+    `SELECT provider_effect_id FROM erased_effect_receipts
+     WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5`, identity);
+  return receipt?.provider_effect_id;
 }
 
 /** The response is already durable. Publication may be retried without access to the transport. */
@@ -87,7 +96,7 @@ async function publishPricedReceipt(tx: DbTransaction, identity: EffectIdentity,
 export async function runEffect(
   db: Db,
   request: EffectRequest,
-  invoke: (providerEffectId: string, checkDispatch: (tx: ReadTransaction) => Promise<void>) => Promise<Json>,
+  invoke: (providerEffectId: string, checkDispatch: (tx: DbTransaction) => Promise<void>) => Promise<Json>,
   authorize?: (tx: ReadTransaction) => Promise<void> | void,
   // Supplied by the host only for a closed set of independently authored fact inputs.
   basis?: { manifest: Manifest; work?: WorkRef & { ownerSlot?: WorkRequest } },
@@ -104,6 +113,9 @@ export async function runEffect(
   const reservation = await db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
     await assertUnburned(tx, 'fact', [request.ownerId]);
+    const erasedId = await erasedProviderEffect(tx, identity);
+    if (erasedId) return { kind: 'unknown', providerEffectId: erasedId } as const;
+    if (request.payloadWork) await assertPayloadWork(tx, request.payloadWork);
     await authorize?.(tx);
     const { rows: [prior] } = await tx.query<EffectRow>(
       `SELECT input_digest, provider_effect_id, state, result, budget_route, reserved_usd_micros::text,
@@ -146,6 +158,7 @@ export async function runEffect(
         state: 'started',
         started_tick: tick,
         input_basis: basis ? JSON.stringify(basis) : null,
+        ...(request.payloadWork && {payload_work_id:request.payloadWork.workId}),
         ...(budget && { reserved_usd_micros: budget.reserveUsdMicros, budget_route: budget.route }),
       });
       return { kind: 'invoke', providerEffectId, tick, deletionWatermark: await deletionWatermark(tx) } as const;
@@ -155,9 +168,11 @@ export async function runEffect(
 
   // Call under the learner lock immediately before the transport starts. A
   // durable claim can survive a transaction that changes the deletion fence.
-  const checkDispatch = async (tx: ReadTransaction) => {
+  const checkDispatch = async (tx: DbTransaction) => {
     if (tx.learner !== learner) throw new Error('Effect dispatch learner mismatch');
+    await lockLearner(tx, learner);
     await assertUnburned(tx, 'fact', [request.ownerId]);
+    if (request.payloadWork) await assertPayloadWork(tx, request.payloadWork);
     if (!basis) await assertDeletionWatermark(tx, reservation.deletionWatermark);
     const { rows: [active] } = await tx.query(`
       SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3
@@ -234,11 +249,13 @@ export async function runEffect(
 /** Discovery may schedule a new request or resume its receipt, but cannot resend a pending request. */
 export async function canProcessPricedEffect(tx: ReadTransaction,
   { ownerKind, ownerId, stepKey, label }: Omit<EffectRequest, 'learner' | 'input'>) {
+  const identity = [tx.learner, ownerKind, ownerId, stepKey, label] as const;
+  if (await erasedProviderEffect(tx, identity)) return false;
   const { rowCount } = await tx.query(
     `SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5
       AND ((state='started' AND result IS NULL) OR consumed_tick IS NOT NULL OR
         NOT effect_may_settle(learner_id, owner_id, started_tick, input_basis))`,
-    [tx.learner, ownerKind, ownerId, stepKey, label],
+    identity,
   );
   return rowCount === 0;
 }
@@ -274,7 +291,7 @@ export async function recordLocalRead(
   db: Db,
   request: EffectRequest,
   read: (tx: ReadTransaction) => Promise<string>,
-  authorize: (tx: ReadTransaction) => Promise<void>,
+  authorize: (tx: DbTransaction) => Promise<void>,
 ): Promise<string> {
   const learner = learnerId(request.learner);
   const identity = [learner, request.ownerKind, request.ownerId, request.stepKey, request.label] as const;
@@ -282,6 +299,7 @@ export async function recordLocalRead(
   return db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
     await assertUnburned(tx, 'fact', [request.ownerId]);
+    if (request.payloadWork) await assertPayloadWork(tx, request.payloadWork);
     await authorize(tx);
     const { rows: [saved] } = await tx.query<Pick<EffectRow, 'state' | 'result' | 'input_digest'>>(
       `SELECT state, result, input_digest FROM effects
@@ -303,6 +321,7 @@ export async function recordLocalRead(
         step_key: request.stepKey,
         label: request.label,
         input_digest: digest,
+        ...(request.payloadWork && {payload_work_id:request.payloadWork.workId}),
         state: 'done',
         result: JSON.stringify(result),
         started_tick: tick,

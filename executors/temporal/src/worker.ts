@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { Client } from '@temporalio/client';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { heartbeat } from '@temporalio/activity';
+import { Context, heartbeat } from '@temporalio/activity';
 import { ApplicationFailure } from '@temporalio/common';
 import { NativeConnection, Worker, type WorkerOptions } from '@temporalio/worker';
 import { createCoordinatorActivity, type AdvanceCoordinator } from './coordinator-activity.ts';
@@ -34,6 +34,8 @@ export async function activateLocalDeployment(client: Client, config: Pick<WorkW
     }
   }
 }
+
+export const workCancellationSignal = () => Context.current().cancellationSignal;
 
 export type ExecuteWork = (executionRef: string) => Promise<unknown>;
 

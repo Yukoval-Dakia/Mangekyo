@@ -252,7 +252,8 @@ export async function completeTodo(tx: DbTransaction, tick: Tick, ref: WorkRef, 
   const updated = await tx.query(
     `UPDATE work SET state='satisfied', result_id=$6, revision=revision+1
      WHERE learner_id=$1 AND id=$2 AND generation=$3 AND slot_key=$4 AND revision=$5
-       AND ${todoFamilies} AND state='ready'`, [ref.learner, ref.workId, ref.generation, todo.id, todo.revision, resultId],
+       AND ${todoFamilies} AND state='ready' AND (publication_fact_id IS NULL OR publication_fact_id=$6)`,
+    [ref.learner, ref.workId, ref.generation, todo.id, todo.revision, resultId],
   );
   if (!updated.rowCount) return false;
   await setPending(tx, { slotType: todoSlot, slotKey: todo.id }, 'none');

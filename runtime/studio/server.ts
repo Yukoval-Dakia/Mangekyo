@@ -7,7 +7,7 @@ import { applyKernelSchema, workerStorage } from '../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { acknowledgeStartedWork, readWork, relayPending, type WorkRef } from '../../kernel/src/work/index.ts';
 import { capabilityTaskQueue, startWork } from '../../executors/temporal/src/index.ts';
-import { activateLocalDeployment, createWorkWorker } from '../../executors/temporal/src/worker.ts';
+import { activateLocalDeployment, createWorkWorker, workCancellationSignal } from '../../executors/temporal/src/worker.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { openStudioNotion } from './notion.ts';
 import { openStudio } from './sessions.ts';
@@ -79,7 +79,9 @@ const scoutModule = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE;
 const scoutHost = scoutModule
   ? validateResearchScoutHost((await import(pathToFileURL(scoutModule).href)).researchScoutHost)
   : undefined;
-const research = openResearch(db, activity, companion, undefined, scoutHost, understandingTransport);
+const tariffModule = process.env.MANGEKYO_RESEARCH_WORKER_TARIFF;
+const tariff = tariffModule ? (await import(pathToFileURL(tariffModule).href)).workerTariff : undefined;
+const research = openResearch(db, activity, companion, undefined, scoutHost, understandingTransport, undefined, tariff);
 const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
 const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
@@ -149,7 +151,7 @@ async function runWorker(storeId: string) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
   async function executeDefault(ref: WorkRef, terminal: boolean) {
-    if (await research.execute(ref, terminal)) return;
+    if (await research.execute(ref, terminal, workCancellationSignal())) return;
     const work = await readWork(db, ref);
     if (!work || [confirmedTeachingMethod,learningToolsMethod].includes(work.deriver)) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);

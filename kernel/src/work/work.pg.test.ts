@@ -8,6 +8,7 @@ import { gatherSnapshot } from '../derivations/gather.ts';
 import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../schema.ts';
 import { eraseOriginal } from '../lifecycle.ts';
 import { newUlid } from './identity.ts';
+import { bindWorkPayload } from './payload.ts';
 import {
   checkTodoTriggers, completeTodo, deferDispatchedTodo, emitTodo, maxTodoHops, newFactWatermark, readTodo, updateOrCancelTodo, type TodoInput,
 } from './todos.ts';
@@ -192,6 +193,57 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     await runEffect(db, { ...request, ownerId: newUlid() }, next, undefined, undefined, pricing);
     expect(next).toHaveBeenCalledTimes(1);
     expect(await db.snapshot({ learner }, effectBudgetUsage)).toEqual({ held: 60n, settled: 25n });
+  });
+
+  it('erases registered work payloads and records late cost without letting them resend', async () => {
+    const root = factId(newUlid()), primary = factId(newUlid()), now = Date.now();
+    const usage = () => db.snapshot({learner}, effectBudgetUsage);
+    const todo = await db.tx({learner}, tx => tx.withLearnerWrite(async tick => {
+      await tx.insert('facts', {learner_id:learner, id:root, type:'test.original', current_rev:1,
+        created_tick:tick, changed_tick:tick});
+      return emitTodo(tx,tick,{
+        dedupKey:'compare', trigger:{kind:'immediate'}, workerProfile:'heavy_tutor_prep', goal:'compare',
+        sourceFactRev:{id:primary,revision:1,accessEpoch:'0'}, refs:[{id:root,revision:1,accessEpoch:'0'}],
+        autonomyTier:1, budgetCap:20, settingsRevision:1, expiresAtMs:now+60000,
+      },now,async () => true);
+    }));
+    const work = { learner, workId:todo!.id, generation:'1' };
+    await db.tx({learner}, tx => bindWorkPayload(tx,work,[root,primary],
+      {factId:factId(newUlid()), commandId:commandId(newUlid())}));
+    const request = {learner, ownerKind:'derivation', ownerId:primary, stepKey:'send',
+      label:'priced-test', input:{}} as const;
+    const cache = {...request,label:'cached-test'};
+    const other = {...cache,stepKey:'other'};
+    const linked = {...request,payloadWork:work};
+    const authorize = async () => {};
+    await recordLocalRead(db,other,async () => 'unrelated result',authorize);
+    const cached = Promise.withResolvers<string>(), reply = Promise.withResolvers<number>();
+    const send = vi.fn(async (id: string) => {
+      await recordLocalRead(db,{...cache,payloadWork:work},async () => 'mixed result',authorize);
+      cached.resolve(id);
+      return reply.promise;
+    });
+    const pricing = {route:'local',limitUsdMicros:40,reserveUsdMicros:20,actualUsdMicros:() => 7};
+    const running = runEffect(db,linked,send,undefined,undefined,pricing);
+    void running.catch(cached.reject);
+    let providerEffectId: string;
+    try {
+      providerEffectId = await cached.promise;
+      expect(await runEffect(db,linked,send,undefined,undefined,pricing))
+        .toEqual({kind:'unknown',providerEffectId,inFlight:true});
+      await eraseOriginal(db,{learner},{actor:'learner',confirmed:true,requestId:commandId(newUlid()),root,expectedRev:1},
+        async () => ({ids:[root],commandTypes:[]}),async () => {});
+      expect(await usage()).toEqual({held:20n,settled:0n});
+      expect((await db.query('SELECT step_key,result FROM effects WHERE learner_id=$1 AND owner_id=$2',[learner,primary])).rows)
+        .toEqual([{step_key:other.stepKey,result:'unrelated result'}]);
+    } finally {
+      reply.resolve(7);
+      await running;
+    }
+    expect(await running).toEqual({kind:'unknown',providerEffectId});
+    expect(await usage()).toEqual({held:0n,settled:7n});
+    expect(await runEffect(db,request,send,undefined,undefined,pricing)).toEqual({kind:'unknown',providerEffectId});
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it.each(['wait first', 'target first'])('resumes strict range demand with concurrent writes (%s)', async order => {
@@ -548,7 +600,7 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
     expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows)
-      .toEqual(Array.from({ length: 14 }, (_, i) => ({ version: i + 1 })));
+      .toEqual(Array.from({ length: 16 }, (_, i) => ({ version: i + 1 })));
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -560,8 +612,8 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (15)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (17)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 15');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 17');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
   }, { initialize: legacyWorkSchema }));

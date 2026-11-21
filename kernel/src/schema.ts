@@ -1,3 +1,5 @@
+import { finishWorkPayloadCutover } from './work/legacy-payload-erasure.ts';
+import { migrateWorkPayloads } from './work/payload-erasure.ts';
 import { installErasureFence, migrateLifecycle, requireLifecycleCutover } from './lifecycle.ts';
 import type { Db, DbQuery } from './db/types.ts';
 import { newUlid } from './work/identity.ts';
@@ -270,6 +272,8 @@ const migrations = [
     await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=13');
   },
   migrateRoutedTodos,
+  migrateWorkPayloads,
+  finishWorkPayloadCutover,
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */
