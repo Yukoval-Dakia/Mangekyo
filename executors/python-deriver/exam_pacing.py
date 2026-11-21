@@ -285,3 +285,142 @@ def derive(evidence, *, method_version=METHOD_VERSION):
     if within is not None:
         result["within_attempt"] = within
     return result
+
+
+TIME_VALUE_METHOD = "plan/exam-pacing@2"
+
+
+def is_time_value_input(value):
+    if not _record(value, ("slice", "attempt_ref")) or not is_evidence_slice(value["slice"]):
+        return False
+    ref = value["attempt_ref"]
+    return (_record(ref, ("id", "rev")) and _key(ref["id"])
+            and _number(ref["rev"], 1, 2**53 - 1) and ref["rev"] == int(ref["rev"]))
+
+
+def _item_state(process, formal, estimate):
+    if formal is None:
+        return "unknown"
+    marker = process["exam_pacing_item"]
+    score = formal["exam_pacing_item"]["score"]
+    earned, maximum = score["earned"], score["maximum"]
+    if marker.get("skipped") and marker.get("returned") and earned > 0:
+        return "recovered-skip"
+    if earned == maximum:
+        return "steady"
+    if estimate is None:
+        return "unknown"
+    elapsed = process["effective_duration_ms"]
+    expected = estimate["exam_pacing_item"]["estimated_duration_ms"]
+    if 5 * elapsed > 9 * expected:
+        return "time-sink"
+    if elapsed < expected and formal.get("error_stage") in ("reading", "execution"):
+        return "fast-slip"
+    return "unknown"
+
+
+def _time_value_summary(items):
+    labels = (("steady", "拿满分"), ("fast-slip", "低耗时失分"),
+              ("time-sink", "超估时失分"), ("recovered-skip", "回访得分"))
+    observations = []
+    for state, label in labels:
+        count = sum(row["state"] == state for row in items)
+        if count:
+            observations.append(f"{count} 题{label}")
+    if not observations:
+        return "本卷各题的节奏证据仍不足。"
+    unknown = sum(row["state"] == "unknown" for row in items)
+    suffix = f"，另有 {unknown} 题节奏未确认。" if unknown else "。"
+    return "本卷有 " + "、".join(observations) + suffix
+
+
+def _item_role(event, submitted_at, scale_key):
+    item = event["exam_pacing_item"]
+    time = _time(event["occurred_at"])
+    has_process = "effective_duration_ms" in event or "skipped" in item
+    has_estimate = "estimated_duration_ms" in item
+    has_score = "score" in item
+    if sum((has_process, has_estimate, has_score)) != 1:
+        return None
+    if has_process and time <= submitted_at:
+        return "process"
+    if has_estimate and time <= submitted_at:
+        return "estimate"
+    if has_score and time >= submitted_at and _key(scale_key) and item["scale_key"] == scale_key:
+        return "formal"
+    return None
+
+
+def derive_time_value(value):
+    evidence, ref = value["slice"], value["attempt_ref"]
+    base = {"method_version": TIME_VALUE_METHOD, "attempt_ref": ref}
+    unknown = {**base, "kind": "unknown"}
+    eligible = _evidence_window(evidence)
+    attempts = [event for event in _eligible_events(evidence)
+                if event["ref"] == ref["id"] and event["rev"] == ref["rev"]]
+    if len(attempts) != 1:
+        return unknown
+    attempt = attempts[0]
+    paper_key = attempt["exam_pacing"].get("paper_key")
+    if not _key(paper_key):
+        return unknown
+    submitted_at = _time(attempt["occurred_at"])
+    scale_key = attempt["exam_pacing"].get("scale_key")
+    items, positions = {}, {}
+    process_witnesses = set()
+    counts = set()
+    classifications = []
+    for event in evidence["events"]:
+        item = event.get("exam_pacing_item")
+        if not item or item["attempt_ref"] != ref or item["paper_key"] != paper_key:
+            continue
+        if not eligible(event, paper_key, ref["id"]):
+            continue
+        role = _item_role(event, submitted_at, scale_key)
+        if role is None or not _key(event["ref"]):
+            continue
+        if role != "process":
+            classifications.append((role, event))
+            continue
+        item_id, position = item["item_id"], item["position"]
+        if not _key(item_id) or item_id in items or position in positions:
+            return unknown
+        witness = (event["ref"], event["rev"])
+        if witness in process_witnesses:
+            return unknown
+        process_witnesses.add(witness)
+        positions[position] = item_id
+        counts.add(item["item_count"])
+        items[item_id] = {"process": event}
+    if counts != {len(positions)}:
+        return unknown
+
+    # Process rows projected from the frozen paper define coverage and order.
+    for role, event in classifications:
+        item = event["exam_pacing_item"]
+        row = items.get(item["item_id"])
+        if row is None:
+            continue
+        process = row["process"]
+        anchor = process["exam_pacing_item"]
+        if (item["position"] != anchor["position"] or item["item_count"] != anchor["item_count"]
+                or event["ref"] == process["ref"]):
+            continue
+        row[role] = event if role not in row else None
+    outputs = []
+    for position, item_id in sorted(positions.items()):
+        row = items[item_id]
+        process = row["process"]
+        if not _item_duration(process.get("effective_duration_ms")):
+            return unknown
+        formal, estimate = row.get("formal"), row.get("estimate")
+        if formal and estimate and formal["ref"] == estimate["ref"]:
+            estimate = None
+        outputs.append({"item_id": item_id, "position": position, "effective_duration_ms": process["effective_duration_ms"],
+                        "state": _item_state(process, formal, estimate)})
+    total = sum(row["effective_duration_ms"] for row in outputs)
+    whole_duration = attempt.get("effective_duration_ms")
+    if total == 0 or (whole_duration is not None and (not _item_duration(whole_duration) or total > whole_duration)):
+        return unknown
+    return {**base, "kind": "observed", "total_duration_ms": total, "items": outputs,
+            "summary": _time_value_summary(outputs)}
