@@ -48,6 +48,18 @@ it('uses the explicit total when individual criteria also mention their maxima',
   expect(result.score).toEqual({earned:2, maximum:3});
 });
 
+it('keeps ordinary rubric grading to one model round', async () => {
+  const fetch = mockChat(() => JSON.stringify({verdict: 'correct', checks: [
+    {criterion: '除法', status: 'correct', reference: '150÷3=50', quote: '50'},
+  ]}));
+  const result = await assessWithAgent({question: '150÷3？', answer: '50', rubric: '商正确'}, deps);
+  expect(result.verdict).toBe('correct');
+  expect(fetch).toHaveBeenCalledTimes(1);
+  const body = bodyOf(fetch.mock.calls[0]?.[1]);
+  expect(body.messages[0].content).toContain('常规文字或数学 Rubric 不需要多余工具探测');
+  expect(body.tools.map((tool: {function: {name: string}}) => tool.function.name)).toEqual(['python', 'open_tool_result']);
+});
+
 it('admits witnessed 5-value error_stage and rejects invalid or full-credit values', async () => {
   const checks = [{criterion:'除法', status:'incorrect', reference:'150÷3=50', quote:'150÷3=45'}];
   const run = (reply: object, answer = '150÷3=45') => (mockChat(() => JSON.stringify(reply)), assessWithAgent({question:'平均速度', answer, rubric:'看算式'}, deps));

@@ -13,7 +13,7 @@ import {openToolResult, studyToolResults} from './study-tool-results.ts';
 import { memoryToolDefinitions, workspaceDefinitions, type ReceiveStudyImage, type StudyImage, type WorkspaceTools } from './workspace-tools.ts';
 import {pythonAttemptSelection} from './python-attempt-selection.ts';
 import { createStudyTools, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
-import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
+import { type CompletionUsage, type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch} from './learning-turn.ts';
 import {adaptWorkspaceResult, learningToolFallback, narrowWorkspaceDefinitions, saveBeliefDefinition, toolFailure,
@@ -45,7 +45,8 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   onMemoryDelivered?: (range: DeliveredToolRange) => void;
   openMemoryRegion?: (input: Record<string, unknown>, step: number) => Promise<string>;
   maxCompletionTokens?: 4096 | 8192;
-  tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
+  toolCallBudget?: number;
+  tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; pythonOnly?: boolean; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
 };
 type StudyRunOptions = StudyAgentOptions & { discoverTools?: boolean; metadataOnlyMessage?: Message };
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
@@ -101,7 +102,13 @@ const memoryRegionTool = { type: 'function', function: { name: 'open_memory_regi
     required: ['region', 'start', 'basisDigest'], additionalProperties: false } } };
 const parallelReadOnlyWorkspaceTools = new Set(['open_learning', 'search_workspace', 'read_workspace', 'read_learner_radar']);
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
-type ModelReply = { message?: string; reportedModel?: string; calls?: FunctionCall[]; providerTurn?: ProviderTurn };
+type ModelReply = {
+  message?: string;
+  reportedModel?: string;
+  usage?: CompletionUsage;
+  calls?: FunctionCall[];
+  providerTurn?: ProviderTurn;
+};
 
 function summarise(call: FunctionCall, args: Record<string, unknown>, output: string) {
   switch (call.function.name) {
@@ -147,7 +154,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const { model, reasoningEffort } = profileFor(options.provider);
   const learning = options.learningTools && createLearningTurn(options.learningTools, results, options.runEffect, model);
   const recovery = learning && learningRecovery();
-  const maxToolCalls = workspace || learning ? 12 : defaultToolBudget;
+  const maxToolCalls = options.toolCallBudget ?? (workspace || learning ? 12 : defaultToolBudget);
   const stride = workspace || learning ? 16 : 8;
   const anthropic = providerProtocol(options.provider) === 'anthropic';
   const allowParallelCalls = learning || (workspace?.executeRead && !anthropic);
@@ -179,7 +186,8 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
     const definitions = discovery ? [...coreDefinitions, ...discovery.takeDefinitions()] : coreDefinitions;
     const available = trace.length < maxToolCalls && definitions.length > 0;
     const context = definitions.length ? projectWorkspaceContext(messages, previews) : messages;
-    const body = JSON.stringify({ model, ...(reasoningEffort === 'default' ? {} : {reasoning_effort: reasoningEffort}), stream: true, max_completion_tokens: options.maxCompletionTokens ?? 4096,
+    const body = JSON.stringify({ model, ...(reasoningEffort === 'default' ? {} : {reasoning_effort: reasoningEffort}), stream: true,
+      ...(!anthropic ? { stream_options: { include_usage: true } } : {}), max_completion_tokens: options.maxCompletionTokens ?? 4096,
       messages: anthropic ? context : projectChatImages(context),
       ...(available ? { tools: definitions, ...(allowParallelCalls ? {} : { parallel_tool_calls: false }) } : {}) });
     const index = round * stride;
@@ -204,7 +212,12 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         },
       }, options.provider);
       const reply = await (options.jitContext && dispatch ? dispatch(send) : send());
-      if ('rejectedHttpStatus' in reply || 'truncated' in reply) return JSON.stringify(reply);
+      if ('truncated' in reply) return JSON.stringify({
+        ...reply,
+        ...(reportedModel ? {reportedModel} : {}),
+        ...(reply.usage ? {usage: reply.usage} : {}),
+      });
+      if ('rejectedHttpStatus' in reply) return JSON.stringify(reply);
       const message = publicAssistantContent(reply.content ?? '').trim();
       // Only exchanges made entirely of recognized greeting and courtesy phrases can
       // exclude answer delivery. Tool, remote and JIT input remains unclassified.
@@ -212,7 +225,9 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         isPhaticMessage(reply.content ?? '') && context.every(entry => entry.role === 'system' || entry === options.metadataOnlyMessage ||
           ((entry.role === 'user' || entry.role === 'assistant') &&
             typeof entry.content === 'string' && isPhaticMessage(entry.content)));
-      return JSON.stringify({ reportedModel, ...(phatic ? {phaticExchangeV1: true} : {}), ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
+      return JSON.stringify({ reportedModel, ...(reply.usage ? {usage: reply.usage} : {}),
+        ...(phatic ? {phaticExchangeV1: true} : {}),
+        ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
     });
     const reply: ModelReply = JSON.parse(raw);
     checkProviderOutcome(reply);
@@ -229,10 +244,12 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
     }
     if (!reply.calls) {
       if (!reply.message?.trim() && (options.learningTools?.writes() ?? workspace?.writes())?.length)
-        return {message:'已完成的写入见下方回执。模型没有返回本轮的文字说明。',
-          completion:'receipts_only' as const, trace, ...(reply.reportedModel ? {reportedModel:reply.reportedModel} : {})};
+        return {message:'已为你完成这次保存。之后可以在「我」页面随时查看、修改或撤回。',
+          completion:'receipts_only' as const, trace, ...(reply.reportedModel ? {reportedModel:reply.reportedModel} : {}),
+          ...(reply.usage ? {usage: reply.usage} : {})};
       if (!reply.message?.trim() || reply.message.length > maxReply) throw new TeachingError('provider_response', '模型没有返回可用的答复。');
-      return { message: reply.message, ...(reply.reportedModel ? { reportedModel: reply.reportedModel } : {}), ...(trace.length ? {trace} : {}) };
+      return { message: reply.message, ...(reply.reportedModel ? { reportedModel: reply.reportedModel } : {}),
+        ...(reply.usage ? {usage: reply.usage} : {}), ...(trace.length ? {trace} : {}) };
     }
     if (!available || (!tools && !learning && !options.beliefTools) ||
         !reply.reportedModel || !reply.calls.length || reply.calls.length + trace.length > maxToolCalls)

@@ -1,12 +1,17 @@
 import {readBoundedText} from './bounded-response.ts';
 export type FunctionCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
+export type CompletionUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+};
 /**
  * A raw assistant turn that must be replayed on the next native-protocol call.
  * Tool-use thinking blocks carry signatures that cannot be reconstructed from
  * function calls alone.
  */
 export type ProviderTurn = { protocol: 'anthropic'; content: unknown[] };
-export type Completion = { id?: unknown; model?: unknown; providerTurn?: ProviderTurn } &
+export type Completion = { id?: unknown; model?: unknown; providerTurn?: ProviderTurn; usage?: CompletionUsage } &
   ({ truncated: true } | { content?: string; toolCalls?: FunctionCall[] });
 export type ProviderHooks = {
   allowTools?: boolean;
@@ -111,12 +116,29 @@ type ProviderChunk = {
   id?: unknown;
   model?: unknown;
   error?: unknown;
+  usage?: unknown;
   choices?: {
     index?: number;
     finish_reason?: string | null;
     delta?: { role?: string; content?: unknown; tool_calls?: unknown; function_call?: unknown };
   }[];
 };
+
+const usageFields = ['prompt_tokens', 'completion_tokens', 'total_tokens'] as const;
+
+export function completionUsage(value: unknown): CompletionUsage | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid completion usage');
+  const usage: CompletionUsage = {};
+  for (const field of usageFields) {
+    const amount = (value as Record<string, unknown>)[field];
+    if (amount === undefined) continue;
+    if (typeof amount !== 'number' || !Number.isInteger(amount) || !Number.isFinite(amount) || amount < 0)
+      throw new Error('Invalid completion usage');
+    usage[field] = amount;
+  }
+  return Object.keys(usage).length ? usage : undefined;
+}
 
 export async function readProviderCompletion(response: Response, hooks: ProviderHooks): Promise<Completion> {
   if (response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'text/event-stream') {
@@ -132,18 +154,20 @@ export async function readProviderCompletion(response: Response, hooks: Provider
         id?: unknown;
         model?: unknown;
         error?: unknown;
+        usage?: unknown;
         choices?: { finish_reason?: string; message?: { role?: string; content?: unknown; tool_calls?: unknown; function_call?: unknown } }[];
       } : null;
+    const usage = completionUsage(completion?.usage);
     const choice = Array.isArray(completion?.choices) ? completion.choices[0] : undefined;
     if (!completion || completion.error || !choice) throw new Error('Invalid completion');
     const model = completion.model;
     if (model !== undefined && model !== null) hooks.model?.(model);
-    if (choice.finish_reason === 'length') return { id: completion.id, model, truncated: true };
+    if (choice.finish_reason === 'length') return { id: completion.id, model, truncated: true, ...(usage ? { usage } : {}) };
     const message = choice.message;
     if (hooks.allowTools && choice.finish_reason === 'tool_calls' && message?.role === 'assistant') {
       const calls: FunctionCall[] = [];
       collectCalls(calls, message.tool_calls, false);
-      return { id: completion.id, model, toolCalls: completedCalls(calls) };
+      return { id: completion.id, model, toolCalls: completedCalls(calls), ...(usage ? { usage } : {}) };
     }
     if (choice.finish_reason && choice.finish_reason !== 'stop') throw new Error('Unusable completion');
     if (message?.tool_calls || message?.function_call || (message?.role && message.role !== 'assistant')) {
@@ -151,7 +175,7 @@ export async function readProviderCompletion(response: Response, hooks: Provider
     }
     const text = message?.content;
     if (typeof text === 'string' && text.length > maximumContent) throw new Error('Completion content too large');
-    return { id: completion.id, model, ...(typeof text === 'string' ? { content: text } : {}) };
+    return { id: completion.id, model, ...(usage ? { usage } : {}), ...(typeof text === 'string' ? { content: text } : {}) };
   }
 
   if (!response.body) throw new Error('Missing completion stream');
@@ -167,6 +191,7 @@ export async function readProviderCompletion(response: Response, hooks: Provider
   let finished = false;
   let stopped = false;
   let truncated = false;
+  let usage: CompletionUsage | undefined;
   const calls: FunctionCall[] = [];
   let endedWithTools = false;
 
@@ -194,14 +219,15 @@ export async function readProviderCompletion(response: Response, hooks: Provider
       model = chunk.model;
     }
     id ??= chunk.id;
+    if (chunk.usage !== undefined) usage = completionUsage(chunk.usage);
     if (!Array.isArray(chunk.choices)) return;
     const choice = chunk.choices.find((item) => item && (item.index === undefined || item.index === 0));
     if (!choice) return;
     if (choice.finish_reason === 'length') {
       truncated = true;
-      finished = true;
       return;
     }
+    if (truncated) return;
     const toolEnd = hooks.allowTools && choice.finish_reason === 'tool_calls';
     if (choice.finish_reason && choice.finish_reason !== 'stop' && !toolEnd) throw new Error('Unusable completion');
     const delta = choice.delta;
@@ -220,7 +246,7 @@ export async function readProviderCompletion(response: Response, hooks: Provider
     if (toolEnd) endedWithTools = true;
     if (toolEnd || choice.finish_reason === 'stop') stopped = true;
     // Reasoning fields and provider metadata never enter the visible content.
-    if (!calls.length && (typeof delta?.content === 'string' || chunk.model)) await hooks.content?.(output);
+    if (!calls.length && typeof delta?.content === 'string') await hooks.content?.(output);
   }
 
   try {
@@ -246,11 +272,11 @@ export async function readProviderCompletion(response: Response, hooks: Provider
         break;
       }
     }
-    if (truncated) return { id, model, truncated: true };
+    if (truncated) return { id, model, truncated: true, ...(usage ? { usage } : {}) };
     if (!stopped) throw new Error('Incomplete completion stream');
-    if (endedWithTools) return { id, model, toolCalls: completedCalls(calls) };
+    if (endedWithTools) return { id, model, toolCalls: completedCalls(calls), ...(usage ? { usage } : {}) };
     if (calls.length) throw new Error('Incomplete tool call');
-    return { id, model, content: output };
+    return { id, model, ...(usage ? { usage } : {}), content: output };
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();

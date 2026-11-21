@@ -2,8 +2,9 @@ import {expect, it, vi} from 'vitest';
 import {anthropicRequestBody, readAnthropicCompletion} from './anthropic-provider.ts';
 import {requestCompletion} from './provider.ts';
 import {readProviderCompletion} from './provider-stream.ts';
+import {runStudyAgent} from './study-agent.ts';
 import {generateResearchDraft, sampleWorker, totalWorkerCost} from './research-worker.ts';
-import {anthropicBlock, bodyOf, sseEvent, sseResponse, toolCall, watchFetch} from './test/chat.ts';
+import {anthropicBlock, bodyOf, deps, providerModel, responseFrame, sseEvent, sseResponse, toolCall, watchFetch} from './test/chat.ts';
 
 const anthropicProvider = {baseUrl: 'https://api.anthropic.test/v1', protocol: 'anthropic' as const,
   model: 'claude-sonnet-5', reasoningEffort: 'default'};
@@ -12,10 +13,27 @@ const block = (index: number, content_block: object, ...deltas: object[]) =>
   [event('content_block_start', {index, content_block}), ...deltas.map(delta => event('content_block_delta', {index, delta})), event('content_block_stop', {index})];
 
 function anthropicStream(content: string[], stopReason: string, model = anthropicProvider.model) {
-  return [sseEvent('message_start', {message: {id: 'msg_1', type: 'message', model, content: []}}), ...content,
-    sseEvent('message_delta', {delta: {stop_reason: stopReason}, usage: {output_tokens: 1}}),
+  return [sseEvent('message_start', {message: {id: 'msg_1', type: 'message', model, content: [], usage: {input_tokens: 7}}}), ...content,
+    sseEvent('message_delta', {delta: {stop_reason: stopReason}, usage: {output_tokens: 5}}),
     sseEvent('message_stop', {})].join('');
 }
+
+it('reads validated usage from OpenAI-compatible stream and non-stream completions', async () => {
+  const usage = {prompt_tokens: 7, completion_tokens: 5, total_tokens: 12};
+  const stream = sseResponse(responseFrame({content: 'ok'}, undefined, 'stop') +
+    'data: ' + JSON.stringify({model: providerModel, choices: [], usage}) + '\r\n\r\ndata: [DONE]\r\n\r\n');
+  expect(await readProviderCompletion(stream, {})).toMatchObject({content: 'ok', usage});
+  const json = Response.json({model: providerModel, usage, choices: [{
+    finish_reason: 'stop', message: {role: 'assistant', content: 'ok'},
+  }]});
+  expect(await readProviderCompletion(json, {})).toMatchObject({content: 'ok', usage});
+  expect(await readProviderCompletion(sseResponse(responseFrame({content: '太长'}, undefined, 'length') +
+    'data: ' + JSON.stringify({model: providerModel, choices: [], usage}) + '\r\n\r\ndata: [DONE]\r\n\r\n'), {}))
+    .toMatchObject({truncated: true, usage});
+  await expect(readProviderCompletion(sseResponse('data: ' + JSON.stringify({
+    model: providerModel, choices: [], usage: {prompt_tokens: -1},
+  }) + '\n\n'), {})).rejects.toThrow('Invalid completion usage');
+});
 
 function completionBody(...history: Record<string, unknown>[]) {
   return JSON.stringify({model: anthropicProvider.model, max_completion_tokens: 2048,
@@ -53,6 +71,7 @@ it('translates tool history and completes multiple native Messages rounds', asyn
       providerTurn: 'providerTurn' in first ? first.providerTurn : undefined},
     {role: 'tool', tool_call_id: 'toolu_1', content: '45'});
   expect(second).toMatchObject({content: '验算完成。', model: 'claude-sonnet-5'});
+  expect('usage' in second ? second.usage : undefined).toEqual({prompt_tokens: 7, completion_tokens: 5, total_tokens: 12});
   const [initial, continuation] = fetch.mock.calls;
   const outboundHeaders = new Headers(initial?.[1]?.headers);
   expect(String(initial?.[0])).toBe('https://api.anthropic.test/v1/messages');
@@ -64,6 +83,25 @@ it('translates tool history and completes multiple native Messages rounds', asyn
   expect(bodyOf(continuation?.[1]).messages).toEqual([
     {role: 'user', content: [{type: 'text', text: '算一下'}]}, {role: 'assistant', content: assistantContent},
     {role: 'user', content: [{type: 'tool_result', tool_use_id: 'toolu_1', content: '45'}]}]);
+});
+
+it('journals real model usage on each study-agent model effect', async () => {
+  const usage = {prompt_tokens: 9, completion_tokens: 4, total_tokens: 13};
+  const effects: unknown[] = [];
+  const fetch = watchFetch().mockResolvedValueOnce(sseResponse(responseFrame({content: '好的。'}, undefined, 'stop') +
+    'data: ' + JSON.stringify({model: providerModel, choices: [], usage}) + '\r\n\r\ndata: [DONE]\r\n\r\n'));
+  const result = await runStudyAgent([{role: 'user', content: '解释一下。'}], {
+    provider: deps.provider,
+    runEffect: async (step, invoke) => {
+      const raw = await invoke(String(step.index));
+      effects.push({step, result: JSON.parse(raw)});
+      return raw;
+    },
+  });
+  expect(result).toMatchObject({message: '好的。', reportedModel: providerModel, usage});
+  expect(effects).toHaveLength(1);
+  expect(effects[0]).toMatchObject({step: {index: 0}, result: {reportedModel: providerModel, usage}});
+  expect(bodyOf(fetch.mock.calls[0]?.[1]).stream_options).toEqual({include_usage: true});
 });
 
 it('enforces protocol bounds on Anthropic/OpenAI completions and research worker drafts', async () => {
