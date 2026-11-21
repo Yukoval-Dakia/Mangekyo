@@ -3,6 +3,7 @@ import { classroomTurn } from './classroom.ts';
 import { isSourceFactId } from './source-values.ts';
 
 export const turnResearchPurpose = 'background-research';
+export const studyTurnType = 'activity.studyTurn';
 
 export function object(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('记录格式无效');

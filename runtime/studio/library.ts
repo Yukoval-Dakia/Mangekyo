@@ -80,7 +80,8 @@ export function openLibrary(db: Db, captureModule: LoadedModule, content: Loaded
     }),
     async capture(input: { requestId: unknown; title: unknown; text: unknown }, deletionWatermark = '0') {
       const requestId = clientRequest(input?.requestId);
-      const data = validate(textMaterial, input, '请输入材料标题（最多 240 字）和正文（最多 4000 字）。');
+      const data = { ...validate(textMaterial, input, '请输入材料标题（最多 240 字）和正文（最多 4000 字）。'),
+        savedAt: new Date().toISOString() };
       const id = factId(stableId('text-material', requestId));
       await write(captureMaterial, requestId, { id, data }, deletionWatermark);
       return { id };

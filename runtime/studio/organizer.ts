@@ -12,7 +12,7 @@ import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { storagePurpose } from '../../modules/activity/library-values.ts';
+import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { organizerNoteType, organizerNoteView, prepareOrganizerNote } from '../../modules/activity/organizer-values.ts';
 import {
   createOrganizerTask,
@@ -20,14 +20,14 @@ import {
   organizerTaskDraft,
   setOrganizerTaskDone,
 } from '../../modules/plan/organizer-task-values.ts';
-import { studyRecordType, submitOfflinePack } from '../../modules/activity/values.ts';
+import { studyRecordType, studyTurnType, submitOfflinePack } from '../../modules/activity/values.ts';
 import { workbookAttemptType, workbookPaperType, workbookRubricAssessmentType } from '../../modules/activity/workbook-values.ts';
 import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
-import { collectPendingCorrectionSources, todayCompletion, todayPaper, todaySettings } from '../../modules/activity/today-values.ts';
+import { collectFreshMaterialSources, collectPendingCorrectionSources, todayCompletion, todayPaper, todaySettings } from '../../modules/activity/today-values.ts';
 import saveRule from '../../modules/plan/commands/save-rule.ts';
 import setGoalStatus from '../../modules/plan/commands/set-goal-status.ts';
 import todayDeriver from '../../modules/plan/derivers/today.ts';
-import { projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
+import { projectFreshMaterialCandidates, projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
 import { checkPack, openPack, packCandidates } from '../../modules/plan/offline-pack.ts';
 import type { GoalStatus } from '../../modules/plan/goal-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
@@ -123,7 +123,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
           const papers: FactSnapshot[] = [];
           const completed = new Set<string | null>();
           const pendingFacts: FactSnapshot[] = [];
-          for await (const fact of readFactCollection(tx, read, [planRuleType, workbookPaperType, workbookAttemptType, workbookRubricAssessmentType, workbookCorrectionType, studyRecordType], {pinTypes: [workbookPaperType]})) {
+          for await (const fact of readFactCollection(tx, read, [planRuleType, materialType, studyTurnType, workbookPaperType, workbookAttemptType, workbookRubricAssessmentType, workbookCorrectionType, studyRecordType], {pinTypes: [workbookPaperType]})) {
             if (fact.type === planRuleType) rules.push({id: fact.ref.id, rev: fact.ref.rev, data: planRule(fact.value)});
             else if (fact.type === workbookPaperType) papers.push(fact);
             else if (fact.type === workbookAttemptType || fact.type === studyRecordType) completed.add(todayCompletion(fact, day, dayOf));
@@ -133,6 +133,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
             ...papers.flatMap(fact => todayPaper(fact, completed, day) ?? []),
             ...packCandidates().map(c => completed.has(c.id + '@' + c.open?.rev) ? {...c, state: 'completed' as const, date: day} : c),
             ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts)),
+            ...projectFreshMaterialCandidates(collectFreshMaterialSources(pendingFacts), settings.now),
           ];
           return {
             ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? {goal} : {}), rules: rules.map(r => r.data),
@@ -158,6 +159,10 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
       const id = params.get('id') ?? '';
       const rev = validate(n => integer(n, 1, 2147483647) as Revision, Number(params.get('rev')));
       if (kind === 'pack') return {kind, ...validate(() => openPack(id, rev), null)};
+      if (kind === 'material') {
+        const match = await readable(() => bus.resolve([{id: validate(factId, id), mode: 'following', rev, type: materialType}], 'organizer'));
+        if (match?.items[0]?.ref.rev === rev) return {kind, id, rev, href: '/materials/saved/' + encodeURIComponent(id)};
+      }
       if (kind !== 'activity') throw new RequestError(400, '活动类型无效。');
       const ref = {id: validate(factId, id), mode: 'following' as const, rev, type: workbookPaperType};
       const match = await readable(() => bus.resolve([ref], 'organizer'));

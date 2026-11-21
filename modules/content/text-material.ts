@@ -10,7 +10,13 @@ export function textMaterial(input: unknown) {
   const value = input as Record<string, unknown>;
   const title = field(value.title, 240);
   const text = field(value.text, 4000);
+  const savedAt = value.savedAt;
   if (!title.isWellFormed() || title.includes('\u0000') || !text.isWellFormed() || text.includes('\u0000'))
     throw new Error('材料包含无效字符');
-  return { title, text };
+  if (savedAt === undefined) return { title, text };
+  if (typeof savedAt !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}T\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d)$/.test(savedAt) ||
+    !Number.isFinite(Date.parse(savedAt)) || new Date(savedAt).toISOString().slice(0, 10) !== savedAt.slice(0, 10))
+    throw new Error('材料保存时间无效');
+  return { title, text, savedAt: new Date(savedAt).toISOString() };
 }

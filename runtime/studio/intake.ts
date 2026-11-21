@@ -128,6 +128,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
         const extraction: IntakeExtraction = cloud ? pendingMineruExtraction() : await extractLocalDocument(detected.kind,staged,input.bytes,intakeTextLimit);
         const commandInput = {
           materialId, intakeId, title, original, extraction,
+          savedAt: new Date().toISOString(),
           ...(cloud ? { requestedExtraction: 'mineru' } : {}),
         };
         const save = createCommandHandler(db, {
