@@ -6,6 +6,7 @@ const pinnedPromptLimit = 8000;
 const pinnedAnswerLimit = 4000;
 
 export class WorkbookSourceMismatch extends Error {}
+export class WorkbookRevisionMismatch extends Error {}
 
 export const workbookPaperType = 'activity.workbookPaper';
 export const workbookAttemptType = 'activity.workbookAttempt';
@@ -302,6 +303,7 @@ export type WorkbookAssessmentRequest = {
 export type WorkbookDetail = {
   id: string;
   revision?: Revision;
+  pacingVersion?: 1;
   sealedPractice?: true;
   title: string;
   savedAt: string;
@@ -520,17 +522,66 @@ export function workbookAttemptRequest(input: unknown, mounted?: { paperId: Fact
     requestId: workbookRequestId(row.requestId),
     submittedAt: timestamp(mounted?.submittedAt ?? row.submittedAt, '提交时间'),
     answers: given,
-    ...effectiveDuration(row.effectiveDurationMs),
+    ...workbookPacingFields(row),
     ...assessmentConsent(row.assessmentConsent),
   };
 }
 
-function effectiveDuration(value: unknown): Pick<WorkbookAttemptRequest, 'effectiveDurationMs'> {
-  if (value === undefined) return {};
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 24 * 60 * 60 * 1000) {
-    throw new Error('有效用时须为 1 毫秒至 24 小时之间的整数毫秒。');
+function duration(value: unknown, minimum: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > 86_400_000) {
+    throw new Error(`有效用时须为 ${minimum} 毫秒至 24 小时之间的整数毫秒。`);
   }
-  return { effectiveDurationMs: value };
+  return value;
+}
+
+function workbookPacingFields(row: Record<string, unknown>): WorkbookPacingFields & Pick<WorkbookAttempt, 'effectiveDurationMs'> {
+  const result: WorkbookPacingFields & Pick<WorkbookAttempt, 'effectiveDurationMs'> = {};
+  if (row.paperRev !== undefined) {
+    if (typeof row.paperRev !== 'number' || !Number.isSafeInteger(row.paperRev) || row.paperRev < 1 || row.paperRev > 2_147_483_647) {
+      throw new Error('交卷卷版无效。');
+    }
+    result.paperRev = row.paperRev as Revision;
+  }
+  if (row.effectiveDurationMs !== undefined) {
+    result.effectiveDurationMs = duration(row.effectiveDurationMs, result.paperRev === undefined ? 1 : 0);
+  }
+  if (row.pacing === undefined) return result;
+  if (result.paperRev === undefined || result.effectiveDurationMs === undefined) {
+    throw new Error('逐题过程需要卷版和整卷有效用时。');
+  }
+  const pacing = record(row.pacing);
+  if (pacing.version !== 1 || Object.keys(pacing).length !== 2 || !Array.isArray(pacing.items) || pacing.items.length > maxQuestions) {
+    throw new Error('逐题过程版本或行数无效。');
+  }
+  const items: WorkbookPacingV1['items'] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  for (const value of pacing.items) {
+    const { questionId, effectiveDurationMs, skipped, returned, ...extra } = record(value);
+    if (typeof questionId !== 'string' || !questionIdPattern.test(questionId) || seen.has(questionId)) {
+      throw new Error('逐题过程题位无效或重复。');
+    }
+    if (typeof skipped !== 'boolean' || typeof returned !== 'boolean' || (!skipped && returned) || Object.keys(extra).length) {
+      throw new Error('逐题过程的跳过或返回标记无效。');
+    }
+    const ms = duration(effectiveDurationMs, 0);
+    seen.add(questionId);
+    total += ms;
+    items.push(skipped
+      ? { questionId, effectiveDurationMs: ms, skipped, returned }
+      : { questionId, effectiveDurationMs: ms, skipped, returned: false });
+  }
+  if (total > result.effectiveDurationMs) throw new Error('逐题有效用时总和超过了整卷有效用时。');
+  result.pacing = { version: 1, items };
+  return result;
+}
+
+export function checkWorkbookPacingItems(paper: WorkbookPaper, pacing: WorkbookPacingV1 | undefined) {
+  if (!pacing) return;
+  const positions = new Set(paper.questions.map(question => question.id));
+  if (pacing.items.some(item => !positions.has(item.questionId))) {
+    throw new Error('逐题过程包含当前卷版没有的题位。');
+  }
 }
 
 function assessmentConsent(value: unknown): Pick<WorkbookAttemptRequest, 'assessmentConsent'> {
@@ -816,6 +867,8 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     if (!item) throw new Error('归档反馈与题目不匹配。');
     return item;
   });
+  const pacing = workbookPacingFields(row);
+  checkWorkbookPacingItems(pap, pacing.pacing);
   return {
     paperId,
     requestId,
@@ -824,7 +877,7 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     paper: pap,
     answers,
     feedback,
-    ...effectiveDuration(row.effectiveDurationMs),
+    ...pacing,
     ...assessmentConsent(row.assessmentConsent),
   };
 }

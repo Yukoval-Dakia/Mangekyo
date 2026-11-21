@@ -68,6 +68,8 @@ export function workbookAttemptView(id: string, attempt: WorkbookAttempt, assess
   return {
     id, requestId: attempt.requestId, submittedAt: attempt.submittedAt, gradingVersion: attempt.gradingVersion,
     ...(attempt.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: attempt.effectiveDurationMs }),
+    ...(attempt.paperRev === undefined ? {} : { paperRev: attempt.paperRev }),
+    ...(attempt.pacing === undefined ? {} : { pacing: attempt.pacing }),
     answers: attempt.answers, feedback, assessments, correctCount: workbookCorrectCount(feedback),
     total: attempt.paper.questions.filter(question => question.kind === 'bank'
       ? feedback.some(item => item.questionId === question.id && ['correct','partial','incorrect'].includes(item.result))

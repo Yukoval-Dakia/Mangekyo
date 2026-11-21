@@ -245,7 +245,22 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
       {kind:'exact',prompt:'写出速度单位。',answers:['内部答案标记']},
       {kind:'rubric',prompt:'解释全程速度。',rubric:'内部评分规则标记'},
     ]});
+    const paced = {
+      requestId: 'paced-attempt', paperRev: privatePaper.revision, answers: {q1:'米每秒',q2:null},
+      effectiveDurationMs: 0,
+      pacing: {version:1,items:[{questionId:'q1',effectiveDurationMs:0,skipped:true,returned:true}]},
+    };
+    const handIn = (input = paced) => workbook.submit(privatePaper.id,input);
+    const [firstPaced, concurrentPaced] = await Promise.all([handIn(),handIn()]);
+    expect(firstPaced.attempts).toMatchObject([{
+      paperRev: paced.paperRev, answers: paced.answers, pacing: paced.pacing, effectiveDurationMs:0,
+    }]);
+    expect(concurrentPaced.attempts).toEqual(firstPaced.attempts);
+    await expect(workbook.submit(paper.id,{...paced,paperRev:paper.revision})).rejects.toMatchObject({status:409});
+    await expect(handIn({...paced,answers:{q1:' 米每秒 ',q2:null}})).rejects.toMatchObject({status:409});
     const privatePaperGrant = await access.setTeaching(privatePaper.id,{enabled:true,expectedRev:1});
+    await expect(handIn({...paced,requestId:'stale-pacing'})).rejects.toMatchObject({status:409});
+    expect((await handIn()).attempts).toEqual(firstPaced.attempts);
     const preview = await edit('search_workspace',{query:'检索速度卷',kind:'paper'},8);
     expect(preview).toMatchObject({results:[{id:privatePaper.id,excerpt:expect.stringContaining('写出速度单位。')}]});
     expect(JSON.stringify(preview)).not.toMatch(/内部答案标记|内部评分规则标记/u);
