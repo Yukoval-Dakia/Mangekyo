@@ -4,6 +4,11 @@ export * from './extraction.ts';
 export * from './experience.ts';
 export type * from './textbook-mastery.ts';
 export { projectTextbookMastery } from './textbook-mastery.ts';
+export {
+  projectGraphConceptMastery,
+  type GraphConceptEvidenceRef, type GraphConceptMasteryNode, type GraphConceptMasteryRequest,
+  type GraphConceptMasterySources, type GraphConceptMasteryView, type GraphConceptNodeInput,
+} from './graph-mastery.ts';
 export { projectPrerequisiteRadar, type PrerequisiteRadarRequest, type PrerequisiteRadarSources, type PrerequisiteRadarChip } from './prerequisite-radar.ts';
 export {
   archetypeQuestionConceptId, projectArchetypeMastery,
