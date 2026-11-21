@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { api, deletedSubmission, submissionId } from './api';
 import { PageTitle, ReadState } from './workspace';
+import { paperPracticePath } from './builtin-packs';
 import { RecurringErrorStrip, type ErrorCluster } from './recurring-error-strip';
 import { observedDeletionWatermark, subscribeDeletionWatermark } from './deletion-watermark';
 import { useVisibleDocument } from './workbook-presentation';
@@ -84,6 +85,6 @@ function ReviewCard({item}: {item: ReviewEntry}) {
     <small>{item.title}</small><h2>{item.prompt}</h2><p>上次回答　{item.answer}</p>
     <RecurringErrorStrip initial={item.recurringErrorCluster} reopen={reopen}/>
     <details><summary>看参考答案</summary><p>{item.expected}</p>{item.explanation && <Message text={item.explanation} />}</details>
-    <a className="text-button" href={item.paperId === 'riding' ? '/practice/riding' : '/papers/'+item.paperId}>回原卷重做</a>
+    <a className="text-button" href={paperPracticePath(item.paperId)}>回原卷重做</a>
   </article>;
 }

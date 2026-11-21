@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Icon } from '../icons';
+import { builtinPackPath, defaultLessonPack } from '../builtin-packs';
 import { QuestionBankTab } from './QuestionBankTab';
 import type { MaterialsSurfaceProps, MaterialsTabId, MaterialsTabMeta } from './types';
 import './materials-v2.css';
@@ -170,7 +171,7 @@ function DefaultTextbooksPlaceholder({ onNavigate }: { readonly onNavigate?: (hr
         badge="示例"
         title="起步材料阅读"
         detail="查看内置示例材料的结构化讲解与随堂练习。"
-        href="/materials/riding"
+        href={defaultLessonPack ? builtinPackPath(defaultLessonPack) : '/materials/riding'}
         {...(onNavigate ? { onNavigate } : {})}
       />
     </div>

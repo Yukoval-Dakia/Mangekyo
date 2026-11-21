@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { api, ApiError, submissionId } from '../api';
+import { paperPracticePath } from '../builtin-packs';
 import { latestKey } from '../deletion-watermark';
 import { useDraftWatermark } from '../draft-watermark';
 import { Icon } from '../icons';
@@ -805,7 +806,7 @@ export function QuestionBankTab({
 
       if (payload.kind === 'mistake-retry' && payload.paperId) {
         navigateTo(
-          payload.paperId === 'riding' ? '/practice/riding' : `/papers/${encodeURIComponent(payload.paperId)}`,
+          paperPracticePath(payload.paperId),
         );
         return;
       }

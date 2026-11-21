@@ -310,8 +310,12 @@ function Conversation({ teachingCase, active, settings, needsSetup, openSettings
   );
 }
 
-export function DemoClassroom({ settings, needsSetup, openSettings }: {
-  settings: Settings | undefined; needsSetup: boolean; openSettings: (event: MouseEvent<HTMLButtonElement>) => void;
+export function DemoClassroom({ settings, needsSetup, openSettings, title, description }: {
+  settings: Settings | undefined;
+  needsSetup: boolean;
+  openSettings: (event: MouseEvent<HTMLButtonElement>) => void;
+  title?: string | undefined;
+  description?: string | undefined;
 }) {
   const [linkedId, setLinkedId] = useState(() => new URLSearchParams(location.search).get("session"));
   const [linkedSession, setLinkedSession] = useState<Session>();
@@ -353,7 +357,7 @@ export function DemoClassroom({ settings, needsSetup, openSettings }: {
   }
 
   return <div className="demo-classroom">
-    <div className="section-heading"><div><a className="back-link" href="/materials">材料 / 示例课堂</a><h1>同一个 45，两份学习史</h1><p>切换两份合成的旧作，观察同伴读了什么，以及它为什么追问。</p></div></div>
+    <div className="section-heading"><div><a className="back-link" href="/materials">材料 / 内置课堂</a><h1>{title ?? '同一个 45，两份学习史'}</h1>{description && <p>{description}</p>}</div></div>
         {linkedId && (!linkedSession || (!selected && cases.length === 0) || (cases.length > 0 && !cases.some((item) => item.id === linkedSession.caseId))) ? (
           <div className="case-loading" role="status">
             {linkProblem || caseLoadProblem || (linkedSession && cases.length > 0)

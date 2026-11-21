@@ -19,6 +19,7 @@ import type {
   RawWitnessLike,
   RepresentativeStatus,
 } from './types';
+import { paperPracticePath } from '../builtin-packs';
 
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const ISO_DATE_PREFIX = /^(\d{4}-\d{2}-\d{2})/;
@@ -219,7 +220,7 @@ export function normalizeMistakeItems(rawMistakes: readonly RawMistakeEntry[] | 
       recurringCount,
       ...(cluster ? { recurringErrorCluster: cluster } : {}),
       ...(entry.sourceRef ? { sourceRef: entry.sourceRef } : {}),
-      retryHref: paperId === 'riding' ? '/practice/riding' : `/papers/${encodeURIComponent(paperId)}`,
+      retryHref: paperPracticePath(paperId),
     });
   }
   return results;

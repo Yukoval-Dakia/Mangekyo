@@ -1,6 +1,7 @@
 import { Dictation } from './classroom-voice';
 import { ReadReply } from './message';
 import { recordFromQuery, recordFromSession, recordLabel, type CurrentObject } from './current-record';
+import { builtinPackPath, findBuiltinPack } from './builtin-packs';
 import { chatRoute, taskLabels, type Route } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, remembered, remember, sessionPath, type Session, type Settings, type StudyAttachment } from './api';
@@ -26,8 +27,8 @@ function LinkedChat({ id, chats, settings }: { settings: Settings | undefined; i
   if (!['companion', 'riding'].includes(record.data.caseId))
     return (
       <>
-        <PageTitle title="示例课堂" />
-        <a href={'/classroom/first45?session=' + encodeURIComponent(id)}>打开这次教研记录</a>
+        <PageTitle title="学习课堂" />
+        <a href={'/classroom?session=' + encodeURIComponent(id)}>打开这次课堂记录</a>
       </>
     );
   return <ChatRoom mode={record.data.caseId} initial={record.data} chats={chats} settings={settings} />;
@@ -44,7 +45,8 @@ export function Companion({ chats, settings }: { settings: Settings | undefined;
   if (id) return <LinkedChat id={id} chats={chats} settings={settings} />;
   const materialId = query.get('material');
   if (materialId) return <MaterialChat id={materialId} prepare={query.get('mode') === 'prepare'} chats={chats} settings={settings} />;
-  if (query.get('context') === 'riding') return <ChatRoom mode="riding" chats={chats} settings={settings} />;
+  const context = query.get('context');
+  if (context && findBuiltinPack(context)) return <ChatRoom mode="riding" chats={chats} settings={settings} />;
   const entry = recordFromQuery(query);
   if (query.has('record') && !entry) return <><PageTitle title="同伴" /><p role="alert">记录链接缺少有效版本，请从原记录重新进入。</p><a href="/companion">开始普通对话</a></>;
   return <ChatRoom mode="companion" entry={entry} chats={chats} settings={settings} />;
@@ -179,8 +181,8 @@ function ChatRoom({
             </label>
             <p className="field-help">{excerptValid ? '点发送后，材料标题和这段文字会交给设置中的模型服务，并保存在这次对话里。你可以只留下需要的一段。需要联网核对时，在消息中另起一行写「公开检索：主题」。' : '请使用原文中连续的一段文字，最多 3000 字。'}</p>
           </div>}
-          {mode === 'riding' && (
-            <a className="context-tag" href="/materials/riding">
+          {mode === 'riding' && findBuiltinPack('riding', 'lesson') && (
+            <a className="context-tag" href={builtinPackPath(findBuiltinPack('riding', 'lesson')!)}>
               <Icon name="book" /> 正在讨论《同一趟骑行，两块码表》
             </a>
           )}

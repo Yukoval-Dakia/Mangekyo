@@ -31,6 +31,7 @@ export function MemoryOverviewPanel({
   fetchJson = memoryOverviewDefaults.fetchOverview,
   onRunAction = memoryOverviewDefaults.runAction,
   initialOverview,
+  hideHeading = false,
   renderHeaderExtra,
 }: MemoryOverviewPanelProps) {
   const [state, setState] = useState<MemoryOverviewState>(
@@ -84,13 +85,15 @@ export function MemoryOverviewPanel({
   }
 
   return (
-    <section className="memory-overview" aria-labelledby="memory-overview-title">
-      <div className="subhead">
-        <div>
-          <h2 id="memory-overview-title">我的记忆与画像</h2>
-          <p>看见系统如何记住你，也保留随时修改与撤回的权利。</p>
+    <section className="memory-overview" aria-labelledby={hideHeading ? undefined : 'memory-overview-title'}>
+      {!hideHeading && (
+        <div className="subhead">
+          <div>
+            <h2 id="memory-overview-title">我的记忆与画像</h2>
+            <p>看见系统如何记住你，也保留随时修改与撤回的权利。</p>
+          </div>
         </div>
-      </div>
+      )}
 
       {renderHeaderExtra?.()}
 
