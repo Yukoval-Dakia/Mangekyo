@@ -20,6 +20,7 @@ export type GraphQuery = {
   hops: number;
   direction: 'inbound' | 'outbound' | 'both';
   edgeKinds: readonly KnowledgeEdgeKind[];
+  conceptsOnly?: boolean;
 };
 
 function versionKey(id: string, rev: number): string {
@@ -153,11 +154,12 @@ export async function readKnowledgeGraph<Result>(
        WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.kind='value'
          AND f.purpose && ARRAY[$3,'all']::text[] AND r.purpose && ARRAY[$3,'all']::text[]
          AND (cardinality($4::text[])=0 OR r.data->>'kind'=ANY($4))
+         AND (NOT $7::boolean OR (r.data#>>'{from,kind}'='concept' AND r.data#>>'{to,kind}'='concept'))
          AND EXISTS (SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS n(id text, rev integer)
            WHERE ($6<>'inbound' AND r.data#>>'{from,sourceUse,id}'=n.id AND r.data#>>'{from,sourceUse,rev}'=n.rev::text)
               OR ($6<>'outbound' AND r.data#>>'{to,sourceUse,id}'=n.id AND r.data#>>'{to,sourceUse,rev}'=n.rev::text))
        ORDER BY f.id`,
-      [tx.learner, knowledgeEdgeType, sourcePurpose(access), query.edgeKinds, JSON.stringify(endpoints), query.direction],
+      [tx.learner, knowledgeEdgeType, sourcePurpose(access), query.edgeKinds, JSON.stringify(endpoints), query.direction, query.conceptsOnly === true],
     );
     const next = new Map<string, FrontierRecord>();
     for (const { id } of rows) {

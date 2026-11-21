@@ -12,6 +12,7 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { purpose } from './identity.ts';
+import { readKnowledgeGraph } from './knowledge-graph.ts';
 import { readPythonAttempts } from './python-attempts.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
 import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
@@ -27,6 +28,28 @@ const absent = (method: string, message: string) =>
 export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, access: {
   maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean;
 }, asOf: string, watermark: Tick): Promise<Value | LearningError> {
+  if (request.method === 'kg_prereqs') {
+    const id = request.args.kc_id;
+    if (!isSourceFactId(id)) return absent('kc_id', '请提供可读取的知识点 ID。');
+    const hops = typeof request.args.depth === 'number' ? request.args.depth : 2;
+    const traverse = (direction: 'inbound' | 'outbound') => readKnowledgeGraph(tx,
+      {conceptId:id, hops, direction, edgeKinds:['prereq_of'], conceptsOnly:true},
+      {recipient:'workspace', maySend:access.maySend, track:access.track},
+      (source, _fact, hop) => hop > 0 ? {id:source.id, rev:source.rev, title:source.title, hop} : undefined);
+    const prerequisites = await traverse('inbound');
+    if (!prerequisites) return access.known(id)
+      ? toolFailure('access_revoked','先前打开的知识点已不可用。',{tool:'read_context',args:{intent:'tutoring'}})
+      : absent('kc_id', '请提供可读取的知识点 ID。');
+    const successors = await traverse('outbound');
+    if (!successors) return absent('kc_id', '请提供可读取的知识点 ID。');
+    const edges = new Map([...prerequisites.edges, ...successors.edges].map(edge => [edge.id, {
+      id:edge.id, rev:edge.rev, from:edge.from.fact.id, from_rev:edge.from.fact.rev,
+      to:edge.to.fact.id, to_rev:edge.to.fact.rev, kind:edge.kind, scope:edge.scope,
+    }]));
+    return {value:{kc_id:id, rev:prerequisites.conceptRef.fact.rev, depth:hops, scope:'authorized', edge_kind:'prereq_of',
+      prerequisites:prerequisites.results, successors:successors.results, edges:[...edges.values()],
+      truncated:prerequisites.truncated || successors.truncated}};
+  }
   if (request.method === 'forgetting_risks') {
     return {value:await readForgettingRisks(tx,access.maySend,{asOf,watermark,
       horizonHours:typeof request.args.horizon_hours === 'number' ? request.args.horizon_hours : 48,
