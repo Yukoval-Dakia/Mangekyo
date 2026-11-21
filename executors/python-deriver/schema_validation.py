@@ -25,6 +25,10 @@ def _matches(schema, value):
     if "$ref" in schema:
         name = schema["$ref"].removeprefix("#/$defs/")
         return _matches(DEFINITIONS[name], value)
+    if "const" in schema:
+        return value is schema["const"]
+    if "not" in schema and _matches(schema["not"], value):
+        return False
     if "anyOf" in schema:
         if not any(_matches(branch, value) for branch in schema["anyOf"]):
             return False
@@ -44,6 +48,7 @@ def _matches(schema, value):
                 for key, field in value.items()
             )
             and (schema is not DEFINITIONS["examScore"] or value["earned"] <= value["maximum"])
+            and (schema is not DEFINITIONS["itemPacing"] or value["position"] <= value["item_count"])
         )
     if kind == "array":
         return (isinstance(value, list) and ("maxItems" not in schema or len(value) <= schema["maxItems"])

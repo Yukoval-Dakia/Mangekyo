@@ -1,7 +1,7 @@
 import { learnerId, type FactSnapshot } from '@mangekyo/kernel';
 import { expect, it, vi } from 'vitest';
 import { understandingProjection } from '../companion/understanding.ts';
-import { blocksRefusal, effectiveDirective, evidencePriority, hypothesesAsOf, hypothesisView, projectBelief,
+import { beliefsAsOf, blocksRefusal, effectiveDirective, evidencePriority, hypothesesAsOf, hypothesisView, projectBelief,
   refusalBoundary, type HypothesisEvidence, type MetacognitiveRead } from './belief-view.ts';
 import { activityEvidenceSlice } from '../activity/evidence-slice.ts';
 import { witness } from './memory-evidence.ts';
@@ -15,7 +15,7 @@ const revisionTime = {validFrom: at(1), recordedAt: at(2), supersededAt: null};
 const fact = (id: number, type: string, value: FactSnapshot['value']): FactSnapshot => ({
   type, value, ref: {...ref(id), learner}, accessEpoch: ref(id).accessEpoch, purpose: ['teaching'],
 });
-const project = (snapshot: FactSnapshot, time = revisionTime) =>
+const project = (snapshot: FactSnapshot, time: Parameters<typeof projectBelief>[2] = revisionTime) =>
   projectBelief(snapshot, understandingProjection(snapshot)!, time)!;
 
 it('keeps real preference and claim values stable and reads remembered, corrected and forgotten revisions', () => {
@@ -30,14 +30,16 @@ it('keeps real preference and claim values stable and reads remembered, correcte
   const claim = {version: 1, action: 'remember', category: 'state', origin: 'turn', scope: {kind: 'general'},
     evidence_refs: [{...ref(2), start: 0, excerpt: '今天累'}], supersedes: null, text: '今天累', valid_until: at(8)};
   const original = fact(12, 'companion.claim', claim);
-  expect(projectBelief(original, understandingProjection(original)!, {...revisionTime, validTo: at(6)})?.value.validTo).toBe(at(6));
-  const old = projectBelief(original, understandingProjection(original)!,
-    {...revisionTime, supersededAt: at(4)})!.value;
+  const shortened = project(original, {...revisionTime, validTo: at(6), recordedAt: at(4)}).value;
+  expect(shortened.validTo).toBe(at(6));
+  const old = project(original, {...revisionTime, supersededAt: at(4)}).value;
   if (old.category !== 'directive') throw new Error('缺少临时状态');
   expect(effectiveDirective(old, asOf(3, 1))).toBeNull();
   expect(effectiveDirective(old, asOf(3, 3))).toBe(old);
   expect(effectiveDirective(old, asOf(3, 4))).toBeNull();
   expect(effectiveDirective(old, asOf(8, 3))).toBeNull();
+  expect(beliefsAsOf([old, shortened], asOf(6, 3))).toEqual([old]);
+  expect(beliefsAsOf([old, shortened], asOf(6, 4))).toEqual([]);
   const corrected = project(fact(14, 'companion.claim', {...claim, action: 'correct', origin: 'learner',
     evidence_refs: [], supersedes: ref(12), text: '今天只做一题'}), {...revisionTime, recordedAt: at(4)}).value;
   if (corrected.category !== 'directive') throw new Error('缺少更正指令');
@@ -56,9 +58,12 @@ it('requires structured refusal keys and applies only the recorded reopening con
   expect(() => refusalBoundary({...boundary, reopen_condition: {kind: 'at', at: 'tomorrow'}})).toThrow();
   expect(() => refusalBoundary({...boundary, reopen_condition: null})).toThrow();
 
+  const scheduled = {...boundary, reopen_condition: {kind: 'at' as const, at: at(7)}};
+  expect(blocksRefusal(scheduled, {...reworded, at: at(6)})).toBe(true);
+  expect(blocksRefusal(scheduled, {...reworded, at: at(7)})).toBe(false);
   const row = projectBelief(fact(12, 'companion.claim', null),
     {kind: 'refusal', text: '这周别再推荐', scope: {}, ttl: null, sticky: true, evidence_refs: [ref(1)],
-      refusal: {...boundary, reopen_condition: {kind: 'at', at: at(7)}}}, revisionTime)!;
+      refusal: scheduled}, revisionTime)!;
   if (row.value.category !== 'directive' || row.value.kind !== 'refusal') throw new Error('缺少拒绝指令');
   expect(effectiveDirective(row.value, asOf(6))).toBe(row.value);
   expect(effectiveDirective(row.value, asOf(7))).toBeNull();
