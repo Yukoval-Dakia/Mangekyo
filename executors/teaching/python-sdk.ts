@@ -17,7 +17,9 @@ const sdkFields = {
   since: {...text, format: 'date-time'}, subject: text, paper_ids: ids,
   horizon_hours: {type: 'integer', minimum: 1, maximum: 168},
   kc_id: text, depth: {type: 'integer', minimum: 1, maximum: 3},
-  kc_ids: ids, answer_exposed: {type: 'boolean'}, limit: {type: 'integer', minimum: 1, maximum: 30},
+  kc_ids: {...ids, description: '任一指定知识点与题目的直接、当前获准图谱关系。'},
+  answer_exposed: {type: 'boolean', description: '仅匹配证据可确认的布尔值。未知题项不会进入任一布尔筛选，coverage 标记证据缺口。'},
+  limit: {type: 'integer', minimum: 1, maximum: 30},
 } as const;
 
 export const runCalculationDefinition = {type: 'function', function: {
