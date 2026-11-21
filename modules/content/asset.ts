@@ -1,4 +1,4 @@
-import { isJson, type Asset as KernelAsset, learnerId, type FactRef, type FactSnapshot, type JsonObject, type ReadContext } from '@mangekyo/kernel';
+import { isJson, type Asset as KernelAsset, learnerId, parseFactRevisionBasis, type FactRevisionBasis, type FactRef, type FactSnapshot, type JsonObject, type ReadContext } from '@mangekyo/kernel';
 import { bindQuestionAssessment } from './assessment-values.ts';
 import { parseKnowledgeEntity, type KnowledgeEntityKind } from './knowledge-entity.ts';
 import { fields, key, list, optionalKey, pageId, record, revision, text } from './parse.ts';
@@ -404,31 +404,40 @@ export function freezeQuestionAssessment(asset: QuestionAsset, { id, rev }: Pick
   }] };
 }
 
+type QuestionSource =
+  | ({ readonly mode: 'pinned' } & AssetBasis)
+  | ({ readonly mode: 'following' } & FactRevisionBasis);
+
+function questionSources(fact: FactSnapshot): QuestionSource[] {
+  if (fact.type === 'activity.workspaceEntry') {
+    return list(record(fact.value).basis).map(input => ({ mode: 'following', ...parseFactRevisionBasis(input) }));
+  }
+  const basis = fact.type === assetType ? parseAsset(fact.value).basis
+    : fact.type === textbookPageType ? textbookPageFrom(fact).basis : undefined;
+  return (basis ?? []).map(source => ({ mode: 'pinned', ...source }));
+}
+
 export async function checkQuestionTeachingSources(read: AssetReader, asset: Pick<QuestionAsset, 'basis'>) {
-  const pending = [...(asset.basis ?? [])];
-  const checked = new Map<string, AssetBasis>();
-  const following = new Map<FactRef['id'], FactSnapshot>();
-  const authorized = (fact: FactSnapshot) => fact.purpose.includes('teaching') || fact.purpose.includes('all');
+  const pending: QuestionSource[] = (asset.basis ?? []).map(source => ({ mode: 'pinned', ...source }));
+  const checked = new Map<string, FactSnapshot>();
   const unavailable = () => new AssetBasisError('题目来源未授权教学用途或依据已变化。');
 
   while (pending.length) {
     const source = pending.pop()!;
-    const key = `${source.id}:${source.rev}`;
-    const prior = checked.get(key);
-    if (prior) {
-      if (prior.type !== source.type || prior.epoch !== source.epoch) throw unavailable();
-      continue;
-    }
-    if (checked.size >= assetBasisLimit) throw unavailable();
-    const pinned = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
-    const current = following.get(source.id) ?? await read.fact(source.id, { mode: 'following' });
-    if (pinned.ref.id !== source.id || pinned.ref.rev !== source.rev || pinned.type !== source.type ||
-        pinned.accessEpoch !== source.epoch || !authorized(pinned) || !authorized(current)) throw unavailable();
-    following.set(source.id, current);
-    checked.set(key, source);
-    const nested = pinned.type === assetType ? parseAsset(pinned.value).basis
-      : pinned.type === textbookPageType ? textbookPageFrom(pinned).basis : undefined;
-    if (nested) pending.push(...nested);
+    const key = `${source.mode}:${source.id}:${source.rev}`;
+    const previous = checked.get(key);
+    if (!previous && checked.size >= assetBasisLimit) throw unavailable();
+    const fact = previous ?? await read.fact(source.id, source.mode === 'pinned'
+      ? { mode: 'pinned', rev: source.rev, requirePurpose: 'teaching' }
+      : { mode: 'following' });
+    if (fact.ref.id !== source.id || fact.ref.rev !== source.rev || fact.accessEpoch !== source.epoch ||
+        (source.mode === 'pinned' && fact.type !== source.type) ||
+        (!fact.purpose.includes('teaching') && !fact.purpose.includes('all'))) throw unavailable();
+    if (previous) continue;
+
+    checked.set(key, fact);
+    try { pending.push(...questionSources(fact)); }
+    catch { throw unavailable(); }
   }
 }
 

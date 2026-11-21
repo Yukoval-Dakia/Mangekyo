@@ -69,7 +69,7 @@ export async function discoverWorkbookCapsules(
     const bindings = new Map<string, PaperCapsuleBinding>();
     const access = {
       learner, purpose, recipient:learner, read:withWorkbookWorkspaceBasis(read),
-      isUnavailable: error => host.unavailable(error) || error instanceof WorkspaceInputError,
+      isUnavailable: (error: unknown) => host.unavailable(error) || error instanceof WorkspaceInputError,
       async reopenLegacyQuestion(this: {read: Reader}, ref: HelpRef) {
         return host.reopenQuestion(this.read, ref);
       },

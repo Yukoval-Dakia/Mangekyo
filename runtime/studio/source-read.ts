@@ -80,10 +80,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     }
     if (sourceId === id && !path.size && !rootType(fact)) return;
     path.add(key);
-    const bankSources: FactSnapshot[] = [];
-    await readFrozenWorkbookRecord(reader, fact, source => bankSources.push(source));
-    for (const source of bankSources) {
-      if (!await visit(source.ref.id,source.ref.rev)) return;
+    const bankSources: [FactSnapshot, 'pinned' | 'following'][] = [];
+    await readFrozenWorkbookRecord(reader, fact, (...proof) => bankSources.push(proof));
+    for (const [source, mode] of bankSources) {
+      if (!await visit(source.ref.id,mode === 'pinned' ? source.ref.rev : undefined)) return;
     }
     if (fact.type === workspaceEntryType) {
       const entry = workspaceEntry(fact.value);

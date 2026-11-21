@@ -81,16 +81,16 @@ export async function freezeWorkbookBank(read: ReadContext, id: FactId, input: J
 type FrozenBankRead = { fact(id: FactId, options: Parameters<ReadContext['fact']>[1]): Promise<FactSnapshot> };
 
 export async function readFrozenWorkbookBank(
-  read: FrozenBankRead, paper: WorkbookPaper, track?: (fact: FactSnapshot, mode: 'pinned') => void,
+  read: FrozenBankRead, paper: WorkbookPaper, track?: (fact: FactSnapshot, mode: 'pinned' | 'following') => void,
 ) {
   const opened = new Map<string, Promise<FactSnapshot>>();
   const tracked: FrozenBankRead = {
     fact(id, options) {
-      const key = JSON.stringify([id,options.mode,options.mode === 'pinned' ? options.rev : null]);
+      const key = JSON.stringify([id,options.mode,options.mode === 'pinned' ? [options.rev,options.requirePurpose] : null]);
       const cached = opened.get(key);
       if (cached) return cached;
       const pending = read.fact(id,options).then(fact => {
-        if (options.mode === 'pinned') track?.(fact,'pinned');
+        track?.(fact,options.mode);
         return fact;
       });
       opened.set(key,pending);
@@ -98,7 +98,7 @@ export async function readFrozenWorkbookBank(
     },
   };
   const open = async (witness: TextbookBasis) => {
-    const fact = await tracked.fact(factId(witness.id), { mode: 'pinned', rev: witness.rev });
+    const fact = await tracked.fact(factId(witness.id), { mode: 'pinned', rev: witness.rev, requirePurpose: 'teaching' });
     if (fact.type !== witness.type || fact.accessEpoch !== witness.epoch ||
         (!fact.purpose.includes('teaching') && !fact.purpose.includes('all')))
       throw new WorkbookSourceMismatch('题目或来源当前不可读取。');

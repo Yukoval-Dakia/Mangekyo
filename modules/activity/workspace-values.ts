@@ -1,9 +1,10 @@
 import {
   factId,
+  parseFactRevisionBasis,
+  type FactRevisionBasis,
   type CommandContext,
   type FactId,
   type Revision,
-  type Tick,
 } from '@mangekyo/kernel';
 import {ridingPracticeType} from './practice-values.ts';
 import {workbookAttemptType, workbookPaperType} from './workbook-values.ts';
@@ -39,11 +40,7 @@ export const workspaceAnswerLimit = 4000;
 export const workspaceRubricLimit = 8000;
 export const workspaceBasisCountLimit = 256;
 
-export type WorkspaceEntryBasis = {
-  readonly id: FactId;
-  readonly rev: Revision;
-  readonly epoch: Tick;
-};
+export type WorkspaceEntryBasis = FactRevisionBasis;
 
 export type WorkspaceEntryBasisInput = {
   readonly id: string;
@@ -150,16 +147,6 @@ function revision(value: unknown, label: string): Revision {
   return value as Revision;
 }
 
-function tick(value: unknown): Tick {
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
-    return String(value) as Tick;
-  }
-  if (typeof value === 'string' && /^(?:0|[1-9][0-9]*)$/.test(value)) {
-    return value as Tick;
-  }
-  throw new WorkspaceInputError('依据访问代次无效。');
-}
-
 function tags(value: unknown): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > workspaceTagCountLimit) {
@@ -223,14 +210,11 @@ export function workspaceEntryBasis(input: unknown): WorkspaceEntryBasis[] {
   if (!Array.isArray(input) || input.length > workspaceBasisCountLimit) {
     throw new WorkspaceInputError('依据清单无效。');
   }
-  const parsed = input.map((item, index) => {
-    const value = record(item);
-    if (typeof value.id !== 'string') throw new WorkspaceInputError('依据标识无效。');
-    return {
-      id: factId(value.id),
-      rev: revision(value.rev, `第 ${index + 1} 条依据的版本`),
-      epoch: tick(value.epoch),
-    };
+  const parsed = input.map(item => {
+    try { return parseFactRevisionBasis(item); }
+    catch (error) {
+      throw new WorkspaceInputError(error instanceof Error ? error.message : '依据清单无效。');
+    }
   });
   const seen = new Set(parsed.map((item) => `${item.id}:${item.rev}`));
   if (seen.size !== parsed.length) throw new WorkspaceInputError('依据不能重复。');
