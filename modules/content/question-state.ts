@@ -3,7 +3,7 @@ import { assetType, checkQuestionTeachingSources, checkTextbookBasis, freezeQues
 import { contentStableId, normalizeKnowledgeName } from './knowledge-entity.ts';
 import { fields, list, pageId, record, revision, text } from './parse.ts';
 import { parseQuestionMetadata } from './question-authoring.ts';
-import { checkQuestionHintSource } from './question-meta-source.ts';
+import { pinQuestionHintSource } from './question-meta-source.ts';
 import { independentQuestionExecutions, type QuestionExecution } from './question-effects.ts';
 import { arithmeticPractice as parseArithmeticPractice } from './arithmetic-practice.ts';
 
@@ -181,7 +181,7 @@ export async function readQuestionMetaForUpdate(read: AssetReadContext['read'], 
 export async function openQuestionMetaDraft(read: AssetReadContext['read'], question: FactSnapshot['ref']) {
   const { snapshot, draft } = await readQuestionMetaForUpdate(read, question);
   const ladder = draft.append_metadata?.hint_ladder;
-  if (ladder) await checkQuestionHintSource({ learner: question.learner, read }, ladder.source_ref, draft.basis);
+  if (ladder) await pinQuestionHintSource({ learner: question.learner, read }, ladder.source_ref, draft.basis);
   return { snapshot, draft };
 }
 

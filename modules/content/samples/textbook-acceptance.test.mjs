@@ -281,6 +281,31 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
   assert.equal(repaired.draft.append_metadata.hint_ladder.source_ref, hint_ladder.source_ref);
   assert.equal(await hint(1, derivationId), undefined);
   console.log(JSON.stringify({ hintAnchorAcceptance: { command: ['missing denied', 'private denied'], legacy: 'denied', repairedDraftRev: repaired.snapshot.ref.rev } }));
+
+  const sourceId = stableId('hint-source-revisions');
+  await send(saveQuestionCommand, { ...graph.question, id: sourceId });
+  const sourceUse = rev => ({ id: sourceId, rev, type: 'content.asset', epoch: '0' });
+  const confirmMeta = async (expectedMetaRev, append_metadata, basis) => {
+    const proposal = await proposeMeta({ ...withLadder, expectedMetaRev, append_metadata, basis });
+    return decide(proposeQuestionMetaCommand, proposal.commandId);
+  };
+  const refOf = ({ id, rev, type }) => ({ v: 1, fact: { id, rev, type }, anchor: { kind: 'block', blockId: 'prompt' } });
+  const before = (await confirmMeta(repaired.snapshot.ref.rev, { hint_ladder: { ...hint_ladder, source_ref: sourceId } }, [sourceUse(1)])).wrote[0];
+  const open = () => read(context => openQuestionMetaDraft(context, frozen));
+  assert.deepEqual(JSON.parse((await open()).draft.append_metadata.hint_ladder.source_ref), refOf(sourceUse(1)));
+  await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
+    [learner, before.id, before.rev, sourceId]);
+  await send('content.correctQuestion', { id: sourceId, expectedRev: 1, patch: {
+    prompt: { block_id: 'prompt', anchor: '平均速度', replacement: '全程用时' },
+  } });
+  const appendedSolution = { solutions: [{ ...alternative, method: '新一版解法', source_ref: sourceId }] };
+  await confirmMeta(before.rev, appendedSolution, [sourceUse(2)]);
+  const currentHint = (await open()).draft;
+  assert.deepEqual(currentHint.basis.filter(use => use.id === sourceId), [sourceUse(1), sourceUse(2)]);
+  assert.deepEqual(JSON.parse(currentHint.append_metadata.hint_ladder.source_ref), refOf(sourceUse(1)));
+  const historical = await read(context => context.fact(before.id, { mode: 'pinned', rev: before.rev }));
+  assert.equal(historical.value.append_metadata.hint_ladder.source_ref, sourceId);
+
   await send('content.setQuestionTeaching', { id: question, expectedRev: 1, allowed: false });
   assert.equal(await hint(1, derivationId), undefined);
   console.log(JSON.stringify({ questionHintAcceptance: { opened, elapsedMs, afterRevocation: null, coldRevision: savedQuestion.ref.rev } }));

@@ -24,7 +24,8 @@ function sourceReference(learner: AssetReadContext['learner'], ref: string, basi
   return witness && { witness, anchor };
 }
 
-export async function checkQuestionHintSource(
+/** Reopen the authorized source and return the fixed public block reference. */
+export async function pinQuestionHintSource(
   { learner, read }: AssetReadContext, ref: string, basis: readonly AssetBasis[],
 ) {
   const unavailable = () => new AssetBasisError('微提示来源缺少获准的固定公开锚点。');
@@ -35,10 +36,13 @@ export async function checkQuestionHintSource(
   if (fact.ref.learner !== learner || fact.ref.id !== id || fact.ref.rev !== rev ||
       fact.type !== type || fact.accessEpoch !== epoch || !fact.purpose.some(use => use === 'teaching' || use === 'all'))
     throw unavailable();
+  let blockId: string | undefined;
   if (fact.type === assetType) {
     const asset = parseAsset(fact.value);
-    if (asset.kind === 'question' && (!anchor || anchor.blockId === asset.promptBlockId) && questionPrompt(asset).trim()) return;
+    if (asset.kind === 'question' && (!anchor || anchor.blockId === asset.promptBlockId) && questionPrompt(asset).trim())
+      blockId = asset.promptBlockId;
   }
-  if (fact.type === 'capture.source' && anchor && projectPublicCaptureMaterial(fact.value, anchor)) return;
-  throw unavailable();
+  if (fact.type === 'capture.source' && anchor && projectPublicCaptureMaterial(fact.value, anchor)) blockId = anchor.blockId;
+  if (!blockId) throw unavailable();
+  return JSON.stringify({ v: 1, fact: { id, rev, type }, anchor: { kind: 'block', blockId } });
 }
