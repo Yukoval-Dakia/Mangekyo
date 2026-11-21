@@ -388,9 +388,9 @@ async function frozenExtractionParts(fact: FactSnapshot, issuance: PaperIssuance
   return { title: source.unit.title, ...frozenPaperBlocks(fact, source, snapshot.outcome) };
 }
 
-function samePrintedPages(historical: readonly Block[], layout: PaperIssuance['layout'], pages: readonly PrintPage[]) {
+function samePrintedPages(historical: () => readonly Block[], layout: PaperIssuance['layout'], pages: readonly PrintPage[]) {
   try {
-    return JSON.stringify(paginate(cleanBlocks(historical), layout)) === JSON.stringify(pages);
+    return JSON.stringify(paginate(cleanBlocks(historical()), layout)) === JSON.stringify(pages);
   } catch {
     // Some outcomes only became printable after dropping invalid branches.
     return false;
@@ -408,9 +408,9 @@ async function projectPaper(
   const parts = issuance.extraction
     ? await frozenExtractionParts(fact, issuance, mode, readExtraction)
     : null;
-  const { title, pieces } = parts
-    ? { title: parts.title, pieces: cleanBlocks(!choosingEdition && !issuance.edition
-      ? parts.historical ?? parts.blocks : parts.blocks) }
+  const blocks = !choosingEdition && !issuance.edition ? parts?.historical ?? parts?.current : parts?.current;
+  const { title, pieces } = parts && blocks
+    ? { title: parts.title, pieces: cleanBlocks(blocks()) }
     : await frozenPrintParts(read, fact, mode === 'current');
   const pages = paginate(pieces, data.layout);
   if (choosingEdition && parts?.historical && !samePrintedPages(parts.historical, data.layout, pages))

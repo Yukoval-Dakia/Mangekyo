@@ -115,8 +115,8 @@ export function frozenPaperBlocks(fact: FactSnapshot, source: SourceEnvelope, ou
   const all = parsedExtractionForSource(fact, source, outcome);
   if (!all) throw new Error('分层抽取未获准用于此卷。');
   const valid = validCropBranches(source, all);
-  return { blocks: mergeExtraction(source, valid),
-    historical: valid.length === all.length ? null : mergeExtraction(source, all) };
+  return { current: () => mergeExtraction(source, valid),
+    historical: valid.length === all.length ? null : () => mergeExtraction(source, all) };
 }
 
 export function mayExtract(fact: FactSnapshot) {
