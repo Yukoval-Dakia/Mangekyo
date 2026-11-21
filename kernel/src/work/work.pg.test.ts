@@ -659,7 +659,7 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
     expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows)
-      .toEqual(Array.from({ length: 17 }, (_, i) => ({ version: i + 1 })));
+      .toEqual(Array.from({ length: 18 }, (_, i) => ({ version: i + 1 })));
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -671,8 +671,8 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (18)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (19)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 18');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 19');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
   }, { initialize: legacyWorkSchema }));

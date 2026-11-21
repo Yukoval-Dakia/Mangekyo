@@ -10,27 +10,19 @@ export type SessionErasure = {
   clearDrafts(tx: DbQuery, learner: string, turns: readonly string[]): Promise<void>;
 };
 
+const referencesDerivation = (manifest: string) => `(
+  ${manifest}->'inputs' @> jsonb_build_array(jsonb_build_object('kind','slot','derivationId',a.id))
+  OR ${manifest}->'inputs' @> jsonb_build_array(jsonb_build_object('kind','range',
+    'members',jsonb_build_array(jsonb_build_object('derivationId',a.id))))
+)`;
+
 /** Called only inside the learner's erasure transaction. */
 export async function eraseSessionPayloads(tx: DbQuery, learner: string, roots: readonly string[], tick: string, scope: SessionErasure) {
   const {slotType, readLabels} = scope;
   const {turns, drafts} = await scope.open(tx, learner, roots);
   const {rows} = await tx.query<{turn: string; derivation: string | null}>(`WITH RECURSIVE
-    manifests AS MATERIALIZED (
-      SELECT id, slot_key AS turn, slot_type, manifest FROM derivations WHERE learner_id=$1
-      UNION ALL
-      SELECT NULL, draft.turn, $3, draft.manifest FROM jsonb_to_recordset($6::jsonb) AS draft(turn text, manifest jsonb)
-    ),
-    inputs AS MATERIALIZED (
-      SELECT m.id, m.turn, m.slot_type, item FROM manifests m
-      CROSS JOIN LATERAL jsonb_array_elements(m.manifest->'inputs') item
-    ),
-    edges AS MATERIALIZED (
-      SELECT i.id, i.turn, i.slot_type, ref.id AS parent FROM inputs i
-      CROSS JOIN LATERAL (
-        SELECT i.item->>'derivationId' AS id WHERE i.item->>'kind'='slot'
-        UNION ALL
-        SELECT member->>'derivationId' FROM jsonb_array_elements(i.item->'members') member WHERE i.item->>'kind'='range'
-      ) ref
+    root_inputs(input) AS (
+      SELECT jsonb_build_array(jsonb_build_object('kind','fact','id',root.id)) FROM unnest($2::text[]) root(id)
     ),
     seed_turns(turn) AS (
       SELECT unnest($4::text[])
@@ -48,14 +40,21 @@ export async function eraseSessionPayloads(tx: DbQuery, learner: string, roots: 
           OR jsonb_path_query_array(packet,'$.assessmentBasis[*].facts[*].id') ? root.id)
     ),
     affected(id, turn, slot_type) AS (
-      (SELECT id, turn, slot_type FROM inputs WHERE item->>'kind'='fact' AND item->>'id'=ANY($2::text[])
-       UNION SELECT m.id, m.turn, m.slot_type FROM manifests m JOIN seed_turns s ON s.turn=m.turn WHERE m.slot_type=$3)
+      (SELECT d.id, d.slot_key, d.slot_type FROM root_inputs r JOIN derivations d
+         ON d.learner_id=$1 AND d.manifest->'inputs' @> r.input
+       UNION SELECT d.id, d.slot_key, d.slot_type FROM seed_turns s JOIN derivations d
+         ON d.learner_id=$1 AND d.slot_type=$3 AND d.slot_key=s.turn)
       UNION
-      SELECT e.id, e.turn, e.slot_type FROM affected a JOIN edges e ON e.parent=a.id
+      SELECT d.id, d.slot_key, d.slot_type FROM affected a JOIN derivations d
+        ON d.learner_id=$1 AND ${referencesDerivation('d.manifest')}
     )
     SELECT turn, id AS derivation FROM affected WHERE slot_type=$3
     UNION SELECT s.slot_key, NULL FROM slot_state s JOIN seed_turns seed ON seed.turn=s.slot_key
-      WHERE s.learner_id=$1 AND s.slot_type=$3`,
+      WHERE s.learner_id=$1 AND s.slot_type=$3
+    UNION SELECT draft.turn, NULL FROM jsonb_to_recordset($6::jsonb) AS draft(turn text, manifest jsonb)
+      WHERE EXISTS (SELECT FROM seed_turns s WHERE s.turn=draft.turn)
+        OR EXISTS (SELECT FROM root_inputs r WHERE draft.manifest->'inputs' @> r.input)
+        OR EXISTS (SELECT FROM affected a WHERE ${referencesDerivation('draft.manifest')})`,
   [learner,roots,slotType,turns,readLabels,JSON.stringify(drafts)]);
   if (!rows.length) return [];
   const owners = [...new Set(rows.map(row => row.turn))];
