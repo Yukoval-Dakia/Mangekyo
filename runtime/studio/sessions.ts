@@ -4,7 +4,6 @@ import { notionReadScope, teachingResultAuthority, type CheckNotionRead, type No
 import { revokedReplyWriteReceipts, type WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import { projectArtifactMountTrace } from '../../executors/teaching/artifact-trace.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -57,6 +56,18 @@ const requestedAccount = (route:unknown) => route && typeof route === 'object' &
   ? route.accountRevision : undefined;
 
 export type CaseId = (typeof cases)[number]['id'] | 'companion' | 'riding';
+type TurnRequest = {
+  selected?: CaseId;
+  session: string;
+  parent: string | null;
+  answer: string | null;
+  req: string;
+  attachment?: ReturnType<typeof studyAttachment> | undefined;
+  grants: ReturnType<typeof studyMcpGrants>;
+  requestedRoute: unknown;
+  currentObject: StudyCurrentObjectSelection | undefined;
+  allowBackgroundUnderstanding: boolean;
+};
 export function caseId(value: unknown): CaseId {
   if (value !== 'independent' && value !== 'workedExample' && value !== 'companion' && value !== 'riding')
     throw new RequestError(400, '对话类型无效。');
@@ -90,8 +101,8 @@ export type DisplayTurn = {
 type Status = 'pending' | 'ready' | 'failed' | 'unknown';
 export const unconfirmedReplyMessage = '暂时无法核对本轮依据，旧回复已隐藏。';
 export const unavailableReplyMessage = '本轮已完成，依据已变更，旧回复已隐藏。';
-const unavailableReply = (model: string): DisplayTurn => ({action: 'reply_unavailable', model,
-  rationale: '', message: unavailableReplyMessage, reads: [], evidenceIds: []});
+const unavailableReply = (model: string, unconfirmed = false): DisplayTurn => ({action: 'reply_unavailable', model,
+  rationale: '', message: unconfirmed ? unconfirmedReplyMessage : unavailableReplyMessage, reads: [], evidenceIds: []});
 type TurnView = {
   id: string;
   submission: ReturnType<typeof studyTurn>;
@@ -101,14 +112,21 @@ type TurnView = {
   status: Status;
   error?: string;
 };
-export async function readOwnStudyTurn(tx: ReadTransaction, id: string) {
-  const open = (use: string) => createCommandReadContext(tx, use).fact(factId(id), {mode: 'following'});
-  const fact = await open(storagePurpose).catch((error: unknown) => {
-    if (error instanceof FactReadDeniedError && error.reason === 'purpose') return open(purpose);
-    throw error;
-  });
+async function readStudyTurn(tx: ReadTransaction, id: string, use: string) {
+  const fact = await createCommandReadContext(tx, use).fact(factId(id), {mode: 'following'});
   if (fact.type !== 'activity.studyTurn') throw new FactNotFoundError('学习回合不存在。');
   return fact;
+}
+
+export const readTeachingTurn = (tx: ReadTransaction, id: string) => readStudyTurn(tx, id, purpose);
+
+export async function readOwnStudyTurn(tx: ReadTransaction, id: string) {
+  try {
+    return await readStudyTurn(tx, id, storagePurpose);
+  } catch (error) {
+    if (error instanceof FactReadDeniedError && error.reason === 'purpose') return readTeachingTurn(tx, id);
+    throw error;
+  }
 }
 
 export async function requireSessionTurn(tx: ReadTransaction, id: string) {
@@ -154,8 +172,7 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
       else if (await teachingMemoryBasis(tx, parseManifest(row.manifest), row.id)) authority = 'authorized';
     }
     let feedback = authority === 'authorized' ? row.value : null;
-    if (!feedback && row.settled) feedback = { action: 'reply_unavailable', model: submission.model,
-      rationale: '', message: authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage, reads: [], evidenceIds: [] };
+    if (!feedback && row.settled) feedback = unavailableReply(submission.model, authority === 'unconfirmed');
     result.push({
       id: row.id,
       submission,
@@ -405,18 +422,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
         input: { id, data: { title: evidence.title, text: evidence.body } },
       });
     }
-  async function submit(
-    selected: CaseId,
-    session: string,
-    parent: string | null,
-    answer: string | null,
-    req: string,
-    attachment?: ReturnType<typeof studyAttachment>,
-    grants?: ReturnType<typeof studyMcpGrants>,
-    requestedRoute?: unknown,
-    currentObject?: StudyCurrentObjectSelection,
-    allowBackgroundUnderstanding = false,
-  ) {
+  async function submit(request: TurnRequest, selected: CaseId) {
+    const {session, parent, answer, req, attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding} = request;
     if (allowBackgroundUnderstanding === true && selected !== 'companion')
       throw new RequestError(400, '本轮后台理解授权仅用于普通同伴对话。');
     const id = parent ? nextTurn(session, parent) : firstTurn(req);
@@ -486,18 +493,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     });
     return getSession(db, session, projectRecall);
   }
-  async function replay(
-    req: string,
-    session: string,
-    selected: CaseId | undefined,
-    parent: string | null,
-    answer: string | null,
-    attachment?: ReturnType<typeof studyAttachment>,
-    grants?: ReturnType<typeof studyMcpGrants>,
-    requestedRoute?: unknown,
-    currentObject?: StudyCurrentObjectSelection,
-    allowBackgroundUnderstanding = false,
-  ) {
+  async function replay(request: TurnRequest) {
+    const {req, session, selected, parent, answer, attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding} = request;
     const {
       rows: [row],
     } = await db.query<{ id: string; data: unknown }>(
@@ -524,6 +521,17 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       throw new RequestError(409, '同一个提交标识已经用于不同内容。');
     }
     return getSession(db, session, projectRecall);
+  }
+  async function submitOrReplay(request: TurnRequest, selected: string) {
+    try {
+      return await submit(request, request.selected ?? caseId(selected));
+    } catch (error) {
+      const prior = await replay(request);
+      if (prior) return prior;
+      if (request.parent && (await loadHistory(db, request.session)).at(-1)?.id !== request.parent)
+        throw new RequestError(409, '另一份回答已提交，请刷新会话。');
+      throw error;
+    }
   }
   function requestedGrants(value: unknown) {
     try { return studyMcpGrants(value); }
@@ -560,16 +568,9 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
         try { attachment = studyAttachment(shared); }
         catch { throw new RequestError(400, '请选择一段 1 至 3000 字的材料。'); }
       }
-      const session = firstTurn(requestId);
-      const prior = await replay(requestId, session, selected, null, firstAnswer, attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding);
-      if (prior) return prior;
-      try {
-        return await submit(selected, session, null, firstAnswer, requestId, attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding);
-      } catch (error) {
-        const again = await replay(requestId, session, selected, null, firstAnswer, attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding);
-        if (again) return again;
-        throw error;
-      }
+      const request: TurnRequest = {req:requestId, session:firstTurn(requestId), selected, parent:null, answer:firstAnswer,
+        attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding};
+      return await replay(request) ?? submitOrReplay(request, selected);
     },
     async answer(session: string, parent: unknown, input: unknown, requestId: string, requestedMcp?: unknown,
       requestedRoute?: unknown, requestedObject?: unknown, requestedBackground?: unknown) {
@@ -580,23 +581,16 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
         throw new RequestError(400, '请输入 1 至 4000 字的回答。');
       if (typeof parent !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(parent))
         throw new RequestError(400, '提交时须指明当前问题。');
-      const answer = input.trim();
-      const prior = await replay(requestId, session, undefined, parent, answer, undefined, grants, requestedRoute, currentObject, allowBackgroundUnderstanding);
+      const request: TurnRequest = {req:requestId, session, parent, answer:input.trim(),
+        grants, requestedRoute, currentObject, allowBackgroundUnderstanding};
+      const prior = await replay(request);
       if (prior) return prior;
       const last = (await loadHistory(db, session)).at(-1);
       if (!last) throw new RequestError(404, '学习会话不存在。');
       if (last.submission.classroom) throw new RequestError(409, '请在课堂步骤内完成学习活动。');
       if (last.id !== parent) throw new RequestError(409, '此题已有回答，请刷新后查看下一步。');
       if (last.status !== 'ready') throw new RequestError(409, '请先等同伴完成这一轮。');
-      try {
-        return await submit(caseId(last.submission.caseId), session, last.id, answer, requestId, undefined, grants, requestedRoute, currentObject, allowBackgroundUnderstanding);
-      } catch (error) {
-        const again = await replay(requestId, session, undefined, parent, answer, undefined, grants, requestedRoute, currentObject, allowBackgroundUnderstanding);
-        if (again) return again;
-        if ((await loadHistory(db, session)).at(-1)?.id !== last.id)
-          throw new RequestError(409, '另一份回答已提交，请刷新会话。');
-        throw error;
-      }
+      return submitOrReplay(request, last.submission.caseId);
     },
   };
 }

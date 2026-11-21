@@ -95,7 +95,7 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
     read: ReadContext;
     unavailable(error: unknown): boolean;
     corrections: Awaited<ReturnType<typeof readWorkbookCorrections>>;
-    frozenAttempt(fact: FactSnapshot, paper: WorkbookPaper): Promise<{questions: Question[]; paperRev?: Revision} | undefined>;
+    frozenAttempt(fact: FactSnapshot, attempt: WorkbookAttempt): Promise<{questions: Question[]; paperRev?: Revision} | undefined>;
     formalAssessment(paper: WorkbookPaper, ref: {id: FactId; rev: Revision}):
       Promise<{view: Formal; result: WorkbookAssessmentResult} | undefined>;
     questions(): Promise<Question[]>;
@@ -104,7 +104,7 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
   const sources = withWorkbookWorkspaceBasis(reads.read);
   const attempts: (WorkbookDetail['attempts'][number] & { rev: Revision; questions: Question[]; paperRev?: Revision; formalAssessment?: Formal })[] = [];
   for (const { id: attemptId, rev, attempt, fact } of reads.attempts) {
-    const frozen = await reads.frozenAttempt(fact, attempt.paper);
+    const frozen = await reads.frozenAttempt(fact, attempt);
     if (!frozen) continue;
     const formal = await reads.formalAssessment(attempt.paper, {id:attemptId,rev});
     const view = workbookAttemptView(attemptId, attempt, reads.assessments.get(attemptId) ?? [], formal?.result);
@@ -128,7 +128,7 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
   return {
     id, revision, title: paper.title, savedAt: paper.savedAt, source,
     questions: await reads.questions(), attempts,
-    ...(sealedPractice ? { sealedPractice:true as const } : {}),
+    ...(sealedPractice ? { sealedPractice:true as const } : { pacingVersion:1 as const }),
     ...(paper.assessmentRelease ? { assessmentReleaseRef:paper.assessmentRelease.releaseRef } : {}),
   };
 }

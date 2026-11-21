@@ -91,6 +91,20 @@ type ExamPacingEvidence = {
   readonly scale_key?: string;
   readonly score?: { readonly earned: number; readonly maximum: number };
 };
+export type ExamPacingItemEvidenceV1 = {
+  readonly attempt_ref: { readonly id: string; readonly rev: number };
+  readonly paper_key: string;
+  readonly item_id: string;
+  readonly position: number;
+  readonly item_count: number;
+  readonly estimated_duration_ms?: number;
+} & (
+  | { readonly skipped: true; readonly returned?: true }
+  | { readonly skipped?: never; readonly returned?: never }
+) & (
+  | { readonly scale_key: string; readonly score: { readonly earned: number; readonly maximum: number } }
+  | { readonly scale_key?: never; readonly score?: never }
+);
 export type EvidenceEventV1 = Dimensions & {
   readonly ref: string;
   readonly rev: number;
@@ -104,9 +118,12 @@ export type EvidenceEventV1 = Dimensions & {
   readonly confidence?: number;
   readonly error_stage?: 'reading' | 'modeling' | 'strategy' | 'execution' | 'expression';
 } & (
-  | { readonly help_level: ItemHelpLevel; readonly exam_pacing?: ExamPacingEvidence }
+  | { readonly help_level: ItemHelpLevel; readonly exam_pacing?: ExamPacingEvidence; readonly exam_pacing_item?: never }
   | { readonly help_level: 'unknown'; readonly exam_pacing: ExamPacingEvidence;
-      readonly outcome: 'unknown'; readonly concept_ids: readonly [] }
+      readonly outcome: 'unknown'; readonly concept_ids: readonly []; readonly exam_pacing_item?: never }
+  | { readonly help_level: 'unknown'; readonly exam_pacing_item: ExamPacingItemEvidenceV1;
+      readonly exam_pacing?: never; readonly outcome: 'unknown'; readonly concept_ids: readonly [];
+      readonly claim_ids: readonly []; readonly score_norm?: never }
 );
 export type EvidenceCandidateV1 = Dimensions & {
   readonly ref: string;

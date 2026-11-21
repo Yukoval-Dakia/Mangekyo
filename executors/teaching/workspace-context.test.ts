@@ -1,9 +1,9 @@
 import { expect, it } from 'vitest';
 import { projectWorkspaceContext, type StudyMessage } from './workspace-context.ts';
 import {studyToolResults} from './study-tool-results.ts';
+import {toolCall} from './test/chat.ts';
 
 it('bounds large Python and Exa results while keeping tool pairs and the newest result', () => {
-  const call = (name: string) => ({ id: name, type: 'function' as const, function: { name, arguments: '{}' } });
   const results = studyToolResults(), previews = new WeakMap();
   const result = (name: string, output: string, step: number) => {
     const {content, preview} = results.publish(name, step, output, []);
@@ -11,14 +11,14 @@ it('bounds large Python and Exa results while keeping tool pairs and the newest 
     previews.set(message, preview);
     return message;
   };
-  const user = { role: 'user', content: '核对作答' } as const;
-  const earlier = { role: 'assistant', tool_calls: [call('python'), call('exa_search')], content: null,
+  const user = { role: 'user', content: 'u'.repeat(22000) } as const;
+  const earlier = { role: 'assistant', tool_calls: [toolCall('python', 'python', {}), toolCall('exa_search', 'exa_search', {})], content: null,
     providerTurn: { protocol: 'anthropic', content: [{ type: 'thinking', signature: 'fixture' }] } } satisfies StudyMessage;
-  const current = { role: 'assistant', tool_calls: [call('read_workspace')], content: null } satisfies StudyMessage;
+  const current = { role: 'assistant', tool_calls: [toolCall('read_workspace', 'read_workspace', {})], content: null } satisfies StudyMessage;
   const large = 'text read '.repeat(1150);
   const latest = result('read_workspace', large, 5);
   const messages = [user, earlier, result('python', large, 1), result('exa_search', large, 2), current, latest];
-  const projected = projectWorkspaceContext([{...user, content:'u'.repeat(22000)}, ...messages.slice(1)], previews);
+  const projected = projectWorkspaceContext(messages, previews);
   expect(Buffer.byteLength(JSON.stringify(projected))).toBeLessThanOrEqual(48 * 1024);
   expect(projected.slice(1)).toMatchObject([earlier, { tool_call_id: 'python' }, { tool_call_id: 'exa_search' }, current, latest]);
   expect(projected[1]).toBe(earlier);

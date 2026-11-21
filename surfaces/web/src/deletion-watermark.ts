@@ -1,3 +1,4 @@
+import {pruneOldWorkbookSubmissions} from './workbook-submission';
 // A command keeps its original generation even if another tab observes a deletion.
 export const latestKey = 'mangekyo:lifecycle-watermark';
 const bindingKey = (id:string) => 'mangekyo:command-watermark:'+id;
@@ -33,6 +34,8 @@ export async function synchronizeDeletion() {
     localStorage.setItem(latestKey,state.watermark);
     if (state.tombstones.length) window.dispatchEvent(new Event(latestKey));
   }
+  // Local cleanup only. A later synchronization retries an unavailable browser store.
+  void pruneOldWorkbookSubmissions(state.watermark, bindDeletionWatermark).catch(() => {});
   return state.watermark as string;
 }
 

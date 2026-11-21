@@ -2,7 +2,8 @@ import type { EffectReceipt, EffectRequest, FactId, FactSnapshot, GatherContext,
 import { questionPrompt, type QuestionAsset } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease } from '@mangekyo/module-content/facts/question-release';
 import { captureObject, captureRef, captureText } from './parse.ts';
-import { captureSourceType, sourceEnvelope, sourceBlocks, type Block, type SourceEnvelope } from './source.ts';
+import { captureSourceType, requireSourceCropPage, sourceEnvelope, sourceBlocks, validSourceCropPage,
+  type Block, type SourceEnvelope } from './source.ts';
 
 export const layeredExtractionSlot = 'capture.layeredExtraction';
 export const layeredExtractionDeriver = 'capture/layered-extraction-v1';
@@ -86,12 +87,36 @@ function sameJson(left: unknown, right: unknown): boolean {
     Object.hasOwn(right, key) && sameJson(Reflect.get(left, key), Reflect.get(right, key)));
 }
 
-function extractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue> | null) {
+function parsedExtractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue> | null) {
   if (outcome?.kind !== 'value') return null;
   const { basis, originals, blocks } = outcome.value;
   if (!mayExtract(fact) || basis.target.id !== fact.ref.id || basis.learner !== fact.ref.learner || basis.target.rev > fact.ref.rev ||
       basis.accessEpoch !== fact.accessEpoch || !sameJson(originals, source.originals)) return null;
-  return extractedBlocks(source, blocks);
+  return parseExtractionBlocks(source, blocks);
+}
+
+function validCropBranches(source: SourceEnvelope, blocks: readonly Block[]) {
+  const retained = new Set<string>();
+  return blocks.filter(({ id, parentId, body }) => {
+    if ((parentId !== null && !retained.has(parentId)) ||
+        (body.crop_ref && !validSourceCropPage(body.crop_ref, source.originals))) return false;
+    retained.add(id);
+    return true;
+  });
+}
+
+function extractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue> | null) {
+  const blocks = parsedExtractionForSource(fact, source, outcome);
+  return blocks && validCropBranches(source, blocks);
+}
+
+// Only paper projection can reconstruct the old printable text from these blocks.
+export function frozenPaperBlocks(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue>) {
+  const all = parsedExtractionForSource(fact, source, outcome);
+  if (!all) throw new Error('分层抽取未获准用于此卷。');
+  const valid = validCropBranches(source, all);
+  return { current: () => mergeExtraction(source, valid),
+    historical: valid.length === all.length ? null : () => mergeExtraction(source, all) };
 }
 
 export function mayExtract(fact: FactSnapshot) {
@@ -117,7 +142,7 @@ export function mergeLayeredSource(fact: FactSnapshot, outcome: Outcome<LayeredE
   return { source: { ...source, unit: { ...source.unit, blocks: mergeExtraction(source, candidate) } }, differences };
 }
 
-export function extractedBlocks(source: VisualSource, input: unknown): readonly Block[] {
+function parseExtractionBlocks(source: VisualSource, input: unknown): readonly Block[] {
   const blocks = sourceBlocks(input, source.kind, source.originals);
   for (const { body } of blocks) {
     if (body.status === 'known' ? body.sticky : body.clarification !== 'pending')
@@ -126,6 +151,12 @@ export function extractedBlocks(source: VisualSource, input: unknown): readonly 
       throw new Error('题干或手写内容缺少题目锚点。');
     if (body.layer === 'handwriting' && !body.slotId) throw new Error('手写内容缺少作答位。');
   }
+  return blocks;
+}
+
+export function extractedBlocks(source: VisualSource, input: unknown): readonly Block[] {
+  const blocks = parseExtractionBlocks(source, input);
+  for (const { body } of blocks) requireSourceCropPage(body.crop_ref, source.originals);
   return blocks;
 }
 
@@ -177,6 +208,7 @@ export function extractionTarget(input: unknown) {
 
 export function extractionAnchor(source: SourceEnvelope, blockId: string, input: unknown): Block | undefined {
   const saved = source.unit.blocks.find(block => block.id === blockId);
+  requireSourceCropPage(saved?.body.crop_ref, source.originals);
   if (saved || input === undefined) return saved;
   const row = captureObject(input);
   const parentId = source.unit.blocks.some(block => block.id === row.parentId) ? row.parentId : null;
@@ -186,6 +218,7 @@ export function extractionAnchor(source: SourceEnvelope, blockId: string, input:
       (block.body.status === 'unknown' ? block.body.clarification !== 'pending' : block.body.sticky))
     throw new Error('请先打开原件的抽取位置。');
   const key = cropKey(block);
+  requireSourceCropPage(block.body.crop_ref, source.originals);
   return source.unit.blocks.find(entry => cropKey(entry) === key && keepLearnerState(entry)) ?? block;
 }
 
@@ -274,20 +307,24 @@ export function clarificationRegions(fact: FactSnapshot, outcome: Outcome<Layere
   const seen = new Set<string>();
   const blocks = candidate ? mergeExtraction(source, candidate) : source.unit.blocks;
   return blocks.flatMap(block => {
-    const { id, body } = block;
-    if (body.status !== 'unknown') return [];
+    const { body } = block;
+    if (body.status !== 'unknown' || !validSourceCropPage(body.crop_ref, source.originals)) return [];
     const key = cropKey(block)!;
     if (seen.has(key)) return [];
     seen.add(key);
-    const { original, page, bbox: [left, top, right, bottom] } = body.crop_ref;
-    const blob = source.originals[original];
-    if (!blob) return [];
-    return [{
-      id, origin: 'ocr' as const, sourceId: fact.ref.id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch,
-      originalSha256: blob.sha256, page, crop: { left, top, width: right - left, height: bottom - top },
-      clarification: body.clarification, candidates: body.candidates,
-    }];
+    return [clarificationRegion(fact, source, { id: block.id, body })];
   });
+}
+
+export function clarificationRegion(fact: FactSnapshot, source: SourceEnvelope, { id, body }: {
+  id: string; body: Extract<Block['body'], { status: 'unknown' }>;
+}) {
+  const { original, page, bbox: [left, top, right, bottom] } = body.crop_ref;
+  return {
+    id, origin: 'ocr' as const, sourceId: fact.ref.id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch,
+    originalSha256: source.originals[original]!.sha256, page, crop: { left, top, width: right - left, height: bottom - top },
+    clarification: body.clarification, candidates: body.candidates,
+  };
 }
 
 function questionBlocks(blocks: readonly Block[], itemId: string) {
@@ -318,13 +355,15 @@ function questionBlocks(blocks: readonly Block[], itemId: string) {
   });
 }
 
-function firstAnswerBlocks(blocks: readonly Block[], itemId: string) {
-  const allowed = new Set<string>();
+export function firstAnswerBlocks(blocks: readonly Block[], itemId?: string) {
+  const allowed = new Map<string, string | undefined>();
   return blocks.filter(({ id, body, parentId }) => {
-    const handwriting = body.layer === 'handwriting' && body.itemId === itemId;
+    const handwriting = body.layer === 'handwriting' && (itemId === undefined || body.itemId === itemId);
     if ((body.layer !== 'material' && body.layer !== 'prompt' && !handwriting) ||
         (parentId !== null && !allowed.has(parentId))) return false;
-    allowed.add(id);
+    const owner = parentId === null ? undefined : allowed.get(parentId);
+    if (itemId === undefined && handwriting && owner && owner !== body.itemId) return false;
+    allowed.set(id, body.itemId ?? owner);
     return handwriting;
   });
 }
