@@ -367,7 +367,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     const requested = request.attachment;
     const attachment: Extract<NonNullable<typeof requested>, {text: string}> | undefined = requested === undefined ? undefined
       : 'text' in requested ? requested : await db.snapshot({learner: studioLearner}, async tx => {
-        const source = await readMaterialText(tx, requested.id, purpose);
+        const source = await readMaterialText(tx, requested.id);
         if (!source) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
         return {id: requested.id, title: source.title,
           text: textSlice(source.text, 0, 16_000).content, mode: requested.mode};

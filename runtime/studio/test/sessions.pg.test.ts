@@ -37,7 +37,7 @@ afterEach(() => {
 const access = (enabled: boolean) => writeFileSync(process.env.MANGEKYO_WORKSPACE_ACCESS_FILE!, JSON.stringify(
   {version: 1, routes: {default: {enabled, baseUrl, protocol: 'openai', revision: 'wrev-1', credentialRevision: 'b3ce6da0-a112-4ac1-a78f-fcf5007b63f7'}}}));
 
-async function material(db: Db, key: string, text: string, granted: boolean, revoke = false) {
+async function material(db: Db, key: string, text: string, granted: boolean) {
   const activity = await loadStudioTestModule('activity');
   const capture = await loadStudioTestModule('capture');
   const content = await loadStudioTestModule('content');
@@ -51,8 +51,6 @@ async function material(db: Db, key: string, text: string, granted: boolean, rev
       extraction: {status: 'ok', method: 'utf8', text, error: null, warnings: [], pages: null, truncated: false, characterCount: text.length}}});
   if (granted) await handle({learner: studioLearner, actor: 'learner', purpose: 'storage', type: 'activity.setWorkspaceTeaching',
     id: commandId(stableId('grant', materialId)), input: {id: materialId, expectedRev: 1, enabled: true}});
-  if (revoke) await handle({learner: studioLearner, actor: 'learner', purpose: 'storage', type: 'activity.setWorkspaceTeaching',
-    id: commandId(stableId('revoke', materialId)), input: {id: materialId, expectedRev: 2, enabled: false}});
   return materialId;
 }
 const saved = (db: Db, id: string) => db.snapshot({learner: studioLearner}, async tx =>
@@ -134,6 +132,13 @@ it.skipIf(!testDatabaseUrl)('enables workspace tools for authorized attachment t
     await expect(studio.start('companion', 'req-forged', '伪造',
       {id: fullId, title: '材料', text: '不在原文里的伪造选段', mode: 'ask'}, undefined, route)).rejects.toMatchObject({status: 400});
 
+    // Fresh storage-only material (just captured, no teaching grant yet) can be
+    // handed to the companion via materialId: the learner's explicit pick is the grant.
+    const freshId = await material(db, 'fresh', '刚拍材料未授教学。', false);
+    const fresh = await studio.start('companion', 'req-fresh', '刚拍的卷子问同伴', {id: freshId, mode: 'ask'}, undefined, route);
+    expect(await saved(db, fresh.id)).toMatchObject({workspaceRevision: 'wrev-1', learningToolsVersion: 1,
+      memoryVersion: 1, agentVersion: 2});
+
     // Without workspace access the same confirmed attachment turn degrades to agent v1.
     access(false);
     const plain = await studio.start('companion', 'req-plain', '自由问', {id: fullId, mode: 'ask'}, undefined, route);
@@ -144,13 +149,12 @@ it.skipIf(!testDatabaseUrl)('enables workspace tools for authorized attachment t
     expect(plainTurn.memoryVersion).toBeUndefined();
     expect(plainTurn.attachmentBasis).toMatch(/^[0-9a-f]{64}$/);
 
-    // Material never granted to teaching cannot be read by materialId.
-    const hiddenId = await material(db, 'hidden', '未授权材料正文。', false);
-    access(true);
-    await expect(studio.start('companion', 'req-hidden', '读取', {id: hiddenId, mode: 'ask'}, undefined, route))
-      .rejects.toMatchObject({status: 400});
+    // Nonexistent material is rejected.
+    await expect(studio.start('companion', 'req-missing', '读取', {id: stableId('session-material', 'missing'), mode: 'ask'},
+      undefined, route)).rejects.toMatchObject({status: 400});
 
     // Long materials hydrate from the server and bind the basis without client truncation.
+    access(true);
     const longText = '长材料正文。'.repeat(3000);
     const longId = await material(db, 'long', longText, true);
     const long = await studio.start('companion', 'req-long', '读长材料', {id: longId, mode: 'prepare'}, undefined, route);
@@ -160,22 +164,18 @@ it.skipIf(!testDatabaseUrl)('enables workspace tools for authorized attachment t
     expect(longTurn.attachmentBasis).toMatch(/^[0-9a-f]{64}$/);
     expect(longTurn).toMatchObject({workspaceRevision: 'wrev-1', learningToolsVersion: 1, agentVersion: 2});
 
-    // materialId read is revoked the moment the material loses teaching access.
-    const revoked = await material(db, 'revoked', '将被撤权的材料。', true, true);
-    await expect(studio.start('companion', 'req-revoked', '读取', {id: revoked, mode: 'ask'}, undefined, route))
-      .rejects.toMatchObject({status: 400});
-
-    // teach-path revalidation: revoking teaching access on the attached material
-    // invalidates attachmentCurrent for the already-persisted turn.
-    const firstRevoked = await db.snapshot({learner: studioLearner}, async tx => {
+    // teach-path revalidation: correcting the intake text invalidates attachmentCurrent
+    // for the already-persisted turn (rev/epoch drift breaks the basis digest).
+    const intakeId = stableId('intake-document', fullId);
+    const corrected = await db.snapshot({learner: studioLearner}, async tx => {
       const act = await loadStudioTestModule('activity');
       const cap = await loadStudioTestModule('capture');
       const cont = await loadStudioTestModule('content');
       const h = createCommandHandler(db, {modules: [act, cap, cont], hooks: {async onFactsChanged() {}},
         crossModuleWrites: {...intakeWriteTargets, 'activity.setWorkspaceTeaching': {set_purpose: ['activity.textMaterial']}}});
-      await h({learner: studioLearner, actor: 'learner', purpose: 'storage', type: 'activity.setWorkspaceTeaching',
-        id: commandId(stableId('revoke-full', fullId)), input: {id: fullId, expectedRev: 2, enabled: false}});
+      await h({learner: studioLearner, actor: 'learner', purpose: 'storage', type: 'activity.correctIntakeText',
+        id: commandId(stableId('correct', fullId)), input: {materialId: fullId, intakeId, expectedRev: 1, text: '更正后的正文。'}});
       return attachmentCurrent(tx, firstTurn);
     });
-    expect(firstRevoked).toBe(false);
+    expect(corrected).toBe(false);
   }));
