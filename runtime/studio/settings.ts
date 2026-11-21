@@ -2,13 +2,12 @@ import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction } from '../../kernel/src/db/types.ts';
 import { studioLearner } from './identity.ts';
 import type { ModelTask } from '../../executors/teaching/model-routes.ts';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import {
   completeReplacement, defaultStored as defaultProviderSettings, flatten, mergeSettings, normalizeSaved,
-  providerAccount, publicSettings, type ProviderAccount, type ProviderSettings, type StoredSettings,
+  providerAccount, publicSettings, type ProviderAccount, type ProviderSettings,
 } from '../../executors/teaching/provider-settings.ts';
 export { providerAccount, publicSettings } from '../../executors/teaching/provider-settings.ts';
 export type { ProviderAccount, ProviderProfile, ProviderProtocol, ProviderSettings, McpServer } from '../../executors/teaching/provider-settings.ts';
@@ -23,29 +22,10 @@ function environmentExaApiKey() {
   return process.env.MANGEKYO_EXA_API_KEY || process.env.EXA_API_KEY || '';
 }
 
-async function readStored(): Promise<StoredSettings> {
-  try {
-    return normalizeSaved(JSON.parse(await readFile(settingsFile(), 'utf8')));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    return defaultStored();
-  }
-}
+const readStored = () => readJsonConfig(settingsFile(), defaultStored, normalizeSaved);
 
 export async function loadSettings(task?: ModelTask): Promise<ProviderSettings> {
   return flatten(await readStored(), task, environmentExaApiKey());
-}
-
-async function writeStored(settings: StoredSettings) {
-  const file = settingsFile();
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  const temp = file + '.' + randomUUID();
-  try {
-    await writeFile(temp, JSON.stringify({ version: 2, ...settings }), { mode: 0o600, flag: 'wx' });
-    await rename(temp, file);
-  } finally {
-    await rm(temp, { force: true }).catch(() => {});
-  }
 }
 
 let updating: Promise<unknown> = Promise.resolve();
@@ -56,7 +36,7 @@ export function saveSettings(input: Record<string, unknown>) {
       return defaultStored();
     });
     const next = mergeSettings(prior, input);
-    await writeStored(next);
+    await writeJsonConfig(settingsFile(), { version: 2, ...next });
     return publicSettings(flatten(next, undefined, environmentExaApiKey()));
   });
   updating = update.catch(() => {});

@@ -1,3 +1,7 @@
+import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
+import { defaultStored, normalizeStored, providerIdentifier, providerViews, type StoredRoute } from '../../executors/teaching/workspace-provider-grants.ts';
+export { workspaceGrantRevision } from '../../executors/teaching/workspace-provider-grants.ts';
+export type { WorkspaceProviderView } from '../../executors/teaching/workspace-provider-grants.ts';
 import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { workbookPresentationType } from '../../modules/activity/workbook-presentation.ts';
 import {
@@ -8,9 +12,8 @@ import { displayOf } from '../../modules/activity/workspace-source-projection.ts
 export { displayOf } from '../../modules/activity/workspace-source-projection.ts';
 import { confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import {
@@ -53,12 +56,8 @@ import { lexicalWorkspaceSql, trigramFunction } from './workspace-search.ts';
 import {
   loadSettings,
   saveSettings,
-  type ProviderProfile,
-  type ProviderProtocol,
-  type ProviderSettings,
 } from './settings.ts';
 
-const providerIdentifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const factIdentifier = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 export const syntheticStudyRecords = new Set<string>([
   sourceId('independent', 'work-01'),
@@ -66,29 +65,6 @@ export const syntheticStudyRecords = new Set<string>([
   sourceId('workedExample', 'work-01'),
   sourceId('workedExample', 'work-02'),
 ]);
-
-type StoredRoute = {
-  readonly enabled: boolean;
-  readonly baseUrl: string;
-  readonly protocol: ProviderProtocol;
-  readonly revision: string;
-  readonly credentialRevision?: string;
-};
-type StoredAccess = {
-  readonly version: 1;
-  readonly routes: Record<string, StoredRoute>;
-};
-
-export type WorkspaceProviderView = {
-  readonly id: string;
-  readonly label: string;
-  readonly model: string;
-  readonly baseUrl: string;
-  readonly protocol: ProviderProtocol;
-  readonly active: boolean;
-  readonly authorized: boolean;
-  readonly authorizationStale?: boolean;
-};
 
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -176,79 +152,11 @@ function accessFile() {
     join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
 }
 
-function defaultStored(): StoredAccess {
-  return { version: 1, routes: {} };
-}
-
-function normalizeStored(value: unknown): StoredAccess {
-  const input = object(value);
-  if (!input) throw new Error('学习记录访问设置无效。');
-  const rawRoutes = object(input.routes);
-  const routes: Record<string, StoredRoute> = {};
-  if (rawRoutes) {
-    for (const [id, raw] of Object.entries(rawRoutes)) {
-      if (!providerIdentifier.test(id)) continue;
-      const route = object(raw);
-      if (!route || typeof route.enabled !== 'boolean') continue;
-      if (typeof route.baseUrl !== 'string' || route.baseUrl.length > 2000 || /[\u0000-\u001f\u007f]/.test(route.baseUrl)) continue;
-      if (route.protocol !== 'openai' && route.protocol !== 'anthropic') continue;
-      if (typeof route.revision !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(route.revision)) continue;
-      routes[id] = {
-        enabled: route.enabled,
-        baseUrl: route.baseUrl,
-        protocol: route.protocol,
-        revision: route.revision,
-        ...(typeof route.credentialRevision === 'string' && providerIdentifier.test(route.credentialRevision)
-          ? {credentialRevision: route.credentialRevision} : {}),
-      };
-    }
-  }
-  return { version: 1, routes };
-}
-
-async function readStored(): Promise<StoredAccess> {
-  try {
-    return normalizeStored(JSON.parse(await readFile(accessFile(), 'utf8')));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultStored();
-    throw error;
-  }
-}
-
-async function writeStored(access: StoredAccess) {
-  const file = accessFile();
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  const temp = file + '.' + randomUUID();
-  try {
-    await writeFile(temp, JSON.stringify(access), { mode: 0o600, flag: 'wx' });
-    await rename(temp, file);
-  } finally {
-    await rm(temp, { force: true }).catch(() => {});
-  }
-}
+const readStored = () => readJsonConfig(accessFile(), defaultStored, normalizeStored);
+const writeStored = (access: Awaited<ReturnType<typeof readStored>>) => writeJsonConfig(accessFile(), access);
 
 export async function loadWorkspaceAccessRoutes(): Promise<Readonly<Record<string, StoredRoute>>> {
   return (await readStored()).routes;
-}
-
-export function workspaceGrantRevision(routes: Readonly<Record<string, StoredRoute>>, provider: ProviderProfile) {
-  const route = routes[provider.id];
-  return route?.enabled && route.baseUrl === provider.baseUrl && route.protocol === provider.protocol &&
-    provider.credentialRevision && route.credentialRevision === provider.credentialRevision ? route.revision : undefined;
-}
-
-function providerViews(settings: ProviderSettings, stored: StoredAccess): WorkspaceProviderView[] {
-  return settings.providers.map(provider => {
-    const {id, label, model, baseUrl, protocol} = provider;
-    const route = stored.routes[id];
-    const matches = Boolean(workspaceGrantRevision(stored.routes, provider));
-    return {
-      id, label, model, baseUrl, protocol,
-      active: id === settings.activeProviderId,
-      authorized: matches,
-      ...(route?.enabled && !matches ? { authorizationStale: true } : {}),
-    };
-  });
 }
 
 export async function notionTeachingRecipients() {
