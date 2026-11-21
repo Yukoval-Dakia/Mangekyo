@@ -61,6 +61,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import { authorizeWorkbookPresentation, recordWorkbookPresentationCommand, workbookPresentation, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
 import { includesBankReferences, readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
+import { openWorkbookCorrectionTarget, projectWorkbookCorrections, recordWorkbookCorrection, workbookCorrectionTarget, workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { completedLegacyRubric, legacyRubricInput, rubricAssessmentIdentity, sameWorkbookDraft } from '../../modules/activity/workbook-assessment-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -188,6 +189,10 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   });
   const commands = { modules: [activity], hooks };
   const handle = createCommandHandler(db, commands);
+  const locked = <T>(run: (tx: DbTransaction) => Promise<T>) => db.tx({ learner: studioLearner }, async tx => {
+    await lockLearner(tx, tx.learner);
+    return run(tx);
+  });
 
   async function saveBank(tx: DbTransaction, input: unknown) {
     if (!isJson(input) || input === null || Array.isArray(input) || typeof input !== 'object')
@@ -243,9 +248,16 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         ? null
         : await sourceView(read, paper.materialId);
       const assessments = await allAssessments(tx, paperId);
+      const attempts = await readAttempts(tx, read, paperId);
+      const { rows } = attempts.length ? await tx.query<{ id: FactId }>(`SELECT f.id FROM facts f JOIN fact_revs r
+        ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+        WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'paperId'=$3`,
+      [tx.learner, workbookCorrectionType, paperId]) : { rows: [] };
+      const corrections = await projectWorkbookCorrections(rows.map(({ id }) => id),
+        id => readable(() => read.fact(id, { mode: 'following' })));
       const projectQuestions = capsules.questions(tx);
       return projectWorkbookDetail(paperId, revision, paper, source, await isPracticeWorkbook(tx,paperId), {
-        attempts: await readAttempts(tx, read, paperId), assessments,
+        attempts, assessments, corrections,
         async frozenAttempt(fact, frozen) {
           try { await readFrozenWorkbookBank(read, frozen); }
           catch (error) {
@@ -266,6 +278,31 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   }
 
   return {
+    async correct(paperId: string, attemptId: string, input: Record<string, unknown>, deletionWatermark: string) {
+      let data: ReturnType<typeof workbookCorrectionTarget>;
+      try { data = workbookCorrectionTarget({ paperId, attempt: { id: attemptId, rev: input.attemptRev }, itemId: input.itemId }); }
+      catch (error) { invalid(error, '订正请求无效。'); }
+      const id = factId(stableId('workbook-correction', attemptId, data.itemId));
+      try {
+        return await locked(async tx => {
+          await assertDeletionWatermark(tx, deletionWatermark);
+          const read = createCommandReadContext(tx, storagePurpose);
+          const original = await openWorkbookCorrectionTarget(read, data);
+          if (!await historicalWorkbookMount(tx, data.paperId, original, read))
+            throw new RequestError(409, '无法确认这次作答的原卷版本。');
+          const prior = await readable(() => read.fact(id, { mode: 'following' }));
+          if (prior?.type === workbookCorrectionType) return { id };
+          const receipt = await createCommandHandler(withinLearnerTransaction(db,tx), commands)({
+            learner: tx.learner, actor: 'learner', purpose: storagePurpose, deletionWatermark,
+            id: commandId(id), type: recordWorkbookCorrection, input: { id, data },
+          });
+          if (receipt.state !== 'done') throw new RequestError(409, '原订正记录当前不可使用。');
+          return { id };
+        });
+      } catch (error) {
+        mapReadFailure(error, '找不到订正对应的作答。', '订正对应的卷面或作答已不可用。');
+      }
+    },
     issueBank: (tx: DbTransaction, input: { requestId: string; questionRefs: readonly { id: FactId; rev: Revision }[]; deletionWatermark?: string }) =>
       saveBank(tx, { requestId: input.requestId, title: '题库练习', deletionWatermark: input.deletionWatermark ?? '0',
         questions: input.questionRefs.map(sourceQuestionRef => ({ sourceQuestionRef })) } satisfies Json),
@@ -306,8 +343,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         const data = workbookPresentation(input);
         if (data.paper.id !== id || 'issuanceId' in data) throw new WorkbookPresentationError('呈现卷面不匹配。');
         const key = commandId(stableId(recordWorkbookPresentationCommand, JSON.stringify(data)));
-        await db.tx({ learner: studioLearner }, async tx => {
-          await lockLearner(tx, tx.learner);
+        await locked(async tx => {
           await authorizeWorkbookPresentation(createCommandReadContext(tx, storagePurpose), data);
           await createCommandHandler(withinLearnerTransaction(db,tx), commands)({
             learner: tx.learner, actor: 'learner', purpose: storagePurpose,
@@ -338,10 +374,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
 
     async save(input: unknown): Promise<WorkbookDetailWithAssessment> {
       if (includesBankReferences(input)) {
-        const { id } = await db.tx({ learner: studioLearner }, async tx => {
-          await lockLearner(tx, tx.learner);
-          return saveBank(tx, input);
-        });
+        const { id } = await locked(tx => saveBank(tx, input));
         return get(id);
       }
       let draft: WorkbookDraft & Pick<WorkbookPaper, 'assessmentRelease'>;
@@ -399,17 +432,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const now = new Date().toISOString();
       let data: WorkbookAttemptRequest;
       try {
-        const row = input as {
-          requestId?: unknown; answers?: unknown; assessmentConsent?: unknown; effectiveDurationMs?: unknown;
-        } | null;
-        data = workbookAttemptRequest({
-          paperId,
-          requestId: row?.requestId,
-          submittedAt: now,
-          answers: row?.answers,
-          assessmentConsent: row?.assessmentConsent,
-          effectiveDurationMs: row?.effectiveDurationMs,
-        });
+        data = workbookAttemptRequest(input, { paperId, submittedAt: now });
       } catch (error) {
         invalid(error, '作答格式无效。');
       }

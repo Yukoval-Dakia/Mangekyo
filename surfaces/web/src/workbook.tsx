@@ -16,6 +16,7 @@ import { PageTitle, ReadState, useResource, type Material, type Resource } from 
 import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
+import { WorkbookCorrection } from './workbook-correction';
 import { observePaperTime } from './workbook-duration';
 import { QuestionContext } from './reading-drawer';
 import type { ReadingContextEntry } from './paper-reading-capsule';
@@ -725,6 +726,7 @@ function FeedbackItem({
   destination,
   assessing,
   sealedPractice,
+  correction,
 }: {
   paperId: string;
   attemptId: string;
@@ -737,6 +739,7 @@ function FeedbackItem({
   destination: string;
   assessing: string | null;
   sealedPractice: boolean;
+  correction?: { attemptRev: number; recorded: boolean } | undefined;
 }) {
   const [query, setQuery] = useState('');
   const assessment = assessments.at(-1);
@@ -768,6 +771,9 @@ function FeedbackItem({
       )}
       {feedback.expected && <p className="workbook-expected"><ExpectedView expected={feedback.expected} /></p>}
       {feedback.explanation && <p className="workbook-explanation">{feedback.explanation}</p>}
+      {correction && (shownResult === 'incorrect' || shownResult === 'partial') &&
+        <WorkbookCorrection key={attemptId + ':' + correction.attemptRev} paperId={paperId} attemptId={attemptId}
+          attemptRev={correction.attemptRev} itemId={question.id} recorded={correction.recorded} />}
       {question.kind === 'rubric' && feedback.answer !== null && (
         <section className="workbook-rubric-assessment">
           {assessment ? (
@@ -1232,6 +1238,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     onAssess={assessRubric}
                     assessing={assessing}
                     sealedPractice={view.sealedPractice === true}
+                    correction={typeof activeAttempt.rev === 'number' && watermark.ready ? {
+                      attemptRev: activeAttempt.rev, recorded: activeAttempt.correctedItemIds?.includes(question.id) === true,
+                    } : undefined}
                   />
                   {settingsError && question.kind === 'rubric' && !(activeAttempt.assessments ?? []).some(
                     (assessment) => assessment.questionId === feedback.questionId,

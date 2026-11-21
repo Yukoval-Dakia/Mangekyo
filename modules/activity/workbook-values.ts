@@ -1,4 +1,4 @@
-import { factId, isJson, type Json, type JsonObject, type Revision } from '@mangekyo/kernel';
+import { factId, isJson, type FactId, type Json, type JsonObject, type Revision } from '@mangekyo/kernel';
 import { parseTextbookBasis, type TextbookBasis } from '@mangekyo/module-content/facts/asset-contract';
 import { assessmentRelease, type AssessmentRelease } from './assessment-values.ts';
 
@@ -238,6 +238,7 @@ export type WorkbookSummary = {
 export type WorkbookAttemptView = {
   id: string;
   rev?: Revision;
+  correctedItemIds?: string[];
   requestId: string;
   submittedAt: string;
   gradingVersion: string;
@@ -490,7 +491,7 @@ export function workbookRequestId(value: unknown): string {
   return value;
 }
 
-export function workbookAttemptRequest(input: unknown): WorkbookAttemptRequest {
+export function workbookAttemptRequest(input: unknown, mounted?: { paperId: FactId; submittedAt: string }): WorkbookAttemptRequest {
   const row = record(input);
   const answers = record(row.answers);
   const given: WorkbookAttemptRequest['answers'] = {};
@@ -501,9 +502,9 @@ export function workbookAttemptRequest(input: unknown): WorkbookAttemptRequest {
     given[key] = value;
   }
   return {
-    paperId: factId(String(row.paperId)),
+    paperId: mounted?.paperId ?? factId(String(row.paperId)),
     requestId: workbookRequestId(row.requestId),
-    submittedAt: timestamp(row.submittedAt, '提交时间'),
+    submittedAt: timestamp(mounted?.submittedAt ?? row.submittedAt, '提交时间'),
     answers: given,
     ...effectiveDuration(row.effectiveDurationMs),
     ...assessmentConsent(row.assessmentConsent),

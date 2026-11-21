@@ -4,6 +4,7 @@ import { projectHelpExposure, type AdmittedHelpEvent } from './help-exposure.ts'
 import type { HelpTarget } from './help-exposure-values.ts';
 import type { SourceRefV1 } from './source-values.ts';
 import type { ActivityEvidenceReadScope } from './evidence-read.ts';
+import type { PracticeView } from './practice-values.ts';
 import {
   workbookAttempt, workbookAttemptType,
   type WorkbookAttempt, type WorkbookDetail, type WorkbookPaper, type WorkbookQuestionView, type WorkbookRubricAssessmentView,
@@ -19,6 +20,21 @@ export type ReviewEntry = {
   expected: string;
   explanation: string | null;
 };
+
+export function ridingReview(practice: PracticeView): ReviewEntry[] {
+  const entries = new Map<string, ReviewEntry>();
+  for (const attempt of practice.history) {
+    for (const feedback of attempt.feedback) {
+      const question = attempt.paper.questions.find(q => q.id === feedback.questionId);
+      if (!question || feedback.result === 'unanswered') continue;
+      if (feedback.result === 'correct') entries.delete(question.id);
+      else entries.set(question.id, { paperId: 'riding', title: attempt.paper.title,
+        questionId: question.id, prompt: question.prompt, answer: String(feedback.answer),
+        expected: feedback.expected + ' ' + question.unit, explanation: feedback.explanation });
+    }
+  }
+  return [...entries.values()];
+}
 
 export async function readWorkbookAttempts(
   tx: ActivityEvidenceReadScope,
@@ -74,6 +90,7 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
   reads: {
     attempts: Awaited<ReturnType<typeof readWorkbookAttempts>>;
     assessments: ReadonlyMap<string, WorkbookRubricAssessmentView[]>;
+    corrections: ReadonlyMap<FactId, string[]>;
     frozenAttempt(fact: FactSnapshot, paper: WorkbookPaper): Promise<{questions: Question[]; paperRev?: Revision} | undefined>;
     formalAssessment(paper: WorkbookPaper, ref: {id: FactId; rev: Revision}):
       Promise<{view: Formal; result: WorkbookAssessmentResult} | undefined>;
@@ -86,7 +103,9 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
     if (!frozen) continue;
     const formal = await reads.formalAssessment(attempt.paper, {id:attemptId,rev});
     const view = workbookAttemptView(attemptId, attempt, reads.assessments.get(attemptId) ?? [], formal?.result);
-    attempts.push({ ...view, rev, ...frozen, ...(formal ? {formalAssessment:formal.view} : {}) });
+    const correctedItemIds = reads.corrections.get(attemptId);
+    attempts.push({ ...view, rev, ...frozen, ...(correctedItemIds ? { correctedItemIds } : {}),
+      ...(formal ? {formalAssessment:formal.view} : {}) });
   }
   return {
     id, revision, title: paper.title, savedAt: paper.savedAt, source,

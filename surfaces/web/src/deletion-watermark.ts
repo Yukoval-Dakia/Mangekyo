@@ -39,7 +39,7 @@ export function recordNewSubmission(id:string) {
 
 export function guardedPath(path:string) {
   return path === '/iqdb/proposals' || path === '/iqdb/papers' || path === '/materials' || path === '/practice/riding' || path === '/papers/sealed-practice' ||
-    /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/attempts$/.test(path);
+    /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/attempts(?:\/[0-9A-HJKMNP-TV-Z]{26}\/corrections)?$/.test(path);
 }
 
 export function verifyGenerationReceipt(response:Response, expected:string) {
