@@ -1,3 +1,4 @@
+import { Dictation } from './classroom-voice';
 import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ErasureProgress, readErasure, pendingErasures } from './erasure';
@@ -423,6 +424,11 @@ export function EditDialog({
             }}
           />
         </label>
+        {isMaterial && !busy && watermark.ready && <Dictation append={spoken => {
+          const next = (text + spoken).slice(0, 4000);
+          setText(next);
+          remember('capture-text', next);
+        }} />}
         {isMaterial && watermark.notice}
         {isMaterial && <p className="field-help">仅保存到我的材料。也可以<a href="/intake">导入文件或照片</a>。</p>}
         {error && (

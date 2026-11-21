@@ -724,3 +724,8 @@ body {
 .formatted-reply .katex {
   font-size: 1.08em;
 }
+
+.support-card { margin-block: .5rem; color: var(--muted); }
+.support-card summary { cursor: pointer; width: fit-content; }
+.support-card[open] p { max-width: 42em; color: var(--text); }
+@media print { .support-card { display: none !important; } }

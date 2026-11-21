@@ -5,7 +5,7 @@ import { useDraftWatermark } from './draft-watermark';
 import { bindDeletionWatermark, observedDeletionWatermark, subscribeDeletionWatermark } from './deletion-watermark';
 import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import type {
   WorkbookDetail as BaseDetail,
   WorkbookQuestionView as BaseQuestion,
@@ -18,13 +18,14 @@ import { PageTitle, ReadState, useResource, type Material, type Resource } from 
 import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
+import { RecurringErrorStrip, type ErrorCluster } from './recurring-error-strip';
 import { WorkbookCorrection } from './workbook-correction';
 import {clearWorkbookTiming, type ItemPacing} from './workbook-pacing';
 import {confirmsPaperSubmission, forgetSubmission, freezeSubmission, readFrozenSubmission} from './workbook-submission';
 import { observePaperTime } from './workbook-duration';
 import { QuestionContext } from './reading-drawer';
 import type { ReadingContextEntry } from './paper-reading-capsule';
-import { QuestionPresentation, useVisibleDocument, useWorkbookPresentation } from './workbook-presentation';
+import { QuestionPresentation, useQuestionPresentation, useVisibleDocument, useWorkbookPresentation } from './workbook-presentation';
 import { SealedPracticeAuthor } from './sealed-practice';
 import { WorkbookAccess } from './workbook-access';
 import './workbook.css';
@@ -739,6 +740,9 @@ function SelfCheckMarks({
   );
 }
 
+type ClusterFeedback = WorkbookDetail['attempts'][number]['feedback'][number] & {recurringErrorCluster?: ErrorCluster};
+type ClusterPaper = Pick<WorkbookDetail, 'id'> & {attempts: {id: string; rev?: number; paperRev?: number; feedback: ClusterFeedback[]}[]};
+
 function FeedbackItem({
   paperId,
   attemptId,
@@ -757,7 +761,7 @@ function FeedbackItem({
   attemptId: string;
   question: WorkbookQuestionView;
   showFeedback: boolean;
-  feedback: WorkbookDetail['attempts'][number]['feedback'][number];
+  feedback: ClusterFeedback;
   assessments: WorkbookRubricAssessmentView[];
   onAssess: (questionId: string, query?: string) => void;
   allowSearch: boolean;
@@ -767,6 +771,15 @@ function FeedbackItem({
   correction?: { attemptRev: number; recorded: boolean } | undefined;
 }) {
   const [query, setQuery] = useState('');
+  const presentation = useQuestionPresentation(question.id);
+  const attemptRev = presentation?.attempt?.id === attemptId ? presentation.attempt.rev : undefined;
+  const paperRev = presentation?.paper.id === paperId ? presentation.paper.rev : undefined;
+  const reopen = useCallback(async (signal: AbortSignal) => {
+    const paper = await api<ClusterPaper>('/papers/' + encodeURIComponent(paperId), {signal, cache: 'no-store'});
+    if (paper.id !== paperId || !paperRev || !attemptRev) return;
+    const attempt = paper.attempts.find(row => row.id === attemptId && row.rev === attemptRev && row.paperRev === paperRev);
+    return attempt?.feedback.find(row => row.questionId === question.id)?.recurringErrorCluster;
+  }, [paperId, attemptId, attemptRev, paperRev, question.id]);
   const assessment = assessments.at(-1);
   const shownResult = showFeedback ? assessment?.verdict ?? feedback.result : undefined;
   const className = shownResult === 'correct'
@@ -780,6 +793,8 @@ function FeedbackItem({
         {showFeedback && <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>}
         <span className="workbook-feedback-question">{question.prompt}</span>
       </header>
+      {attemptRev && paperRev && (shownResult === 'incorrect' || shownResult === 'partial') &&
+        <RecurringErrorStrip initial={feedback.recurringErrorCluster} reopen={reopen}/>}
       <QuestionContext itemId={question.id} historical readingContext={question.readingContext} source={sealedPractice || question.kind === 'bank' ? undefined : question.sourceQuestionRef}
         referencesAllowed={showFeedback} previous={feedback.answer !== null && <p>我的作答 · {String(feedback.answer)}</p>} />
       {question.kind === 'bank' && <BankOrigin source={question.sourceQuestionRef}/>}
@@ -854,7 +869,9 @@ function durationLabel(ms: number) {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
-function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
+export function PaperDetail({ paperId, modelSettings, singleQuestionOnly = false }: {
+  paperId: string; modelSettings?: Resource<Settings>; singleQuestionOnly?: boolean;
+}) {
   const foreground = useVisibleDocument();
   const watermark = useDraftWatermark(foreground);
   const deletionGeneration = useSyncExternalStore(subscribeDeletionWatermark, observedDeletionWatermark);
@@ -865,8 +882,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   const [coveredItem, coverItem] = useState<string | null>(null);
   const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
   const [assessing, setAssessing] = useState<string | null>(null);
-  const settings = modelSettings.data && forTask(modelSettings.data, 'assessment');
-  const settingsError = modelSettings.error ? '无法读取模型设置。' : '';
+  const settings = modelSettings?.data && forTask(modelSettings.data, 'assessment');
+  const settingsError = modelSettings?.error ? '无法读取模型设置。' : '';
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
@@ -906,13 +923,18 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     setError('');
     api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}`, { signal: controller.signal, cache: 'no-store' })
       .then((result) => {
-        if (!controller.signal.aborted && observedDeletionWatermark() === deletionGeneration) setView(result);
+        if (controller.signal.aborted || observedDeletionWatermark() !== deletionGeneration) return;
+        if (singleQuestionOnly && (result.id !== paperId || result.questions.length !== 1)) {
+          setError('领取回执未对应到一份单题卷。');
+          return;
+        }
+        setView(result);
       })
       .catch(() => {
         if (!controller.signal.aborted) setError('试卷载入失败。请重试。');
       });
     return () => controller.abort();
-  }, [foreground, paperId, reload, deletionGeneration]);
+  }, [foreground, paperId, reload, deletionGeneration, singleQuestionOnly]);
 
   const sittingId = draft?.requestId;
   const scope = foreground && watermark.ready && currentGeneration && sittingId && view?.id === paperId
@@ -1510,5 +1532,5 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
 export function Workbook({ id, materials, modelSettings }: WorkbookProps) {
   if (id === undefined) return <ListPage />;
   if (id === 'new') return <AuthorPage materials={materials} />;
-  return <PaperDetail paperId={id} materials={materials} modelSettings={modelSettings} />;
+  return <PaperDetail paperId={id} modelSettings={modelSettings} />;
 }

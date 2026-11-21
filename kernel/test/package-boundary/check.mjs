@@ -14,8 +14,8 @@ try {
   const artifact = path.join(temporary, 'package');
   await mkdir(artifact);
   await copyFile(path.join(root, 'kernel/package.json'), path.join(artifact, 'package.json'));
-  const tsc = path.join(root, 'node_modules/typescript/bin/tsc');
-  run(process.execPath, [tsc, '-p', 'kernel/tsconfig.build.json', '--outDir', path.join(artifact, 'dist')]);
+  const tsrs = path.join(root, 'node_modules/tsrs/bin/tsrs');
+  run(process.execPath, [tsrs, '-p', 'kernel/tsconfig.build.json', '--outDir', path.join(artifact, 'dist')]);
   run('pnpm', ['pack', '--pack-destination', temporary], artifact);
   for (const file of ['package.json', 'pnpm-workspace.yaml', 'index.ts', 'forbidden.ts', 'runtime.test.mjs']) {
     await copyFile(path.join(consumer, file), path.join(temporary, file));
@@ -27,7 +27,7 @@ try {
     '--strict', '--noEmit', '--types', '--skipLibCheck', 'true',
   ];
   for (const file of ['index.ts', 'forbidden.ts']) {
-    run(process.execPath, [tsc, ...flags, path.join(temporary, file)], temporary);
+    run(process.execPath, [tsrs, ...flags, path.join(temporary, file)], temporary);
   }
   run(process.execPath, ['--test', 'runtime.test.mjs'], temporary);
   console.log('Packed consumer compiles and runs; Db imports are rejected.');

@@ -1,4 +1,5 @@
 import { outline } from './outline.ts';
+import { BlockPulseMarks } from './TextbookPulse';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import type { Block, Body, Edit, Page, Slots } from './contract.ts';
@@ -209,6 +210,7 @@ export function BlockTree({
         >
           <div className="tb-blockhead">
             <span>{blockNames[block.body.kind]}</span>
+            <BlockPulseMarks blockId={block.id} />
             <details>
               <summary aria-label={'块操作 ' + block.id}>•••</summary>
               <div className="tb-menu">

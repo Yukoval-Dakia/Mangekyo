@@ -188,6 +188,11 @@ function App() {
         </header>
         <main id="main-content" className="page-body">
           <OfflineStatus />
+          <details className="support-card">
+            <summary>需要帮助</summary>
+            <p>你现在安全吗？如果你担心自己会受伤，请先到有人陪伴的地方，联系身边信任的人，让对方陪着你。</p>
+            <p>如果有眼前的危险或已经受伤，请联系当地急救服务，或请身边的人陪你去急诊。</p>
+          </details>
           {content}
           <p className="visually-hidden" role="status">
             {notice}
