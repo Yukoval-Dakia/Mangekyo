@@ -131,7 +131,7 @@ export async function readQuestionNotionLinks(
     if (root.kind === 'question' && endpoint.blockId === undefined) {
       // A question revision (rev 1 -> 2) leaves edges pinned on the old rev; reverify
       // that revision under the same authorization snapshot instead of dropping the link.
-      return await openQuestion(access, use) !== undefined;
+      return await openKnowledgeQuestion(access, use) !== undefined;
     }
     return false;
   }
