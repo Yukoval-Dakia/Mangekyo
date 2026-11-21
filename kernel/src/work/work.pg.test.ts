@@ -486,14 +486,14 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
   });
 });
 
-it.skipIf(!testDatabaseUrl)('backfills the v13 correction route without reissuing legacy work', () =>
+it.skipIf(!testDatabaseUrl).each(['valid', 'erased', 'revoked'])('backfills %s v13 correction Work without reissuing it', authority =>
   withLearnerDatabase(learner, async db => {
     const settings = newUlid(), original = newUlid(), source = newUlid();
-    const correction = newUlid(), execution = newUlid(), ordinary = newUlid();
+    const correction = newUlid(), grant = newUlid(), paper = newUlid(), execution = newUlid(), ordinary = newUlid();
     const spec = {
       goal: 'Review', workerProfile: 'deterministic_compute', trigger: { kind: 'scheduled', fireAtMs: 10 },
       sourceFactRev: { id: correction, revision: 1, accessEpoch: '0' },
-      refs: [{ id: original, revision: 1, accessEpoch: '0' }],
+      refs: [original, grant, paper].map(id => ({ id, revision: 1, accessEpoch: '0' })),
       autonomyTier: 1, budgetCap: 0, settingsRevision: 1, expiresAtMs: 50,
     };
     // Insert the draft rows with the actual v13 constraints, before applying v14.
@@ -501,11 +501,14 @@ it.skipIf(!testDatabaseUrl)('backfills the v13 correction route without reissuin
       async query<Row>(...args: Parameters<Db['query']>) {
         const result = await tx.query<Row>(...args);
         if (args[0] !== 'INSERT INTO kernel_schema_migrations (version) VALUES ($1)' || args[1]?.[0] !== 13) return result;
-        await tx.query(`INSERT INTO facts (learner_id,id,type,current_rev,created_tick,changed_tick)
-          VALUES ($1,$2,'content.asset',1,1,1)`, [learner, original]);
+        await tx.query(`INSERT INTO facts (learner_id,id,type,current_rev,created_tick,changed_tick,purpose)
+          SELECT $1,id,type,1,1,1,'{storage,teaching,background-research}' FROM unnest($2::text[],$3::text[]) AS f(id,type)`,
+        [learner, [original, grant, paper, settings, correction],
+          ['content.asset','activity.workbookAttempt','activity.workbookPaper','companion.researchSettings','activity.workbookCorrection']]);
         await tx.query(`INSERT INTO fact_revs (learner_id,fact_id,rev,data,purpose,sticky,kind,author,command_id,tick)
-          VALUES ($1,$2,1,$3,'{teaching}',false,'value','learner',$2,1)`,
-        [learner, original, JSON.stringify({ basis: [{ id: source, rev: 1 }] })]);
+          SELECT learner_id,id,1,CASE id WHEN $2 THEN $3::jsonb WHEN $4 THEN '{"enabled":true}' ELSE '{}' END,
+            purpose,false,'value','learner',id,1 FROM facts WHERE learner_id=$1`,
+        [learner, original, JSON.stringify({ basis: [{ id: source, rev: 1 }] }), settings]);
         await tx.query(`INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys) VALUES
           ($1,'companion.researchWake',$2,'{}'),($1,'working.todo',$3,'{}'),($1,'working.todo',$4,'{}')`,
         [learner, settings, correction, ordinary]);
@@ -516,21 +519,19 @@ it.skipIf(!testDatabaseUrl)('backfills the v13 correction route without reissuin
           ($1,$5,'working.todo',$5,'deterministic_compute','pending',NULL,'todo',$6,$5,0,1)`,
         [learner, correction, execution, JSON.stringify({ ...spec, dedupKey: `correction-retest:${correction}:1` }), ordinary,
           JSON.stringify({ ...spec, dedupKey: `review-attempt:${correction}:1:0` })]);
-        await tx.query("INSERT INTO work_outbox VALUES ($1,$2,$3,1,'delivered')", [learner, execution, correction]);
+        await tx.query("INSERT INTO work_outbox VALUES ($1,$2,$3,1,'pending')", [learner, execution, correction]);
+        if (authority === 'erased') await tx.query("INSERT INTO tombstones VALUES ($1,$2,'fact',1)", [learner, source]);
+        if (authority === 'revoked') await tx.query('UPDATE facts SET access_epoch=1 WHERE learner_id=$1 AND id=$2', [learner, grant]);
         return result;
       },
     }));
     await applyKernelSchema({ ...db, schemaTransaction });
+    const valid = authority === 'valid';
     expect(await db.snapshot({ learner }, tx => readTodo(tx, correction))).toMatchObject({
-      id: correction, spec, state: 'dispatched', revision: 1, route: 'studio/correction-retest-v1',
+      id: correction, spec, state: valid ? 'dispatched' : 'cancelled', revision: valid ? 1 : 2, route: 'studio/correction-retest-v1',
     });
     expect(await db.snapshot({ learner }, tx => readTodo(tx, ordinary))).toMatchObject({ state: 'pending', route: null });
-    expect(await acknowledgeStartedWork(db, execution)).toEqual({ learner, workId: correction, generation: '1' });
-    await db.tx({ learner }, tx => tx.withLearnerWrite(tick => tx.insert('tombstones', {
-      learner_id: learner, id: source, kind: 'fact', generation: tick,
-    })));
-    expect(await db.snapshot({ learner }, tx => readTodo(tx, correction))).toMatchObject({ state: 'cancelled' });
-    expect(await acknowledgeStartedWork(db, execution)).toBeNull();
+    expect(await relayPending(db, async (_ref, id) => { expect(id).toBe(execution); })).toBe(valid ? 1 : 0);
   }, { initialize: legacyWorkSchema }));
 
 it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concurrent migration of legacy work', () =>
