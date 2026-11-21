@@ -1,7 +1,7 @@
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
 import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
-import { projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
+import { projectWorkbookDetail, projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
 import { historicalWorkbookMount, openWorkbookContext, type WorkbookContextAuthority, type WorkbookQuestionWithContext } from './workbook-context.ts';
 import { posttestIssuanceType } from '../../modules/activity/retention-posttest.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -16,7 +16,7 @@ import { commandId, derivationId, factId, type FactId, type Revision } from '../
 import { isJson } from '../../kernel/src/declarations/define.ts';
 import type { Json, JsonObject } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { runEffect } from '../../kernel/src/work/index.ts';
@@ -60,7 +60,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import { authorizeWorkbookPresentation, recordWorkbookPresentationCommand, workbookPresentation, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
 import { includesBankReferences, readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
-import { completedLegacyRubric, legacyRubricInput, rubricAssessmentIdentity, sameWorkbookDraft, workbookAttemptView } from '../../modules/activity/workbook-assessment-values.ts';
+import { completedLegacyRubric, legacyRubricInput, rubricAssessmentIdentity, sameWorkbookDraft } from '../../modules/activity/workbook-assessment-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { practiceCustodyType } from '../../modules/activity/sealed-practice.ts';
@@ -188,14 +188,6 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   const commands = { modules: [activity], hooks };
   const handle = createCommandHandler(db, commands);
 
-  function inTransaction(tx: DbTransaction) {
-    return { ...db, query: tx.query, tx: async <Result>(scope: { learner: typeof tx.learner },
-      run: (tx: DbTransaction) => Promise<Result>) => {
-      if (scope.learner !== tx.learner) throw new Error('试卷事务的学习者不匹配。');
-      return run(tx);
-    } };
-  }
-
   async function saveBank(tx: DbTransaction, input: unknown) {
     if (!isJson(input) || input === null || Array.isArray(input) || typeof input !== 'object')
       throw new RequestError(400, '题库组卷格式无效。');
@@ -212,7 +204,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     const previous = (recorded?.input as { input?: { savedAt?: string } } | undefined)?.input;
     const bankDraft = { title, questions, materialId: materialId ?? null };
     if (!isJson(bankDraft)) throw new RequestError(400, '题库组卷格式无效。');
-    const bound = createCommandHandler(inTransaction(tx),
+    const bound = createCommandHandler(withinLearnerTransaction(db,tx),
       { ...commands, bindCommandRead: (inner, _, base) => ({ ...base, slot: readCurrentQuestionVerification(inner) }) });
     try {
       if (Array.isArray(questions)) await assertUnburned(tx, 'fact', questions.flatMap(question => {
@@ -251,32 +243,24 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         : await sourceView(read, paper.materialId);
       const assessments = await allAssessments(tx, paperId);
       const projectQuestions = capsules.questions(tx);
-      const attempts: WorkbookDetailWithAssessment['attempts'] = [];
-      for (const { id: attemptId, rev, attempt, fact } of await readAttempts(tx, read, paperId)) {
-        try { await readFrozenWorkbookBank(read, attempt.paper); }
-        catch (error) {
-          if (factUnavailable(error) || error instanceof WorkbookSourceMismatch) continue;
-          throw error;
-        }
-        const mount = await historicalWorkbookMount(tx,paperId,fact,read);
-        const questions = mount ? await projectQuestions(attempt.paper,mount) : [];
-        const release = attempt.paper.assessmentRelease;
-        const formal = release && await readWorkbookAssessment(tx, release, { id: attemptId, rev });
-        const view = workbookAttemptView(attemptId, attempt, assessments.get(attemptId) ?? [],
-          formal && 'result' in formal ? formal.result : undefined);
-        attempts.push({ ...view, rev, questions, ...(mount ? {paperRev:mount.paper.rev} : {}), ...(formal ? { formalAssessment: formal } : {}) });
-      }
-      return {
-        id: paperId,
-        revision,
-        title: paper.title,
-        savedAt: paper.savedAt,
-        source,
-        questions: pending ? workbookQuestionsView(paper) : await projectQuestions(paper,{paper:{id:paperId,rev:revision},epoch}),
-        ...(await isPracticeWorkbook(tx,paperId) ? {sealedPractice:true as const} : {}),
-        ...(paper.assessmentRelease ? { assessmentReleaseRef: paper.assessmentRelease.releaseRef } : {}),
-        attempts,
-      };
+      return projectWorkbookDetail(paperId, revision, paper, source, await isPracticeWorkbook(tx,paperId), {
+        attempts: await readAttempts(tx, read, paperId), assessments,
+        async frozenAttempt(fact, frozen) {
+          try { await readFrozenWorkbookBank(read, frozen); }
+          catch (error) {
+            if (factUnavailable(error) || error instanceof WorkbookSourceMismatch) return;
+            throw error;
+          }
+          const mount = await historicalWorkbookMount(tx,paperId,fact,read);
+          return mount ? { questions: await projectQuestions(frozen,mount), paperRev: mount.paper.rev } : { questions: [] };
+        },
+        async formalAssessment(frozen, ref) {
+          if (!frozen.assessmentRelease) return;
+          const view = await readWorkbookAssessment(tx, frozen.assessmentRelease, ref);
+          return {view, result: 'result' in view ? view.result : undefined};
+        },
+        questions: async () => pending ? workbookQuestionsView(paper) : projectQuestions(paper,{paper:{id:paperId,rev:revision},epoch}),
+      });
     });
   }
 
@@ -324,7 +308,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         await db.tx({ learner: studioLearner }, async tx => {
           await lockLearner(tx, tx.learner);
           await authorizeWorkbookPresentation(createCommandReadContext(tx, storagePurpose), data);
-          await createCommandHandler(inTransaction(tx), commands)({
+          await createCommandHandler(withinLearnerTransaction(db,tx), commands)({
             learner: tx.learner, actor: 'learner', purpose: storagePurpose,
             id: key, type: recordWorkbookPresentationCommand, input: { id: key, data },
           });

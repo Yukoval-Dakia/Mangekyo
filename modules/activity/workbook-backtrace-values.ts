@@ -40,7 +40,7 @@ export function workbookTraceOtherQuestion(from: WorkbookTraceQuestionRef, to: W
 }
 export class WorkbookTraceReadError extends Error {}
 
-export function workbookWitnessReader(read: Reader, tx: ActivityEvidenceReadScope, basis: readonly BusWitness[] = []) {
+export function workbookWitnessReader(read: Reader, tx: Pick<ActivityEvidenceReadScope, 'learner'>, basis: readonly BusWitness[] = []) {
   const witnesses = new Map(basis.map(w => [JSON.stringify(w), w]));
   const traced: ReadContext = {
     async fact<Value>(id: Parameters<Reader['fact']>[0], options: Parameters<Reader['fact']>[1]) {

@@ -9,28 +9,27 @@ import { factId, type FactId, type Revision } from '../../kernel/src/declaration
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  historicalWorkbookMount as readHistory, localWorkbookCapsuleKinds as localKinds, workbookCapsuleKinds as allKinds, memoWorkbookFacts, memoWorkbookRead, withWorkbookWorkspaceBasis, workbookCapsuleLinkCandidates, verifyWorkbookQuestionPermit, type BoundWorkbookMount as BoundMount,
+  historicalWorkbookMount as readHistory, memoWorkbookFacts, memoWorkbookRead, workbookCapsuleLinkCandidates, verifyWorkbookQuestionPermit, type BoundWorkbookMount as BoundMount,
 } from '../../modules/activity/workbook-context-read.ts';
-import { helpExposureRequest, helpExposureType, helpRef, type HelpRef, type HelpPresentation } from '../../modules/activity/help-exposure-values.ts';
+import { helpExposureRequest, helpExposureType, type HelpRef, type HelpPresentation } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose as purpose } from '../../modules/activity/library-values.ts';
 import { posttestIssuanceType } from '../../modules/activity/retention-posttest.ts';
 import { workbookReadingContext, workbookReadingMount } from '../../modules/activity/workbook-presentation.ts';
 import { sameWorkbookJson, WorkbookSourceMismatch, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, workbookQuestionView, type WorkbookQuestion, type WorkbookPaper, type WorkbookQuestionView } from '../../modules/activity/workbook-values.ts';
 import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
 import { WorkspaceInputError, workspaceEntryType } from '../../modules/activity/workspace-values.ts';
-import { workbookCapsuleHandles, type WorkbookCapsuleKind as Kind } from '../../modules/activity/workbook-context-handles.ts';
-import { selectWorkbookTrace, workbookWitnessReader, type WorkbookTraceProof } from '../../modules/activity/workbook-backtrace-values.ts';
+import { workbookCapsuleHandles } from '../../modules/activity/workbook-context-handles.ts';
+import type { WorkbookTraceProof } from '../../modules/activity/workbook-backtrace-values.ts';
 import { notionReadScope, NotionReadUnchecked, type CheckNotionRead } from './notion.ts';
 import type { openRetention } from './retention.ts';
 import { isWorkbookNotionSource, selectedWorkbookRead, retentionPurpose } from './retention-workbook.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
-import { listPaperCapsules, openPaperCapsule, type PaperCapsuleBinding } from '../../modules/content/paper-capsules.ts';
+import { discoverWorkbookCapsules, type CapsuleHandle } from '../../modules/activity/workbook-capsules.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { resolveSource } from './source-read.ts';
 
 type Reader = Pick<ReadContext,'fact'>;
-type CapsuleHandle = {kind: Kind; ref:string};
 export type WorkbookQuestionWithContext = WorkbookQuestionView & {readingContext?: CapsuleHandle[]};
 export type WorkbookContextAuthority = {
   activePosttest?: ReturnType<typeof openRetention>['activePosttest'];
@@ -58,91 +57,31 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
     return {sourceFor,backtraceFor,
       edgesFor:memoWorkbookRead((question: HelpRef,use: string) => workbookCapsuleLinkCandidates(tx,question,knowledgeEdgeType,use))};
   }
-  async function discover(tx: ReadTransaction, {sourceFor,backtraceFor,edgesFor}: ReturnType<typeof capsuleReads>,
+  function discover(tx: ReadTransaction, {sourceFor,backtraceFor,edgesFor}: ReturnType<typeof capsuleReads>,
     mount: BoundMount, item: WorkbookQuestion, check?: CheckNotionRead,
     requested?: string, collectPages?: CheckNotionRead) {
-    const category = requested && capsuleHandles.kind(requested,mount,item.id);
-    if (!item.sourceQuestionRef || (requested && !category)) return { handles: [] };
-    const question = helpRef(item.sourceQuestionRef);
     const use = mount.issuance ? retentionPurpose : purpose;
-    const source = sourceFor(use);
-    const edges = category === 'backtrace' ? [] : await edgesFor(question,use);
-    // Buffer preflight pages so an unrelated remote category never delays a local opening.
-    const pages = new Set<FactSnapshot>();
-    const choices: (readonly (readonly FactSnapshot[])[])[] = [];
-    const handles: CapsuleHandle[] = [];
-    for (const kind of category ? [category] : check || collectPages ? allKinds : localKinds) {
-      let pending = false;
-      const selected = selectedWorkbookRead(tx,use,source,async fact => {
-        if (!check) { pending = true; pages.add(fact); return; }
-        try { await check(fact); } catch (error) {
-          if (error instanceof NotionReadUnchecked) pending = true;
-          throw error;
-        }
-      });
-      const read = memoWorkbookFacts(selected.fact);
-      if (kind === 'backtrace') {
-        const {local,project} = await backtraceFor(use);
-        const proofs = await project?.({paper:mount.paper,itemId:item.id,question,
-          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})}) ?? [];
-        const refFor = (trace: WorkbookTraceProof) => capsuleHandles.seal(kind,mount,item.id,[question,trace.content,trace.witnesses]);
-        const trace = await selectWorkbookTrace(proofs,local,isWorkbookNotionSource,async options=>{
-          if (check?.choose) return check.choose(options);
-          const index = options.findIndex(proof=>proof.length===0);
-          if (index >= 0) return index;
-          pending = true;
-          choices.push(options);
-          return undefined;
-        },requested ? proof=>refFor(proof)===requested : undefined).catch(error=>{
-          if (!unavailable(error)) throw error;
+    return discoverWorkbookCapsules(tx.learner, use, capsuleHandles, {
+      read: confirm => memoWorkbookFacts(selectedWorkbookRead(tx,use,sourceFor(use),confirm).fact),
+      edges: question => edgesFor(question,use),
+      backtrace: () => backtraceFor(use),
+      isRemote: isWorkbookNotionSource,
+      unavailable: error => unavailable(error) || error instanceof WorkspaceInputError,
+      unchecked: error => error instanceof NotionReadUnchecked,
+      async reopenQuestion(reader, ref) {
+        const sources: [FactSnapshot, 'pinned' | 'following' | undefined][] = [];
+        const value = await resolveSource(tx, {v:1,fact:{...ref,type:workspaceEntryType},anchor:{kind:'whole'}}, {
+          recipient: 'learner', track: (fact,mode) => sources.push([fact,mode]),
         });
-        if (!trace || pending) continue;
-        const ref = refFor(trace);
-        handles.push({kind,ref});
-        if (ref === requested) return {handles,card:{kind,text:trace.text,content:trace.content,basis:trace.witnesses}};
-        continue;
-      }
-      const bindings = new Map<string, PaperCapsuleBinding>();
-      const access = {
-        learner: tx.learner, purpose:use, recipient:tx.learner, read:withWorkbookWorkspaceBasis(read),
-        isUnavailable: (error: unknown) => unavailable(error) || error instanceof WorkspaceInputError,
-        async reopenLegacyQuestion(this: {read:Reader},ref: HelpRef) {
-          const sources: [FactSnapshot, 'pinned' | 'following' | undefined][] = [];
-          const value = await resolveSource(tx, {v:1,fact:{...ref,type:workspaceEntryType},anchor:{kind:'whole'}}, {
-            recipient: 'learner', track: (fact,mode) => sources.push([fact,mode]),
-          });
-          if (value?.kind !== 'question') return;
-          let root;
-          for (const [fact,mode] of sources) {
-            const checked = await this.read.fact(fact.ref.id,mode === 'following' ? {mode} : {mode:'pinned',rev:fact.ref.rev});
-            if (checked.ref.id === ref.id && checked.ref.rev === ref.rev) root = checked;
-          }
-          return root && {...ref,accessEpoch:root.accessEpoch};
-        },
-        async seal(binding: PaperCapsuleBinding) {
-          const ref = capsuleHandles.seal(kind,mount,item.id,binding);
-          bindings.set(ref,binding);
-          return ref;
-        },
-        async unseal(ref: string) { return bindings.get(ref) ?? null; },
-      };
-      const [label] = await listPaperCapsules(access,question,edges,kind === 'notion' ? 'notion-block' : kind);
-      if (pending || !label) continue;
-      handles.push({kind,ref:label.ref});
-      if (label.ref !== requested) continue;
-      const binding = bindings.get(label.ref)!;
-      const proof = workbookWitnessReader(read,tx);
-      const matched = await openPaperCapsule({...access,read:withWorkbookWorkspaceBasis(proof.read)},label.ref,binding.trail.map(step=>step.edge.id),question);
-      if (!matched || pending) continue;
-      const {id,rev} = binding.trail.at(-1)!.endpoint.sourceUse;
-      return {handles,card:{kind,text:matched.kind === 'notion-block' ? matched.text : matched.title,
-        content:{id,rev},basis:proof.witnesses()}};
-    }
-    if (collectPages) {
-      for (const fact of pages) await collectPages(fact);
-      for (const group of choices) await collectPages.choose?.(group);
-    }
-    return {handles};
+        if (value?.kind !== 'question') return;
+        let root;
+        for (const [fact,mode] of sources) {
+          const checked = await reader.fact(fact.ref.id,mode === 'following' ? {mode} : {mode:'pinned',rev:fact.ref.rev});
+          if (checked.ref.id === ref.id && checked.ref.rev === ref.rev) root = checked;
+        }
+        return root && {...ref,accessEpoch:root.accessEpoch};
+      },
+    }, mount, item, check, requested, collectPages);
   }
 
   async function issuedMount(tx: ReadTransaction, id: FactId) {

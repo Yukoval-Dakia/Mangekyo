@@ -1,4 +1,4 @@
-import { workbookAttemptUsage, workbookSummary, workbookMistakes } from './workbook-assessment-values.ts';
+import { workbookAttemptUsage, workbookAttemptView, workbookSummary, workbookMistakes } from './workbook-assessment-values.ts';
 import { factId, type FactId, type FactRef, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { projectHelpExposure, type AdmittedHelpEvent } from './help-exposure.ts';
 import type { HelpTarget } from './help-exposure-values.ts';
@@ -6,7 +6,7 @@ import type { SourceRefV1 } from './source-values.ts';
 import type { ActivityEvidenceReadScope } from './evidence-read.ts';
 import {
   workbookAttempt, workbookAttemptType,
-  type WorkbookAttempt, type WorkbookPaper, type WorkbookRubricAssessmentView,
+  type WorkbookAttempt, type WorkbookDetail, type WorkbookPaper, type WorkbookQuestionView, type WorkbookRubricAssessmentView,
   type WorkbookSourceView, type WorkbookSummary,
 } from './workbook-values.ts';
 
@@ -65,6 +65,35 @@ export async function readWorkbookSummaries(paperIds: readonly FactId[],
     }
   }
   return summaries;
+}
+
+type WorkbookAssessmentResult = Parameters<typeof workbookAttemptView>[3];
+
+export async function projectWorkbookDetail<Question extends WorkbookQuestionView, Formal>(
+  id: FactId, revision: Revision, paper: WorkbookPaper, source: WorkbookSourceView | null, sealedPractice: boolean,
+  reads: {
+    attempts: Awaited<ReturnType<typeof readWorkbookAttempts>>;
+    assessments: ReadonlyMap<string, WorkbookRubricAssessmentView[]>;
+    frozenAttempt(fact: FactSnapshot, paper: WorkbookPaper): Promise<{questions: Question[]; paperRev?: Revision} | undefined>;
+    formalAssessment(paper: WorkbookPaper, ref: {id: FactId; rev: Revision}):
+      Promise<{view: Formal; result: WorkbookAssessmentResult} | undefined>;
+    questions(): Promise<Question[]>;
+  },
+) {
+  const attempts: (WorkbookDetail['attempts'][number] & { rev: Revision; questions: Question[]; paperRev?: Revision; formalAssessment?: Formal })[] = [];
+  for (const { id: attemptId, rev, attempt, fact } of reads.attempts) {
+    const frozen = await reads.frozenAttempt(fact, attempt.paper);
+    if (!frozen) continue;
+    const formal = await reads.formalAssessment(attempt.paper, {id:attemptId,rev});
+    const view = workbookAttemptView(attemptId, attempt, reads.assessments.get(attemptId) ?? [], formal?.result);
+    attempts.push({ ...view, rev, ...frozen, ...(formal ? {formalAssessment:formal.view} : {}) });
+  }
+  return {
+    id, revision, title: paper.title, savedAt: paper.savedAt, source,
+    questions: await reads.questions(), attempts,
+    ...(sealedPractice ? { sealedPractice:true as const } : {}),
+    ...(paper.assessmentRelease ? { assessmentReleaseRef:paper.assessmentRelease.releaseRef } : {}),
+  };
 }
 
 export async function projectWorkbookReview(attempts: readonly {id: FactId; attempt: WorkbookAttempt}[],
