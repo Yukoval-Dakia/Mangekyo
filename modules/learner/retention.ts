@@ -114,11 +114,12 @@ const elapsedIndependentEvidence: RetentionMethod = {
 
 const retentionMethods = [lastIndependentResult, elapsedIndependentEvidence];
 const pythonRetentionMethods: PythonRetentionMethod[] = [
+  { id: 'cognition', version: '3', engine: 'python', deriver: 'learner/cognition@3' },
   { id: 'cognition', version: '2', engine: 'python', deriver: 'learner/cognition@2' },
   { id: 'cognition', version: '1', engine: 'python', deriver: 'learner/cognition@1' },
   { id: 'dimensioned-retention', version: '1', engine: 'python', deriver: 'learner/retention-forecast@1' },
 ];
-export const defaultRetentionMethod = 'cognition@2';
+export const defaultRetentionMethod = 'cognition@3';
 
 export function readRetentionMethod(ref: string) {
   return retentionMethods.find(method => method.id + '@' + method.version === ref);

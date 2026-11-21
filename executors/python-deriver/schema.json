@@ -4,6 +4,7 @@
   "x-derivers": {
     "learner/intervention-lift@1": "intervention-lift@1",
     "plan/exam-pacing@1": "plan/exam-pacing@1",
+    "learner/cognition@3": "cognition@3",
     "learner/cognition@2": "cognition@2",
     "learner/cognition@1": "cognition@1",
     "learner/retention-forecast@1": "dimensioned-retention@1"
@@ -18,7 +19,7 @@
     "novelty": { "enum": ["same", "isomorphic", "transfer"] },
     "errorStage": { "enum": ["reading", "modeling", "strategy", "execution", "expression"] },
     "state": { "enum": ["known", "unknown"] },
-    "methodVersion": { "enum": ["cognition@1", "cognition@2", "dimensioned-retention@1"] },
+    "methodVersion": { "enum": ["cognition@1", "cognition@2", "cognition@3", "dimensioned-retention@1"] },
     "dimension": { "anyOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] },
     "evidenceRef": {
       "type": "object", "additionalProperties": false, "required": ["ref", "rev"],

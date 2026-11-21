@@ -103,12 +103,17 @@ it('prioritizes the shortest matching variant with the frozen error revision', a
   const filtered = await host.derive('learner/cognition@2', withheld);
   expect(filtered).toMatchObject({kind: 'ok', outcome: {value: {anomalies: [], state_vector: [{mastery_prob: 2 / 3}]}}});
   expect(JSON.stringify(filtered)).not.toContain('wrong');
-  expect(await host.derive('learner/cognition@2', input)).toMatchObject({ kind: 'ok', outcome: { value: {
+  const graded = await host.derive('learner/cognition@2', input);
+  expect(graded).toMatchObject({ kind: 'ok', outcome: { value: {
     state_vector: [{ mastery_prob: 2 / 3.5 }],
     ranked_candidates: [{ ref: 'short', reason_code: 'probe-high-confidence-error', evidence_refs: [{ ref: 'wrong', rev: 2 }] },
       { ref: 'long' }, { ref: 'different-context', reason_code: 'probe-unknown' }],
     anomalies: [{ refs: ['wrong'], evidence_refs: [{ ref: 'wrong', rev: 2 }], error_stage: 'execution' }],
   } } });
+  if (graded.kind !== 'ok' || graded.outcome.kind !== 'value' || !isCognitionResult(graded.outcome.value))
+    throw new Error('Missing graded result');
+  expect(await host.derive('learner/cognition@3', input)).toEqual({kind: 'ok', outcome: {kind: 'value',
+    value: {...graded.outcome.value, method_version: 'cognition@3'}}});
   const helped = { ...input, events: [{ ...event, help_level: 'hint_l1' }, { ...error, help_level: 'hint_l2' }] };
   expect(await host.derive('learner/cognition@2', helped)).toMatchObject({ kind: 'ok', outcome: { value: { state: 'unknown' } } });
 });
