@@ -1,4 +1,4 @@
-import { commandId, factId, learnerId, type BusWitness, type FactWrite, type Json, type Revision, type Tick } from '@mangekyo/kernel';
+import { commandId, type BusWitness, type FactWrite, type Json, type Revision, type Tick } from '@mangekyo/kernel';
 import { expect, it } from 'vitest';
 import { FactReadDeniedError, createAuthorizedFactReader } from '../../kernel/src/commands/reads.ts';
 import { applyFactWrites } from '../../kernel/src/commands/writes.ts';
@@ -8,22 +8,21 @@ import { activityEvidenceSlice, controlledWorkbookHelp } from '../activity/evide
 import type { AdmittedHelpEvent } from '../activity/help-exposure.ts';
 import { hypothesesAsOf } from './belief-view.ts';
 import {
-  correctionContradictions, correctionRetestDue, planCorrectionCheck, type CorrectionReopen, type CorrectionVariant,
+  correctionContradictions, correctionRetestDue, planCorrectionCheck, type ActiveMisconception, type CorrectionObservation,
+  type CorrectionReopen, type CorrectionVariant,
 } from './correction-check.ts';
+import { id, learner, snapshot, use as ref } from './test/facts.ts';
 
-const id = (n: number) => factId(String(n).padStart(26, '0'));
-const learner = learnerId(id(1));
-const ref = (n: number, type: string): BusWitness => ({
-  id: id(n), rev: 1 as Revision, accessEpoch: '0' as Tick, learner, type, mode: 'following',
-});
+const day = 86_400_000;
 const now = Date.parse('2026-11-21T05:00:00.000Z');
 const at = (ms: number) => new Date(now + ms).toISOString();
 const correction = { source: ref(2, 'test.recordedCorrection'), originalQuestion: ref(3, 'activity.workspaceEntry'),
   admittedAt: '10' as Tick, correctedAt: at(0) };
 const proof = ref(6, 'content.knowledgeEdgeEvidence');
+const question = ref(4, 'activity.workspaceEntry');
 const variant: CorrectionVariant = {
-  question: ref(4, 'activity.workspaceEntry'), edge: ref(5, 'content.knowledgeEdge'), kind: 'variant_of',
-  from: correction.originalQuestion, to: ref(4, 'activity.workspaceEntry'), verification: proof,
+  question, edge: ref(5, 'content.knowledgeEdge'), kind: 'variant_of',
+  from: correction.originalQuestion, to: question, verification: proof,
   basis: [proof], variant: { relation: 'numbers_only', spoilsNext: 'none' }, history: 'unseen',
 };
 
@@ -31,7 +30,7 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
   const source = ref(7, 'activity.retentionPosttestSubmission');
   const issuance = ref(8, 'activity.retentionPosttest');
   const authorization = ref(9, 'test.memoryEvidenceConsent');
-  const belief: Parameters<typeof correctionContradictions>[3][number] = {
+  const belief: ActiveMisconception = {
     ref: ref(10, 'companion.memoryAssertion'), kind: 'misconception', conceptIds: ['fraction'],
     stage: 'supported', sticky: false, evidenceSourceIds: [],
   };
@@ -41,24 +40,22 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
     value: { kind: 'displayed', mount, content: proof, alsoAppliesTo: [], step: { kind: 'solution', order: 1 } } } satisfies AdmittedHelpEvent;
   const opened: AdmittedHelpEvent = { ...shown, value: { ...shown.value, kind: 'opened' } };
   let revoked: BusWitness | undefined;
-  const reopen: CorrectionReopen = async (ref, purpose) => ref.id !== revoked?.id
-    ? { type: ref.type, ref, accessEpoch: ref.accessEpoch, purpose: [purpose], value: {} } : undefined;
-  const result = ({events = [], changes = {}, novelty = 'isomorphic', selected = [belief], submittedAt = cutoff.at, confidence}: {
-    events?: AdmittedHelpEvent[]; changes?: Partial<Parameters<typeof correctionContradictions>[2]>;
-    novelty?: 'isomorphic' | 'same'; selected?: typeof belief[]; submittedAt?: string; confidence?: number;
-  } = {}) => {
-    const observedCutoff = changes.cutoff ?? cutoff;
+  const reopen: CorrectionReopen = async (ref, purpose) => ref.id !== revoked?.id ? snapshot(ref, {}, [purpose]) : undefined;
+  const evidence = (at = cutoff.at, events: readonly AdmittedHelpEvent[] = [], novelty: 'isomorphic' | 'same' = 'isomorphic', confidence?: number) => {
     const { helpLevel } = controlledWorkbookHelp(source, cutoff.tick, [mount], events, false, false);
-    const slice = activityEvidenceSlice(cutoff.tick, observedCutoff.at, { ref: issuance.id, at: observedCutoff.at },
-      [{ submission: source, occurredAt: submittedAt, concepts: ['fraction'], novelty, helpLevel, result: 'correct', score: 1 }]);
-    return correctionContradictions(reopen, correction, {
-      source, issuance, issuedAt: '11' as Tick, itemId: mount.item.itemId, authorization, basis: [],
-      admittedAt: cutoff.tick, startedAt: at(0), through: at(60_000), window: 'immediate', variant,
-      cutoff: observedCutoff, slice: { ...slice, events: slice.events.map(event => event.exam_pacing_item ? event :
-        { ...event, claim_ids: [belief.ref.id], ...(confidence === undefined ? {} : {confidence}) }) },
-      fragment: { anchor: 'q', excerpt: '12' }, ...changes,
-    }, selected);
+    const slice = activityEvidenceSlice(cutoff.tick, at, undefined,
+      [{ submission: source, occurredAt: at, concepts: belief.conceptIds, novelty, helpLevel, result: 'correct', score: 1 }]);
+    return { ...slice, events: slice.events.map(event => event.help_level === 'unknown' ? event : {
+      ...event, claim_ids: [belief.ref.id], ...(confidence === undefined ? {} : {confidence}),
+    }) };
   };
+  const observation: CorrectionObservation = {
+    source, issuance, issuedAt: '11' as Tick, itemId: mount.item.itemId, authorization, basis: [],
+    admittedAt: cutoff.tick, startedAt: correction.correctedAt, through: at(60_000), window: 'immediate', variant,
+    cutoff, slice: evidence(), fragment: { anchor: 'q', excerpt: '12' },
+  };
+  const result = (changes: Partial<CorrectionObservation> = {}, selected = belief) =>
+    correctionContradictions(reopen, correction, { ...observation, ...changes }, [selected]);
 
   expect(await planCorrectionCheck(reopen, correction, [variant], 1, now))
     .toMatchObject({kind: 'offer', variant, suggestedDurationMs: 30_000});
@@ -69,22 +66,22 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
   const edge = {...links[0]!.edge, ...time};
   const row = {ref: belief.ref, value: {...time, category: 'hypothesis', kind: belief.kind, status: belief.stage,
     text: '错将分母相加', scope: {}, sticky: belief.sticky, evidence_refs: [correction.source]}} as const;
-  const read = (opened: readonly BusWitness[]) => hypothesesAsOf([row], [edge],
-    {validAt: at(90 * 86_400_000), knownAt: at(90 * 86_400_000)}, opened).relations;
+  const later = at(90 * day);
+  const read = (opened: readonly BusWitness[]) => hypothesesAsOf([row], [edge], {validAt: later, knownAt: later}, opened).relations;
   expect(read(edge.basis)).toEqual([edge]);
   expect(read(edge.basis.map(ref => ref.id === source.id ? {...ref, mode: 'pinned'} : ref))).toEqual([]);
-  const seconds = cutoff.at.replace('.000Z', 'Z');
-  expect(await result({changes: {cutoff: {...cutoff, at: seconds}}, submittedAt: seconds})).toHaveLength(1);
-  expect(await result({changes: {cutoff: {...cutoff, at: at(30_001)}}, submittedAt: at(30_001), confidence: 0.36})).toHaveLength(1);
-  for (const input of [{events: [shown]}, {events: [opened]}, {novelty: 'same' as const}, {confidence: 0.35},
-    {changes: {variant: {...variant, question: correction.originalQuestion}}}, {changes: {cutoff: {...cutoff, tick: '14' as Tick}}},
-    {changes: {through: at(29_999)}}, {changes: {issuedAt: cutoff.tick}}, {changes: {itemId: 'unassigned-item'}}])
-    expect(await result(input)).toEqual([]);
-  const scheduledAt = 86_400_000;
-  expect(await result({changes: {window: 'scheduled', startedAt: at(scheduledAt), through: at(scheduledAt + 60_000),
-    cutoff: {...cutoff, at: at(scheduledAt + 10_000)}}, submittedAt: at(scheduledAt + 10_000)})).toHaveLength(1);
+  const submitted = (at: string, confidence?: number) => ({cutoff: {...cutoff, at}, slice: evidence(at, [], 'isomorphic', confidence)});
+  expect(await result(submitted(cutoff.at.replace('.000Z', 'Z')))).toHaveLength(1);
+  expect(await result(submitted(at(30_001), 0.36))).toHaveLength(1);
+  const inadmissible = [evidence(cutoff.at, [shown]), evidence(cutoff.at, [opened]),
+    evidence(cutoff.at, [], 'same'), evidence(cutoff.at, [], 'isomorphic', 0.35)];
+  for (const changes of [...inadmissible.map(slice => ({slice})),
+    {variant: {...variant, question: correction.originalQuestion}}, {cutoff: {...cutoff, tick: '14' as Tick}},
+    {through: at(29_999)}, {issuedAt: cutoff.tick}, {itemId: 'unassigned-item'}])
+    expect(await result(changes)).toEqual([]);
+  expect(await result({...submitted(at(day + 10_000)), window: 'scheduled', startedAt: at(day), through: at(day + 60_000)})).toHaveLength(1);
   for (const change of [{evidenceSourceIds: [source.id]}, {sticky: true}, {stage: 'retired' as const}])
-    expect(await result({selected: [{...belief, ...change}]})).toEqual([]);
+    expect(await result({}, {...belief, ...change})).toEqual([]);
   for (const ref of [authorization, proof]) {
     revoked = ref;
     expect(await result()).toEqual([]);
@@ -110,7 +107,7 @@ it('rechecks the 24h reservation against the pinned question and current authori
     const recorded = { ...correction, originalQuestion: { ...originalQuestion, mode: 'pinned' as const } };
     const plan = await db.snapshot({ learner }, tx => planCorrectionCheck(reopen(tx), recorded, [], 1, now));
     if (plan?.kind !== 'scheduled') throw new Error('Missing scheduled Work');
-    const dueAt = Date.parse(at(86_400_000));
+    const dueAt = now + day;
     expect(plan.todo.trigger.fireAtMs).toBe(dueAt);
     const due = (ms: number, revision = 1, subject: typeof correction = recorded) =>
       db.snapshot({ learner }, tx => correctionRetestDue(reopen(tx), subject, plan.todo, revision, ms));
