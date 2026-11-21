@@ -3,6 +3,7 @@ import { assetType, checkQuestionTeachingSources, checkTextbookBasis, freezeQues
 import { contentStableId, normalizeKnowledgeName } from './knowledge-entity.ts';
 import { fields, list, pageId, record, revision, text } from './parse.ts';
 import { parseQuestionMetadata } from './question-authoring.ts';
+import { checkQuestionHintSource } from './question-meta-source.ts';
 import { independentQuestionExecutions, type QuestionExecution } from './question-effects.ts';
 import { arithmeticPractice as parseArithmeticPractice } from './arithmetic-practice.ts';
 
@@ -173,6 +174,8 @@ export async function openQuestionMetaDraft(read: AssetReadContext['read'], ques
   const draft = parseQuestionMetaDraft(snapshot.value);
   if (draft.id !== question.id || draft.expectedRev !== question.rev) throw new Error('活元信息与题版不匹配。');
   await checkTextbookBasis(read, draft.basis);
+  const ladder = draft.append_metadata?.hint_ladder;
+  if (ladder) await checkQuestionHintSource({ learner: question.learner, read }, ladder.source_ref, draft.basis);
   return { snapshot, draft };
 }
 

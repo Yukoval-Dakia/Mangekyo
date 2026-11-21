@@ -137,7 +137,9 @@ async function exerciseGraphEvolution({ db, learner, send, stableId, assert, rea
   const name = term => read(async context => (await openKnowledgeName(context, 'concept', term))?.snapshot.ref);
   const openEdge = mode => read(read => openKnowledgeEdgeRevision({ learner, read }, edgeId,
     mode === 'pinned' ? { mode, rev: 1 } : { mode }));
-  await send(saveQuestionCommand, graph.question);
+  const questionWithSolution = { ...graph.question.asset, blocks: [...graph.question.asset.blocks,
+    { id: 'private-solution', parentId: null, body: { kind: 'text', text: '仅供解答。' } }] };
+  await send(saveQuestionCommand, { ...graph.question, asset: questionWithSolution });
   for (const concept of graph.concepts) await send('content.createKnowledgeEntity', concept);
   await send(createKnowledgeEdgeCommand, graph.edge);
 
@@ -192,7 +194,8 @@ async function exerciseGraphEvolution({ db, learner, send, stableId, assert, rea
   assert.equal(content.slots.get(questionMetaType)?.policy, 'lazy');
   const { createAuthorizedFactReader, FactReadDeniedError } = await load('kernel/src/commands/reads.ts');
   const { readCurrentSlotOutcome } = await load('kernel/src/derivations/revalidate.ts');
-  const hint_ladder = { l1: '留意分段用时。', l2: '先写出每段的路程表达式。', l3: '设两段速度为 v₁、v₂，总路程为 v₁×1+v₂×2。用总路程除以总时间 3，得到 (v₁+2v₂)/3。', source_ref: question };
+  const anchor = blockId => JSON.stringify({ v: 1, fact: { id: question, rev: 1, type: 'content.asset' }, anchor: { kind: 'block', blockId } });
+  const hint_ladder = { l1: '留意分段用时。', l2: '先写出每段的路程表达式。', l3: '设两段速度为 v₁、v₂，总路程为 v₁×1+v₂×2。用总路程除以总时间 3，得到 (v₁+2v₂)/3。', source_ref: anchor('prompt') };
   const withLadder = { ...graph.questionMeta, append_metadata: { ...graph.questionMeta.append_metadata, hint_ladder } };
   const frozen = { learner, id: question, rev: 1, accessEpoch: '0' };
   const hint = (level, expectedDerivationId, { recipient = learner, permits = true, ref = frozen } = {}) => db.snapshot({ learner }, tx =>
@@ -202,6 +205,11 @@ async function exerciseGraphEvolution({ db, learner, send, stableId, assert, rea
     }, { question: ref, level, expectedDerivationId }));
   await assert.rejects(propose(proposeQuestionMetaCommand, { ...withLadder, append_metadata: { hint_ladder: { ...hint_ladder, l1: '字'.repeat(26) } } }), /25 字/);
   const proposed = await propose(proposeQuestionMetaCommand, withLadder);
+  for (const blockId of ['NONEXISTENT-AUDIT-BLOCK', 'private-solution']) {
+    const input = { ...withLadder, append_metadata: { hint_ladder: { ...hint_ladder, source_ref: anchor(blockId) } } };
+    const bad = await propose(proposeQuestionMetaCommand, input);
+    await assert.rejects(decide(proposeQuestionMetaCommand, bad.commandId), /固定公开锚点/);
+  }
   assert.equal(await hint(1), undefined);
   const alternative = { ...graph.questionMeta.append_metadata.solutions[0], explanation: '改成另一种说法。' };
   const otherMetadata = { ...graph.questionMeta, append_metadata: { solutions: [alternative] } };
@@ -247,7 +255,20 @@ async function exerciseGraphEvolution({ db, learner, send, stableId, assert, rea
   ]);
   const savedQuestion = await read(context => context.fact(question, { mode: 'pinned', rev: 1 }));
   assert.equal(savedQuestion.ref.rev, 1);
-  assert.deepEqual(savedQuestion.value, graph.question.asset);
+  assert.deepEqual(savedQuestion.value, questionWithSolution);
+  // Simulate an already-published pre-fix draft and matching overlay.
+  const setLegacyAnchor = async sourceRef => {
+    await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
+      [learner, draft.snapshot.ref.id, draft.snapshot.ref.rev, sourceRef]);
+    await db.query("UPDATE derivations SET value=jsonb_set(value,'{value,hint_ladder,source_ref}',to_jsonb($3::text)) WHERE learner_id=$1 AND id=$2",
+      [learner, derivationId, sourceRef]);
+  };
+  await setLegacyAnchor(anchor('NONEXISTENT-AUDIT-BLOCK'));
+  await assert.rejects(read(context => openQuestionMetaDraft(context, frozen)), /固定公开锚点/);
+  assert.equal(await hint(1, derivationId), undefined);
+  await setLegacyAnchor(hint_ladder.source_ref);
+  assert.deepEqual(await hint(1, derivationId), opened[0]);
+  console.log(JSON.stringify({ hintAnchorAcceptance: { command: ['missing denied', 'private denied'], legacy: 'denied', restored: opened[0].text } }));
   await send('content.setQuestionTeaching', { id: question, expectedRev: 1, allowed: false });
   assert.equal(await hint(1, derivationId), undefined);
   console.log(JSON.stringify({ questionHintAcceptance: { opened, elapsedMs, afterRevocation: null, coldRevision: savedQuestion.ref.rev } }));

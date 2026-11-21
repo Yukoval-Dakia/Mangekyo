@@ -1,6 +1,7 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
 import { assetType, checkQuestionTeachingSources, checkTextbookBasis, mergeTextbookBasis } from '../asset.ts';
 import { sameEffectInput } from '../question-effects.ts';
+import { checkQuestionHintSource } from '../question-meta-source.ts';
 import { parseQuestionMetaProposal, proposeQuestionMetaCommand } from '../question-writes.ts';
 import { openQuestionMetaDraft, questionSolutionKey, questionTagKey, validateQuestionMetaReferences } from '../question-state.ts';
 
@@ -39,6 +40,7 @@ export default defineCommand({
       }
       if (!target.purpose.includes('teaching') && !target.purpose.includes('all')) throw new Error('题目未授权教学用途。');
       await checkQuestionTeachingSources(ctx.read, { basis });
+      await checkQuestionHintSource(ctx, proposedLadder.source_ref, basis);
     }
     const ladder = proposedLadder ?? previousLadder;
     return [{
