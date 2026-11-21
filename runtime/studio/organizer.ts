@@ -8,7 +8,7 @@ import {
   FactNotFoundError,
   FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
-import type { Db } from '../../kernel/src/db/types.ts';
+import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -66,7 +66,8 @@ function translate(error: unknown): Error {
 }
 
 export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule,
-  hooks: CommandHooks = createStudioCommandHooks()) {
+  hooks: CommandHooks = createStudioCommandHooks(),
+  carePause?: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> }) {
   const handle = createCommandHandler(db, { modules: [activity, plan], hooks });
 
   const learner = studioLearner;
@@ -110,6 +111,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
     const { dayOf, ...settings } = validate(p => todaySettings(p, new Date().toISOString()), params);
     const scope = { learner, purpose: storagePurpose };
     return db.snapshot(scope, async tx => {
+      const paused = (await carePause?.paused(tx)) === true;
       let goal: {id: string; rev: number; text: string | null; status: GoalStatus} | null = null;
       const rules: {id: string; rev: Revision; data: PlanRule}[] = [];
       const gathered = await gatherSnapshot({ ...db, snapshot: (_, work) => work(tx) }, scope, ctx =>
@@ -129,7 +131,9 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
             ...packCandidates().map(c => completed.has(c.id + '@' + c.open?.rev) ? {...c, state: 'completed' as const, date: day} : c),
           ];
           return {
-            ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? {goal} : {}), rules: rules.map(r => r.data), candidates,
+            ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? {goal} : {}), rules: rules.map(r => r.data),
+            // Hold proactive practice suggestions while a care pause is active.
+            candidates: paused ? [] : candidates,
             constraints: {budget_min: null, locks: [], deadlines: []},
           };
         }));
@@ -138,7 +142,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
       const outcome = await todayDeriver.derive(input);
       if (outcome.kind !== 'value') throw new Error(outcome.reason);
       const alternatives = input.candidates.filter(c => outcome.value.shortlist.includes(c.id));
-      return {...outcome.value, alternatives, rules, goal, observedThrough: input.observedThrough, openedAt: settings.now};
+      return {...outcome.value, alternatives, rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, ...(paused ? {paused: true as const} : {})};
     });
   }
 

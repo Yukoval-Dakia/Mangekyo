@@ -40,6 +40,8 @@ import type { openIqdb } from './iqdb.ts';
 import { openTransparency } from './transparency.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
+import type { CarePause } from './care-pause.ts';
+import { offlineCrisisSupportCard } from '../../executors/teaching/crisis-support.ts';
 import { ridingReview } from '../../modules/activity/workbook-views.ts';
 import { serveSessionEvents } from './stream.ts';
 import { freezeProviderAccount, saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
@@ -124,6 +126,7 @@ export function serve(
     retentionComparison: ReturnType<typeof openRetentionComparison>;
     iqdb: ReturnType<typeof openIqdb>;
     transparency?: ReturnType<typeof openTransparency>;
+    carePause: CarePause;
   },
   port: number,
 ) {
@@ -161,6 +164,13 @@ export function serve(
       if (path === '/api/ai/activity' && method === 'GET') return json(res, 200, await transparency.aiActivity());
       if (path === '/api/knowledge/graph' && method === 'GET') return json(res, 200, await transparency.knowledgeGraph(url.searchParams));
       if (path === '/api/memory/overview' && method === 'GET') return json(res, 200, await transparency.memoryOverview());
+      if (path === '/api/care/support' && method === 'GET') {
+        return json(res, 200, { card: offlineCrisisSupportCard, pause: await student.carePause.read() });
+      }
+      if ((path === '/api/care/pause/resume' && method === 'POST') ||
+          (path === '/api/care/pause' && method === 'DELETE')) {
+        return json(res, 200, { pause: await student.carePause.resume() });
+      }
       if (path === '/api/iqdb/proposals' && method === 'POST') {
         return await offlineSubmission(201,(input,watermark) => student.iqdb.proposals(input,watermark));
       }

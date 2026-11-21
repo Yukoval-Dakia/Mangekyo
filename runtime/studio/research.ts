@@ -69,7 +69,9 @@ async function updateSettings<T>(action: () => Promise<T>) {
 
 export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule,
   scoutHost?: ResearchScoutHost, understandingTransport?: UnderstandingTransport,
-  correctionAuthority?: CorrectionRetestAuthority, tariff?: WorkerTariff) {
+  correctionAuthority?: CorrectionRetestAuthority, tariff?: WorkerTariff,
+  carePause?: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> }) {
+  const held = (tx: ReadTransaction, now = Date.now()) => carePause?.paused(tx, now) ?? Promise.resolve(false);
   const extract = openUnderstandingExtraction(db, companion, understandingTransport);
   const settingsCurrent = async (tx: ReadTransaction, revision: number) => {
     const current = await settings(tx);
@@ -156,6 +158,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' } as const;
       signal.throwIfAborted();
       const now = Date.now();
+      if (await held(tx, now)) return { status: 'waiting', recheckAtMs: now + idleRecheckMs } as const;
       const extractionCap = current.workerGrant?.profile === extractorProfile ? workerCap(current.workerGrant, tariff) : 0;
       const recipient = extractionCap ? paidExtractionRecipient : understandingTransport?.maySend;
       const eligible = async (spec: TodoSpec) => (await ((extract || extractionCap) && spec.workerProfile === extractorProfile
@@ -319,6 +322,11 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       const todoId = factId(work.slotKey);
       if (terminal) {
         await failWork(db, ref);
+        return true;
+      }
+      // A paid todo acknowledged before the pause took effect must not bill or send.
+      if (await db.snapshot(scope, tx => held(tx))) {
+        await cancelWork(db, ref);
         return true;
       }
       if (work.deriver === extractorProfile) {
