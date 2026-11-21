@@ -4,8 +4,10 @@ import type { Classroom } from './classroom-contract';
 import { useConversation } from './conversation';
 import { ActivityReentry } from './activity-reentry';
 import { TeachingTurn } from './demo';
+import { ClassroomGenerationProgress } from './classroom-progress';
+import { RecoveryGuide } from './recovery';
 
-export function ClassroomLesson({room, visible}: {room: Classroom; visible: boolean}) {
+export function ClassroomLesson({room, visible, onOpenAiActivity}: {room: Classroom; visible: boolean; onOpenAiActivity?: (() => void) | undefined}) {
   const [initial, setInitial] = useState<Session>();
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -19,20 +21,34 @@ export function ClassroomLesson({room, visible}: {room: Classroom; visible: bool
     return () => controller.abort();
   }, [room.sessionId, attempt]);
   if (error) return <p role="alert">暂时无法读取这次课堂的内容。 <button onClick={() => setAttempt(n => n + 1)}>重试</button></p>;
-  return initial ? <BoundTurns room={room} initial={initial} visible={visible} /> : <p role="status">正在打开讲义…</p>;
+  return initial ? <BoundTurns room={room} initial={initial} visible={visible} onOpenAiActivity={onOpenAiActivity} /> : <p role="status">正在打开讲义…</p>;
 }
 
 const statusLabel = {pending: '待学', active: '当前步骤', presented: '已呈现', skipped: '已跳过'};
 
-function BoundTurns({room, initial, visible}: {room: Classroom; initial: Session; visible: boolean}) {
+function BoundTurns({room, initial, visible, onOpenAiActivity}: {room: Classroom; initial: Session; visible: boolean; onOpenAiActivity?: (() => void) | undefined}) {
   const chat = useConversation(initial.caseId, true, initial, false);
   const {session} = chat;
   if (!visible) return null;
   if (!session || chat.invalidated || chat.problem?.source === 'read')
     return <p role="alert">当前无法核对课堂内容。 <button onClick={chat.retry}>重新读取</button></p>;
   return <>
-    {session.status === 'failed' || session.status === 'unknown' ? <p role="alert">{session.error || '教学内容未能生成。'}</p>
-      : !room.steps.length && <p role="status">{chat.progressLabel || '正在准备课程步骤…'}</p>}
+    {session.status === 'failed' || session.status === 'unknown' ? (
+        <RecoveryGuide
+          status={session.status === 'unknown' ? 'unknown' : 'failed'}
+          detail={session.error || '教学内容未能生成。'}
+          onResend={chat.retry}
+          resendLabel="重新核对"
+        />
+      )
+      : !room.steps.length && session.status === 'pending' && (
+        <ClassroomGenerationProgress
+          active
+          resetKey={session.id + ':' + (session.currentTurnId ?? 'open')}
+          hasTurns={session.turns.length > 0}
+          onOpenAiActivity={onOpenAiActivity}
+        />
+      )}
     <ol className="classroom-steps">{room.steps.map(step => {
       const current = room.status === 'active' && step.status === 'active' && room.activeStepId === step.id;
       const visible = step.status !== 'pending' && !!step.turnId;

@@ -5,6 +5,7 @@ import { Icon } from "../icons";
 import { Message } from "../message";
 import { chatRoute, forTask } from "../model-route";
 import type { ChatLink, Resource } from "../workspace";
+import { RecoveryGuide } from "../recovery";
 
 type Purpose = "daily" | "once";
 
@@ -83,6 +84,8 @@ function DrawerThread({
   const turns = chat.session?.turns ?? [];
   const pending = chat.busy || chat.session?.status === "pending";
   const value = chat.sessionId ? replyInput : opening;
+  const sessionStatus = chat.session?.status;
+  const sessionDown = sessionStatus === "failed" || sessionStatus === "unknown" || chat.invalidated;
 
   useEffect(() => {
     if (chat.sessionId && !initial) onReloadChats();
@@ -162,6 +165,14 @@ function DrawerThread({
               <p>{chat.progressLabel || "同伴正在处理…"}</p>
               {chat.streamingReply && <Message text={chat.streamingReply} />}
             </div>
+          )}
+          {!pending && sessionDown && (
+            <RecoveryGuide
+              status={sessionStatus === "unknown" ? "unknown" : "failed"}
+              detail={chat.session?.error}
+              onResend={() => chat.retry()}
+              onOpenPrivacy={() => onOpenFull("/me?section=privacy")}
+            />
           )}
           {chat.problem && (
             <div className="drawer-note problem" role="alert">

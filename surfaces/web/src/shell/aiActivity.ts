@@ -67,7 +67,68 @@ export type AiUsageCallItem = {
   costMicros?: number;
   status?: string;
   occurredAt?: string;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
 };
+
+export type AiTokenSummary = {
+  total: number;
+  prompt: number;
+  completion: number;
+  modelNames: string[];
+  countedCalls: number;
+};
+
+function tokenCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+}
+
+function callTokens(call: AiUsageCallItem) {
+  const total = tokenCount(call.totalTokens);
+  const prompt = tokenCount(call.promptTokens);
+  const completion = tokenCount(call.completionTokens);
+  if (total !== null) return { total, prompt, completion };
+  if (prompt !== null || completion !== null) {
+    return { total: (prompt ?? 0) + (completion ?? 0), prompt, completion };
+  }
+  return null;
+}
+
+export function callModelName(call: AiUsageCallItem) {
+  const name = call.model ?? call.route;
+  return typeof name === "string" && name.trim() && name !== "unknown" ? name.trim() : null;
+}
+
+export function callTokenText(call: AiUsageCallItem) {
+  const tokens = callTokens(call);
+  if (!tokens) return null;
+  const detail = tokens.prompt !== null || tokens.completion !== null
+    ? `↑${(tokens.prompt ?? 0).toLocaleString("zh-CN")} / ↓${(tokens.completion ?? 0).toLocaleString("zh-CN")}`
+    : `${tokens.total.toLocaleString("zh-CN")} tokens`;
+  return detail;
+}
+
+export function summarizeUsageTokens(calls: readonly AiUsageCallItem[]): AiTokenSummary | null {
+  let total = 0;
+  let prompt = 0;
+  let completion = 0;
+  let countedCalls = 0;
+  const modelNames: string[] = [];
+  for (const call of calls) {
+    const tokens = callTokens(call);
+    if (tokens) {
+      countedCalls += 1;
+      total += tokens.total;
+      prompt += tokens.prompt ?? 0;
+      completion += tokens.completion ?? 0;
+    }
+    const name = callModelName(call);
+    if (name && !modelNames.includes(name)) modelNames.push(name);
+  }
+  if (!countedCalls && !modelNames.length) return null;
+  return { total, prompt, completion, modelNames, countedCalls };
+}
 
 export type AiProposalAction = {
   method: string;

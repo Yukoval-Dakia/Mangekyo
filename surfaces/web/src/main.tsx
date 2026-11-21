@@ -278,7 +278,7 @@ function App() {
   else if (/^\/classroom\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path)) {
     const id = path.split('/')[2]!;
     const preview = path.endsWith('/print');
-    content = <>{!preview && <div className="classroom-screen"><ClassroomRoom id={id} /></div>}<ClassroomPrint id={id} preview={preview} /></>;
+    content = <>{!preview && <div className="classroom-screen"><ClassroomRoom id={id} onOpenAiActivity={() => setAiActivityRequest(Date.now())} /></div>}<ClassroomPrint id={id} preview={preview} /></>;
   }
   else if (path === '/companion') content = <Companion key={routeKey} chats={chats} settings={settings.data} />;
   else if (path === '/me') {
