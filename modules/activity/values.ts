@@ -88,7 +88,7 @@ export type StudyTurnReplay = {
   session: string;
   parent: string | null;
   answer: string | null;
-  attachment?: ReturnType<typeof studyAttachment> | undefined;
+  attachment?: ReturnType<typeof studyAttachmentRequest> | undefined;
   grants: ReturnType<typeof studyMcpGrants>;
   currentObject: StudyCurrentObjectSelection | undefined;
   allowBackgroundUnderstanding: boolean;
@@ -119,9 +119,16 @@ export function studyAttachment(input: unknown) {
   return {
     id: factId(field(value, 'id')),
     title: field(value, 'title', 240),
-    text: field(value, 'text', 3000),
+    text: field(value, 'text', 16_000),
     mode: value.mode as 'ask' | 'prepare',
   };
+}
+export function studyAttachmentRequest(input: unknown) {
+  const value = object(input);
+  if (value.mode !== 'ask' && value.mode !== 'prepare') throw new Error('材料使用方式无效');
+  if (value.title === undefined && value.text === undefined)
+    return { id: factId(field(value, 'id')), mode: value.mode as 'ask' | 'prepare' };
+  return studyAttachment(input);
 }
 export const submitOfflinePack = 'activity.submitOfflinePack';
 export const studyRecordType = 'activity.studyRecord';

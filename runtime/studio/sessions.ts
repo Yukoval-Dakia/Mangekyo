@@ -18,9 +18,9 @@ export { introductoryStudyCases as cases } from '../../executors/teaching/exampl
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
-import { matchesStudyTurnReplay, studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchAccess,
+import { matchesStudyTurnReplay, studyAttachmentRequest, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchAccess,
   type StudyTurnReplay } from '../../modules/activity/values.ts';
-import { attachmentCurrent, attachmentSources, readOwnStudyTurn } from './reading.ts';
+import { attachmentCurrent, attachmentSources, readMaterialText, readOwnStudyTurn, textSlice } from './reading.ts';
 export { readOwnStudyTurn, readTeachingTurn } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import type { RecallHttp } from './recall-http.ts';
@@ -358,13 +358,23 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       });
     }
   async function submit(request: TurnRequest, selected: CaseId) {
-    const {session, parent, answer, req, attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding} = request;
+    const {session, parent, answer, req, grants, requestedRoute, currentObject, allowBackgroundUnderstanding} = request;
     if (allowBackgroundUnderstanding === true && selected !== 'companion')
       throw new RequestError(400, '本轮后台理解授权仅用于普通同伴对话。');
     const id = parent ? nextTurn(session, parent) : firstTurn(req);
     const origin = parent ? await db.snapshot({learner: studioLearner}, async tx =>
       studyTurn((await readOwnStudyTurn(tx, session)).value)) : undefined;
-    const attachmentBasis = attachment && await db.snapshot({learner:studioLearner}, tx => attachmentSources(tx, attachment));
+    const requested = request.attachment;
+    const attachment: Extract<NonNullable<typeof requested>, {text: string}> | undefined = requested === undefined ? undefined
+      : 'text' in requested ? requested : await db.snapshot({learner: studioLearner}, async tx => {
+        const source = await readMaterialText(tx, requested.id);
+        if (!source) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
+        return {id: requested.id, title: source.title,
+          text: textSlice(source.text, 0, 16_000).content, mode: requested.mode};
+      });
+    if (requested && !('text' in requested)) request.attachment = attachment;
+    const attachmentBasis = attachment &&
+      await db.snapshot({learner:studioLearner}, tx => attachmentSources(tx, attachment));
     if (attachment && !attachmentBasis) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
     const task = turnTask(selected, (origin?.attachment ?? attachment)?.mode === 'prepare');
     const settings = await loadSettings(task);
@@ -373,10 +383,10 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       try { resolveMcpGrants(grants, settings); }
       catch { throw new RequestError(409, 'MCP 设置已变化，请重新选择本轮工具。'); }
     }
-    const workspaceRevision = selected === 'companion' && !origin?.attachment && !attachment
+    const workspaceRevision = selected === 'companion' && !(origin?.attachment && !origin.workspaceRevision)
       ? await workspaceRouteRevision(settings) : undefined;
     const account = providerAccount(settings);
-    const jitCounter = enableJit && account && !parent && workspaceRevision && !grants?.length ? studioJitCounter(jitCounters, settings) : undefined;
+    const jitCounter = enableJit && account && !parent && workspaceRevision && !grants?.length && !attachment ? studioJitCounter(jitCounters, settings) : undefined;
     const supplied = requestedAccount(requestedRoute);
     const learningToolsVersion = workspaceRevision && account && supplied === account.accountRevision && !jitCounter &&
       !grants?.length && (!origin || origin.learningToolsVersion === 1) ? 1 : undefined;
@@ -490,8 +500,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       let attachment;
       if (shared !== undefined) {
         if (selected !== 'companion') throw new RequestError(400, '请在自由对话中使用个人材料。');
-        try { attachment = studyAttachment(shared); }
-        catch { throw new RequestError(400, '请选择一段 1 至 3000 字的材料。'); }
+        try { attachment = studyAttachmentRequest(shared); }
+        catch { throw new RequestError(400, '请选择材料或其片段。'); }
       }
       const request: TurnRequest = {req:requestId, session:firstTurn(requestId), selected, parent:null, answer:firstAnswer,
         attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding};
