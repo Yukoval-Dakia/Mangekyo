@@ -1,115 +1,156 @@
-// Run with MANGEKYO_CAPTURE_ACCEPTANCE_URL pointed at a disposable PostgreSQL database.
+// Use PGlite by default or set MANGEKYO_TEST_DATABASE_URL to an owned, disposable loopback PostgreSQL.
 // runtime/studio/node_modules/.bin/tsx modules/capture/samples/capture-acceptance.test.mjs
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
+import { loadStudioTestModule } from '../../../runtime/studio/test/modules.ts';
+import {
+  clarificationRegions, gatherLayeredExtraction, layeredExtractionDeriver, layeredExtractionSlot,
+  mergeLayeredSource, settleLayeredExtraction,
+} from '../extraction.ts';
+import exerciseLayeredPaper from './layered-paper-assessment.test.mjs';
 import exerciseNotion from './notion-acceptance.test.mjs';
 import exerciseTextbook from '../../content/samples/textbook-acceptance.test.mjs';
 
 const root = new URL('../../../', import.meta.url);
 const load = file => import(new URL(file, root));
-const require = createRequire(new URL('kernel/package.json', root));
-const { Pool } = require('pg');
-const { createPgDb } = await load('kernel/src/db/pg.ts');
-const { applyKernelSchema } = await load('kernel/src/schema.ts');
-const { loadModuleDirectory } = await load('kernel/src/loader.ts');
 const { createCommandHandler } = await load('kernel/src/commands/handle.ts');
 const { createStudioCommandHooks } = await load('runtime/studio/command-hooks.ts');
 const { stableId } = await load('runtime/studio/identity.ts');
-
-const {createCommandReadContext, UnsupportedReadError} = await load('kernel/src/commands/reads.ts');
-const connectionString = process.env.MANGEKYO_CAPTURE_ACCEPTANCE_URL;
-
-const schema = 'capture_accept_' + randomUUID().replaceAll('-', '');
-const admin = connectionString ? new Pool({ connectionString }) : null;
-const { createPgliteDb } = await load('kernel/src/db/pglite.ts');
-const db = admin ? createPgDb(new Pool({ connectionString }), { schema })
-  : createPgliteDb(new (require('@electric-sql/pglite').PGlite)());
+const { createCommandReadContext, UnsupportedReadError } = await load('kernel/src/commands/reads.ts');
+const { gatherSnapshot } = await load('kernel/src/derivations/gather.ts');
+const { sealCandidate, submitCandidate } = await load('kernel/src/derivations/candidate.ts');
+const { runEffect } = await load('kernel/src/work/index.ts');
+const { enqueueWork } = await load('kernel/src/work/todos.ts');
 const learner = stableId('capture-acceptance-learner');
+const commandId = () => stableId(randomUUID());
+const at = '2026-11-21T01:00:00.000Z';
+const visualEnvelope = (kind, title, originals) => ({
+  kind, occurredAt: at, recordedAt: at, retentionPolicy: 'retained', originals,
+  unit: { kind: 'capture', title, blocks: [] },
+});
+const captureBlock = (id, body, original = 0, parentId = null) => ({
+  id, parentId, body: { kind: 'capture', crop_ref: { original, page: 1, bbox: [0.1, 0.2, 0.8, 0.9] }, ...body },
+});
+const jpeg = (name, blobRef, hex) => ({ name, blobRef, mediaType: 'image/jpeg', size: 100, sha256: hex.repeat(64) });
 
-try {
-  await admin?.query('CREATE SCHEMA ' + schema);
-  await applyKernelSchema(db);
-  await db.query('INSERT INTO learners(id) VALUES ($1)', [learner]);
-  const modules = await Promise.all(['capture', 'content', 'activity'].map(name =>
-    loadModuleDirectory(fileURLToPath(new URL('modules/' + name, root))),
-  ));
-  const hooks = createStudioCommandHooks();
-  const handle = createCommandHandler(db, { modules, hooks });
-  function send(type, input, { actor = 'learner', purpose = 'storage', commandId = stableId(randomUUID()) } = {}) {
-    return handle({ learner, id: commandId, type, input, actor, purpose });
-  }
-  const read = (action, purpose = 'storage') => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
-  const current = id => read(context => context.fact(id, { mode: 'following' }));
-  const fixture = { db, learner, stableId, load, send, assert, read, current, hooks, content: modules.find(module => module.definition.name === 'content') };
-  await run(fixture);
-  await exerciseNotion(fixture);
-  await exerciseTextbook(fixture);
-} finally {
-  await db.close();
-  await admin?.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE');
-  await admin?.end();
+function numericQuestion(title, prompt, criterionId, value, blocks) {
+  const statement = { id: 'statement', parentId: null, body: { kind: 'text', text: prompt } };
+  return {
+    kind: 'question', title, promptBlockId: statement.id, blocks: [statement, ...blocks],
+    response_schema: [{ slotId: 'answer', schemaVersion: '1', fields: [{ kind: 'numeric', path: '' }] }],
+    assessment_contract: [{
+      criterionId, inputs: [{ slotId: 'answer', path: '' }], maximum: 1,
+      missingEvidence: 'insufficient-evidence', evaluator: { id: 'frozen-value-match', version: '1' },
+      parameters: { value },
+    }],
+  };
 }
 
-async function run({ send, read, current }) {
+await withLearnerDatabase(learner, async db => {
+  const gather = (plan, purpose = 'teaching') => gatherSnapshot(db, { learner, purpose }, plan);
+  const gatherValue = (read, purpose) => gather(async context => ({
+    kind: 'input', effects: [], data: await read(context),
+  }), purpose);
+  const modules = await Promise.all(['capture', 'content', 'activity'].map(loadStudioTestModule));
+  const hooks = createStudioCommandHooks();
+  const handle = createCommandHandler(db, { modules, hooks });
+  function send(type, input, { actor = 'learner', purpose = 'storage', commandId: id = commandId() } = {}) {
+    return handle({ learner, id, type, input, actor, purpose });
+  }
+  const read = (action, purpose = 'storage') => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
+  const current = (id, purpose) => read(context => context.fact(id, { mode: 'following' }), purpose);
+  const ingestPhoto = (id, title, originals, options) => send('capture.ingest', {
+    id, purpose: ['storage', 'teaching'], envelope: visualEnvelope('photo', title, originals),
+  }, options);
+  async function proposeExtraction(input) {
+    const proposal = await send('capture.proposeExtraction', input, { actor: 'companion' });
+    assert.equal(proposal.state, 'proposed');
+    return proposal.commandId;
+  }
+  const confirmExtraction = async input => handle.decideProposal({
+    learner, id: commandId(), type: 'capture.proposeExtraction', purpose: 'storage', proposalId: await proposeExtraction(input), selection: true,
+  }, async (_tx, input) => input);
+
+  async function publish(slotType, slotKey, deriver, { plan, inspect, invoke, authorize, settle }) {
+    const work = await db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
+      enqueueWork(tx, tick, { slotType, slotKey, deriver })));
+    const policy = { deriver, purpose: 'teaching', slot: { type: slotType } };
+    const gathered = await gather(plan);
+    inspect?.(gathered);
+    const sealed = await sealCandidate(db, work, policy, gathered);
+    assert.equal(sealed.kind, 'sealed');
+    const receipts = [];
+    for (const request of sealed.plan.effects) {
+      const reply = await runEffect(db, { learner, ownerKind: 'derivation', ownerId: sealed.id, ...request },
+        invocation => invoke(request, invocation), authorize, authorize ? undefined : { manifest: sealed.manifest });
+      assert.equal(reply.kind, 'done');
+      receipts.push({ ownerId: sealed.id, request, state: 'done', result: reply.result });
+    }
+    const outcome = settle(sealed, receipts);
+    assert.equal((await submitCandidate(db, work, policy, sealed.id, outcome, hooks)).kind, 'effective');
+    return { sealed, outcome };
+  }
+
+  const extract = (key, blocks, originals, { inspect, authorize } = {}) =>
+    publish(layeredExtractionSlot, key.target.id, layeredExtractionDeriver, {
+      plan: ctx => gatherLayeredExtraction(ctx, key),
+      inspect,
+      invoke: ({ input, stepKey }) => {
+        assert.deepEqual(input.originals, originals);
+        assert.equal(input.modelMethod, key.modelMethod);
+        assert.equal(input.redInkMeaning, key.redInkMeaning ?? null);
+        return { version: stepKey, blocks };
+      },
+      authorize,
+      settle: ({ plan }, receipts) => settleLayeredExtraction(plan.data, receipts),
+    });
+  const fixture = { db, learner, stableId, load, send, assert, read, current, hooks, gatherValue, publish, extract,
+    proposeExtraction, confirmExtraction, captureBlock, ingestPhoto, jpeg, numericQuestion,
+    content: modules.find(module => module.definition.name === 'content') };
+  await run(fixture);
+  await exerciseLayeredPaper(fixture);
+  await exerciseNotion(fixture);
+  await exerciseTextbook(fixture);
+}, { postgres: Boolean(testDatabaseUrl) });
+
+async function run({ send, read, current, gatherValue, extract, ingestPhoto, proposeExtraction }) {
   const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, projectNewPaper, paperIssuance,
     paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
-  const at = '2026-11-21T01:00:00.000Z';
-  const crop_ref = {original:0,page:1,bbox:[0.1,0.2,0.8,0.9]};
-  const block = (id,body) => ({id,parentId:null,body:{kind:'capture',crop_ref,...body}});
-  const envelope = (kind,hex,blocks=[]) => ({
-    kind, occurredAt:at, recordedAt:at, retentionPolicy:'retained',
-    originals:[{name:'page.jpg',blobRef:'accept:'+hex,mediaType:'image/jpeg',size:100,sha256:hex.repeat(64)}],
-    unit:{kind:'capture',title:'跨页验证',blocks},
-  });
+  const firstPage = hex => jpeg('page.jpg', 'accept:' + hex, hex);
+  const originals = [firstPage('f')];
   const base = stableId('capture-pg-fixture');
   const passage = '跨页共享材料🙂。'.repeat(120);
-  const unknowable = block('unknown',{layer:'handwriting',status:'unknown',itemId:'q2',slotId:'slot1',candidates:['0.5','0.8']});
+  const unknowable = captureBlock('unknown',{layer:'handwriting',status:'unknown',itemId:'q2',slotId:'slot1',candidates:['0.5','0.8']});
   const blocks = [
-    block('shared',{layer:'material',status:'known',text:passage}),
-    block('prompt1',{layer:'prompt',status:'known',text:'请答第 1 题。',itemId:'q1'}),
-    block('prompt2',{layer:'prompt',status:'known',text:'问题第 2 题。'.repeat(100),itemId:'q2'}),
-    block('answer',{layer:'reference-answer',status:'known',text:'hidden reference answer'}),
-    block('rubric',{layer:'rubric',status:'known',text:'hidden scores'}),
-    block('red', { layer: 'correction', status: 'known', text: 'hidden correction' }),
+    captureBlock('shared',{layer:'material',status:'known',text:passage}),
+    captureBlock('prompt1',{layer:'prompt',status:'known',text:'请答第 1 题。',itemId:'q1'}),
+    captureBlock('prompt2',{layer:'prompt',status:'known',text:'问题第 2 题。'.repeat(100),itemId:'q2'}),
+    captureBlock('answer',{layer:'reference-answer',status:'known',text:'hidden reference answer'}),
+    captureBlock('rubric',{layer:'rubric',status:'known',text:'hidden scores'}),
+    captureBlock('red', { layer: 'correction', status: 'known', text: 'hidden correction' }),
     unknowable,
   ];
-  const targetCapture = id => ({ id, purpose: ['storage', 'teaching'], envelope: envelope('photo', 'f') });
   const learnerId=stableId('learner visual source');
-  await send('capture.ingest', targetCapture(learnerId));
+  await ingestPhoto(learnerId, '跨页验证', originals);
   const target = { target: { id: learnerId, rev: 1 }, blocks };
   await assert.rejects(send('capture.applyExtraction',target,{actor:'companion'}),/unedited companion draft/);
-  const proposal=await send('capture.proposeExtraction',target,{actor:'companion'});
-  assert.equal(proposal.state,'proposed');
-  assert.equal((await current(learnerId)).ref.rev,1);
-
-  const {gatherLayeredExtraction,settleLayeredExtraction,mergeLayeredSource,clarificationRegions,layeredExtractionSlot,layeredExtractionDeriver} = await load('modules/capture/extraction.ts');
-  const {gatherSnapshot} = await load('kernel/src/derivations/gather.ts');
-  const {sealCandidate,submitCandidate} = await load('kernel/src/derivations/candidate.ts');
-  const {requestWork,runEffect} = await load('kernel/src/work/index.ts');
-  await db.query("INSERT INTO slot_state(learner_id,slot_type,slot_key,scope_keys) VALUES ($1,$2,$3,'{}')",[learner,layeredExtractionSlot,learnerId]);
-  const work = await db.tx({learner},tx=>tx.withLearnerWrite(tick=>requestWork(tx,tick,{slotType:layeredExtractionSlot,slotKey:learnerId,deriver:layeredExtractionDeriver})));
-  const savedSource=await current(learnerId);
-  const scope={learner,purpose:'teaching'};
+  await proposeExtraction(target);
+  const savedSource = await current(learnerId);
+  assert.equal(savedSource.ref.rev, 1);
   const targetKey={target:{id:learnerId,rev:savedSource.ref.rev},accessEpoch:savedSource.accessEpoch,modelMethod:'fixture/vision-v1'};
-  const gathered=await gatherSnapshot(db,scope,ctx=>gatherLayeredExtraction(ctx,targetKey));
-  assert.deepEqual(gathered.manifest.inputs,[{kind:'fact',id:learnerId,rev:1,accessEpoch:savedSource.accessEpoch,mode:'pinned'}]);
-  const policy={deriver:layeredExtractionDeriver,purpose:'teaching',slot:{type:layeredExtractionSlot}};
-  const sealed=await sealCandidate(db,work,policy,gathered);
-  assert.equal(sealed.kind,'sealed');
-  const [effect]=sealed.plan.effects;
-  assert.equal(effect.input.modelMethod,'fixture/vision-v1');
-  const wire=await runEffect(db,{learner,ownerKind:'derivation',ownerId:sealed.id,...effect},async()=>({version:effect.stepKey,blocks}),async tx=>{
-    const pinned=await createCommandReadContext(tx,'teaching').fact(learnerId,{mode:'pinned',rev:1});
-    assert.equal(pinned.accessEpoch,targetKey.accessEpoch);
+  const { sealed, outcome } = await extract(targetKey, blocks, originals, {
+    inspect: ({ manifest }) => assert.deepEqual(manifest.inputs, [
+      { kind: 'fact', id: learnerId, rev: 1, accessEpoch: savedSource.accessEpoch, mode: 'pinned' },
+    ]),
+    authorize: async tx => {
+      const pinned = await createCommandReadContext(tx, 'teaching').fact(learnerId, { mode: 'pinned', rev: 1 });
+      assert.equal(pinned.accessEpoch, targetKey.accessEpoch);
+    },
   });
-  assert.equal(wire.kind,'done');
-  const outcome=settleLayeredExtraction(sealed.plan.data,[{request:effect,state:'done',result:wire.result}]);
-  const forged = block('unknown', { ...unknowable.body, status: 'known', text: '猜测', author: 'learner', sticky: true });
+  const [effect] = sealed.plan.effects;
+  const forged = captureBlock('unknown', { ...unknowable.body, status: 'known', text: '猜测', author: 'learner', sticky: true });
   assert.equal(settleLayeredExtraction(sealed.plan.data, [{request:effect,state:'done',result:{version:effect.stepKey,blocks:[forged]}}]).kind, 'unknown');
-  const submitted=await submitCandidate(db,work,policy,sealed.id,outcome,{onSlotChanged:()=>{}});
-  assert.equal(submitted.kind,'effective');
   assert.equal((await current(learnerId)).ref.rev,1);
   assert.equal(mergeLayeredSource(await current(learnerId),outcome).source.unit.blocks.length,blocks.length);
   const layeredIssue = paperIssuance({source:targetKey.target,epoch:targetKey.accessEpoch,layout:{lines:10,columns:16},
@@ -130,22 +171,20 @@ async function run({ send, read, current }) {
   assert.equal((await send('capture.clarifyExtraction', { ...clarify, target: { id: learnerId, rev: 2 } })).wrote.length, 0);
   const fixed=await send('capture.correctExtraction',{target:{id:learnerId,rev:2},blockId:'unknown',anchor:unknowable,text:'0.5'});
   assert.equal(fixed.wrote[0].rev,3);
-  const liveSlot=await gatherSnapshot(db,scope,async ctx=>({kind:'input',effects:[],data:
-    (await ctx.read.slot({learner,type:layeredExtractionSlot,key:learnerId},{mode:'following'})).outcome,
-  }));
+  const liveSlot = await gatherValue(async ({ read }) =>
+    (await read.slot({ learner, type: layeredExtractionSlot, key: learnerId }, { mode: 'following' })).outcome);
   const live=mergeLayeredSource(await current(learnerId),liveSlot.plan.data);
   assert.equal(live.differences[0].blockId,'unknown');
   assert.equal(live.source.unit.blocks.find(b=>b.id==='unknown').body.text,'0.5');
   assert.deepEqual(clarificationRegions(await current(learnerId), outcome), []);
   assert.deepEqual(live.source.originals,savedSource.value.originals);
-  console.log(JSON.stringify({checked:'capture slot pg',manifest:gathered.manifest.inputs,modelMethod:effect.input.modelMethod,
+  console.log(JSON.stringify({checked:'capture slot pg',manifest:sealed.manifest.inputs,modelMethod:effect.input.modelMethod,
     derivation:sealed.id,sourceRev:fixed.wrote[0].rev,stickyDifferences:live.differences.length}));
 
-  const draft = targetCapture(base);
-  await send('capture.ingest', draft, { actor: 'companion' });
+  await ingestPhoto(base, '跨页验证', originals, { actor: 'companion' });
   await send('capture.applyExtraction', { target: { id: base, rev: 1 }, blocks }, { actor: 'companion' });
   const snapshot = await current(base);
-  assert.deepEqual(snapshot.value.originals, draft.envelope.originals);
+  assert.deepEqual(snapshot.value.originals, originals);
   assert.equal(snapshot.ref.rev, 2);
   assert.equal(snapshot.value.unit.blocks.length, blocks.length);
   const issue = {source:{id:base,rev:snapshot.ref.rev},epoch:snapshot.accessEpoch,layout:{lines:10,columns:16}};
@@ -162,18 +201,10 @@ async function run({ send, read, current }) {
 
   const prompt = '2 + 3 = ?';
   const questionId = stableId('textbook example'), pageId = stableId('textbook print');
-  const written = await send('content.saveQuestion', { id: questionId, asset: {
-    kind:'question', title:'应用题', promptBlockId:'statement', blocks:[
-      {id:'statement',parentId:null,body:{kind:'text',text:prompt}},
-      {id:'solution',parentId:null,body:{kind:'text',text:'hidden solution'}},
-    ],
-    response_schema: [{ slotId: 'answer', schemaVersion: '1', fields: [{ kind: 'numeric', path: '' }] }],
-    assessment_contract: [{
-      criterionId: 'sum', inputs: [{ slotId: 'answer', path: '' }], maximum: 1,
-      missingEvidence: 'insufficient-evidence', evaluator: { id: 'frozen-value-match', version: '1' },
-      parameters: { value: 5 },
-    }],
-  } });
+  const solution = { id: 'solution', parentId: null, body: { kind: 'text', text: 'hidden solution' } };
+  const written = await send('content.saveQuestion', {
+    id: questionId, asset: numericQuestion('应用题', prompt, 'sum', 5, [solution]),
+  });
   await send('content.createTextbookPage', { id:pageId, clientEditSeq:1, page:{title:'教材应用题',blocks:[
     {id:'exposition',parentId:null,body:{kind:'text',text:'hidden commentary'}},
     {id:'question',parentId:null,body:{kind:'reference',role:'question',presentation:'embed',
@@ -210,9 +241,7 @@ async function run({ send, read, current }) {
   await send('activity.saveWorkspaceEntry', { id: wrapperId, entry, basis: [{ id: questionId, rev: bank.ref.rev, epoch: bank.accessEpoch }] });
   const throughPrompt = await legacyWorkbook(wrapperId, 'promptRef');
   await assert.rejects(send('capture.issuePaper', throughPrompt), UnsupportedReadError);
-  const missingReady = await gatherSnapshot(db, { learner, purpose: 'storage' }, async ({read}) => ({
-    kind:'input', data:await projectNewPaper(read,throughPrompt), effects:[],
-  }));
+  const missingReady = await gatherValue(({ read }) => projectNewPaper(read, throughPrompt), 'storage');
   assert.deepEqual(missingReady.plan, {kind:'waiting', targets:[
     {kind:'slot',ref:{learner,type:questionVerificationType,key:questionVerificationKey(bank.ref)}},
   ]});
@@ -225,7 +254,7 @@ async function run({ send, read, current }) {
   for (const [i,page] of questionPages.entries()) {
     const source = stableId('return:'+i);
     const hex = (i+1).toString(16);
-    await send('capture.ingest',{id:source,envelope:envelope('paper-return',hex)});
+    await send('capture.ingest', { id: source, envelope: visualEnvelope('paper-return', '跨页验证', [firstPage(hex)]) });
     const returned = {issuanceId,source:{id:source,rev:1},page,original:0};
     const receipts = i===0 ? await Promise.all([send('capture.collectPaper',returned),send('capture.collectPaper',returned)]) : [await send('capture.collectPaper',returned)];
     assert.equal(receipts.reduce((total,receipt)=>total+receipt.wrote.length,0),1);

@@ -1,4 +1,4 @@
-export default async function({ db, learner, load, send, assert, read, stableId, current, hooks }) {
+export default async function({ db, learner, load, send, assert, read, stableId, current, publish }) {
   const { createAuthorizedFactReader } = await load('kernel/src/commands/reads.ts');
   const { captureSourceCommand } = await load('modules/capture/source.ts');
   const {
@@ -17,6 +17,7 @@ export default async function({ db, learner, load, send, assert, read, stableId,
   const firstGrant = { commandId: stableId('grant-chemistry') };
   await grant('0', {}, firstGrant);
   const selection = await selected();
+  const revise = (page, observedAt = page.lastEditedTime) => prepareNotionRevision(selection, page, observedAt);
   const todo = (n, checked = false, parentId = null) => ({
     id: uuid(n), parentId, text: `任务 ${n}`, body: { type: 'to_do', data: { checked } },
   });
@@ -35,7 +36,7 @@ export default async function({ db, learner, load, send, assert, read, stableId,
     (pinned ? openPinnedNotionBlock : openCurrentNotionBlock)(access(tx), ref));
   const sync = input => send(refreshNotionSourceCommand, input, { actor: 'companion' });
   assert.deepEqual((await send(captureSourceCommand, ingest, { actor: 'companion' })).wrote, [{ learner, id: ingest.id, rev: 1 }]);
-  const envelope = await prepareNotionRevision(selection, updated, '2026-11-20T01:01:00.000Z');
+  const envelope = await revise(updated);
   const forged = structuredClone(envelope);
   forged.unit.blocks[0].body.text = '伪造未变哈希';
   await assert.rejects(sync({ ...target, envelope: forged }), /内容与哈希不一致/);
@@ -61,38 +62,27 @@ export default async function({ db, learner, load, send, assert, read, stableId,
     resolution: { decision: 'no-match', reason: '独立样例无候选', candidates: [], sourceUses: [targetUse(second)] },
   });
   const { openKnowledgeName } = await load('modules/content/knowledge-entity.ts');
-  const { gatherSnapshot } = await load('kernel/src/derivations/gather.ts');
-  const { sealCandidate, submitCandidate } = await load('kernel/src/derivations/candidate.ts');
-  const { runEffect } = await load('kernel/src/work/index.ts');
-  const { enqueueWork } = await load('kernel/src/work/todos.ts');
   const deriver = (await load('modules/capture/derivers/notion-block.ts')).default;
-  const policy = { deriver: notionBlockDeriver, purpose: 'teaching', slot: { type: notionBlockSlot } };
   const sent = [];
   const linked = [];
-  const work = await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
-    const jobs = [];
-    for (const ref of plan.rebuild) jobs.push(await enqueueWork(tx, tick, {
-      slotType: notionBlockSlot, slotKey: notionBlockWorkKey(ref), deriver: notionBlockDeriver,
-    }));
-    return jobs;
-  }));
-  for (const [index, ref] of plan.rebuild.entries()) {
-    const gathered = await gatherSnapshot(db, { learner, purpose: 'teaching' }, ctx => deriver.gather(ctx, notionBlockWorkKey(ref)));
-    assert.doesNotMatch(JSON.stringify(gathered), /任务/);
-    const sealed = await sealCandidate(db, work[index], policy, gathered);
-    assert.equal(sealed.kind, 'sealed');
-    const [request] = sealed.plan.effects;
-    const wire = await runEffect(db, { learner, ownerKind: 'derivation', ownerId: sealed.id, ...request },
-      () => db.snapshot({ learner }, tx => consumeNotionBlockLink(request, access(tx), async ({ text, basis }) => {
+  for (const ref of plan.rebuild) {
+    const key = notionBlockWorkKey(ref);
+    const { outcome } = await publish(notionBlockSlot, key, notionBlockDeriver, {
+      plan: ctx => deriver.gather(ctx, key),
+      inspect: gathered => assert.doesNotMatch(JSON.stringify(gathered), /任务/),
+      invoke: request => db.snapshot({ learner }, tx => consumeNotionBlockLink(request, access(tx), async ({ text, basis }) => {
         sent.push(basis.blockId);
         const match = await openKnowledgeName(withSelectedNotionSources(access(tx)), 'concept', text);
         return match ? [{ target: targetUse(match.snapshot), confidence: 1 }] : [];
-      })), tx => openCurrentNotionBlock(access(tx), ref));
-    assert.equal(wire.kind, 'done');
-    const outcome = deriver.derive({ ...sealed.plan.data, receipts: [{ request, state: 'done', result: wire.result }] });
-    assert.equal(outcome.kind, 'value');
-    assert.doesNotMatch(JSON.stringify(outcome), /任务/);
-    assert.equal((await submitCandidate(db, work[index], policy, sealed.id, outcome, hooks)).kind, 'effective');
+      })),
+      authorize: tx => openCurrentNotionBlock(access(tx), ref),
+      settle: (sealed, receipts) => {
+        const outcome = deriver.derive({ ...sealed.plan.data, receipts });
+        assert.equal(outcome.kind, 'value');
+        assert.doesNotMatch(JSON.stringify(outcome), /任务/);
+        return outcome;
+      },
+    });
     const edges = await db.snapshot({ learner }, tx => verifyNotionBlockEdges(access(tx), outcome.value));
     for (const edge of edges) {
       const id = stableId('notion-test-edge', edge.from.blockId);
@@ -105,22 +95,21 @@ export default async function({ db, learner, load, send, assert, read, stableId,
   assert.deepEqual(linked, [uuid(2)]);
   console.log(JSON.stringify({ checked: 'notion block slots pg', rebuilt: sent, retired: plan.retire.map(ref => ref.blockId) }));
   const clock = '2026-11-20T01:03:00.000Z';
-  const unchanged = await prepareNotionRevision(selection, { ...updated, lastEditedTime: clock }, clock);
+  const unchanged = await revise({ ...updated, lastEditedTime: clock });
   const currentTarget = { ...target, expectedRev: 2 };
   const observe = await prepareNotionRefreshInput(currentTarget, after, unchanged);
   await assert.rejects(sync({ ...currentTarget, envelope: unchanged }), /无正文/);
   const duplicate = await Promise.all([sync(observe), sync(observe)]);
   assert.equal(duplicate.flatMap(receipt => receipt.wrote).length, 1);
-  const late = await prepareNotionRevision(selection, { ...page, lastEditedTime: '2026-11-20T01:02:00.000Z' }, clock);
+  const late = await revise({ ...page, lastEditedTime: '2026-11-20T01:02:00.000Z' }, clock);
   await assert.rejects(sync(await prepareNotionRefreshInput(currentTarget, after, late)), /观测已过时/);
   assert.deepEqual(planNotionBlockWork(first, { ...second, value: { ...before, unit: { ...before.unit, title: '新标题' } } },
     'teaching'), { rebuild: [], retire: [] });
   const journal = await db.query("SELECT input->'input' AS payload FROM commands WHERE learner_id=$1 AND type=$2 ORDER BY tick", [learner, refreshNotionSourceCommand]);
   assert.deepEqual(journal.rows.map(row => row.payload), [{ ...target, envelope }, observe, observe]);
-  const nextAt = '2026-11-20T01:04:00.000Z';
-  const movesBack = await prepareNotionRevision(selection, {
-    ...updated, lastEditedTime: nextAt, blocks: [...updated.blocks.slice(1), updated.blocks[0]],
-  }, nextAt);
+  const movesBack = await revise({
+    ...updated, lastEditedTime: '2026-11-20T01:04:00.000Z', blocks: [...updated.blocks.slice(1), updated.blocks[0]],
+  });
   await sync(await prepareNotionRefreshInput(currentTarget, after, movesBack));
   assert.equal((await openBlock(prior(3))).text, '任务 3');
   assert.equal((await openBlock(prior(7), true)).text, '任务 7');
@@ -139,8 +128,9 @@ export default async function({ db, learner, load, send, assert, read, stableId,
   for (const [purpose, recipient] of [['storage',learner], ['learning','notebook'], ['teaching','tutor']])
     assert.equal(checked((await open(2,purpose,recipient)).value), true);
   await send(setNotionPurposeCommand, { ...currentTarget, expectedRev: 3, preset: 'storage' });
-  assert.deepEqual((await open(4, 'storage')).purpose, ['storage']);
-  assert.deepEqual(planNotionBlockWork(third, await open(4, 'storage'), 'teaching').rebuild, []);
+  const narrowed = await open(4, 'storage');
+  assert.deepEqual(narrowed.purpose, ['storage']);
+  assert.deepEqual(planNotionBlockWork(third, narrowed, 'teaching').rebuild, []);
   await assert.rejects(send(setNotionPurposeCommand, { ...currentTarget, expectedRev: 4, accessEpoch: '1', preset: 'learning' }), /选源或用途已变更/);
   await send('capture.revokeNotionSelection', { selectionId: selection.id, expectedEpoch: '2' });
   await grant('0', {}, firstGrant);
