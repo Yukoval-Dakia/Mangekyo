@@ -1,6 +1,7 @@
-import { factId, type FactId, type ReadContext } from '@mangekyo/kernel';
+import { FactNotFoundError, factId, type FactId, type ReadContext } from '@mangekyo/kernel';
 import { helpRef } from './help-exposure-values.ts';
 import { object } from './values.ts';
+import { openSealedPractice } from './sealed-practice.ts';
 import { readFrozenWorkbookBank } from './workbook-bank.ts';
 import { sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from './workbook-values.ts';
 
@@ -11,6 +12,11 @@ export class WorkbookPresentationError extends Error {}
 export function workbookPresentation(value: unknown) {
   try { return parsePresentation(value); }
   catch { throw new WorkbookPresentationError('卷面呈现见证格式无效。'); }
+}
+
+export function isWorkbookAnswerDisplay(value: unknown) {
+  const presentation = workbookPresentation(value);
+  return presentation.kind === 'solution' && presentation.phase === 'displayed';
 }
 
 function parsePresentation(value: unknown) {
@@ -86,9 +92,14 @@ export async function authorizeWorkbookPresentation(read: Pick<ReadContext, 'fac
       throw new WorkbookPresentationError('许可与题面或反馈版本不匹配。');
     }
   }
-  const shown = await read.fact(data.paper.id, { mode: 'pinned', rev: data.paper.rev });
-  if (shown.type !== workbookPaperType) throw new WorkbookPresentationError('需要已送达的普通试卷。');
-  const paper = workbookPaper(shown.value);
+  const shown = await read.fact(data.paper.id, { mode: 'pinned', rev: data.paper.rev }).catch(error => {
+    if (!(error instanceof FactNotFoundError) || data.kind !== 'question' || data.issuanceId ||
+        data.attemptRef || data.paper.rev !== 1) throw error;
+    return undefined;
+  });
+  const paper = shown?.type === workbookPaperType ? workbookPaper(shown.value)
+    : !shown ? (await openSealedPractice(read,data.paper.id))?.paper : undefined;
+  if (!paper) throw new WorkbookPresentationError('需要已送达的普通试卷。');
   await readFrozenWorkbookBank(read, paper);
   if (!data.items.every(id => paper.questions.some(question => question.id === id))) {
     throw new WorkbookPresentationError('呈现题项与卷面不匹配。');
@@ -104,7 +115,7 @@ export async function authorizeWorkbookPresentation(read: Pick<ReadContext, 'fac
     const submission = await read.fact(submitted.id, { mode: 'pinned', rev: submitted.rev });
     if (submission.type !== workbookAttemptType) throw new WorkbookPresentationError('需要已送达的作答反馈。');
     const attempt = workbookAttempt(submission.value);
-    if (attempt.paperId !== shown.ref.id || !sameWorkbookJson(attempt.paper, paper) ||
+    if (attempt.paperId !== data.paper.id || !sameWorkbookJson(attempt.paper, paper) ||
         (data.kind === 'solution' && !data.items.every(id => attempt.feedback.some(item => item.questionId === id &&
           item.result !== 'unanswered' && item.expected !== null && item.expected.kind !== 'rubric')))) {
       throw new WorkbookPresentationError('参考答案与实际反馈不匹配。');

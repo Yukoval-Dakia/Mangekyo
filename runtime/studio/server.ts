@@ -21,6 +21,7 @@ import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } f
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
 import { workbookBacktrace } from './workbook-backtrace.ts';
+import { openPracticeAdmission } from './sealed-practice.ts';
 import {
   artifactAssessmentSlot, executeArtifactAssessment, type ReadArtifactAssessmentWitness,
 } from './artifact-assessment.ts';
@@ -117,7 +118,8 @@ async function openWeb() {
   });
   const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank);
   const student = { notion:openStudioNotion(db,capture), textbook, relationReview:openRelationReview(db,content),
-    workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
+    workbook, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),
+    organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),

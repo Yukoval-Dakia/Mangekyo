@@ -73,6 +73,7 @@ export function useWorkbookPresentation(
   const [retry, setRetry] = useState(0);
   const [receipt, setReceipt] = useState<Receipt>();
   const [confirmationError, setConfirmationError] = useState<Receipt>();
+  const [confirmed, setConfirmed] = useState<{key: string; displayId: string}>();
   const [confirmRetry, setConfirmRetry] = useState(0);
   const attempt = binding?.attempt;
   const invalid = !validRev(revision) || (attempt !== undefined && (!attempt.id || !validRev(attempt.rev)));
@@ -87,6 +88,7 @@ export function useWorkbookPresentation(
   useEffect(() => {
     setReceipt(undefined);
     setConfirmationError(undefined);
+    setConfirmed(undefined);
     if (!request) return;
     const controller = new AbortController();
     api<{permit: string}>(path, {method: 'POST', body: {...JSON.parse(payload), phase: 'permit'}, signal: controller.signal})
@@ -107,10 +109,13 @@ export function useWorkbookPresentation(
     let frame = requestAnimationFrame(() => {
       frame = requestAnimationFrame(() => {
         if (document.visibilityState !== 'visible') return;
-        api<{recorded: boolean}>(path, {method: 'POST', body: {...JSON.parse(payload), phase: 'displayed', permit},
+        api<{recorded: boolean; displayId?: string}>(path, {method: 'POST', body: {...JSON.parse(payload), phase: 'displayed', permit},
           signal: controller.signal}).then(result => {
           if (result?.recorded !== true) throw new Error();
-          if (!controller.signal.aborted) setConfirmationError(undefined);
+          if (!controller.signal.aborted) {
+            setConfirmationError(undefined);
+            if (result.displayId) setConfirmed({key,displayId:result.displayId});
+          }
         }).catch(error => {
           if (controller.signal.aborted) return;
           if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
@@ -127,6 +132,7 @@ export function useWorkbookPresentation(
     questionPermit: permit && binding?.kind !== 'solution' && revision
       ? {paper: {id: paperId, rev: revision}, permit, items, ...(ref && {attempt: ref})} : null,
     allowed: !needed || Boolean(permit),
+    displayId: confirmed?.key === key && permit ? confirmed.displayId : undefined,
     error: needed && invalid ? '缺少固定版本，无法展示。' : current?.error ?? unconfirmed,
     retry: () => unconfirmed && permit ? setConfirmRetry(n => n + 1) : setRetry(n => n + 1),
   };

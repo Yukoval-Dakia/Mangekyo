@@ -287,6 +287,7 @@ export type WorkbookAssessmentRequest = {
 export type WorkbookDetail = {
   id: string;
   revision?: Revision;
+  sealedPractice?: true;
   title: string;
   savedAt: string;
   source: WorkbookSourceView | null;

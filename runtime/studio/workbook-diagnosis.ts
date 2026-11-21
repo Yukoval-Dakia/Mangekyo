@@ -10,6 +10,7 @@ import { helpAppliesTo } from '../../modules/activity/help-exposure-values.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { workbookAttemptView } from '../../modules/activity/workbook-assessment-values.ts';
 import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
+import { assetType } from '../../modules/content/asset.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
@@ -103,13 +104,15 @@ export async function openWorkbookQuestionSources(tx: ReadTransaction, submissio
       if (material?.sourceRef.fact.type !== materialType) return;
     }
     const questions = itemId === undefined ? attempt.paper.questions : attempt.paper.questions.filter(q => q.id === itemId);
-    await readFrozenWorkbookBank(createAuthorizedFactReader(tx, sourceAccess.purpose, access.maySend),
-      {...attempt.paper, questions}, access.track);
-    for (const { kind, sourceQuestionRef, prompt } of questions) {
+    const read = createAuthorizedFactReader(tx, sourceAccess.purpose, access.maySend);
+    await readFrozenWorkbookBank(read, {...attempt.paper, questions}, access.track);
+    for (const {kind, sourceQuestionRef, prompt} of questions) {
       if (kind === 'bank' || !sourceQuestionRef) continue;
-      const readable = itemId ? await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose) : sourceQuestionRef;
+      const readable = await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose);
+      const { type } = await read.fact(factId(readable.id), {mode:'pinned', rev:readable.rev as Revision});
+      if (type !== assetType && type !== workspaceEntryType) return;
       const question = await resolveSource(tx, {
-        v: 1, fact: { ...readable, type: workspaceEntryType }, anchor: { kind: 'question', itemId: 'question' },
+        v: 1, fact: { ...readable, type }, anchor: { kind: 'question', itemId: 'question' },
       }, sourceAccess);
       if (question?.content !== prompt) return;
     }

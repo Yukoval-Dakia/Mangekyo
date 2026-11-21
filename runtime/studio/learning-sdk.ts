@@ -14,6 +14,7 @@ import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { purpose } from './identity.ts';
 import { readKnowledgeGraph, type EdgeHit } from './knowledge-graph.ts';
 import { readPythonAttempts } from './python-attempts.ts';
+import { readPythonQuestions } from './python-questions.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
 import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { checkStudioNotionFact } from './notion.ts';
@@ -26,8 +27,9 @@ const absent = (method: string, message: string) =>
   toolFailure('not_found',message,{tool:'read_context',args:{intent:'tutoring'}},method);
 
 export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, access: {
-  maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean;
+  maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean; turn: string; trackNegative(id: string): void;
 }, asOf: string, watermark: Tick): Promise<Value | LearningError> {
+  if (request.method === 'questions') return readPythonQuestions(tx,request.args,watermark,access);
   if (request.method === 'kg_prereqs') {
     const id = request.args.kc_id;
     if (!isSourceFactId(id)) return absent('kc_id', '请提供可读取的知识点 ID。');

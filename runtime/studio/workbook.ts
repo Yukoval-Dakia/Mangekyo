@@ -63,6 +63,8 @@ import { includesBankReferences, readFrozenWorkbookBank } from '../../modules/ac
 import { completedLegacyRubric, legacyRubricInput, rubricAssessmentIdentity, sameWorkbookDraft, workbookAttemptView } from '../../modules/activity/workbook-assessment-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { practiceCustodyType } from '../../modules/activity/sealed-practice.ts';
+import { isPracticeWorkbook, sealedPracticePaper, submitWithPracticeCustody } from './sealed-practice.ts';
 import { RequestError } from './sessions.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { loadSettings } from './settings.ts';
@@ -104,7 +106,13 @@ function mapReadFailure(error: unknown, missing: string, denied: string): never 
 }
 
 async function readPaperSnapshot(tx: ReadTransaction, id: FactId) {
-  if (await factType(tx, id) !== workbookPaperType) {
+  const type = await factType(tx,id);
+  if (type === null) {
+    await assertUnburned(tx,'fact',[id]);
+    const opened = await sealedPracticePaper(tx,id);
+    if (opened) return {paper:opened.paper,revision:opened.custody.value.paper.rev,pending:true as const};
+  }
+  if (type !== workbookPaperType) {
     throw new RequestError(404, '找不到这份试卷。');
   }
   try {
@@ -236,7 +244,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         try { return await capsules.issued(tx,paperId); }
         catch (error) { mapReadFailure(error,'找不到已发放的后测。','后测当前不可读取。'); }
       }
-      const { paper, revision, epoch } = await readPaperSnapshot(tx, paperId);
+      const { paper, revision, epoch, pending } = await readPaperSnapshot(tx, paperId);
       const read = createCommandReadContext(tx, storagePurpose);
       const source = paper.materialId === null
         ? null
@@ -264,7 +272,8 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         title: paper.title,
         savedAt: paper.savedAt,
         source,
-        questions: await projectQuestions(paper,{paper:{id:paperId,rev:revision},epoch}),
+        questions: pending ? workbookQuestionsView(paper) : await projectQuestions(paper,{paper:{id:paperId,rev:revision},epoch}),
+        ...(await isPracticeWorkbook(tx,paperId) ? {sealedPractice:true as const} : {}),
         ...(paper.assessmentRelease ? { assessmentReleaseRef: paper.assessmentRelease.releaseRef } : {}),
         attempts,
       };
@@ -276,9 +285,23 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       saveBank(tx, { requestId: input.requestId, title: '题库练习', deletionWatermark: input.deletionWatermark ?? '0',
         questions: input.questionRefs.map(sourceQuestionRef => ({ sourceQuestionRef })) } satisfies Json),
     async list(): Promise<WorkbookSummary[]> {
-      return db.snapshot({learner:studioLearner}, async tx => {
-        const read = createCommandReadContext(tx,storagePurpose);
-        return readWorkbookSummaries(tx,await readAttempts(tx,read),id => readPaper(tx,id),
+      return db.snapshot({ learner: studioLearner }, async (tx) => {
+        const read = createCommandReadContext(tx, storagePurpose);
+        const { rows } = await tx.query<{ id: string }>(
+          `SELECT id, created_tick FROM facts
+            WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
+           UNION ALL
+           SELECT r.data#>>'{paper,id}' AS id, f.created_tick
+             FROM facts f JOIN fact_revs r
+               ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+            WHERE f.learner_id=$1 AND f.type=$3 AND f.retracted_rev IS NULL
+              AND r.kind='value' AND r.data->>'kind'='sealed'
+              AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id
+                AND t.kind='fact' AND t.id=r.data#>>'{paper,id}')
+           ORDER BY created_tick DESC, id`,
+          [tx.learner, workbookPaperType, practiceCustodyType],
+        );
+        return readWorkbookSummaries(rows.map(row => factId(row.id)), await readAttempts(tx, read), id => readPaper(tx, id),
           id => sourceView(read,id),workbookUnavailable);
       });
     },
@@ -307,6 +330,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           });
         });
         if (data.phase === 'permit') return { permit: key };
+        if (data.kind === 'solution' && data.phase === 'displayed') return { recorded: true, displayId: key };
       } catch (error) {
         if (error instanceof WorkbookPresentationError) throw new RequestError(400, error.message);
         mapReadFailure(error, '找不到呈现的试卷。', '这份试卷当前不可读取。');
@@ -409,10 +433,10 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const priorAttempt = () => db.snapshot({ learner:studioLearner }, async tx => {
         await assertUnburned(tx, 'fact', [attemptId,paperId]);
         await assertDeletionWatermark(tx,deletionWatermark);
-        return { existing: await readAttemptOrNull(tx, attemptId), current: await readPaper(tx, paperId) };
+        return { existing: await readAttemptOrNull(tx, attemptId), snapshot: await readPaperSnapshot(tx,paperId) };
       });
-      const { existing, current } = await priorAttempt();
-      const paper = existing?.paper ?? current;
+      const {existing, snapshot} = await priorAttempt();
+      const paper = existing?.paper ?? snapshot.paper;
       let graded: ReturnType<typeof gradeWorkbook>;
       try {
         graded = gradeWorkbook(paper, data.answers);
@@ -430,9 +454,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         return get(paperId);
       }
       try {
-        await handle({
+        const request = {
           learner: studioLearner,
-          actor: 'learner',
+          actor: 'learner' as const,
           purpose: storagePurpose,
           type: submitWorkbookAttemptCommand, deletionWatermark,
           id: commandId(stableId('submit-workbook-attempt', attemptId)),
@@ -440,7 +464,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
             id: attemptId,
             data,
           },
-        });
+        };
+        if (snapshot?.pending) await submitWithPracticeCustody(db,activity,hooks,paperId,request);
+        else await handle(request);
       } catch (error) {
         if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch) {
           throw new RequestError(403, '这份试卷当前不可读取。');

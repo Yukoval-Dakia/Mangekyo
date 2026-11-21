@@ -5,7 +5,7 @@ import type { HelpTarget } from './help-exposure-values.ts';
 import type { SourceRefV1 } from './source-values.ts';
 import type { ActivityEvidenceReadScope } from './evidence-read.ts';
 import {
-  workbookAttempt, workbookAttemptType, workbookPaperType,
+  workbookAttempt, workbookAttemptType,
   type WorkbookAttempt, type WorkbookPaper, type WorkbookRubricAssessmentView,
   type WorkbookSourceView, type WorkbookSummary,
 } from './workbook-values.ts';
@@ -46,25 +46,19 @@ export async function readWorkbookAttempts(
   return attempts;
 }
 
-export async function readWorkbookSummaries(tx: ActivityEvidenceReadScope,
+export async function readWorkbookSummaries(paperIds: readonly FactId[],
   attempts: readonly {attempt: WorkbookAttempt}[], openPaper: (id: FactId) => Promise<WorkbookPaper>,
   openSource: (id: string) => Promise<WorkbookSourceView>, unavailable: (error: unknown) => boolean,
 ): Promise<WorkbookSummary[]> {
   const grouped = workbookAttemptUsage(attempts);
-  const { rows } = await tx.query<{ id: string }>(
-    `SELECT id FROM facts
-     WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-     ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookPaperType],
-  );
   const summaries: WorkbookSummary[] = [];
-  for (const row of rows) {
+  for (const id of paperIds) {
     try {
-      const paper = await openPaper(factId(row.id));
+      const paper = await openPaper(id);
       const source = paper.materialId === null
         ? null
         : await openSource(paper.materialId);
-      summaries.push(workbookSummary(factId(row.id),paper,source,grouped.get(row.id)));
+      summaries.push(workbookSummary(id,paper,source,grouped.get(id)));
     } catch (error) {
       if (unavailable(error)) continue;
       throw error;

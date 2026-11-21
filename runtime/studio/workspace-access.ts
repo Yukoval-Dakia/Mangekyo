@@ -1,4 +1,5 @@
 import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
+import { workbookPresentationType } from '../../modules/activity/workbook-presentation.ts';
 import {
   allowedTypes, categories, encodeCursor, itemOf, purposesOf, workspaceCatalogPage, workspaceCatalogQuery,
   WorkspaceCatalogInputError, type AccessRow, type AccessDisplay,
@@ -496,7 +497,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         const row = await currentRow(tx, itemId);
         return {row, link: use === 'teaching' && row?.type === materialType ? await materialIntakeLink(tx, itemId) : undefined};
       });
-      if (!row || !allowedTypes.has(row.type) ||
+      if (!row || (!allowedTypes.has(row.type) && row.type !== workbookPresentationType) ||
         (row.type === studyRecordType && syntheticStudyRecords.has(row.id))) {
         throw new RequestError(404, '找不到这条学习记录。');
       }
