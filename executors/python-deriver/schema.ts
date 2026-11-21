@@ -127,6 +127,17 @@ export type CognitionResult = {
   readonly artifacts?: readonly string[];
 };
 
+export type InformationGainResult = {
+  readonly method_version: 'plan/information-gain@1';
+  readonly ranked_candidates: readonly {
+    readonly ref: string;
+    readonly est_min: number;
+    readonly info_gain: number;
+    readonly reason_code: 'probe-unknown' | 'reduce-uncertainty';
+    readonly uncertainty: UnknownUncertainty | Interval;
+  }[];
+};
+
 export type ItemPacingEvidence = {
   readonly attempt_ref: { readonly id: string; readonly rev: number };
   readonly paper_key: string; readonly item_id: string; readonly position: number; readonly item_count: number;
@@ -142,6 +153,26 @@ type WireEvent = (EvidenceEventV1 & { readonly exam_pacing_item?: never }) |
 export type WireSlice = Omit<CanonicalEvidenceSliceV1, 'events'> & { readonly events: readonly WireEvent[] };
 export function isCanonicalEvidenceSlice(value: unknown): value is WireSlice {
   return matches(wireSchema.$defs.input, value);
+}
+
+// The result may only reference the exact pool in the frozen request.
+export function isInformationGainResult(value: unknown, input: WireSlice): value is InformationGainResult {
+  if (!matches(wireSchema.$defs.informationGainResult, value)) return false;
+  const unavailable = new Set([
+    ...input.constraints.locks,
+    ...(input.omissions ?? []).map(({ ref }) => ref.id),
+    ...input.events.filter(event => Date.parse(event.occurred_at) <= Date.parse(input.as_of_at)).map(event => event.ref),
+  ]);
+  const pool = new Map(input.candidate_pool.map(candidate => [candidate.ref, candidate]));
+  if (pool.size !== input.candidate_pool.length) return false;
+  const eligible = new Map([...pool].filter(([ref, candidate]) => !unavailable.has(ref) && candidate.concept_ids.length > 0));
+  for (const { ref, est_min, uncertainty } of (value as InformationGainResult).ranked_candidates) {
+    const candidate = eligible.get(ref);
+    if (!candidate || candidate.est_min !== est_min ||
+        (uncertainty.kind === 'interval' && uncertainty.low > uncertainty.high)) return false;
+    eligible.delete(ref);
+  }
+  return eligible.size === 0;
 }
 
 export function isCognitionResult(value: unknown): value is CognitionResult {

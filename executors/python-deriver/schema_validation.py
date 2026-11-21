@@ -78,5 +78,9 @@ def is_evidence_slice(value):
     return _matches(DEFINITIONS["input"], value)
 
 
+def is_information_gain_result(value):
+    return _matches(DEFINITIONS["informationGainResult"], value)
+
+
 def is_cognition_result(value):
     return _matches(DEFINITIONS["output"], value)
