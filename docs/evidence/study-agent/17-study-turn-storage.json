@@ -502,5 +502,338 @@
       "state": "done",
       "purpose": "storage"
     }
-  ]
+  ],
+  "afterMainIntegration": {
+    "implementation": "1dac753c",
+    "main": "99b90eb2",
+    "samples": [
+      {
+        "name": "本轮读过 · 1",
+        "delta": 81.30000019073486,
+        "paint": 376,
+        "start": 294.69999980926514,
+        "implementation": "element"
+      },
+      {
+        "name": "本轮读过 · 1",
+        "delta": 34.40000009536743,
+        "paint": 576,
+        "start": 541.5999999046326,
+        "implementation": "element"
+      },
+      {
+        "name": "本轮读过 · 1",
+        "delta": 33.59999990463257,
+        "paint": 808,
+        "start": 774.4000000953674,
+        "implementation": "element"
+      },
+      {
+        "name": "本轮读过 · 1",
+        "delta": 52,
+        "paint": 1060,
+        "start": 1008,
+        "implementation": "element"
+      },
+      {
+        "name": "本轮读过 · 1",
+        "delta": 36.80000019073486,
+        "paint": 1244,
+        "start": 1207.1999998092651,
+        "implementation": "element"
+      },
+      {
+        "name": "本轮读过 · 1",
+        "delta": 34.5,
+        "paint": 1476,
+        "start": 1441.5,
+        "implementation": "element"
+      },
+      {
+        "name": "预览写入教材",
+        "delta": 35.30000019073486,
+        "paint": 1728,
+        "start": 1692.6999998092651,
+        "implementation": "element"
+      },
+      {
+        "name": "预览写入教材",
+        "delta": 34.69999980926514,
+        "paint": 1876,
+        "start": 1841.3000001907349,
+        "implementation": "element"
+      },
+      {
+        "name": "预览写入教材",
+        "delta": 32.69999980926514,
+        "paint": 2024,
+        "start": 1991.3000001907349,
+        "implementation": "element"
+      },
+      {
+        "name": "预览写入教材",
+        "delta": 35.09999990463257,
+        "paint": 2176,
+        "start": 2140.9000000953674,
+        "implementation": "element"
+      },
+      {
+        "name": "预览写入教材",
+        "delta": 37.5,
+        "paint": 2328,
+        "start": 2290.5,
+        "implementation": "element"
+      },
+      {
+        "name": "预览写入教材",
+        "delta": 34.40000009536743,
+        "paint": 2476,
+        "start": 2441.5999999046326,
+        "implementation": "element"
+      },
+      {
+        "name": "确认写入教材",
+        "delta": 53.69999980926514,
+        "paint": 2628,
+        "start": 2574.300000190735,
+        "implementation": "element"
+      },
+      {
+        "name": "撤回教材写入",
+        "delta": 35,
+        "paint": 2760,
+        "start": 2725,
+        "implementation": "element"
+      }
+    ],
+    "confirmationReplay": 200,
+    "finalSteps": [
+      {
+        "before": {
+          "kind": "textbook",
+          "learner": "691F38927C0F0C8A7DE5FFF70C",
+          "id": "8DD9F89CBF199F3537D0B9883E",
+          "rev": 2,
+          "accessEpoch": "1",
+          "purpose": [
+            "storage",
+            "teaching"
+          ],
+          "title": "分式的定义域",
+          "blocks": [
+            {
+              "id": "boundary",
+              "parentId": null,
+              "body": {
+                "kind": "text",
+                "text": "原文标记：分母为零时原式没有意义。"
+              }
+            }
+          ],
+          "references": []
+        },
+        "preview": {
+          "page": "8DD9F89CBF199F3537D0B9883E",
+          "rev": 2,
+          "title": "分式的定义域",
+          "answer": "我发现必须先检查分母是否为零。",
+          "confirmationId": "2TRV85MG4V1WJTVT53RZRNMY0B"
+        },
+        "receipt": {
+          "status": "applied",
+          "ref": {
+            "learner": "691F38927C0F0C8A7DE5FFF70C",
+            "id": "8DD9F89CBF199F3537D0B9883E",
+            "rev": 3
+          },
+          "undo_token": "5ZKS8SVPMTNS2ZN0W95Z8842DK"
+        },
+        "saved": {
+          "kind": "textbook",
+          "learner": "691F38927C0F0C8A7DE5FFF70C",
+          "id": "8DD9F89CBF199F3537D0B9883E",
+          "rev": 3,
+          "accessEpoch": "1",
+          "purpose": [
+            "storage",
+            "teaching"
+          ],
+          "title": "分式的定义域",
+          "basis": [
+            {
+              "id": "4F2E20F93DE24A07500DEA55EE",
+              "rev": 1,
+              "epoch": "0",
+              "type": "activity.studyTurn"
+            },
+            {
+              "id": "8DD9F89CBF199F3537D0B9883E",
+              "rev": 2,
+              "epoch": "1",
+              "type": "content.textbookPage"
+            }
+          ],
+          "blocks": [
+            {
+              "id": "boundary",
+              "parentId": null,
+              "body": {
+                "kind": "text",
+                "text": "原文标记：分母为零时原式没有意义。"
+              }
+            },
+            {
+              "id": "5DMJ21FEBTX4WCQ74QB6VVHSYK",
+              "parentId": null,
+              "body": {
+                "kind": "text",
+                "text": "我发现必须先检查分母是否为零。"
+              }
+            },
+            {
+              "id": "4T421NS1C9CRHETXS2971CRGS0",
+              "parentId": null,
+              "body": {
+                "kind": "reference",
+                "role": "citation",
+                "target": {
+                  "fact": {
+                    "learner": "691F38927C0F0C8A7DE5FFF70C",
+                    "id": "4F2E20F93DE24A07500DEA55EE",
+                    "rev": 1
+                  },
+                  "type": "activity.studyTurn",
+                  "anchor": {
+                    "kind": "path",
+                    "path": [
+                      "answer"
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "references": [
+            {
+              "blockId": "4T421NS1C9CRHETXS2971CRGS0",
+              "ref": {
+                "learner": "691F38927C0F0C8A7DE5FFF70C",
+                "id": "4F2E20F93DE24A07500DEA55EE",
+                "rev": 1
+              },
+              "type": "activity.studyTurn",
+              "anchor": {
+                "kind": "path",
+                "path": [
+                  "answer"
+                ]
+              },
+              "accessEpoch": "0"
+            }
+          ]
+        }
+      },
+      {
+        "retry": {
+          "status": 200,
+          "data": {
+            "status": "applied",
+            "ref": {
+              "id": "8DD9F89CBF199F3537D0B9883E",
+              "rev": 3,
+              "learner": "691F38927C0F0C8A7DE5FFF70C"
+            },
+            "undo_token": "5ZKS8SVPMTNS2ZN0W95Z8842DK"
+          }
+        }
+      },
+      {
+        "undone": {
+          "kind": "textbook",
+          "learner": "691F38927C0F0C8A7DE5FFF70C",
+          "id": "8DD9F89CBF199F3537D0B9883E",
+          "rev": 5,
+          "accessEpoch": "1",
+          "purpose": [
+            "storage",
+            "teaching"
+          ],
+          "title": "分式的定义域",
+          "blocks": [
+            {
+              "id": "boundary",
+              "parentId": null,
+              "body": {
+                "kind": "text",
+                "text": "后来独立补充的教材内容。"
+              }
+            }
+          ],
+          "retiredBlockIds": [
+            "5DMJ21FEBTX4WCQ74QB6VVHSYK",
+            "4T421NS1C9CRHETXS2971CRGS0"
+          ],
+          "references": []
+        }
+      },
+      {
+        "revoked": {
+          "status": 200,
+          "data": {
+            "id": "8DD9F89CBF199F3537D0B9883E",
+            "rev": 6,
+            "teaching": false,
+            "changed": true
+          }
+        },
+        "denied": {
+          "status": 409,
+          "data": {
+            "error": "本轮或所选教材的存储依据已变更，请重新预览。"
+          }
+        }
+      },
+      {
+        "onlyTeaching": "C443F031A17DB66921F5859A59",
+        "denyStorage": {
+          "status": 409,
+          "data": {
+            "error": "本轮或所选教材的存储依据已变更，请重新预览。"
+          }
+        },
+        "revokedBetweenPreviewAndConfirm": {
+          "status": 409,
+          "data": {
+            "error": "本轮或所选教材的存储依据已变更，请重新预览。"
+          }
+        },
+        "final": {
+          "kind": "textbook",
+          "learner": "691F38927C0F0C8A7DE5FFF70C",
+          "id": "8DD9F89CBF199F3537D0B9883E",
+          "rev": 8,
+          "accessEpoch": "4",
+          "purpose": [
+            "storage"
+          ],
+          "title": "分式的定义域",
+          "blocks": [
+            {
+              "id": "boundary",
+              "parentId": null,
+              "body": {
+                "kind": "text",
+                "text": "后来独立补充的教材内容。"
+              }
+            }
+          ],
+          "retiredBlockIds": [
+            "5DMJ21FEBTX4WCQ74QB6VVHSYK",
+            "4T421NS1C9CRHETXS2971CRGS0"
+          ],
+          "references": []
+        }
+      }
+    ]
+  }
 }
