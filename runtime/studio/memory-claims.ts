@@ -10,7 +10,10 @@ import { memoryReceipt, saveBeliefCommand } from '../../modules/companion/belief
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { applyClaimCommand, claimType, claimValue, ClaimInputError, matchesClaimEvidence, type ClaimRef } from '../../modules/companion/claim.ts';
-import { purpose, stableId } from './identity.ts';
+import { purpose, slotType, stableId } from './identity.ts';
+import { readRadarTodo } from './research-understanding.ts';
+import { isDeepStrictEqual } from 'node:util';
+import { readLocalReceiptBases } from '../../kernel/src/work/local-read-basis.ts';
 
 export const claimUndoToken = (command: string, id: string) => stableId('memory-undo-token', command, id);
 
@@ -54,7 +57,12 @@ export async function areMemoryClaimsCurrent(tx: ReadTransaction, ids: readonly 
 
 export async function teachingMemoryBasis(tx: ReadTransaction, manifest: Manifest, turn: string, maySend: WorkspaceSourceRecipient = () => true) {
   if ((await revalidateManifest(tx, manifest)).kind !== 'valid') return;
-  const facts = await manifestFactInputs(tx, manifest.inputs);
+  const turns = new Set([turn]);
+  const facts = await manifestFactInputs(tx, manifest.inputs, (type, key) => { if (type === slotType) turns.add(key); });
+  type TodoBasis = NonNullable<Awaited<ReturnType<typeof readRadarTodo>>>['basis'];
+  const receipts = await readLocalReceiptBases<TodoBasis>(tx, [...turns], 'local:read_learner_radar', 'todoBasis');
+  for (const basis of receipts)
+    if (!basis?.id || !isDeepStrictEqual(basis, (await readRadarTodo(tx, maySend, basis.id))?.basis)) return;
   const {rows} = await tx.query<{id: string; superseded: boolean; hypothesis: unknown}>(`SELECT f.id, EXISTS (${activeSuccessor()}) AS superseded,
     CASE WHEN r.data ? 'belief' AND r.data#>>'{scope,kind}'='object' THEN r.data END AS hypothesis
     FROM (SELECT DISTINCT * FROM unnest($4::text[], $5::int[]) AS input(id,rev)) input
@@ -69,7 +77,7 @@ export async function teachingMemoryBasis(tx: ReadTransaction, manifest: Manifes
     if (!basis) return;
     objects.push(...basis);
   }
-  return {ids:new Set(rows.map(row => row.id)), objects};
+  return {ids:new Set(rows.map(row => row.id)), objects, usesRadarTodo: receipts.length > 0};
 }
 
 export const turnMemoryKey = (turn: string, belief: boolean) => stableId(belief ? 'turn-belief-command' : 'turn-memory-command', turn);

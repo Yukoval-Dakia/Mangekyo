@@ -121,7 +121,9 @@ export function createLearningTurn(host: LearningTools, results: ReturnType<type
     });
     const output = formatLearningResult(value);
     if (!value.ok) return {content:output};
-    return {...results.publishLearning(name, step, output, []), ...(image && {image})};
+    const radar = name === 'read_context' && args.intent === 'radar' &&
+      value.data !== null && typeof value.data === 'object' && 'in_flight_todos' in value.data;
+    return {...results.publishLearning(name, step, output, [], radar), ...(image && {image})};
   }
 
   return {resident, discoverable: [...onDemand, openToolResult], execute, badArgs};

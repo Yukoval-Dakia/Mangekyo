@@ -6,13 +6,22 @@ import { commandId, factId, type FactId } from '../../kernel/src/declarations/id
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { independentlyAuthoredPaper, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
-import { ResearchBasisChanged, researchPurpose, retentionReviewPermission, retentionReviewPermissionType } from '../../modules/companion/research.ts';
-import { stableId } from './identity.ts';
+import { ResearchBasisChanged, researchPurpose, researchSettings, retentionReviewPermission, retentionReviewPermissionType } from '../../modules/companion/research.ts';
+import { stableId, studioLearner } from './identity.ts';
 import { resolveWorkPublication } from '../../kernel/src/work/payload.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
 
 export const researchReader = (tx: ReadTransaction) => createCommandReadContext(tx, researchPurpose);
+export const settingsId = factId(stableId('research-settings', studioLearner));
+
+export function currentResearchSettings(tx: ReadTransaction) {
+  return whenAvailable(async () => {
+    const {ref, accessEpoch, value} = await researchReader(tx).fact(settingsId, {mode:'following'});
+    const {enabled, coordinatorRef, scoutConsent, workerGrant} = researchSettings(value);
+    return {enabled, coordinatorRef, workerGrant, scoutBudget:scoutConsent, revision:ref.rev, accessEpoch};
+  });
+}
 
 export async function whenAvailable<T>(read: () => Promise<T>): Promise<T | null> {
   try {

@@ -47,13 +47,14 @@ export function studyToolResults() {
       if (bytes > 16_000) return {content:preview};
       return {content:bytes > 2048 || artifacts.length ? withReferences(output, {handle, ...metadata}) : output, preview, ...delivery};
     },
-    publishLearning(tool: string, step: number, output: string, files: readonly CalculationArtifact[]) {
+    publishLearning(tool: string, step: number, output: string, files: readonly CalculationArtifact[], retainHandle = false) {
       const artifacts = files.map(({name, mediaType, value}) => ({
         name, handle: store('calc', step, value, mediaType), ...(mediaType && {mediaType}),
       }));
       const metadata = artifacts.length ? {artifacts} : {};
       if (Buffer.byteLength(output) <= 2048) {
-        return {content: artifacts.length ? withReferences(output, metadata) : output,
+        const references = retainHandle ? {...metadata, handle:store('res', step, output)} : metadata;
+        return {content: Object.keys(references).length ? withReferences(output, references) : output,
           ...(tool === 'read_context' && {delivery:{step, output, start:0, end:output.length}})};
       }
       const handle = store(tool === 'run_calculation' ? 'calc' : 'res', step, output);

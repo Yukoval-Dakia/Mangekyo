@@ -27,14 +27,14 @@ import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import {
   allowRetentionReview, configureResearch,
-  researchPurpose, researchScoutBudget, researchSettings, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType,
+  researchPurpose, researchScoutBudget, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType,
 } from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';
 import {
   activeRetentionReview, comparisonAttempts, independentScoutSource, readWorksheet, readWorksheetById, researchReader,
-  retentionReviewPermissionId, whenAvailable, workbookSource, worksheetPublication,
+  currentResearchSettings as settings, settingsId, retentionReviewPermissionId, whenAvailable, workbookSource, worksheetPublication,
 } from './research-sources.ts';
 import {
   preparePaidResearchTriage, prepareResearchTriage, researchDecision, scoutEffectIdentity,
@@ -47,18 +47,9 @@ import { clientRequest, RequestError } from './sessions.ts';
 import { correctionRetestDeriver, eligibleCorrectionRetest, executeCorrectionRetest, registerCorrectionRetest, type CorrectionRetestAuthority } from './research-correction.ts';
 
 const scope = { learner: studioLearner };
-const settingsId = factId(stableId('research-settings', studioLearner));
 const wakeSlot = 'companion.researchWake';
 const wake = { slotType: wakeSlot, slotKey: settingsId, deriver: 'studio/research-wake-v1' };
 const idleRecheckMs = 60_000;
-
-async function settings(tx: ReadTransaction) {
-  return whenAvailable(async () => {
-    const fact = await researchReader(tx).fact(settingsId, { mode: 'following' });
-    const { enabled, coordinatorRef, scoutConsent, workerGrant } = researchSettings(fact.value);
-    return { enabled, coordinatorRef, workerGrant, scoutBudget: scoutConsent, revision: fact.ref.rev };
-  });
-}
 
 function settingInput(input: Record<string, unknown>, minimum: number, field: 'enabled' | 'allowed') {
   const { revision } = input;

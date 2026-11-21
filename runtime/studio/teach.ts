@@ -198,9 +198,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       gatherTick: clock?.tick,
       inputs: [...inputs.values()],
     });
-    if (!await teachingMemoryBasis(tx, manifest, slotKey, maySend) || !await questionReceiptsCurrent(tx,slotKey,use))
+    const evidence = await teachingMemoryBasis(tx, manifest, slotKey, maySend);
+    if (!evidence || !await questionReceiptsCurrent(tx,slotKey,use))
       throw new ChangedEvidence();
-    return {manifest, pages};
+    return {manifest, pages, usesRadarTodo:evidence.usesRadarTodo};
   }
   const validInputs = async (tx: ReadTransaction) => (await revalidateInputs(tx)).manifest;
   async function validWorkInputs(tx: ReadTransaction, use?: 'publish' | 'dispatch') {
@@ -323,11 +324,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       // The receipt can settle after its own public draft. Only a fresh send
       // must also prove that this turn has not already published a draft.
       const authorize = async (tx: ReadTransaction, current?: typeof settings, use: 'publish' | 'dispatch' = 'publish') => {
-        const {manifest,pages} = await validWorkInputs(tx,use);
+        const {manifest,pages,usesRadarTodo} = await validWorkInputs(tx,use);
         const localCalculation = learningV1 && step.provider === 'tool:run_calculation';
         if (retention.size && (step.model !== settings.model ||
             (!step.provider.startsWith('tool:') && step.provider !== providerEndpoint(settings)))) throw new ChangedEvidence();
-        if (selected.length && ((!localCalculation && step.provider !== providerEndpoint(settings)) ||
+        if ((usesRadarTodo || selected.length) && ((!localCalculation && step.provider !== providerEndpoint(settings)) ||
             step.model !== settings.model ||
             JSON.stringify(selected) !== JSON.stringify(pages))) throw new ChangedEvidence();
         current ??= await loadSettings(task);

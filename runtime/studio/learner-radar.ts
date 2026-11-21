@@ -1,9 +1,9 @@
-import { guardAccess, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { guardAccess } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, type Tick } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot, Outcome } from '../../kernel/src/declarations/types.ts';
+import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { readCurrentValueDerivations, revalidateManifest, type CurrentValueDerivation } from '../../kernel/src/derivations/revalidate.ts';
 import { posttestOpensAt } from '../../modules/activity/retention-posttest.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { isStandaloneWorkbookPaper, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
@@ -17,15 +17,14 @@ import { radarArguments } from '../../executors/teaching/workspace-tools.ts';
 import { radarInventory, radarOverview, retentionEvidenceLink } from '../../modules/activity/workspace-source-projection.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
+import { readRadarTodo } from './research-understanding.ts';
+import { whenAvailable } from './research-sources.ts';
 
 export type RadarSlot = Extract<ManifestInput, { kind: 'slot' }>;
 type FactInput = Extract<ManifestInput, { kind: 'fact' }>;
 export type RetentionBasis = { slot: RadarSlot; facts: FactInput[] };
 type Access = { callerPurpose: string; maySend: WorkspaceSourceRecipient };
-type Selection = {
-  id: string; slot_type: string; slot_key: string; deriver: string;
-  effective_tick: Tick; value: Outcome<RetentionForecast | RetentionReconciliation>; manifest: unknown;
-};
+type Selection = CurrentValueDerivation<RetentionForecast | RetentionReconciliation>;
 
 // The controlled posttest publisher uses the same retention result contract.
 // Its private fact types can support the result without opening their raw payloads to the companion.
@@ -39,18 +38,8 @@ export function isRadarRetentionSlot(type: string) {
   return type === forecastType || type === reconciliationType;
 }
 
-async function currentSelections(tx: ReadTransaction, type: string, id?: string, key?: string) {
-  const { rows } = await tx.query<Selection>(
-    `SELECT d.id, d.slot_type, d.slot_key, d.deriver, d.effective_tick::text, d.value, d.manifest
-     FROM slot_state s JOIN derivations d
-       ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.current_id)
-     WHERE s.learner_id=$1 AND s.slot_type=$2 AND ($3::text IS NULL OR d.id=$3)
-       AND ($5::text IS NULL OR d.slot_key=$5)
-       AND d.lifecycle='effective' AND d.selection_ended_tick IS NULL AND d.invalidated_tick IS NULL
-       AND NOT d.is_shadow AND d.effective_tick >= d.gather_tick AND d.value->>'kind'='value'
-     ORDER BY d.effective_tick DESC, d.id LIMIT $4`, [tx.learner, type, id ?? null, id || key ? 1 : candidateLimit, key ?? null],
-  );
-  return rows;
+function currentSelections(tx: ReadTransaction, type: string, id?: string, key?: string) {
+  return readCurrentValueDerivations<RetentionForecast | RetentionReconciliation>(tx, type, id || key ? 1 : candidateLimit, id, key);
 }
 
 async function validRetentionManifest(tx: ReadTransaction, row: Selection, callerPurpose = purpose) {
@@ -90,13 +79,9 @@ async function readSelection(tx: ReadTransaction, row: Selection, access: Access
       continue;
     }
     if (input.kind !== 'fact') return;
-    try {
-      const fact = await guardAccess(tx, input, actor);
-      facts.push({ input, fact });
-    } catch (error) {
-      if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
-      throw error;
-    }
+    const fact = await whenAvailable(() => guardAccess(tx, input, actor));
+    if (!fact) return;
+    facts.push({ input, fact });
   }
   const value = row.value.value;
   if (row.slot_type === forecastType && 'method' in value && value.input.target.activity === 'frozen-workbook-item') {
@@ -217,12 +202,11 @@ export async function readForgettingRisks(tx: ReadTransaction, maySend: Workspac
     const { paper, condition } = input.target;
     const source = selected.facts.find(({ fact }) => fact.ref.id === paper.id && fact.ref.rev === paper.rev);
     if (projected?.kind !== 'forecast' || !source) continue;
-    try {
+    const authorized = await whenAvailable(async () => {
       for (const { fact } of selected.facts) await checkStudioNotionFact(tx, fact, purpose, maySend);
-    } catch (error) {
-      if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) continue;
-      throw error;
-    }
+      return true;
+    });
+    if (!authorized) continue;
     // Out-of-window crossings also support a covered result or true empty set.
     options.trackRetention(basisOf(selected));
     for (const { fact, input } of selected.facts) options.track(fact, input.mode);
@@ -240,11 +224,11 @@ export async function readForgettingRisks(tx: ReadTransaction, maySend: Workspac
 export async function readLearnerRadar(tx: ReadTransaction, args: Record<string, unknown>,
   maySend: WorkspaceSourceRecipient, track: SourceTrack, trackRetention?: (basis: RetentionBasis) => void) {
   const query = radarArguments(args, isSourceFactId);
-  if (!query) return { ok: false, code: 'invalid_args', message: 'horizon_hours 须为 1–168 的整数，scope 只接受 subject_id 或最多 8 个 kc_ids。' };
+  if (!query) return { view: { ok: false, code: 'invalid_args', message: 'horizon_hours 须为 1–168 的整数，scope 只接受 subject_id 或最多 8 个 kc_ids。' } };
   const prerequisites = { tool: 'search_workspace', args: { hops: 2, direction: 'inbound', edgeKinds: ['prereq_of'] },
     required: ['conceptId'] };
-  if (query.scoped) return { retention: unknown, goal: unknown, tasks: unknown, inventory: unknown, prerequisites,
-    unappliedFilters: ['scope'], reason: '当前保持结果、任务和库存没有可靠的学科或知识点归属。' };
+  if (query.scoped) return { view: { retention: unknown, goal: unknown, tasks: unknown, inventory: unknown, in_flight_todos: unknown, prerequisites,
+    unappliedFilters: ['scope'], reason: '当前保持结果、任务和库存没有可靠的学科或知识点归属。' } };
   const retention = trackRetention ? await readRetentionRadar(tx, { callerPurpose: purpose, maySend },
     { track: trackRetention, ...(query.horizon ? { horizon: query.horizon } : {}) }) : unknown;
   const observed = new Map<string, FactSnapshot>();
@@ -259,5 +243,8 @@ export async function readLearnerRadar(tx: ReadTransaction, args: Record<string,
     recipient: 'workspace', maySend: fact => fact.type === workbookPaperType && maySend(fact) && isStandaloneWorkbookPaper(fact.value), track,
   });
   const papers = inventory && 'results' in inventory ? inventory.results : [];
-  return { retention, prerequisites, ...projected.view, inventory: radarInventory(papers) };
+  const todo = await readRadarTodo(tx, maySend);
+  if (todo) track(todo.fact, 'following');
+  return { view: { retention, prerequisites, ...projected.view, inventory: radarInventory(papers),
+    in_flight_todos: todo?.view ?? unknown }, todoBasis:todo?.basis };
 }
