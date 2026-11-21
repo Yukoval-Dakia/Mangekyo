@@ -11,6 +11,45 @@ const sdkMethods = {
 
 export type PythonRead = {method: keyof typeof sdkMethods; args: ToolArgs};
 export type PythonReadValue = Json | CanonicalEvidenceSliceV1;
+export const pythonPrerequisiteKinds = ['prereq_of', 'prerequisite', 'successor'] as const;
+type ConceptNode = { id: string; rev: number; title: string };
+type PrerequisiteNode = ConceptNode & { hop: number };
+type Endpoint = { fact: Pick<ConceptNode, 'id' | 'rev'> };
+type PrerequisiteEdge = { id: string; rev: number; from: Endpoint; to: Endpoint; kind: string; scope: string };
+type PrerequisiteBranch = {
+  conceptRef: Endpoint; results: PrerequisiteNode[];
+  edges: readonly PrerequisiteEdge[]; truncated: boolean;
+};
+
+const prerequisiteEdge = (edge: PrerequisiteEdge) => ({
+  id:edge.id, rev:edge.rev, from:edge.from.fact.id, from_rev:edge.from.fact.rev,
+  to:edge.to.fact.id, to_rev:edge.to.fact.rev, kind:edge.kind, scope:edge.scope,
+});
+
+export async function pythonPrerequisites(id: string, depth: number, read: (
+  direction: 'inbound' | 'outbound',
+  select: (source: ConceptNode, fact: unknown, hop: number) => PrerequisiteNode | undefined,
+  fits: (edge: PrerequisiteEdge, result: PrerequisiteNode) => boolean,
+) => Promise<PrerequisiteBranch | undefined>) {
+  function branch(direction: 'inbound' | 'outbound') {
+    // Leave space for the other SDK queries, the tool inputs, and the script.
+    let remainingBytes = 12 * 1024;
+    return read(direction, ({id, rev, title}, _fact, hop) => hop > 0 ? {id,rev,title,hop} : undefined,
+      (edge, node) => {
+        remainingBytes -= Buffer.byteLength(JSON.stringify([prerequisiteEdge(edge), node]));
+        return remainingBytes >= 0;
+      });
+  }
+  const prerequisites = await branch('inbound');
+  if (!prerequisites) return { state:'missing-root' } as const;
+  const successors = await branch('outbound');
+  if (!successors) return { state:'unavailable' } as const;
+  const edges = new Map([...prerequisites.edges, ...successors.edges].map(edge => [edge.id, prerequisiteEdge(edge)]));
+  return { state:'ready' as const, value:{kc_id:id, rev:prerequisites.conceptRef.fact.rev, depth, scope:'authorized',
+    edge_kinds:[...pythonPrerequisiteKinds], prerequisites:prerequisites.results, successors:successors.results,
+    edges:[...edges.values()], truncated:prerequisites.truncated || successors.truncated} };
+}
+
 const text = {type: 'string', minLength: 1, maxLength: 160} as const;
 const ids = {type: 'array', items: text, minItems: 1, maxItems: 30} as const;
 const sdkFields = {

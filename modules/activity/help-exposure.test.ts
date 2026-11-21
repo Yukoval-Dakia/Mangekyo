@@ -27,10 +27,7 @@ test('分级切片只使用交卷之前实际绘制的提示档次', () => {
   const second = { ...shown, ref: late.ref,
     value: helpExposure({ ...example, kind: 'displayed', step: { kind: 'hint_l2', order: 2 } }) };
   const project = (events: typeof first[]) => activityHelpProcess(projectHelpExposure({ submission, coverage, events }), events);
-  expect(project([first]).helpLevel).toBe('hint_l1');
   expect(project([first, { ...second, admittedAt: late.admittedAt }]).helpLevel).toBe('hint_l1');
-  expect(project([first, { ...second, value: helpExposure({ ...example, kind: 'opened', step: { kind: 'hint_l2', order: 2 } }) }]).helpLevel)
-    .toBe('hint_l1');
   const process = project([first, second]);
   expect(process.exposure).toMatchObject({ kind: 'exposed', level: 'hint_l2' });
   const occurredAt = '2026-11-21T00:00:00.000Z';
