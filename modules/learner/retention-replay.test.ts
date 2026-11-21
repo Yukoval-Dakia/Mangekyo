@@ -2,10 +2,10 @@ import { projectClassroomRadar } from './classroom-radar.ts';
 import { expect, it } from 'vitest';
 import type { EvidenceEventV1, FactId, FactSnapshot, LearnerId, Revision, Tick } from '@mangekyo/kernel';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
-import { isCognitionResult } from '../../executors/python-deriver/schema.ts';
+import { evaluateStudioRetention } from '../../runtime/studio/retention.ts';
 import { flashCheckPriority } from './flash-check.ts';
 import { projectRetentionRead } from './retention-view.ts';
-import { defaultRetentionMethod, evaluateFrozenRetention, freezeCognition, readPythonRetentionMethod, retentionSlice,
+import { defaultRetentionMethod, freezeCognition, readPythonRetentionMethod, retentionSlice,
   type RetentionInput, type RetentionObservation } from './retention.ts';
 
 const tick = '9007199254740997' as Tick;
@@ -62,15 +62,8 @@ it('scopes only witnessed exact-item submissions to an unclassified target, pres
 it('uses one exact low-confidence correct answer for retention discount and the authorized flash check', async ({onTestFinished}) => {
   const host = createPythonDeriverHost();
   onTestFinished(host.close);
-  const run = (input: RetentionInput, version = defaultRetentionMethod) => {
-    const method = readPythonRetentionMethod(version)!;
-    return evaluateFrozenRetention(method, input, async slice => {
-      const reply = await host.derive(method.deriver, slice);
-      if (reply.kind !== 'ok' || reply.outcome.kind !== 'value' || !isCognitionResult(reply.outcome.value))
-        throw new Error(JSON.stringify(reply));
-      return reply.outcome.value;
-    });
-  };
+  const run = (frozenInput: RetentionInput, version = defaultRetentionMethod) =>
+    evaluateStudioRetention(readPythonRetentionMethod(version)!, frozenInput, host);
   const aboveThreshold = {...input, observations: [answer(0.350001).observation]};
   const [guess, full, prior] = await Promise.all([run(frozen), run(aboveThreshold), run(frozen, 'cognition@2')]);
   expect(guess).toMatchObject({method: {version: '3'}, estimate: {masteryProb: 1.1 / 2.1, stabilityDays: 2.1,
