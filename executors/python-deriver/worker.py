@@ -28,7 +28,7 @@ def handle(request):
             if not exam_pacing.is_pacing_input(evidence):
                 return {"id": request_id, "error": "invalid exam pacing input"}
             result = exam_pacing.derive(evidence, method_version=version)
-            if not exam_pacing.is_pacing_result(result):
+            if not exam_pacing.is_pacing_result(result, evidence):
                 return {"id": request_id, "error": "invalid exam pacing output"}
             return {"id": request_id, "value": {"kind": "value", "value": result}}
         if not is_evidence_slice(evidence):

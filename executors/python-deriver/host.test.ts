@@ -70,7 +70,18 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
       attempts: [{id: 'first'}, {id: 'second'}, {kind: 'unknown', missing: ['effective_duration_ms', 'score']}],
     }}});
     expect(outcomes[1]).toMatchObject({kind: 'ok', outcome: {kind: 'unknown'}});
-    expect((await host.derive('plan/exam-pacing@1', sample)).kind).toBe('failed');
+    expect(await host.derive('plan/exam-pacing@1', sample)).toMatchObject({kind: 'ok', outcome: {kind: 'value',
+      value: {attempts: [], strategy: {kind: 'unknown'}}}});
+    const exam = (ref: string, duration: number, earned: number) => ({...sample.events[0], ref,
+      effective_duration_ms: duration, exam_pacing: {paper_key: 'paper@2', scale_key: 'release@4', score: {earned, maximum: 10}}});
+    const events = [exam('recent', 2000, 6), exam('prior', 1000, 8), exam('withheld', 9000, 0)];
+    const slice = {...sample, events, omissions: [{ref: {id: 'withheld', rev: 1}, reason: 'not available'}]};
+    const pacing = await host.derive('plan/exam-pacing@1', slice);
+    expect(pacing).toMatchObject({kind: 'ok', outcome: {kind: 'value', value: {
+      attempts: expect.arrayContaining([expect.objectContaining({id: 'recent', paper_key: 'paper@2'})]),
+      strategy: {kind: 'observed', comparisons: [{slower_attempt_id: 'recent', faster_attempt_id: 'prior', extra_duration_ms: 1000}]},
+    }}});
+    expect(JSON.stringify(pacing)).not.toContain('withheld');
   } finally {
     await host.close();
   }
