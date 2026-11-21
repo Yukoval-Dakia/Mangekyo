@@ -7,7 +7,7 @@ import type { Db, DbTransaction, ReadTransaction } from '../db/types.ts';
 import { learnerId, type Tick } from '../declarations/ids.ts';
 import type { Manifest } from '../derivations/manifest.ts';
 import type { WorkRef, WorkRequest } from './demand.ts';
-import type { Json } from '../declarations/types.ts';
+import type { Json, JsonObject } from '../declarations/types.ts';
 import { newUlid } from './identity.ts';
 import { assertPayloadWork } from './payload.ts';
 
@@ -41,6 +41,17 @@ type EffectRow = {
 };
 
 const json = z.json();
+
+function effectInputMetadata(input: Json): JsonObject | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const source = input as Record<string, Json>;
+  const metadata: Record<string, string> = {};
+  for (const key of ['provider', 'model'] as const) {
+    const value = source[key];
+    if (typeof value === 'string' && value) metadata[key] = value;
+  }
+  return Object.keys(metadata).length ? metadata : null;
+}
 
 export class EffectBudgetExceeded extends Error {}
 export class EffectIdentityMismatch extends Error {}
@@ -203,6 +214,7 @@ export async function runEffect(
     else if (budget && stages) await reserveFollowups(tx, identity, work!, budget, stages.followups, true);
     else if (budget) await requireBudget(tx, budget, 1);
     const providerEffectId = newUlid();
+    const inputMetadata = effectInputMetadata(input);
     return tx.withLearnerWrite(async tick => {
       // The unsent hold becomes an immutable dispatch claim without releasing budget.
       if (stages === 'claim') await tx.query(`DELETE FROM effects
@@ -215,6 +227,7 @@ export async function runEffect(
         step_key: stepKey,
         label,
         input_digest: digest,
+        input: inputMetadata === null ? null : JSON.stringify(inputMetadata),
         provider_effect_id: providerEffectId,
         state: 'started',
         started_tick: tick,

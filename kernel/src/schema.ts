@@ -287,6 +287,9 @@ const migrations = [
     await tx.query("CREATE INDEX derivations_manifest_inputs_idx ON derivations USING gin ((manifest->'inputs') jsonb_path_ops)");
     await tx.query('CREATE INDEX derivations_slot_history_idx ON derivations(learner_id,slot_type,slot_key)');
   },
+  async (tx: DbQuery) => {
+    await tx.query('ALTER TABLE effects ADD COLUMN input jsonb');
+  },
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */

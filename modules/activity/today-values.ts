@@ -9,6 +9,7 @@ import {
   workbookPaperType,
   workbookRubricAssessment,
   workbookRubricAssessmentType,
+  type WorkbookRubricAssessmentView,
 } from './workbook-values.ts';
 
 function todayMode(mode: string): 'any' | 'one-hand' | 'voice' {
@@ -81,7 +82,9 @@ type PendingCorrectionRow = {
 // submitted attempt on a visible workbook paper. Read authorization already
 // filters revoked or retracted facts, so this only sees permitted snapshots.
 // Corrections are matched per (paper, attempt ref + access epoch, item).
-export function collectPendingCorrectionSources(facts: readonly FactSnapshot[]): PendingCorrectionRow[] {
+export function collectPendingCorrectionSources(
+  facts: readonly FactSnapshot[], settledRubrics?: ReadonlyMap<string, readonly WorkbookRubricAssessmentView[]>,
+): PendingCorrectionRow[] {
   const papers = new Map<string, FactSnapshot>();
   const attempts: FactSnapshot[] = [];
   const rubrics: FactSnapshot[] = [];
@@ -103,9 +106,15 @@ export function collectPendingCorrectionSources(facts: readonly FactSnapshot[]):
         record.attempt.id === attemptFact.ref.id && record.attempt.rev === attemptFact.ref.rev &&
         record.accessEpoch === attemptFact.accessEpoch);
     const items: PendingCorrectionRow['items'][number][] = [];
+    const evidenceRefs = new Set<string>();
+    const addItem = (item: PendingCorrectionRow['items'][number]) => {
+      if (evidenceRefs.has(item.evidenceRef)) return;
+      evidenceRefs.add(item.evidenceRef);
+      items.push(item);
+    };
     for (const feedback of attempt.feedback) {
       if (feedback.answer === null || (feedback.result !== 'incorrect' && feedback.result !== 'partial')) continue;
-      items.push({
+      addItem({
         itemId: feedback.questionId,
         outcome: feedback.result,
         source: 'attempt',
@@ -117,12 +126,19 @@ export function collectPendingCorrectionSources(facts: readonly FactSnapshot[]):
       const assessment = workbookRubricAssessment(rubricFact.value);
       if (assessment.attemptId !== attemptFact.ref.id || assessment.paperId !== attempt.paperId) continue;
       if (assessment.verdict !== 'incorrect' && assessment.verdict !== 'partial') continue;
-      items.push({
+      addItem({
         itemId: assessment.questionId,
         outcome: assessment.verdict,
         source: 'rubric',
         corrected: corrected(assessment.questionId),
         evidenceRef: `${rubricFact.ref.id}@${rubricFact.ref.rev}`,
+      });
+    }
+    for (const assessment of settledRubrics?.get(attemptFact.ref.id) ?? []) {
+      if (assessment.paperId !== attempt.paperId || (assessment.verdict !== 'incorrect' && assessment.verdict !== 'partial')) continue;
+      addItem({
+        itemId: assessment.questionId, outcome: assessment.verdict, source: 'rubric', corrected: corrected(assessment.questionId),
+        evidenceRef: `${assessment.id}@1`,
       });
     }
     if (!items.length) continue;
