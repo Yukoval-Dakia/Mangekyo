@@ -1,0 +1,52 @@
+{
+  "base": "http://127.0.0.1:4397",
+  "database": {
+    "host": "127.0.0.1:55432",
+    "schemas": ["visual_polish_r2_mwqmcl6p", "visual_polish_r2_final_mwqnls2x"],
+    "remainingAfterDrop": 0
+  },
+  "workbookUpload": {
+    "httpStatus": 201,
+    "complete": true,
+    "naturalWidth": 1440,
+    "naturalHeight": 900,
+    "src": "http://127.0.0.1:4397/api/materials/1C0CC260BDCC21CC55CFBE85B1/original",
+    "state": "已上传跟随本卷",
+    "consoleErrors": 0,
+    "pageExceptions": 0
+  },
+  "citation": {
+    "containsChinese": "掌握状态：尚待核对",
+    "leaksUnknown": false,
+    "consoleErrors": 0,
+    "pageExceptions": 0
+  },
+  "graphSixNodes": {
+    "nodes": 6,
+    "edges": 6,
+    "labels": ["前置", "包含"],
+    "consoleErrors": 0,
+    "pageExceptions": 0
+  },
+  "graphDenseDesktop": {
+    "nodes": 18,
+    "edges": 18,
+    "viewBox": "0 0 1356 826",
+    "nodeOverlaps": 0,
+    "titleFontSize": "19px",
+    "labelFontSize": "21px",
+    "scrollWidth": 1425,
+    "clientWidth": 1425,
+    "consoleErrors": 0,
+    "pageExceptions": 0
+  },
+  "graphDarkMobile": {
+    "theme": "dark",
+    "nodes": 18,
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "horizontalOverflow": false,
+    "consoleErrors": 0,
+    "pageExceptions": 0
+  }
+}

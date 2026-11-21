@@ -169,11 +169,52 @@
 
 .kg-edge-pending {
   stroke: var(--kg-edge-pending);
-  stroke-dasharray: 6 5;
+}
+
+.kg-edge-pending path {
+  stroke-dasharray: 7 5;
+}
+
+.kg-edge-dim {
+  opacity: .28;
+}
+
+.kg-edge-active {
+  opacity: 1;
+}
+
+.kg-edge-active path {
+  stroke-width: 2.4;
+}
+
+.kg-edge-label rect {
+  fill: color-mix(in srgb, var(--surface, #fbfcf9) 86%, transparent);
+  stroke: color-mix(in srgb, var(--kg-edge) 38%, transparent);
+}
+
+.kg-edge-pending .kg-edge-label rect {
+  fill: color-mix(in srgb, var(--surface, #fbfcf9) 78%, #f4e8c8 22%);
+  stroke: color-mix(in srgb, var(--kg-edge-pending) 42%, transparent);
+}
+
+.kg-edge-label text {
+  fill: var(--ink, #1d2922);
+  font-size: 11px;
+  font-weight: 640;
+  dominant-baseline: middle;
+}
+
+.kg-edge-pending .kg-edge-label text {
+  fill: var(--kg-edge-pending);
 }
 
 .kg-node {
   cursor: pointer;
+  transition: opacity 140ms ease;
+}
+
+.kg-node-dim {
+  opacity: .38;
 }
 
 .kg-node-card {
@@ -204,7 +245,7 @@
 .kg-unknown .kg-node-dot { fill: var(--kg-unknown); }
 
 .kg-node-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 680;
   fill: var(--ink, #1d2922);
   dominant-baseline: middle;

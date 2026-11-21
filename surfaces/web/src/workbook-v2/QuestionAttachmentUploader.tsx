@@ -21,6 +21,18 @@ function isSupportedImage(file: File): boolean {
   return file.type === 'image/png' || file.type === 'image/jpeg' || file.type === 'image/webp';
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('图片预览读取失败'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('图片预览读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function summarizeAttachments(entries: readonly PendingAttachment[]): UploadSummary {
   let uploading = 0;
   let failed = 0;
@@ -136,7 +148,7 @@ export function usePaperAttachments(paperId: string): PaperAttachmentController 
     (itemId: string, list: FileList | null) => {
       if (!list?.length) return;
       let rejectedNote = '';
-      const added: PendingAttachment[] = [];
+      const candidates: {entry: PendingAttachment; readPreview: Promise<string>}[] = [];
       for (const file of Array.from(list)) {
         if (!isSupportedImage(file)) {
           rejectedNote = '只支持 PNG / JPEG / WebP 图片。';
@@ -146,19 +158,38 @@ export function usePaperAttachments(paperId: string): PaperAttachmentController 
           rejectedNote = `「${file.name}」超过 12MB，请压缩后再传。`;
           continue;
         }
-        added.push({
-          localId: nextLocalId(),
-          file,
-          previewUrl: URL.createObjectURL(file),
-          scope: 'inherit',
-          state: { phase: 'uploading', progress: 0 },
+        candidates.push({
+          entry: {
+            localId: nextLocalId(),
+            file,
+            previewUrl: '',
+            scope: 'inherit',
+            state: {phase: 'uploading', progress: 0},
+          },
+          readPreview: readFileAsDataUrl(file),
         });
       }
       setNotesByQuestion((previous) => ({ ...previous, [itemId]: rejectedNote }));
-      if (!added.length) return;
-      const existing = itemsRef.current[itemId] ?? [];
-      setQuestionItems(itemId, [...existing, ...added]);
-      for (const entry of added) runUpload(itemId, entry);
+      void Promise.all(
+        candidates.map(async candidate => ({
+          ...candidate.entry,
+          previewUrl: await candidate.readPreview,
+        })),
+      )
+        .then(added => {
+          if (!added.length) return;
+          const current = itemsRef.current[itemId] ?? [];
+          const fresh = added.filter(entry => !current.some(item => item.localId === entry.localId));
+          if (!fresh.length) return;
+          setQuestionItems(itemId, [...current, ...fresh]);
+          for (const entry of fresh) runUpload(itemId, entry);
+        })
+        .catch(() => {
+          setNotesByQuestion(previous => ({
+            ...previous,
+            [itemId]: `${previous[itemId] ? `${previous[itemId]} ` : ''}图片预览读取失败，请重新选择。`,
+          }));
+        });
     },
     [runUpload, setQuestionItems],
   );
@@ -177,8 +208,6 @@ export function usePaperAttachments(paperId: string): PaperAttachmentController 
       controllersRef.current.get(localId)?.abort();
       controllersRef.current.delete(localId);
       const current = itemsRef.current[itemId] ?? [];
-      const target = current.find((entry) => entry.localId === localId);
-      if (target) URL.revokeObjectURL(target.previewUrl);
       setQuestionItems(
         itemId,
         current.filter((entry) => entry.localId !== localId),
@@ -204,9 +233,6 @@ export function usePaperAttachments(paperId: string): PaperAttachmentController 
   const resetAll = useCallback(() => {
     for (const controller of controllersRef.current.values()) controller.abort();
     controllersRef.current.clear();
-    for (const list of Object.values(itemsRef.current)) {
-      for (const entry of list) URL.revokeObjectURL(entry.previewUrl);
-    }
     itemsRef.current = {};
     setItemsByQuestion({});
     setNotesByQuestion({});
@@ -216,9 +242,6 @@ export function usePaperAttachments(paperId: string): PaperAttachmentController 
     return () => {
       for (const controller of controllersRef.current.values()) controller.abort();
       controllersRef.current.clear();
-      for (const list of Object.values(itemsRef.current)) {
-        for (const entry of list) URL.revokeObjectURL(entry.previewUrl);
-      }
       itemsRef.current = {};
     };
   }, [paperId]);
@@ -325,7 +348,7 @@ export function QuestionAttachmentUploader({
         <div className="wbv2-thumbs">
           {items.map((entry) => (
             <figure key={entry.localId} className={`wbv2-thumb${entry.state.phase === 'error' ? ' is-error' : ''}`}>
-              <img src={entry.previewUrl} alt="手写过程图预览" />
+              <AttachmentPreviewImage entry={entry} />
               <button
                 type="button"
                 className="wbv2-thumb-remove"
@@ -382,6 +405,28 @@ export function QuestionAttachmentUploader({
         </p>
       )}
     </div>
+  );
+}
+
+function AttachmentPreviewImage({entry}: {entry: PendingAttachment}) {
+  const [remoteBroken, setRemoteBroken] = useState(false);
+  const doneUrl = entry.state.phase === 'done' ? entry.state.url : '';
+  const showRemote = Boolean(doneUrl) && !remoteBroken;
+  const src = showRemote ? doneUrl : entry.previewUrl;
+
+  useEffect(() => {
+    setRemoteBroken(false);
+  }, [doneUrl]);
+
+  if (!src) return <div className="wbv2-thumb-skeleton" aria-label="图片预览准备中" />;
+  return (
+    <img
+      src={src}
+      alt="手写过程图预览"
+      onError={() => {
+        if (showRemote) setRemoteBroken(true);
+      }}
+    />
   );
 }
 

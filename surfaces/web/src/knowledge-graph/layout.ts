@@ -33,9 +33,9 @@ export function masteryHint(status: MasteryStatus): string {
 
 export function edgeKindLabel(kind: string): string {
   switch (kind) {
-    case 'prereq_of': case 'prerequisite': return '先修';
+    case 'prereq_of': case 'prerequisite': return '前置';
     case 'successor': return '后继';
-    case 'part_of': return '属于';
+    case 'part_of': return '包含';
     case 'contrasts_with': case 'confusable': return '易混';
     case 'targets_concept': return '指向';
     case 'variant_of': return '变式';
@@ -118,10 +118,15 @@ export type GraphLayout = {
   height: number;
 };
 
-const LAYER_GAP = 148;
-const ROW_GAP = 96;
-const PAD_X = 72;
-const PAD_Y = 56;
+export const NODE_WIDTH = 216;
+export const NODE_HEIGHT = 82;
+const NODE_GAP_X = 42;
+const LAYER_GAP = 52;
+const ROW_GAP = 42;
+const COMPONENT_GAP_X = 72;
+const COMPONENT_GAP_Y = 58;
+const PAD_X = 54;
+const PAD_Y = 52;
 
 export function buildGraphLayout(
   nodes: readonly KnowledgeGraphNode[],
@@ -149,6 +154,7 @@ export function buildGraphLayout(
     if (!byId.has(fromId) || !byId.has(toId)) continue;
     pendingEdges.push({id: proposal.id, kind: proposal.kind, pending: true, summary: proposal.summary, fromId, toId});
   }
+  const allEdges = [...hierarchyEdges, ...looseEdges, ...pendingEdges];
 
   // layer = longest chain of prerequisites below the node.
   // Leaves (deepest dependents) sit on lower layers rendered further down.
@@ -176,39 +182,133 @@ export function buildGraphLayout(
 
   for (const node of nodes) resolveDepth(node.id);
 
-  const layers = new Map<number, KnowledgeGraphNode[]>();
-  for (const node of nodes) {
-    const level = depth.get(node.id) ?? 0;
-    const list = layers.get(level) ?? [];
-    list.push(node);
-    layers.set(level, list);
-  }
-
   const sortNodes = (list: KnowledgeGraphNode[]) =>
     [...list].sort((a, b) =>
       masteryOrder[a.mastery.status] - masteryOrder[b.mastery.status] ||
       a.title.localeCompare(b.title, 'zh-Hans-CN'),
     );
 
-  const layoutNodes: LayoutNode[] = [];
-  const sortedLevels = [...layers.keys()].sort((a, b) => b - a);
   const positionOf = new Map<string, {x: number; y: number; layer: number}>();
+  const parentOf = new Map(nodes.map(node => [node.id, node.id]));
+  const findParent = (id: string): string => {
+    let current = id;
+    for (;;) {
+      const parent = parentOf.get(current) ?? current;
+      if (parent === current) return current;
+      current = parent;
+    }
+  };
+  const unionNodes = (left: string, right: string) => {
+    const leftParent = findParent(left);
+    const rightParent = findParent(right);
+    if (leftParent !== rightParent) parentOf.set(rightParent, leftParent);
+  };
+  for (const edge of allEdges) unionNodes(edge.fromId, edge.toId);
 
-  const width = Math.max(
-    640,
-    PAD_X * 2 + Math.max(...sortedLevels.map(level => (layers.get(level)?.length ?? 0)), 1) * 220,
-  );
-  const height = PAD_Y * 2 + (sortedLevels.length > 0 ? sortedLevels.length - 1 : 0) * LAYER_GAP + 120;
+  const components = new Map<string, KnowledgeGraphNode[]>();
+  for (const node of nodes) {
+    const root = findParent(node.id);
+    const list = components.get(root) ?? [];
+    list.push(node);
+    components.set(root, list);
+  }
 
-  for (const level of sortedLevels) {
-    const list = sortNodes(layers.get(level) ?? []);
-    const rowY = PAD_Y + (sortedLevels.indexOf(level)) * LAYER_GAP;
-    const spacing = Math.min(240, (width - PAD_X * 2) / Math.max(list.length, 1));
-    const startX = width / 2 - ((list.length - 1) * spacing) / 2;
-    list.forEach((node, index) => {
-      positionOf.set(node.id, {x: startX + index * spacing, y: rowY, layer: level});
+  type ComponentBlock = {nodes: KnowledgeGraphNode[]; width: number; height: number; x: number; y: number};
+  const blocks: ComponentBlock[] = [];
+  for (const componentNodes of components.values()) {
+    const componentLayers = new Map<number, KnowledgeGraphNode[]>();
+    for (const node of componentNodes) {
+      const level = depth.get(node.id) ?? 0;
+      const list = componentLayers.get(level) ?? [];
+      list.push(node);
+      componentLayers.set(level, list);
+    }
+
+    const levels = [...componentLayers.keys()].sort((a, b) => a - b);
+    const levelColumns = Math.min(2, levels.length);
+    let blockColumnCount = 1;
+    let localY = 0;
+    for (let band = 0; band < Math.ceil(levels.length / levelColumns); band += 1) {
+      const bandLevels = levels.slice(band * levelColumns, (band + 1) * levelColumns);
+      let bandRows = 1;
+      let columnCursor = 0;
+      for (const level of bandLevels) {
+        const list = sortNodes(componentLayers.get(level) ?? []);
+        const stackColumns = Math.max(1, Math.ceil(Math.sqrt(list.length)));
+        const rowsPerStack = Math.max(1, Math.ceil(list.length / stackColumns));
+        const columnStart = columnCursor;
+        columnCursor += stackColumns;
+        bandRows = Math.max(bandRows, rowsPerStack);
+        list.forEach((node, index) => {
+          positionOf.set(node.id, {
+            x: (columnStart + Math.floor(index / rowsPerStack)) * (NODE_WIDTH + NODE_GAP_X) + NODE_WIDTH / 2,
+            y: localY + (index % rowsPerStack) * (NODE_HEIGHT + ROW_GAP) + NODE_HEIGHT / 2,
+            layer: level,
+          });
+        });
+      }
+      blockColumnCount = Math.max(blockColumnCount, columnCursor);
+      localY += bandRows * NODE_HEIGHT + Math.max(0, bandRows - 1) * ROW_GAP + LAYER_GAP;
+    }
+    const columnWidth = blockColumnCount * NODE_WIDTH + Math.max(0, blockColumnCount - 1) * NODE_GAP_X;
+
+    blocks.push({
+      nodes: componentNodes,
+      width: columnWidth,
+      height: Math.max(NODE_HEIGHT, localY - LAYER_GAP),
+      x: 0,
+      y: 0,
     });
   }
+
+  blocks.sort((a, b) =>
+    b.nodes.length - a.nodes.length ||
+    (a.nodes[0]?.title ?? '').localeCompare(b.nodes[0]?.title ?? '', 'zh-Hans-CN'),
+  );
+  const blockColumns = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(blocks.length))));
+  const columnWidths = Array.from({length: blockColumns}, (_, column) =>
+    Math.max(...blocks.filter((_, index) => index % blockColumns === column).map(block => block.width), 0),
+  );
+  const columnOffsets: number[] = [];
+  let rawX = 0;
+  for (let column = 0; column < blockColumns; column += 1) {
+    columnOffsets.push(rawX);
+    rawX += columnWidths[column] ?? 0;
+    if (column < blockColumns - 1) rawX += COMPONENT_GAP_X;
+  }
+
+  const rowCount = Math.ceil(blocks.length / blockColumns);
+  const rowExtent = (row: number) =>
+    Math.max(...blocks.filter((_, index) => Math.floor(index / blockColumns) === row).map(block => block.height), 0);
+  const rowOffsets: number[] = [];
+  let rawY = 0;
+  for (let row = 0; row < rowCount; row += 1) {
+    rowOffsets.push(rawY);
+    rawY += rowExtent(row);
+    if (row < rowCount - 1) rawY += COMPONENT_GAP_Y;
+  }
+
+  blocks.forEach((block, index) => {
+    block.x = columnOffsets[index % blockColumns] ?? 0;
+    block.y = rowOffsets[Math.floor(index / blockColumns)] ?? 0;
+  });
+  for (const block of blocks) {
+    for (const node of block.nodes) {
+      const position = positionOf.get(node.id);
+      if (position) positionOf.set(node.id, {...position, x: block.x + position.x, y: block.y + position.y});
+    }
+  }
+
+  const width = Math.max(760, rawX + PAD_X * 2);
+  const height = Math.max(480, rawY + PAD_Y * 2);
+  const centerX = (width - rawX) / 2;
+  const centerY = (height - rawY) / 2;
+  for (const node of nodes) {
+    const position = positionOf.get(node.id);
+    if (position) positionOf.set(node.id, {...position, x: centerX + position.x, y: centerY + position.y});
+  }
+
+  const layoutNodes: LayoutNode[] = [];
 
   for (const node of nodes) {
     const position = positionOf.get(node.id);
@@ -217,7 +317,7 @@ export function buildGraphLayout(
 
   return {
     nodes: layoutNodes,
-    edges: [...hierarchyEdges, ...looseEdges, ...pendingEdges],
+    edges: allEdges,
     width,
     height,
   };
