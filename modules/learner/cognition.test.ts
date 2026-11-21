@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { ref as factRef } from './test/facts.ts';
-import { admitExtraction, extractionDecision, hypothesisView,
-  projectExperience, type ExtractionActivity, type HypothesisEvidence } from './cognition.ts';
+import { admitExtraction, extractionDecision, hypothesisView, projectExperience,
+  type ExtractionActivity, type HypothesisEvidence } from './cognition.ts';
 
 const ref = (n: number) => factRef(n, '1');
 const at = (n: number) => new Date(n * 1000).toISOString();
@@ -21,9 +21,9 @@ it('gates activity extraction by permission, clock, feedback and intent while re
     conceptIds: ['k'], occurredAt: at(1), origin: 'chronicle'};
   const existing = [{ref: ref(2), conceptIds: ['k'], stage: 'supported' as const, sticky: false}];
   const funded = {track: 'after-activity' as const, explicitLearnerIntent: false, afterClock: '2', clockThrough: '3', budgetAvailable: true};
-  const host = {...funded, budgetAvailable: false,
-    attempt: {source: ref(1), independent: true, allCorrect: true, novelty: 'transfer' as const, testedHypotheses: [ref(2).id],
-      intervention: ref(3), firstUnfamiliarPostLessonTransfer: true, mastery: 0.87}};
+  const host = {...funded, budgetAvailable: false, attempt: {source: ref(1), independent: true, allCorrect: true,
+    novelty: 'transfer' as const, testedHypotheses: [ref(2).id], intervention: ref(3),
+    firstUnfamiliarPostLessonTransfer: true, mastery: 0.87}};
   expect(extractionDecision(source, host, existing)).toMatchObject({model: 'none', contradictions: [{hypothesis: ref(2)}],
     evaluateLift: {posttest: ref(1)}, bridge: {conceptIds: ['k']}});
   for (const change of [{purpose: ['storage']}, {origin: 'consolidation' as const}, {admittedAt: '4'}])

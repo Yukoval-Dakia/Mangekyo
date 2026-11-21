@@ -11,8 +11,7 @@ const at = (day: number) => new Date(day * 86_400_000).toISOString();
 const asOf = (valid: number, known = valid) => ({validAt: at(valid), knownAt: at(known)});
 const revisionTime: BeliefTime = {validFrom: at(1), recordedAt: at(2), supersededAt: null, validTo: null};
 const fact = (id: number, type: string, value?: FactSnapshot['value']) => snapshot(use(id, type), value);
-const project = (snapshot: FactSnapshot, time = revisionTime) =>
-  projectBelief(snapshot, understandingProjection(snapshot)!, time)!;
+const project = (snapshot: FactSnapshot, time = revisionTime) => projectBelief(snapshot, understandingProjection(snapshot)!, time)!;
 
 it('keeps real preference and claim values stable and reads remembered, corrected and forgotten revisions', () => {
   const row = project(fact(10, 'learner.preference', {text: '先画图', scope: {subject: '物理'}}));
@@ -30,10 +29,8 @@ it('keeps real preference and claim values stable and reads remembered, correcte
   expect(shortened.validTo).toBe(at(6));
   const old = project(original, {...revisionTime, supersededAt: shortened.recordedAt}).value;
   const history = (valid: number, known: number) => beliefsAsOf([old, shortened], asOf(valid, known));
-  for (const [valid, known, expected] of [
-    [3, 1, []], [3, 3, [{...old, category: 'directive'}]], [3, 4, [shortened]],
-    [8, 3, []], [6, 3, [old]], [6, 4, []],
-  ] as const) expect(history(valid, known)).toEqual(expected);
+  for (const [valid, known, expected] of [[3, 1, []], [3, 3, [{...old, category: 'directive'}]], [3, 4, [shortened]],
+    [8, 3, []], [6, 3, [old]], [6, 4, []]] as const) expect(history(valid, known)).toEqual(expected);
   const corrected = project(fact(14, 'companion.claim', {...claim, action: 'correct', origin: 'learner',
     evidence_refs: [], supersedes: ref(12), text: '今天只做一题'}), {...revisionTime, recordedAt: shortened.recordedAt}).value;
   expect(beliefsAsOf([corrected], asOf(3, 4))).toMatchObject([{category: 'directive', text: '今天只做一题'}]);
@@ -70,8 +67,7 @@ it('co-projects assertion formats, preserving both conflicting witnesses and tem
     links: [{kind: 'source', id: ref(6).id}], evidence: [{...ref(6), itemId: 'Q1', direction: 'support'}]}));
   const rows = [extracted, manual].flatMap(({ref, value}) => value.category === 'hypothesis' ? [{ref, value}] : []);
   const edge = {...revisionTime, validFrom: at(3), recordedAt: at(4), from_ref: extracted.ref, to_ref: manual.ref,
-    basis: [use(7, 'activity.workbookAttempt')],
-    kind: 'contradicts' as const, author: 'companion' as const, confidence: null, sticky: false};
+    basis: [use(7, 'activity.workbookAttempt')], kind: 'contradicts' as const, author: 'companion' as const, confidence: null, sticky: false};
   expect(rows.map(row => row.value.kind)).toEqual(['observation', 'observation']);
   const disputed = hypothesesAsOf(rows, [edge], asOf(3, 4), edge.basis);
   expect(disputed.hypotheses.map(row => [row.ref.id, row.value.status, row.value.evidence_refs[0].id]))
@@ -87,8 +83,8 @@ it('separates trust from attestation and outcome, excluding consolidation even w
     ref: ref(n), occurredAt: at(1), recordedAt: at(2), origin: 'chronicle', source,
     direction: 'supports', assessment: 'independent-transfer',
   });
-  const events = [item(1, 'learner-quote'), item(2, 'learner-quote'), item(3, 'agent-note'),
-    item(4, 'agent-inference'), item(5, 'first-hand-tool'), {...item(6, 'business-event'), origin: 'consolidation' as const}];
+  const events = [item(1, 'learner-quote'), item(2, 'learner-quote'), item(3, 'agent-note'), item(4, 'agent-inference'),
+    item(5, 'first-hand-tool'), {...item(6, 'business-event'), origin: 'consolidation' as const}];
   const review = hypothesisView(events, asOf(1, 2));
   expect(review.confidence).toEqual({statement: 'directly-attested', fact: 'tentative', outcome: 'unknown'});
   expect(review.evidence.map(event => event.ref.id)).not.toContain(ref(6).id);
@@ -114,14 +110,13 @@ it('requires two reopened independent submissions in distinct disciplines for a 
     learner, purpose: 'teaching', reopen: async ({id}) => facts.find(row => row.ref.id === id),
     observe: async ({ref: submission, accessEpoch}, citation) => ({discipline: citation.anchor === 'first' ? physics : secondSubject, basis: [physics],
       slice: activityEvidenceSlice(accessEpoch, at(submission.id === ref(6).id ? 4 : 3), undefined, [{submission,
-        occurredAt: at(submission.id === ref(6).id ? 4 : 2), concepts: [], novelty: 'transfer',
-        helpLevel: submission.id === ref(1).id ? 'independent' : secondHelp, result: 'incorrect'}])}),
+        occurredAt: at(submission.id === ref(6).id ? 4 : 2), concepts: [], novelty: 'transfer', helpLevel: submission.id === ref(1).id ? 'independent' : secondHelp, result: 'incorrect'}])}),
   });
   const read = reader();
   const count = async (second = ref(2), opened: MetacognitiveRead | null = read, when = asOf(3), includeLater = false) =>
     (await hypothesesAsOf<unknown, unknown>([{ref: ref(5), value: {...revisionTime, category: 'hypothesis', kind: 'metacognitive_habit',
-      status: 'tentative', sticky: false, scope: {}, text: '漏读限制词',
-      evidence_refs: [{...ref(1), direction: 'support', anchor: 'first'}, {...second, direction: 'support'},
+      status: 'tentative', sticky: false, scope: {}, text: '漏读限制词', evidence_refs: [
+        {...ref(1), direction: 'support', anchor: 'first'}, {...second, direction: 'support'},
         ...(includeLater ? [{...ref(6), direction: 'support'}] : [])],
     }}], [], when, [], opened ?? undefined)).hypotheses.length;
   expect(await count()).toBe(1);

@@ -15,16 +15,12 @@ const now = '2026-11-21T00:00:00.000Z';
 const submission = {id: 'a' as FactId, rev};
 const paper = {id: 'p' as FactId, rev};
 const answer = (confidence: number, result: 'correct' | 'incorrect' = 'correct') => ({
-  observation: {submission, admittedAt: tick, submittedAt: now, exposure: {kind: 'independent'},
-    result, confidence} satisfies RetentionObservation,
+  observation: {submission, admittedAt: tick, submittedAt: now, exposure: {kind: 'independent'}, result, confidence} satisfies RetentionObservation,
   event: {ref: submission.id, rev, occurred_at: now, item_novelty: 'same', concept_ids: [],
-    help_level: 'independent', outcome: result, confidence, claim_ids: []} satisfies EvidenceEventV1,
-});
+    help_level: 'independent', outcome: result, confidence, claim_ids: []} satisfies EvidenceEventV1 });
 const {observation, event} = answer(0.35);
-const input: RetentionInput = {
-  target: {activity: 'frozen-workbook-item', paper, itemId: 'q', condition: 'same-item', gradingVersion: '1'},
-  window: {requestedAt: now, through: now}, observedThrough: tick, observations: [observation],
-};
+const input: RetentionInput = { target: {activity: 'frozen-workbook-item', paper, itemId: 'q', condition: 'same-item', gradingVersion: '1'},
+  window: {requestedAt: now, through: now}, observedThrough: tick, observations: [observation] };
 const frozen = {...input, canonicalEvidence: retentionSlice(input)};
 const slice = (...events: EvidenceEventV1[]) => ({...frozen.canonicalEvidence, events});
 
@@ -74,9 +70,9 @@ it('uses one exact low-confidence correct answer for retention discount and the 
 
   const source = (ref: typeof paper) => snapshot({...use(1, 'example'), ...ref, accessEpoch: tick});
   const facts = {papers: [source(paper)], submissions: [source(submission)]};
-  const project = (sources = facts) => projectRetentionRead({
-    id: 'forecast', key: 'key', effectiveTick: tick, value: {kind: 'value', value: guess},
-  }, {id: 'forecast', value: guess}, sources, '/retention', (fact, itemId) => ({ref: fact.ref.id, rev: fact.ref.rev, itemId}));
+  const project = (sources = facts) => projectRetentionRead({ id: 'forecast', key: 'key', effectiveTick: tick,
+    value: {kind: 'value', value: guess} }, {id: 'forecast', value: guess}, sources, '/retention',
+    (fact, itemId) => ({ref: fact.ref.id, rev: fact.ref.rev, itemId}));
   expect(project()).toMatchObject({flash_check_priority: 'lucky-guess-check',
     evidence: [{ref: 'p', rev, itemId: 'q'}, {ref: 'a', rev, itemId: 'q'}]});
   for (const denied of [{...facts, submissions: []}, {...facts, papers: [source({...paper, rev: 1 as Revision})]}])
