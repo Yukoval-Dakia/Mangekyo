@@ -1,9 +1,10 @@
 import { BankAttachment, BankFeedback, BankFields, BankOrigin, bankSubmission } from './bank-question';
 import { fixedLink } from './concept-reading';
 import { useDraftWatermark } from './draft-watermark';
+import { observedDeletionWatermark, subscribeDeletionWatermark } from './deletion-watermark';
 import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import type {
   WorkbookDetail as BaseDetail,
   WorkbookQuestionView as BaseQuestion,
@@ -831,6 +832,7 @@ function durationLabel(ms: number) {
 
 function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
   const watermark = useDraftWatermark();
+  const deletionGeneration = useSyncExternalStore(subscribeDeletionWatermark, observedDeletionWatermark);
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
   const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
@@ -847,15 +849,15 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     const controller = new AbortController();
     setView(null);
     setError('');
-    api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}`, { signal: controller.signal })
+    api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}`, { signal: controller.signal, cache: 'no-store' })
       .then((result) => {
-        if (!controller.signal.aborted) setView(result);
+        if (!controller.signal.aborted && observedDeletionWatermark() === deletionGeneration) setView(result);
       })
       .catch(() => {
         if (!controller.signal.aborted) setError('试卷载入失败。请重试。');
       });
     return () => controller.abort();
-  }, [paperId, reload]);
+  }, [paperId, reload, deletionGeneration]);
 
   useEffect(() => {
     if (!view || !draft) return;
@@ -1214,7 +1216,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </button>
               </div>
             </div>
-            <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} />
+            <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id}
+              onSaved={() => setReload(n => n + 1)} />
             {solutions.error && <p role="alert">{solutions.error} <button onClick={solutions.retry}>重试</button></p>}
             {historical.error && <p role="alert">{historical.error} <button onClick={historical.retry}>重试</button></p>}
             {!historical.allowed && !historical.error && <p role="status">正在确认历史题面展示许可…</p>}

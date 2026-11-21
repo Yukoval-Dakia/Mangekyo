@@ -12,11 +12,12 @@ type Source = { paperTitle: string; questionNumber: number; prompt: string; feed
 
 const researchSettingsChanged = 'research-settings-changed';
 
-function ResearchChoice({ path, field, label, help, children }: {
+function ResearchChoice({ path, field, label, help, children, onSaved }: {
   path: string;
   field: 'enabled' | 'allowed';
   label: string;
   help: string;
+  onSaved?: () => void;
   children?: (allowed: boolean, revision: number, refresh: () => void) => ReactNode;
 }) {
   const [receipt, setReceipt] = useState<Receipt>();
@@ -52,6 +53,7 @@ function ResearchChoice({ path, field, label, help, children }: {
         revision: receipt.revision, requestId: requestId(), [field]: choice, ...(field === 'enabled' && {scoutBudget: null}),
       } }));
       setChoice(undefined);
+      onSaved?.();
     } catch (error) {
       setMessage(error instanceof ApiError && error.status === 409
         ? '版本已更新。已保留你的选择，请核对当前状态。'
@@ -184,9 +186,9 @@ function Worksheet({ path, refresh }: { path: string; refresh: () => void }) {
   </div>;
 }
 
-export function AttemptResearch({ paperId, attemptId }: { paperId: string; attemptId: string }) {
+export function AttemptResearch({ paperId, attemptId, onSaved }: { paperId: string; attemptId: string; onSaved?: () => void }) {
   const path = '/papers/' + encodeURIComponent(paperId) + '/attempts/' + encodeURIComponent(attemptId) + '/research';
-  return <ResearchChoice path={path + '-permission'} field="allowed" label="向后台教研开放本次作答"
+  return <ResearchChoice path={path + '-permission'} field="allowed" label="向后台教研开放本次作答" onSaved={onSaved}
     help="开放后，后台教研可读取这份原答。如已另行授权付费前哨，该服务可收到卷名、提交时间与错题摘要。收回后，这次作答的复习单及其来源将不再可读。">
     {(allowed, revision, refresh) => allowed && <Worksheet key={revision} path={path} refresh={refresh} />}
   </ResearchChoice>;

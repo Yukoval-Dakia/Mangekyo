@@ -1,18 +1,9 @@
 import {useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode} from 'react';
 import {remember, remembered} from './api';
-import {bindDeletionWatermark, latestKey, validWatermark} from './deletion-watermark';
-
-function watchWatermark(change: () => void) {
-  window.addEventListener('storage', change);
-  window.addEventListener(latestKey, change);
-  return () => {
-    window.removeEventListener('storage', change);
-    window.removeEventListener(latestKey, change);
-  };
-}
+import {bindDeletionWatermark, latestKey, subscribeDeletionWatermark, validWatermark} from './deletion-watermark';
 
 export function useCurrentDraft(requestId?: string) {
-  return useSyncExternalStore(watchWatermark, () => {
+  return useSyncExternalStore(subscribeDeletionWatermark, () => {
     try {
       const current = localStorage.getItem(latestKey);
       return !!requestId && validWatermark(current) && bindDeletionWatermark(requestId) === current;
