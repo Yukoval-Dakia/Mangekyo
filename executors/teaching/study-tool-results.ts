@@ -57,12 +57,16 @@ export function studyToolResults() {
           ...(tool === 'read_context' && {delivery:{step, output, start:0, end:output.length}})};
       }
       const handle = store(tool === 'run_calculation' ? 'calc' : 'res', step, output);
-      const {data, warnings} = JSON.parse(output);
-      const {status, ref, rev, undo_token, proposal_id, cursor} = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+      let parsed: unknown;
+      try { parsed = JSON.parse(output); } catch { /* Non-JSON output still archives under its handle. */ }
+      const {data, warnings} = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as {data?: unknown; warnings?: unknown} : {};
+      const {status, ref, rev, undo_token, proposal_id, cursor} = data && typeof data === 'object' && !Array.isArray(data)
+        ? data as Record<string, unknown> : {};
       const header = {status, ref, rev, undo_token, proposal_id, cursor};
       const head = JSON.stringify(header).length <= 200 ? {head:header} : {};
       const preview = JSON.stringify({ok:true, archived:true, tool, handle, bytes:Buffer.byteLength(output),
-        ...head, ...(warnings?.length && {warning_count:warnings.length}), ...metadata});
+        ...head, ...(Array.isArray(warnings) && warnings.length && {warning_count:warnings.length}), ...metadata});
       return {content:preview, preview};
     },
     handle(handle: string) {

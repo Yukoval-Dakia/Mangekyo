@@ -67,7 +67,7 @@ export function studyToolDiscovery(remotes: ReadonlyMap<string, RemoteTool>, loc
       });
       const hasExact = ranked.some(match => match.exact);
       const matches = ranked.filter(match => hasExact ? match.exact : match.score > 0)
-        .sort((a, b) => b.score - a.score || (a.entry.descriptor.name < b.entry.descriptor.name ? -1 : 1))
+        .sort((a, b) => b.score - a.score || (a.entry.descriptor.name < b.entry.descriptor.name ? -1 : a.entry.descriptor.name > b.entry.descriptor.name ? 1 : 0))
         .slice(0, maximumMatches);
       const items = matches.map(({entry, exact, name, description}) => {
         const {descriptor, definition} = entry;
@@ -80,9 +80,7 @@ export function studyToolDiscovery(remotes: ReadonlyMap<string, RemoteTool>, loc
         summary: '查找工具 · ' + (items.length ? items.length + ' 项匹配' : '无匹配')};
     },
     takeDefinitions() {
-      const definitions = local.length
-        ? [...pending].sort(([a], [b]) => a < b ? -1 : 1).map(([, definition]) => definition)
-        : [...pending.values()];
+      const definitions = [...pending].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, definition]) => definition);
       pending.clear();
       return definitions;
     },

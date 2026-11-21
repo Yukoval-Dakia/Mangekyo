@@ -1,5 +1,5 @@
 import { cancellationSignal, heartbeat } from '@temporalio/activity';
-import { ApplicationFailure } from '@temporalio/common';
+import { ApplicationFailure, CancelledFailure } from '@temporalio/common';
 import { coordinatorRequest, isCoordinatorRequest, type CoordinatorDecision, type CoordinatorRequest } from './coordinator.ts';
 
 export type AdvanceCoordinator = (request: CoordinatorRequest, signal: AbortSignal) => Promise<CoordinatorDecision>;
@@ -35,6 +35,11 @@ export function createCoordinatorActivity(advance: AdvanceCoordinator) {
     try {
       decision = projectDecision(await advance(coordinatorRequest(coordinatorRef, wakeRef), cancellationSignal()));
     } catch {
+      if (cancellationSignal().aborted) {
+        const cancellation = new CancelledFailure('Coordinator activity cancelled');
+        delete cancellation.stack;
+        throw cancellation;
+      }
       throw coordinatorFailure('CoordinatorAdvanceFailed', false);
     } finally {
       clearInterval(timer);

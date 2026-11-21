@@ -1,5 +1,8 @@
-import {expect, it} from 'vitest';
-import {createStudyTools} from './agent-tools.ts';
+import {expect, it, vi} from 'vitest';
+import {createStudyTools, readPythonEnvelope} from './agent-tools.ts';
+import {createLearningTurn} from './learning-turn.ts';
+import {studyToolDiscovery} from './study-tool-discovery.ts';
+import {studyToolResults} from './study-tool-results.ts';
 import {watchFetch} from './test/chat.ts';
 import {hasDockerImage} from './test/docker.ts';
 
@@ -89,3 +92,27 @@ it.skipIf(!hasDockerImage('python:3.12-alpine', {timeout: 3_000}))(
     expect(output).toContain('files: data.txt, result.txt');
     expect(await tools.execute('read_file', {name: 'result.txt'})).toBe('42');
   });
+
+it('handles non-JSON large tool outputs, extra open_tool_result args, empty Exa body, and deterministic MCP discovery', async () => {
+  const results = studyToolResults();
+  const archived = results.publishLearning('run_calculation', 1, 'plain '.repeat(500), []);
+  expect(JSON.parse(archived.content)).toMatchObject({ ok: true, archived: true, handle: expect.stringMatching(/^@calc_/) });
+  expect(JSON.parse(results.publishLearning('read_context', 2, 'null'.padEnd(2100, ' '), []).content)).toMatchObject({ ok: true, archived: true });
+  const emptyDef = (name: string) => ({ type: 'function', function: { name, description: name, parameters: { type: 'object', properties: {} } } });
+  const turn = createLearningTurn({ definitions: Object.fromEntries(['search_learning', 'open_learning', 'read_context', 'save_page', 'save_question', 'save_edge', 'manage_activity'].map(toolName => [toolName, emptyDef(toolName)])) as never,
+    execute: vi.fn(), writeKeys: () => [], preparePython: vi.fn(), authorizeHandles: async () => ({ ok: true }), writes: () => [] }, results, vi.fn(), 'm');
+  const { handle } = JSON.parse(archived.content);
+  const badOpen = await turn.execute('open_tool_result', { handle, offset: 10 }, 3, Promise.resolve());
+  expect(JSON.parse(badOpen!.content)).toMatchObject({ ok: false, code: 'invalid_args', next: { tool: 'find_tools', args: { query: 'open_tool_result' } } });
+  watchFetch().mockResolvedValueOnce(new Response('', { headers: { 'content-type': 'application/json' } }));
+  expect(await createStudyTools({ allowSearch: true }).execute('exa_search', { query: 'test' })).toMatchObject({ ok: false, code: 'execution_failed' });
+  watchFetch().mockResolvedValueOnce(new Response('data: {"id":1,"result":{"content":[{"type":"text","text":"hit"}]}}\ndata: [DONE]\n', { headers: { 'content-type': 'text/event-stream' } }));
+  expect(await createStudyTools({ allowSearch: true }).execute('exa_search', { query: 'test' })).toBe('hit');
+  const envelopePayload = JSON.stringify({ status: 'ok', stdout: 'seen __MANGEKYO_RESULT__ inside output', stderr: '', files: {}, images: {} });
+  expect(readPythonEnvelope(`\n__MANGEKYO_RESULT__${envelopePayload}\n`)).toMatchObject({ status: 'ok', stdout: 'seen __MANGEKYO_RESULT__ inside output' });
+  const remote = (name: string) => ({ server: { id: 's', url: 'https://s.test/mcp', allowedTools: [name] }, tool: { name, description: 'desc ' + name, inputSchema: { type: 'object' } }, stateful: false });
+  const discovery = studyToolDiscovery(new Map([['mcp_z_000000000001', remote('zeta')], ['mcp_a_000000000002', remote('alpha')]]));
+  discovery.find('zeta');
+  discovery.find('alpha');
+  expect(discovery.takeDefinitions().map(def => def.function.name)).toEqual(['mcp_a_000000000002', 'mcp_z_000000000001']);
+});
