@@ -167,9 +167,11 @@ it('golden run_calculation prepares the declared read and replays the stored cal
   expect(prepare).toHaveBeenCalledExactlyOnceWith(reads,1);
 });
 
-it.skipIf(!hasDockerImage('mangekyo-calculation:1'))('calculates with the real read-only SDK and attaches a PNG by handle', async () => {
+it.skipIf(!hasDockerImage('mangekyo-calculation:1'))('uses Python handles for a chart and a short radar result', async () => {
+  const radar = {in_flight_todos:{state:'available',item:{kind:'personalized_extractor',state:'ready'}}};
   let handle = '';
   const host = binding(async (name, _, {handles}) => {
+    if (name === 'read_context') return {ok:true,data:radar};
     expect(name).toBe('save_page');
     expect(handles[handle]).toMatchObject({step:1, mediaType:'image/png'});
     expect(Buffer.from(handles[handle]!.value, 'base64').subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
@@ -205,6 +207,14 @@ plt.savefig("chart.png")
       expect(handle).toMatch(/^@calc_/);
       return [['save_page', {ref:'page',patch:[{op:'insert_after',target:'intro',artifact:handle}]}]];
     }
+    if (round === 2) return [['read_context', {intent:'radar'}]];
+    const result = JSON.parse(body.messages.at(-1)!.content);
+    if (round === 3) {
+      expect(result).toEqual({ok:true,data:radar,handle:expect.stringMatching(/^@res_/)});
+      const code = "import json\nprint(json.loads(next(iter(inputs.values())))['data']['in_flight_todos']['item']['state'])";
+      return [['run_calculation', {inputs:[result.handle], code}]];
+    }
+    expect(result.data.text.trim()).toBe('ready');
     return undefined;
   });
   await turn(host);

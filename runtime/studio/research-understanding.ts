@@ -12,6 +12,7 @@ import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { cancelWork, failWork, finishWork, readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { runEffect } from '../../kernel/src/work/effects.ts';
 import { completeTodo, endDispatchedTodo, readTodo, type TodoInput, type TodoSpec } from '../../kernel/src/work/todos.ts';
+import { readActiveTodos } from '../../kernel/src/work/todo-reads.ts';
 import { admittedActivityFragments, activityEvidenceTypes, bindLinkedCitationRead, citeQuestion, hasLinkedAttempt, questionOrigin, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';
 import { claimType, ClaimInputError } from '../../modules/companion/claim.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
@@ -21,13 +22,14 @@ import {
 } from '../../modules/companion/understanding.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import { claimUndoToken, claimWitness } from './memory-claims.ts';
-import { turnAllowsBackgroundUnderstanding } from '../../modules/activity/values.ts';
+import { studyTurn, turnAllowsBackgroundUnderstanding } from '../../modules/activity/values.ts';
 import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
-import { slotType, stableId, studioLearner } from './identity.ts';
-import { whenAvailable } from './research-sources.ts';
+import { notionModelRecipient, purpose, slotType, stableId, studioLearner } from './identity.ts';
+import { currentResearchSettings, whenAvailable } from './research-sources.ts';
+import { workspaceGrantChecker } from './harness.ts';
 import { companionTeachingMethods, completedCompanionTurns } from './research-foreground.ts';
 import { textSlice } from './reading.ts';
 import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
@@ -114,7 +116,7 @@ async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpos
   const fragments = activity.quoteOnly ? activity.fragments.map(fragment => ({
     ...fragment, text: textSlice(fragment.text, 0, 1200).content,
   })) : activity.fragments;
-  return {...activity, ref, basis, basisDigest, fragments, paper: opened?.paper, ...provenance};
+  return {...activity, fact, ref, basis, basisDigest, fragments, paper: opened?.paper, ...provenance};
 }
 
 export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], purpose?: string,
@@ -165,16 +167,41 @@ async function paidSource(tx: ReadTransaction, id: string) {
   return fact && paidExtractionRecipient(fact) && (fact.type !== workbookAttemptType || await independentScoutSource(tx, fact));
 }
 
-export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec, recipient?: WorkspaceSourceRecipient, budgetCap = 0) {
+export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec, recipient?: WorkspaceSourceRecipient, budgetCap = 0,
+  callerPurpose = researchPurpose) {
   const {id, revision, accessEpoch} = spec.sourceFactRev;
   const item = spec.sourceFactRev.anchor;
   if (spec.workerProfile !== extractorProfile || spec.goal !== extractionGoal || spec.budgetCap !== budgetCap || budgetCap && !await paidSource(tx, id) ||
       spec.autonomyTier !== 2 || spec.expiresAtMs <= Date.now()) return null;
-  const source = await openUnderstandingActivity(tx, id, researchPurpose, recipient, item);
+  const source = await openUnderstandingActivity(tx, id, callerPurpose, recipient, item);
   if (source?.ref.rev !== revision || source.ref.accessEpoch !== accessEpoch || spec.dedupKey !== extractionKey(id, source.quoteOnly ? 1 : revision, item)) return null;
   if (source.kind === 'conversation' && (!source.quoteOnly ||
       !(await tx.query(`${completedCompanionTurns} AND s.slot_key=$4`, [tx.learner, slotType, companionTeachingMethods, id])).rowCount)) return null;
   return source;
+}
+
+export async function readRadarTodo(tx: ReadTransaction, maySend: WorkspaceSourceRecipient, id?: string) {
+  const recipient = maySend.notionRecipientId;
+  if (!recipient) return;
+  const settings = await currentResearchSettings(tx);
+  if (!settings?.enabled) return;
+  const grantCurrent = workspaceGrantChecker();
+  const teachingRecipient: WorkspaceSourceRecipient = fact => {
+    if (fact.type !== turnEvidenceType || !fact.purpose.includes(purpose) || !maySend(fact)) return false;
+    const turn = studyTurn(fact.value);
+    return Boolean(turn.accountRevision && turn.providerId && turn.protocol && turn.workspaceRevision &&
+      notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision) === recipient);
+  };
+  for await (const {spec, ...work} of readActiveTodos(tx, extractorProfile, id)) {
+    const source = spec.sourceFactRev;
+    if (spec.settingsRevision !== settings.revision || spec.trigger.kind !== 'immediate' ||
+        spec.refs.length || source.anchor || spec.parentTodoId) continue;
+    const eligible = await eligibleExtraction(tx, spec, teachingRecipient, 0, purpose);
+    if (eligible?.kind !== 'conversation' || !await grantCurrent(studyTurn(eligible.fact.value))) continue;
+    return {fact:eligible.fact, basis:{...work, source, settingsRev:settings.revision, settingsEpoch:settings.accessEpoch, recipient},
+      view:{state:'available', item:{kind:extractorProfile, state:work.state}}};
+  }
+  return undefined;
 }
 
 async function existingUnderstandings(tx: ReadTransaction, sourceId: string, recipient?: WorkspaceSourceRecipient) {

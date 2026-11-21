@@ -129,9 +129,10 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     }
     const { rows: [clock] } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [learner]);
     const manifest = parseManifest({ version: 1, learner, purpose, gatherTick: clock?.tick, inputs: [...inputs.values()] });
-    if (!await teachingMemoryBasis(tx, manifest, slotKey, maySend) || !await questionReceiptsCurrent(tx,slotKey,use))
+    const evidence = await teachingMemoryBasis(tx, manifest, slotKey, maySend);
+    if (!evidence || !await questionReceiptsCurrent(tx,slotKey,use))
       throw new ChangedEvidence();
-    return {manifest, pages};
+    return {manifest, pages, usesRadarTodo:evidence.usesRadarTodo};
   }
   const validInputs = async (tx: ReadTransaction) => (await revalidateInputs(tx)).manifest;
   async function validWorkInputs(tx: ReadTransaction, use?: 'publish' | 'dispatch') {
@@ -177,7 +178,6 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (submission.workspaceRevision) {
       maySend.notionRecipientId = notionModelRecipient(settings.activeProviderId, settings.baseUrl, settings.protocol, settings.model, submission.workspaceRevision);
     }
-<<<<<<< HEAD
     const onProgress = createTurnProgressHandler({
       learningV1,
       recordReplyStarted: async () => {

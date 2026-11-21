@@ -19,6 +19,29 @@ type FactInput = Extract<ManifestInput,{kind:'fact'}>;
 const invalid = (reason: string): ManifestVerdict => ({ kind: 'invalid', reason });
 const valid = (behind = false): ManifestVerdict => ({ kind: 'valid', freshness: behind ? 'behind' : 'current' });
 
+export type CurrentValueDerivation<Value> = {
+  id: string;
+  slot_type: string;
+  slot_key: string;
+  deriver: string;
+  effective_tick: Tick;
+  value: Outcome<Value>;
+  manifest: unknown;
+};
+
+export async function readCurrentValueDerivations<Value>(tx: ReadTransaction, type: string, limit: number, id?: string, key?: string) {
+  const {rows} = await tx.query<CurrentValueDerivation<Value>>(
+    `SELECT d.id, d.slot_type, d.slot_key, d.deriver, d.effective_tick::text, d.value, d.manifest
+     FROM slot_state s JOIN derivations d
+       ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.current_id)
+     WHERE s.learner_id=$1 AND s.slot_type=$2 AND ($3::text IS NULL OR d.id=$3)
+       AND ($5::text IS NULL OR d.slot_key=$5)
+       AND d.lifecycle='effective' AND d.selection_ended_tick IS NULL AND d.invalidated_tick IS NULL
+       AND NOT d.is_shadow AND d.effective_tick >= d.gather_tick AND d.value->>'kind'='value'
+     ORDER BY d.effective_tick DESC, d.id LIMIT $4`, [tx.learner, type, id ?? null, limit, key ?? null]);
+  return rows;
+}
+
 /** Caller supplies one snapshot or holds the learner write lock for the whole check. */
 export async function revalidateManifest(
   tx: ReadTransaction,
@@ -41,7 +64,8 @@ export async function revalidateManifest(
 }
 
 /** Enumerate the fact witnesses of a manifest already revalidated by the caller. */
-export async function manifestFactInputs(tx: ReadTransaction, inputs: Manifest['inputs']) {
+export async function manifestFactInputs(tx: ReadTransaction, inputs: Manifest['inputs'],
+  visitSlot?: (slotType: string, slotKey: string) => void) {
   const facts: Extract<Manifest['inputs'][number], {kind: 'fact'}>[] = [];
   const seen = new Set<string>();
   let pending = inputs;
@@ -49,8 +73,10 @@ export async function manifestFactInputs(tx: ReadTransaction, inputs: Manifest['
     const slots = new Set<string>();
     for (const input of pending) {
       if (input.kind === 'fact') facts.push(input);
-      else if (input.kind === 'slot') slots.add(input.derivationId);
-      else for (const member of input.members) slots.add(member.derivationId);
+      else for (const member of input.kind === 'slot' ? [input] : input.members) {
+        visitSlot?.(input.slotType, member.slotKey);
+        slots.add(member.derivationId);
+      }
     }
     const ids = [...slots].filter(id => !seen.has(id));
     if (!ids.length) break;
