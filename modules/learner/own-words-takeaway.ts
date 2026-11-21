@@ -1,5 +1,5 @@
 import type { BusWitness, CanonicalEvidenceSliceV1, FactSnapshot, Revision, Tick } from '@mangekyo/kernel';
-import { allows, evidenceTime, instant, scopedWitnessReader, type EvidenceReadScope } from './memory-evidence.ts';
+import { allows, evidenceTime, scopedWitnessReader, type EvidenceReadScope } from './memory-evidence.ts';
 
 export type OwnWordsTakeawayScope = EvidenceReadScope;
 
@@ -133,11 +133,12 @@ function displayMatches(displayFact: FactSnapshot | undefined, input: OwnWordsTa
   const step = fields(value?.step);
   const appliesToItem = Array.isArray(value?.alsoAppliesTo) &&
     value.alsoAppliesTo.some(row => fields(row)?.itemId === input.itemId);
+  const matchesItem = input.phase === 'during-attempt' ? item?.itemId === input.itemId : (item?.itemId === input.itemId || appliesToItem);
   return !!display && !!displayFact && displayFact.type === 'activity.helpExposure' && !!value && !!mount && !!issuance && !!item &&
     display.learnerRequested === true && display.itemId === input.itemId && !!display.activityId.trim() &&
     mount.activityId === display.activityId && issuance.id === display.issuance.id && issuance.rev === display.issuance.rev &&
     value.kind === 'displayed' && value.learnerRequested === true && sameRef(value.content, display.content) &&
-    (item.itemId === input.itemId || appliesToItem) &&
+    matchesItem &&
     ((step?.kind === 'hint' && step.order === 1) || (step?.kind === 'hint_l0' && (step.order === 0 || step.order === 1)));
 }
 
@@ -190,22 +191,26 @@ export async function projectOwnWordsTakeaway(read: OwnWordsTakeawayRead, input:
       occurredAt > evidenceTime(input.slice.as_of_at) ||
       (event.outcome !== 'correct' && event.outcome !== 'incorrect') || input.slice.omissions?.length)
     return { kind: 'hidden', reason: 'stale-evidence' };
-  if (input.takeawaySavedAt !== undefined && (input.takeawaySavedAt !== instant(input.takeawaySavedAt) ||
-      evidenceTime(input.takeawaySavedAt) > occurredAt)) return { kind: 'hidden', reason: 'unknown' };
+  const savedAt = input.takeawaySavedAt === undefined ? undefined : evidenceTime(input.takeawaySavedAt);
+  if ((savedAt !== undefined && (!Number.isFinite(savedAt) || savedAt > occurredAt)) ||
+      !(BigInt(input.takeawayAdmittedAt) < BigInt(input.submissionAdmittedAt)))
+    return { kind: 'hidden', reason: 'unknown' };
+  const allowPreSubmitDisplay = event.outcome === 'incorrect' && event.help_level === 'hinted';
   if (input.l0Display) {
     if (!validTick(input.l0Display.admittedAt) || !validTick(input.submissionAdmittedAt) ||
-        BigInt(input.l0Display.admittedAt) < BigInt(input.submissionAdmittedAt) ||
         BigInt(input.l0Display.admittedAt) > BigInt(watermark) ||
         !atWatermark(input.l0Display.display, watermark) || !atWatermark(input.l0Display.content, watermark))
-      return { kind: 'hidden', reason: input.l0Display.admittedAt && validTick(input.l0Display.admittedAt) ? 'stale-evidence' : 'unknown' };
+      return { kind: 'hidden', reason: 'unknown' };
+    const preSubmit = BigInt(input.l0Display.admittedAt) < BigInt(input.submissionAdmittedAt);
+    if (preSubmit && (!allowPreSubmitDisplay || BigInt(input.l0Display.admittedAt) < BigInt(input.takeawayAdmittedAt)))
+      return { kind: 'hidden', reason: 'stale-evidence' };
     if (!await openedDisplay(reader, scope, input)) return { kind: 'hidden', reason: 'unknown' };
   }
   if (!await canOpen([input.takeaway, input.concept, input.submission,
     ...(input.l0Display ? [input.l0Display.display, input.l0Display.content] : [])])) return { kind: 'hidden', reason: 'not-authorized' };
   const evidence = [input.takeaway, input.submission, input.concept] as const;
   if (event.outcome === 'correct') {
-    if (event.help_level !== 'independent' || input.exposureCoverage !== 'complete' ||
-        !(BigInt(input.takeawayAdmittedAt) < BigInt(input.submissionAdmittedAt)))
+    if (event.help_level !== 'independent' || input.exposureCoverage !== 'complete')
       return { kind: 'hidden', reason: 'unknown' };
     return { kind: 'positive-review', concept: input.concept.id, submittedAt: event.occurred_at,
       takeawayAdmittedAt: input.takeawayAdmittedAt, submissionAdmittedAt: input.submissionAdmittedAt,

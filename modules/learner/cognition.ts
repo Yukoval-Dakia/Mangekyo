@@ -7,6 +7,7 @@ export { projectTextbookMastery } from './textbook-mastery.ts';
 export { projectPrerequisiteRadar, type PrerequisiteRadarRequest, type PrerequisiteRadarSources, type PrerequisiteRadarChip } from './prerequisite-radar.ts';
 export * from './recurring-error-cluster.ts';
 export { projectPreSubmitPitfalls, type PreSubmitPitfall, type PreSubmitPitfallInput, type PreSubmitPitfallRead } from './pre-submit-pitfalls.ts';
+export { projectOwnWordsTakeaway, type L0TakeawayDisplay, type OwnWordsTakeawayDuringAttemptInput, type OwnWordsTakeawayInput, type OwnWordsTakeawayPostSubmitInput, type OwnWordsTakeawayRead, type OwnWordsTakeawayResult, type OwnWordsTakeawayScope } from './own-words-takeaway.ts';
 export * from './sentinel-evidence.ts';
 export { projectClassroomRadar, type ClassroomRadarSources } from './classroom-radar.ts';
 export { playbook, readVerifiedPlaybook, playbookType, understandingStatusType, type PlaybookStatus } from './playbook.ts';

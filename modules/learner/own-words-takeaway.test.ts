@@ -36,13 +36,15 @@ it('does not fail open when pre-submit display authorization was revoked', async
 });
 
 it('honors the extended L0 protocol and blocks future-epoch witnesses', async () => {
-  facts.set(displayW.id, snapshot(displayW, help({kind: 'hint_l0', order: 0}, 'q2', [{itemId: 'q1'}]), ['storage']));
-  await expect(projectOwnWordsTakeaway(read, during({l0Display: display}))).resolves.toMatchObject({kind: 'echo'});
-  for (const input of [during({takeaway: {...takeawayW, accessEpoch: '10' as Tick}}), during({concept: {...conceptW, accessEpoch: '10' as Tick}}), post({submission: {...submissionW, accessEpoch: '10' as Tick}}), post({l0Display: {...display, display: {...displayW, accessEpoch: '10' as Tick}}})])
+  const withDisplay = (data: ReturnType<typeof help>): OwnWordsTakeawayRead => ({...read, reopen: async (_s, row) => row.id === displayW.id ? snapshot(displayW, data, ['storage']) : facts.get(row.id)});
+  await expect(projectOwnWordsTakeaway(withDisplay(help({kind: 'hint_l0', order: 0}, 'q1')), during({l0Display: display}))).resolves.toMatchObject({kind: 'echo'});
+  await expect(projectOwnWordsTakeaway(withDisplay(help({kind: 'hint_l0', order: 0}, 'q2', [{itemId: 'q1'}])), during({l0Display: display}))).resolves.toEqual({kind: 'hidden', reason: 'not-displayed'});
+  for (const input of [during({takeaway: {...takeawayW, accessEpoch: '10' as Tick}}), during({concept: {...conceptW, accessEpoch: '10' as Tick}}), post({submission: {...submissionW, accessEpoch: '10' as Tick}}), post({l0Display: {...display, display: {...displayW, accessEpoch: '10' as Tick}}}), post({takeawaySavedAt: 'not-a-date'})])
     await expect(projectOwnWordsTakeaway(read, input)).resolves.toMatchObject({kind: 'hidden'});
 });
 
 it('labels error reviews with the actual independent or hinted basis', async () => {
   await expect(projectOwnWordsTakeaway(read, post({slice: slice('incorrect', 'independent')}))).resolves.toMatchObject({kind: 'error-review', helpLevel: 'independent'});
-  await expect(projectOwnWordsTakeaway(read, post({slice: slice('incorrect', 'hinted')}))).resolves.toMatchObject({kind: 'error-review', helpLevel: 'hinted'});
+  await expect(projectOwnWordsTakeaway(read, post({slice: slice('incorrect', 'hinted'), l0Display: display}))).resolves.toMatchObject({kind: 'error-review', helpLevel: 'hinted'});
+  await expect(projectOwnWordsTakeaway(read, post({slice: slice('incorrect', 'independent'), takeawayAdmittedAt: '7' as Tick}))).resolves.toEqual({kind: 'hidden', reason: 'unknown'});
 });
