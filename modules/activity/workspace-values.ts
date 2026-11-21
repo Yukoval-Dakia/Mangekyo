@@ -13,6 +13,8 @@ import organizerTask from '@mangekyo/module-plan/facts/organizer-task';
 import {materialType} from './library-values.ts';
 import {organizerNoteType} from './organizer-values.ts';
 import {turnResearchPurpose} from './values.ts';
+import {helpExposureType} from './help-exposure-values.ts';
+import {ownWordsClaimType} from './takeaway-values.ts';
 
 export class WorkspaceInputError extends Error {}
 
@@ -268,6 +270,8 @@ export const workspaceShareableTypes = [
   goal.type,
   organizerTask.type,
   workspaceEntryType,
+  ownWordsClaimType,
+  helpExposureType,
 ];
 export const workspaceOverviewTypes = workspaceShareableTypes;
 

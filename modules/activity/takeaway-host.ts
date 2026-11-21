@@ -109,9 +109,12 @@ function mountOf(input: unknown, paperId: FactId, reject: TakeawayReject): Mount
   const value = row(input);
   const issuanceRow = value.issuance === undefined ? undefined : refOf(value.issuance);
   try {
+    if (issuanceRow !== undefined && issuanceRow.id !== paperId) throw reject(400, '口诀发放与本次试卷不匹配。');
     return {
       paperId, paperRev: revOf(value.paperRev), itemId: itemIdOf(value.itemId),
-      issuance: issuanceRow ?? { id: paperId, rev: revOf(value.paperRev) },
+      // Ordinary workbook content is frozen at revision 1; later revisions only
+      // carry purpose grants, so the issuance anchor is always the first revision.
+      issuance: { id: paperId, rev: 1 as Revision },
       source: {
         paperId: factId(typeof value.sourcePaperId === 'string' ? value.sourcePaperId : ''),
         attempt: refOf(value.sourceAttempt), itemId: itemIdOf(value.sourceItemId),
@@ -128,7 +131,7 @@ async function findTakeaway(deps: Deps, mount: Mount): Promise<FactSnapshot | un
        AND r.data->'scope'->'anchor'->>'paperId'=$3 AND r.data->'scope'->'anchor'->>'itemId'=$4
        AND r.data->'scope'->'basis' @> $5::jsonb`,
     [deps.scope.learner, ownWordsClaimType, mount.source.paperId, mount.source.itemId,
-      JSON.stringify([{ id: mount.source.attempt.id, rev: mount.source.attempt.rev }])]);
+      JSON.stringify([{ id: mount.source.attempt.id }])]);
   for (const record of rows) {
     try {
       const fact = await deps.read.fact(record.id, { mode: 'following' });
@@ -144,14 +147,16 @@ function presentation(found: FactSnapshot, mount: Mount, kind: 'opened' | 'displ
     kind,
     mount: { activityId: mount.issuance.id, issuance: mount.issuance, item: { itemId: mount.itemId } },
     alsoAppliesTo: [],
-    content: { id: found.ref.id, rev: found.ref.rev },
+    // The sticky own-words claim is content-frozen at revision 1; later
+    // revisions only carry purpose grants, so the recorded content anchor is rev 1.
+    content: { id: found.ref.id, rev: 1 as Revision },
     step: { kind: 'hint_l0', order: 0 },
     learnerRequested: true,
   };
 }
 
 function openingId(deps: Deps, found: FactSnapshot, mount: Mount): FactId {
-  return factId(deps.stable('own-words-open', found.ref.id, String(found.ref.rev), mount.issuance.id, String(mount.issuance.rev), mount.itemId));
+  return factId(deps.stable('own-words-open', found.ref.id, '1', mount.issuance.id, String(mount.issuance.rev), mount.itemId));
 }
 
 /** Learner taps 给点方向: resolve the own-words claim on the frozen slot and record an `opened` witness. */
@@ -202,13 +207,11 @@ export async function takeawayFeedback(deps: Deps, paperId: FactId, attemptId: F
   if (attempt.paperId !== paperId) throw deps.reject(404, '作答与试卷不匹配。');
   const feedback = attempt.feedback.find(item => item.questionId === itemId);
   if (!feedback) throw deps.reject(404, '本题位没有评分依据。');
-  const paper = await deps.read.fact(paperId, { mode: 'following' }).catch((error: unknown) => {
-    if (deps.unavailable(error)) return undefined;
-    throw error;
-  });
   const birth = await readActivitySubmissionBirth(deps.scope, submission.ref, workbookAttemptType);
   const mount: HelpTarget = {
-    activityId: paperId, issuance: { id: paperId, rev: paper?.ref.rev ?? (1 as Revision) }, item: { itemId },
+    // Ordinary workbook content is frozen at revision 1; purpose grants add
+    // later revisions without changing the issued questions.
+    activityId: paperId, issuance: { id: paperId, rev: 1 as Revision }, item: { itemId },
   };
   let helpLevel: 'independent' | 'hinted' | 'unknown' = 'unknown';
   if (birth) {
@@ -216,7 +219,10 @@ export async function takeawayFeedback(deps: Deps, paperId: FactId, attemptId: F
       activities: [paperId], cutoff: birth.tick, mode: 'following',
     }, undefined, deps.unavailable);
     const observed = projectHelpExposure({ submission: { ref: submission.ref, target: mount, cutoff: birth.tick }, events, coverage: null });
-    helpLevel = observed.kind === 'exposed' ? 'hinted' : omitted ? 'unknown' : 'independent';
+    // S11 fail-closed: only a proven exposure earns 'hinted', and only a proven
+    // complete observation earns 'independent'; every other outcome stays 'unknown'.
+    helpLevel = observed.kind === 'exposed' ? 'hinted'
+      : observed.kind === 'unexposed' && !omitted ? 'independent' : 'unknown';
   }
   const claim = await findTakeaway(deps, {
     paperId, paperRev: submission.ref.rev, itemId, issuance: mount.issuance,
