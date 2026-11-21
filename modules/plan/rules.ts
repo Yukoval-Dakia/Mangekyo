@@ -1,6 +1,9 @@
 import { date, instant, integer, object, oneOf, text } from './validation.ts';
 
 export const planRuleType = 'plan.rule';
+export type WarmupOpen = { kind: 'activity' | 'pack'; id: string; rev: number };
+type WarmupLock = { timeZone: string; open: WarmupOpen };
+
 export type Campaign = 'steady' | 'sprint' | 'recovery';
 export type PlanRule =
   | { kind: 'exam'; date: string; scope: string[]; weights: { topic: string; weight: number }[] }
@@ -15,7 +18,7 @@ export type PlanRule =
       minutes: number;
       condition: 'time' | 'tired' | 'anxious';
     }
-  | { kind: 'lock'; date: string; activityId: string }
+  | { kind: 'lock'; date: string; activityId: string; warmup?: WarmupLock }
   | { kind: 'defer'; until: string; activityId: string }
   | { kind: 'replace'; date: string; activityId: string; replacementId: string }
   | { kind: 'campaign'; campaign: Campaign };
@@ -62,8 +65,16 @@ export function planRule(input: unknown): PlanRule {
     case 'rest':
     case 'exception':
       return { kind: r.kind, date: date(r.date) };
-    case 'lock':
-      return { kind: r.kind, date: date(r.date), activityId: text(r.activityId) };
+    case 'lock': {
+      const lock = { kind: r.kind, date: date(r.date), activityId: text(r.activityId) } as const;
+      if (r.warmup === undefined) return lock;
+      const warmup = object(r.warmup);
+      const open = object(warmup.open);
+      return { ...lock, warmup: {
+        timeZone: warmupTimeZone(warmup.timeZone),
+        open: { kind: oneOf(open.kind, ['activity', 'pack']), id: text(open.id), rev: integer(open.rev, 1, 2147483647) },
+      } };
+    }
     case 'defer':
       return { kind: r.kind, until: date(r.until), activityId: text(r.activityId) };
     case 'replace': {
@@ -77,4 +88,38 @@ export function planRule(input: unknown): PlanRule {
     default:
       throw new Error('无法识别的规划约束。');
   }
+}
+
+export function warmupTimeZone(value: unknown) {
+  const zone = text(value);
+  if (!/^[a-zA-Z][a-zA-Z0-9_+/-]*$/.test(zone)) throw new Error('需要命名时区。');
+  new Intl.DateTimeFormat('en', { timeZone: zone });
+  return zone;
+}
+
+export function sameWarmupOpen(a: WarmupOpen | null, b: WarmupOpen) {
+  return a !== null && a.kind === b.kind && a.id === b.id && a.rev === b.rev;
+}
+
+export function todayWarmupRules(
+  rules: readonly PlanRule[], day: string, timeZone: string,
+  candidates: readonly { id: string; open: WarmupOpen | null; refused?: boolean; minutes?: number }[],
+): { rules: PlanRule[]; warmup: string | null } {
+  const ordinary: PlanRule[] = [];
+  let selected: Extract<PlanRule, { kind: 'lock' }> | null = null;
+  for (const rule of rules) {
+    if (rule.kind !== 'lock' || !rule.warmup) {
+      ordinary.push(rule);
+      continue;
+    }
+    const { open } = rule.warmup;
+    if (rule.date === day && rule.warmup.timeZone === timeZone && candidates.some(
+      candidate => candidate.id === rule.activityId && !candidate.refused &&
+        (candidate.minutes === undefined || candidate.minutes <= 3) && sameWarmupOpen(candidate.open, open),
+    )) {
+      selected ??= rule;
+    }
+  }
+  if (selected) ordinary.push(selected);
+  return { rules: ordinary, warmup: selected?.activityId ?? null };
 }
