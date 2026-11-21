@@ -1,6 +1,8 @@
 import type { CommandContext, FactId, FactWrite, Revision } from '@mangekyo/kernel';
+import { pruneTextbookGroupBasis } from './textbook-undo-basis.ts';
 import {
-  parseTextbookPage, textbookPageFrom, verifyTextbookBodyReference, type TextbookBlock, type TextbookPage,
+  checkTextbookBasis, parseTextbookPage, textbookPageFrom, verifyTextbookBodyReference,
+  type TextbookBlock, type TextbookPage,
 } from './textbook-page.ts';
 import { readTextbookHead } from './textbook-structure.ts';
 
@@ -44,6 +46,21 @@ function sameBlock(a: TextbookBlock | undefined, b: TextbookBlock | undefined) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+export function sameTextbookBlockPosition(before: TextbookPage, after: TextbookPage, id: string) {
+  const parentId = before.blocks.find(block => block.id === id)?.parentId;
+  const siblings = (page: TextbookPage) => page.blocks.filter(block => block.parentId === parentId).map(block => block.id);
+  const previous = siblings(before);
+  const current = siblings(after);
+  const oldIndex = previous.indexOf(id);
+  const newIndex = current.indexOf(id);
+  if (oldIndex === -1 || newIndex === -1) return oldIndex === newIndex;
+  const oldPredecessors = new Set(previous.slice(0, oldIndex));
+  const newPredecessors = new Set(current.slice(0, newIndex));
+  const retained = new Set(current);
+  return previous.every(blockId => !retained.has(blockId) ||
+    oldPredecessors.has(blockId) === newPredecessors.has(blockId));
+}
+
 function checkUndoHead(
   page: TextbookPage, applied: TextbookPage, blockIds: readonly string[], moveBlockIds: readonly string[],
 ) {
@@ -54,25 +71,22 @@ function checkUndoHead(
       throw new Error(`教材块自采纳后已变更：${id}`);
     }
   }
-  const appliedIds = new Set(applied.blocks.map(block => block.id));
   for (const id of moveBlockIds) {
-    const parentId = blocks.get(id)?.parentId;
-    const was = applied.blocks.filter(block => block.parentId === parentId && blocks.has(block.id)).map(block => block.id);
-    const now = page.blocks.filter(block => block.parentId === parentId && appliedIds.has(block.id)).map(block => block.id);
-    if (was.indexOf(id) !== now.indexOf(id) || was.some((blockId, index) => blockId !== now[index])) {
+    if (!sameTextbookBlockPosition(applied, page, id)) {
       throw new Error(`教材块位置自采纳后已变更：${id}`);
     }
   }
 }
 
 export async function undoTextbookWrite(ctx: CommandContext, {
-  id, expectedRev, priorRev, appliedRev = expectedRev, blockIds, moveBlockIds = [],
+  id, expectedRev, priorRev, appliedRev = expectedRev, blockIds, moveBlockIds = [], pruneGroupBasis = false,
 }: {
   id: FactId; expectedRev: Revision; priorRev: Revision | null;
   appliedRev?: Revision;
-  blockIds?: readonly string[]; moveBlockIds?: readonly string[];
+  blockIds?: readonly string[]; moveBlockIds?: readonly string[]; pruneGroupBasis?: boolean;
 }): Promise<readonly FactWrite[]> {
   const { snapshot, page } = await readTextbookHead(ctx, { id, expectedRev });
+  if (pruneGroupBasis && (!blockIds || appliedRev >= expectedRev)) throw new Error('教材来源撤回版本无效。');
   if (priorRev === null && expectedRev === 1 && appliedRev === expectedRev && !blockIds) {
     if (page.parentPageId) {
       const parent = textbookPageFrom(await ctx.read.fact(page.parentPageId, { mode: 'following' }));
@@ -89,8 +103,18 @@ export async function undoTextbookWrite(ctx: CommandContext, {
     JSON.stringify(applied.mergedFrom) !== JSON.stringify(previous.mergedFrom)) {
     throw new Error('教材跨页移动不能单独撤回。');
   }
-  if (blockIds && appliedRev !== expectedRev) checkUndoHead(page, applied, blockIds, moveBlockIds);
-  const restored = blockIds ? restoreSelectedBlocks(page, previous, blockIds, moveBlockIds) : previous;
+  if (blockIds) {
+    for (let rev = appliedRev + 1; rev <= expectedRev; rev++) {
+      const later = rev === expectedRev ? page
+        : textbookPageFrom(await ctx.read.fact(id, { mode: 'pinned', rev: rev as Revision }));
+      checkUndoHead(later, applied, blockIds, moveBlockIds);
+    }
+  }
+  let restored = blockIds ? restoreSelectedBlocks(page, previous, blockIds, moveBlockIds) : previous;
+  if (pruneGroupBasis && blockIds) {
+    restored = await pruneTextbookGroupBasis(ctx.read, snapshot.ref, previous, applied, restored, appliedRev, blockIds);
+  }
+  await checkTextbookBasis(ctx.read, restored.basis ?? []);
   const active = new Set(restored.blocks.map(block => block.id));
   const retiredBlockIds = [...new Set([
     ...(restored.retiredBlockIds ?? []),
