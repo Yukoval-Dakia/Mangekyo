@@ -161,7 +161,7 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     const submission = stored.classroom ? {...withoutAttachment,answer:null} : materialAvailable ? stored : withoutAttachment;
     let authority: 'authorized' | 'unconfirmed' | 'withdrawn' = 'withdrawn';
     if (materialAvailable && row.value) {
-      if (check) authority = (await teachingResultAuthority(tx, row.id, stored, row.manifest, grantCurrent, check)).state;
+      if (check) authority = (await teachingResultAuthority(tx, row.id, stored, row.manifest, grantCurrent, check, undefined, 'history')).state;
       else if (await teachingMemoryBasis(tx, parseManifest(row.manifest), row.id)) authority = 'authorized';
     }
     let feedback = authority === 'authorized' ? row.value : null;

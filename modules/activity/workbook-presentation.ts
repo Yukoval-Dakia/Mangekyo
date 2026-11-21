@@ -11,6 +11,11 @@ export function workbookPresentation(value: unknown) {
   catch { throw new WorkbookPresentationError('卷面呈现见证格式无效。'); }
 }
 
+export function isWorkbookAnswerDisplay(value: unknown) {
+  const presentation = workbookPresentation(value);
+  return presentation.kind === 'solution' && presentation.phase === 'displayed';
+}
+
 function parsePresentation(value: unknown) {
   const row = object(value);
   const { kind, items } = row;

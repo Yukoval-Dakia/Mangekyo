@@ -2,6 +2,7 @@ import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } fr
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import { assetType } from '../../modules/content/asset.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
   KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeUseKey,
@@ -41,7 +42,7 @@ export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeE
   }
   const from = sources.get(knowledgeUseKey(edge.from.sourceUse));
   const to = sources.get(knowledgeUseKey(edge.to.sourceUse));
-  if (!from || !to || from.sourceRef.fact.type !== workspaceEntryType || to.sourceRef.fact.type !== workspaceEntryType ||
+  if (!from || !to || ![workspaceEntryType,assetType].includes(from.sourceRef.fact.type) || to.sourceRef.fact.type !== workspaceEntryType ||
       from.kind !== edge.from.kind || to.kind !== edge.to.kind)
     throw new KnowledgeEdgeBasisError('概念或题目端点类型不符。');
   return {from, to, sources: [...sources.values()].map(source => source.sourceRef), opened};

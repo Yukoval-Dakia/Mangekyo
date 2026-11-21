@@ -7,6 +7,7 @@ import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { frozenWorkbookRevision, licensedQuestionCopy } from '../../modules/activity/evidence-read.ts';
 import { helpAppliesTo } from '../../modules/activity/help-exposure-values.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
+import { assetType } from '../../modules/content/asset.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
@@ -88,12 +89,15 @@ export async function openWorkbookQuestionSources(tx: ReadTransaction, submissio
       const material = await resolveSource(tx, attempt.paper.materialId, sourceAccess);
       if (material?.sourceRef.fact.type !== materialType) return;
     }
+    const read = createAuthorizedFactReader(tx, sourceAccess.purpose, access.maySend);
     for (const { id, sourceQuestionRef, prompt } of attempt.paper.questions) {
       if (itemId !== undefined && id !== itemId) continue;
       if (!sourceQuestionRef) continue;
-      const readable = itemId ? await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose) : sourceQuestionRef;
+      const readable = await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose);
+      const { type } = await read.fact(factId(readable.id), {mode:'pinned', rev:readable.rev as Revision});
+      if (type !== assetType && type !== workspaceEntryType) return;
       const question = await resolveSource(tx, {
-        v: 1, fact: { ...readable, type: workspaceEntryType }, anchor: { kind: 'question', itemId: 'question' },
+        v: 1, fact: { ...readable, type }, anchor: { kind: 'question', itemId: 'question' },
       }, sourceAccess);
       if (question?.content !== prompt) return;
     }

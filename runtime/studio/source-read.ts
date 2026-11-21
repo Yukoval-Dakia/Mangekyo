@@ -1,4 +1,5 @@
 import {assetType, parseAsset, assetBodyReference} from '../../modules/content/asset.ts';
+import {openArithmeticPractice} from '../../modules/content/arithmetic-practice.ts';
 import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
 import { projectSource as project } from '../../modules/activity/workspace-source-projection.ts';
 export { sourceQuestions, sourceSearchExcerpt, textbookText } from '../../modules/activity/workspace-source-projection.ts';
@@ -52,7 +53,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const rootType = (fact: FactSnapshot) =>
     (!reference || fact.type === reference.fact.type) &&
     (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
-      fact.type === textbookPageType);
+      fact.type === textbookPageType || fact.type === assetType);
 
   async function visit(sourceId: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(sourceId)) return;
@@ -114,10 +115,21 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
           return {...anchor, start:offset, end:nextOffset ?? oldText.length};
         })() : anchor;
         if (!project(text, originalAnchor, access.recipient)) return;
+      } else if (original.type === assetType) {
+        if (!await openArithmeticPractice(reader,original.ref.id,original)) return;
       } else if (!project(original, anchor, access.recipient)) return;
     }
     const fact = await visit(id, mode === 'pinned' ? rootRevision : undefined);
     if (!fact) return;
+    if (fact.type === assetType) {
+      if (anchor.kind !== 'whole' && (anchor.kind !== 'question' || anchor.itemId !== 'question')) return;
+      const result = await openArithmeticPractice(reader,fact.ref.id,fact);
+      if (!result) return;
+      access.track?.(fact, reference ? mode : 'following');
+      access.track?.(result.state,'following');
+      return {id:fact.ref.id,rev:fact.ref.rev,sourceRef:sourceReference(fact,anchor),
+        kind:'question' as const,title:result.title,content:result.prompt};
+    }
     let body = fact;
     let linkedMaterial: FactSnapshot | undefined;
     if (fact.type === materialType || fact.type === intakeFactType) {

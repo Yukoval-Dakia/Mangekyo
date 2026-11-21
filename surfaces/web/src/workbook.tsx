@@ -16,6 +16,8 @@ import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
 import { observePaperTime } from './workbook-duration';
 import { useWorkbookPresentation } from './workbook-presentation';
+import { SealedPracticeAuthor } from './sealed-practice';
+import { WorkbookAccess } from './workbook-access';
 import './workbook.css';
 
 export type WorkbookProps = {
@@ -114,9 +116,11 @@ type EditorQuestion = (NumericEditor | ExactEditor | RubricEditor) & {
   sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
 
-function QuestionSource({ source }: { source: WorkbookSourceQuestionRef }) {
+function QuestionSource({ source, sealedPractice }: { source: WorkbookSourceQuestionRef; sealedPractice?: boolean }) {
   return <p className="workbook-source-note">
-    引用原题第 {source.rev} 版 · <a href={'/materials/records/' + encodeURIComponent(source.id)}>查看当前记录</a>
+    引用原题第 {source.rev} 版 · {sealedPractice
+      ? <a href="#question-teaching">管理原题题面权限</a>
+      : <a href={'/materials/records/' + encodeURIComponent(source.id)}>查看当前记录</a>}
     <br /><small>{source.id}</small>
   </p>;
 }
@@ -388,6 +392,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
         ‹ 返回试卷
       </a>
       <PageTitle title="新建试卷" meta="可写任意学科；保存后试卷即冻结，内容不再改动" />
+      <SealedPracticeAuthor />
       <form className="workbook-editor" onSubmit={submitSave}>
         <section className="workbook-editor-block">
           <label className="field">
@@ -701,6 +706,7 @@ function FeedbackItem({
   allowSearch,
   destination,
   assessing,
+  sealedPractice,
 }: {
   paperId: string;
   attemptId: string;
@@ -711,6 +717,7 @@ function FeedbackItem({
   allowSearch: boolean;
   destination: string;
   assessing: string | null;
+  sealedPractice: boolean;
 }) {
   const [query, setQuery] = useState('');
   const assessment = assessments.at(-1);
@@ -726,7 +733,7 @@ function FeedbackItem({
         <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>
         <span className="workbook-feedback-question">{question.prompt}</span>
       </header>
-      {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
+      {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} sealedPractice={sealedPractice} />}
       {feedback.result === 'self-check' && (
         <SelfCheckMarks paperId={paperId} attemptId={attemptId} questionId={feedback.questionId} />
       )}
@@ -1038,6 +1045,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
           )}
         </section>
       )}
+      {view.sealedPractice && <WorkbookAccess key={paperId} paperId={paperId} />}
       <div className="workbook-detail-grid">
         {watermark.notice}
         {showForm && (
@@ -1060,7 +1068,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                           : '评分标准题'}
                     </span>
                   </header>
-                  {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
+                  {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} sealedPractice={view.sealedPractice === true} />}
                   <p className="workbook-answer-prompt">{question.prompt}</p>
                   {question.kind === 'numeric' ? (
                     <label className="field">
@@ -1171,6 +1179,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     destination={settings ? settings.model + ' · ' + settings.baseUrl : '模型服务'}
                     onAssess={assessRubric}
                     assessing={assessing}
+                    sealedPractice={view.sealedPractice === true}
                   />
                   {settingsError && question.kind === 'rubric' && !(activeAttempt.assessments ?? []).some(
                     (assessment) => assessment.questionId === feedback.questionId,
@@ -1178,6 +1187,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </div>
               );
             })}
+            <WorkbookAccess key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} displayId={solutions.displayId} />
           </section>
         )}
       </div>

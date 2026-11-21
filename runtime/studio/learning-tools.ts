@@ -17,6 +17,8 @@ import { readRetentionBasis, type RetentionBasis } from './learner-radar.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import { openWorkspaceQuestion, type DraftWitness } from './workspace-question.ts';
 import { workspaceInput, type openWorkspaceTools, type WorkspaceWitness } from './workspace-agent.ts';
+import { learningPythonReadLabel, questionExposureReceiptVersion } from '../../executors/teaching/question-read-receipts.ts';
+import { questionReceiptsCurrent } from './question-exposure.ts';
 
 const scope = {learner:studioLearner};
 const native = {search_learning:'search_workspace',open_learning:'open_learning',
@@ -63,7 +65,7 @@ export function openLearningTools(options: {
     await authorize(tx);
     const {rows:[clock]} = await tx.query<{tick:string}>('SELECT clock::text AS tick FROM learners WHERE id=$1',[tx.learner]);
     const manifest = parseManifest({version:1,learner:tx.learner,purpose,gatherTick:clock?.tick,inputs:facts.map(workspaceInput)});
-    if ((await revalidateManifest(tx,manifest)).kind !== 'valid') return false;
+    if ((await revalidateManifest(tx,manifest)).kind !== 'valid' || !await questionReceiptsCurrent(tx,turn,'dispatch')) return false;
     const read = createAuthorizedFactReader(tx,purpose,maySend);
     for (const witness of facts) {
       const fact = await read.reopen({...workspaceInput(witness),type:witness.type});
@@ -157,14 +159,17 @@ export function openLearningTools(options: {
     writeKeys:() => [],
     async preparePython(reads,step) {
       if (!reads.length) return {ok:true,values:[]};
+      // Question reads cannot replay across receipt formats. Other SDK effects keep their identity.
+      const request = reads.some(read => read.method === 'questions') ? {reads,questionExposure:questionExposureReceiptVersion} : reads;
       const raw = await recordLocalRead(db,{...scope,ownerKind:'session',ownerId:turn,stepKey:String(step),
-        label:'local:learning-python-v1',input:JSON.parse(canonicalJsonString(reads))},async tx => {
+        label:learningPythonReadLabel,input:JSON.parse(canonicalJsonString(request))},async tx => {
         const {rows:[clock]} = await tx.query<{tick:Tick}>(
           'SELECT clock::text AS tick FROM learners WHERE id=$1',[tx.learner]);
         if (!clock) throw new Error('Learner clock missing');
         const witnesses: WorkspaceWitness[] = [];
         const retention = new Map<string,RetentionBasis>();
-        const access = {maySend,known:workspace.knows,trackRetention:(basis:RetentionBasis) =>
+        const negatives = new Set<string>();
+        const access = {turn,maySend,trackNegative:(id: string) => negatives.add(id),known:workspace.knows,trackRetention:(basis:RetentionBasis) =>
           retention.set(basis.slot.derivationId,basis),track:(fact: Parameters<import('./source-read.ts').SourceTrack>[0],
           mode?: WorkspaceWitness['mode']) => witnesses.push({id:fact.ref.id,rev:fact.ref.rev,type:fact.type,epoch:fact.accessEpoch,
             ...(mode ? {mode} : {})})};
@@ -175,7 +180,8 @@ export function openLearningTools(options: {
           if ('ok' in result) return JSON.stringify({error:result,witnesses:[]});
           values.push(result.value);
         }
-        return JSON.stringify({values,witnesses:[...new Map(witnesses.map(w => [canonicalJsonString(w),w])).values()],
+        return JSON.stringify({values,questionExposure:questionExposureReceiptVersion,questionNegatives:[...negatives],
+          witnesses:[...new Map(witnesses.map(w => [canonicalJsonString(w),w])).values()],
           ...(retention.size ? {retentionBasis:[...retention.values()]} : {})});
       },authorize);
       const packet = JSON.parse(raw);

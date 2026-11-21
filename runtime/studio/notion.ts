@@ -23,6 +23,7 @@ import { teachingTurnAllowed } from './reading.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { notionTeachingRecipients } from './workspace-access.ts';
 import { notionConnection } from './notion-transport.ts';
+import { questionReceiptsCurrent } from './question-exposure.ts';
 
 const learnerScope = {learner: studioLearner};
 const learningReader = {id: 'studio:learning-reader', purpose: 'learning', label: '本机学习阅读器'};
@@ -166,7 +167,7 @@ export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<B
 
 export async function teachingResultAuthority(tx: ReadTransaction, turnId: string, turn: ReturnType<typeof studyTurn>,
   rawManifest: unknown, grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, check: CheckNotionRead,
-  origin?: ReturnType<typeof studyTurn>) {
+  origin?: ReturnType<typeof studyTurn>, use: 'publish' | 'history' = 'publish') {
   try {
     const manifest = parseManifest(rawManifest);
     if (manifest.purpose !== teaching || !await teachingTurnAllowed(tx,turn,grantCurrent,origin))
@@ -175,7 +176,8 @@ export async function teachingResultAuthority(tx: ReadTransaction, turnId: strin
     if (turn.providerId && turn.protocol && turn.workspaceRevision)
       recipient.notionRecipientId = notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision);
     const memoryBasis = await teachingMemoryBasis(tx, manifest, turnId, recipient);
-    if (!memoryBasis) return {state:'withdrawn'} as const;
+    if (!memoryBasis || (turn.learningToolsVersion === 1 && !await questionReceiptsCurrent(tx,turnId,use)))
+      return {state:'withdrawn'} as const;
     await notionSendBasis(tx, [...await savedNotionWitnesses(tx, manifest.inputs), ...memoryBasis.objects], recipient, check);
     return {state:'authorized', memoryBasis} as const;
   } catch (error) {
