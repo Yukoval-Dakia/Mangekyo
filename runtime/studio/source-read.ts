@@ -137,7 +137,15 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         return {id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), ...projection};
       }
       if (currentDocument.type !== intakeFactType) return;
-      const material = fact.type === materialType ? fact : await visit(relatedMaterialId(currentDocument));
+      let material: FactSnapshot | undefined = fact;
+      if (fact.type === intakeFactType) {
+        const materialId = relatedMaterialId(currentDocument);
+        // A pinned OCR uses the paired material for identity and access only.
+        // Freeze its authorized revision for replay while retaining its access epoch.
+        const pinnedPair = access.exactReadModes && reference && mode === 'pinned';
+        const materialRev = pinnedPair ? (await reader.fact(materialId, {mode:'following'})).ref.rev : undefined;
+        material = await visit(materialId, materialRev);
+      }
       if (!material || material.type !== materialType || !isMaterialIntakePair(material.ref.id, currentDocument)) return;
       const document = fact.type === intakeFactType ? fact :
         mode === 'pinned' && documentRevision !== undefined
