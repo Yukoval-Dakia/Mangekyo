@@ -38,10 +38,9 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
   };
   const cutoff = { tick: '13' as Tick, at: at(30_000) };
   const mount = { activityId: issuance.id, issuance, item: { itemId: 'q' } };
-  const shown: AdmittedHelpEvent = { ref: ref(11, 'activity.helpExposure'), admittedAt: '12' as Tick,
-    value: { kind: 'displayed', mount, content: proof, alsoAppliesTo: [], step: { kind: 'solution', order: 1 } } };
-  const opened: AdmittedHelpEvent = { ...shown, value: { ...shown.value, kind: 'opened', mount, content: proof,
-    alsoAppliesTo: [], step: { kind: 'solution', order: 1 } } };
+  const shown = { ref: ref(11, 'activity.helpExposure'), admittedAt: '12' as Tick,
+    value: { kind: 'displayed', mount, content: proof, alsoAppliesTo: [], step: { kind: 'solution', order: 1 } } } satisfies AdmittedHelpEvent;
+  const opened: AdmittedHelpEvent = { ...shown, value: { ...shown.value, kind: 'opened' } };
   let revoked: BusWitness | undefined;
   const reopen: CorrectionReopen = async (ref, purpose) => ref.id !== revoked?.id
     ? { type: ref.type, ref, accessEpoch: ref.accessEpoch, purpose: [purpose], value: {} } : undefined;

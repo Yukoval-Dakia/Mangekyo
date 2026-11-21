@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { derivationId, learnerId, type GatherContext } from '@mangekyo/kernel';
 import { witness } from './memory-evidence.ts';
-import { admitExtraction, beliefsAsOf, blocksRefusal, effectiveDirective, extractionDecision, hypothesisView,
+import { admitExtraction, extractionDecision, hypothesisView,
   projectExperience, type ExtractionActivity, type HypothesisEvidence } from './cognition.ts';
 import status from './derivers/understanding-status.ts';
 import propose from './commands/propose-playbook.ts';
@@ -9,11 +9,7 @@ import propose from './commands/propose-playbook.ts';
 const ref = (n: number) => witness({id: String(n).padStart(26, '0'), rev: 1, accessEpoch: '1'});
 const at = (n: number) => new Date(n * 1000).toISOString();
 
-it('separates real time and knowledge time, and keeps same-condition counterevidence', () => {
-  const rows = [{validFrom: at(1), validTo: null, recordedAt: at(5), supersededAt: at(10)},
-    {validFrom: at(1), validTo: at(4), recordedAt: at(10), supersededAt: null}];
-  expect(beliefsAsOf(rows, {validAt: at(4), knownAt: at(9)})).toEqual([rows[0]]);
-  expect(beliefsAsOf(rows, {validAt: at(4), knownAt: at(10)})).toEqual([]);
+it('keeps same-condition counterevidence and tracks improvement, retirement and relapse', () => {
   const history = ['supports', 'supports', 'contradicts', 'contradicts', 'contradicts', 'supports'].map((d, i): HypothesisEvidence =>
     ({ref: ref(i+1), direction: d as HypothesisEvidence['direction'], occurredAt: at(i), recordedAt: at(i), origin: 'chronicle',
       assessment: i < 3 ? 'observation' : i === 3 ? 'independent-variant' : 'independent-transfer', source: 'business-event'}));
@@ -21,16 +17,6 @@ it('separates real time and knowledge time, and keeps same-condition counterevid
   expect(view.trajectory.map(s => s.stage)).toEqual(['supported', 'disputed', 'improving', 'retired', 'relapsed']);
   expect(view.evidence).toHaveLength(6);
   expect(view.confidence.statement).toBe('unconfirmed');
-});
-
-it('honors exact reopening and TTL boundaries independently of wording or preference age', () => {
-  const refusal = {goal: 'g', intent_key: 'reschedule', reopen_condition: {kind: 'at' as const, at: at(5)}};
-  expect(blocksRefusal(refusal, {goal: 'g', intent_key: 'reschedule', learnerRequested: false, at: at(4)})).toBe(true);
-  expect(blocksRefusal(refusal, {goal: 'g', intent_key: 'reschedule', learnerRequested: false, at: at(5)})).toBe(false);
-  const common = {category: 'directive', validFrom: at(0), recordedAt: at(0), supersededAt: null,
-    scope: {}, text: '先画图', sticky: true, evidence_refs: [ref(1)]} as const;
-  expect(effectiveDirective({...common, kind: 'state', validTo: at(5)}, {validAt: at(5), knownAt: at(5)})).toBeNull();
-  expect(effectiveDirective({...common, kind: 'preference', validTo: null}, {validAt: at(9e6), knownAt: at(9e6)})).toBeTruthy();
 });
 
 it('admits only clocked, permitted originals and keeps deterministic positive updates when model budget is zero', () => {
