@@ -3,7 +3,7 @@ import { assessmentRelease, type AssessmentRelease, type AssessmentRevisionRef }
 import { AssetBasisError, assetType, checkQuestionTeachingSources, checkTextbookBasis, questionAsset, type AssetReadContext } from './asset.ts';
 import {
   KnowledgeEdgeBasisError, knowledgeEndpointKind, knowledgeUseKey, openKnowledgeEdgeRevision, readKnowledgeUse,
-  walkKnowledgeEdges, workspaceEntryType, type KnowledgeEdge, type KnowledgeSourceUse,
+  walkKnowledgeEdges, workspaceEntryType, type KnowledgeEdge, type KnowledgeEndpoint, type KnowledgeSourceUse,
 } from './knowledge-edge.ts';
 import { record } from './parse.ts';
 import { projectQuestionPrompt } from './question-verification.ts';
@@ -117,6 +117,14 @@ export async function readQuestionNotionLinks(
 ) {
   const { root, mode, edgeIds } = input;
   if (!bound(access) || edgeIds.length > 128) return [];
+  async function reopenFollowingRootAlias(endpoint: KnowledgeEndpoint) {
+    if (root.kind !== 'note' || endpoint.kind !== 'note' || endpoint.blockId !== root.blockId) return false;
+    const use = endpoint.sourceUse;
+    if (use.id !== root.sourceUse.id || use.accessEpoch !== root.sourceUse.accessEpoch || use.rev >= root.sourceUse.rev) return false;
+    // Reopen the edge's original pin against current selection and block history.
+    const block = await reopenNotionBlock({ ...use, blockId: root.blockId }, 'following');
+    return Boolean(block?.text.trim());
+  }
   try {
     if (root.kind === 'question') {
       if (!await openQuestion(access, root.sourceUse)) return [];
@@ -124,7 +132,7 @@ export async function readQuestionNotionLinks(
         !(await reopenNotionBlock({ ...root.sourceUse, blockId: root.blockId }, mode))?.text.trim()) return [];
 
     const { paths } = await walkKnowledgeEdges(access, {
-      root, edgeIds, mode, hops: 2, unavailable: error => unavailable(access, error),
+      root, edgeIds, mode, hops: 2, reopenFollowingRootAlias, unavailable: error => unavailable(access, error),
       acceptEdge: ({ kind, from, to }) => to.kind === 'concept' && to.blockId === undefined &&
         ((kind === 'targets_concept' && from.kind === 'question' && from.blockId === undefined) ||
           (kind === 'explains' && from.kind === 'note' && from.blockId !== undefined)),
