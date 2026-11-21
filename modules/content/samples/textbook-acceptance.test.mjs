@@ -44,13 +44,16 @@ export default async function exerciseContent(fixture, decideProposal) {
   }), /教材已归档/);
 
   const devices = ['甲设备', '乙设备'].map(text => ({ text, draftId: idFor(text) }));
-  const saves = await Promise.all(devices.map(({ text, draftId }) => send('content.saveTextbookDraft', {
-    id, draftId, base_rev: 3, clientEditSeq: 1, edits: [rewrite('intro', text)],
-  })));
+  const save = ({ text, draftId }, edit = {}, request = text, purpose = 'storage') => send('content.saveTextbookDraft', {
+    id, draftId, base_rev: 3, clientEditSeq: 1, edits: [rewrite('intro', text)], ...edit,
+  }, { commandId: idFor(request), purpose });
+  await assert.rejects(save(devices[0], {}, 'teaching-first', 'teaching'), /requires purpose storage/);
+  const saves = await Promise.all(devices.map(device => save(device)));
   const winner = saves.findIndex(receipt => receipt.wrote[0].id === id);
   assert.notEqual(winner, -1);
   const savedIntro = block('intro', devices[winner].text);
-  const { draftId, text } = devices[1 - winner];
+  const loser = devices[1 - winner];
+  const { draftId, text } = loser;
   assert.equal(saves[1 - winner].wrote[0].id, draftId);
 
   const { openTextbook } = await load('runtime/studio/textbook.ts');
@@ -98,11 +101,25 @@ export default async function exerciseContent(fixture, decideProposal) {
   await assert.rejects(undo('formula', 6), /教材块自采纳后已变更/);
   await undo('example', 6);
   assert.deepEqual((await current(id)).value.blocks, [formula, note, savedIntro]);
+  const nextDraft = { clientEditSeq: 2, edits: [rewrite('intro', text + '续写'), rewrite('note', '续写笔记')] };
+  await assert.rejects(save(loser, nextDraft, 'teaching-continued', 'teaching'), /requires purpose storage/);
+  await assert.rejects(read(context => openTextbookConflict({ learner, read: context }, draftId), 'teaching'),
+    /does not allow read purpose teaching/);
+  const updated = await save(loser, nextDraft, 'newer-save');
+  assert.deepEqual(updated.wrote, [{ learner, id: draftId, rev: 2 }]);
+  assert.deepEqual(await save(loser, nextDraft, 'newer-save'), updated);
+  assert.deepEqual(await save(devices[winner]), saves[winner]);
+  assert.deepEqual(await save(loser), saves[1 - winner]);
+  await assert.rejects(save(loser, nextDraft), /different command identity/);
+  await assert.rejects(save(loser, {}, 'delayed-save'), /草稿编辑序号已过时/);
+  await assert.rejects(save(loser, { ...nextDraft, base_rev: 7 }, 'wrong-base'), /草稿所属页或基版本不符/);
   const copies = await read(context => openTextbookConflict({ learner, read: context }, draftId));
   assert.equal(copies.base.rev, 3);
   assert.equal(copies.saved.ref.rev, 4);
   assert.deepEqual(copies.saved.page.blocks, [formula, note, savedIntro]);
-  assert.deepEqual(copies.draft.page.blocks, [formula, note, block('intro', text)]);
+  assert.equal(copies.ref.rev, 2);
+  assert.equal(copies.draft.clientEditSeq, 2);
+  assert.deepEqual(copies.draft.page.blocks, [formula, block('note', '续写笔记'), block('intro', text + '续写')]);
   await send('content.setTextbookTeaching', { id, expectedRev: 7, enabled: false });
   await assert.rejects(read(context => openTextbookBlock(context, original, 'proof', 'following'), 'teaching'),
     /does not allow read purpose teaching/);
