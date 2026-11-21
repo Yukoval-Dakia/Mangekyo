@@ -57,7 +57,11 @@ export type AiUsageCall = {
   readonly stepKey: string;
   readonly label: string;
   readonly state: 'started' | 'done' | 'unknown';
+  readonly model: string | null;
   readonly route: string | null;
+  readonly promptTokens: number | null;
+  readonly completionTokens: number | null;
+  readonly totalTokens: number | null;
   readonly reservedMicros: number | null;
   readonly actualMicros: number | null;
   readonly startedTick: Tick;
@@ -175,6 +179,41 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function parseEffectResult(raw: unknown): Record<string, unknown> | undefined {
+  if (isObject(raw)) return raw;
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function effectModel(result: Record<string, unknown> | undefined): string | null {
+  if (!result) return null;
+  const served = result.servedModel ?? result.reportedModel ?? result.model;
+  return typeof served === 'string' && served ? served : null;
+}
+
+function tokenCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function effectTokens(result: Record<string, unknown> | undefined): {
+  promptTokens: number | null; completionTokens: number | null; totalTokens: number | null;
+} {
+  const usage = result && isObject(result.usage) ? result.usage : undefined;
+  const promptTokens = tokenCount(usage?.promptTokens) ?? tokenCount(usage?.prompt_tokens) ??
+    tokenCount(usage?.input_tokens) ?? tokenCount(result?.promptTokens);
+  const completionTokens = tokenCount(usage?.completionTokens) ?? tokenCount(usage?.completion_tokens) ??
+    tokenCount(usage?.output_tokens) ?? tokenCount(result?.completionTokens);
+  const totalTokens = tokenCount(usage?.totalTokens) ?? tokenCount(usage?.total_tokens) ??
+    tokenCount(result?.totalTokens) ??
+    (promptTokens !== null && completionTokens !== null ? promptTokens + completionTokens : null);
+  return { promptTokens, completionTokens, totalTokens };
+}
+
 export async function readAiActivity(
   tx: ActivityEvidenceReadScope,
   asOf: string,
@@ -223,11 +262,12 @@ export async function readAiActivity(
     owner_kind: 'derivation' | 'session'; owner_id: string; step_key: string; label: string;
     state: 'started' | 'done' | 'unknown'; budget_route: string | null;
     reserved_usd_micros: string | null; actual_usd_micros: string | null;
-    started_tick: Tick; ended_tick: Tick | null; fact_retracted: boolean | null; fact_erased: boolean;
+    started_tick: Tick; ended_tick: Tick | null; result: unknown;
+    fact_retracted: boolean | null; fact_erased: boolean;
   }>(`
     SELECT e.owner_kind, e.owner_id, e.step_key, e.label, e.state, e.budget_route,
            e.reserved_usd_micros::text, e.actual_usd_micros::text,
-           e.started_tick::text, e.ended_tick::text,
+           e.started_tick::text, e.ended_tick::text, e.result,
            (f.retracted_rev IS NOT NULL) AS fact_retracted,
            EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=e.learner_id AND t.kind='fact' AND t.id=e.owner_id) AS fact_erased
     FROM effects e
@@ -348,10 +388,23 @@ export async function readAiActivity(
     });
   }
 
-  const foregroundHandoffs: AiHandoffItem[] = digestResult.digests.map(item => ({
-    id: item.id, channel: 'night_chain', status: 'completed', title: '前台学习交班',
-    summary: item.summary, tick: item.tick, basisCount: item.sourceRefs.length, href: '/companion',
-  }));
+  const foregroundHandoffs: AiHandoffItem[] = [];
+  for (const item of digestResult.digests) {
+    let href = '/companion';
+    if (ulidPattern.test(item.id)) {
+      const turnFact = await openFact(ports.readTeaching, factId(item.id));
+      if (turnFact?.type === 'activity.studyTurn') {
+        try {
+          const turn = studyTurn(turnFact.value);
+          if (turn.classroom) href = `/classroom/${turn.sessionId}`;
+        } catch { /* keep the default companion link */ }
+      }
+    }
+    foregroundHandoffs.push({
+      id: item.id, channel: 'night_chain', status: 'completed', title: '前台学习交班',
+      summary: item.summary, tick: item.tick, basisCount: item.sourceRefs.length, href,
+    });
+  }
 
   const handoffs = [
     ...foregroundHandoffs,
@@ -382,6 +435,7 @@ export async function readAiActivity(
   const recentCalls: AiUsageCall[] = [];
   for (const row of effectRows.rows) {
     if (row.fact_erased || row.fact_retracted) continue;
+    const result = parseEffectResult(row.result);
     recentCalls.push({
       id: `${row.owner_kind}:${row.owner_id}:${row.step_key}:${row.label}`,
       ownerKind: row.owner_kind,
@@ -389,7 +443,9 @@ export async function readAiActivity(
       stepKey: row.step_key,
       label: row.label,
       state: row.state,
+      model: effectModel(result),
       route: row.budget_route,
+      ...effectTokens(result),
       reservedMicros: row.reserved_usd_micros === null ? null : Number(row.reserved_usd_micros),
       actualMicros: row.actual_usd_micros === null ? null : Number(row.actual_usd_micros),
       startedTick: row.started_tick,

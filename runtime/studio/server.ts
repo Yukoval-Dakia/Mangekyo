@@ -142,6 +142,16 @@ async function openWeb() {
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
 const server = mode === 'worker' ? undefined : await openWeb();
+
+async function interruptibleDelay(ms: number, signal: AbortSignal) {
+  try {
+    await delay(ms, undefined, { signal });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 if (mode === 'web') {
   const stop = () => {
     stopEvents?.();
@@ -152,13 +162,38 @@ if (mode === 'web') {
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
 } else {
-  await runWorker(storeId).catch(async error => {
-    await pythonHost.close();
-    throw error;
-  });
+  const controller = new AbortController();
+  const worker = runWorkerLoop(storeId, controller.signal);
+  const stop = () => {
+    controller.abort();
+    void worker;
+  };
+  process.once('SIGTERM', stop);
+  process.once('SIGINT', stop);
+  // In studio mode the HTTP server is the product surface: the worker loop runs
+  // in the background and must never take the process down with it.
+  if (mode === 'worker') await worker;
+  else void worker.catch(() => {});
 }
 
-async function runWorker(storeId: string) {
+type WorkerRound = {
+  readonly connection: Connection;
+  readonly client: Client;
+  readonly workers: readonly { worker: { run(): Promise<void>; getState(): string; shutdown(): void }; connection: { close(): Promise<void> } }[];
+  readonly runs: readonly Promise<void>[];
+  readonly relaying: Promise<void>;
+  readonly roundFailed: () => boolean;
+};
+
+async function closeRound(round: WorkerRound | undefined) {
+  if (!round) return;
+  for (const { worker } of round.workers) if (worker.getState() === 'RUNNING') worker.shutdown();
+  await Promise.allSettled([...round.runs, round.relaying]);
+  await Promise.allSettled(round.workers.map(({ connection }) => connection.close()));
+  await round.connection.close().catch(() => {});
+}
+
+async function runWorkerLoop(storeId: string, signal: AbortSignal) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
   const executeResearch = (ref: WorkRef, terminal: boolean) => research.execute(ref, terminal, workCancellationSignal());
@@ -182,8 +217,6 @@ async function runWorker(storeId: string) {
     namespace: process.env.TEMPORAL_NAMESPACE || 'default',
     buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
   };
-  const connection = await Connection.connect({ address: workerConfig.address });
-  const client = new Client({ connection, namespace: workerConfig.namespace });
   const protectedMethods = [
     {deriver:confirmedTeachingMethod, lane:'teaching-confirmed-v1'},
     {deriver:learningToolsMethod, lane:'learning-tools-v1'},
@@ -203,65 +236,118 @@ async function runWorker(storeId: string) {
       run: (ref: WorkRef, terminal: boolean, cause?: WorkFailureCause) => executeNotionBlockWork(db, ref, terminal, cause) },
     ...(mineruToken() ? [{ queue: capabilityTaskQueue(queue, 'ocr-v1'), route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
   ];
-  const workers = await Promise.all(lanes.map(lane => {
-    async function execute(id: string, terminal = false, cause?: WorkFailureCause) {
-      const ref = await acknowledgeStartedWork(db, id, lane.route);
-      if (ref) await lane.run(ref, terminal, cause);
-    }
-    return createWorkWorker(execute, {
-      ...workerConfig, taskQueue: lane.queue, deploymentName: lane.queue,
-      ...(lane.route ? {} : {advanceCoordinator: research.advance}),
-      onTerminalFailure: (id, cause) => execute(id, true, cause),
-      ...(lane.route === notionBlockRoute ? {isRemoteUnavailable: (error: unknown) => error instanceof NotionReadTemporaryFailure} : {}),
-    });
-  }));
-  let stopping = false;
-  const runs = workers.map(({worker}) => worker.run());
-  const running = Promise.all(runs);
-  void running.catch((error) => {
-    console.error('Temporal Worker 停止', error.name);
-    process.exitCode = 1;
-    stopping = true;
-  });
-  if (process.env.MANGEKYO_ACTIVATE_LOCAL_BUILD === '1') {
-    await Promise.all(lanes.map(lane => activateLocalDeployment(client, workerConfig, lane.queue)));
-  }
-  async function relay(lane: typeof lanes[number]) {
+
+  async function startRound(): Promise<WorkerRound> {
+    const connection = await Connection.connect({ address: workerConfig.address });
+    const client = new Client({ connection, namespace: workerConfig.namespace });
     let failed = false;
-    while (!stopping) {
-      try {
-        await relayPending(db, async (ref, id) => {
-          if (!lane.route && await research.relayWake(client, queue, ref, id)) return;
-          await startWork(client, id, {taskQueue: lane.queue});
-        }, lane.route);
-        failed = false;
-      } catch {
-        if (!failed) console.error('执行交接暂时不可用，待办已保留。');
-        failed = true;
-      }
-      await delay(failed ? 2500 : 500);
+    let workers;
+    try {
+      workers = await Promise.all(lanes.map(lane => {
+        async function run(id: string, terminal = false, cause?: WorkFailureCause) {
+          const ref = await acknowledgeStartedWork(db, id, lane.route);
+          if (ref) await lane.run(ref, terminal, cause);
+        }
+        return createWorkWorker(run, {
+          ...workerConfig, taskQueue: lane.queue, deploymentName: lane.queue,
+          ...(lane.route ? {} : { advanceCoordinator: research.advance }),
+          onTerminalFailure: (id, cause) => run(id, true, cause),
+          ...(lane.route === notionBlockRoute ? { isRemoteUnavailable: (error: unknown) => error instanceof NotionReadTemporaryFailure } : {}),
+        });
+      }));
+    } catch (error) {
+      await connection.close().catch(() => {});
+      throw error;
     }
+    const runs = workers.map(({ worker }) => worker.run());
+    const running = Promise.all(runs);
+    void running.catch(error => {
+      if (!signal.aborted) {
+        failed = true;
+        console.error('Temporal Worker 中断，准备重连。', error instanceof Error ? error.name : 'error');
+      }
+    });
+    if (process.env.MANGEKYO_ACTIVATE_LOCAL_BUILD === '1') {
+      try {
+        await Promise.all(lanes.map(lane => activateLocalDeployment(client, workerConfig, lane.queue)));
+      } catch (error) {
+        failed = true;
+        console.error('构建激活失败，准备重连。', error instanceof Error ? error.name : 'error');
+      }
+    }
+    async function relay(lane: typeof lanes[number]) {
+      let warned = false;
+      while (!signal.aborted && !failed) {
+        try {
+          await relayPending(db, async (ref, id) => {
+            if (!lane.route && await research.relayWake(client, queue, ref, id)) return;
+            await startWork(client, id, { taskQueue: lane.queue });
+          }, lane.route);
+          warned = false;
+        } catch {
+          if (signal.aborted || failed) break;
+          if (!warned) console.error('执行交接暂时不可用，待办已保留。');
+          warned = true;
+        }
+        if (!await interruptibleDelay(warned ? 2500 : 500, signal)) break;
+      }
+    }
+    const relaying = Promise.all(lanes.map(relay)).then(() => undefined);
+    return { connection, client, workers, runs, relaying, roundFailed: () => failed };
   }
-  const relaying = Promise.all(lanes.map(relay));
-  let closing = false;
-  async function stop() {
-    if (closing) return;
-    closing = true;
-    stopping = true;
+
+  let attempt = 0;
+  let offlineLogged = false;
+  let round: WorkerRound | undefined;
+  const aborted = new Promise<'aborted'>(resolve => {
+    if (signal.aborted) resolve('aborted');
+    else signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+  });
+  const stop = async () => {
     stopEvents?.();
     server?.close();
-    for (const {worker} of workers) if (worker.getState() === 'RUNNING') worker.shutdown();
-    await Promise.allSettled([...runs, relaying]);
+    await closeRound(round);
     await pythonHost.close();
-    await Promise.all(workers.map(({connection}) => connection.close()));
-    await connection.close();
     await db.close();
+  };
+  try {
+    while (!signal.aborted) {
+      try {
+        round = await startRound();
+      } catch (error) {
+        await closeRound(round);
+        round = undefined;
+        if (signal.aborted) break;
+        if (!offlineLogged) {
+          console.error('Temporal 暂不可达，后台将持续重连；本地界面不受影响。',
+            error instanceof Error ? error.name : 'error');
+          offlineLogged = true;
+        }
+        if (!await interruptibleDelay(Math.min(30_000, 2_000 * 2 ** attempt), signal)) break;
+        attempt += 1;
+        continue;
+      }
+      attempt = 0;
+      offlineLogged = false;
+      const outcome = await Promise.race([
+        Promise.all(round.runs).then(() => 'stopped' as const, () => 'failed' as const),
+        round.relaying.then(() => 'stopped' as const, () => 'stopped' as const),
+        aborted,
+      ]);
+      const finished = round;
+      round = undefined;
+      await closeRound(finished);
+      if (signal.aborted || outcome === 'aborted') break;
+      if (outcome === 'failed' || finished.roundFailed()) {
+        if (!offlineLogged) {
+          console.error('Temporal 连接中断，后台将持续重连。');
+          offlineLogged = true;
+        }
+        if (!await interruptibleDelay(Math.min(30_000, 2_000 * 2 ** attempt), signal)) break;
+        attempt += 1;
+      } else break;
+    }
+  } finally {
+    await stop();
   }
-  process.once('SIGTERM', () => void stop());
-  process.once('SIGINT', () => void stop());
-  void running
-    .finally(() => {
-      if (!closing) void stop();
-    })
-    .catch(() => {});
 }

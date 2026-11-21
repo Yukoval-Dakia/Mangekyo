@@ -167,6 +167,20 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
         await tx.insert('effects', { learner_id: studioLearner, owner_kind: 'session', owner_id: turnId, step_key: 'step1', label: 'teaching-model', input_digest: 'd1', provider_effect_id: 'pe1', state: 'done', reserved_usd_micros: 1200, actual_usd_micros: 800, budget_route: 'default', started_tick: tick, ended_tick: tick });
       }));
 
+      // A classroom turn: same companion caseId but the classroom flag routes the handoff to /classroom.
+      const classroomId = factId(stableId('tr', 'classroom'));
+      const turnId2 = factId(stableId('tr', 'turn2'));
+      await send('activity.submitTurn', 'turn2', { id: turnId2, data: { sessionId: classroomId, caseId: 'companion', parentId: null, answer: '课堂回合', memoryVersion: 1, allowBackgroundUnderstanding: true, classroom: { mode: 'start', evidence: [] }, model: 'kimi-k3.1-pro', baseUrl: 'http://127.0.0.1:4000/v1' } });
+      await db.tx({ learner: studioLearner }, async tx => tx.withLearnerWrite(async tick => {
+        const fb2 = stableId('tr', 'fb2');
+        const fb2Manifest = { version: 1, learner: studioLearner, purpose: 'teaching', gatherTick: tick, inputs: [{ kind: 'fact', id: turnId2, rev: 1, accessEpoch: '0', mode: 'following' }] };
+        const fb2Val = { action: 'companion_reply', model: 'kimi-k3.1-pro', message: '课堂回复', foregroundDigest: { id: turnId2, kind: 'companion_completed', summary: '课堂回合完成', sourceRefs: [{ kind: 'fact', id: turnId2, rev: 1, accessEpoch: '0', mode: 'following' }] } };
+        await tx.insert('derivations', { learner_id: studioLearner, id: fb2, slot_type: slotType, slot_key: turnId2, deriver: 'activity/evidence-tutor-v1', scope_keys: '{}', value: JSON.stringify(fb2Val), lifecycle: 'effective', freshness: 'current', gather_tick: tick, effective_tick: tick, manifest: JSON.stringify(fb2Manifest) });
+        await tx.insert('slot_state', { learner_id: studioLearner, slot_type: slotType, slot_key: turnId2, current_id: fb2, last_id: fb2, pending: 'none', changed_tick: tick, scope_keys: '{}' });
+        const result = JSON.stringify({ reportedModel: 'kimi-k3.1-pro', message: '课堂回复', usage: { prompt_tokens: 120, completion_tokens: 45 } });
+        await tx.insert('effects', { learner_id: studioLearner, owner_kind: 'session', owner_id: turnId2, step_key: 'step1', label: 'teaching-model', input_digest: 'd2', provider_effect_id: 'pe2', state: 'done', result, reserved_usd_micros: 900, actual_usd_micros: 600, budget_route: 'magpie', started_tick: tick, ended_tick: tick });
+      }));
+
       const graph = (await get('/api/knowledge/graph')).body as { nodes: { id: string; counts: Record<string, number>; mastery: Record<string, unknown> }[]; edges: { verified: boolean; kind: string }[]; pendingProposals: { commandType: string }[] };
       expect(graph.nodes.find(n => n.id === c1)).toMatchObject({ counts: { questions: 2, textbooks: 1, notes: 1, notionBlocks: 1 }, mastery: { status: 'steady', retrievability: 0.82, independentCount: 1 } });
       expect(graph.nodes.find(n => n.id === c2)?.mastery).toMatchObject({ status: 'unknown', retrievability: null, independentCount: 0 });
@@ -183,16 +197,27 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       expect(mem.hypotheses[0]!.basis.length).toBeGreaterThan(0);
       expect(mem.calibration).toMatchObject({ status: 'available', totalReconciliations: 1, confirmed: 1, missed: 0 });
 
-      const ai = (await get('/api/ai/activity')).body as { running: unknown[]; handoffs: { channel: string }[]; recentTools: { toolCount: number; basisCount: number }[]; usage: Record<string, unknown>; pendingProposals: { kind: string }[] };
+      const ai = (await get('/api/ai/activity')).body as {
+        running: unknown[];
+        handoffs: { id: string; channel: string; href: string | null }[];
+        recentTools: { toolCount: number; basisCount: number }[];
+        usage: Record<string, unknown> & { recentCalls: { ownerId: string; model: string | null; route: string | null; promptTokens: number | null; completionTokens: number | null; totalTokens: number | null }[] };
+        pendingProposals: { kind: string }[];
+      };
       expect(ai.running).toHaveLength(1);
       expect(new Set(ai.handoffs.map(h => h.channel))).toEqual(new Set(['night_chain', 'retention', 'notion']));
-      expect(ai.recentTools).toMatchObject([{ toolCount: 2, basisCount: 1 }]);
-      expect(ai.usage).toMatchObject({ currency: 'USD_MICROS', spentMicros: 800, limitMicros: 500000 });
+      expect(ai.handoffs.find(h => h.id === turnId2)?.href).toBe(`/classroom/${classroomId}`);
+      expect(ai.handoffs.find(h => h.id === turnId)?.href).toBe('/companion');
+      expect(ai.recentTools).toMatchObject([{ toolCount: 0, basisCount: 1 }, { toolCount: 2, basisCount: 1 }]);
+      expect(ai.usage).toMatchObject({ currency: 'USD_MICROS', spentMicros: 1400, limitMicros: 500000 });
+      const call = ai.usage.recentCalls.find(c => c.ownerId === turnId2);
+      expect(call).toMatchObject({ model: 'kimi-k3.1-pro', route: 'magpie', promptTokens: 120, completionTokens: 45, totalTokens: 165 });
       expect(new Set(ai.pendingProposals.map(p => p.kind))).toEqual(new Set(['knowledge_edge', 'textbook_patch', 'question_draft', 'question_meta']));
 
       // Revoke Notion selection, revoke companion turn teaching access, and bump c1 access_epoch
       await notion.mutate('revoke', { requestId: 'notion-revoke-1', deletionWatermark: '0', selectionId: 'calc-notion', expectedEpoch: '1' });
       await send('activity.setWorkspaceTeaching', 'revoke-turn', { id: turnId, expectedRev: 1, enabled: false }, 'learner', 'storage');
+      await send('activity.setWorkspaceTeaching', 'revoke-turn2', { id: turnId2, expectedRev: 1, enabled: false }, 'learner', 'storage');
       await send('activity.setWorkspaceTeaching', 'revoke-ord', { id: ordinaryAttemptId, expectedRev: 2, enabled: false }, 'learner', 'storage');
       await db.tx({ learner: studioLearner }, async tx => tx.withLearnerWrite(async tick => {
         await tx.query('UPDATE facts SET access_epoch=access_epoch+1, changed_tick=$2 WHERE learner_id=$1 AND id=$3', [studioLearner, tick, c1]);

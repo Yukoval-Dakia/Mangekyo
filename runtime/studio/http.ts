@@ -133,7 +133,7 @@ export function serve(
 ) {
   const transparency = student.transparency ?? openTransparency(db);
   const hosts = new Set(['localhost', '127.0.0.1'].map((host) => host + ':' + port));
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader(
@@ -497,4 +497,10 @@ export function serve(
       });
     }
   });
+  // Long synchronous model turns can exceed the Node 5s default keep-alive
+  // window; keep reused connections open across them and require the header
+  // timeout to stay strictly above the keep-alive timeout.
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 66_000;
+  return server;
 }
