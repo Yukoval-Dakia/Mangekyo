@@ -57,6 +57,7 @@ import {
 import { recordWorkbookPresentationCommand, workbookPresentation, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { practiceCustodyType } from '../../modules/activity/sealed-practice.ts';
 import { isPracticeWorkbook, sealedPracticePaper, submitWithPracticeCustody } from './sealed-practice.ts';
 import { RequestError } from './sessions.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
@@ -261,7 +262,21 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     async list(): Promise<WorkbookSummary[]> {
       return db.snapshot({ learner: studioLearner }, async (tx) => {
         const read = createCommandReadContext(tx, storagePurpose);
-        return readWorkbookSummaries(tx, await allAttempts(tx, read), id => readPaper(tx, id),
+        const { rows } = await tx.query<{ id: string }>(
+          `SELECT id, created_tick FROM facts
+            WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
+           UNION ALL
+           SELECT r.data#>>'{paper,id}' AS id, f.created_tick
+             FROM facts f JOIN fact_revs r
+               ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+            WHERE f.learner_id=$1 AND f.type=$3 AND f.retracted_rev IS NULL
+              AND r.kind='value' AND r.data->>'kind'='sealed'
+              AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id
+                AND t.kind='fact' AND t.id=r.data#>>'{paper,id}')
+           ORDER BY created_tick DESC, id`,
+          [tx.learner, workbookPaperType, practiceCustodyType],
+        );
+        return readWorkbookSummaries(rows.map(row => factId(row.id)), await allAttempts(tx, read), id => readPaper(tx, id),
           id => sourceView(tx, read, id), error => unavailableFact(error) || unavailablePaper(error));
       });
     },

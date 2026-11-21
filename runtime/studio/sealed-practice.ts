@@ -25,7 +25,7 @@ export async function isPracticeWorkbook(tx: ReadTransaction, paper: FactId) {
 
 export async function sealedPracticePaper(tx: ReadTransaction, id: FactId) {
   try {
-    return await openSealedPractice(createCommandReadContext(tx,purpose),id);
+    return await openSealedPractice(createCommandReadContext(tx,'storage'),id);
   } catch (error) {
     if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
     return undefined;
@@ -94,12 +94,12 @@ export function submitWithPracticeCustody(db: Db, activity: LoadedModule, hooks:
   paperId: FactId, request: CommandRequest) {
   return db.tx(scope,async tx => {
     await lockLearner(tx,tx.learner);
-    const read = createCommandReadContext(tx,purpose);
+    const read = createCommandReadContext(tx,'storage');
     const custody = await readPracticeCustody(read,await practiceCustodyId(paperId));
     const handle = createCommandHandler(withinLearnerTransaction(db,tx),{modules:[activity],hooks});
     if (custody?.value.kind === 'sealed') {
       if (!await sealedPracticePaper(tx,paperId)) throw unavailable();
-      await handle({...scope,actor:'learner',purpose,type:releasePracticeFeedbackCommand,
+      await handle({...scope,actor:'learner',purpose:'storage',type:releasePracticeFeedbackCommand,
         id:commandId(stableId(sealedPracticePurpose,'release-feedback',paperId)),
         ...(request.deletionWatermark === undefined ? {} : {deletionWatermark:request.deletionWatermark}),
         input:{custody:{id:custody.fact.ref.id,rev:custody.fact.ref.rev},paper:{id:paperId,rev:1}}});

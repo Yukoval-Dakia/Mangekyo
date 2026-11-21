@@ -39,12 +39,12 @@ export function arithmeticQuestion(practice: ReturnType<typeof arithmeticPractic
 
 /** The dedicated practice release admits only the deterministic source born under this policy. */
 export async function openArithmeticPractice(read: {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>},
-  id: FactId, question?: FactSnapshot) {
+  id: FactId, question?: FactSnapshot, use: 'storage' | 'teaching' = 'teaching') {
   const source = question ?? await read.fact(id,{mode:'following'});
-  if (source.type !== assetType || source.ref.id !== id || !source.purpose.some(use => use === 'teaching' || use === 'all')) return;
+  if (source.type !== assetType || source.ref.id !== id || !source.purpose.some(granted => granted === use || granted === 'all')) return;
   const {state, snapshot} = await readQuestionState(read,id);
   if (!state.arithmeticPractice || state.recheck !== 0 ||
-      state.restrictions.some(item => ['all','practice','teaching'].includes(item.scope))) return;
+      state.restrictions.some(item => ['all','practice',use].includes(item.scope))) return;
   const {asset, expected, prompt} = arithmeticQuestion(arithmeticPractice(state.arithmeticPractice));
   // Every admitted question has exactly one generated prompt and exactly one local scoring contract.
   const actual = questionAsset(source.value);

@@ -45,10 +45,10 @@ export async function openSealedPractice(read: FactReader, id: FactId) {
   const custody = await readPracticeCustody(read,await practiceCustodyId(id));
   if (!custody || custody.value.kind !== 'sealed' || custody.value.paper.id !== id) return;
   const {id:sourceId,rev} = custody.value.question;
-  const current = await openArithmeticPractice(read,sourceId);
+  const current = await openArithmeticPractice(read,sourceId,undefined,'storage');
   if (!current) return;
   const pinned = current.source.ref.rev === rev ? current : await openArithmeticPractice(read,sourceId,
-    await read.fact(sourceId,{mode:'pinned',rev}));
+    await read.fact(sourceId,{mode:'pinned',rev}), 'storage');
   if (pinned) return {custody,paper:arithmeticPracticePaper(pinned,custody.value.savedAt)};
   return undefined;
 }
