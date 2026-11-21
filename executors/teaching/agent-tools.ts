@@ -366,13 +366,20 @@ function runPythonContainer(name: string, input: string, image: string): Promise
         void clean().then(() => finish({ kind: 'timeout' }));
       } else if (overflow) {
         void clean().then(() => finish({ kind: 'overflow' }));
-      } else {
+      } else if (code === 0) {
         finish({
           kind: 'closed',
           code,
           stdout: Buffer.concat(stdout),
           stderr: Buffer.concat(stderr),
         });
+      } else {
+        void clean().then(() => finish({
+          kind: 'closed',
+          code,
+          stdout: Buffer.concat(stdout),
+          stderr: Buffer.concat(stderr),
+        }));
       }
     });
     child.stdin.on('error', () => undefined);

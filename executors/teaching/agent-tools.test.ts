@@ -1,10 +1,65 @@
 import {expect, it, vi} from 'vitest';
+import {EventEmitter} from 'node:events';
+import {spawn} from 'node:child_process';
 import {createStudyTools, readPythonEnvelope} from './agent-tools.ts';
 import {createLearningTurn} from './learning-turn.ts';
 import {studyToolDiscovery} from './study-tool-discovery.ts';
 import {studyToolResults} from './study-tool-results.ts';
 import {watchFetch} from './test/chat.ts';
 import {hasDockerImage} from './test/docker.ts';
+
+const realSpawn = vi.hoisted(() => ({ current: undefined as unknown }));
+vi.mock('node:child_process', async importOriginal => {
+  const original = await importOriginal<typeof import('node:child_process')>();
+  realSpawn.current = original.spawn;
+  return { ...original, spawn: vi.fn((...args: Parameters<typeof original.spawn>) =>
+    (realSpawn.current as typeof original.spawn)(...args)) };
+});
+
+const OK_ENVELOPE = '\n__MANGEKYO_RESULT__' + JSON.stringify({
+  status: 'ok', stdout: 'done', stderr: '', files: {}, images: {},
+}) + '\n';
+
+function fakeDockerChild(closeCode: number | null, stdoutText = '') {
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: EventEmitter; stderr: EventEmitter;
+    stdin: EventEmitter & {end: (input?: unknown) => void};
+    kill: () => boolean;
+  };
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  let ended = false;
+  child.stdin = Object.assign(new EventEmitter(), {end: () => {
+    if (ended) return;
+    ended = true;
+    if (stdoutText) child.stdout.emit('data', Buffer.from(stdoutText));
+    queueMicrotask(() => child.emit('close', closeCode));
+  }});
+  child.kill = () => true;
+  return child;
+}
+
+it('reclaims the container on non-zero docker exit but not on exit 0', async () => {
+  const spawnMock = vi.mocked(spawn);
+  const delegate = ((...args: Parameters<typeof spawn>) =>
+    (realSpawn.current as typeof spawn)(...args)) as typeof spawn;
+  spawnMock.mockImplementation(delegate as never);
+  spawnMock.mockImplementation(((_command: string, args: readonly string[]) => {
+    if (args[0] === 'rm') return fakeDockerChild(0) as never;
+    return fakeDockerChild(137) as never;
+  }) as never);
+  const tools = createStudyTools();
+  const failed = await tools.execute('python', {code: 'print(1)'});
+  expect(failed).toMatchObject({ok: false});
+  expect(spawnMock.mock.calls.filter(call => call[1]?.[0] === 'rm')).toHaveLength(1);
+  spawnMock.mockClear();
+  spawnMock.mockImplementation(((_command: string, args: readonly string[]) =>
+    fakeDockerChild(0, OK_ENVELOPE) as never) as never);
+  const ok = await tools.execute('python', {code: 'print(1)'});
+  expect(typeof ok).toBe('string');
+  expect(spawnMock.mock.calls.filter(call => call[1]?.[0] === 'rm')).toHaveLength(0);
+  spawnMock.mockImplementation(delegate as never);
+});
 
 it('exposes scratch tools and offers keyless Exa only with search permission', () => {
   const scratch = ['python', 'read_file', 'write_file'];
