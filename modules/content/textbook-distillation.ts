@@ -253,9 +253,9 @@ export async function previewTextbookDistillation(
   if (input.speaker !== 'learner') return { status: 'source_unavailable' };
   const { candidates, selection } = input;
   const turn = { ...input.turn, ref: parseTextbookReference(input.turn.ref) };
-  const { anchor } = turn.ref;
-  if (turn.ref.type !== 'activity.studyTurn' || anchor.kind !== 'path' ||
-      anchor.path.length !== 1 || anchor.path[0] !== 'answer') return { status: 'source_unavailable' };
+  const turnAnchor = turn.ref.anchor;
+  if (turn.ref.type !== 'activity.studyTurn' || turnAnchor.kind !== 'path' ||
+      turnAnchor.path.length !== 1 || turnAnchor.path[0] !== 'answer') return { status: 'source_unavailable' };
   if (!turn.witness || !matches(turn.ref, turn.witness)) return { status: 'missing_witness' };
   const ctx = authorizedStorage(access);
   let answer: string;
