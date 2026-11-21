@@ -207,7 +207,7 @@ export function retentionSlice(input: RetentionInput, methodVersion = defaultRet
     }
     return { ...slice, events: slice.events.map(event => {
       const key = event.ref + '/' + event.rev;
-      if ('exam_pacing' in event) return event;
+      if ('exam_pacing' in event || event.exam_pacing_item) return event;
       const observation = scoped.get(key);
       if (counts.get(key) !== 1 || !observation || event.item_novelty !== 'same' ||
           event.outcome !== observation.result || Date.parse(event.occurred_at) !== Date.parse(observation.submittedAt) ||

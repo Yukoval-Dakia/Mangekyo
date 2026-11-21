@@ -54,8 +54,8 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
     return correctionContradictions(reopen, correction, {
       source, issuance, issuedAt: '11' as Tick, itemId: mount.item.itemId, authorization, basis: [],
       admittedAt: cutoff.tick, startedAt: at(0), through: at(60_000), window: 'immediate', variant,
-      cutoff: observedCutoff, slice: { ...slice, events: slice.events.map(event => ({ ...event, claim_ids: [belief.ref.id],
-        ...(confidence === undefined ? {} : {confidence}) })) },
+      cutoff: observedCutoff, slice: { ...slice, events: slice.events.map(event => event.exam_pacing_item ? event :
+        { ...event, claim_ids: [belief.ref.id], ...(confidence === undefined ? {} : {confidence}) }) },
       fragment: { anchor: 'q', excerpt: '12' }, ...changes,
     }, selected);
   };
