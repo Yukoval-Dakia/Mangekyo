@@ -61,11 +61,11 @@ export function readPlaybookLift(read: ReadContext, learner: DerivationSnapshot<
 }
 
 export function playbookGardeningProposal(id: FactId, expectedRev: Revision, status: PlaybookStatus) {
-  if (status.status !== 'demoted') return null;
+  if (status.status !== 'demoted' || status.liftId === null) return null;
   return {
     light: 'yellow' as const,
-    dedupKey: `retire-playbook/${id}/${expectedRev}`,
-    command: {type: retirePlaybookCommand, input: {id, expectedRev, version: status.version}},
+    dedupKey: `retire-playbook/${id}/${expectedRev}/${status.liftId}`,
+    command: {type: retirePlaybookCommand, input: {id, expectedRev, version: status.version, liftId: status.liftId}},
   };
 }
 export function verifiedStatus(playbookId: string, proposal: Playbook,
