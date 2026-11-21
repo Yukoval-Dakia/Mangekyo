@@ -1,8 +1,7 @@
-import { mineruSupports, type readMineru, type submitMineru } from '@mangekyo/executor-document-extraction/mineru';
+import { mineruSupports, pollMineru, type readMineru, type submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
-import { setTimeout as delay } from 'node:timers/promises';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
@@ -154,25 +153,16 @@ export function openCloudIntakeWork(db: Db, intake: {
         return;
       }
       if (typeof submission.result !== 'string') throw new Error('Invalid OCR submission receipt');
-      const signal = AbortSignal.timeout(120_000);
-      for (;;) {
+      const result = await pollMineru(input => client.read(input), {
+        token, dataId, batchId: submission.result, beforeDownload: () => db.snapshot(scope, authorize),
+      }, async () => {
         await db.snapshot(scope, authorize);
-        if (configurationChanged()) return finishConfigurationChange();
-        const result = await client.read({ token, dataId, batchId: submission.result, signal,
-          beforeDownload: () => db.snapshot(scope, authorize) });
-        if (result.state === 'pending') {
-          await delay(pollIntervalMs, undefined, { signal });
-          continue;
-        }
-        await db.snapshot(scope, authorize);
-        if (configurationChanged()) return finishConfigurationChange();
-        if (result.state === 'done') {
-          await publish(completeMineruExtraction(result.text, result.pages));
-          return;
-        }
-        await publish(failedMineruExtraction(result.message));
-        return;
-      }
+        return !configurationChanged();
+      }, pollIntervalMs);
+      if (!result) return finishConfigurationChange();
+      await publish(result.state === 'done'
+        ? completeMineruExtraction(result.text, result.pages)
+        : failedMineruExtraction(result.message));
     } catch (error) {
       if (!intakeStopped(error)) throw error;
       await cancelWork(db, ref);
