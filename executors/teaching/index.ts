@@ -425,3 +425,16 @@ export async function runTeachingTurn(input: TeachingInput, dependencies: Teachi
 }
 
 export { first45Answer, first45Diagnostic, first45Histories, first45Question } from './examples.ts';
+export {
+  executeNotionRead,
+  notionReadDefinition,
+  notionReadWriteKeys,
+  parseNotionReadArgs,
+  type NotionReadBlock,
+  type NotionReadDiff,
+  type NotionReadHostOutcome,
+  type NotionReadHostPort,
+  type NotionReadInput,
+  type NotionReadOutput,
+  type UnchangedNotionReadSnapshot,
+} from './notion-read-tool.ts';

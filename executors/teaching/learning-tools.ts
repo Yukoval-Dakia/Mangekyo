@@ -190,7 +190,8 @@ export const narrowWorkspaceDefinitions: ToolDefinition[] = [
 ].map(name => workspaceDefinitionByName.get(name)!)
   .concat(renamed('save_edge'), saveQuestionDefinition);
 
-export function learningHostDefinitions(manageBeliefs: boolean, allowedIntents: readonly string[], artifact?: ToolDefinition): LearningTools['definitions'] {
+export function learningHostDefinitions(manageBeliefs: boolean, allowedIntents: readonly string[],
+  artifact?: ToolDefinition, notionRead?: ToolDefinition): LearningTools['definitions'] {
   return {
     search_learning:renamed('search_learning'),open_learning:renamed('open_learning'),
     read_context:tool('read_context','读取已授权学习上下文，intent 支持 radar、tutoring、conversation、planning、execution、history。从返回的 omitted.expand 可打开更多本轮已授权内容。当前只读当前视点。' +
@@ -207,5 +208,6 @@ export function learningHostDefinitions(manageBeliefs: boolean, allowedIntents: 
       action:{const:'mount_artifact'},...((artifact?.function.parameters.properties ?? {}) as object),
     },['action','view']),
     ...(artifact ? {mount_artifact:{...artifact,function:{...artifact.function,name:'mount_artifact' as const}}} : {}),
+    ...(notionRead ? {notion_read:{...notionRead,function:{...notionRead.function,name:'notion_read' as const}}} : {}),
   };
 }
