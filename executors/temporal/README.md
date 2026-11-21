@@ -4,7 +4,7 @@
 
 `pnpm --filter @mangekyo/temporal worker` 加载 `MANGEKYO_EXECUTE_WORK_MODULE` 指向的本地模块。该模块导出 `executeWork(executionRef)` 和幂等的 `onTerminalFailure(executionRef)`。执行函数从 PG 解析工作意图，按当前工作代次和效果账本处理。执行最多尝试四次。耗尽后，独立 Activity 持续尝试记录失败状态，记录成功后工作流以失败结束。工作流历史记录不透明引用、平台运行元数据和脱敏后的失败。Activity 心跳不带业务载荷。
 
-Worker 从 `TEMPORAL_ADDRESS`、`TEMPORAL_NAMESPACE`、`TEMPORAL_TASK_QUEUE`、`TEMPORAL_DEPLOYMENT` 和 `TEMPORAL_BUILD_ID` 读取配置。同一部署的每个构建使用独立 Build ID。新 Worker 开始轮询后，通过 `temporal worker deployment set-current-version --deployment-name <部署名> --build-id <新版本>` 切换流量。保留旧版 Worker，直到绑定旧版的运行结束。
+Worker 从 `TEMPORAL_ADDRESS`、`TEMPORAL_NAMESPACE`、`TEMPORAL_TASK_QUEUE`、`TEMPORAL_DEPLOYMENT` 和 `TEMPORAL_BUILD_ID` 读取配置。同一部署的每个构建使用独立 Build ID。新 Worker 开始轮询后，通过 `temporal worker deployment set-current-version --deployment-name <部署名> --build-id <新版本>` 切换流量。兼容升级可保留旧版 Worker，直到绑定旧版的运行结束。需要停机的版本按对应切换流程执行。
 
 使用独立本地开发服务器复现恢复验证。验证会新建自己的命名空间，终止并重新启动实际 Worker 进程，并输出工作流 ID、运行 ID、状态和版本。
 
@@ -74,6 +74,64 @@ git diff --check
 命令：`TEMPORAL_ADDRESS=127.0.0.1:17415 node /tmp/mangekyo-unit14.DsgQCV/p1-probe.mjs "$PWD"`，断言结果位于 `/tmp/mangekyo-unit14.DsgQCV/p1-run-Jm7BvS/proof.json`。
 
 上游接入后需复验实际 PG 配置和 outbox 交接、代次与撤权准入、效果回执及预算、已授权旧作读取和无人值守交付。生产部署、协调器换版及服务器故障恢复另验。
+
+## Studio v13 草稿库切换到 v14
+
+适用于尚未登记 v14 的库。只有写过定时订正预约的 v13 草稿构建需要恢复这些预约，正式主线的 v13 不会写这种预约。旧版 v14 已登记的库不会重跑迁移，也不会补做撤权、墓碑回查或抬高 Worker 门槛。有草稿预约或升级来历不明时，保持停写及停轮询，先核对墓碑、授权、PG 意图及 Temporal 历史，再制定修复方案。已被旧构建取消的预约保留终态。
+
+1. 关闭所有写入入口和外发，禁用旧 Web、Worker 和中继的自动拉起，停止这些进程并确认退出。**禁止旧草稿 Worker 在 v14 上轮询。** v14 把最低 Worker schema 提至 14，只能拒绝旧 Studio 重新启动。已启动的旧 Worker 不会再次读取门槛，若继续轮询，原 Run 可能由旧 Activity 完成并把订正预约取消。保留原 PG store、对象路径、Temporal namespace 和队列。对未决外发保留原身份并对账。
+2. 保持停写，记录原 store ID、所有现有队列及其构建。在原 namespace 对各队列列出活跃 Run，包括普通队列上的 `mangekyoWork` 和 `mangekyoCoordinator`，记录 Workflow ID、Run ID、队列及部署。用 PG 的 `work.execution_ref`、尚未交接的 outbox 和已启用设置里的 `coordinatorRef` 逐个 describe 复核。未确认的 Work 意图也可能已启动，必须用原 `execution_ref` 查询。Visibility 可能延迟，有遗漏则复查。未曾启动的意图由新版中继处理。不要 cancel、terminate、reset 或另启同一业务的工作流。
+
+   ```sh
+   export TEMPORAL_ADDRESS TEMPORAL_NAMESPACE
+   temporal task-queue describe --task-queue "$queue" -o json > pollers-before.json
+   temporal workflow list --query "TaskQueue='$queue' AND ExecutionStatus='Running'" -o json > runs.json
+   jq -r '.[] | [.execution.workflowId,.execution.runId] | @tsv' runs.json > runs.tsv
+   ```
+
+   `queue` 是包含 store ID 的完整队列名，例如 `mangekyo-studio-<store ID>`。每条队列单独保存清单及 describe 结果，避免覆盖原记录。
+
+   在原 Studio schema 查询 PG 的交接身份和协调器身份。
+
+   ```sql
+   SELECT w.id, w.generation, w.execution_ref, o.state AS delivery
+   FROM work w LEFT JOIN work_outbox o
+     ON (o.learner_id, o.intent_id) = (w.learner_id, w.execution_ref)
+   WHERE w.state = 'ready' AND w.execution_ref IS NOT NULL;
+   SELECT 'coordinator:' || (r.data->>'coordinatorRef') AS workflow_id
+   FROM facts f JOIN fact_revs r ON (r.learner_id, r.fact_id, r.rev) = (f.learner_id, f.id, f.current_rev)
+   WHERE f.type = 'companion.researchSettings' AND f.retracted_rev IS NULL AND r.data->'enabled' = 'true'::jsonb;
+   ```
+3. 用新版以 `MANGEKYO_PROCESS=web` 启动并完成迁移，继续隔离用户入口。确认库仍是原 store，schema 和最低 Worker schema 均为 14。用同一数据库和 namespace 启动新版 `MANGEKYO_PROCESS=worker`，以唯一的 `MANGEKYO_BUILD_ID` 标识构建。待开始轮询，把各队列的部署版本指向新构建，含普通队列和现有订正能力队列。
+
+   ```sql
+   SELECT max(version) AS schema_version FROM kernel_schema_migrations;
+   SELECT store_id, minimum_worker_schema FROM kernel_runtime_identity WHERE singleton;
+   ```
+
+   ```sh
+   temporal worker deployment set-current-version --deployment-name "$queue" --build-id "$build"
+   ```
+
+4. 每条队列用各 Run 原来的部署名，按原 Workflow ID 和 Run ID 改绑 Work 和 Coordinator。切换默认构建后，旧 Run 仍可能固定在旧构建。
+
+   ```sh
+   while read -r workflow run; do
+     temporal workflow update-options --workflow-id "$workflow" --run-id "$run" \
+       --versioning-override-behavior pinned --versioning-override-deployment-name "$deployment" \
+       --versioning-override-build-id "$build" </dev/null || exit 1
+     temporal workflow describe --workflow-id "$workflow" --run-id "$run" -o json \
+       </dev/null > "describe-$run.json" || exit 1
+   done < runs.tsv
+   ```
+
+5. 核对 describe 的 `versioningInfo.versioningOverride.pinned.version` 以及原 Run ID。让已提交的 wake outbox 通过正常入口唤醒协调器（例如新版 Worker 启动校对），用历史确认该 Run 收到唤醒并由新构建运行 `advanceCoordinator`。订正 Work 等待已有 Activity 继续或重试，在原 Run 历史核对新版的 Workflow Task 及后续 Activity 身份，以及 PG 中的结果、等待原因或合法终态。
+
+   ```sh
+   temporal workflow show --workflow-id "$workflow" --run-id "$run" -o json > "history-$run.json"
+   ```
+
+   如果启动校对早于换绑，Signal 会留在同一活跃 Run 的历史中，换绑后核对其消费。对于仍在定时等待的 Run，等到实际复查再确认。若清单中的 Run 已关闭，核对终态和后继，如有后继则继续核对。确认无旧构建执行，同一工作代次未重复派发，普通 Todo 可继续，且删除或撤权的预约未派发，再按现有配置恢复入口和外发。发现差异时保留 PG、对象和 Temporal 历史并继续隔离。
 
 ## Studio v6/v7 原地切换到生命周期 v8
 
