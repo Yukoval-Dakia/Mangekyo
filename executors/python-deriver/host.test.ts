@@ -112,6 +112,18 @@ it('prioritizes the shortest matching variant with the frozen error revision', a
   expect(await host.derive('learner/cognition@2', helped)).toMatchObject(success({state: 'unknown'}));
 });
 
+it('starts the worker from warmup while derive keeps the same request contract', async ({ onTestFinished }) => {
+  let starts = 0;
+  const host = createPythonDeriverHost({
+    spawnProcess: (python, args) => (++starts, spawn(python, args, { stdio: ['pipe', 'pipe', 'ignore'], env: {} })),
+  });
+  onTestFinished(host.close);
+  host.warmup();
+  expect(starts).toBe(1);
+  expect(await host.derive(cognition, sample)).toMatchObject({ kind: 'ok', outcome: { kind: 'value' } });
+  expect(starts).toBe(1);
+});
+
 it.for([
   { reason: 'timed out', script: 'import sys\nfor _ in sys.stdin: pass' },
   { reason: 'exited', script: 'import sys\nsys.stdin.readline()\nsys.exit(1)' },

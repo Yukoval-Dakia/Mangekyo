@@ -65,6 +65,9 @@ export type TextbookMasterySources = {
   // Reopen these exact witnesses together for the actual display recipient,
   // checking current epochs, revisions, expiry and deletion. Missing means denied.
   reopen(scope: TextbookMasteryScope, witnesses: readonly BusWitness[]): Promise<readonly BusWitness[]>;
+  // Optional host hook after candidates and before the evidence snapshot.
+  // It may overlap trusted calculator startup with the authorized DB reads.
+  prepareEvidence?: (scope: TextbookMasteryScope, conceptIds: readonly string[]) => void;
 };
 
 export type TextbookMasteryAnchor = {
@@ -276,6 +279,7 @@ export async function readConceptMastery(scope: TextbookMasteryScope, conceptIds
   displayWitnesses: readonly BusWitness[], sources: TextbookMasterySources) {
   const version = sources.methodVersion ?? defaultRetentionMethod;
   const method = readPythonRetentionMethod(version);
+  if (method && conceptIds.size) sources.prepareEvidence?.(scope, [...conceptIds]);
   const batch = method && conceptIds.size ? await sources.readEvidence(scope, [...conceptIds]) : null;
   const coveredBuckets = batch ? evidenceBuckets(batch, scope, conceptIds) : null;
   const buckets = coveredBuckets ?? new Map<string, Bucket | null>();
