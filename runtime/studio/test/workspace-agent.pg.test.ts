@@ -67,6 +67,20 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     const plan = await loadStudioTestModule('plan');
     const access = openWorkspaceAccess(db, activity, content, capture, plan); expect(access.categories).toEqual(expect.arrayContaining([{id: 'goal', label: '目标'}, {id: 'task', label: '任务'}]));
     const textbook = openTextbook(db, content, {async onFactsChanged() {}});
+    const turnId = stableId('textbook source turn');
+    const submitTurn = createCommandHandler(db,{modules:[activity],hooks:{async onFactsChanged() {}}});
+    await submitTurn({learner:studioLearner,actor:'learner',purpose:'teaching',type:'activity.submitTurn',
+      id:commandId(turnId),input:{id:turnId,data:{caseId:'companion',sessionId:turnId,parentId:null,
+        answer:'这段对话用于本轮教学。',model:'local-test',baseUrl:'http://127.0.0.1'}}});
+    const pageWriter = openWorkspaceTools({db,turn:turnId,prior:[],authorize:async () => {},track() {},maySend:() => true,
+      pageBasis:[{id:turnId,type:'activity.studyTurn',rev:1,epoch:'0'}]});
+    const byCompanion = JSON.parse(await pageWriter.execute('save_page',{title:'伴学方法',content:'先找已知条件。'},1));
+    expect(byCompanion).toMatchObject({ok:true,status:'saved'});
+    expect(await textbook.get({learner:studioLearner,id:byCompanion.ref})).toMatchObject({title:'伴学方法'});
+    await db.snapshot({learner:studioLearner},async tx =>
+      expect(await resolveSource(tx,turnId,{recipient:'learner'})).toBeUndefined());
+    await db.query('UPDATE facts SET purpose=$3 WHERE learner_id=$1 AND id=$2',[studioLearner,turnId,['teaching-disabled']]);
+    await expect(textbook.get({learner:studioLearner,id:byCompanion.ref})).rejects.toMatchObject({status:403});
     const teachingPage = await textbook.create({learner:studioLearner, requestId:'textbook-teaching', clientEditSeq:0,
       page:{title:'我的教材', blocks:[{id:'intro', parentId:null, body:{kind:'text',text:'比对分段计时'}}]}});
     expect(await access.list(new URLSearchParams({category:'textbook'}))).toMatchObject({items:[{

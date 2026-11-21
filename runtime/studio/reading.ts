@@ -2,15 +2,32 @@ import { createHash } from 'node:crypto';
 import { intakeTextOf, materialTextOf } from '../../modules/activity/workspace-source-projection.ts';
 export { intakeTextOf, materialTextOf, textSlice } from '../../modules/activity/workspace-source-projection.ts';
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import type { FactReadOptions, FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { intakeDocument, intakeFactType } from '../../modules/capture/intake-values.ts';
 import { isSourceFactId, sourceReference, type SourceAnchorV1 } from '../../modules/activity/source-values.ts';
 import { studyTurn, type studyAttachment } from '../../modules/activity/values.ts';
 import { purpose, stableId } from './identity.ts';
+
+async function readStudyTurn(tx: ReadTransaction, id: string, use: string, options: FactReadOptions) {
+  const fact = await createCommandReadContext(tx, use).fact(factId(id), options);
+  if (fact.type !== 'activity.studyTurn') throw new FactNotFoundError('学习回合不存在。');
+  return fact;
+}
+
+export const readTeachingTurn = (tx: ReadTransaction, id: string) => readStudyTurn(tx, id, purpose, {mode:'following'});
+
+export async function readOwnStudyTurn(tx: ReadTransaction, id: string, options: FactReadOptions = {mode:'following'}) {
+  try {
+    return await readStudyTurn(tx, id, storagePurpose, options);
+  } catch (error) {
+    if (error instanceof FactReadDeniedError && error.reason === 'purpose') return readStudyTurn(tx, id, purpose, options);
+    throw error;
+  }
+}
 
 export async function readMaterialText(tx: ReadTransaction, id: string) {
   if (!isSourceFactId(id)) return null;

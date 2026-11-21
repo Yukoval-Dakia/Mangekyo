@@ -1,6 +1,7 @@
 import { commandId, factId, learnerId, type BusWitness, type FactWrite, type Json, type Revision, type Tick } from '@mangekyo/kernel';
 import { expect, it } from 'vitest';
-import { FactReadDeniedError, createAuthorizedFactReader } from '../../kernel/src/commands/reads.ts';
+import { readable } from '../../kernel/src/commands/fact-collection.ts';
+import { createAuthorizedFactReader } from '../../kernel/src/commands/reads.ts';
 import { applyFactWrites } from '../../kernel/src/commands/writes.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../kernel/test/learner-database.ts';
@@ -85,8 +86,8 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
   expect(await result()).toEqual([]);
 });
 
-it('rechecks the 24h reservation against the pinned question and current authorization', { timeout: 20_000 }, async () => {
-  await withLearnerDatabase(learner, async db => {
+it('rechecks the 24h reservation against the pinned question and current authorization', { timeout: 20_000 }, () =>
+  withLearnerDatabase(learner, async db => {
     const { source, originalQuestion } = correction;
     const apply = (writes: readonly FactWrite[], n: number) => db.tx({ learner }, tx => tx.withLearnerWrite(tick =>
       applyFactWrites(tx, tick, writes, { actor: 'learner', purpose: 'storage', commandId: commandId(id(n)) },
@@ -96,10 +97,7 @@ it('rechecks the 24h reservation against the pinned question and current authori
       { kind: 'create', id: originalQuestion.id, factType: originalQuestion.type, data: {}, purpose: ['storage', 'teaching'] },
     ], 20);
     const reopen = (tx: ReadTransaction): CorrectionReopen => (ref, purpose) =>
-      createAuthorizedFactReader(tx, purpose, () => true).reopen(ref).catch((error: unknown) => {
-        if (error instanceof FactReadDeniedError) return undefined;
-        throw error;
-      });
+      readable(() => createAuthorizedFactReader(tx, purpose, () => true).reopen(ref));
     const recorded = { ...correction, originalQuestion: { ...originalQuestion, mode: 'pinned' as const } };
     const plan = await db.snapshot({ learner }, tx => planCorrectionCheck(reopen(tx), recorded, [], 1, now));
     if (plan?.kind !== 'scheduled') throw new Error('Missing scheduled Work');
@@ -116,5 +114,4 @@ it('rechecks the 24h reservation against the pinned question and current authori
     expect(await due(dueAt)).toBe(false);
     await apply([{ kind: 'set_purpose', id: originalQuestion.id, expectedRev: 3 as Revision, purpose: ['storage', 'teaching'] }], 23);
     expect(await due(dueAt)).toBe(false);
-  }, { postgres: Boolean(testDatabaseUrl) });
-});
+  }, { postgres: Boolean(testDatabaseUrl) }));
