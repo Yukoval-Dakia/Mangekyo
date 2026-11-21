@@ -70,9 +70,22 @@ it.skipIf(!testDatabaseUrl)('records own-words takeaways with delay-safe L0 expo
     });
     expect(displayed).toMatchObject({ recorded: true });
 
+    // Default hooks run kernel propagation: a manifest pinned to the saved
+    // takeaway must go stale once the undo retracts it.
+    const dependent = stableId('takeaway-dependent');
+    await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
+      await tx.insert('derivations', { learner_id: learner, id: dependent, slot_type: 'test.slot', slot_key: saved.id,
+        deriver: 'test', scope_keys: '{}', value: '{}', lifecycle: 'effective', freshness: 'current', gather_tick: tick,
+        effective_tick: tick, manifest: JSON.stringify({ version: 1, learner, purpose: 'storage', gatherTick: tick,
+          inputs: [{ kind: 'fact', id: saved.id, rev: 1, accessEpoch: '0', mode: 'pinned' }] }) });
+    }));
+
     // Undone removes the fact and the item no longer opens.
     const undone = await takeaways.mutate(paper.id, undefined, 'undo', { undo_token: saved.undo_token });
     expect(undone).toMatchObject({ status: 'withdrawn' });
+    expect(await db.snapshot({ learner }, async tx =>
+      (await tx.query<{ lifecycle: string }>('SELECT lifecycle FROM derivations WHERE learner_id=$1 AND id=$2', [learner, dependent])).rows[0]?.lifecycle
+    )).toBe('stale');
     await expect(takeaways.mutate(paper.id, undefined, 'open', {
       paperRev: paper.revision!, itemId: 'q1',
       sourcePaperId: paper.id, sourceAttempt: { id: attempt.id, rev: attemptRev }, sourceItemId: 'q1',

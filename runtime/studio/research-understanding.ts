@@ -36,6 +36,7 @@ import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
 import { openWorkbookQuestionSources } from './workbook-diagnosis.ts';
 import { undoTextbookCommand } from './workspace-textbook.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 
 // A zero-cost host supplies an authorized route. A paid route requires budget admission first.
 export type UnderstandingTransport = {
@@ -319,7 +320,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
           if (citation.question_evidence && citation.question_evidence.recipient !== route) return;
           if (!(await openUnderstandingCitations(tx, [citation], researchPurpose, maySend)).length) return;
           return {teaching: !!(await openUnderstandingCitations(tx, [citation], 'teaching', maySend)).length};
-        }), hooks: {async onFactsChanged(tx, tick) {
+        }), hooks: createStudioCommandHooks({ async afterFactsChanged(tx, tick) {
         // The command has already written its revisions. Revalidate source/consent without rereading revised targets.
         const current = await readTodo(tx, todoId);
         const citations = entries.flatMap(entry => entry.data.evidence_refs);
@@ -328,7 +329,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
             (await openUnderstandingCitations(tx, citations, researchPurpose, maySend)).length !== citations.length ||
             await learnerGovernedSince(tx, source.born, source.ref.id) ||
             !await completeTodo(tx, tick, ref, current, entries[0]!.id)) throw new ClaimInputError('抽取工作已失效。');
-      }}});
+      } }) });
       await handle({...scope, id: command, type: publishUnderstandingCommand, actor: 'companion',
         purpose: researchPurpose, input: {entries}});
       await finishWork(db, ref);

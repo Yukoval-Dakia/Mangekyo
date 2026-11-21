@@ -21,6 +21,7 @@ import { attachmentSources, teachingOrigin } from './reading.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { purpose, slotType, stableId, studioLearner } from './identity.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 
 type DisplayWitness = { mount: RecallMount; revealId: string };
 type Issuance = ReturnType<typeof recallIssuance>;
@@ -137,7 +138,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
   verifyDisplay?: (receipt: unknown) => Promise<DisplayWitness | null>;
 } = {}) {
   const scope = { learner: studioLearner };
-  const hooks = options.hooks ?? { async onFactsChanged() {} };
+  const hooks = options.hooks ?? createStudioCommandHooks();
 
   const notionRead = () => notionReadScope(db, studioLearner);
   function write<T>(mount: RecallMount, run: (tx: DbTransaction, handle: CommandHandler, check: CheckNotionRead) => Promise<T>, notion = notionRead()) {

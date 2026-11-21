@@ -12,11 +12,12 @@ import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { takeawayDisplay, takeawayFeedback, takeawayOpen, takeawaySave, takeawayUndo } from '../../modules/activity/takeaway-host.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 
 const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 const reject = (status: number, message: string) => new RequestError(status, message);
 
-export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks = { async onFactsChanged() {} }) {
+export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
   const key = randomBytes(32);
   const sign = (scope: unknown) => createHmac('sha256', key).update(canonicalJsonString(scope)).digest('base64url');
   const commands = { modules: [activity], hooks };
