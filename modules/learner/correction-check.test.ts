@@ -6,6 +6,7 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../kernel/test/learner-database.ts';
 import { activityEvidenceSlice, controlledWorkbookHelp } from '../activity/evidence-slice.ts';
 import type { AdmittedHelpEvent } from '../activity/help-exposure.ts';
+import { hypothesesAsOf } from './belief-view.ts';
 import {
   correctionContradictions, correctionRetestDue, planCorrectionCheck, type CorrectionReopen, type CorrectionVariant,
 } from './correction-check.ts';
@@ -42,8 +43,10 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
   let revoked: BusWitness | undefined;
   const reopen: CorrectionReopen = async (ref, purpose) => ref.id !== revoked?.id
     ? { type: ref.type, ref, accessEpoch: ref.accessEpoch, purpose: [purpose], value: {} } : undefined;
-  const result = (events: AdmittedHelpEvent[] = [], changes: Partial<Parameters<typeof correctionContradictions>[2]> = {},
-    novelty: 'isomorphic' | 'same' = 'isomorphic', selected = [belief], submittedAt = cutoff.at) => {
+  const result = ({events = [], changes = {}, novelty = 'isomorphic', selected = [belief], submittedAt = cutoff.at, confidence}: {
+    events?: AdmittedHelpEvent[]; changes?: Partial<Parameters<typeof correctionContradictions>[2]>;
+    novelty?: 'isomorphic' | 'same'; selected?: typeof belief[]; submittedAt?: string; confidence?: number;
+  } = {}) => {
     const observedCutoff = changes.cutoff ?? cutoff;
     const { helpLevel } = controlledWorkbookHelp(source, cutoff.tick, [mount], events, false, false);
     const slice = activityEvidenceSlice(cutoff.tick, observedCutoff.at, { ref: issuance.id, at: observedCutoff.at },
@@ -51,37 +54,42 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
     return correctionContradictions(reopen, correction, {
       source, issuance, issuedAt: '11' as Tick, itemId: mount.item.itemId, authorization, basis: [],
       admittedAt: cutoff.tick, startedAt: at(0), through: at(60_000), window: 'immediate', variant,
-      cutoff: observedCutoff, slice: { ...slice, events: slice.events.map(event => ({ ...event, claim_ids: [belief.ref.id] })) },
+      cutoff: observedCutoff, slice: { ...slice, events: slice.events.map(event => ({ ...event, claim_ids: [belief.ref.id],
+        ...(confidence === undefined ? {} : {confidence}) })) },
       fragment: { anchor: 'q', excerpt: '12' }, ...changes,
     }, selected);
   };
 
-  expect(await planCorrectionCheck(reopen, correction, [variant], 1, now)).toMatchObject({
-    kind: 'offer', variant: { question: variant.question }, suggestedDurationMs: 30_000,
-  });
-  expect(await result()).toMatchObject([{ edge: { kind: 'contradicts', to_ref: belief.ref },
+  expect(await planCorrectionCheck(reopen, correction, [variant], 1, now))
+    .toMatchObject({kind: 'offer', variant, suggestedDurationMs: 30_000});
+  const links = await result();
+  expect(links).toMatchObject([{ edge: { kind: 'contradicts', to_ref: belief.ref },
     citation: { id: source.id, anchor: 'q', direction: 'contradict' } }]);
+  const time = {validFrom: cutoff.at, validTo: null, recordedAt: cutoff.at, supersededAt: null};
+  const edge = {...links[0]!.edge, ...time};
+  const row = {ref: belief.ref, value: {...time, category: 'hypothesis', kind: belief.kind, status: belief.stage,
+    text: '错将分母相加', scope: {}, sticky: belief.sticky, evidence_refs: [correction.source]}} as const;
+  const read = (opened: readonly BusWitness[]) => hypothesesAsOf([row], [edge],
+    {validAt: at(90 * 86_400_000), knownAt: at(90 * 86_400_000)}, opened).relations;
+  expect(read(edge.basis)).toEqual([edge]);
+  expect(read(edge.basis.map(ref => ref.id === source.id ? {...ref, mode: 'pinned'} : ref))).toEqual([]);
   const seconds = cutoff.at.replace('.000Z', 'Z');
-  expect(await result([], {cutoff: {...cutoff, at: seconds}}, 'isomorphic', [belief], seconds)).toHaveLength(1);
-  expect(await result([shown])).toEqual([]);
-  expect(await result([opened])).toEqual([]);
-  expect(await result([], {}, 'same')).toEqual([]);
-  expect(await result([], { variant: { ...variant, question: correction.originalQuestion } })).toEqual([]);
-  expect(await result([], { cutoff: { ...cutoff, tick: '14' as Tick } })).toEqual([]);
-  expect(await result([], { cutoff: { ...cutoff, at: at(30_001) } }, 'isomorphic', [belief], at(30_001))).toHaveLength(1);
-  expect(await result([], { through: at(29_999) })).toEqual([]);
-  expect(await result([], { issuedAt: cutoff.tick })).toEqual([]);
-  expect(await result([], { itemId: 'unassigned-item' })).toEqual([]);
+  expect(await result({changes: {cutoff: {...cutoff, at: seconds}}, submittedAt: seconds})).toHaveLength(1);
+  expect(await result({changes: {cutoff: {...cutoff, at: at(30_001)}}, submittedAt: at(30_001), confidence: 0.36})).toHaveLength(1);
+  for (const input of [{events: [shown]}, {events: [opened]}, {novelty: 'same' as const}, {confidence: 0.35},
+    {changes: {variant: {...variant, question: correction.originalQuestion}}}, {changes: {cutoff: {...cutoff, tick: '14' as Tick}}},
+    {changes: {through: at(29_999)}}, {changes: {issuedAt: cutoff.tick}}, {changes: {itemId: 'unassigned-item'}}])
+    expect(await result(input)).toEqual([]);
   const scheduledAt = 86_400_000;
-  expect(await result([], { window: 'scheduled', startedAt: at(scheduledAt), through: at(scheduledAt + 60_000),
-    cutoff: { ...cutoff, at: at(scheduledAt + 10_000) } }, 'isomorphic', [belief], at(scheduledAt + 10_000))).toHaveLength(1);
-  expect(await result([], {}, 'isomorphic', [{ ...belief, evidenceSourceIds: [source.id] }])).toEqual([]);
-  expect(await result([], {}, 'isomorphic', [{ ...belief, sticky: true }])).toEqual([]);
-  expect(await result([], {}, 'isomorphic', [{ ...belief, stage: 'retired' as const }])).toEqual([]);
-  revoked = authorization;
-  expect(await result()).toEqual([]);
-  revoked = proof;
-  expect(await result()).toEqual([]);
+  expect(await result({changes: {window: 'scheduled', startedAt: at(scheduledAt), through: at(scheduledAt + 60_000),
+    cutoff: {...cutoff, at: at(scheduledAt + 10_000)}}, submittedAt: at(scheduledAt + 10_000)})).toHaveLength(1);
+  for (const change of [{evidenceSourceIds: [source.id]}, {sticky: true}, {stage: 'retired' as const}])
+    expect(await result({selected: [{...belief, ...change}]})).toEqual([]);
+  for (const ref of [authorization, proof]) {
+    revoked = ref;
+    expect(await result()).toEqual([]);
+    expect(read(edge.basis.filter(basis => basis.id !== revoked?.id))).toEqual([]);
+  }
 });
 
 it('rechecks the 24h reservation against the pinned question and current authorization', { timeout: 20_000 }, async () => {

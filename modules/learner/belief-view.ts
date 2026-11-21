@@ -1,19 +1,19 @@
 import type { BeliefTime, BusWitness, CanonicalEvidenceSliceV1, Directive, FactReadOptions, FactSnapshot,
   Hypothesis, LearnerId, RefusalBoundary } from '@mangekyo/kernel';
 export type { RefusalBoundary } from '@mangekyo/kernel';
-import { allows, instant, record, text, witness, witnessIdentity, type Witness } from './memory-evidence.ts';
+import { allows, instant, isAttemptEvidenceType, record, text, witness, witnessIdentity, type Witness } from './memory-evidence.ts';
 
 export function refusalBoundary(value: unknown): RefusalBoundary {
-  const {goal, intent_key, reopen_condition} = record(value);
-  const goalKey = text(goal);
-  const intentKey = text(intent_key);
-  if (goalKey.trim() !== goalKey || intentKey.trim() !== intentKey)
+  const fields = record(value);
+  const goal = text(fields.goal, 200);
+  const intent_key = text(fields.intent_key, 160);
+  if (Object.keys(fields).length !== 3 || goal.trim() !== goal || intent_key.trim() !== intent_key)
     throw new Error('拒绝需要规范的目标与意图键。');
-  const condition = record(reopen_condition);
-  if (condition.kind === 'learner_request')
-    return {goal: goalKey, intent_key: intentKey, reopen_condition: {kind: condition.kind}};
-  if (condition.kind === 'at')
-    return {goal: goalKey, intent_key: intentKey, reopen_condition: {kind: condition.kind, at: instant(condition.at)}};
+  const condition = record(fields.reopen_condition);
+  if (condition.kind === 'learner_request' && Object.keys(condition).length === 1)
+    return {goal, intent_key, reopen_condition: {kind: condition.kind}};
+  if (condition.kind === 'at' && Object.keys(condition).length === 2)
+    return {goal, intent_key, reopen_condition: {kind: condition.kind, at: instant(condition.at)}};
   throw new Error('拒绝需要明确的重开条件。');
 }
 
@@ -195,8 +195,7 @@ async function supportsAcrossDisciplines(evidence: readonly unknown[], read: Met
       return false;
     }
     const source = await open(ref);
-    if (!source || (source.type !== 'activity.workbookAttempt' &&
-        source.type !== 'activity.retentionPosttestSubmission')) return false;
+    if (!source || !isAttemptEvidenceType(source.type)) return false;
     const observation = await read.observe(source, {...citation, ...ref});
     if (!observation || !observation.basis.length) return false;
     const {slice, discipline, basis} = observation;
@@ -262,16 +261,14 @@ function projectRelations<S, E>(visible: readonly OpenHypothesis<S, E>[], edges:
     const from = witnessIdentity(edge.from_ref);
     const to = witnessIdentity(edge.to_ref);
     if (!endpoints.has(to)) return false;
+    if (edge.kind !== 'contradicts') return endpoints.has(from);
+    if (edge.from_ref.id === edge.to_ref.id || !edge.basis.length || !edge.basis.every(ref => opened.has(readKey(ref)))) return false;
     if (!endpoints.has(from)) {
-      const submission = edge.basis.find(ref => ref.type === 'activity.retentionPosttestSubmission' && witnessIdentity(ref) === from);
-      return edge.kind === 'contradicts' && submission !== undefined &&
-        edge.basis.every(ref => ref.learner === submission.learner && opened.has(readKey(ref)));
+      const submission = edge.basis.find(ref => isAttemptEvidenceType(ref.type) && witnessIdentity(ref) === from);
+      return submission !== undefined && edge.basis.every(ref => ref.learner === submission.learner);
     }
-    if (edge.kind === 'contradicts') {
-      if (from === to || !edge.basis.length) return false;
-      disputes.add(from);
-      disputes.add(to);
-    }
+    disputes.add(from);
+    disputes.add(to);
     return true;
   });
   return {hypotheses: visible.map(row => disputes.has(witnessIdentity(row.ref))

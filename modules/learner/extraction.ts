@@ -1,5 +1,5 @@
 import type { BusWitness, CanonicalEvidenceSliceV1, Edge } from '@mangekyo/kernel';
-import { allows, integer, text, type Witness } from './memory-evidence.ts';
+import { allows, evidenceTime, integer, isAttemptEvidenceType, text, type Witness } from './memory-evidence.ts';
 import type { HypothesisStage } from './belief-view.ts';
 
 export type ActivitySource = 'conversation' | 'attempt' | 'posttest' | 'intake' | 'notes' | 'artifact' | 'feedback';
@@ -14,6 +14,7 @@ export type ExistingBelief = {
 export type VerifiedAttempt = {
   source: Witness;
   independent: boolean | 'unknown'; allCorrect: boolean; novelty: 'same-item' | 'variant' | 'transfer' | 'unknown';
+  guessRisk?: true;
   // These links come from the frozen assessment and intervention assignments.
   testedHypotheses: readonly string[]; intervention: Witness | null;
   firstUnfamiliarPostLessonTransfer: boolean; mastery: number | null;
@@ -28,13 +29,17 @@ export function verifiedAttemptFromSlice(source: Witness, expected: readonly {re
   const required = new Set(expected.map(item => key(item.ref, item.rev)));
   if (!required.size || required.size !== expected.length) return null;
   const events = slice.events.filter(item => required.has(key(item.ref, item.rev)));
+  const asOf = evidenceTime(slice.as_of_at);
   if (events.length !== required.size || new Set(events.map(item => key(item.ref, item.rev))).size !== required.size ||
+      events.some(item => !(evidenceTime(item.occurred_at) <= asOf)) ||
       slice.omissions?.some(item => required.has(key(item.ref.id, item.ref.rev)))) return null;
   const novelty = events.some(item => item.item_novelty === 'same') ? 'same-item'
     : events.every(item => item.item_novelty === 'transfer') ? 'transfer' : 'variant';
   return {source, ...context, novelty,
     allCorrect: events.every(item => item.outcome === 'correct' && (item.score_norm === undefined || item.score_norm === 1)),
     independent: events.every(item => item.help_level === 'independent'),
+    ...(events.some(({confidence}) => confidence !== undefined && !(confidence > 0.35 && confidence <= 1))
+      ? {guessRisk: true} : {}),
     testedHypotheses: [...new Set(events.flatMap(item => item.claim_ids))]};
 }
 
@@ -91,11 +96,11 @@ export function extractionDecision(activity: ExtractionActivity, host: {
   const attempt = host.attempt;
   if (attempt && (activity.kind === 'attempt' || activity.kind === 'posttest')) {
     if (!sameWitness(attempt.source, activity.ref)) throw new Error('作答核验来源不符。');
-    if (attempt.allCorrect && attempt.independent === true) {
+    if (attempt.allCorrect && attempt.independent === true && !attempt.guessRisk) {
       const transferEligible = attempt.novelty === 'variant' || attempt.novelty === 'transfer';
       if (transferEligible) {
         output.contradictions = related.filter(item => !item.sticky && attempt.testedHypotheses.includes(item.ref.id)
-          && (item.stage === 'supported' || item.stage === 'relapsed'))
+          && item.stage !== 'tentative' && item.stage !== 'retired')
           .map(item => ({hypothesis: item.ref, evidence: activity.ref}));
         if (attempt.intervention) output.evaluateLift = {intervention: attempt.intervention, posttest: activity.ref};
       }
@@ -117,8 +122,9 @@ export type BeliefEdge = Edge<Witness, 'supports' | 'contradicts' | 'supersedes'
 
 export function positiveEvidenceEdges(decision: ExtractionDecision, opened: readonly BusWitness[]): BeliefEdge[] {
   return decision.contradictions.map(({hypothesis, evidence}) => {
-    const origin = opened.find(ref => sameWitness(ref, evidence));
-    if (!origin || !opened.some(ref => ref.learner === origin.learner && sameWitness(ref, hypothesis)))
+    const origin = opened.find(ref => isAttemptEvidenceType(ref.type) && sameWitness(ref, evidence));
+    if (!origin || !opened.some(ref => ref.type === 'companion.memoryAssertion' &&
+        ref.learner === origin.learner && sameWitness(ref, hypothesis)))
       throw new Error('逻辑边两端必须由同一学习者的总线读取见证。');
     return {from_ref: evidence, to_ref: hypothesis, kind: 'contradicts', basis: [origin],
       author: 'companion', confidence: null, sticky: false};
@@ -157,6 +163,6 @@ export function admitExtraction(decision: ExtractionDecision, activity: Extracti
         seen.has(edit.target) || (edit.direction !== 'supports' && edit.direction !== 'contradicts'))
       throw new Error('抽取只能关联已打开、可更新的目标。');
     seen.add(edit.target);
-    return {op: edit.op, target: prior.ref, direction: edit.direction, evidence};
+    return {op: edit.op, target: prior.ref, direction: edit.direction, stage: 'tentative' as const, evidence};
   });
 }

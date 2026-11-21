@@ -2,7 +2,7 @@ import type { BusWitness, CanonicalEvidenceSliceV1, FactSnapshot, Tick } from '@
 import {
   extractionDecision, positiveEvidenceEdges, sameWitness, verifiedAttemptFromSlice, type BeliefEdge, type ExistingBelief,
 } from './extraction.ts';
-import { allows, instant, type Witness } from './memory-evidence.ts';
+import { allows, evidenceTime, instant, type Witness } from './memory-evidence.ts';
 
 export const correctionCheckSuggestedMs = 30_000;
 const dayMs = 86_400_000;
@@ -180,18 +180,6 @@ export type CorrectionContradiction = {
   citation: Witness & { anchor: string; excerpt: string; direction: 'contradict' };
 };
 
-// v1 permits UTC seconds and one to three fractional digits. The Activity
-// window has fixed millisecond precision, so compare instants rather than text.
-function evidenceTime(value: string): number {
-  if (!value.endsWith('Z') || value.startsWith('0000')) return NaN;
-  const time = value.slice(0, -1);
-  const secondsOnly = time.length === 19;
-  if (!secondsOnly && (time[19] !== '.' || time.length < 21 || time.length > 23)) return NaN;
-  const full = (secondsOnly ? time + '.000' : time.padEnd(23, '0')) + 'Z';
-  const ms = Date.parse(full);
-  return Number.isFinite(ms) && new Date(ms).toISOString() === full ? ms : NaN;
-}
-
 export async function correctionContradictions(reopen: CorrectionReopen, correction: RecordedCorrection,
   observation: CorrectionObservation, existing: readonly ActiveMisconception[]): Promise<CorrectionContradiction[]> {
   const { source, authorization, issuance, issuedAt, itemId, basis, admittedAt, startedAt,
@@ -216,7 +204,7 @@ export async function correctionContradictions(reopen: CorrectionReopen, correct
 
   const attempt = verifiedAttemptFromSlice(source, [{ ref: source.id, rev: source.rev }], slice,
     { intervention: null, firstUnfamiliarPostLessonTransfer: false, mastery: null });
-  if (attempt?.independent !== true || !attempt.allCorrect) return [];
+  if (attempt?.independent !== true || !attempt.allCorrect || attempt.guessRisk) return [];
   const openedBasis = [source, issuance, ...variantBasis(variant), ...basis];
   if (!await current(reopen, correction, openedBasis) ||
       !await matchesCurrent(reopen, correction.source.learner, { ...authorization, mode: 'following' }, research)) return [];
@@ -236,7 +224,8 @@ export async function correctionContradictions(reopen: CorrectionReopen, correct
     const [edge] = positiveEvidenceEdges({ ...decision, contradictions: [entry] }, [source, target]);
     if (!edge) continue;
     links.push({
-      edge: { ...edge, basis: [correction.source, correction.originalQuestion, ...openedBasis, authorization] },
+      edge: { ...edge, basis: [{ ...correction.source, mode: 'following' }, correction.originalQuestion,
+        ...openedBasis, { ...authorization, mode: 'following' }] },
       citation: { id: source.id, rev: source.rev, accessEpoch: source.accessEpoch,
         anchor: fragment.anchor, excerpt: fragment.excerpt, direction: 'contradict' as const },
     });

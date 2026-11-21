@@ -1,6 +1,7 @@
 import { learnerId, type FactSnapshot } from '@mangekyo/kernel';
 import { expect, it, vi } from 'vitest';
 import { understandingProjection } from '../companion/understanding.ts';
+import { structuredClaim } from '../companion/claim.ts';
 import { beliefsAsOf, blocksRefusal, effectiveDirective, evidencePriority, hypothesesAsOf, hypothesisView, projectBelief,
   refusalBoundary, type HypothesisEvidence, type MetacognitiveRead } from './belief-view.ts';
 import { activityEvidenceSlice } from '../activity/evidence-slice.ts';
@@ -54,45 +55,39 @@ it('requires structured refusal keys and applies only the recorded reopening con
   expect(blocksRefusal(boundary, reworded)).toBe(true);
   expect(blocksRefusal(boundary, {...request, goal: 'another-exam'})).toBe(false);
   expect(blocksRefusal(boundary, {...request, learnerRequested: true})).toBe(false);
-  expect(() => refusalBoundary({...boundary, intent_key: ''})).toThrow();
-  expect(() => refusalBoundary({...boundary, reopen_condition: {kind: 'at', at: 'tomorrow'}})).toThrow();
-  expect(() => refusalBoundary({...boundary, reopen_condition: null})).toThrow();
+  for (const change of [{intent_key: ''}, {reopen_condition: {kind: 'at', at: 'tomorrow'}},
+    {reopen_condition: null}, {reopen_condition: {kind: 'learner_request', at: at(7)}}])
+    expect(() => refusalBoundary({...boundary, ...change})).toThrow();
 
   const scheduled = {...boundary, reopen_condition: {kind: 'at' as const, at: at(7)}};
   expect(blocksRefusal(scheduled, {...reworded, at: at(6)})).toBe(true);
   expect(blocksRefusal(scheduled, {...reworded, at: at(7)})).toBe(false);
-  const row = projectBelief(fact(12, 'companion.claim', null),
-    {kind: 'refusal', text: '这周别再推荐', scope: {}, ttl: null, sticky: true, evidence_refs: [ref(1)],
-      refusal: scheduled}, revisionTime)!;
+  const claim = structuredClaim({action: 'remember', authority: 'directive', category: 'refusal', origin: 'learner',
+    text: '这周别再推荐', scope: {kind: 'general'}, supersedes: null, evidence_refs: [], refusal: scheduled});
+  const snapshot = fact(12, 'companion.claim', claim);
+  const row = projectBelief(snapshot, {...understandingProjection(snapshot)!, refusal: claim.refusal}, revisionTime)!;
   if (row.value.category !== 'directive' || row.value.kind !== 'refusal') throw new Error('缺少拒绝指令');
   expect(effectiveDirective(row.value, asOf(6))).toBe(row.value);
   expect(effectiveDirective(row.value, asOf(7))).toBeNull();
 });
 
-it('co-projects assertion formats, preserving both conflicting witnesses and temporal visibility', async () => {
+it('co-projects assertion formats, preserving both conflicting witnesses and temporal visibility', () => {
   const extracted = project(fact(20, 'companion.memoryAssertion', {version: 2, kind: 'preference', text: '总是先算',
     scope: {kind: 'general'}, ttl: null, sticky: false, undo_token: ref(9).id,
     evidence_refs: [{...ref(5), anchor: 'message', excerpt: '先算', direction: 'support'}]}));
   const manual = project(fact(21, 'companion.memoryAssertion', {text: '先画图', scope: {subject: '物理', validFrom: at(1)},
     links: [{kind: 'source', id: ref(6).id}], evidence: [{...ref(6), itemId: 'Q1', direction: 'support'}]}));
   const rows = [extracted, manual].flatMap(({ref, value}) => value.category === 'hypothesis' ? [{ref, value}] : []);
-  const edge = {...revisionTime, validTo: null, recordedAt: at(4), from_ref: extracted.ref, to_ref: manual.ref,
+  const edge = {...revisionTime, validFrom: at(3), validTo: null, recordedAt: at(4), from_ref: extracted.ref, to_ref: manual.ref,
     basis: [{...ref(7), learner, type: 'activity.workbookAttempt', mode: 'following' as const}],
     kind: 'contradicts' as const, author: 'companion' as const, confidence: null, sticky: false};
-  expect((await hypothesesAsOf(rows, [edge], asOf(3, 3))).hypotheses.map(row => row.value.kind))
-    .toEqual(['observation', 'observation']);
-  const submission = {...ref(8), learner, type: 'activity.retentionPosttestSubmission', mode: 'following' as const};
-  const correction = {...edge, from_ref: submission, basis: [submission, ...edge.basis]};
-  expect((await hypothesesAsOf(rows, [correction], asOf(3, 4), correction.basis)).relations).toEqual([correction]);
-  expect((await hypothesesAsOf(rows, [correction], asOf(3, 4), [submission])).relations).toEqual([]);
-  const pinned = {...submission, mode: 'pinned' as const};
-  expect((await hypothesesAsOf(rows, [correction], asOf(3, 4), [pinned, ...edge.basis])).relations).toEqual([]);
-  expect((await hypothesesAsOf(rows, [correction], asOf(3, 4), [...correction.basis, pinned])).relations).toEqual([correction]);
-  const disputed = await hypothesesAsOf(rows, [edge], asOf(3, 4));
+  expect(rows.map(row => row.value.kind)).toEqual(['observation', 'observation']);
+  const disputed = hypothesesAsOf(rows, [edge], asOf(3, 4), edge.basis);
   expect(disputed.hypotheses.map(row => [row.ref.id, row.value.status, row.value.evidence_refs[0].id]))
     .toEqual([[ref(20).id, 'disputed', ref(5).id], [ref(21).id, 'disputed', ref(6).id]]);
-  expect((await hypothesesAsOf(rows, [{...edge, from_ref: ref(20, '1')}], asOf(3, 4)))
-    .relations).toEqual([]);
+  for (const [candidate, when, opened] of [[edge, asOf(2, 4), edge.basis], [edge, asOf(3, 3), edge.basis],
+    [edge, asOf(3, 4), []], [{...edge, from_ref: ref(20, '1')}, asOf(3, 4), edge.basis]] as const)
+    expect(hypothesesAsOf(rows, [candidate], when, opened).relations).toEqual([]);
 });
 
 it('separates trust from attestation and outcome, excluding consolidation even when labeled as high trust', () => {
