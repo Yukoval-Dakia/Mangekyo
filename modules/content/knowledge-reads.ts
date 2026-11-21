@@ -32,7 +32,7 @@ function unavailable(access: KnowledgeReadAccess, error: unknown) {
     error instanceof AssetBasisError || access.isUnavailable(error);
 }
 
-async function openQuestion(access: KnowledgeReadAccess, use: KnowledgeSourceUse) {
+export async function openKnowledgeQuestion(access: KnowledgeReadAccess, use: KnowledgeSourceUse) {
   const fact = await readKnowledgeUse(access, use);
   if (knowledgeEndpointKind(fact) !== 'question') return undefined;
   if (fact.type === assetType) {
@@ -75,7 +75,7 @@ export async function readArchetypeCoverage(
     const originals = new Map<string, string>();
     for (const { endpoint } of graph.paths) {
       const use = endpoint.sourceUse;
-      if (!await openQuestion(access, use)) return;
+      if (!await openKnowledgeQuestion(access, use)) return;
       const origin = await readOrigin(use);
       if (!origin || (origin.kind === 'original' && !origin.key.trim())) return;
       if (origin.kind === 'original') originals.set(knowledgeUseKey(use), origin.key);
@@ -128,7 +128,7 @@ export async function readQuestionNotionLinks(
   }
   try {
     if (root.kind === 'question') {
-      if (!await openQuestion(access, root.sourceUse)) return [];
+      if (!await openKnowledgeQuestion(access, root.sourceUse)) return [];
     } else if ((await readKnowledgeUse(access, root.sourceUse)).type !== 'capture.source' ||
         !(await reopenNotionBlock({ ...root.sourceUse, blockId: root.blockId }, mode))?.text.trim()) return [];
 
@@ -143,7 +143,7 @@ export async function readQuestionNotionLinks(
       const concept = trail[0]?.endpoint.sourceUse;
       if (hop !== 2 || !concept || endpoint.kind === root.kind) continue;
       try {
-        if (endpoint.kind === 'question' && await openQuestion(access, endpoint.sourceUse)) {
+        if (endpoint.kind === 'question' && await openKnowledgeQuestion(access, endpoint.sourceUse)) {
           links.push({ kind: 'question' as const, question: endpoint.sourceUse, concept, trail });
         } else if (endpoint.kind === 'note' && endpoint.blockId &&
             (await readKnowledgeUse(access, endpoint.sourceUse)).type === 'capture.source') {

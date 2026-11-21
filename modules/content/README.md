@@ -41,3 +41,9 @@
 L3 要求显式传入 `reveal`。选 `worked-example` 只读已有局部示范，记 `worked-example / 3`。选 `solution` 时，宿主必须以 `authorizeSolution` 核对本次发放、固定题项、用途与真实接收人的答案许可，获准才读完整解，记 `solution / 3`。宿主签名票据还应绑定具体揭晓类型，展示确认或重放时重新核对许可。
 
 [graph-evolution.json](samples/graph-evolution.json) 提供联调载荷。依次创建 `question`、`concepts`、`edge`，再提议与确认 `split`、`merge` 或 `questionMeta`。拆分前原边指向「平均速度」。确认后重开当前边指向「不等时平均速度」，固定版仍指向「平均速度」。
+
+## 一跳前置体检
+
+宿主从 `@mangekyo/module-content/facts/prerequisite-radar` 调用 `readPrerequisiteRadar`。先按实际用途与接收人重开卷题或当前教材块，在同一快照枚举其全部授权概念和定位边，并枚举这些概念的 `prereq_of` 入边和前置概念的摘要边。超限或无法完成枚举时传 `complete: false`。将 `preloadFollowingEdges` 绑定到授权快照读器的 `preloadFollowing`。事实读取仍逐项复验用途、接收方和访问代次。宿主在 `dependenciesFor` 提供读器追踪的递归依据。Notion 摘要需经 Capture 的当前块选择授权读口重开原锚点，并保留选源见证。
+
+每条授权入边各自返回根概念、前置概念、边和用于定位输入题或块的依据。摘要和快检各携带自己的见证。快检沿用教材探针的题目发放和变式规则，宿主须提供固定题项的可信时长上界、当前有效槽位和完整曝光判断。没有可信快检时，认知域可按已有规则单独复验旧稳题。认知域对全部授权前置概念计算薄弱状态，展示前在新快照重枚举并重跑，发放前重验快检。只把展示需要的文字和获准动作投影给浏览器。
