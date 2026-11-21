@@ -47,3 +47,12 @@ it('uses the explicit total when individual criteria also mention their maxima',
     rubric:'面积满分2分，周长满分1分，总分3分。'}, deps);
   expect(result.score).toEqual({earned:2, maximum:3});
 });
+
+it('admits witnessed 5-value error_stage and rejects invalid or full-credit values', async () => {
+  const checks = [{criterion:'除法', status:'incorrect', reference:'150÷3=50', quote:'150÷3=45'}];
+  const run = (reply: object, answer = '150÷3=45') => (mockChat(() => JSON.stringify(reply)), assessWithAgent({question:'平均速度', answer, rubric:'看算式'}, deps));
+  expect((await run({verdict:'partial', error_stage:'execution', checks})).errorStage).toBe('execution');
+  expect((await run({verdict:'partial', checks})).errorStage).toBeUndefined();
+  expect((await run({verdict:'correct', error_stage:'execution', checks:[{criterion:'答案', status:'correct', reference:'50', quote:'50'}]}, '50')).errorStage).toBeUndefined();
+  expect(await run({verdict:'partial', error_stage:'guessing', checks})).toMatchObject({verdict:'pending'});
+});

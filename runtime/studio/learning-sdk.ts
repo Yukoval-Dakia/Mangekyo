@@ -90,7 +90,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
     return toolFailure('limit_exceeded',`本次选择超过 ${pythonAttemptsLimit} 份作答，请缩小时间范围。`,{tool:'read_context',args:{intent:'tutoring'}});
   const events: EvidenceEventV1[] = [];
   const declared = refs.length ? await readPythonAttempts(tx,{refs},
-    wholePaper ? {...access,includeExamItems,recordExam:event=>events.push(event)} : access) : undefined;
+    wholePaper ? {...access,includeExamItems,cutoff:watermark,recordExam:event=>events.push(event)} : access) : undefined;
   const rows = declared?.ok ? declared.rows : [];
   if (declared?.issues?.some(item => item.code === 'access_revoked'))
     return toolFailure('access_revoked','先前打开的作答已不可使用。',{tool:'read_context',args:{intent:'tutoring'}});
@@ -121,7 +121,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
       const controlled = fact.type === posttestSubmissionType
         ? await evidence.openControlledSubmission(tx,tracked,attempt,birth.tick) : undefined;
       const opened = await evidence.openRetentionTarget(tx,tracked,controlled?.source.ref.id ?? factId(attempt.paperId),item.id);
-      const {observation,process,recordedAt,duration} = await evidence.readWorkbookEvidence(tx,tracked,opened,fact.ref.id);
+      const {observation,process,recordedAt,duration} = await evidence.readWorkbookEvidence(tx,tracked,opened,fact.ref.id,undefined,watermark);
       if (BigInt(recordedAt) > BigInt(watermark) || observation.submittedAt > asOf) {
         omissions.push({ref,reason:'outside-evidence-window'});
         continue;
@@ -130,7 +130,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
       // A prediction's relative transfer condition is not this item's identity.
       const concepts = await evidence.readItemDimensions(tx,tracked,item.sourceQuestionRef,birth.tick);
       observations.push({submission:ref,occurredAt:observation.submittedAt,concepts,novelty:'same',
-        helpLevel:process.helpLevel,result:observation.result,...(duration === undefined ? {} : {duration})});
+        helpLevel:process.helpLevel,result:observation.result,...(observation.scoreNorm === undefined ? {} : {score:observation.scoreNorm}),...(observation.errorStage === undefined ? {} : {errorStage:observation.errorStage}),...(duration === undefined ? {} : {duration})});
     } catch (error) {
       if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof RequestError)) throw error;
       omissions.push({ref,reason:'unavailable-process-witness'});

@@ -164,7 +164,7 @@ export type TeachingAttemptAssessmentAuthorization = {
   readonly recipientEligible: boolean;
 };
 
-export type TeachingAttemptAssessment = Pick<WorkbookRubricAssessment, 'rubricVersion' | 'score' | 'feedback' | 'evidence'> & {
+export type TeachingAttemptAssessment = Pick<WorkbookRubricAssessment, 'rubricVersion' | 'score' | 'errorStage' | 'feedback' | 'evidence'> & {
   /** The frozen question is identified by the attempt revision and its local question ID. */
   attempt: FactRef;
   questionId: string;
@@ -226,7 +226,7 @@ export async function readTeachingAttemptAssessments(
       questionId: question.id,
       rubricVersion: question.rubricVersion,
       verdict: assessment.verdict,
-      ...(assessment.score ? { score: assessment.score } : {}),
+      ...(assessment.score ? { score: assessment.score } : {}), ...(assessment.errorStage ? { errorStage: assessment.errorStage } : {}),
       feedback: assessment.feedback,
       evidence: assessment.evidence,
       ref: { kind: 'slot', slotType: workbookRubricAssessmentType, slotKey: row.slot_key, derivationId: id, mode: 'following' },

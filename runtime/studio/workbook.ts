@@ -212,7 +212,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
             if (workbookUnavailable(error)) return false;
             throw error;
           }
-        });
+        }, (paper, ref) => formalAssessment(tx, paper, ref).then(found => found?.result));
       });
     },
 

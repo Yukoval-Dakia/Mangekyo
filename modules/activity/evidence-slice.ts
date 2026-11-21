@@ -1,7 +1,7 @@
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1, FactId, FactRef, Revision, Tick } from '@mangekyo/kernel';
 import { projectHelpExposure, type AdmittedHelpEvent, type HelpExposureEvidence } from './help-exposure.ts';
 import { helpAppliesTo, type HelpTarget } from './help-exposure-values.ts';
-import type { AssessmentRevisionRef, FormalAssessmentValue } from './assessment-values.ts';
+import { formalItemErrorStage, type AssessmentRevisionRef, type FormalAssessmentValue } from './assessment-values.ts';
 import type { WorkbookAttempt } from './workbook-values.ts';
 
 export type ActivityEvidenceObservation = {
@@ -11,6 +11,7 @@ export type ActivityEvidenceObservation = {
   novelty: EvidenceEventV1['item_novelty'];
   helpLevel: EvidenceEventV1['help_level'] | 'unknown';
   result: EvidenceEventV1['outcome'];
+  errorStage?: EvidenceEventV1['error_stage'];
   score?: number;
   duration?: number;
 };
@@ -39,16 +40,25 @@ export function workbookExamPacingEvent(
   } as const;
 }
 
-export function workbookExamPacingItems(ref: FactRef, attempt: WorkbookAttempt, frozen: AssessmentRevisionRef): EvidenceEventV1[] {
+export function workbookExamPacingItems(ref: FactRef, attempt: WorkbookAttempt, frozen: AssessmentRevisionRef,
+  formal?: { state: string; releaseRef: AssessmentRevisionRef; result?: { outcomes: readonly { itemId: string; state: string; earned?: number; errorStage?: EvidenceEventV1['error_stage'] }[] } },
+): EvidenceEventV1[] {
   if (!attempt.pacing || attempt.paperRev !== frozen.rev || attempt.paperId !== frozen.id) return [];
   const paperKey = JSON.stringify([frozen.id, frozen.rev]);
+  const releaseItems = attempt.paper.assessmentRelease?.items;
+  const releaseRef = attempt.paper.assessmentRelease?.releaseRef;
+  const scaleKey = formal?.state === 'complete' && releaseRef?.id === frozen.id &&
+    formal.releaseRef.id === releaseRef.id && formal.releaseRef.rev === releaseRef.rev &&
+    releaseItems?.length === attempt.paper.questions.length &&
+    attempt.paper.questions.every(question => releaseItems.some(item => item.itemId === question.id))
+    ? JSON.stringify(['workbook-formal-assessment@1', formal.releaseRef.id, formal.releaseRef.rev]) : undefined;
   const observed = new Map(attempt.pacing.items.map(item => [item.questionId, item]));
   return attempt.paper.questions.flatMap(({ id }, index) => {
     const item = observed.get(id);
     if (!item) return [];
     const anchor = { attempt_ref: { id: ref.id, rev: ref.rev }, paper_key: paperKey, item_id: id,
       position: index + 1, item_count: attempt.paper.questions.length };
-    return [{
+    const process: EvidenceEventV1[] = [{
       ref: JSON.stringify([ref.id, id]), rev: ref.rev, occurred_at: attempt.submittedAt,
       concept_ids: [], item_novelty: 'same', help_level: 'unknown', outcome: 'unknown', claim_ids: [],
       effective_duration_ms: item.effectiveDurationMs,
@@ -56,6 +66,21 @@ export function workbookExamPacingItems(ref: FactRef, attempt: WorkbookAttempt, 
         ...anchor, skipped: true, ...(item.returned ? { returned: true } : {}),
       } : anchor,
     }];
+    // A settled formal assessment adds the witnessed per-item score and, when the
+    // evaluator classified a witnessed wrong step, its error stage.
+    if (!scaleKey || !formal?.result) return process;
+    const outcomes = formal.result.outcomes.filter(outcome => outcome.itemId === id && outcome.state === 'scored');
+    const criteria = (releaseItems!.find(release => release.itemId === id)?.criteria ?? []).filter(criterion => criterion.maximum !== null);
+    const maximum = criteria.reduce((sum, criterion) => sum + criterion.maximum!, 0);
+    const earned = outcomes.reduce((sum, outcome) => sum + (outcome.earned ?? 0), 0);
+    if (!criteria.length || outcomes.length !== criteria.length || maximum <= 0) return process;
+    const stage = formalItemErrorStage(formal.result.outcomes, id);
+    return [...process, {
+      ref: JSON.stringify([ref.id, id, 'formal']), rev: ref.rev, occurred_at: attempt.submittedAt,
+      concept_ids: [], item_novelty: 'same', help_level: 'unknown', outcome: 'unknown', claim_ids: [],
+      ...(earned < maximum && stage !== undefined ? { error_stage: stage } : {}),
+      exam_pacing_item: { ...anchor, scale_key: scaleKey, score: { earned, maximum } },
+    } as EvidenceEventV1];
   });
 }
 
@@ -77,6 +102,8 @@ export function activityEvidenceSlice(
       ref: row.submission.id, rev: row.submission.rev, occurred_at: row.occurredAt,
       concept_ids: row.concepts, item_novelty: row.novelty, help_level: row.helpLevel,
       outcome: row.result, claim_ids: [],
+      // A witnessed wrong-answer classification; correct or unseen work omits it.
+      ...(row.result === 'incorrect' && row.errorStage !== undefined ? { error_stage: row.errorStage } : {}),
       ...(row.score === undefined ? {} : { score_norm: row.score }),
       ...(row.duration === undefined ? {} : { effective_duration_ms: row.duration }),
     });
