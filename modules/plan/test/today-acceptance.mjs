@@ -168,9 +168,9 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
     assert.ok(!tomorrow.shortlist.includes(paper));
     await save('next-rest',{kind:'rest',date});
     assert.deepEqual(await isPinned(),[paper,pinned]);
-    const stale = await save('warmup-stale',{...warmup,warmup:{timeZone,open:{...open,rev:2}}},anchor);
-    assert.deepEqual(await isPinned(),[pinned]);
-    await save('warmup-clear',null,await save('warmup-restore',warmup,stale));
+    await assert.rejects(save('warmup-stale',{...warmup,warmup:{timeZone,open:{...open,rev:2}}},anchor), /热身活动版本已变化/);
+    assert.deepEqual(await isPinned(),[paper,pinned]);
+    await save('warmup-clear',null,anchor);
     assert.deepEqual(await isPinned(),[pinned]);
     const deriver = modules[0].derivers.get('plan/today');
     const input = {...base,constraints:noLocks,candidates:[]};
