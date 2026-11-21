@@ -6,6 +6,16 @@ import type { WorkRef } from './demand.ts';
 
 import type { WorkPublication } from './payload-contract.ts';
 
+/** Record the authorized source set under the dispatch lock before a session sends. */
+export async function bindSessionPayloadSources(tx: DbTransaction, ref: WorkRef, ids: readonly FactId[]) {
+  if (tx.learner !== ref.learner) throw new Error('Work payload learner mismatch');
+  await lockLearner(tx, tx.learner);
+  await assertUnburned(tx, 'fact', ids);
+  await tx.query(`UPDATE work SET payload_sources=ARRAY(SELECT DISTINCT unnest(COALESCE(payload_sources,'{}') || $4::text[]))
+    WHERE learner_id=$1 AND id=$2 AND generation=$3 AND family='derivation' AND state='ready'
+      AND NOT COALESCE(payload_sources @> $4::text[],false)`, [tx.learner,ref.workId,ref.generation,ids]);
+}
+
 /** Reopen inputs in this transaction before binding and keep it open until binding commits. */
 export async function bindWorkPayload(tx: DbTransaction, ref: WorkRef, ids: readonly FactId[], publication: WorkPublication) {
   const sources = [...new Set(ids)].sort();

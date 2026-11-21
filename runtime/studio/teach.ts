@@ -24,6 +24,8 @@ import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { derivationId, factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
+import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
+import { bindSessionPayloadSources } from '../../kernel/src/work/payload.ts';
 import {
   failWork,
   finishWork,
@@ -321,7 +323,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       // The receipt can settle after its own public draft. Only a fresh send
       // must also prove that this turn has not already published a draft.
       const authorize = async (tx: ReadTransaction, current?: typeof settings, use: 'publish' | 'dispatch' = 'publish') => {
-        const {pages} = await validWorkInputs(tx,use);
+        const {manifest,pages} = await validWorkInputs(tx,use);
         const localCalculation = learningV1 && step.provider === 'tool:run_calculation';
         if (retention.size && (step.model !== settings.model ||
             (!step.provider.startsWith('tool:') && step.provider !== providerEndpoint(settings)))) throw new ChangedEvidence();
@@ -339,6 +341,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         if (step.provider === 'tool:exa_search' && (!current.allowSearch || current.exaApiKey !== settings.exaApiKey)) throw new ChangedEvidence();
         if (grants.length) checkMcpAccess(current);
         if (submission.workspaceRevision) await checkWorkspaceRoute(current);
+        return manifest;
       };
       let dispatchDenied: ChangedEvidence | TeachingError | LifecycleError | undefined;
       const needsFreshEvidence = Boolean(jit || notionWitnesses.size || protectWorkspaceDispatch || assessments.size || retention.size || memorySend);
@@ -379,7 +382,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           };
           return recorded.invoke(requestId, dispatch);
         },
-        authorize,
+        async tx => {
+          const manifest = await authorize(tx);
+          const sources = (await manifestFactInputs(tx, manifest.inputs)).map(input => input.id);
+          if (attachmentOrigin?.attachment) sources.push(attachmentOrigin.attachment.id);
+          await bindSessionPayloadSources(tx, ref, sources);
+        },
       ).catch(error => {
         if (error instanceof LifecycleError) throw new ChangedEvidence();
         throw error;
