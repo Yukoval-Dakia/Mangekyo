@@ -250,12 +250,15 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
       effectiveDurationMs: 0,
       pacing: {version:1,items:[{questionId:'q1',effectiveDurationMs:0,skipped:true,returned:true}]},
     };
+    const legacyPaced = {...timedInput,requestId:paced.requestId};
+    const legacyReceipt = await workbook.submit(paper.id,legacyPaced);
     const handIn = (input = paced) => workbook.submit(privatePaper.id,input);
     const [firstPaced, concurrentPaced] = await Promise.all([handIn(),handIn()]);
     expect(firstPaced.attempts).toMatchObject([{
       paperRev: paced.paperRev, answers: paced.answers, pacing: paced.pacing, effectiveDurationMs:0,
     }]);
     expect(concurrentPaced.attempts).toEqual(firstPaced.attempts);
+    expect((await workbook.submit(paper.id,legacyPaced)).attempts).toEqual(legacyReceipt.attempts);
     await expect(workbook.submit(paper.id,{...paced,paperRev:paper.revision})).rejects.toMatchObject({status:409});
     await expect(handIn({...paced,answers:{q1:' 米每秒 ',q2:null}})).rejects.toMatchObject({status:409});
     const privatePaperGrant = await access.setTeaching(privatePaper.id,{enabled:true,expectedRev:1});

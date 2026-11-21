@@ -452,12 +452,13 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           const sealed = snapshot.pending || await isPracticeWorkbook(tx,paperId);
           if (sealed && versioned) throw new RequestError(400, '只有普通试卷接受逐题过程。');
           const existing = await readAttemptOrNull(tx,attemptId);
-          if (existing && existing.paperId !== paperId) throw conflict();
+          if (existing && (existing.paperId !== paperId || existing.requestId !== data.requestId)) throw conflict();
           const envelope = { actor: 'learner' as const, purpose: storagePurpose, input: { id: attemptId, data } };
-          if (!sealed) {
-            await assertUnburned(tx, 'command', [versionedCommand]);
+          const legacyReplay = !versioned && existing !== null && existing.paperRev === undefined;
+          if (!sealed) await assertUnburned(tx, 'command', [legacyReplay ? legacyCommand : versionedCommand]);
+          if (!sealed && !legacyReplay) {
             const recorded = await readRecordedCommand(tx,versionedCommand);
-            if (recorded || (existing && versioned)) {
+            if (recorded || existing) {
               if (!versioned || !existing || recorded?.type !== submitWorkbookAttemptCommand || recorded.state !== 'done' ||
                   !sameWorkbookJson(recorded.input, { ...envelope,
                     input: { id: attemptId, data: { ...data, submittedAt: existing.submittedAt } } })) throw conflict();
