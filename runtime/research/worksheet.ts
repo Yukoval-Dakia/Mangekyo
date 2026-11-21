@@ -43,11 +43,11 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
     // Source authorization must succeed before recording a failure for a missing live quote.
     const eligible = await whenAvailable(() => readEligibleReview(reviewAccess(tx), todo.spec, settingsId));
     if (!eligible) return null;
-    const { basis, evidence } = eligible;
+    const { basis, evidence, retention } = eligible;
     const { attemptId, revision, accessEpoch } = basis.source;
     const publication = await worksheetPublication(tx, attemptId, revision, accessEpoch);
     if (!await bindWorkPayload(tx, ref, eligible.sourceIds, publication)) return null;
-    return { todo, publication, basis, evidence, grant: eligible.grant, comparison:eligible.comparison } as const;
+    return { todo, publication, basis, evidence, retention, grant: eligible.grant, comparison:eligible.comparison } as const;
   });
   if (!prepared) {
     await cancelWork(db, ref);
@@ -60,18 +60,18 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
     if (current?.revision !== prepared.todo.revision || !await readReadyWork(tx, ref) ||
         !await eligibleBasis(tx, current.spec, settingsId, tariff)) throw new ResearchBasisChanged('教研授权失效。');
   };
-  const { grant, todo, evidence, comparison } = prepared;
+  const { grant, todo, evidence, retention, comparison } = prepared;
   const unavailable = async () => {
     await failWork(db, ref, (tx, tick) => rememberTodoUnavailable(tx, tick, todoId, 'model_unavailable'));
     return true;
   };
-  if (!evidence || !isWorksheetProfile(profile) || !grant || !tariff || workerCap(grant, tariff) !== todo.spec.budgetCap)
+  if ((!evidence && !retention) || !isWorksheetProfile(profile) || (retention && profile !== 'heavy_tutor_prep') || !grant || !tariff || workerCap(grant, tariff) !== todo.spec.budgetCap)
     return unavailable();
 
   const runner = workerCall(db, todoId, prepared.basis.source.attemptId, grant, tariff, check, signal, ref);
   let draft;
   try {
-    draft = worksheetDraft(await generateResearchDraft(profile, JSON.stringify({source:evidence, comparison}), runner.call));
+    draft = worksheetDraft(await generateResearchDraft(profile, JSON.stringify({source:evidence ?? retention, comparison}), runner.call, Boolean(retention)));
   } catch (error) {
     if (error instanceof EffectBudgetExceeded || error instanceof ResearchDispatchDenied) return unavailable();
     throw error;
@@ -91,7 +91,7 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
     id: commandId,
     input: { id, todoId, basis: prepared.basis, draft,
       actualUsdMicros:runner.actualUsdMicros(), references:todo.spec.refs.map(({id, revision, accessEpoch, anchor}) => ({id,revision,accessEpoch,anchor:anchor!})),
-      method:profile, questionNumber:evidence.questionNumber },
+      method:profile, questionNumber:evidence?.questionNumber ?? 1 },
   }));
   if (!receipt) await cancelWork(db, ref);
   return true;
