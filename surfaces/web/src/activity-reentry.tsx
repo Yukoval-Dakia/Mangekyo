@@ -87,10 +87,12 @@ function focusScratch(itemId: string) {
   target.querySelector('textarea')?.focus();
 }
 
-export function ScratchReentry({itemId, label, slot, binding, cover}: Omit<CardProps,'onContinue'|'onCover'> & {
-  cover: (item: string) => void;
+export function ScratchReentry({itemId, label, slot, binding, cover, scratch}: Omit<CardProps,'onContinue'|'onCover'> & {
+  cover: (item: string) => void; scratch: string | undefined;
 }) {
-  return <ActivityReentry {...{slot,binding,itemId,label}} onContinue={() => focusScratch(itemId)} onCover={() => cover(itemId)}/>;
+  const excerpt = scratch?.trim().replace(/\s+/g, ' ');
+  const summary = excerpt ? label + ' · 草稿停在“' + [...excerpt].slice(0, 24).join('') + '”' : label;
+  return <ActivityReentry {...{slot,binding,itemId}} label={summary} onContinue={() => focusScratch(itemId)} onCover={() => cover(itemId)}/>;
 }
 
 function CoveredScratch({change, cancel, disabled}: {change: (value: string) => void; cancel: () => void; disabled: boolean}) {

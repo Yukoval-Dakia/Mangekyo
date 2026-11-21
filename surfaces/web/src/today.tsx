@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, remember, remembered, requestId } from './api';
 import { PageTitle } from './workspace';
 import { RetentionPosttests } from './retention-posttests';
-import { openLink, TodayActivity, type ActivityRef } from './today-pack';
+import { durationLabels, openLink, todayParams, TodayActivity, type ActivityRef, type Duration } from './today-pack';
 import { rememberPlan, SavedTodayAnswers, TodayHistory } from './today-history';
 import { TodayClassrooms } from './today-classrooms';
 import './today.css';
@@ -73,7 +73,7 @@ function nextDay(day: string) {
   return date.toISOString().slice(0, 10);
 }
 
-function TodayPlanPage({ mode }: { mode: Mode }) {
+function TodayPlanPage({ mode, duration }: { mode: Mode; duration: Duration | undefined }) {
   const [plan, setPlan] = useState<TodayPlan | null>(null);
   const [error, setError] = useState('');
   const [offline, setOffline] = useState(false);
@@ -113,10 +113,8 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
   }, []);
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({
-      mode,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-    });
+    const params = todayParams(mode, duration);
+    params.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
     if (lastVisit.current) params.set('lastOpenedAt', lastVisit.current);
     if (!navigator.onLine) {
       setPlan(null);
@@ -138,7 +136,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
           !Number.isFinite(value.totalMinutes)
         )
           throw new Error('规划回执不完整。');
-        rememberPlan(value, mode);
+        rememberPlan(value, mode, duration);
         setOffline(false);
         setPlan(value);
         if (typeof value.openedAt === 'string') remember('today-last-open', value.openedAt);
@@ -158,7 +156,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [mode, reload]);
+  }, [mode, duration, reload]);
 
   async function write(op: Operation) {
     if (busy) return;
@@ -236,7 +234,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
         </details>
         <div className="study-actions">
           {candidate.open && (
-            <a className="primary-button" href={openLink(candidate.open, mode)}>
+            <a className="primary-button" href={openLink(candidate.open, mode, duration)}>
               开始 / 继续
             </a>
           )}
@@ -307,11 +305,16 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
     <>
       <PageTitle title="今天" meta={plan?.day ?? new Date().toLocaleDateString('zh-CN')} />
       <TodayClassrooms />
-      <div className="filter-row today-modes">
+      <div role="group" aria-label="可用时间" className="filter-row today-modes">
+        {([undefined, '3min', '15min', '45min+'] as const).map(value =>
+          <a key={value ?? 'any'} className="tonal-button" aria-current={duration === value ? 'page' : undefined}
+            href={'/today?' + todayParams(mode, value)}>{value ? durationLabels[value] : '不限时长'}</a>)}
+      </div>
+      <div role="group" aria-label="作答方式" className="filter-row today-modes">
         {(
           [
-            ['any', '全部'],
-            ['one-hand', '3 分钟单手'],
+            ['any', '全部方式'],
+            ['one-hand', '单手点选'],
             ['voice', '语音'],
           ] as const
         ).map(([value, label]) => (
@@ -319,7 +322,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
             className="tonal-button"
             key={value}
             aria-current={mode === value ? 'page' : undefined}
-            href={'/today?mode=' + value}
+            href={'/today?' + todayParams(value, duration)}
           >
             {label}
           </a>
@@ -340,7 +343,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
         </p>
       )}
       {offline && <TodayHistory />}
-      <SavedTodayAnswers mode={mode} />
+      <SavedTodayAnswers mode={mode} duration={duration} />
       {loading && !plan && <p role="status">正在读取今天的安排…</p>}
       {plan && (
         <section className="day-sheet" aria-busy={loading}>
@@ -474,10 +477,12 @@ export function Today() {
     );
   const mode: Mode =
     params.get('mode') === 'one-hand' ? 'one-hand' : params.get('mode') === 'voice' ? 'voice' : 'any';
+  const requestedDuration = params.get('duration');
+  const duration = requestedDuration === '3min' || requestedDuration === '15min' || requestedDuration === '45min+' ? requestedDuration : undefined;
   const kind = params.get('kind'),
     id = params.get('id'),
     rev = Number(params.get('rev'));
   if ((kind === 'pack' || kind === 'activity') && id && Number.isSafeInteger(rev) && rev > 0)
-    return <TodayActivity refValue={{ kind, id, rev }} mode={mode} />;
-  return <TodayPlanPage mode={mode} />;
+    return <TodayActivity refValue={{ kind, id, rev }} mode={mode} duration={duration} />;
+  return <TodayPlanPage mode={mode} duration={duration} />;
 }
