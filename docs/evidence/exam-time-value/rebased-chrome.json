@@ -1,0 +1,102 @@
+{
+  "base": "3e986431",
+  "web": "644625b6",
+  "browser": "157.0.8103.52",
+  "host": "本轮专属 PG schema 和真实 Studio HTTP。浏览器构建也含能力 20 工作中改动。",
+  "ordinary": {
+    "case": "ordinary",
+    "paper": "6179644AC12A224D1B2679AF74",
+    "status": 200,
+    "request": {
+      "requestId": "cc963437-375d-415e-a879-3031a3272931",
+      "answers": {
+        "q1": "2",
+        "q2": "3"
+      },
+      "effectiveDurationMs": 474,
+      "pacing": {
+        "version": 1,
+        "items": [
+          {
+            "questionId": "q1",
+            "effectiveDurationMs": 224,
+            "skipped": false,
+            "returned": false
+          },
+          {
+            "questionId": "q2",
+            "effectiveDurationMs": 239,
+            "skipped": false,
+            "returned": false
+          }
+        ]
+      },
+      "paperRev": 1,
+      "deletionWatermark": "0"
+    },
+    "feedback": [
+      "incorrect",
+      "incorrect"
+    ],
+    "formal": null,
+    "pacing": {
+      "version": 1,
+      "items": [
+        {
+          "questionId": "q1",
+          "effectiveDurationMs": 224,
+          "skipped": false,
+          "returned": false
+        },
+        {
+          "questionId": "q2",
+          "effectiveDurationMs": 239,
+          "skipped": false,
+          "returned": false
+        }
+      ]
+    },
+    "timeBar": "本卷用时分布\n\n用时分布和逐题节奏未知。"
+  },
+  "projectionFixture": [
+    {
+      "case": "18-injected-optional-field",
+      "jump": {
+        "ms": 28.100000381469727,
+        "focus": "workbook-feedback-q2"
+      },
+      "withdrawn": true,
+      "authority": "fixture; real archived timing + HTTP re-read"
+    },
+    {
+      "case": "18-real-purpose-change",
+      "changes": [
+        [
+          200,
+          {
+            "allowed": true,
+            "revision": 2
+          }
+        ],
+        [
+          200,
+          {
+            "allowed": false,
+            "revision": 3
+          }
+        ]
+      ]
+    },
+    {
+      "case": "18-injected-optional-field",
+      "jump": {
+        "ms": 21.5,
+        "focus": "workbook-feedback-q2"
+      },
+      "withdrawn": true,
+      "authority": "fixture; real archived timing + HTTP re-read"
+    }
+  ],
+  "domain3": "2909a5caf7b9b841e63604242da7bc03cad21ec9",
+  "duplicateWitnessCheck": "真实 Python worker，合成两个题位复用 timer@1 返回整卷 unknown。独立 timer 返回 observed，合计 1000 ms。Vitest 1 passed，4 skipped。"
+}
