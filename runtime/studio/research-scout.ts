@@ -98,7 +98,8 @@ export async function sampleResearchScout(db: Db, settingsId: FactId, revision: 
     return Boolean(result && typeof result === 'object' && 'decision' in result && result.decision === 'review');
   } catch (error) {
     if (error instanceof EffectBudgetExceeded || error instanceof ScoutAuthorizationChanged) return undefined;
-    if (error instanceof EffectIdentityMismatch || error instanceof LifecycleError) return false;
+    if (error instanceof EffectIdentityMismatch) return 'superseded' as const;
+    if (error instanceof LifecycleError) return false;
     throw error;
   }
 }

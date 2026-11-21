@@ -249,7 +249,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     if (review === undefined) return scan.waiting;
     return db.tx(scope, async tx => {
       signal.throwIfAborted();
-      const consumed = await consumePricedEffect(tx, scoutEffectIdentity(settingsId, prepared.intent.dedupKey), async tick => {
+      const consumed = await consumePricedEffect(tx, scoutEffectIdentity(settingsId, prepared.intent.dedupKey), review === 'superseded' ? 'discard' : async tick => {
         if (!review) return null;
         try {
           await authorizeScout(tx);

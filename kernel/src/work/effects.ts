@@ -234,16 +234,22 @@ export async function runEffect(
 /** Consume a terminal paid receipt and register its business outcome in the same learner transaction. */
 export async function consumePricedEffect(tx: DbTransaction,
   { ownerKind, ownerId, stepKey, label }: Omit<EffectRequest, 'learner' | 'input'>,
-  consume: (tick: Tick) => Promise<string | null>) {
+  consume: ((tick: Tick) => Promise<string | null>) | 'discard') {
   await lockLearner(tx, tx.learner);
   const identity = [tx.learner, ownerKind, ownerId, stepKey, label] as const;
-  const { rowCount } = await tx.query(`SELECT 1 FROM effects
+  // A superseded request can retire an already received decision without reading it
+  // or creating work. A reservation with no response must remain in flight.
+  const { rows: [receipt] } = await tx.query<{ state: string }>(`SELECT state FROM effects
     WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5
-      AND reserved_usd_micros IS NOT NULL AND state<>'started' AND consumed_tick IS NULL
-      AND effect_may_settle(learner_id, owner_id, started_tick, input_basis)`, identity);
-  if (!rowCount) return false;
+      AND reserved_usd_micros IS NOT NULL AND consumed_tick IS NULL
+      AND (state<>'started' OR ($6 AND result IS NOT NULL))
+      AND effect_may_settle(learner_id, owner_id, started_tick, input_basis)`, [...identity, consume === 'discard']);
+  if (!receipt) return false;
   await tx.withLearnerWrite(async tick => {
-    const todoId = await consume(tick);
+    if (receipt.state === 'started') await tx.query(
+      `UPDATE effects SET state='done', ended_tick=$6
+       WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5`, [...identity, tick]);
+    const todoId = consume === 'discard' ? null : await consume(tick);
     await tx.query(`UPDATE effects SET consumed_tick=$6, consumer_todo_id=$7
       WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5`,
     [...identity, tick, todoId]);
