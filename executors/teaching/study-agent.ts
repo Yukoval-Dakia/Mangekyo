@@ -16,7 +16,8 @@ import { createStudyTools, pythonCodeError, type PythonAttemptsRead } from './ag
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch} from './learning-turn.ts';
-import {saveBeliefDefinition, toolFailure, type LearningTools} from './learning-tools.ts';
+import {adaptWorkspaceResult, learningToolFallback, narrowWorkspaceDefinitions, saveBeliefDefinition, toolFailure,
+  type LearningTools} from './learning-tools.ts';
 
 type StudyWorkspaceTools = WorkspaceTools & {
   presentationOnly?: true;
@@ -90,6 +91,8 @@ function summarise(call: FunctionCall, args: Record<string, unknown>, output: st
     case 'open_learning': return '打开学习对象 · ' + String(Array.isArray(args.refs) ? args.refs.length : 1) + ' 项\n' + output.slice(0, 900);
     case 'record_observation': return '记录学情观察 · ' + String(args.title ?? '').slice(0, 160);
     case 'save_page': return '提交教材块变更';
+    case 'save_question': return '提交题面草稿';
+    case 'save_edge':
     case 'save_relation': return '提交有向知识边\n' + output.slice(0,700);
     case 'retrieve_memory': return '查找已获准的记忆';
     case 'save_memory': return '登记本轮记忆操作';
@@ -133,10 +136,13 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const discovery = learning
     ? studyToolDiscovery(remotes, [...learning.discoverable, ...builtins.filter(tool => tool.function.name === 'exa_search')])
     : tools && options.discoverTools ? studyToolDiscovery(remotes) : undefined;
+  const narrowSaves = workspace?.narrowSaves;
   const nativeTools = workspace
-    ? [...(workspace.presentationOnly ? [] : workspaceDefinitions), ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
+    ? [...(workspace.presentationOnly ? [] : narrowSaves ? narrowWorkspaceDefinitions : workspaceDefinitions),
+      ...(workspace.presentationTool ? [workspace.presentationTool] : [])]
     : [];
-  const memoryDefinitions = options.beliefTools ? [memoryToolDefinitions[0]!, saveBeliefDefinition] : memoryToolDefinitions;
+  const memoryDefinitions = options.beliefTools ? [memoryToolDefinitions[0]!, saveBeliefDefinition]
+    : narrowSaves ? memoryToolDefinitions.slice(0,1) : memoryToolDefinitions;
   const coreDefinitions = learning?.resident ?? [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []),
     ...(options.memoryTools ? memoryDefinitions : []),
     ...(discovery ? [findTools] : Array.from(remotes, ([name, remote]) => remoteToolDefinition(name, remote)))];
@@ -226,6 +232,8 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const name = call.function.name;
       if (!availableNames.has(name)) {
         if (learning) return {...learning.badArgs(name, '当前请求未开放此工具。'), summary:'工具不可用'};
+        if (narrowSaves) return {content:JSON.stringify(toolFailure('not_found','当前请求未开放此工具。',
+          learningToolFallback(name),'name')),summary:'工具不可用'};
         if (discovery) return {content: JSON.stringify(learningToolError('tool_unavailable','name','当前请求未开放此工具。',{
           tool:findTools.function.name, args:{query:name}, why:'确认本轮已授权且下一次请求可用的工具。',
         })), summary: '工具不可用'};
@@ -265,13 +273,21 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       let parsed: unknown;
       try { parsed = JSON.parse(call.function.arguments); } catch { /* Send an actionable tool response. */ }
       const args = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
-      if (discovery && name === findTools.function.name) return discovery.find(args.query);
+      if (discovery && name === findTools.function.name) {
+        const resident = narrowSaves && coreDefinitions.find(tool => tool.function.name === args.query);
+        if (resident) return {content:JSON.stringify({ok:true,data:{tool:resident.function.name,available:true,
+          parameters:resident.function.parameters}}),summary:'查找工具'};
+        return discovery.find(args.query);
+      }
       if (name === openToolResult.function.name) return {...results.open(args), summary: '读取工具结果'};
       if (name === 'exa_search' && pinnedQuery) args.query = pinnedQuery;
       const remote = remotes.get(name);
       const workspaceTool = workspace && nativeTools.some(tool => tool.function.name === name);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        const content = JSON.stringify(learningToolError('invalid_args','args','请将工具参数作为 JSON 对象提交。'));
+        const message = '请将工具参数作为 JSON 对象提交。';
+        const content = JSON.stringify(narrowSaves && name.startsWith('save_')
+          ? toolFailure('invalid_args',message,learningToolFallback(name),'args')
+          : learningToolError('invalid_args','args',message));
         return {content, summary: name === 'mount_artifact' ? artifactMountTrace(content) : '参数错误 · ' + name};
       }
       const python = name === 'python' && args.inputs !== undefined ? results.pythonInputs(args.inputs) : undefined;
@@ -320,6 +336,10 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
           sources: attempts.witnesses.map(({id, rev}) => ({id, rev})),
           ...(attempts.issues.length ? {...learningToolError('partial_success','refs','部分作答未打开，详见逐项结果。'), issues:attempts.issues} : {}),
         }) : saved.output;
+      }
+      if (narrowSaves && (name === 'save_page' || name === 'save_edge' || name === 'save_belief')) {
+        const adapted = adaptWorkspaceResult(output,name,'workspace-v2');
+        if (!adapted.ok) output = JSON.stringify(adapted);
       }
       const files = name === 'python' ? Object.entries(tools!.snapshotFiles()).filter(([name, value]) => before[name] !== value) : [];
       const result = results.publish(name, step, output, files);

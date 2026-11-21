@@ -421,7 +421,7 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     const authorize = async () => {}, track = () => {};
     const workspace = openWorkspaceTools({db,turn:runId,prior:[],authorize,track,maySend});
     const sdk = openLearningTools({db,turn:runId,workspace,authorize,track,maySend,manageBeliefs:false,trackRetention:track,
-      authorizeRemote:async()=>true,readContext:async()=>undefined,draftBasis:()=>[],saveBelief:async()=>'',onDelivered:async()=>{}});
+      authorizeRemote:async()=>true,readContext:async()=>undefined,saveBelief:async()=>'',onDelivered:async()=>{}});
     const reads = pythonReads([{method:'evidence_slice',args:{exam_pacing:true,paper_ids:[privatePaper.id]}}]);
     expect(reads).toBeDefined();
     const packet = await sdk.preparePython!(reads!,1);
