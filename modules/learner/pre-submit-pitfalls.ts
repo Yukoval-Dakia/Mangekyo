@@ -162,10 +162,11 @@ Promise<PreSubmitPitfall[]> {
         const {rule, concepts, cited, submissions, activities, matched} = candidate;
         if (!concepts.has(concept) || rule.errorStage !== row.event.error_stage) continue;
         if (rule.kind === 'sticky') {
-          // The item-level assignment names the directive, and its basis fixes
-          // the directive revision and epoch used when the error was observed.
+          // The current directive and the historical assignment have each
+          // reopened in their own mode. Compare the editions they identify.
           if (!row.event.claim_ids.includes(rule.ref.id) ||
-              !row.basis.some(w => busWitnessKey(w) === busWitnessKey(rule.ref))) continue;
+              !row.basis.some(w => w.learner === rule.ref.learner && w.type === rule.ref.type &&
+                w.id === rule.ref.id && w.rev === rule.ref.rev && w.accessEpoch === rule.ref.accessEpoch)) continue;
         } else if (!cited?.has(support)) continue;
         matched.add(concept);
         if (submissions.has(row.submission.id)) continue;
