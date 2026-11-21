@@ -29,9 +29,16 @@ const database = new URL(process.env.MANGEKYO_ARTIFACT_ACCEPTANCE_DATABASE_URL ?
 const temporal = process.env.MANGEKYO_ARTIFACT_ACCEPTANCE_TEMPORAL ?? '';
 assert.ok(/^postgres(ql)?:$/.test(database.protocol) && database.hostname === '127.0.0.1' && database.port);
 assert.match(temporal, /^127\.0\.0\.1:\d+$/);
-const schema = 'gui_' + randomUUID().replaceAll('-', '');
+const schema = 'test_gui_' + randomUUID().replaceAll('-', '');
+const namespace = schema.replaceAll('_', '-');
 const directory = resolve(process.argv[2] ?? 'node_modules/.cache/' + schema);
 await mkdir(directory, { recursive: true });
+const connection = await Connection.connect({ address: temporal });
+await connection.workflowService.registerNamespace({ namespace, workflowExecutionRetentionPeriod: { seconds: 86_400 } })
+  .catch(async error => {
+    await connection.close();
+    throw error;
+  });
 let studioLog = '';
 let generation;
 const model = createServer(async (req, res) => {
@@ -83,21 +90,22 @@ const studio = spawn(process.execPath, ['--import', 'tsx', 'server.ts'], {
     MANGEKYO_DATABASE_SCHEMA: schema,
     MANGEKYO_ACTIVATE_LOCAL_BUILD: '1',
     TEMPORAL_ADDRESS: temporal,
+    TEMPORAL_NAMESPACE: namespace,
     MANGEKYO_SETTINGS_FILE: resolve(directory, 'provider.json'),
     MANGEKYO_WORKSPACE_ACCESS_FILE: resolve(directory, 'workspace.json'),
     MANGEKYO_ARTIFACT_ASSESSMENT_MODULE: resolve(cwd, 'test/artifact-assessment-witness.ts'),
     MANGEKYO_LLM_BASE_URL: 'http://127.0.0.1:' + model.address().port + '/v1',
   },
 });
-const exited = once(studio, 'exit');
+const exited = new Promise(done => studio.once('close', done));
+studio.on('error', error => { studioLog += String(error); });
 studio.stdout.on('data', data => { studioLog += data; });
 studio.stderr.on('data', data => { studioLog += data; });
 const pool = new pg.Pool({ connectionString: database.href, options: '-c search_path=' + schema });
-let connection;
 
 async function until(read) {
   for (let i = 0; i < 180; i++) {
-    if (studio.exitCode !== null) throw new Error(studioLog);
+    if (!studio.pid || studio.exitCode !== null || studio.signalCode !== null) throw new Error(studioLog);
     const value = await read();
     if (value) return value;
     await delay(250);
@@ -162,9 +170,29 @@ function ready(path) {
   });
 }
 
+async function cleanup() {
+  generation?.finish.resolve();
+  model.closeAllConnections();
+  model.close();
+  if (studio.exitCode === null && studio.signalCode === null) studio.kill('SIGTERM');
+  await Promise.race([exited, delay(5000, undefined, { ref: false })]);
+  if (studio.exitCode === null && studio.signalCode === null) studio.kill('SIGKILL');
+  await exited;
+  await Promise.all([
+    connection.close(),
+    pool.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE').finally(() => pool.end()),
+    writeFile(resolve(directory, 'studio.log'), studioLog),
+  ]);
+}
+
+let cleanupRun;
+const clean = () => cleanupRun ??= cleanup();
+for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.once(signal, () => void clean().catch(console.error).finally(() => process.exit(exitCode)));
+}
+
 try {
-  connection = await Connection.connect({ address: temporal });
-  const temporalClient = new Client({ connection });
+  const temporalClient = new Client({ connection, namespace });
   await until(() => fetch(base + 'settings').then(r => r.ok, () => false));
   const { providers: [provider] } = await api('workspace/access/providers');
   const accessPath = 'workspace/access/providers/' + provider.id;
@@ -285,13 +313,5 @@ try {
   assert.deepEqual(archive[0].trace, rejected.turns.at(-1).trace);
   console.log('Studio HTTP/SSE → PG/outbox → Temporal → effective: 100/100, 100/100, 66/100, unsubmitted; changed rules rejected; legacy submission preserved.');
 } finally {
-  generation?.finish.resolve();
-  model.closeAllConnections();
-  model.close();
-  if (studio.exitCode === null) studio.kill('SIGTERM');
-  await Promise.race([exited, delay(5000, undefined, { ref: false })]);
-  if (studio.exitCode === null && studio.signalCode === null) studio.kill('SIGKILL');
-  await connection?.close();
-  await pool.end();
-  await writeFile(resolve(directory, 'studio.log'), studioLog);
+  await clean();
 }

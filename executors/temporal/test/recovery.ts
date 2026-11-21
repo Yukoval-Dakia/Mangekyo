@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +12,7 @@ import { executions, privateBody } from './executor.ts';
 
 const address = process.env.TEMPORAL_ADDRESS;
 assert(address);
-const namespace = `probe-${Date.now().toString(36)}`;
+const namespace = 'probe-' + randomUUID();
 const taskQueue = namespace;
 const deploymentName = namespace;
 const connection = await Connection.connect({ address });
@@ -59,6 +60,21 @@ async function complete(executionRef: string) {
   await until(`${executionRef} completion`, async () =>
     (await describeWork(client, executionRef)).status === 'COMPLETED');
   return describeWork(client, executionRef);
+}
+
+async function cleanup() {
+  await Promise.all(workers.map(async (child) => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.kill('SIGTERM');
+    await once(child, 'exit');
+  }));
+  await connection.close();
+}
+
+let cleanupRun: Promise<void> | undefined;
+const clean = () => cleanupRun ??= cleanup();
+for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
+  process.once(signal, () => void clean().catch(console.error).finally(() => process.exit(exitCode)));
 }
 
 try {
@@ -129,10 +145,5 @@ try {
     ?.map((payload) => defaultPayloadConverter.fromPayload(payload)), [terminal]);
   console.log(JSON.stringify({ namespace, waiting, resumed, freshResult, closedResult, failureResult, terminalId }, null, 2));
 } finally {
-  await Promise.all(workers.map(async (child) => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    child.kill('SIGTERM');
-    await once(child, 'exit');
-  }));
-  await connection.close();
+  await clean();
 }
