@@ -1,4 +1,5 @@
-import { isCanonicalEvidenceSlice, type WireSlice as PacingSlice } from './schema.ts';
+import { isDeepStrictEqual } from 'node:util';
+import { isCanonicalEvidenceSlice, type ItemPacingEvidence, type WireSlice as PacingSlice } from './schema.ts';
 
 export const examPacingMethod = 'plan/exam-pacing@1';
 
@@ -7,6 +8,18 @@ type InputRow = { id: string; effective_duration_ms?: number | null; score?: Sco
 type ExamBasis = { paper_key: string; scale_key: string };
 type PacingEvent = PacingSlice['events'][number];
 type PacingEvidence = NonNullable<PacingEvent['exam_pacing']>;
+type Ref = ItemPacingEvidence['attempt_ref'];
+type ItemAnchor = Pick<ItemPacingEvidence, 'item_id' | 'position'> & { evidence_ref: Ref; occurred_at: string };
+type ProcessItem = ItemAnchor & Pick<ItemPacingEvidence, 'skipped' | 'returned' | 'estimated_duration_ms'> & {
+  effective_duration_ms?: number;
+  over_estimate?: boolean;
+};
+type Observations<Item> = { kind: 'unknown' } | { kind: 'observed'; items: Item[] };
+type WithinAttempt = {
+  attempt_ref: Ref;
+  process: Observations<ProcessItem>;
+  later_scores: Observations<ItemAnchor & { score: Score }>;
+};
 const fields = ['effective_duration_ms', 'score'] as const;
 const basis = ['paper_key', 'scale_key'] as const;
 const canonicalFields = [...fields, ...basis] as const;
@@ -23,6 +36,7 @@ export type ExamPacingInput = { attempts: InputRow[] } | PacingSlice;
 export type ExamPacingResult = {
   method_version: typeof examPacingMethod;
   attempts: (ObservedRow | UnknownRow)[];
+  within_attempt?: WithinAttempt[];
   strategy:
     | { kind: 'unknown'; reason: 'insufficient-comparable-attempts' }
     | { kind: 'observed'; comparisons: Comparison[] };
@@ -41,6 +55,10 @@ function duration(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 86_400_000;
 }
 
+function itemDuration(value: unknown): value is number {
+  return value === 0 || duration(value);
+}
+
 function score(value: unknown): value is Score {
   return record(value, ['earned', 'maximum']) && typeof value.maximum === 'number' &&
     Number.isFinite(value.maximum) && value.maximum > 0 &&
@@ -52,31 +70,95 @@ function key(value: unknown): value is string {
 }
 
 type TaggedEvent = PacingEvent & { readonly exam_pacing: PacingEvidence };
-function eligibleEvents(input: PacingSlice) {
+function evidenceWindow(input: PacingSlice) {
   const deadlines = new Map<string, number>();
   for (const {ref, at} of input.constraints.deadlines) {
     deadlines.set(ref, Math.min(deadlines.get(ref) ?? Infinity, Date.parse(at)));
   }
   const omitted = new Set(input.omissions?.map(({ref}) => JSON.stringify([ref.id, ref.rev])));
   const cutoff = Date.parse(input.as_of_at);
-  return input.events.filter((event): event is TaggedEvent => {
-    const details = event.exam_pacing;
-    if (!details || omitted.has(JSON.stringify([event.ref, event.rev]))) return false;
-    const paperCutoff = details.paper_key === undefined ? Infinity : deadlines.get(details.paper_key) ?? Infinity;
-    return Date.parse(event.occurred_at) <= Math.min(cutoff, paperCutoff, deadlines.get(event.ref) ?? Infinity);
-  });
+  return (event: PacingEvent, ...refs: (string | undefined)[]) =>
+    !omitted.has(JSON.stringify([event.ref, event.rev])) && Date.parse(event.occurred_at) <=
+      Math.min(cutoff, deadlines.get(event.ref) ?? Infinity, ...refs.map(ref => ref === undefined ? Infinity : deadlines.get(ref) ?? Infinity));
+}
+
+function eligibleEvents(input: PacingSlice) {
+  const eligible = evidenceWindow(input);
+  return input.events.filter((event): event is TaggedEvent => !!event.exam_pacing && eligible(event, event.exam_pacing.paper_key));
+}
+
+function recentAttempts(input: PacingSlice) {
+  return eligibleEvents(input).sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at)).slice(0, 8);
 }
 
 function pacingRows(input: ExamPacingInput) {
   if ('attempts' in input) return input.attempts.map(row => ({ row, required: fields }));
-  return eligibleEvents(input)
-    .sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at))
-    .slice(0, 8)
+  return recentAttempts(input)
     .map(event => ({
       row: { id: event.ref, ...event.exam_pacing,
         ...(duration(event.effective_duration_ms) ? {effective_duration_ms: event.effective_duration_ms} : {}) },
       required: canonicalFields,
     }));
+}
+
+function itemAnchor(event: PacingEvent, { item_id, position }: ItemPacingEvidence): ItemAnchor {
+  return { item_id, position, evidence_ref: { id: event.ref, rev: event.rev }, occurred_at: event.occurred_at };
+}
+
+function observations<Item>(items: Item[]): Observations<Item> {
+  return items.length ? { kind: 'observed', items } : { kind: 'unknown' };
+}
+
+function withinAttempt(input: ExamPacingInput): WithinAttempt[] | undefined {
+  if ('attempts' in input) return undefined;
+  const items = input.events.flatMap(event => event.exam_pacing_item ? [{event, item: event.exam_pacing_item}] : []);
+  if (!items.length) return undefined;
+  const eligible = evidenceWindow(input);
+  return recentAttempts(input).map(attempt => {
+    const { paper_key, scale_key } = attempt.exam_pacing;
+    const submittedAt = Date.parse(attempt.occurred_at);
+    const matching = items.flatMap(({event, item}) => {
+      if (item.attempt_ref.id !== attempt.ref || item.attempt_ref.rev !== attempt.rev ||
+          item.paper_key !== paper_key || !eligible(event, paper_key, attempt.ref)) return [];
+      const time = Date.parse(event.occurred_at);
+      // Process precedes submission. A formal score may settle later within the evidence window.
+      const process = time <= submittedAt && (item.skipped || item.returned || itemDuration(event.effective_duration_ms));
+      const score = time >= submittedAt && scale_key === item.scale_key ? item.score : undefined;
+      return process || score ? [{event, item, process, score}] : [];
+    });
+    const count = matching[0]?.item.item_count ?? 0;
+    const positions = new Map<number, string>();
+    const ids = new Map<string, number>();
+    const process: ProcessItem[] = [];
+    const scores = new Map<number, ItemAnchor & { score: Score }>();
+    let duplicateScore = false;
+    const halfway = Math.ceil(count / 2);
+    const attempt_ref = { id: attempt.ref, rev: attempt.rev };
+    for (const {event, item, process: hasProcess, score} of matching) {
+      const {item_id, position, skipped, returned, estimated_duration_ms: estimate} = item;
+      if (item.item_count !== count || (positions.get(position) ?? item_id) !== item_id ||
+          (ids.get(item_id) ?? position) !== position) {
+        return { attempt_ref, process: {kind: 'unknown'}, later_scores: {kind: 'unknown'} };
+      }
+      positions.set(position, item_id);
+      ids.set(item_id, position);
+      const elapsed = event.effective_duration_ms;
+      const anchor = itemAnchor(event, item);
+      if (hasProcess) {
+        process.push({ ...anchor, ...(skipped ? {skipped} : {}), ...(returned ? {returned} : {}),
+          ...(estimate === undefined ? {} : {estimated_duration_ms: estimate}),
+          ...(itemDuration(elapsed) ? {effective_duration_ms: elapsed,
+            ...(estimate === undefined ? {} : {over_estimate: 5 * elapsed > 9 * estimate})} : {}) });
+      }
+      if (position > halfway && score) {
+        duplicateScore ||= scores.has(position);
+        scores.set(position, { ...anchor, score });
+      }
+    }
+    const later = !duplicateScore && scores.size === count - halfway
+      ? [...scores.values()].sort((a, b) => a.position - b.position) : [];
+    return { attempt_ref, process: observations(process), later_scores: observations(later) };
+  });
 }
 
 function attempts<T extends { id: string }>(value: unknown, valid: (row: unknown) => row is T): value is T[] {
@@ -96,7 +178,11 @@ export function isExamPacingInput(value: unknown): value is ExamPacingInput {
   if (!isCanonicalEvidenceSlice(value)) return false;
   const slice: PacingSlice = value;
   if (!slice.events.every(event => {
+    const item = event.exam_pacing_item;
     const details = event.exam_pacing;
+    if (item) return key(event.ref) && key(item.item_id) && item.position <= item.item_count &&
+      (item.score === undefined || key(item.scale_key)) &&
+      (event.effective_duration_ms === undefined || itemDuration(event.effective_duration_ms));
     return details === undefined || (key(event.ref) && record(details, [], [...basis, 'score']) &&
       basis.every(field => !Object.hasOwn(details, field) || key(details[field])) &&
       (!Object.hasOwn(details, 'score') || score(details.score)));
@@ -119,8 +205,10 @@ function outputRow(value: unknown): value is ObservedRow | UnknownRow {
 }
 
 export function isExamPacingResult(value: unknown, input?: ExamPacingInput): value is ExamPacingResult {
-  if (!record(value, ['method_version', 'attempts', 'strategy']) || value.method_version !== examPacingMethod ||
+  if (!record(value, ['method_version', 'attempts', 'strategy'], ['within_attempt']) || value.method_version !== examPacingMethod ||
       !attempts(value.attempts, outputRow)) return false;
+  const within = input && withinAttempt(input);
+  if (within === undefined ? Object.hasOwn(value, 'within_attempt') : !isDeepStrictEqual(value.within_attempt, within)) return false;
   if (input) {
     const supplied = pacingRows(input);
     if (value.attempts.length !== supplied.length || !value.attempts.every((row, index) => {
