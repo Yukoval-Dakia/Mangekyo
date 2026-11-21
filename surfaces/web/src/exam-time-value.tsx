@@ -22,7 +22,7 @@ type Attempt = {id: string; rev?: number; paperRev?: number; pacing?: ItemPacing
 function projection(attempt: Attempt, paperId: string, ids: string[]) {
   const total = attempt.effectiveDurationMs;
   const pacing = attempt.pacing;
-  if (!ids.length || total === undefined || !Number.isSafeInteger(total) || total <= 0 ||
+  if (!ids.length || new Set(ids).size !== ids.length || !attempt.rev || !attempt.paperRev || total === undefined || !Number.isSafeInteger(total) || total <= 0 ||
       pacing?.version !== 1 || !Array.isArray(pacing.items) || pacing.items.length !== ids.length) return;
   const durations = new Map<string, number>();
   let recorded = 0;
@@ -34,17 +34,17 @@ function projection(attempt: Attempt, paperId: string, ids: string[]) {
   }
   if (!recorded || recorded > total) return;
   const result = attempt.examTimeValue;
-  if (result !== undefined && (!result || result.kind !== 'observed' || result.method_version !== 'plan/exam-pacing@2' ||
+  if (!result || result.kind !== 'observed' || result.method_version !== 'plan/exam-pacing@2' ||
       result.paper?.id !== paperId || result.paper.rev !== attempt.paperRev ||
       result.attempt_ref?.id !== attempt.id || result.attempt_ref.rev !== attempt.rev ||
       !Array.isArray(result.items) || result.items.length !== ids.length ||
       result.total_duration_ms !== recorded || typeof result.summary !== 'string' || !result.summary.trim() ||
       !result.items.every((item, index) => item && item.position === index + 1 && item.item_id === ids[index] &&
-        item.effective_duration_ms === durations.get(item.item_id) && typeof item.state === 'string' && Object.hasOwn(labels, item.state)))) return;
-  const items = ids.map((id, index) => ({
-    id, number: index + 1, ms: durations.get(id)!, state: result?.items[index]?.state ?? 'unknown',
+        item.effective_duration_ms === durations.get(item.item_id) && typeof item.state === 'string' && Object.hasOwn(labels, item.state))) return;
+  const items = result.items.map(({item_id, position, effective_duration_ms, state}: Item) => ({
+    id: item_id, number: position, ms: effective_duration_ms, state,
   }));
-  return {items, total, remainder: total - recorded, summary: result?.summary ?? '逐题节奏判断未知。'};
+  return {items, total, remainder: total - recorded, summary: result.summary};
 }
 
 const percent = new Intl.NumberFormat('zh-CN', {style: 'percent', maximumFractionDigits: 1});
@@ -93,7 +93,7 @@ export function ExamTimeValue({attempt, paperId, ids}: {attempt: Attempt; paperI
         <div className="exam-time-positions">
           {timing.items.map(({id, number, ms, state}) =>
             <button key={id} type="button" onClick={() => jump(id)}>
-              第 {number} 题 · {share(ms, timing.total)}{attempt.examTimeValue ? ' · ' + labels[state] : ''}
+              第 {number} 题 · {share(ms, timing.total)} · {labels[state]}
             </button>)}
         </div>
       </details>
