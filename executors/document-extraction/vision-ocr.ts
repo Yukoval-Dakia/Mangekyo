@@ -381,123 +381,138 @@ function stripLeadingFence(text: string): string {
  */
 export function repairTruncatedQuestionsJson(rawText: string): string | null {
   const source = stripLeadingFence(rawText);
-  const objStart = source.indexOf('{');
-  if (objStart < 0) return null;
+  let searchFrom = 0;
 
-  let inString = false;
-  let escaped = false;
-  let depth = 0;
-  let questionsKeyStart = -1;
-  let questionsArrayStart = -1;
-  let expectingColon = false;
-  let expectingArray = false;
-  let stringStart = -1;
+  while (searchFrom < source.length) {
+    const objStart = source.indexOf('{', searchFrom);
+    if (objStart < 0) return null;
 
-  for (let i = objStart; i < source.length; i += 1) {
-    const ch = source[i]!;
-    if (inString) {
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
+    let inString = false;
+    let escaped = false;
+    let depth = 0;
+    let questionsKeyStart = -1;
+    let questionsArrayStart = -1;
+    let expectingColon = false;
+    let expectingArray = false;
+    let stringStart = -1;
+    let scanEnd = source.length;
+
+    for (let i = objStart; i < source.length; i += 1) {
+      const ch = source[i]!;
+      if (inString) {
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') {
+          inString = false;
+          if (depth === 1 && stringStart >= 0) {
+            const key = source.slice(stringStart + 1, i);
+            if (key === 'questions') {
+              questionsKeyStart = stringStart;
+              expectingColon = true;
+            }
+          }
+          stringStart = -1;
+        }
+        continue;
+      }
+      if (expectingColon) {
+        if (ch === ':') { expectingColon = false; expectingArray = true; continue; }
+        if (/\s/.test(ch)) continue;
+        expectingColon = false;
+        questionsKeyStart = -1;
+      }
+      if (expectingArray) {
+        if (ch === '[') { questionsArrayStart = i; depth += 1; break; }
+        if (/\s/.test(ch)) continue;
+        expectingArray = false;
+        questionsKeyStart = -1;
+      }
       if (ch === '"') {
-        inString = false;
-        if (depth === 1 && stringStart >= 0) {
-          const key = source.slice(stringStart + 1, i);
-          if (key === 'questions') {
-            questionsKeyStart = stringStart;
-            expectingColon = true;
+        inString = true;
+        stringStart = i;
+        continue;
+      }
+      if (ch === '{' || ch === '[') depth += 1;
+      else if (ch === '}' || ch === ']') {
+        depth -= 1;
+        if (depth <= 0) { scanEnd = i + 1; break; }
+      }
+    }
+
+    if (questionsArrayStart < 0 || questionsKeyStart < 0) {
+      searchFrom = Math.max(scanEnd, objStart + 1);
+      continue;
+    }
+
+    const recoveredQuestions: unknown[] = [];
+    inString = false;
+    escaped = false;
+    let itemDepth = 0;
+    let itemStart = -1;
+
+    for (let i = questionsArrayStart + 1; i < source.length; i += 1) {
+      const ch = source[i]!;
+      if (inString) {
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') {
+        if (itemDepth === 0) itemStart = i;
+        itemDepth += 1;
+        continue;
+      }
+      if (ch === '}') {
+        if (itemDepth === 0) break;
+        itemDepth -= 1;
+        if (itemDepth === 0 && itemStart >= 0) {
+          try {
+            const parsedItem: unknown = JSON.parse(source.slice(itemStart, i + 1));
+            if (parsedItem && typeof parsedItem === 'object' && !Array.isArray(parsedItem)) {
+              recoveredQuestions.push(parsedItem);
+            }
+          } catch {
+            // Ignore malformed element.
           }
+          itemStart = -1;
         }
-        stringStart = -1;
+        continue;
       }
-      continue;
+      if (ch === ']' && itemDepth === 0) break;
     }
-    if (ch === '"') {
-      inString = true;
-      stringStart = i;
-      continue;
-    }
-    if (expectingColon) {
-      if (ch === ':') { expectingColon = false; expectingArray = true; continue; }
-      if (!/\s/.test(ch)) { expectingColon = false; questionsKeyStart = -1; }
-      continue;
-    }
-    if (expectingArray) {
-      if (ch === '[') { questionsArrayStart = i; depth += 1; break; }
-      if (!/\s/.test(ch)) { expectingArray = false; questionsKeyStart = -1; }
-      continue;
-    }
-    if (ch === '{' || ch === '[') depth += 1;
-    else if (ch === '}' || ch === ']') {
-      depth -= 1;
-      if (depth <= 0) break;
-    }
-  }
 
-  if (questionsArrayStart < 0 || questionsKeyStart < 0) return null;
-
-  const recoveredQuestions: unknown[] = [];
-  inString = false;
-  escaped = false;
-  let itemDepth = 0;
-  let itemStart = -1;
-
-  for (let i = questionsArrayStart + 1; i < source.length; i += 1) {
-    const ch = source[i]!;
-    if (inString) {
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
-      if (ch === '"') inString = false;
+    if (recoveredQuestions.length === 0) {
+      searchFrom = Math.max(scanEnd, objStart + 1);
       continue;
     }
-    if (ch === '"') { inString = true; continue; }
-    if (ch === '{') {
-      if (itemDepth === 0) itemStart = i;
-      itemDepth += 1;
-      continue;
-    }
-    if (ch === '}') {
-      if (itemDepth === 0) break;
-      itemDepth -= 1;
-      if (itemDepth === 0 && itemStart >= 0) {
-        try {
-          const parsedItem: unknown = JSON.parse(source.slice(itemStart, i + 1));
-          if (parsedItem && typeof parsedItem === 'object' && !Array.isArray(parsedItem)) {
-            recoveredQuestions.push(parsedItem);
-          }
-        } catch {
-          // Ignore malformed element.
+
+    let prefix: JsonRecord = {};
+    const rawPrefix = source.slice(objStart, questionsKeyStart).replace(/,\s*$/, '').trim();
+    if (rawPrefix.startsWith('{')) {
+      try {
+        const parsedPrefix: unknown = JSON.parse(`${rawPrefix}}`);
+        if (parsedPrefix && typeof parsedPrefix === 'object' && !Array.isArray(parsedPrefix)) {
+          prefix = parsedPrefix as JsonRecord;
         }
-        itemStart = -1;
+      } catch {
+        prefix = {};
       }
-      continue;
     }
-    if (ch === ']' && itemDepth === 0) break;
+
+    return JSON.stringify({
+      version: typeof prefix.version === 'string' ? prefix.version : 'vision-paper-ocr-v1',
+      paperTitle: typeof prefix.paperTitle === 'string' ? prefix.paperTitle : null,
+      subject: typeof prefix.subject === 'string' ? prefix.subject : null,
+      pageNote: typeof prefix.pageNote === 'string' ? prefix.pageNote : null,
+      questions: recoveredQuestions,
+      freeformText: null,
+      warnings: [`视觉模型输出达到长度上限，已保留前 ${recoveredQuestions.length} 道完整识别的题目，尾部内容请核对原件。`],
+    });
   }
 
-  if (recoveredQuestions.length === 0) return null;
-
-  let prefix: JsonRecord = {};
-  const rawPrefix = source.slice(objStart, questionsKeyStart).replace(/,\s*$/, '').trim();
-  if (rawPrefix.startsWith('{')) {
-    try {
-      const parsedPrefix: unknown = JSON.parse(`${rawPrefix}}`);
-      if (parsedPrefix && typeof parsedPrefix === 'object' && !Array.isArray(parsedPrefix)) {
-        prefix = parsedPrefix as JsonRecord;
-      }
-    } catch {
-      prefix = {};
-    }
-  }
-
-  return JSON.stringify({
-    version: typeof prefix.version === 'string' ? prefix.version : 'vision-paper-ocr-v1',
-    paperTitle: typeof prefix.paperTitle === 'string' ? prefix.paperTitle : null,
-    subject: typeof prefix.subject === 'string' ? prefix.subject : null,
-    pageNote: typeof prefix.pageNote === 'string' ? prefix.pageNote : null,
-    questions: recoveredQuestions,
-    freeformText: null,
-    warnings: [`视觉模型输出达到长度上限，已保留前 ${recoveredQuestions.length} 道完整识别的题目，尾部内容请核对原件。`],
-  });
+  return null;
 }
 
 function parseVisionOutput<TParsed>(
@@ -547,38 +562,59 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
       ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
     });
 
-    let result = await invoke({ ...input.visionConfig, maxTokens: initialMaxTokens, timeoutMs: budgetMs });
-    normalized = result.normalized;
-    let totalElapsedMs = result.elapsedMs;
+    const firstResult = await invoke({ ...input.visionConfig, maxTokens: initialMaxTokens, timeoutMs: budgetMs });
+    let result = firstResult;
+    normalized = firstResult.normalized;
+    let totalElapsedMs = firstResult.elapsedMs;
+
+    const trySalvage = (candidate: VisionPaperLlmCallResult): TParsed | null => {
+      if (candidate.finishReason !== 'length') return null;
+      const repaired = repairTruncatedQuestionsJson(candidate.rawText);
+      if (repaired === null) return null;
+      try {
+        return parseVisionOutput(repaired, input.parseStructuredOutput);
+      } catch {
+        return null;
+      }
+    };
 
     let parsed: TParsed;
     try {
-      parsed = parseVisionOutput(result.rawText, input.parseStructuredOutput);
+      parsed = parseVisionOutput(firstResult.rawText, input.parseStructuredOutput);
     } catch (firstParseError) {
-      const truncatedByLength = result.finishReason === 'length';
+      if (input.signal?.aborted) throw input.signal.reason ?? firstParseError;
+      const truncatedByLength = firstResult.finishReason === 'length';
       const remainingMs = budgetMs - totalElapsedMs;
       if (truncatedByLength && initialMaxTokens < maxRetryTokens && remainingMs >= minRetryBudgetMs) {
         const retryMaxTokens = Math.min(maxRetryTokens, initialMaxTokens * 2);
+        let retryResult: VisionPaperLlmCallResult | null = null;
         try {
-          const retryResult = await invoke({
+          retryResult = await invoke({
             ...input.visionConfig,
             maxTokens: retryMaxTokens,
             timeoutMs: remainingMs,
           });
           totalElapsedMs += retryResult.elapsedMs;
+          parsed = parseVisionOutput(retryResult.rawText, input.parseStructuredOutput);
           result = retryResult;
           normalized = retryResult.normalized;
-          parsed = parseVisionOutput(retryResult.rawText, input.parseStructuredOutput);
         } catch (retryError) {
           if (input.signal?.aborted) throw input.signal.reason ?? retryError;
-          const repaired = repairTruncatedQuestionsJson(result.rawText);
-          if (repaired === null) throw retryError;
-          parsed = parseVisionOutput(repaired, input.parseStructuredOutput);
+          const retrySalvaged = retryResult ? trySalvage(retryResult) : null;
+          if (retrySalvaged !== null && retryResult) {
+            parsed = retrySalvaged;
+            result = retryResult;
+            normalized = retryResult.normalized;
+          } else {
+            const firstSalvaged = trySalvage(firstResult);
+            if (firstSalvaged === null) throw retryError;
+            parsed = firstSalvaged;
+          }
         }
       } else if (truncatedByLength) {
-        const repaired = repairTruncatedQuestionsJson(result.rawText);
-        if (repaired === null) throw firstParseError;
-        parsed = parseVisionOutput(repaired, input.parseStructuredOutput);
+        const firstSalvaged = trySalvage(firstResult);
+        if (firstSalvaged === null) throw firstParseError;
+        parsed = firstSalvaged;
       } else {
         throw firstParseError;
       }
