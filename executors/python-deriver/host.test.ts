@@ -33,12 +33,11 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
   } } });
 
   const invalid = { ...sample, as_of_at: '2026-02-29T00:00:00Z' };
-  expect(await host.derive(cognition, invalid)).toEqual({ kind: 'failed', reason: 'invalid CanonicalEvidenceSlice@v1' });
+  const invalidSlice = 'invalid CanonicalEvidenceSlice@v1';
+  expect(await host.derive(cognition, invalid)).toEqual({kind: 'failed', reason: invalidSlice});
   const requests = [sample, invalid].map((input, i) => ({id: String(i), deriver: cognition, input}));
-  const [valid, rejected] = pythonLines(['worker.py'], requests);
-  expect(initial.kind).toBe('ok');
-  if (initial.kind === 'ok') expect(valid).toEqual({id: '0', value: initial.outcome});
-  expect(rejected).toEqual({ id: '1', error: 'invalid CanonicalEvidenceSlice@v1' });
+  if (initial.kind !== 'ok') throw new Error('Missing initial result');
+  expect(pythonLines(['worker.py'], requests)).toEqual([{id: '0', value: initial.outcome}, {id: '1', error: invalidSlice}]);
 
   const noIndependent = { ...sample, events: sample.events.map(event => ({ ...event, help_level: 'hinted' })) };
   const uncertainty = {kind: 'unknown', reason: 'missing-independent-scored-evidence'};
@@ -77,6 +76,12 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
   const hiddenItem = {...neutral, exam_pacing_item: {attempt_ref: {id: 'recent', rev: 1}, paper_key: 'paper@2',
     item_id: 'q2', position: 2, item_count: 2, skipped: true}};
   expect(await host.derive('plan/exam-pacing@1', {...slice, events: [...events, hiddenItem]})).toEqual(pacing);
+  const process = {...hiddenItem, ref: 'timer', effective_duration_ms: 500};
+  const first = {...process, exam_pacing_item: {...process.exam_pacing_item, item_id: 'q1', position: 1}};
+  const timeValue = (ref: string) => host.derive('plan/exam-pacing@2', {attempt_ref: first.exam_pacing_item.attempt_ref,
+    slice: {...slice, events: [...events, first, {...process, ref}]}});
+  expect(await timeValue('second-timer')).toMatchObject(success({kind: 'observed', total_duration_ms: 1000}));
+  expect(await timeValue('timer')).toEqual(success({method_version: 'plan/exam-pacing@2', attempt_ref: first.exam_pacing_item.attempt_ref, kind: 'unknown'}));
 });
 
 it('prioritizes the shortest matching variant with the frozen error revision', async () => {

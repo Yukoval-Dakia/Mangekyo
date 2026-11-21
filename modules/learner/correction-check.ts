@@ -64,7 +64,7 @@ async function current(reopen: CorrectionReopen, correction: RecordedCorrection,
   if (grant && (grant.learner !== source.learner || grant.mode !== 'following' ||
       !await matchesCurrent(reopen, source.learner, grant, research))) return false;
   if (!await matchesCurrent(reopen, source.learner, { ...source, mode: 'following' }, grant ? storage : research)) return false;
-  if (scheduled && frozenPaper && !await matchesCurrent(reopen, source.learner, frozenPaper, storage)) return false;
+  if (frozenPaper && !await matchesCurrent(reopen, source.learner, frozenPaper, storage)) return false;
   for (const ref of [originalQuestion, ...basis])
     if (!await matchesCurrent(reopen, source.learner, ref, teaching)) return false;
   return true;
@@ -192,6 +192,7 @@ export async function correctionContradictions(reopen: CorrectionReopen, correct
   const cutoffMs = evidenceTime(cutoff.at);
   const throughMs = Date.parse(instant(through));
   if (!event || slice.events.length !== 1 || slice.omissions?.length || event.item_novelty !== 'isomorphic' ||
+      event.exam_pacing || event.exam_pacing_item || source.id === issuance.id ||
       slice.clock_watermark !== cutoff.tick || evidenceTime(slice.as_of_at) !== cutoffMs ||
       BigInt(issuedAt) < BigInt(correction.admittedAt) || BigInt(admittedAt) <= BigInt(issuedAt) ||
       BigInt(admittedAt) > BigInt(cutoff.tick) ||
@@ -206,26 +207,34 @@ export async function correctionContradictions(reopen: CorrectionReopen, correct
     { intervention: null, firstUnfamiliarPostLessonTransfer: false, mastery: null });
   if (attempt?.independent !== true || !attempt.allCorrect || attempt.guessRisk) return [];
   const openedBasis = [source, issuance, ...variantBasis(variant), ...basis];
-  if (!await current(reopen, correction, openedBasis) ||
+  const correctionBasis = [
+    { ...correction.source, mode: 'following' as const }, correction.frozenPaper,
+  ].filter(ref => ref !== undefined);
+  if ([...correctionBasis, correction.originalQuestion, ...openedBasis, authorization]
+      .some(ref => BigInt(ref.accessEpoch) > BigInt(cutoff.tick)) ||
+      !await current(reopen, correction, openedBasis) ||
       !await matchesCurrent(reopen, correction.source.learner, { ...authorization, mode: 'following' }, research)) return [];
 
   const activity = { ref: source, admittedAt, kind: 'posttest', purpose: [research],
     conceptIds: event.concept_ids, occurredAt: event.occurred_at, origin: 'chronicle' } as const;
+  const targets = existing.filter(row => row.kind === 'misconception' &&
+    row.ref.learner === source.learner && row.ref.type === 'companion.memoryAssertion' &&
+    BigInt(row.ref.accessEpoch) <= BigInt(cutoff.tick) && !row.evidenceSourceIds.includes(source.id));
   const decision = extractionDecision(activity, {
     track: 'after-activity', explicitLearnerIntent: false, budgetAvailable: false,
     afterClock: correction.admittedAt, clockThrough: cutoff.tick, attempt,
-  }, existing.filter(row => row.kind === 'misconception' && !row.evidenceSourceIds.includes(source.id)));
+  }, targets);
 
   const links: CorrectionContradiction[] = [];
   for (const entry of decision.contradictions) {
-    const target = existing.find(row => sameWitness(row.ref, entry.hypothesis))?.ref;
-    if (target?.type !== 'companion.memoryAssertion' || links.some(link => link.edge.to_ref.id === target.id) ||
+    const target = targets.find(row => sameWitness(row.ref, entry.hypothesis))?.ref;
+    if (!target || links.some(link => link.edge.to_ref.id === target.id) ||
         !await matchesCurrent(reopen, correction.source.learner, { ...target, mode: 'following' }, research)) continue;
     const [edge] = positiveEvidenceEdges({ ...decision, contradictions: [entry] }, [source, target]);
     if (!edge) continue;
     links.push({
-      edge: { ...edge, basis: [{ ...correction.source, mode: 'following' }, correction.originalQuestion,
-        ...openedBasis, { ...authorization, mode: 'following' }] },
+      edge: { ...edge, basis: [...correctionBasis, correction.originalQuestion, ...openedBasis,
+        { ...authorization, mode: 'following' }] },
       citation: { id: source.id, rev: source.rev, accessEpoch: source.accessEpoch,
         anchor: fragment.anchor, excerpt: fragment.excerpt, direction: 'contradict' as const },
     });

@@ -28,10 +28,6 @@ const { enqueueWork } = await load('kernel/src/work/todos.ts');
 const learner = stableId('capture-acceptance-learner');
 const commandId = () => stableId(randomUUID());
 const at = '2026-11-21T01:00:00.000Z';
-const visualEnvelope = (kind, title, originals) => ({
-  kind, occurredAt: at, recordedAt: at, retentionPolicy: 'retained', originals,
-  unit: { kind: 'capture', title, blocks: [] },
-});
 const captureBlock = (id, body, original = 0, parentId = null) => ({
   id, parentId, body: { kind: 'capture', crop_ref: { original, page: 1, bbox: [0.1, 0.2, 0.8, 0.9] }, ...body },
 });
@@ -62,9 +58,11 @@ await withLearnerDatabase(learner, async db => {
     return action(layered ? withExtraction(tx, purpose, base) : base);
   });
   const current = (id, purpose) => read(context => context.fact(id, { mode: 'following' }), purpose);
-  const ingestPhoto = (id, title, originals, options) => send('capture.ingest', {
-    id, purpose: ['storage', 'teaching'], envelope: visualEnvelope('photo', title, originals),
-  }, options);
+  const ingestVisual = (id, title, originals, { kind = 'photo', paperReturn, actor } = {}) => send('capture.ingest', {
+    id, purpose: ['storage', 'teaching'], ...(paperReturn && { paperReturn }),
+    envelope: { kind, occurredAt: at, recordedAt: at, retentionPolicy: 'retained', originals,
+      unit: { kind: 'capture', title, blocks: [] } },
+  }, { actor });
   async function proposeExtraction(input) {
     const proposal = await send('capture.proposeExtraction', input, { actor: 'companion' });
     assert.equal(proposal.state, 'proposed');
@@ -108,7 +106,7 @@ await withLearnerDatabase(learner, async db => {
       settle: ({ plan }, receipts) => settle(plan.data, receipts),
     });
   const fixture = { db, learner, stableId, load, send, sendCompanion, assert, snapshot, read, current, hooks, gatherValue, publish, extract,
-    proposeExtraction, confirmExtraction, captureBlock, ingestPhoto, jpeg, numericQuestion,
+    proposeExtraction, confirmExtraction, captureBlock, ingestVisual, jpeg, numericQuestion,
     content: modules.find(module => module.definition.name === 'content') };
   await run(fixture);
   await exerciseLayeredPaper(fixture);
@@ -116,7 +114,7 @@ await withLearnerDatabase(learner, async db => {
   await exerciseTextbook(fixture, handle.decideProposal);
 }, { postgres: Boolean(connectionString), connectionString });
 
-async function run({ send, read, current, gatherValue, extract, ingestPhoto, proposeExtraction, confirmExtraction }) {
+async function run({ send, read, current, gatherValue, extract, ingestVisual, proposeExtraction, confirmExtraction }) {
   const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, projectNewPaper, paperIssuance,
     paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
   const {openPaperRun} = await load('modules/capture/paper-answers.ts');
@@ -136,7 +134,7 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
     unknowable,
   ];
   const learnerId=stableId('learner visual source');
-  await ingestPhoto(learnerId, '跨页验证', originals);
+  await ingestVisual(learnerId, '跨页验证', originals);
   const target = { target: { id: learnerId, rev: 1 }, blocks };
   await assert.rejects(send('capture.applyExtraction',target,{actor:'companion'}),/unedited companion draft/);
   await proposeExtraction(target);
@@ -192,7 +190,7 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   console.log(JSON.stringify({checked:'capture slot pg',manifest:sealed.manifest.inputs,modelMethod:effect.input.modelMethod,
     derivation:sealed.id,sourceRev:fixed.wrote[0].rev,stickyDifferences:live.differences.length}));
 
-  await ingestPhoto(base, '跨页验证', originals, { actor: 'companion' });
+  await ingestVisual(base, '跨页验证', originals, { actor: 'companion' });
   await send('capture.applyExtraction', { target: { id: base, rev: 1 }, blocks }, { actor: 'companion' });
   const snapshot = await current(base);
   assert.deepEqual(snapshot.value.originals, originals);
@@ -270,8 +268,9 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
     const source = stableId('return:'+i);
     const hex = (i+1).toString(16);
     const start = performance.now();
-    await send('capture.ingest', { id: source, purpose:['storage','teaching'], envelope: visualEnvelope('paper-return', '跨页验证', [firstPage(hex)]),
-      ...(i===1 ? {paperReturn:{issuanceId,page,original:0}} : {}) });
+    await ingestVisual(source, '跨页验证', [firstPage(hex)], {
+      kind: 'paper-return', paperReturn: i === 1 ? { issuanceId, page, original: 0 } : undefined,
+    });
     const ingestMs = performance.now() - start;
     const returned = {issuanceId,source:{id:source,rev:1},page,original:0};
     if(i===1) await assert.rejects(send('capture.collectPaper',{...returned,page:questionPages[0],retryId}),/与原件确认/);
@@ -313,7 +312,7 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   assert.deepEqual(await read(ctx=>projectIssuedPaper(ctx,issue)),projected);
   assert.equal((await item()).status,'recognized');
   const photo = [firstPage('a')], source = stableId('paper witness photo');
-  const captured = await send('capture.ingest', {id:source,purpose:['storage','teaching'],envelope:visualEnvelope('paper-return','手写',photo)});
+  const captured = await ingestVisual(source, '手写', photo, { kind: 'paper-return' });
   const returned = {issuanceId,source:captured.wrote[0],page:questionPages[0],original:0};
   const [first,redo] = ['paper witness run','paper witness redo'].map(label=>stableId(label));
   for (const retryId of [first,redo]) await send('capture.collectPaper',{...returned,retryId});

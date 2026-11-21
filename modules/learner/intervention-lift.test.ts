@@ -1,11 +1,10 @@
 import { pythonLines } from '../../executors/python-deriver/test/worker.ts';
-import { ref, snapshot, use } from './test/facts.ts';
+import { command, factWriter, ref, snapshot, use } from './test/facts.ts';
 import { expect, it } from 'vitest';
-import { commandId, derivationId, learnerId, type FactWrite, type GatherContext, type Json, type Revision, type Tick } from '@mangekyo/kernel';
+import { derivationId, learnerId, type FactWrite, type GatherContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { isInterventionLiftInput, isInterventionLiftOutcome } from '../../executors/python-deriver/intervention-lift-schema.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { createCommandHandler, readCommandProposals } from '../../kernel/src/commands/handle.ts';
-import { applyFactWrites } from '../../kernel/src/commands/writes.ts';
 import { sealCandidate, submitCandidate } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
@@ -51,15 +50,18 @@ it('TS 与确定性 Python 在固定截止时间按相同配对和缺失边界�
     ...['2026-01-05T00:00:00.001Z', '2026-01-04T23:59:59.999Z', '2026-01-16T00:00:00.001Z']
       .map(occurredAt => input(replacePosttest({occurredAt}))),
   ];
-  const outcomes = python([...cases, cases[0]]);
-  expect(outcomes.at(-1)).toEqual(outcomes[0]);
-  expect(outcomes.slice(0, cases.length)).toEqual(cases.map(measureInterventionLift));
-  expect(outcomes.map(row => (row as {value?: {verdict: string}}).value?.verdict ?? 'unknown')).toEqual([
-    'positive', 'negative', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'inconclusive', 'positive', 'unknown', 'unknown', 'positive',
+  const invalids = [{...cases[0], asOf: '2026-02-29T00:00:00.000Z'},
+    {...cases[0], version: true}, {...cases[0], strategyId: ' '},
+    {...cases[0], interventions: [{...positive[0]!, intervention: {...positive[0]!.intervention, accessEpoch: '01'}}]}];
+  const expected = cases.map(measureInterventionLift);
+  expect(expected.map(row => row.kind === 'value' ? row.value.verdict : 'unknown')).toEqual([
+    'positive', 'negative', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'inconclusive', 'positive', 'unknown', 'unknown',
   ]);
-  for (const [i, sealed] of cases.entries()) {
+  const outcomes = python([...cases, cases[0], ...invalids]);
+  expect(outcomes).toEqual([...expected, expected[0], ...invalids.map(() => null)]);
+  expect(invalids.map(isInterventionLiftInput)).toEqual([false, false, false, false]);
+  for (const [i, sealed] of cases.entries())
     expect(isInterventionLiftInput(sealed) && isInterventionLiftOutcome(outcomes[i], sealed)).toBe(true);
-  }
   const flat = input(replacePosttest({score: 0}));
   if (!isInterventionLiftInput(flat)) throw new Error('invalid fixture');
   for (const i of [0, 2]) expect(isInterventionLiftOutcome(outcomes[i], flat)).toBe(false);
@@ -73,11 +75,6 @@ it('TS 与确定性 Python 在固定截止时间按相同配对和缺失边界�
   expect(isInterventionLiftOutcome(outcomes[0], assisted)).toBe(false);
   expect(() => measureInterventionLift(input([positive[0]!, positive[0]!]))).toThrow('重复');
 
-  const invalids = [{...cases[0], asOf: '2026-02-29T00:00:00.000Z'},
-    {...cases[0], version: true}, {...cases[0], strategyId: ' '},
-    {...cases[0], interventions: [{ ...positive[0]!, intervention: {...positive[0]!.intervention, accessEpoch: '01'} }]}];
-  expect(invalids.map(isInterventionLiftInput)).toEqual([false, false, false, false]);
-  expect(python(invalids)).toEqual([null, null, null, null]);
 });
 
 it('正式后测适配器只计独立分数并检查冻结预测身份及截止水位', async () => {
@@ -85,14 +82,14 @@ it('正式后测适配器只计独立分数并检查冻结预测身份及截止�
   const forecastId = derivationId(ref(2).id);
   const observation = {submission, admittedAt:'3' as Tick, submittedAt: asOf, result:'correct' as const,
     novelty: 'fresh-context' as const, exposure: {kind: 'independent' as const}};
-  const fact = async () => snapshot(submission, {}, ['background-research']);
-  const slot = async () => ({outcome: {kind: 'value', value: {forecastId, status: 'observed', observation}}});
-  const ctx = {learner: submission.learner, read: {fact, slot}, snapshotTick: '3'} as unknown as GatherContext;
-  const reconcile = (forecastId: ReturnType<typeof derivationId>) =>
-    reconciledLiftAssessment(ctx, submission, {...target, key: 'posttest', forecastId});
-  await expect(reconcile(forecastId))
-    .resolves.toMatchObject({independence: 'independent', score: 1, novelty: 'transfer'});
-  await expect(reconcile(derivationId(ref(3).id))).resolves.toBeNull();
+  const ctx = {learner: submission.learner, snapshotTick: '3', read: {
+    fact: async () => snapshot(submission, {}, ['background-research']),
+    slot: async () => ({outcome: {kind: 'value', value: {forecastId, status: 'observed', observation}}}),
+  }} as unknown as GatherContext;
+  const reconcile = (id: number) => reconciledLiftAssessment(ctx, submission,
+    {...target, key: 'posttest', forecastId: derivationId(ref(id).id)});
+  await expect(reconcile(2)).resolves.toMatchObject({independence: 'independent', score: 1, novelty: 'transfer'});
+  await expect(reconcile(3)).resolves.toBeNull();
   const assess = (change: Partial<Parameters<typeof liftAssessment>[2]>) =>
     liftAssessment(ctx, submission, {...observation, ...change}, target);
   for (const [exposure, independence] of [[{kind: 'exposed', refs: []}, 'assisted'],
@@ -114,10 +111,7 @@ it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {t
   onTestFinished(worker.close);
   await withLearnerDatabase(learner, async db => {
     const handler = createCommandHandler(db, {modules: [await loadStudioTestModule('learner')], hooks});
-    const command = (n: number) => commandId(ref(n).id);
-    const apply = (writes: readonly FactWrite[], n: number) => db.tx(scope, tx => tx.withLearnerWrite(tick =>
-      applyFactWrites(tx, tick, writes, {purpose, commandId: command(n), actor: 'learner'},
-        type => ({type, schema: {parse: (value: Json) => value}}))));
+    const apply = factWriter(db, scope);
     const sources = positive.flatMap(({intervention, baseline, posttest}) => [intervention, baseline!.submission, posttest!.submission]);
     await apply([ref(94), ref(95), ...sources].map(({id}): FactWrite => ({
       kind: 'create', id, factType: 'activity.workbookAttempt', data: {},
@@ -157,11 +151,8 @@ it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {t
         derivationId: measured.id, mode: 'following'});
       const teaching = await gatherSnapshot(db, {...scope, purpose: 'teaching'}, async ctx =>
         ({kind: 'input', effects: [], data: await readVerifiedPlaybook(ctx.read, ref(0))}));
-      if (expected === 'verified') {
-        expect(teaching.plan).toMatchObject({data: {status: {status: expected}}});
-        continue;
-      }
-      expect(teaching.plan).toMatchObject({data: null});
+      expect(teaching.plan).toMatchObject({data: expected === 'verified' ? {status: {status: expected}} : null});
+      if (expected === 'verified') continue;
       expect(state.plan).toMatchObject({data: {gardeningProposal: {light: 'yellow'}}});
       const proposal = (state.plan.data as Parameters<typeof status.derive>[0]).gardeningProposal!;
       const proposalId = command(101);

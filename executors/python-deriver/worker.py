@@ -31,6 +31,11 @@ def handle(request):
             if not exam_pacing.is_pacing_result(result, evidence):
                 return {"id": request_id, "error": "invalid exam pacing output"}
             return {"id": request_id, "value": {"kind": "value", "value": result}}
+        if version == "plan/exam-pacing@2":
+            import exam_pacing
+            if not exam_pacing.is_time_value_input(evidence):
+                return {"id": request_id, "error": "invalid exam time-value input"}
+            return {"id": request_id, "value": {"kind": "value", "value": exam_pacing.derive_time_value(evidence)}}
         if not is_evidence_slice(evidence):
             return {"id": request_id, "error": "invalid CanonicalEvidenceSlice@v1"}
         if version == "plan/information-gain@1":

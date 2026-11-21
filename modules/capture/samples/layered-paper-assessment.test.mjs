@@ -1,10 +1,9 @@
 import * as verification from '../../content/question-verification.ts';
-import { bindQuestionExecution } from '../../content/question-effects.ts';
-import { localVerificationExecution } from '../../content/samples/fixtures/question.ts';
+import { bindFixtureVerifiers } from '../../content/samples/fixtures/question.ts';
 
 export default async function ({
   learner, stableId, load, send, assert, current, gatherValue, publish, extract, confirmExtraction,
-  captureBlock, ingestPhoto, jpeg, numericQuestion,
+  captureBlock, ingestVisual, jpeg, numericQuestion,
 }) {
   const { clarificationRegions, openCapturedAssessment } = await load('modules/capture/extraction.ts');
   const sourceId = stableId('four-page-capture');
@@ -29,7 +28,7 @@ export default async function ({
     block('school', 3, 'reference-answer', { status:'known', text:'SCHOOL SECRET' }),
     block('rubric', 3, 'rubric', { status:'known', text:'RUBRIC SECRET' }),
   ];
-  await ingestPhoto(sourceId, '四页原件', originals);
+  await ingestVisual(sourceId, '四页原件', originals);
   const { accessEpoch, ref } = await currentSource();
   const key = { target: ref, accessEpoch, modelMethod: 'fixture/layers', redInkMeaning: '红笔是事后订正' };
   const impossible = { ...unknown, body: { ...unknown.body, crop_ref: { ...unknown.body.crop_ref, page: 2 } } };
@@ -85,12 +84,7 @@ export default async function ({
   const slot = { learner, type: verification.questionVerificationType, key: verification.questionVerificationKey(question) };
   assert.deepEqual((await read({ questionId })).plan.targets, [{ kind: 'slot', ref: slot }]);
   const checked = await publish(slot.type, slot.key, 'content/question-verification', {
-    plan: async ctx => {
-      const plan = await verification.gather(ctx, question);
-      // Bind distinct synthetic verifier identities before sealing the fixture plan.
-      const effects = plan.effects.map((request, index) => bindQuestionExecution(request, localVerificationExecution((index + 1).toString(16))));
-      return { ...plan, effects };
-    },
+    plan: async ctx => bindFixtureVerifiers(await verification.gather(ctx, question)),
     invoke: (request, invocation) => {
       assert.doesNotMatch(JSON.stringify(request.input), /SECRET|candidates|blobRef/);
       assert.equal(request.input.prompt, gap.prompt);

@@ -1,5 +1,6 @@
 import type { BusWitness, CanonicalEvidenceSliceV1, EvidenceEventV1, LearnerId, Tick } from '@mangekyo/kernel';
 import { nearFlashCrossing } from './flash-check.ts';
+import { isAttemptEvidenceType } from './memory-evidence.ts';
 import {
   defaultRetentionMethod, readPythonRetentionMethod, type CognitionOutput, type PythonRetentionMethod,
 } from './retention.ts';
@@ -150,7 +151,7 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
       anchors.set(key, null);
       continue;
     }
-    anchors.set(key, itemId && /^\/(?!\/)[^\\\s]*$/u.test(href)
+    anchors.set(key, isAttemptEvidenceType(submission.type) && itemId && /^\/(?!\/)[^\\\s]*$/u.test(href)
       && BigInt(recordedAt) <= BigInt(scope.clockWatermark)
       && (expiresAt === undefined || cutoff < Date.parse(expiresAt))
       && [submission, question, ...basis].every(ref => localWitness(ref, scope)) ? anchor : null);
@@ -233,19 +234,28 @@ function projectConcept(conceptId: string, bucket: Bucket, row: CognitionOutput[
   if (row.state !== 'known' || row.r_now === undefined || !(row.r_now >= 0 && row.r_now <= 1)
     || (row.crossing_at !== undefined && !(Date.parse(row.crossing_at) >= now))) return { conceptId, state: 'unknown', reason: 'unavailable' };
   let latest: Attempt | undefined;
-  let error: Attempt | undefined;
-  let stable: Attempt | undefined;
+  const latestByQuestion = new Map<string, Attempt>();
   for (const attempt of bucket.attempts.values()) {
     if (newer(attempt, latest)) latest = attempt;
+    const questionId = attempt.anchor.question.id;
+    if (newer(attempt, latestByQuestion.get(questionId))) latestByQuestion.set(questionId, attempt);
+  }
+  let error: Attempt | undefined;
+  let stable: Attempt | undefined;
+  for (const attempt of latestByQuestion.values()) {
     if (attempt.event.outcome === 'incorrect') {
       if (newer(attempt, error)) error = attempt;
       continue;
     }
-    const { priorStable, question } = attempt.anchor;
-    if (priorStable?.conceptIds.includes(conceptId) && newer(attempt, stable)
-      && priorStable.basis.some(ref => ref.id === question.id && ref.rev === question.rev && ref.accessEpoch === question.accessEpoch)
-      && priorStable.basis.some(ref => ref.id === conceptId)
-      && priorStable.basis.every(ref => localWitness(ref, scope) && allowed(ref))) stable = attempt;
+    const { priorStable, question, submission } = attempt.anchor;
+    if (!priorStable?.conceptIds.includes(conceptId) || !newer(attempt, stable)) continue;
+    const { basis } = priorStable;
+    if (basis.some(ref => witnessKey(ref) === witnessKey(question))
+      && basis.some(ref => witnessKey(ref) === witnessKey(submission))
+      && basis.some(ref => ref.id === conceptId)
+      && basis.some(ref => ref.type === 'activity.retentionPosttest')
+      && new Set(basis.filter(ref => isAttemptEvidenceType(ref.type)).map(ref => ref.id)).size >= 2
+      && basis.every(ref => localWitness(ref, scope) && allowed(ref))) stable = attempt;
   }
   if (!latest) return { conceptId, state: 'unknown', reason: 'unavailable' };
   const decaying = row.r_now <= crossingProbability || (row.crossing_at !== undefined && nearFlashCrossing(row.crossing_at, now));

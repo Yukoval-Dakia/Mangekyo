@@ -12,6 +12,7 @@ and closes the host during shutdown.
 | `learner/retention-forecast@1` | `dimensioned-retention@1` |
 | `learner/intervention-lift@1` | `intervention-lift@1` |
 | `plan/exam-pacing@1` | `plan/exam-pacing@1` |
+| `plan/exam-pacing@2` | `plan/exam-pacing@2` (one submission’s item time-value bar) |
 
 All four retention routes accept only the v1 slice defined by [schema.json](./schema.json).
 `@mangekyo/kernel` exports the input type `CanonicalEvidenceSliceV1`.
@@ -22,6 +23,36 @@ for composition callers. Ticks are unsigned decimal strings. Timestamps use UTC
 Lift takes the sealed intervention and prospectively paired baseline and posttest records. The host validates its Outcome against that input. An insufficient sample returns `{kind: "unknown", reason}`. The gather must have research authorization for the full evidence chain.
 
 Exam pacing accepts the v1 slice and selects up to eight authorized whole-paper attempts. It compares attempts with matching frozen paper, scoring scale and maximum score. The earlier sealed attempts input remains supported. Its input contains the actual effective duration and official score for each attempt. Missing observations remain unknown in the result. The caller retains the source revisions and restores their authorization before displaying the diagnosis.
+
+The opt-in `plan/exam-pacing@2` takes `{slice, attempt_ref}`. This route has its
+own output contract so a sealed `@1` request still replays its original result.
+The exact submission revision must have an eligible `exam_pacing` event with
+the frozen `paper_key`. Use the authorized release's `scale_key` when there are
+formal item scores. The gather projects these separate neutral `exam_pacing_item`
+events, with the same attempt reference, frozen paper key and item ID, position
+and count on each event:
+
+- Process records carry the observed `effective_duration_ms` and any recorded
+  `skipped` and `returned` flags.
+- Estimates carry an authorized item-level `estimated_duration_ms` established
+  by submission time.
+- Formal assessments carry the actual item score and matching release scale,
+  recorded at or after submission. Include `error_stage` only when witnessed
+  for that scored item.
+
+Process positions must cover the frozen paper. A missing or conflicting
+duration, or a zero total, returns `kind: "unknown"` without item IDs or lengths.
+The observed result includes item states in frozen order, the sum of measured
+item durations and one descriptive sentence. Segment lengths use measured item
+time. The classifier checks recovered skip with positive formal credit first,
+then full credit. A shortfall after more than 1.8 times the estimate is a time
+sink. A shortfall below the estimate with a reading or execution error is a fast
+slip. Insufficient classification evidence yields an unknown item state.
+
+Studio must project only sources read at the fixed watermark with current
+purpose and recipient permission. Recheck source revisions and access epochs
+before delivering the result. The worker applies the sealed UTC cutoffs and
+omissions. Keep source evidence and access checks at the host.
 
 The worker receives only `{id, deriver, input}`. It replies with
 `{id, value: {kind: "value", value: result}}` or a Lift unknown Outcome, or `{id, error}`. An estimate
