@@ -97,7 +97,7 @@ function takeawayText(fact: FactSnapshot | undefined, concept: BusWitness): stri
   const value = fields(fact?.value);
   const object = fields(value?.scope);
   const basis = witnessBasis(object?.basis);
-  if (!fact || fact.type !== 'companion.claim' || !value || !object || !basis ||
+  if (!fact || (fact.type !== 'activity.ownWordsTakeaway' && fact.type !== 'companion.claim') || !value || !object || !basis ||
       value.version !== 1 || value.authority !== 'directive' || value.category !== 'claim' ||
       value.sticky !== true || value.valid_until !== null || typeof value.text !== 'string' ||
       !value.text.trim() || value.text.length > 60 || !value.text.isWellFormed() || value.text.includes('\0') ||

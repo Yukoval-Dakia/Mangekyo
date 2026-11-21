@@ -19,6 +19,9 @@ const post = (partial: Partial<OwnWordsTakeawayPostSubmitInput> = {}): OwnWordsT
 
 it('echoes during an attempt without submission and only after a witnessed L0 display', async () => {
   await expect(projectOwnWordsTakeaway(read, during({l0Display: display}))).resolves.toEqual({kind: 'echo', text: '先查定义域', evidence: [takeawayW, displayW]});
+  const activityTakeaway = use(2, 'activity.ownWordsTakeaway');
+  const activityRead: OwnWordsTakeawayRead = {...read, reopen: async (_s, row) => row.id === activityTakeaway.id ? snapshot(activityTakeaway, claim, ['storage']) : facts.get(row.id)};
+  await expect(projectOwnWordsTakeaway(activityRead, during({takeaway: activityTakeaway, l0Display: {...display, content: activityTakeaway}}))).resolves.toEqual({kind: 'echo', text: '先查定义域', evidence: [activityTakeaway, displayW]});
   for (const l0Display of [undefined, {...display, display: use(8, 'activity.helpExposure')}, {...display, admittedAt: '4' as Tick}])
     await expect(projectOwnWordsTakeaway(read, during({l0Display}))).resolves.toMatchObject({kind: 'hidden'});
 });
