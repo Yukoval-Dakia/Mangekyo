@@ -3,7 +3,7 @@ import attemptFact from '@mangekyo/module-activity/facts/workbook-attempt';
 import { isWorksheetProfile, type WorkerConsent } from './worker-consent.ts';
 import { readResearchSource, researchOrderType, researchWorksheetType, researchWorksheet,
   readResearchBasis, researchOrder, researchSettings, researchPurpose, ResearchBasisChanged,
-  worksheetDraft, retentionReviewPermissionType, type retentionReviewPermission } from './research.ts';
+  retentionReviewPermissionType, type retentionReviewPermission } from './research.ts';
 
 const {type: workbookAttemptType, schema: {parse: workbookAttempt}} = attemptFact;
 type ReviewRef = {id:FactId; revision:number; accessEpoch:string; anchor?:string | undefined};
@@ -47,7 +47,7 @@ export async function comparisonWitness(access: ReviewAccess, grant: WorkerConse
 
 export async function planReview<T extends ReviewSpec>(access: ReviewAccess, spec: T, grant: WorkerConsent | null, budgetCap: number) {
   if (!grant || !isWorksheetProfile(grant.profile)) return spec;
-  if (!budgetCap) return null;
+  if (!budgetCap) return spec;
   const source = await access.open(spec.sourceFactRev.id);
   if (!source || !await access.independent(source)) return spec;
   const refs: ReviewRef[] = [];
@@ -66,31 +66,7 @@ export async function readComparison(access: ReviewAccess, ref: ReviewRef) {
       source.accessEpoch !== ref.accessEpoch || !await access.independent(source)) return null;
   return { sourceId:source.ref.id, evidence:reviewEvidence(source.value, ref.anchor) };
 }
-/** Historical zero-cost worksheet adapter. */
-export type ResearchAgent = (source: ReviewEvidence) =>
-  ReturnType<typeof worksheetDraft> | Promise<ReturnType<typeof worksheetDraft>>;
-
-export const deterministicReview: ResearchAgent = ({ questionNumber, feedback }) => ({
-  title: `第 ${questionNumber} 题复习`,
-  steps: [
-    '这次原答与冻结卷面的判分规则不符。先盖住上次的答案和参考答案，独立重做一遍。',
-    feedback.expected.kind === 'numeric'
-      ? '写下用于求值的式子，再检查代入、运算和单位。'
-      : '写下决定答案的题干条件，再检查回答是否满足每一项。',
-    '做完后对照来源里的原答和参考答案，找出第一次出现差异的地方，记下一项下次要检查的内容。',
-  ],
-});
-
-export const retentionReviewDraft = {
-  title: '后测复习单',
-  steps: [
-    '回想上次独立作答时卡住的位置，先用自己的话写出解题思路。',
-    '隔一段时间再做一道考查同一要点的题，先独立作答，再对照反馈。',
-    '回看这次预测与实际结果的差异，记下需要再练的一点。',
-  ],
-};
-
-export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec, settingsId: FactId, quote: (grant: WorkerConsent) => number) {
+export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec, settingsId: FactId, quote?: (grant: WorkerConsent) => number) {
   const { id, revision, accessEpoch, anchor } = spec.sourceFactRev;
   const model = isWorksheetProfile(spec.workerProfile);
   if ((!model && (spec.workerProfile !== 'deterministic_compute' || spec.budgetCap !== 0)) || spec.goal !== reviewGoal ||
@@ -111,7 +87,7 @@ export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec,
   if (model) {
     grant = researchSettings((await read.fact(settingsId, {mode:'following'})).value).workerGrant;
     if (!grant || grant.profile !== spec.workerProfile || !spec.budgetCap ||
-        quote(grant) !== spec.budgetCap || !await access.independent(source)) return null;
+        (quote && quote(grant) !== spec.budgetCap) || !await access.independent(source)) return null;
     if (grant.profile === 'deep_analyst') {
       const [ref] = spec.refs;
       if (spec.refs.length !== 1 || !ref || ref.id === id || ref.id !== grant.comparisonAttemptId ||

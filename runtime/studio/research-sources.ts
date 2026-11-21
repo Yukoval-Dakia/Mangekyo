@@ -1,4 +1,4 @@
-import { projectWorksheet, type ReviewAccess } from '../../modules/companion/worksheet-policy.ts';
+import { projectWorksheet, reviewDedupKey, type ReviewAccess } from '../../modules/companion/worksheet-policy.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -8,6 +8,7 @@ import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { independentlyAuthoredPaper, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { ResearchBasisChanged, researchPurpose, retentionReviewPermission, retentionReviewPermissionType } from '../../modules/companion/research.ts';
 import { stableId } from './identity.ts';
+import { readLatestTodoUnavailable } from '../../kernel/src/work/todos.ts';
 import { resolveWorkPublication } from '../../kernel/src/work/payload.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
@@ -84,10 +85,18 @@ export function readWorksheetById(tx: ReadTransaction, id: FactId) {
     key => createCommandReadContext(tx,storagePurpose).fact(key,{mode:'following'})));
 }
 
-export async function readWorksheet(tx: ReadTransaction, paperId: string, attemptId: string) {
-  const attempt = await workbookSource(tx, paperId, attemptId);
+export async function readWorksheet(tx: ReadTransaction, attempt: FactSnapshot) {
   if (!attempt.purpose.includes(researchPurpose)) return null;
   return readWorksheetById(tx, (await worksheetPublication(tx, attempt.ref.id, attempt.ref.rev, attempt.accessEpoch)).factId);
+}
+
+export async function worksheetView(tx: ReadTransaction, source: FactSnapshot | null, settingsRevision?: number) {
+  const opened = source && await readWorksheet(tx, source);
+  const worksheet = opened?.worksheet ?? null;
+  if (worksheet || !source?.purpose.includes(researchPurpose) || settingsRevision === undefined) return { worksheet };
+  const dedup = reviewDedupKey({id:source.ref.id, revision:source.ref.rev, accessEpoch:source.accessEpoch});
+  const reason = await readLatestTodoUnavailable(tx, dedup, settingsRevision);
+  return {worksheet, ...(reason === 'model_unavailable' && {failure:reason})};
 }
 
 export async function comparisonAttempts(tx: ReadTransaction) {

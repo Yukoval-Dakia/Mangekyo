@@ -81,7 +81,7 @@ const scoutHost = scoutModule
   : undefined;
 const tariffModule = process.env.MANGEKYO_RESEARCH_WORKER_TARIFF;
 const tariff = tariffModule ? (await import(pathToFileURL(tariffModule).href)).workerTariff : undefined;
-const research = openResearch(db, activity, companion, undefined, scoutHost, understandingTransport, undefined, tariff);
+const research = openResearch(db, activity, companion, scoutHost, understandingTransport, undefined, tariff);
 const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
 const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });

@@ -174,15 +174,18 @@ function WorksheetContents({ sheet }: { sheet: Sheet }) {
   </>;
 }
 
+type WorksheetFailure = 'model_unavailable';
+const modelUnavailable = '当前没有可用的教研模型或额度，未生成复习单。';
+
 function Worksheet({ path, refresh }: { path: string; refresh: () => void }) {
-  const resource = useResource<{ worksheet: Sheet | null }>(path);
+  const resource = useResource<{ worksheet: Sheet | null; failure?: WorksheetFailure }>(path);
   const sheet = resource.data?.worksheet;
   return <div className="research-sheet">
     <ReadState resource={resource} />
     {!resource.error && resource.data && (sheet ? <>
       <WorksheetContents sheet={sheet} />
       <WorksheetSource key={sheet.id} href={sheet.source.href} unavailable={refresh} />
-    </> : <p>暂未产出复习单。 <button type="button" className="text-button" onClick={refresh}>重新查看</button></p>)}
+    </> : <p>{resource.data.failure === 'model_unavailable' ? modelUnavailable : '暂未产出复习单。'} <button type="button" className="text-button" onClick={refresh}>重新查看</button></p>)}
   </div>;
 }
 
@@ -198,6 +201,7 @@ type ReconciliationResearchView = {
   enabled: boolean;
   revision: number;
   allowed: boolean;
+  failure?: WorksheetFailure;
   worksheet: (Sheet & { method: string; deliveredAt: string; digest?: string }) | null;
 };
 
@@ -258,7 +262,7 @@ export function ReconciliationResearch({ recordKey }: { recordKey: string }) {
   }
 
   return <section className="research-choice" aria-label="后测复习单">
-    <p className="field-help">你可以授权后台使用此次对账摘要，生成零费用复习单。授权可随时在这里撤回。</p>
+    <p className="field-help">你可以授权后台使用此次对账摘要，在有适用模型及授权额度时生成复习单。授权可随时在这里撤回。</p>
     {message && <p role="alert">{message}</p>}
     {!view ? <div className="research-controls">
       {busy || !readFailed ? <span role="status">{busy ? '正在保存…' : '正在读取授权…'}</span> :
@@ -275,7 +279,7 @@ export function ReconciliationResearch({ recordKey }: { recordKey: string }) {
           <WorksheetContents sheet={view.worksheet} />
           {view.worksheet.digest && <p>{view.worksheet.digest}</p>}
           <a href="#posttest-result">查看对账来源</a>
-        </> : <p>此次摘要已开放，暂未生成复习单。 <button type="button" className="text-button" onClick={refresh}>重新查看</button></p>}
+        </> : <p>{view.failure === 'model_unavailable' ? modelUnavailable : '此次摘要已开放，暂未生成复习单。'} <button type="button" className="text-button" onClick={refresh}>重新查看</button></p>}
       </div>}
     </>}
   </section>;

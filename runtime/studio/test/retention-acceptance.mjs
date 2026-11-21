@@ -190,16 +190,15 @@ assert.deepEqual(await api(reviewPath), { enabled: true, revision: 0, allowed: f
 const permission = { requestId: randomUUID(), revision: 0, allowed: true };
 await api('retention/' + overlap.result.key + '/research', permission, 'PUT', 409);
 assert.equal((await api(reviewPath, permission, 'PUT')).allowed, true);
-let worksheet;
-for (let i = 0; i < 80 && !worksheet; i++) {
-  ({ worksheet } = await api(reviewPath));
-  if (!worksheet) await delay(250);
+let review;
+for (let i = 0; i < 80 && !review?.failure; i++) {
+  review = await api(reviewPath);
+  if (!review.failure) await delay(250);
 }
-assert.equal(worksheet?.cost, 0);
-assert.equal(worksheet.source.href, '/api/retention/' + posttest.result.key);
-assert.deepEqual((await api(reviewPath, permission, 'PUT')).worksheet, worksheet);
+assert.deepEqual(review, { enabled: true, revision: 1, allowed: true, worksheet: null, failure: 'model_unavailable' });
+assert.deepEqual(await api(reviewPath, permission, 'PUT'), review);
 assert.deepEqual(await api(reviewPath, { requestId: randomUUID(), revision: 1, allowed: false }, 'PUT'),
   { enabled: true, revision: 2, allowed: false, worksheet: null });
 assert.deepEqual(await api('retention/' + posttest.result.key), posttest.result);
 console.log(JSON.stringify({ frozen, reconciled, revoked: 'forecast and reconciliation stale', pretest, posttest, overlap,
-  followup: { forecast: followup, before, early, ready, issued: laterIssue, submitted, result: laterResult }, worksheet, comparison }, null, 2));
+  followup: { forecast: followup, before, early, ready, issued: laterIssue, submitted, result: laterResult }, review, comparison }, null, 2));

@@ -103,6 +103,22 @@ export async function readTodo(tx: ReadTransaction, id: string) {
   return row ? parsed(row) : null;
 }
 
+export async function rememberTodoUnavailable(tx: DbTransaction, tick: Tick, id: string, reason: string) {
+  await tx.query(`UPDATE slot_state SET last_error=$4, changed_tick=$5
+    WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3`,
+  [tx.learner, todoSlot, id, JSON.stringify({status:'unavailable', reason}), tick]);
+}
+
+export async function readLatestTodoUnavailable(tx: ReadTransaction, dedupKey: string, settingsRevision: number) {
+  const { rows: [latest] } = await tx.query<{reason:string | null}>(`SELECT CASE
+      WHEN w.state='blocked' AND s.last_error->>'status'='unavailable' THEN s.last_error->>'reason' END AS reason
+    FROM work w JOIN slot_state s USING (learner_id,slot_type,slot_key)
+    WHERE w.learner_id=$1 AND w.slot_type=$2 AND w.family='todo' AND w.dedup_key=$3 AND w.spec->>'settingsRevision'=$4
+    ORDER BY w.registered_tick DESC, w.id DESC LIMIT 1`,
+  [tx.learner, todoSlot, dedupKey, String(settingsRevision)]);
+  return latest?.reason ?? null;
+}
+
 export async function enqueueWork(tx: DbTransaction, tick: Tick, work: WorkRequest) {
   await tx.query(
     `INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys, changed_tick)
