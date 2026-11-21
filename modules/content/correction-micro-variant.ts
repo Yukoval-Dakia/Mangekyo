@@ -1,8 +1,8 @@
-import { FactNotFoundError, type FactId, type FactRef, type FactSnapshot, type ReadContext } from '@mangekyo/kernel';
+import { FactNotFoundError, type FactId, type FactRef, type FactSnapshot, type Json, type ReadContext } from '@mangekyo/kernel';
 import { AssetBasisError, assetType, type AssetReadContext } from './asset.ts';
 import {
   canUseDistinguishingVariant, KnowledgeEdgeBasisError, knowledgeEndpointKind, knowledgeUseKey, walkKnowledgeEdges,
-  type KnowledgeEndpoint,
+  type KnowledgeEdge, type KnowledgeEndpoint,
 } from './knowledge-edge.ts';
 import { openQuestionForRelease } from './question-release.ts';
 
@@ -43,19 +43,26 @@ async function readArchetype(
 
 class ReleaseReadFailure extends Error {}
 
-async function releaseCurrent(access: CorrectionMicroVariantAccess, question: QuestionRef) {
+async function releaseCurrent(access: CorrectionMicroVariantAccess, question: QuestionRef & Pick<FactSnapshot, 'accessEpoch'>) {
   // The release gate uses plain Errors for expected rejections. Keep reader failures distinct.
   const read = async <T>(run: () => Promise<T>) => {
     try { return await run(); }
     catch (cause) { throw new ReleaseReadFailure('题目发放读取失败。', { cause }); }
   };
   try {
+    let currentEpoch: FactSnapshot['accessEpoch'] | undefined;
     const released = await openQuestionForRelease({
-      fact: (id, options) => read(() => access.read.fact(id, options)),
+      async fact<Value = Json>(...args: Parameters<ReadContext['fact']>) {
+        const [id, options] = args;
+        const fact = await read(() => access.read.fact<Value>(id, options));
+        if (id === question.id && options.mode === 'following') currentEpoch = fact.accessEpoch;
+        return fact;
+      },
       slot: (ref, options) => read(() => access.read.slot(ref, options)),
     }, question.id, ['teaching', access.purpose, ...access.releaseUses]);
-    if (released.ref.learner === access.learner && released.ref.id === question.id && released.ref.rev === question.rev) {
-      return question;
+    if (released.ref.learner === access.learner && released.ref.id === question.id && released.ref.rev === question.rev &&
+        currentEpoch === question.accessEpoch) {
+      return { id: question.id, rev: question.rev };
     }
     return undefined;
   } catch (error) {
@@ -74,6 +81,16 @@ export async function readCorrectionMicroVariant(access: CorrectionMicroVariantA
   readonly variantEdgeIds: readonly FactId[];
   readonly archetypeEdgeIds: readonly FactId[];
 }): Promise<QuestionRef | undefined> {
+  return readUnexposedArchetypeVariant(access, input,
+    edge => canUseDistinguishingVariant(edge, input.source.id, 'solution_seen', 'numbers_only'));
+}
+
+export async function readUnexposedArchetypeVariant(
+  access: CorrectionMicroVariantAccess,
+  input: Parameters<typeof readCorrectionMicroVariant>[1],
+  acceptVariant: (edge: KnowledgeEdge) => boolean,
+  acceptCurrent?: (question: FactRef & Pick<FactSnapshot, 'accessEpoch'>) => Promise<boolean>,
+): Promise<QuestionRef | undefined> {
   const { source, variantEdgeIds, archetypeEdgeIds } = input;
   if (source.learner !== access.learner || !access.purpose.trim() || !access.recipient.trim() ||
       !access.releaseUses.length || !variantEdgeIds.length || !archetypeEdgeIds.length) return;
@@ -108,16 +125,17 @@ export async function readCorrectionMicroVariant(access: CorrectionMicroVariantA
     const candidates = paths.sort((a, b) => a.endpoint.sourceUse.id.localeCompare(b.endpoint.sourceUse.id) ||
       a.endpoint.sourceUse.rev - b.endpoint.sourceUse.rev);
     for (const { endpoint, edge } of candidates) {
-      const { id, rev } = endpoint.sourceUse;
-      // The correction can reveal the source solution. Require this edge to be safe in that direction.
-      if (id === source.id || !edge.variant || !canUseDistinguishingVariant(edge, source.id, 'solution_seen', 'numbers_only')) continue;
+      const { id, rev, accessEpoch } = endpoint.sourceUse;
+      if (id === source.id || !edge.variant || !acceptVariant(edge)) continue;
       try {
         const candidateArchetype = await readArchetype(graph, endpoint, archetypeEdgeIds, unavailable);
         if (!candidateArchetype || knowledgeUseKey(candidateArchetype) !== knowledgeUseKey(archetype)) continue;
-        const question = await releaseCurrent(access, { id, rev });
+        const question = await releaseCurrent(access, { id, rev, accessEpoch });
         if (!question) continue;
+        const candidate = { learner: access.learner, ...question };
+        if (acceptCurrent && !await acceptCurrent({ ...candidate, accessEpoch })) continue;
         const exposure = await access.readExposure({
-          candidate: { learner: access.learner, ...question },
+          candidate,
           archetype: { learner: access.learner, id: archetype.id, rev: archetype.rev },
           familyId: edge.variant.familyId,
         });
