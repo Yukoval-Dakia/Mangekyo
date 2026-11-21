@@ -1,5 +1,5 @@
 import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
-import { submittedWatermark } from './deletion-watermark.ts';
+import { submittedWatermark } from '../../modules/capture/request.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import {

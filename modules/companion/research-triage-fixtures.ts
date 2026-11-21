@@ -1,6 +1,6 @@
-import { parseTriageSnapshot, type TriageSnapshot } from './snapshot.ts';
-import { parseTriageResponse, type TriageResponse } from './response.ts';
-import { triageSkillById, type TriageSkillCard } from './skills.ts';
+import { parseTriageSnapshot, type TriageSnapshot } from './research-triage-snapshot.ts';
+import { parseTriageResponse, type TriageResponse } from './research-triage-policy.ts';
+import { triageSkillById, type TriageSkillCard } from './research-triage-cards.ts';
 
 export type TriageExpected =
   | { readonly kind: 'noop' }

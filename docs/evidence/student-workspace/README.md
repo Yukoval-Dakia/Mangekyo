@@ -50,7 +50,7 @@
 在独立的本机实例上，下面的验收会创建合成记录，再从正常 HTTP 入口读回。并发重复编卷和交卷各只产生一份记录。另测了有容差的数值答案、可接受的别名，以及仅自核的开放回答。
 
 ```sh
-node runtime/studio/test/student-workspace-acceptance.mjs http://127.0.0.1:4356
+node scripts/acceptance/studio/student-workspace-acceptance.mjs http://127.0.0.1:4356
 ```
 
 另开一段地理对话，实际读取了改正后的教学偏好。更换模型端点后仍能回看旧对话，续发会提示另开对话。原先「同一个 45」的两份学习史用真实模型重新跑过，独立旧作触发迁移，明确的错法触发针对性讲解。

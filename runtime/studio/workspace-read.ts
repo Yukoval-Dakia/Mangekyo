@@ -11,9 +11,9 @@ import {knowledgeEdgeEvidenceType, knowledgeEdgeKinds, knowledgeEdgeType} from '
 import {resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient} from './source-read.ts';
 import {syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
-import {readTeachingAttemptAssessments} from './learning-attempt-read.ts';
+import {readTeachingAttemptAssessments} from '../../modules/activity/learning-attempt-read.ts';
 import {workspaceReadRecord} from '../../modules/activity/workspace-source-projection.ts';
-import {readLearningOverview} from './learning-overview.ts';
+import {readLearningOverview} from '../../modules/activity/learning-overview.ts';
 import {openKnowledgeEdge, openKnowledgeEdgeEvidence, readKnowledgeGraph} from './knowledge-graph.ts';
 import {
   parseWorkspaceSearch, queryStrings, searchWorkspaceRecords, unappliedWorkspaceFilters, WorkspaceSearchError,

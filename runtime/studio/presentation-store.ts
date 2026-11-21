@@ -30,7 +30,7 @@ import {
   handleArtifactIntent,
   projectArtifactMountState,
   projectArtifactSubmission,
-} from './artifact-presentation.ts';
+} from '../../surfaces/shared/presentation/artifact-intent.ts';
 import {
   artifactAssessmentPolicy, qualifyArtifactAssessment, readArtifactAssessment, type ReadArtifactAssessmentWitness,
 } from './artifact-assessment.ts';

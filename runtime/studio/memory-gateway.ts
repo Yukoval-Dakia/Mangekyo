@@ -20,7 +20,7 @@ import { claimRecallValue, hypothesisStatus, recallClaimEvidence, workbookRecall
 import { openObjectiveCitations } from './belief-evidence.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
-import { readLearningOverview } from './learning-overview.ts';
+import { readLearningOverview } from '../../modules/activity/learning-overview.ts';
 import { textSlice } from './reading.ts';
 import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';

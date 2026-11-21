@@ -34,7 +34,7 @@ import {
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
 import { caseId, readOwnStudyTurn, readTeachingTurn, type DisplayTurn } from './sessions.ts';
 import { jitWitnessesCurrent, prepareFirstTurnJit, studioJitCounter, type StudioJitCounter } from './first-turn-jit.ts';
-import { turnTask } from './model-routes.ts';
+import { turnTask } from '../../executors/teaching/model-routes.ts';
 import { workspaceGrantChecker, sameRoute, requiresAccountConfirmation, workspaceRouteRevision } from './harness.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import {openWorkspaceTools, workspaceInput, workspaceProofKey, type WorkspaceWitness} from './workspace-agent.ts';

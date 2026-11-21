@@ -12,7 +12,7 @@ import {openWorkbook} from '../workbook.ts';
 import {openWorkspaceAccess} from '../workspace-access.ts'; import {openWorkspaceTools, type WorkspaceWitness} from '../workspace-agent.ts';
 import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organizer.ts';
 import {intakeWriteTargets} from '../intake.ts';
-import {learningOverviewPurpose, readLearningOverview} from '../learning-overview.ts';
+import {learningOverviewPurpose, readLearningOverview} from '../../../modules/activity/learning-overview.ts';
 import type {LearningOverviewFact} from '../../../modules/activity/workspace-values.ts';
 import {workbookRubricAssessmentType, workbookRubricAssessmentVersion, workbookRubricVersion} from '../../../modules/activity/workbook-values.ts';
 import {workspaceQuery} from '../workspace-read.ts';

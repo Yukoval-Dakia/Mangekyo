@@ -1,15 +1,6 @@
-import { storeSettledValue } from '../../kernel/src/derivations/settled-value.ts';
-import type { FactChange } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import type { DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { derivationId, type DerivationId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
-import { isJson } from '../../kernel/src/declarations/define.ts';
-import type { FactRef, FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
-import { parseManifest, type Manifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
-import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
-import { readActivityHelpEvents as readHelpEvents } from '../../modules/activity/evidence-read.ts';
-import { storagePurpose } from '../../modules/activity/library-values.ts';
+import { createCommandReadContext, createPropagationHooks, derivationId, FactNotFoundError, FactReadDeniedError, isJson, parseManifest, revalidateManifest, stableId, storeSettledValue, type DbTransaction, type FactChange, type FactId, type FactRef, type FactSnapshot, type DerivationId, type Manifest, type ManifestInput, type ReadContext, type ReadTransaction, type Revision, type Tick } from '@mangekyo/kernel';
+import { readActivityHelpEvents as readHelpEvents } from './evidence-read.ts';
+import { storagePurpose } from './library-values.ts';
 import {
   sameWorkbookJson,
   workbookAttempt,
@@ -21,14 +12,14 @@ import {
   type WorkbookAttempt,
   type WorkbookRubricAssessment,
   type WorkbookRubricAssessmentView,
-} from '../../modules/activity/workbook-values.ts';
-import { purpose as teachingPurpose, stableId } from './identity.ts';
+} from './workbook-values.ts';
+const teachingPurpose = 'teaching';
 
 type AssessmentRow = { id: string; slot_key: string; value: unknown; manifest: unknown };
 type ArchivedAssessment = AssessmentRow & { original_id: string | null };
 const rubricPropagation = createPropagationHooks([]);
 
-export { readActivitySubmissionBirth } from '../../modules/activity/evidence-read.ts';
+export { readActivitySubmissionBirth } from './evidence-read.ts';
 
 export function readActivityHelpEvents(
   tx: ReadTransaction, read: ReadContext, query: Parameters<typeof readHelpEvents>[2],

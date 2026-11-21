@@ -1,10 +1,11 @@
-import { commandId } from '../../kernel/src/declarations/ids.ts';
+import { createHash } from 'node:crypto';
+import { commandId } from '../../../kernel/src/declarations/ids.ts';
 import {
   handleArtifactIntent as verifyArtifactIntent, type ArtifactCommandAdapterV1, type ArtifactGrantV1, type ArtifactMountV1,
-} from '../../surfaces/shared/presentation/host-authority.ts';
-import { stableId } from './identity.ts';
+} from './host-authority.ts';
+const stableId = (...parts: string[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 26).toUpperCase();
 
-export * from '../../surfaces/shared/presentation/host-authority.ts';
+export * from './host-authority.ts';
 
 export function artifactIntentCommandId(requestId: string) {
   return commandId(stableId('artifact-intent-v1', requestId));

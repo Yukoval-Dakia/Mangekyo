@@ -1,19 +1,16 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { writeFile } from 'node:fs/promises';
+import { createServer as createModelServer } from 'node:http';
 import { resolve } from 'node:path';
 import { json } from 'node:stream/consumers';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { Client, Connection } from '@temporalio/client';
-import pg from 'pg';
+import { Client } from '@temporalio/client';
 import { describeWork } from '../../../executors/temporal/src/index.ts';
-import { studioJsonApi } from './acceptance-fixtures.mjs';
+import { dropIsolatedSchema, freePort, isolatedSchema, pollUntil, spawnStudio, stopStudio, studioJsonApi, temporalNamespace } from './acceptance-fixtures.mjs';
 
-const cwd = fileURLToPath(new URL('../', import.meta.url));
+const cwd = fileURLToPath(new URL('../../../runtime/studio/', import.meta.url));
 const view = {
   version: 1, id: 'fixture-passage', revision: 'passage-r1',
   title: '尝试两种断句', fallback: '读原文，选择停顿位置。',
@@ -29,19 +26,11 @@ const database = new URL(process.env.MANGEKYO_ARTIFACT_ACCEPTANCE_DATABASE_URL ?
 const temporal = process.env.MANGEKYO_ARTIFACT_ACCEPTANCE_TEMPORAL ?? '';
 assert.ok(/^postgres(ql)?:$/.test(database.protocol) && database.hostname === '127.0.0.1' && database.port);
 assert.match(temporal, /^127\.0\.0\.1:\d+$/);
-const schema = 'test_gui_' + randomUUID().replaceAll('-', '');
-const namespace = schema.replaceAll('_', '-');
-const directory = resolve(process.argv[2] ?? 'node_modules/.cache/' + schema);
-await mkdir(directory, { recursive: true });
-const connection = await Connection.connect({ address: temporal });
-await connection.workflowService.registerNamespace({ namespace, workflowExecutionRetentionPeriod: { seconds: 86_400 } })
-  .catch(async error => {
-    await connection.close();
-    throw error;
-  });
+const { schema, directory, pool } = await isolatedSchema(database.href);
+const { connection, namespace } = await temporalNamespace(temporal, schema);
 let studioLog = '';
 let generation;
-const model = createServer(async (req, res) => {
+const model = createModelServer(async (req, res) => {
   try {
     assert.equal(req.url, '/v1/chat/completions');
     const body = await json(req);
@@ -76,41 +65,25 @@ const model = createServer(async (req, res) => {
   }
 }).listen(0, '127.0.0.1');
 await once(model, 'listening');
-const freePort = createServer().listen(0, '127.0.0.1');
-await once(freePort, 'listening');
-const port = freePort.address().port;
-await new Promise(done => freePort.close(done));
+const port = await freePort();
 const base = 'http://127.0.0.1:' + port + '/api/';
-const studio = spawn(process.execPath, ['--import', 'tsx', 'server.ts'], {
-  cwd,
-  env: {
-    PATH: process.env.PATH,
-    MANGEKYO_PORT: String(port),
-    MANGEKYO_DATABASE_URL: database.href,
-    MANGEKYO_DATABASE_SCHEMA: schema,
-    MANGEKYO_ACTIVATE_LOCAL_BUILD: '1',
-    TEMPORAL_ADDRESS: temporal,
-    TEMPORAL_NAMESPACE: namespace,
-    MANGEKYO_SETTINGS_FILE: resolve(directory, 'provider.json'),
-    MANGEKYO_WORKSPACE_ACCESS_FILE: resolve(directory, 'workspace.json'),
-    MANGEKYO_ARTIFACT_ASSESSMENT_MODULE: resolve(cwd, 'test/artifact-assessment-witness.ts'),
-    MANGEKYO_LLM_BASE_URL: 'http://127.0.0.1:' + model.address().port + '/v1',
-  },
-});
-const exited = new Promise(done => studio.once('close', done));
-studio.on('error', error => { studioLog += String(error); });
-studio.stdout.on('data', data => { studioLog += data; });
-studio.stderr.on('data', data => { studioLog += data; });
-const pool = new pg.Pool({ connectionString: database.href, options: '-c search_path=' + schema });
+const studio = spawnStudio({ port, env: {
+  MANGEKYO_DATABASE_URL: database.href,
+  MANGEKYO_DATABASE_SCHEMA: schema,
+  TEMPORAL_ADDRESS: temporal,
+  TEMPORAL_NAMESPACE: namespace,
+  MANGEKYO_SETTINGS_FILE: resolve(directory, 'provider.json'),
+  MANGEKYO_WORKSPACE_ACCESS_FILE: resolve(directory, 'workspace.json'),
+  MANGEKYO_ARTIFACT_ASSESSMENT_MODULE: resolve(cwd, 'scripts/acceptance/studio/artifact-assessment-witness.ts'),
+  MANGEKYO_LLM_BASE_URL: 'http://127.0.0.1:' + model.address().port + '/v1',
+} });
+const { child } = studio;
 
 async function until(read) {
-  for (let i = 0; i < 180; i++) {
-    if (!studio.pid || studio.exitCode !== null || studio.signalCode !== null) throw new Error(studioLog);
-    const value = await read();
-    if (value) return value;
-    await delay(250);
-  }
-  throw new Error('等待 Studio 状态超时。');
+  return pollUntil(async () => {
+    if (!child.pid || child.exitCode !== null || child.signalCode !== null) throw new Error(studioLog);
+    return read();
+  }, { attempts: 180 });
 }
 
 const api = studioJsonApi(base, (response, path, result) => {
@@ -174,13 +147,11 @@ async function cleanup() {
   generation?.finish.resolve();
   model.closeAllConnections();
   model.close();
-  if (studio.exitCode === null && studio.signalCode === null) studio.kill('SIGTERM');
-  await Promise.race([exited, delay(5000, undefined, { ref: false })]);
-  if (studio.exitCode === null && studio.signalCode === null) studio.kill('SIGKILL');
-  await exited;
+  studioLog = studio.log();
+  await stopStudio(studio);
   await Promise.all([
     connection.close(),
-    pool.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE').finally(() => pool.end()),
+    dropIsolatedSchema(pool, schema),
     writeFile(resolve(directory, 'studio.log'), studioLog),
   ]);
 }

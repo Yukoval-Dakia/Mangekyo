@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { startWork } from '../../../executors/temporal/src/index.ts';
-import { studioJsonApi } from './acceptance-fixtures.mjs';
+import { pollUntil, spawnStudio, studioJsonApi } from './acceptance-fixtures.mjs';
 
 const [database, temporal, schema, port, namespace = 'default'] = process.argv.slice(2);
 assert.match(database, /^postgresql:\/\/postgres@127\.0\.0\.1:\d+\/postgres$/);
@@ -42,9 +40,7 @@ const env = { PATH: process.env.PATH, HOME: home, PGPASSWORD: process.env.PGPASS
   TEMPORAL_ADDRESS: temporal, TEMPORAL_NAMESPACE: namespace, MANGEKYO_TASK_QUEUE: schema, MANGEKYO_ACTIVATE_LOCAL_BUILD: '1' };
 const children = [];
 function studio(mode) {
-  children.push(spawn(process.execPath, ['--import', 'tsx', 'server.ts'], {
-    cwd: new URL('../', import.meta.url), env: { ...env, MANGEKYO_PROCESS: mode }, stdio: 'inherit',
-  }));
+  children.push(spawnStudio({ port, env: { ...env, MANGEKYO_PROCESS: mode }, inherit: true }).child);
 }
 const base = 'http://127.0.0.1:' + port;
 const api = studioJsonApi(base, (response, path, body, status = 200) =>
@@ -58,11 +54,7 @@ const rows = async () => (await pool.query(`SELECT w.slot_key::jsonb AS basis,w.
   JOIN slot_state s ON (s.learner_id,s.slot_type,s.slot_key)=(w.learner_id,w.slot_type,w.slot_key) WHERE w.slot_type='capture.notionBlock'
   ORDER BY w.requested_tick,w.slot_key`)).rows;
 async function until(probe) {
-  for (let attempt = 0; attempt < 120; attempt++) {
-    if (await probe()) return;
-    await delay(500);
-  }
-  throw new Error('Studio did not reach the expected state');
+  return pollUntil(probe, { attempts: 120, interval: 500 });
 }
 let temporalConnection;
 try {

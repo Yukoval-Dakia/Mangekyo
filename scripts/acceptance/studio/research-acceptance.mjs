@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
-import { jsonHeaders, requestJson } from './acceptance-fixtures.mjs';
+import { jsonHeaders, pollUntil, requestJson } from './acceptance-fixtures.mjs';
 
 const base = new URL(process.argv[2]);
 assert.equal(base.protocol, 'http:');
@@ -28,10 +27,7 @@ await api(path + '-permission', 'PUT', { revision: 1, allowed: true });
 assert.deepEqual(await api(path), { worksheet: null });
 await api(settings, 'PUT', { revision: 0, enabled: true });
 let view;
-for (let i = 0; i < 30 && !view?.failure; i++) {
-  await delay(500);
-  view = await api(path);
-}
+view = await pollUntil(async () => (await api(path)).failure && await api(path), { attempts: 30, interval: 500 });
 assert.deepEqual(view, { worksheet: null, failure: 'model_unavailable' });
 assert.deepEqual(await api(path), view);
 await api(path + '/' + paper.id + '/source', 'GET', undefined, 404);

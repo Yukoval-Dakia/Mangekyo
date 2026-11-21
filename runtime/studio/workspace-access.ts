@@ -45,7 +45,7 @@ import { notionModelRecipient, sourceId, stableId, studioLearner } from './ident
 import { materialIntakeLink } from './reading.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { carryRubricAssessments } from './learning-attempt-read.ts';
+import { carryRubricAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { sourceRefV1 } from '../../modules/activity/source-values.ts';
 import { knowledgeEdgeEvidenceType, knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';

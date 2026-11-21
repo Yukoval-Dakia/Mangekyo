@@ -32,7 +32,7 @@ import { checkPack, openPack, packCandidates } from '../../modules/plan/offline-
 import type { GoalStatus } from '../../modules/plan/goal-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
 import { integer } from '../../modules/plan/validation.ts';
-import { readGoal, readTasks } from './learning-overview.ts';
+import { readGoal, readTasks } from '../../modules/activity/learning-overview.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';

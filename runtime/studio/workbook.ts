@@ -1,7 +1,7 @@
 import { storeSettledValue } from '../../kernel/src/derivations/settled-value.ts';
 import { readFactType as factType } from '../../kernel/src/commands/fact-collection.ts';
 import { assertDeletionWatermark, assertUnburned, deletionWatermark as readDeletionWatermark, LifecycleError } from '../../kernel/src/lifecycle.ts';
-import { submittedWatermark } from './deletion-watermark.ts';
+import { submittedWatermark } from '../../modules/capture/request.ts';
 import { projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
 import { historicalWorkbookMount, openWorkbookContext, type WorkbookContextAuthority, type WorkbookQuestionWithContext } from './workbook-context.ts';
 import { posttestIssuanceType } from '../../modules/activity/retention-posttest.ts';
@@ -49,7 +49,7 @@ import { isPracticeWorkbook, sealedPracticePaper, submitWithPracticeCustody } fr
 import { RequestError } from './sessions.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { loadSettings } from './settings.ts';
-import { allAssessments } from './learning-attempt-read.ts';
+import { allAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import {
   frozenSubmission, openWorkbookAssessment, prepareWorkbookRelease, readWorkbookAssessment,
