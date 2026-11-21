@@ -7,6 +7,7 @@
     ".": "./module.ts",
     "./source": "./source.ts",
     "./extraction": "./extraction.ts",
+    "./intake-history-view": "./intake-history-view.ts",
     "./public-link": "./public-link.ts",
     "./notion-api": "./notion-api.ts",
     "./notion-selection": "./notion-selection.ts",
