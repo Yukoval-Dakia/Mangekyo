@@ -61,8 +61,9 @@ export async function readArchetypeCoverage(
   readOrigin: (question: KnowledgeSourceUse) =>
     Promise<{ readonly kind: 'original'; readonly key: string } | { readonly kind: 'non-paper' } | undefined>,
 ) {
-  const { archetype, scope, memberships, variants } = input;
-  if (!bound(access) || !scope.trim() || !memberships.complete || !variants.complete ||
+  const { archetype, memberships, variants } = input;
+  const scope = input.scope.trim();
+  if (!bound(access) || !scope || !memberships.complete || !variants.complete ||
       memberships.edgeIds.length > 128 || variants.edgeIds.length > 128) return;
   try {
     if ((await readKnowledgeUse(access, archetype)).type !== assetType) return;

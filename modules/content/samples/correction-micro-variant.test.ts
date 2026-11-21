@@ -21,14 +21,16 @@ test('counts distinct proven paper items and opens only the published grade vers
       const access = (deny?: FactId) => ({ learner, purpose: 'teaching', recipient: 'grader', isUnavailable: unavailable,
         read: createAuthorizedFactReader(tx, 'teaching', fact => fact.ref.id !== deny) });
       const membershipIds = input.archetypeEdgeIds;
-      const coverage = (complete = true, deny?: FactId, missing?: FactId) => readArchetypeCoverage(access(deny), {
-        archetype: { ...fixture.archetype, accessEpoch }, scope: 'average-speed',
+      const coverage = (complete = true, deny?: FactId, missing?: FactId, scope = 'average-speed') => readArchetypeCoverage(access(deny), {
+        archetype: { ...fixture.archetype, accessEpoch }, scope,
         memberships: { complete, edgeIds: [...membershipIds, membershipIds[0]] },
         variants: { complete: true, edgeIds: input.variantEdgeIds },
       }, async ({ id }) => id === missing ? undefined : { kind: 'original', key: id === second.id ? 'paper-b:q2' : 'paper-a:q1' });
       expect(await coverage()).toMatchObject({ coveredQuestionCount: 2, variationDimensions: [
         { dimension: '第二段时长', evidence: { id: input.variantEdgeIds[1] } },
       ] });
+      expect(await coverage(true, undefined, undefined, ' average-speed ')).toEqual(await coverage());
+      expect(await coverage(true, undefined, undefined, ' ')).toBeUndefined();
       expect(await coverage(false)).toBeUndefined();
       expect(await coverage(true, second.id)).toBeUndefined();
       expect(await coverage(true, undefined, second.id)).toBeUndefined();
