@@ -1,13 +1,14 @@
-import { planReview, readEligibleReview } from '../../modules/companion/worksheet-policy.ts';
+import { planReview, readEligibleReview, reviewDedupKey } from '../../modules/companion/worksheet-policy.ts';
 import { generateResearchDraft, ResearchDispatchDenied, type WorkerTariff } from '../../executors/teaching/research-worker.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { learnerId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { cancelWork, failWork, readReadyWork, type WorkRef, type WorkRequest } from '../../kernel/src/work/index.ts';
-import { completeTodo, enqueueWork, readTodo, rememberTodoUnavailable } from '../../kernel/src/work/todos.ts';
+import { completeTodo, enqueueWork, readTodo, readLatestTodoUnavailable, rememberTodoUnavailable } from '../../kernel/src/work/todos.ts';
 import { researchPurpose, ResearchBasisChanged, publishWorksheet, worksheetDraft } from '../../modules/companion/research.ts';
-import { reviewAccess, worksheetPublication, whenAvailable } from '../studio/research-sources.ts';
+import { readWorksheet, reviewAccess, worksheetPublication, whenAvailable } from '../studio/research-sources.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { EffectBudgetExceeded } from '../../kernel/src/work/effects.ts';
 import { bindWorkPayload } from '../../kernel/src/work/payload.ts';
@@ -20,6 +21,15 @@ export function modelReviewSpec(tx: ReadTransaction, spec: TodoSpec, grant: Work
 }
 export function eligibleBasis(tx: ReadTransaction, spec: TodoSpec, settingsId: FactId, tariff?: WorkerTariff) {
   return whenAvailable(() => readEligibleReview(reviewAccess(tx),spec,settingsId,grant => workerCap(grant,tariff)));
+}
+
+export async function worksheetView(tx: ReadTransaction, source: FactSnapshot | null, settingsRevision?: number) {
+  const opened = source && await readWorksheet(tx, source);
+  const worksheet = opened?.worksheet ?? null;
+  if (worksheet || !source?.purpose.includes(researchPurpose) || settingsRevision === undefined) return { worksheet };
+  const dedup = reviewDedupKey({id:source.ref.id, revision:source.ref.rev, accessEpoch:source.accessEpoch});
+  const reason = await readLatestTodoUnavailable(tx, dedup, settingsRevision);
+  return {worksheet, ...(reason === 'model_unavailable' && {failure:reason})};
 }
 
 export async function executeWorksheet(db: Db, companion: LoadedModule, ref: WorkRef, todoId: FactId, settingsId: FactId,

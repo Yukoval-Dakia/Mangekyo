@@ -1,4 +1,4 @@
-import { eligibleBasis, executeWorksheet, modelReviewSpec } from '../research/worksheet.ts';
+import { eligibleBasis, executeWorksheet, modelReviewSpec, worksheetView } from '../research/worksheet.ts';
 import { grantHooks, workerCap, workerOffer } from '../research/worker-dispatch.ts';
 import { workerConsent } from '../../modules/companion/worker-consent.ts';
 import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
@@ -31,7 +31,7 @@ import { stableId, studioLearner } from './identity.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';
 import {
-  activeRetentionReview, comparisonAttempts, independentScoutSource, readWorksheet, worksheetView, researchReader,
+  activeRetentionReview, comparisonAttempts, independentScoutSource, readWorksheet, researchReader,
   retentionReviewPermissionId, whenAvailable, workbookSource,
 } from './research-sources.ts';
 import {
