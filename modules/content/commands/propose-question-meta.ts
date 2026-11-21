@@ -1,5 +1,5 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
-import { assetType, checkTextbookBasis, mergeTextbookBasis } from '../asset.ts';
+import { assetType, checkQuestionTeachingSources, checkTextbookBasis, mergeTextbookBasis } from '../asset.ts';
 import { sameEffectInput } from '../question-effects.ts';
 import { parseQuestionMetaProposal, proposeQuestionMetaCommand } from '../question-writes.ts';
 import { openQuestionMetaDraft, questionSolutionKey, questionTagKey, validateQuestionMetaReferences } from '../question-state.ts';
@@ -31,10 +31,20 @@ export default defineCommand({
     }
     const tags = apply(previous.append_metadata?.tags ?? [], append_metadata.tags, questionTagKey);
     const solutions = apply(previous.append_metadata?.solutions ?? [], append_metadata.solutions, questionSolutionKey);
+    const proposedLadder = append_metadata.hint_ladder;
+    const previousLadder = previous.sticky ? previous.append_metadata?.hint_ladder : undefined;
+    if (proposedLadder) {
+      if (expectedMetaRev === undefined && previousLadder && !sameEffectInput(previousLadder, proposedLadder)) {
+        throw new Error(`Fact revision conflict: ${snapshot.ref.id}`);
+      }
+      if (!target.purpose.includes('teaching') && !target.purpose.includes('all')) throw new Error('题目未授权教学用途。');
+      await checkQuestionTeachingSources(ctx.read, { basis });
+    }
+    const ladder = proposedLadder ?? previousLadder;
     return [{
       kind: 'correct', id: snapshot.ref.id, expectedRev: snapshot.ref.rev,
       data: { id, expectedRev, basis: mergeTextbookBasis(previous.basis, basis), sticky: true,
-        append_metadata: { tags, solutions },
+        append_metadata: { tags, solutions, ...(ladder ? { hint_ladder: ladder } : {}) },
       },
     }];
   },

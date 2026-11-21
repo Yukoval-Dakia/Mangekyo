@@ -1,5 +1,5 @@
 import { type FactId, type FactSnapshot, type Json, type ReadContext, type Revision } from '@mangekyo/kernel';
-import { assetType, checkQuestionTeachingSources, checkTextbookBasis, freezeQuestionAssessment, parseTextbookBasis, questionAsset } from './asset.ts';
+import { assetType, checkQuestionTeachingSources, checkTextbookBasis, freezeQuestionAssessment, parseTextbookBasis, questionAsset, type AssetReadContext } from './asset.ts';
 import { contentStableId, normalizeKnowledgeName } from './knowledge-entity.ts';
 import { fields, list, pageId, record, revision, text } from './parse.ts';
 import { parseQuestionMetadata } from './question-authoring.ts';
@@ -162,7 +162,7 @@ export function questionMetaDraftId(question: FactSnapshot['ref']) {
   return contentStableId(questionMetaDraftType, question.id, String(question.rev));
 }
 
-export async function openQuestionMetaDraft(read: Pick<ReadContext, 'fact'>, question: FactSnapshot['ref']) {
+export async function openQuestionMetaDraft(read: AssetReadContext['read'], question: FactSnapshot['ref']) {
   const target = await read.fact(question.id, { mode: 'pinned', rev: question.rev });
   if (target.ref.learner !== question.learner || target.type !== assetType) throw new Error('请选择授权的题版。');
   await checkTextbookBasis(read, questionAsset(target.value).basis ?? []);
@@ -178,7 +178,8 @@ export async function openQuestionMetaDraft(read: Pick<ReadContext, 'fact'>, que
 
 export function validateQuestionMetaReferences(draft: QuestionMetaDraft) {
   if (!draft.append_metadata) return;
-  for (const { source_ref } of [...draft.append_metadata.tags, ...draft.append_metadata.solutions]) {
+  const { tags, solutions, hint_ladder: ladder } = draft.append_metadata;
+  for (const { source_ref } of [...tags, ...solutions, ...(ladder ? [ladder] : [])]) {
     if (!source_ref) continue;
     if (draft.basis.some(use => use.id === source_ref)) continue;
     let source;
@@ -189,7 +190,7 @@ export function validateQuestionMetaReferences(draft: QuestionMetaDraft) {
       // A plain ID or the established versioned reference wire format is required.
     }
     if (!source || !draft.basis.some(use => use.id === source.id && use.rev === source.rev && use.type === source.type)) {
-      throw new Error('请先打开术语标签与解法引用的来源版本。');
+      throw new Error('请先打开题目元信息引用的来源版本。');
     }
   }
 }
