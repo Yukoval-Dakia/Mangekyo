@@ -39,6 +39,7 @@ import {textbookPageType} from '../../modules/content/textbook-page.ts';
 import {openedAnswerCitations} from '../../modules/companion/belief.ts';
 import {openObjectiveActivity} from './belief-evidence.ts';
 import type {ActivityCitation} from '../../modules/companion/understanding.ts';
+import {openWorkspaceQuestion, type DraftWitness} from './workspace-question.ts';
 import {openWorkspaceTextbook} from './workspace-textbook.ts';
 import {openWorkspaceRelation, type OpenedRelationSource} from './workspace-relation.ts';
 
@@ -49,7 +50,7 @@ const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/
 let declarations: ReturnType<typeof activity> | undefined;
 
 export function openWorkspaceTools(options: {
-  db: Db; turn: string;
+  db: Db; turn: string; narrowSaves?: true; draftBasis?(): DraftWitness[];
   authorize: (tx: ReadTransaction) => Promise<void>;
   maySend: NotionRecipient;
   track: (input: WorkspaceWitness, checkAtDispatch?: true) => void;
@@ -65,7 +66,8 @@ export function openWorkspaceTools(options: {
   jitBasis?: readonly WorkspaceWitness[];
   currentObject?: OpenedCurrentLearningObject | undefined;
 }) {
-  const {db, turn, currentObject} = options;
+  const {db, turn, currentObject, narrowSaves} = options;
+  const saveQuestion = options.draftBasis && openWorkspaceQuestion(db,turn,options.maySend,options.authorize,options.draftBasis);
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));
   const jitBasis = [...(options.jitBasis ?? []), ...options.prior.filter(w => w.jitBasis)];
@@ -455,24 +457,24 @@ export function openWorkspaceTools(options: {
       if (args.sentenceBreaks !== undefined && 'state' in result && result.state === 'done') publishedFormalArtifact = true;
       return JSON.stringify(result);
     }
-    const invalid = validateWorkspaceToolArgs(name, args);
+    if (narrowSaves && (name === 'save_workspace' || name === 'save_relation'))
+      return JSON.stringify(learningToolError('tool_unavailable','name','请按本轮目录选择保存工具。'));
+    if (narrowSaves && name === 'save_question' && saveQuestion) return JSON.stringify(await saveQuestion(args,step));
+    const invalid = validateWorkspaceToolArgs(narrowSaves && name === 'save_edge' ? 'save_relation' : name, args);
     if (invalid) return JSON.stringify(invalid);
     if (name === 'record_observation') return recordObservation(args,step);
     if (name === 'save_page') return JSON.stringify(await savePage(args,step));
-    if (name === 'save_relation') return JSON.stringify(await saveRelation(args,step));
+    if (name === (narrowSaves ? 'save_edge' : 'save_relation')) return JSON.stringify(await saveRelation(args,step));
     return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead, receiveImage);
   }
   return {
-    ...(options.presentationManifest ? {presentationTool:artifactTool} : {}),
+    ...(narrowSaves && {narrowSaves}), ...(options.presentationManifest ? {presentationTool:artifactTool} : {}),
     execute: (name: string, args: Record<string, unknown>, step: number, receiveImage?: ReceiveStudyImage) =>
       execute(name, args, step, undefined, receiveImage),
     async preparePythonAttempts(args: Record<string, unknown>, step: number): Promise<PreparedPythonAttempts> {
       return JSON.parse(await read('python_attempts', args, step));
     },
-    executeRead: (name: string, args: Record<string, unknown>, step: number, priorRead: Promise<unknown>, receiveImage?: ReceiveStudyImage) =>
-      name === 'search_workspace' || name === 'read_workspace' || name === 'open_learning' || name === 'read_learner_radar'
-        ? execute(name, args, step, priorRead, receiveImage)
-        : execute(name, args, step),
+    executeRead: execute, saveQuestion,
     openedBeliefEvidence({id, rev, accessEpoch, anchor, excerpt}: ActivityCitation) {
       const opened = beliefEvidence.get(`${id}:${anchor}`);
       return opened?.rev === rev && opened.accessEpoch === accessEpoch && excerpt !== undefined && opened.excerpt.includes(excerpt);

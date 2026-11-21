@@ -67,7 +67,7 @@ export function studyTurn(input: unknown) {
     ...(value.learningToolsVersion === 1 ? {learningToolsVersion:1 as const} : {}),
     ...(value.memoryVersion === 1 ? {memoryVersion: 1 as const} : {}),
     ...(value.jitContextVersion === 1 ? {jitContextVersion: 1 as const, jitCounterId: field(value, 'jitCounterId', 100)} : {}),
-    ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),
+    ...(value.agentVersion === 1 || value.agentVersion === 2 ? {agentVersion: value.agentVersion, allowSearch: value.allowSearch === true} : {}),
     ...(value.workspaceRevision === undefined ? {} : {workspaceRevision: field(value, 'workspaceRevision', 80)}),
     ...(value.attachment === undefined ? {} : { attachment: studyAttachment(value.attachment) }),
     ...(value.attachmentBasis === undefined ? {} : {attachmentBasis: field(value, 'attachmentBasis', 64)}),

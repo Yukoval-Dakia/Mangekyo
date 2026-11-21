@@ -134,20 +134,37 @@ function tool<K extends string>(name: K, description: string, properties: object
   return {type:'function',function:{name,description,parameters:{type:'object',additionalProperties:false,properties,required}}};
 }
 export const learningToolFallback = (name: string) => ({tool:'find_tools',args:{query:name}});
-export function adaptWorkspaceResult(raw: string, name: HostedTool): LearningResult {
+export function adaptWorkspaceResult(raw: string, name: HostedTool, catalog?: 'workspace-v2'): LearningResult {
   const value = JSON.parse(raw);
   if (value?.ok !== false) return {ok:true,data:value};
   const code = value.code;
   const next = value.next?.tool;
-  const redirect = next === 'read_workspace' ? 'open_learning' : next === 'search_workspace' ? 'search_learning' :
+  const redirect = next === 'read_workspace' ? 'open_learning' : next === 'search_workspace' && !catalog ? 'search_learning' :
     next === 'save_relation' ? 'save_edge' : next;
   const args = next === 'read_workspace' ? {refs:value.next.args.id} : value.next?.args;
-  const retry = redirect && args && ['open_learning','search_learning','save_page','save_edge','save_belief'].includes(redirect)
+  const emptyWrite = catalog && redirect?.startsWith('save_') && args && !Object.keys(args).length;
+  const retry = redirect && args && !emptyWrite &&
+    ['open_learning','search_learning','search_workspace','save_page','save_edge','save_belief'].includes(redirect)
     ? {tool:redirect,args} : learningToolFallback(name);
   return toolFailure(code === 'budget_or_limit' ? 'limit_exceeded' :
     ['invalid_args','not_found','access_revoked','basis_stale','version_conflict','evidence_not_opened','limit_exceeded'].includes(code)
       ? code : 'invalid_args',String(value.message ?? '工具无法完成。'),retry,value.field);
 }
+
+const saveQuestionDefinition = tool('save_question','保存独立题面草稿。题库核验前不可发放。',{
+  title:{type:'string',maxLength:240},prompt:{type:'string',maxLength:8000},
+  response_schema:{type:'array',items:{type:'object'},maxItems:32},
+  assessment_contract:{type:'array',items:{type:'object'},maxItems:32},
+},['title','prompt']);
+
+// Serve the v2 workspace catalog only on newly versioned turns.
+export const narrowWorkspaceDefinitions = workspaceDefinitions.map<ToolDefinition>(definition => {
+  switch (definition.function.name) {
+    case 'save_workspace': return saveQuestionDefinition;
+    case 'save_relation': return renamed('save_edge');
+    default: return definition;
+  }
+});
 
 export function learningHostDefinitions(manageBeliefs: boolean, allowedIntents: readonly string[], artifact?: ToolDefinition): LearningTools['definitions'] {
   return {
@@ -161,11 +178,7 @@ export function learningHostDefinitions(manageBeliefs: boolean, allowedIntents: 
       }},
     },['intent']),
     save_page:renamed('save_page'),save_edge:renamed('save_edge'),
-    save_question:tool('save_question','保存独立题面草稿。题库核验前不可发放。',{
-      title:{type:'string',maxLength:240},prompt:{type:'string',maxLength:8000},
-      response_schema:{type:'array',items:{type:'object'},maxItems:32},
-      assessment_contract:{type:'array',items:{type:'object'},maxItems:32},
-    },['title','prompt']),
+    save_question:saveQuestionDefinition,
     manage_activity:tool('manage_activity','用正常挂载命令为当前回合发放作品。动作 mount_artifact。',{
       action:{const:'mount_artifact'},...((artifact?.function.parameters.properties ?? {}) as object),
     },['action','view']),

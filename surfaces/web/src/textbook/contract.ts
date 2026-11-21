@@ -8,7 +8,8 @@ import type { TextbookEdit } from '../../../../modules/content/textbook-edits.ts
 
 export type { TextbookBlock as Block, TextbookBlockBody as Body };
 export type Edit = Extract<TextbookEdit, { kind: 'rewrite' | 'insert' | 'move' }>;
-export type Page = TextbookPage & { id: string; rev: number; purpose?: readonly string[] };
+export type Page = TextbookPage & { id: string; rev: number; purpose?: readonly string[]; accessEpoch?: string;
+  pulse?: {initial: import('./pulse-projection').PulseRows; read: import('./pulse-projection').PulseReader} };
 export type Request = { id: string; expectedRev: number; clientEditSeq: number; edits: [Edit] };
 export type Address = { id: string; rev?: number; block?: string };
 export type Chapter = { title: string; pages: { id: string; title: string }[] };

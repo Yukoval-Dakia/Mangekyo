@@ -4,16 +4,25 @@ import { api, requestId } from '../api';
 import { ListLink, PageTitle, ReadState, useResource } from '../workspace';
 import { TextbookWorkspace, textbookLink, type Page, type Transport } from './index';
 
+import { pulseRows } from './pulse-projection';
 import { PageProposals } from './ProposalReview';
 
 const editorPath = '/textbooks/page';
 const pagePath = (id: string) => editorPath + textbookLink({ id });
+type WirePage = Omit<Page, 'pulse'> & {kind: string; masteryPulse?: unknown; pulse?: never};
 const transport: Transport = {
   async read({ id, rev }) {
-    const page = await api<Page & { kind: string }>('/textbooks/' + encodeURIComponent(id) +
-      (rev === undefined ? '' : '?rev=' + encodeURIComponent(rev)));
+    const wire = await api<WirePage>('/textbooks/' + encodeURIComponent(id) +
+      (rev === undefined ? '' : '?rev=' + encodeURIComponent(rev)), {cache: 'no-store'});
+    const {masteryPulse, pulse: _unused, ...page} = wire;
     if (page.kind !== 'textbook') throw new Error('这是一份学习笔记，请从笔记入口打开。');
-    return page;
+    if (rev !== undefined || !masteryPulse) return page;
+    const initial = pulseRows(page, masteryPulse);
+    return {...page, pulse: {initial, async read(signal: AbortSignal) {
+      const current = await api<typeof wire>('/textbooks/' + encodeURIComponent(id), {signal, cache: 'no-store'});
+      return current.kind === 'textbook' && current.id === id && current.rev === page.rev &&
+        current.accessEpoch === page.accessEpoch ? pulseRows(current, current.masteryPulse) : new Map();
+    }}};
   },
   async revise(request) {
     const { id, clientEditSeq } = request;
@@ -28,7 +37,8 @@ const transport: Transport = {
     if (!response.ok) throw new Error(result.error || '教材保存失败。');
     if (result.id !== id || result.clientEditSeq !== clientEditSeq || result.expectedRev !== request.expectedRev)
       throw new Error('教材保存回执与编辑不符。');
-    const page = await transport.read({ id, rev: result.rev });
+    const current = await transport.read({ id }).catch(() => null);
+    const page = current && current.rev === result.rev ? current : await transport.read({ id, rev: result.rev });
     return { kind: 'saved', clientEditSeq, page };
   },
 };

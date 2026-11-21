@@ -15,11 +15,15 @@ export function OfflineStatus() {
   },[]);
   useEffect(() => {
     let active = true;
+    let revision = 0;
     function refresh() {
+      const expected = ++revision;
       setOnline(navigator.onLine);
-      void pendingCount().then(n => {if (active) setCount(n);}).catch(() => {});
+      void pendingCount().then(n => {if (active && expected === revision) setCount(n);}).catch(() => {});
     }
     function reconnect() { refresh(); void reconcile(); }
+    const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel(queueChanged);
+    channel?.addEventListener('message', refresh);
     reconnect();
     window.addEventListener('online',reconnect);
     window.addEventListener('pageshow',reconnect);
@@ -28,6 +32,7 @@ export function OfflineStatus() {
     window.addEventListener(queueChanged,refresh);
     return () => {
       active = false;
+      channel?.close();
       window.removeEventListener('online',reconnect);
       window.removeEventListener('pageshow',reconnect);
       window.removeEventListener('offline',refresh);
