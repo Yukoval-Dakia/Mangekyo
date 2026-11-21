@@ -124,6 +124,7 @@ async function openWeb() {
     assessment: workbookAssessment,
     context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
     onResearchFactsChanged: research.workbookChanged,
+    pythonHost,
   });
   const activityHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
   const takeaways = openTakeaway(db, activity, activityHooks);

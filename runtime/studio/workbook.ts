@@ -22,11 +22,16 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { runEffect } from '../../kernel/src/work/index.ts';
 import { assessWithAgent } from '../../executors/teaching/assessment-agent.ts';
+import { createPythonDeriverHost, type PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import {
   TeachingError,
   type TeachingDependencies,
 } from '../../executors/teaching/index.ts';
+import {
+  examTimeValueMethod, projectWorkbookExamTimeValue, unknownExamTimeValue, type ExamTimeValueView,
+} from '../../modules/activity/exam-time-value.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
+import { bindPreSubmitRevisionWitness } from '../../modules/activity/pre-submit-revision.ts';
 import { workbookPaperType, workbookQuestionsView, type WorkbookAttemptView, type WorkbookDetail, type WorkbookPaper, type WorkbookSummary } from '../../modules/activity/workbook-values.ts';
 import { recordWorkbookPresentationCommand } from '../../modules/activity/workbook-presentation.ts';
 import { includesBankReferences } from '../../modules/activity/workbook-bank.ts';
@@ -49,7 +54,14 @@ import { isPracticeWorkbook, sealedPracticePaper, submitWithPracticeCustody } fr
 import { RequestError } from './sessions.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { loadSettings } from './settings.ts';
-import { allAssessments } from '../../modules/activity/learning-attempt-read.ts';
+import {
+  allAssessments, openWorkbookExamTimeValueBundle, verifyWorkbookExamTimeValueBundle,
+  type AuthorizedExamTimeValueBundle, type WorkbookExamTimeValueAccess,
+} from '../../modules/activity/learning-attempt-read.ts';
+import {
+  readWorkbookPreSubmitPitfalls, verifyWorkbookPreSubmitRevision,
+  type WorkbookPreSubmitAuthority, type WorkbookPreSubmitReadOptions,
+} from './workbook-pre-submit.ts';
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import {
   frozenSubmission, openWorkbookAssessment, prepareWorkbookRelease, readWorkbookAssessment,
@@ -81,16 +93,20 @@ const readAttempts = (tx: ReadTransaction, read: ReturnType<typeof createCommand
   readWorkbookAttempts(tx, read, factUnavailable, paperId);
 
 type FormalAssessmentView = Awaited<ReturnType<typeof readWorkbookAssessment>>;
-type WorkbookDetailWithAssessment = WorkbookDetail & {
+type WorkbookDetailWithAssessment = Omit<WorkbookDetail, 'attempts'> & {
   assessmentReleaseRef?: FormalAssessmentView['releaseRef'];
   attempts: (WorkbookAttemptView & { rev: number; formalAssessment?: FormalAssessmentView; paperRev?: number;
-    questions: WorkbookQuestionWithContext[] })[];
+    examTimeValue?: ExamTimeValueView; questions: WorkbookQuestionWithContext[] })[];
 };
 
+let sharedPacingHost: PythonDeriverHost | undefined;
+
 export function openWorkbook(db: Db, activity: LoadedModule, {
-  capture, assessment = openWorkbookAssessment(db), onResearchFactsChanged, context = {},
+  capture, assessment = openWorkbookAssessment(db), onResearchFactsChanged, context = {}, preSubmit, pythonHost,
 }: {
   capture?: LoadedModule; context?: WorkbookContextAuthority;
+  preSubmit?: WorkbookPreSubmitAuthority;
+  pythonHost?: PythonDeriverHost;
   assessment?: ReturnType<typeof openWorkbookAssessment>;
   onResearchFactsChanged?: CommandHooks['onFactsChanged'];
 } = {}) {
@@ -127,16 +143,37 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     return {view, result: 'result' in view ? view.result : undefined};
   }
 
+  async function deriveExamTimeValue(
+    bundle: AuthorizedExamTimeValueBundle,
+    maySend?: WorkbookExamTimeValueAccess['maySend'],
+  ): Promise<ExamTimeValueView> {
+    const fallback = unknownExamTimeValue(bundle.paperRef, bundle.attemptRef);
+    const derived = await (pythonHost ?? (sharedPacingHost ??= createPythonDeriverHost())).derive(examTimeValueMethod, bundle.request);
+    if (derived.kind !== 'ok' || derived.outcome.kind !== 'value') return fallback;
+    const valid = await db.snapshot({ learner: studioLearner }, tx => verifyWorkbookExamTimeValueBundle(
+      tx, bundle, (release, attemptRef, epochs) => readWorkbookAssessment(tx, release, attemptRef, {
+        ...epochs, purpose: bundle.purpose, ...(maySend ? { maySend } : {}),
+      }), maySend,
+    ));
+    if (!valid) return fallback;
+    return projectWorkbookExamTimeValue({
+      paperRef: bundle.paperRef,
+      attemptRef: bundle.attemptRef,
+      attempt: bundle.attempt,
+      rawResult: derived.outcome.value,
+    });
+  }
+
   async function get(id: string): Promise<WorkbookDetailWithAssessment> {
     const paperId = factIdOf(id, '找不到这份试卷。');
-    return db.snapshot({learner:studioLearner},async tx => {
+    const gathered = await db.snapshot({learner:studioLearner},async tx => {
       if (await factType(tx,paperId) === posttestIssuanceType) {
-        try { return await capsules.issued(tx,paperId); }
+        try { return { issued: await capsules.issued(tx,paperId) }; }
         catch (error) { mapWorkbookReadFailure(error,'找不到已发放的后测。','后测当前不可读取。',checks); }
       }
       const snapshot = await readPaperSnapshot(tx, paperId);
       const read = createCommandReadContext(tx, storagePurpose);
-      return loadWorkbookDetail({
+      const detail: WorkbookDetailWithAssessment = await loadWorkbookDetail({
         paperId, snapshot, sealedPractice: await isPracticeWorkbook(tx, paperId), read, unavailable: factUnavailable,
         sourceView: materialId => sourceView(read, materialId),
         assessments: await allAssessments(tx, paperId),
@@ -146,7 +183,34 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         projectQuestions: capsules.questions(tx),
         formalAssessment: (frozen, ref) => formalAssessment(tx, frozen, ref),
       });
+      const bundles = new Map<string, AuthorizedExamTimeValueBundle>();
+      if (!detail.sealedPractice) {
+        for (const attempt of detail.attempts) {
+          if (attempt.paperRev === undefined) continue;
+          const bundle = await openWorkbookExamTimeValueBundle(
+            tx, paperId, factId(attempt.id), (release, attemptRef, epochs) => readWorkbookAssessment(tx, release, attemptRef, epochs),
+          );
+          if (bundle) bundles.set(attempt.id, bundle);
+        }
+      }
+      return { detail, bundles };
     });
+    if ('issued' in gathered) return gathered.issued;
+    if (gathered.detail.sealedPractice) return gathered.detail;
+    const resolved = new Map<string, ExamTimeValueView>();
+    for (const [attemptId, bundle] of gathered.bundles) {
+      resolved.set(attemptId, await deriveExamTimeValue(bundle));
+    }
+    return {
+      ...gathered.detail,
+      attempts: gathered.detail.attempts.map(attempt => attempt.paperRev === undefined ? attempt : {
+        ...attempt,
+        examTimeValue: resolved.get(attempt.id) ?? unknownExamTimeValue(
+          { id: paperId, rev: attempt.paperRev as Revision },
+          { id: factId(attempt.id), rev: attempt.rev as Revision },
+        ),
+      }),
+    };
   }
 
   return {
@@ -179,6 +243,32 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     },
 
     get,
+    preSubmitPitfalls(id: string, options: WorkbookPreSubmitReadOptions = {}) {
+      const paperId = factIdOf(id, '找不到这份试卷。');
+      return db.snapshot({ learner: studioLearner }, tx => readWorkbookPreSubmitPitfalls(tx, paperId, { ...preSubmit, ...options }));
+    },
+    async examTimeValue(paperValue: string, attemptValue: string, access: WorkbookExamTimeValueAccess = {}): Promise<ExamTimeValueView> {
+      const paperId = factIdOf(paperValue, '找不到这份试卷。');
+      const attemptId = factIdOf(attemptValue, '找不到这次作答。');
+      const opened = await db.snapshot({ learner: studioLearner }, async tx => {
+        const bundle = await openWorkbookExamTimeValueBundle(
+          tx, paperId, attemptId, (release, attemptRef, epochs) => readWorkbookAssessment(tx, release, attemptRef, {
+            ...epochs, ...(access.purpose ? { purpose: access.purpose } : {}),
+            ...(access.maySend ? { maySend: access.maySend } : {}),
+          }), access,
+        );
+        if (bundle) return { bundle };
+        const read = createCommandReadContext(tx, storagePurpose);
+        const paper = await read.fact(paperId, { mode: 'following' }).catch(() => undefined);
+        const attempt = await read.fact(attemptId, { mode: 'following' }).catch(() => undefined);
+        return {
+          paperRef: { id: paperId, rev: (paper?.ref.rev ?? 1) as Revision },
+          attemptRef: { id: attemptId, rev: (attempt?.ref.rev ?? 1) as Revision },
+        };
+      });
+      if ('bundle' in opened && opened.bundle) return deriveExamTimeValue(opened.bundle, access.maySend);
+      return unknownExamTimeValue(opened.paperRef, opened.attemptRef);
+    },
     readingLabels: (id: string, query: URLSearchParams, signal: AbortSignal) => capsules.labels(factIdOf(id,'找不到这份试卷。'),query,signal),
     readingContext: (id: string, input: Record<string,unknown>, signal: AbortSignal) =>
       capsules.event(factIdOf(id,'找不到这份试卷。'),input,signal),
@@ -264,7 +354,12 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           const local = withinLearnerTransaction(db, tx);
           const full = { ...request, learner: studioLearner };
           if (pending) await submitWithPracticeCustody(local, activity, hooks, prepared.paperId, full);
-          else await createCommandHandler(local, commands)(full);
+          else await createCommandHandler(local, {
+            ...commands,
+            bindCommandRead: (inner, _, base) => bindPreSubmitRevisionWitness(base, {
+              verify: check => verifyWorkbookPreSubmitRevision(inner, check, preSubmit),
+            }),
+          })(full);
         },
       }));
       return get(prepared.paperId);

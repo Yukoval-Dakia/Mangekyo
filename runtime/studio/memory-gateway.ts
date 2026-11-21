@@ -13,6 +13,8 @@ import { memoryAssertion, memoryAssertionType, type MemoryLink } from '../../mod
 import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory-claims.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import { learnerPreferenceType, type PreferenceScope } from '../../modules/learner/preference-values.ts';
+import { witnessIdentity } from '../../modules/learner/memory-evidence.ts';
+import { preSubmitRevisionWitness } from '../../modules/learner/pre-submit-process.ts';
 import {
   extractedUnderstanding, isExtractedUnderstanding, reviewUnderstanding, teachingCitation, understandingPresentation, understandingProjection,
 } from '../../modules/companion/understanding.ts';
@@ -124,8 +126,18 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       if (!objectBasis) continue;
       const review = reviewUnderstanding(fact.ref.id, data, sources);
       const status = hypothesisStatus(data);
+      const seenRevisions = new Set<string>();
+      const preSubmitRevised = sources.flatMap(source => {
+        const revision = preSubmitRevisionWitness(source.fact, purpose);
+        if (!revision) return [];
+        const key = witnessIdentity(revision);
+        if (seenRevisions.has(key)) return [];
+        seenRevisions.add(key);
+        return [revision];
+      });
       add('claims', {value: {id, rev: fact.ref.rev, category: 'hypothesis', kind: 'observation', status,
-        text: data.text, scope: data.scope, evidence_refs: data.evidence_refs, review},
+        text: data.text, scope: data.scope, evidence_refs: data.evidence_refs, review,
+        ...(preSubmitRevised.length ? {process: {preSubmitRevised}} : {})},
       sent: [witness(fact), ...sources.map(source => witness(source.fact))], basis: objectBasis});
     }
   }

@@ -115,6 +115,6 @@ export async function readVerifiedPlaybook(read: ReadContext, ref: Witness, at?:
   for (const verification of verificationRefs) {
     await openWitness(read, verification, 'teaching');
   }
-  return {proposal, status: verified, statusId: current.id,
+  return {proposal, status: {...verified, ...(basis.process ? {process: basis.process} : {})}, statusId: current.id,
     basis: [ref, ...proposal.reflection.evidence_refs, ...verificationRefs]};
 }

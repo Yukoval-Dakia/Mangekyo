@@ -4,9 +4,9 @@ import { formalItemOutcome } from './workbook-assessment-values.ts';
 import { activityHelpProcess, controlledWorkbookHelp } from './evidence-slice.ts';
 import {
   readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, workbookItemHistory,
-  workbookLinkCandidates, workbookWitnessesBy, type ActivityEvidenceReadScope,
+  readWorkbookPreSubmitObservation, workbookLinkCandidates, workbookWitnessesBy, type ActivityEvidenceReadScope,
 } from './evidence-read.ts';
-import { helpAppliesTo, type HelpPresentation, type HelpTarget } from './help-exposure-values.ts';
+import { helpAppliesTo, type HelpPresentation, type HelpRef, type HelpTarget } from './help-exposure-values.ts';
 import { projectHelpExposure } from './help-exposure.ts';
 import { sourceReference, type SourceRefV1 } from './source-values.ts';
 import {
@@ -253,8 +253,46 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     return activityHelpProcess(projectHelpExposure({ submission: { ref, target: mount, cutoff }, events, coverage: null }), events);
   }
 
+  async function readPreSubmitIndependence(
+    tx: Tx,
+    paper: HelpRef,
+    itemId: string,
+    submission: FactRef,
+    cutoff: Tick,
+  ) {
+    const observed = await readWorkbookPreSubmitObservation(tx, paper, itemId, cutoff);
+    const { events, omitted } = await readActivityHelpEvents(tx, createRead(tx), {
+      activities: [paper.id], cutoff, mode: 'pinned', includeOpens: true,
+    }, undefined, unavailable);
+    const revs = new Set<Revision>([paper.rev, 1 as Revision]);
+    for (const { value } of events) {
+      if ((value.kind === 'opened' || value.kind === 'displayed') && value.mount.issuance.id === paper.id) {
+        revs.add(value.mount.issuance.rev);
+      }
+    }
+    const mounts: HelpTarget[] = [...revs].map(rev => ({
+      activityId: paper.id, issuance: { id: paper.id, rev }, item: { itemId },
+    }));
+    const relevant = events.filter(({ value }) =>
+      (value.kind === 'opened' || value.kind === 'displayed') && mounts.some(mount => helpAppliesTo(value, mount)));
+    const hasOpen = relevant.some(({ value }) => value.kind === 'opened');
+    const history = await workbookItemHistory(tx, { paper, itemId }, cutoff);
+    const complete = observed.question_displayed && !observed.printed && !observed.solution_presented &&
+      !observed.prior_attempt_feedback && !omitted && !hasOpen && !history.cross_help;
+    const results = mounts.map(target => projectHelpExposure({
+      submission: { ref: submission, target, cutoff },
+      events: relevant,
+      coverage: complete ? { submission, target, through: cutoff } : null,
+    }));
+    const evidenceRefs = results.flatMap(result => result.evidenceRefs).sort((first, second) => first.id.localeCompare(second.id));
+    const exposure = evidenceRefs.length ? { kind: 'exposed' as const, evidenceRefs }
+      : results.find(result => result.kind === 'unknown') ?? results[0]!;
+    const process = activityHelpProcess(exposure, relevant);
+    return { independent: process.helpLevel === 'independent', process };
+  }
+
   return {
     openRetentionTarget, openControlledSubmission, readWorkbookObservation, readWorkbookEvidence,
-    readComparableWorkbookEvidence, readItemDimensions, readItemConceptLinks,
+    readComparableWorkbookEvidence, readItemDimensions, readItemConceptLinks, readPreSubmitIndependence,
   };
 }

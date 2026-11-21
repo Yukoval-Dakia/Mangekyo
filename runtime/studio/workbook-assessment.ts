@@ -1,6 +1,6 @@
 import { revisionsOnlyChangeGrants } from '../../kernel/src/commands/fact-collection.ts';
 import { createHash } from 'node:crypto';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -88,8 +88,13 @@ export function prepareWorkbookRelease(value: unknown, paperId: FactId, draft: W
 
 export const frozenSubmission = frozenWorkbookSubmission;
 
-async function authorizeBankBasis(tx: ReadTransaction, release: AssessmentRevisionRef) {
-  const read = createCommandReadContext(tx, storagePurpose);
+async function authorizeBankBasis(
+  tx: ReadTransaction,
+  release: AssessmentRevisionRef,
+  purpose = storagePurpose,
+  maySend?: (fact: FactSnapshot) => boolean,
+) {
+  const read = maySend ? createAuthorizedFactReader(tx, purpose, maySend) : createCommandReadContext(tx, purpose);
   const paper = await read.fact(release.id, { mode: 'pinned', rev: release.rev });
   if (paper.type !== workbookPaperType) throw new AssessmentInputUnavailable();
   await readFrozenWorkbookBank(read, workbookPaper(paper.value));
@@ -232,11 +237,16 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
 
 /** A finalized score can be read with fresh witnesses when only the grants changed. */
 export async function readSavedWorkbookAssessment(
-  tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submission: FactSnapshot, paper: FactSnapshot, cutoff?: Tick,
+  tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submission: FactSnapshot, paper: FactSnapshot,
+  cutoff?: Tick, requiredPurpose = storagePurpose, maySend?: (fact: FactSnapshot) => boolean,
 ) {
   if (paper.ref.id !== releaseRef.id || submission.type !== workbookAttemptType || paper.type !== workbookPaperType) return;
   const selectedPolicy = assessmentPolicy(workbookPaper(paper.value));
-  if (selectedPolicy === bankPolicy) await authorizeBankBasis(tx, releaseRef);
+  const grants = (fact: FactSnapshot, use: string) => fact.purpose.includes(use) || fact.purpose.includes('all');
+  if (!grants(paper, selectedPolicy.purpose) || !grants(submission, selectedPolicy.purpose) ||
+      !grants(paper, requiredPurpose) || !grants(submission, requiredPurpose) ||
+      (maySend && (!maySend(paper) || !maySend(submission)))) return;
+  if (selectedPolicy === bankPolicy) await authorizeBankBasis(tx, releaseRef, requiredPurpose, maySend);
   const { rows: [row] } = await tx.query<{
     id: string; scope_keys: AssessmentScope; manifest: unknown; value: { kind: 'value'; value: FormalAssessmentValue } | null;
   }>(
@@ -272,24 +282,58 @@ export async function readSavedWorkbookAssessment(
     releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
 }
 
-export async function readWorkbookAssessment(tx: ReadTransaction, release: AssessmentRelease, submissionRef: AssessmentRevisionRef) {
+export type WorkbookAssessmentReadAccess = {
+  readonly purpose?: string;
+  readonly maySend?: (fact: FactSnapshot) => boolean;
+  readonly releaseEpoch?: string;
+  readonly submissionEpoch?: string;
+};
+
+export async function readWorkbookAssessment(
+  tx: ReadTransaction,
+  release: AssessmentRelease,
+  submissionRef: AssessmentRevisionRef,
+  access?: WorkbookAssessmentReadAccess,
+) {
+  const use = access?.purpose ?? storagePurpose;
+  const maySend = access?.maySend;
   const bank = release.items.some(item => item.criteria.some(isLocalQuestionCriterion));
   if (bank) {
-    try { await authorizeBankBasis(tx, release.releaseRef); }
+    try { await authorizeBankBasis(tx, release.releaseRef, use, maySend); }
     catch (error) {
       if (!readFailure(error)) throw error;
       return { releaseRef: release.releaseRef, submissionRef, state: 'blocked' as const, reason: assessmentInputsBlocked, score: null };
     }
   }
-  const result = await readFormalAssessment(tx, workbookAssessmentSlot, release.releaseRef, submissionRef, storagePurpose);
+  let opened: { submission: FactSnapshot; paper: FactSnapshot } | undefined;
+  if (access) {
+    try {
+      const read = createAuthorizedFactReader(tx, use, maySend ?? (() => true));
+      const submission = await read.fact(factId(submissionRef.id), { mode: 'following' });
+      const paper = await read.fact(factId(release.releaseRef.id), { mode: 'following' });
+      if (!sameRef(submission.ref, submissionRef) ||
+          (access.releaseEpoch !== undefined && paper.accessEpoch !== access.releaseEpoch) ||
+          (access.submissionEpoch !== undefined && submission.accessEpoch !== access.submissionEpoch)) {
+        return { releaseRef: release.releaseRef, submissionRef, state: 'blocked' as const, reason: assessmentInputsBlocked, score: null };
+      }
+      opened = { submission, paper };
+    } catch (error) {
+      if (!readFailure(error)) throw error;
+      return { releaseRef: release.releaseRef, submissionRef, state: 'blocked' as const, reason: assessmentInputsBlocked, score: null };
+    }
+  }
+  const result = await readFormalAssessment(tx, workbookAssessmentSlot, release.releaseRef, submissionRef, use,
+    opened ? { releaseEpoch: opened.paper.accessEpoch, submissionEpoch: opened.submission.accessEpoch } : undefined);
   if (bank && 'criteria' in result && result.criteria)
     return { ...result, ...publicBankAssessment(result) };
   if (result.state !== 'blocked' || 'derivationId' in result) return result;
   try {
-    const read = createCommandReadContext(tx, storagePurpose);
-    const submission = await read.fact(factId(submissionRef.id), { mode: 'following' });
-    const paper = await read.fact(factId(release.releaseRef.id), { mode: 'following' });
-    if (sameRef(submission.ref, submissionRef)) return await readSavedWorkbookAssessment(tx, release.releaseRef, submission, paper) ?? result;
+    const read = maySend ? createAuthorizedFactReader(tx, use, maySend) : createCommandReadContext(tx, use);
+    const submission = opened?.submission ?? await read.fact(factId(submissionRef.id), { mode: 'following' });
+    const paper = opened?.paper ?? await read.fact(factId(release.releaseRef.id), { mode: 'following' });
+    if (sameRef(submission.ref, submissionRef)) {
+      return await readSavedWorkbookAssessment(tx, release.releaseRef, submission, paper, undefined, use, maySend) ?? result;
+    }
   } catch (error) {
     if (!readFailure(error)) throw error;
   }

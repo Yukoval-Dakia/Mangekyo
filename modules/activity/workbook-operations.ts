@@ -723,8 +723,20 @@ export async function runWorkbookSubmitTransaction(ports: {
       invalidWorkbookInput(error, '作答格式无效。', ports.checks);
     }
     if (existing) {
-      if (!sameWorkbookJson(existing.answers, graded.answers) || existing.assessmentConsent !== data.assessmentConsent ||
-          !sameWorkbookJson(existing.questionAttachments ?? null, data.questionAttachments ?? null)) {
+      const recorded = data.preSubmitRevisions !== undefined ? await ports.readRecordedCommand(legacyCommand) : undefined;
+      if (
+        !sameWorkbookJson(existing.answers, graded.answers) ||
+        existing.assessmentConsent !== data.assessmentConsent ||
+        !sameWorkbookJson(existing.questionAttachments ?? null, data.questionAttachments ?? null) ||
+        (data.preSubmitRevisions !== undefined && (
+          recorded?.type !== submitWorkbookAttemptCommand ||
+          recorded.state !== 'done' ||
+          !sameWorkbookJson(recorded.input, {
+            ...envelope,
+            input: { id: attemptId, data: { ...data, submittedAt: existing.submittedAt } },
+          })
+        ))
+      ) {
         conflict();
       }
       return;
