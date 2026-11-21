@@ -116,7 +116,7 @@ async function splitKnowledgeEntity(ctx: CommandContext, input: Extract<GraphEvo
       throw new KnowledgeEdgeBasisError('子概念没有覆盖原关系的用途。');
     }
     const edgeAccess = { ...ctx, read: readForPurposes(ctx.read, current.purpose) };
-    const { edge: previous } = await openKnowledgeEdgeRevision(edgeAccess, item.edge.id, { mode: 'following' });
+    const { edge: previous } = await openKnowledgeEdgeRevision(edgeAccess, item.edge.id, { mode: 'pinned', rev: current.ref.rev });
     const assignment = previous.kind === 'targets_concept' || previous.kind === 'instance_of' ||
       (previous.kind === 'related_to' && (previous.from.kind === 'work' || previous.from.kind === 'question'));
     if (!assignment || previous.to.kind !== entity.kind || previous.to.sourceUse.id !== id || previous.to.blockId !== undefined) {
