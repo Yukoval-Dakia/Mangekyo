@@ -7,6 +7,7 @@ export default async function ({
     gather: gatherQuestion, questionVerificationEffectResult, questionVerificationKey,
     questionVerificationType, settle: settleQuestion,
   } = await load('modules/content/question-verification.ts');
+  const { bindQuestionExecution } = await load('modules/content/question-effects.ts');
   const sourceId = stableId('four-page-capture');
   const questionId = stableId('captured-distance-item');
   const currentSource = () => current(sourceId, 'teaching');
@@ -71,13 +72,22 @@ export default async function ({
   assert.deepEqual((await read({ questionId })).plan.targets,
     [{kind:'slot',ref:{learner,type:questionVerificationType,key:questionVerificationKey(question)}}]);
   const verification = await publish(questionVerificationType, questionVerificationKey(question), 'content/question-verification', {
-    plan: ctx => gatherQuestion(ctx, question),
+    plan: async ctx => {
+      const plan = await gatherQuestion(ctx, question);
+      // Bind distinct synthetic verifier identities before sealing the fixture plan.
+      return { ...plan, effects: plan.effects.map((request, index) => {
+        const digest = (index + 1).toString(16).repeat(64);
+        return bindQuestionExecution(request, {
+          kind:'local_wasm', moduleDigest:digest, executableDigest:digest, feeMicroUsd:0,
+        });
+      }) };
+    },
     invoke: (request, invocation) => {
       assert.doesNotMatch(JSON.stringify(request.input), /SECRET|candidates|blobRef/);
       assert.equal(request.input.prompt, gap.prompt);
       return questionVerificationEffectResult(invocation, {
         answerKey:'30 km', conditionKey:'constant speed for two hours', reasoning:'fixture receipt', eligible:true,
-      });
+      }, request.input.execution);
     },
     settle: (sealed, receipts) => {
       const wrong = { ...receipts[1], result: { ...receipts[1].result, result: { answerKey:'36 km' } } };

@@ -4,7 +4,8 @@ import type { Db } from '../../../../kernel/src/db/types.ts';
 import { loadStudioTestModule } from '../../../../runtime/studio/test/modules.ts';
 import { helpExposureRequest, type HelpTarget } from '../../../activity/help-exposure-values.ts';
 import { createKnowledgeEdgeCommand } from '../../knowledge-edge.ts';
-import { questionVerificationKey, questionVerificationMethodVersion, questionVerificationType } from '../../question-state.ts';
+import { verificationSteps, type QuestionExecution } from '../../question-effects.ts';
+import { evaluateQuestionVerification, questionVerificationKey, questionVerificationMethodVersion, questionVerificationType } from '../../question-state.ts';
 import { saveQuestionCommand } from '../../question-writes.ts';
 
 const id = (suffix: string) => factId(suffix.padStart(26, '0'));
@@ -69,11 +70,22 @@ export async function seedCorrectionMicroVariant(db: Db) {
     await edge(input.archetypeEdgeIds[index]!, 'instance_of', candidate);
     if (index === 0) continue;
     await edge(input.variantEdgeIds[index - 1]!, 'variant_of', candidate);
-    // 固定验题结果，发放仍通过内核读取当前槽并重验题目见证。
     const key = questionVerificationKey(candidate);
-    const value = { kind: 'value', value: { status: 'ready', basis: {
+    const basis = {
       ...use(candidate), recheck: 0, methodVersion: questionVerificationMethodVersion,
-    }, invocations: [], solutions: ['PRIVATE VERIFICATION REASONING'] } };
+    };
+    // The fixture supplies synthetic consensus receipts without running the WASM host.
+    const checks = verificationSteps.map(({ stepKey }, step) => {
+      const digest = (step + 1).toString(16).repeat(64);
+      const execution: QuestionExecution = {
+        kind: 'local_wasm', moduleDigest: digest, executableDigest: digest, feeMicroUsd: 0,
+      };
+      return { invocationId: `${candidate.id}:${stepKey}`, execution, result: {
+        answerKey: String((30 + 60 * (index + 1)) / (index + 2)), conditionKey: 'average-speed',
+        reasoning: 'PRIVATE VERIFICATION REASONING', eligible: true,
+      } };
+    });
+    const value = { kind: 'value', value: evaluateQuestionVerification(basis, checks) };
     const manifest = { version: 1, learner, purpose: 'teaching', gatherTick: '4',
       inputs: [{ kind: 'fact', mode: 'following', ...use(candidate) }] };
     await db.query(`INSERT INTO derivations(learner_id,id,slot_type,slot_key,deriver,scope_keys,value,lifecycle,freshness,gather_tick,effective_tick,manifest)
