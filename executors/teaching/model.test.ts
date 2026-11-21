@@ -3,7 +3,7 @@ import { runCompanionTurn, runTeachingTurn, type TeachingProgress } from './inde
 import {bodyOf, deps, model, providerModel, responseFrame, sseResponse, watchFetch} from './test/chat.ts';
 
 it('requests DeepSeek Flash at high effort for reading, repair and teaching', async () => {
-  const decisions = [{type: 'read_evidence', id: 'work'}, null,
+  const decisions = [null,
     {type: 'teach', action: 'transfer_question', rationale: '已独立完成', nextStep: '换个条件试试。', evidenceIds: ['work']}];
   const usage = {prompt_tokens: 8, completion_tokens: 6, total_tokens: 14};
   const effects: object[] = [];
@@ -13,19 +13,60 @@ it('requests DeepSeek Flash at high effort for reading, repair and teaching', as
     expect(body.stream_options).toEqual({include_usage: true});
     return Response.json({model: providerModel, usage, choices: [{message: {content: JSON.stringify(decisions.shift())}}]});
   });
+  const readEvidence = vi.fn(async () => '独立列式');
   const result = await runTeachingTurn({question: '平均速度？', answer: '45',
     evidenceCatalog: [{id: 'work', title: '行程'}]}, {
-      ...deps,
-      readEvidence: async () => '独立列式',
+      ...deps, readEvidence,
       runEffect: async (step, invoke) => {
         const raw = await invoke(String(step.index));
         effects.push(JSON.parse(raw));
         return raw;
       },
     });
-  expect(result.action).toBe('transfer_question'); expect(send).toHaveBeenCalledTimes(3);
+  expect(result.action).toBe('transfer_question'); expect(send).toHaveBeenCalledTimes(2);
+  expect(readEvidence).toHaveBeenCalledTimes(1);
+  expect(readEvidence).toHaveBeenCalledWith('work');
+  expect(result.reads).toEqual([{id: 'work', title: '行程'}]);
   expect(result.usage).toEqual(usage);
-  expect(effects.map((effect: {usage?: unknown}) => effect.usage)).toEqual([usage, usage, usage]);
+  expect(effects.map((effect: {usage?: unknown}) => effect.usage)).toEqual([usage, usage]);
+});
+
+it('pre-reads the single catalog entry and teaches in one model call', async () => {
+  const send = watchFetch().mockImplementation(async (_url, init) => {
+    const body = bodyOf(init);
+    const user = JSON.parse(body.messages[1].content);
+    expect(user.evidenceRead).toEqual([{id: 'work', title: '行程', body: '独立列式'}]);
+    expect(user.readsRemaining).toBe(0);
+    return Response.json({model: providerModel, usage: {prompt_tokens: 8, completion_tokens: 6, total_tokens: 14},
+      choices: [{message: {content: JSON.stringify({type: 'teach', action: 'clarifying_question', rationale: '有歧义', nextStep: '先确认条件。', evidenceIds: ['work']})}}]});
+  });
+  const readEvidence = vi.fn(async () => '独立列式');
+  const result = await runTeachingTurn({question: '平均速度？', answer: '45',
+    evidenceCatalog: [{id: 'work', title: '行程'}]}, {...deps, readEvidence});
+  expect(result.action).toBe('clarifying_question'); expect(send).toHaveBeenCalledTimes(1);
+  expect(readEvidence).toHaveBeenCalledTimes(1);
+});
+
+it('keeps on-demand reads for multi-entry catalogs and rejects teach before any read', async () => {
+  const decisions = [{type: 'teach', action: 'clarifying_question', rationale: '有歧义', nextStep: '先确认。', evidenceIds: []}];
+  watchFetch().mockImplementation(async () => Response.json({model: providerModel,
+    choices: [{message: {content: JSON.stringify(decisions.shift())}}]}));
+  const readEvidence = vi.fn(async () => '正文');
+  await expect(runTeachingTurn({question: '平均速度？', answer: '45',
+    evidenceCatalog: [{id: 'a', title: '甲'}, {id: 'b', title: '乙'}]}, {...deps, readEvidence}))
+    .rejects.toMatchObject({code: 'invalid_decision'});
+  expect(readEvidence).not.toHaveBeenCalled();
+});
+
+it('ignores one redundant read_evidence for the preloaded entry, then still rejects the second', async () => {
+  const decisions = [{type: 'read_evidence', id: 'work'}, {type: 'read_evidence', id: 'work'}];
+  watchFetch().mockImplementation(async () => Response.json({model: providerModel,
+    choices: [{message: {content: JSON.stringify(decisions.shift())}}]}));
+  const readEvidence = vi.fn(async () => '独立列式');
+  await expect(runTeachingTurn({question: '平均速度？', answer: '45',
+    evidenceCatalog: [{id: 'work', title: '行程'}]}, {...deps, readEvidence}))
+    .rejects.toMatchObject({code: 'evidence_limit'});
+  expect(readEvidence).toHaveBeenCalledTimes(1);
 });
 
 it('streams only public companion content before the provider completes', async () => {

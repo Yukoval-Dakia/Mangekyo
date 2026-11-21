@@ -341,6 +341,23 @@ export async function runTeachingTurn(input: TeachingInput, dependencies: Teachi
   let repair: string | undefined;
   let repaired = false;
   let expandedBudget = false;
+  // With a single catalog entry, the host pre-reads the only authorized record
+  // before the model loop: reading it was guaranteed on the first turn anyway,
+  // so this stays inside the minimal-disclosure bound and cannot over-read a
+  // larger catalog or exceed maximumReads.
+  let preloadedId: string | undefined;
+  let ignoredPreloadedRead = false;
+  if (!input.followUp && catalog.size === 1) {
+    const evidence = [...catalog.values()][0]!;
+    await onProgress?.({ phase: 'reading' });
+    const record = await readEvidence(evidence.id);
+    if (record && record.length > maximumRecordLength) {
+      throw new TeachingError('evidence_limit', '所选证据正文超过本轮读取上限。');
+    }
+    lookedUp.set(evidence.id, { ...evidence, body: record || null });
+    if (record) reads.push({ ...evidence });
+    preloadedId = evidence.id;
+  }
   for (let index = 0; index <= maximumReads + 1 + Number(expandedBudget); index++) {
     const readsRemaining = Math.min(maximumReads - lookedUp.size, catalog.size - lookedUp.size);
     const request = {
@@ -394,7 +411,16 @@ export async function runTeachingTurn(input: TeachingInput, dependencies: Teachi
     if (decision.type === 'read_evidence') {
       const evidence = catalog.get(decision.id);
       if (!evidence) throw new TeachingError('evidence_scope', '教学模型请求了本轮范围外的证据。');
-      if (lookedUp.has(evidence.id) || readsRemaining === 0) {
+      const isPreloadedBody = preloadedId === evidence.id && !ignoredPreloadedRead && lookedUp.get(evidence.id)?.body != null;
+      if (isPreloadedBody) {
+        // The model may still request the preloaded entry once (replayed or
+        // redundant turn); ignore it so the turn does not spin forever. A
+        // second request for the same id falls through and still throws.
+        ignoredPreloadedRead = true;
+        repair = undefined;
+        continue;
+      }
+      if (ignoredPreloadedRead || lookedUp.has(evidence.id) || readsRemaining === 0) {
         throw new TeachingError('evidence_limit', '教学模型重复读取或超过本轮证据读取上限。');
       }
       await onProgress?.({ phase: 'reading' });
