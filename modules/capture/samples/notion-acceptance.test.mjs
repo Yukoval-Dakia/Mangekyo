@@ -116,10 +116,42 @@ export default async function({ db, learner, load, send, assert, read, stableId,
   await assert.rejects(openBlock(prior(7)), /已变更/);
   await assert.rejects(openBlock(plan.rebuild[0]), /已变更/);
   const third = await open(3);
+  const { readQuestionNotionLinks } = await load('modules/content/knowledge-reads.ts');
+  const questionId = stableId('notion-reverse-question');
+  await send('content.saveQuestion', { id: questionId, purpose: 'teaching', asset: {
+    kind: 'question', title: '滴定', promptBlockId: 'stem',
+    blocks: [{ id: 'stem', parentId: null, body: { kind: 'text', text: '滴定用到了什么概念？' } }],
+  } });
+  const from = { kind: 'question', sourceUse: targetUse(await current(questionId)) };
+  const to = { kind: 'concept', sourceUse: targetUse(await current(conceptId)) };
+  const questionEdge = stableId('notion-question-target');
+  await send('content.createKnowledgeEdge', { id: questionEdge, purpose: 'teaching', edge: {
+    kind: 'targets_concept', from, to, sourceUses: [from.sourceUse, to.sourceUse], scope: 'chemistry',
+  } });
+  const noteEdge = stableId('notion-test-edge', uuid(2));
+  const beforeEdit = stableId('notion-previous-note-edge');
+  const oldBlock = { kind: 'note', sourceUse: targetUse(first), blockId: uuid(2) };
+  await send('content.createKnowledgeEdge', { id: beforeEdit, purpose: 'teaching', edge: {
+    kind: 'explains', from: oldBlock, to, sourceUses: [oldBlock.sourceUse, to.sourceUse], scope: 'chemistry',
+  } });
+  const reverse = (mode, edge = noteEdge) => db.snapshot({ learner }, tx => {
+    const selected = access(tx);
+    return readQuestionNotionLinks({
+      learner, read: withSelectedNotionSources(selected), purpose: selected.purpose, recipient: selected.recipientId,
+      isUnavailable: error => ['Notion 选源不可用。', 'Notion 块已变更。'].includes(error.message),
+    }, { root: { kind: 'note', sourceUse: targetUse(third), blockId: uuid(2) }, mode, edgeIds: [edge, questionEdge] },
+    (ref, readMode) => (readMode === 'following' ? openCurrentNotionBlock : openPinnedNotionBlock)(selected, ref));
+  });
+  const [match] = await reverse('following');
+  assert.deepEqual(match.question, from.sourceUse);
+  assert.deepEqual(match.trail.map(step => [step.edge.id, step.edge.rev]), [[noteEdge, 1], [questionEdge, 1]]);
+  assert.deepEqual(await reverse('pinned'), []);
+  assert.deepEqual(await reverse('following', beforeEdit), []);
 
   const withdraw = () => send('capture.revokeNotionSelection', { selectionId: selection.id, expectedEpoch: '1', recipient: settings.recipients[0] });
   const race = await Promise.allSettled([withdraw(), withdraw()]);
   assert.equal(race.filter(result => result.status === 'fulfilled').length, 1);
+  assert.deepEqual(await reverse('following'), []);
   await assert.rejects(open(2), /选源不可用/);
   await assert.rejects(openBlock(plan.rebuild[1]), /选源不可用/);
   await assert.rejects(db.snapshot({ learner }, tx => consumeNotionBlockLink({
