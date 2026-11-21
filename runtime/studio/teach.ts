@@ -559,7 +559,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               break;
             }
             const witnesses: WorkspaceWitness[] = [...response.workspaceBasis ?? [], ...notion];
-            if (new Set([...priorBasis.keys(), ...witnesses.map(workspaceProofKey)]).size > 48) {
+            const revisions = new Set([...priorBasis.values(), ...witnesses].map(w => `${w.id}:${w.rev}`));
+            if (revisions.size > 48) {
               historyNotice = '较早的学习记录可按需重新检索，本轮从最近的对话继续。';
               break;
             }

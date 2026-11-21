@@ -144,7 +144,9 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
           ? await reader.fact(documentId, {mode: 'pinned', rev: documentRevision})
           : currentDocument;
       if (!isMaterialIntakePair(material.ref.id, document)) return;
-      seen.set(`${documentId}:${document.ref.rev}`, {fact:document,pinned:mode === 'pinned' && documentRevision !== undefined});
+      // A directly opened intake already carries the mode of its own reference.
+      if (fact.type === materialType)
+        seen.set(`${documentId}:${document.ref.rev}`, {fact:document,pinned:mode === 'pinned' && documentRevision !== undefined});
       linkedMaterial = material;
       body = document;
     }
