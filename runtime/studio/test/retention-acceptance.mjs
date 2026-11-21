@@ -190,16 +190,45 @@ assert.deepEqual(await api(reviewPath), { enabled: true, revision: 0, allowed: f
 const permission = { requestId: randomUUID(), revision: 0, allowed: true };
 await api('retention/' + overlap.result.key + '/research', permission, 'PUT', 409);
 assert.equal((await api(reviewPath, permission, 'PUT')).allowed, true);
-let worksheet;
-for (let i = 0; i < 80 && !worksheet; i++) {
-  ({ worksheet } = await api(reviewPath));
-  if (!worksheet) await delay(250);
+let review;
+for (let i = 0; i < 80 && !review?.failure; i++) {
+  review = await api(reviewPath);
+  if (!review.failure) await delay(250);
 }
-assert.equal(worksheet?.cost, 0);
-assert.equal(worksheet.source.href, '/api/retention/' + posttest.result.key);
-assert.deepEqual((await api(reviewPath, permission, 'PUT')).worksheet, worksheet);
+assert.deepEqual(review, { enabled: true, revision: 1, allowed: true, worksheet: null, failure: 'model_unavailable' });
+assert.deepEqual(await api(reviewPath, permission, 'PUT'), review);
 assert.deepEqual(await api(reviewPath, { requestId: randomUUID(), revision: 1, allowed: false }, 'PUT'),
   { enabled: true, revision: 2, allowed: false, worksheet: null });
+const offer = (await api('research/settings')).workerOffers?.find(entry => entry.task === 'preparation');
+let fundedReview = null;
+if (offer) {
+  const currentSettings = await api('research/settings');
+  await api('research/settings', {
+    requestId: randomUUID(), revision: currentSettings.revision, enabled: true,
+    workerGrant: {
+      profile: 'heavy_tutor_prep', providerId: offer.providerId, accountRevision: offer.accountRevision,
+      model: offer.model, route: offer.route, maxRetentionDays: offer.maxRetentionDays,
+      maxPerCallMicros: offer.maxPerCallMicros, limitMicros: offer.maxPerCallMicros * 2,
+      expiresAtMs: Date.now() + 3_600_000,
+    },
+  }, 'PUT');
+  assert.equal((await api(reviewPath, { requestId: randomUUID(), revision: 2, allowed: true }, 'PUT')).allowed, true);
+  for (let attemptIndex = 0; attemptIndex < 80 && !fundedReview?.worksheet && !fundedReview?.failure; attemptIndex++) {
+    fundedReview = await api(reviewPath);
+    if (!fundedReview.worksheet && !fundedReview.failure) await delay(250);
+  }
+  assert.equal(fundedReview.enabled, true);
+  assert.equal(fundedReview.revision, 3);
+  assert.equal(fundedReview.allowed, true);
+  assert.equal('failure' in fundedReview, false);
+  assert.equal(fundedReview.worksheet?.method, 'heavy_tutor_prep');
+  assert.ok(Array.isArray(fundedReview.worksheet?.steps) && fundedReview.worksheet.steps.length > 0);
+  assert.equal(fundedReview.worksheet?.source?.href, '/api/retention/' + posttest.result.key);
+  assert.doesNotMatch(JSON.stringify(fundedReview), /七组|乘法参考说明|"item"|"answers"/);
+  assert.ok(BigInt((await api('research/settings')).settledUsdMicros ?? '0') > 0n);
+  assert.deepEqual(await api(reviewPath, { requestId: randomUUID(), revision: 3, allowed: false }, 'PUT'),
+    { enabled: true, revision: 4, allowed: false, worksheet: null });
+}
 assert.deepEqual(await api('retention/' + posttest.result.key), posttest.result);
 console.log(JSON.stringify({ frozen, reconciled, revoked: 'forecast and reconciliation stale', pretest, posttest, overlap,
-  followup: { forecast: followup, before, early, ready, issued: laterIssue, submitted, result: laterResult }, worksheet, comparison }, null, 2));
+  followup: { forecast: followup, before, early, ready, issued: laterIssue, submitted, result: laterResult }, review, fundedReview, comparison }, null, 2));

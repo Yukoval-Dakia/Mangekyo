@@ -3,7 +3,7 @@ import attemptFact from '@mangekyo/module-activity/facts/workbook-attempt';
 import { isWorksheetProfile, type WorkerConsent } from './worker-consent.ts';
 import { readResearchSource, researchOrderType, researchWorksheetType, researchWorksheet,
   readResearchBasis, researchOrder, researchSettings, researchPurpose, ResearchBasisChanged,
-  worksheetDraft, retentionReviewPermissionType, type retentionReviewPermission } from './research.ts';
+  retentionReviewPermissionType, type retentionReviewPermission } from './research.ts';
 
 const {type: workbookAttemptType, schema: {parse: workbookAttempt}} = attemptFact;
 type ReviewRef = {id:FactId; revision:number; accessEpoch:string; anchor?:string | undefined};
@@ -36,6 +36,12 @@ export type ReviewEvidence = ReturnType<typeof reviewEvidence>;
 
 export const retentionReviewAnchor = 'retention-posttest';
 
+export function retentionReviewEvidence(permission: ReturnType<typeof retentionReviewPermission>) {
+  return { kind: 'retention_posttest_miss' as const, reconciliationKey: permission.key, resultId: permission.resultId,
+    forecast: 'correct' as const, observation: 'incorrect' as const, exposure: 'independent' as const,
+    href: `/api/retention/${permission.key}` };
+}
+
 export async function comparisonWitness(access: ReviewAccess, grant: WorkerConsent) {
   if (!grant.comparisonAttemptId || !grant.comparisonRevision || grant.comparisonAccessEpoch === undefined) return null;
   const other = await access.open(grant.comparisonAttemptId);
@@ -46,10 +52,15 @@ export async function comparisonWitness(access: ReviewAccess, grant: WorkerConse
 }
 
 export async function planReview<T extends ReviewSpec>(access: ReviewAccess, spec: T, grant: WorkerConsent | null, budgetCap: number) {
-  if (!grant || !isWorksheetProfile(grant.profile)) return spec;
-  if (!budgetCap) return null;
+  if (!grant || !isWorksheetProfile(grant.profile) || !budgetCap) return spec;
   const source = await access.open(spec.sourceFactRev.id);
-  if (!source || !await access.independent(source)) return spec;
+  if (!source) return spec;
+  if (source.type === retentionReviewPermissionType) {
+    if (grant.profile !== 'heavy_tutor_prep' || spec.sourceFactRev.anchor !== retentionReviewAnchor ||
+        !await access.retention(source)) return spec;
+    return { ...spec, refs: [], workerProfile: grant.profile, budgetCap };
+  }
+  if (!await access.independent(source)) return spec;
   const refs: ReviewRef[] = [];
   if (grant.profile === 'deep_analyst') {
     if (source.ref.id === grant.comparisonAttemptId) return spec;
@@ -66,31 +77,7 @@ export async function readComparison(access: ReviewAccess, ref: ReviewRef) {
       source.accessEpoch !== ref.accessEpoch || !await access.independent(source)) return null;
   return { sourceId:source.ref.id, evidence:reviewEvidence(source.value, ref.anchor) };
 }
-/** Historical zero-cost worksheet adapter. */
-export type ResearchAgent = (source: ReviewEvidence) =>
-  ReturnType<typeof worksheetDraft> | Promise<ReturnType<typeof worksheetDraft>>;
-
-export const deterministicReview: ResearchAgent = ({ questionNumber, feedback }) => ({
-  title: `第 ${questionNumber} 题复习`,
-  steps: [
-    '这次原答与冻结卷面的判分规则不符。先盖住上次的答案和参考答案，独立重做一遍。',
-    feedback.expected.kind === 'numeric'
-      ? '写下用于求值的式子，再检查代入、运算和单位。'
-      : '写下决定答案的题干条件，再检查回答是否满足每一项。',
-    '做完后对照来源里的原答和参考答案，找出第一次出现差异的地方，记下一项下次要检查的内容。',
-  ],
-});
-
-export const retentionReviewDraft = {
-  title: '后测复习单',
-  steps: [
-    '回想上次独立作答时卡住的位置，先用自己的话写出解题思路。',
-    '隔一段时间再做一道考查同一要点的题，先独立作答，再对照反馈。',
-    '回看这次预测与实际结果的差异，记下需要再练的一点。',
-  ],
-};
-
-export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec, settingsId: FactId, quote: (grant: WorkerConsent) => number) {
+export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec, settingsId: FactId, quote?: (grant: WorkerConsent) => number) {
   const { id, revision, accessEpoch, anchor } = spec.sourceFactRev;
   const model = isWorksheetProfile(spec.workerProfile);
   if ((!model && (spec.workerProfile !== 'deterministic_compute' || spec.budgetCap !== 0)) || spec.goal !== reviewGoal ||
@@ -105,13 +92,17 @@ export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec,
     if (fact.ref.rev !== ref.revision || fact.accessEpoch !== ref.accessEpoch) return null;
   }
   const source = await readResearchBasis(read, basis);
+  const isRetention = source.type === retentionReviewPermissionType;
+  const retention = isRetention && anchor === retentionReviewAnchor ? await access.retention(source) : null;
+  if (isRetention && !retention) return null;
   let grant: WorkerConsent | null = null;
   const sourceIds = [source.ref.id];
   let comparison: ReviewEvidence | null = null;
   if (model) {
     grant = researchSettings((await read.fact(settingsId, {mode:'following'})).value).workerGrant;
     if (!grant || grant.profile !== spec.workerProfile || !spec.budgetCap ||
-        quote(grant) !== spec.budgetCap || !await access.independent(source)) return null;
+        (quote && quote(grant) !== spec.budgetCap) ||
+        (retention ? grant.profile !== 'heavy_tutor_prep' : !await access.independent(source))) return null;
     if (grant.profile === 'deep_analyst') {
       const [ref] = spec.refs;
       if (spec.refs.length !== 1 || !ref || ref.id === id || ref.id !== grant.comparisonAttemptId ||
@@ -122,14 +113,11 @@ export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec,
       comparison = reopened.evidence;
     } else if (spec.refs.length) return null;
   }
-  if (source.type === retentionReviewPermissionType) {
-    if (anchor !== retentionReviewAnchor || !await access.retention(source)) return null;
-    return { basis, evidence: null, grant, comparison, sourceIds };
-  }
+  if (retention) return { basis, evidence: null, retention: retentionReviewEvidence(retention), grant, comparison, sourceIds };
   if (source.type !== workbookAttemptType ||
       workbookAttempt(source.value).feedback.find(item => item.result === 'incorrect')?.questionId !== anchor) return null;
   if (!await access.material(workbookAttempt(source.value).paper)) return null;
-  return { basis, grant, comparison, sourceIds, evidence: reviewEvidence(source.value, anchor) };
+  return { basis, grant, comparison, sourceIds, retention: null, evidence: reviewEvidence(source.value, anchor) };
 }
 
 

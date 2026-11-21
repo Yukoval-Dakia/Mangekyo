@@ -27,18 +27,14 @@ const path = attempts + '/' + attempt.id + '/research';
 await api(path + '-permission', 'PUT', { revision: 1, allowed: true });
 assert.deepEqual(await api(path), { worksheet: null });
 await api(settings, 'PUT', { revision: 0, enabled: true });
-let worksheet;
-for (let i = 0; i < 30 && !worksheet; i++) {
+let view;
+for (let i = 0; i < 30 && !view?.failure; i++) {
   await delay(500);
-  ({ worksheet } = await api(path));
+  view = await api(path);
 }
-assert.equal(worksheet?.tier, 1);
-assert.equal(worksheet.cost, 0);
-assert.equal(worksheet.digest, '已为这次作答备好第 1 题的复习单。');
-assert.deepEqual(await api(path), { worksheet });
-const sourcePath = worksheet.source.href.slice('/api/'.length);
-assert.equal((await api(sourcePath)).feedback.answer, 20);
+assert.deepEqual(view, { worksheet: null, failure: 'model_unavailable' });
+assert.deepEqual(await api(path), view);
+await api(path + '/' + paper.id + '/source', 'GET', undefined, 404);
 await api(path + '-permission', 'PUT', { revision: 2, allowed: false });
 assert.deepEqual(await api(path), { worksheet: null });
-await api(sourcePath, 'GET', undefined, 404);
-console.log(JSON.stringify(worksheet, null, 2));
+console.log(JSON.stringify(view, null, 2));

@@ -1,9 +1,7 @@
-import { eligibleBasis, executeWorksheet, modelReviewSpec } from '../research/worksheet.ts';
+import { eligibleBasis, executeWorksheet, modelReviewSpec, worksheetView } from '../research/worksheet.ts';
 import { grantHooks, workerCap, workerOffer } from '../research/worker-dispatch.ts';
 import { workerConsent } from '../../modules/companion/worker-consent.ts';
 import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
-import type { ResearchAgent } from '../../modules/companion/worksheet-policy.ts';
-export type { ResearchAgent } from '../../modules/companion/worksheet-policy.ts';
 import type { Client } from '@temporalio/client';
 import { startOrWakeCoordinator } from '../../executors/temporal/src/index.ts';
 import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts';
@@ -33,8 +31,8 @@ import { stableId, studioLearner } from './identity.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';
 import {
-  activeRetentionReview, comparisonAttempts, independentScoutSource, readWorksheet, readWorksheetById, researchReader,
-  retentionReviewPermissionId, whenAvailable, workbookSource, worksheetPublication,
+  activeRetentionReview, comparisonAttempts, independentScoutSource, readWorksheet, researchReader,
+  retentionReviewPermissionId, whenAvailable, workbookSource,
 } from './research-sources.ts';
 import {
   preparePaidResearchTriage, prepareResearchTriage, researchDecision, scoutEffectIdentity,
@@ -79,7 +77,7 @@ async function updateSettings<T>(action: () => Promise<T>) {
 }
 
 export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule,
-  agent?: ResearchAgent, scoutHost?: ResearchScoutHost, understandingTransport?: UnderstandingTransport,
+  scoutHost?: ResearchScoutHost, understandingTransport?: UnderstandingTransport,
   correctionAuthority?: CorrectionRetestAuthority, tariff?: WorkerTariff) {
   const extract = openUnderstandingExtraction(db, companion, understandingTransport);
   const settingsCurrent = async (tx: ReadTransaction, revision: number) => {
@@ -120,12 +118,11 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     whenAvailable(() => researchReader(tx).fact(retentionReviewPermissionId(key), { mode: 'following' }));
 
   const retentionReview = (key: string) => db.snapshot(scope, async tx => {
-    const enabled = (await settings(tx))?.enabled ?? false;
+    const current = await settings(tx);
     const fact = await readRetentionPermission(tx, key);
     const active = fact && await activeRetentionReview(tx, fact);
-    const opened = enabled && active && await readWorksheetById(tx, (await worksheetPublication(tx, fact.ref.id, fact.ref.rev, fact.accessEpoch)).factId);
-    return { enabled, revision: fact?.ref.rev ?? 0, allowed: Boolean(active),
-      worksheet: opened ? opened.worksheet : null };
+    return { enabled: current?.enabled ?? false, revision: fact?.ref.rev ?? 0, allowed: Boolean(active),
+      ...await worksheetView(tx, current?.enabled && active ? fact : null, current?.revision) };
   });
 
   const workbookChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
@@ -284,10 +281,12 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       if (!receipt) throw new RequestError(404, '找不到这次作答。');
       return permission(paperId, attemptId);
     },
-    worksheet: (paperId: string, attemptId: string) =>
-      db.snapshot(scope, async tx => (await readWorksheet(tx, paperId, attemptId))?.worksheet ?? null),
+    worksheet: (paperId: string, attemptId: string) => db.snapshot(scope, async tx => {
+      const current = await settings(tx);
+      return worksheetView(tx, await workbookSource(tx, paperId, attemptId), current?.enabled ? current.revision : undefined);
+    }),
     async source(paperId: string, attemptId: string, id: string) {
-      const result = await db.snapshot(scope, tx => readWorksheet(tx, paperId, attemptId));
+      const result = await db.snapshot(scope, async tx => readWorksheet(tx, await workbookSource(tx, paperId, attemptId)));
       if (result?.worksheet.id !== id) throw new RequestError(404, '这份复习依据当前不可读。');
       return result.source;
     },
@@ -343,7 +342,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
         await executeCorrectionRetest(db, ref, todoId, settingsCurrent, correctionAuthority);
         return true;
       }
-      return executeWorksheet(db, companion, ref, todoId, settingsId, wake, agent, tariff, signal);
+      return executeWorksheet(db, companion, ref, todoId, settingsId, wake, tariff, signal);
     },
   };
 }

@@ -209,7 +209,7 @@ export function serve(
           return json(res, 200, await student.research.allow(paperId!, attemptId!, await body(req)));
         if (resource === 'research' && method === 'GET') {
           if (id) return json(res, 200, await student.research.source(paperId!, attemptId!, id));
-          return json(res, 200, { worksheet: await student.research.worksheet(paperId!, attemptId!) });
+          return json(res, 200, await student.research.worksheet(paperId!, attemptId!));
         }
       }
       if (path === '/api/textbooks' && method === 'GET')

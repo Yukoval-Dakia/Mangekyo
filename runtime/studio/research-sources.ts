@@ -84,8 +84,7 @@ export function readWorksheetById(tx: ReadTransaction, id: FactId) {
     key => createCommandReadContext(tx,storagePurpose).fact(key,{mode:'following'})));
 }
 
-export async function readWorksheet(tx: ReadTransaction, paperId: string, attemptId: string) {
-  const attempt = await workbookSource(tx, paperId, attemptId);
+export async function readWorksheet(tx: ReadTransaction, attempt: FactSnapshot) {
   if (!attempt.purpose.includes(researchPurpose)) return null;
   return readWorksheetById(tx, (await worksheetPublication(tx, attempt.ref.id, attempt.ref.rev, attempt.accessEpoch)).factId);
 }

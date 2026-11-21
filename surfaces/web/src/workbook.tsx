@@ -1463,7 +1463,7 @@ export function PaperDetail({ paperId, modelSettings, singleQuestionOnly = false
             {historical.questionPermit && frozenQuestions && reviewItems.length > 0 && activeAttempt.rev && activeAttempt.paperRev &&
               <div key={activeAttempt.id + ':' + activeAttempt.rev} data-workbook-thought-feedback={activeAttempt.id}
                 data-attempt-rev={activeAttempt.rev} data-paper-id={paperId} data-paper-rev={activeAttempt.paperRev} />}
-            <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id}
+            <AttemptResearch key={'research:' + activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id}
               onSaved={() => setReload(n => n + 1)} />
             {solutions.error && <p role="alert">{solutions.error} <button onClick={solutions.retry}>重试</button></p>}
             {historical.error && <p role="alert">{historical.error} <button onClick={historical.retry}>重试</button></p>}
@@ -1499,7 +1499,7 @@ export function PaperDetail({ paperId, modelSettings, singleQuestionOnly = false
               );
             })}
             </QuestionPresentation>
-            <WorkbookAccess key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} displayId={solutions.displayId} />
+            <WorkbookAccess key={'access:' + activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} displayId={solutions.displayId} />
           </section>
         )}
       </div>
