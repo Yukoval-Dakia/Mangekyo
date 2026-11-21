@@ -25,6 +25,7 @@ export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = NotionRecipient;
 export type SourceAccess = {
   track?: SourceTrack;
+  exactReadModes?: true;
   rootType?: string;
   readNotionWitness?: (fact: FactSnapshot) => Promise<FactSnapshot>;
 } & (
@@ -147,18 +148,28 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         if (fact.type !== materialType || textReference) return;
         const projection = project(fact, anchor, access.recipient);
         if (!projection) return;
-        access.track?.(fact, reference ? mode : undefined);
+        access.track?.(fact, reference ? mode : access.exactReadModes ? 'following' : undefined);
         return {id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), ...projection};
       }
       if (currentDocument.type !== intakeFactType) return;
-      const material = fact.type === materialType ? fact : await visit(relatedMaterialId(currentDocument));
+      let material: FactSnapshot | undefined = fact;
+      if (fact.type === intakeFactType) {
+        const materialId = relatedMaterialId(currentDocument);
+        // A pinned OCR uses the paired material for identity and access only.
+        // Freeze its authorized revision for replay while retaining its access epoch.
+        const pinnedPair = access.exactReadModes && reference && mode === 'pinned';
+        const materialRev = pinnedPair ? (await reader.fact(materialId, {mode:'following'})).ref.rev : undefined;
+        material = await visit(materialId, materialRev);
+      }
       if (!material || material.type !== materialType || !isMaterialIntakePair(material.ref.id, currentDocument)) return;
       const document = fact.type === intakeFactType ? fact :
         mode === 'pinned' && documentRevision !== undefined
           ? await reader.fact(documentId, {mode: 'pinned', rev: documentRevision})
           : currentDocument;
       if (!isMaterialIntakePair(material.ref.id, document)) return;
-      seen.set(`${documentId}:${document.ref.rev}`, {fact:document,pinned:mode === 'pinned' && documentRevision !== undefined});
+      // A directly opened intake already carries the mode of its own reference.
+      if (fact.type === materialType)
+        seen.set(`${documentId}:${document.ref.rev}`, {fact:document,pinned:mode === 'pinned' && documentRevision !== undefined});
       linkedMaterial = material;
       body = document;
     }
@@ -172,6 +183,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     if (!projection) return;
     for (const {fact:witness, pinned} of seen.values()) {
       const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
+      if (access.exactReadModes) {
+        access.track?.(witness, pinned ? 'pinned' : 'following');
+        continue;
+      }
       access.track?.(witness, witness.type === textbookPageType || pinned ? 'pinned' : isReferenced ? mode : undefined);
     }
     for (const proof of questionSources) access.track?.(...proof);

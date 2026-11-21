@@ -50,7 +50,7 @@ import { jitWitnessesCurrent, prepareFirstTurnJit, studioJitCounter, type Studio
 import { turnTask } from './model-routes.ts';
 import { workspaceGrantChecker, sameRoute, requiresAccountConfirmation, resolveMcpGrants, workspaceRouteRevision, mcpRevision } from './harness.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
-import {openWorkspaceTools, workspaceInput, type WorkspaceWitness} from './workspace-agent.ts';
+import {openWorkspaceTools, workspaceInput, workspaceProofKey, type WorkspaceWitness} from './workspace-agent.ts';
 import {readCurrentLearningObject, type OpenedCurrentLearningObject} from './current-learning-object.ts';
 import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
@@ -302,6 +302,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
         await validInputs(tx);
         const localCalculation = learningV1 && step.provider === 'tool:run_calculation';
+        if (retention.size && (step.model !== settings.model ||
+            (!step.provider.startsWith('tool:') && step.provider !== providerEndpoint(settings)))) throw new ChangedEvidence();
         if (selected.length && ((!localCalculation && step.provider !== providerEndpoint(settings)) ||
             step.model !== settings.model ||
             JSON.stringify(selected) !== JSON.stringify(await notionSendBasis(tx,notionWitnesses.values(),maySend)))) throw new ChangedEvidence();
@@ -465,7 +467,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           await authorizeWorkspace();
         } };
       const learningReadBasis = new Map<string,WorkspaceWitness>();
-      const keepLearningBasis = (w:WorkspaceWitness) => learningReadBasis.set(w.id + ':' + w.rev,w);
+      const keepLearningBasis = (w:WorkspaceWitness) => learningReadBasis.set(workspaceProofKey(w),w);
       function trackMemory(packet: NonNullable<typeof learningMemory>) {
         memoryPackets.push(packet);
         for (const entry of packet.receipt.basis) {
@@ -557,7 +559,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               break;
             }
             const witnesses: WorkspaceWitness[] = [...response.workspaceBasis ?? [], ...notion];
-            if (new Set([...priorBasis.keys(), ...witnesses.map(w => `${w.id}:${w.rev}`)]).size > 48) {
+            const revisions = new Set([...priorBasis.values(), ...witnesses].map(w => `${w.id}:${w.rev}`));
+            if (revisions.size > 48) {
               historyNotice = '较早的学习记录可按需重新检索，本轮从最近的对话继续。';
               break;
             }
@@ -576,7 +579,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             retain.push(() => witnesses.forEach(trackNotion));
             for (const witness of witnesses) {
               const w = 'image' in witness && witness.image === true ? {...witness,writeBasis:true as const} : witness;
-              const key = `${w.id}:${w.rev}`;
+              const key = workspaceProofKey(w);
               const newer = priorBasis.get(key);
               if (!newer || (w.jitBasis && !newer.jitBasis) || (w.writeBasis && !newer.writeBasis))
                 priorBasis.set(key, {...newer,...w});
@@ -627,7 +630,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const manageBeliefs = learningV1 && await toolContract('management-context','read_context','management') === 'management';
       function trackWorkspace(w: WorkspaceWitness, checkAtDispatch?: true) {
         trackNotion(w);
-        inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
+        inputs.set('workspace:' + workspaceProofKey(w), workspaceInput(w));
         if (checkAtDispatch) protectWorkspaceDispatch = true;
       }
       async function authorizeLearning(tx: ReadTransaction) {
@@ -666,7 +669,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }) : undefined;
       if (learningV1 && (!workspace || !turnMemory)) throw new ChangedEvidence();
       const toolsV1 = learningV1 && workspace && turnMemory ? openLearningTools({db,turn:slotKey,workspace,maySend,manageBeliefs,
-        authorize:authorizeLearning,track(w) {
+        authorize:authorizeLearning,trackRetention,track(w) {
           keepLearningBasis(w);
           trackWorkspace(w,true);
         },
@@ -753,7 +756,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           ? createHash('sha256').update(learningMemoryDigest).update(expandedMemory.receipt.digest).digest('hex') : learningMemoryDigest } : {}),
         ...(writes.length ? {writes} : {}),
         ...(turnMemory?.used() ? {memoryManagement: true} : {}),
-        ...(workspace?.basis().length || notionWitnesses.size ? {workspaceBasis:[...new Map([...notionWitnesses.values(), ...(workspace?.basis() ?? [])].map(w => [w.id + ':' + w.rev,w])).values()]} : {}),
+        ...(workspace?.basis().length || notionWitnesses.size ? {workspaceBasis:[...new Map([...notionWitnesses.values(), ...(workspace?.basis() ?? [])].map(w => [workspaceProofKey(w),w])).values()]} : {}),
         evidenceIds: [], reads: [
           ...(workspace?.reads() ?? []),
           ...(anchor ? [{id:anchor.ref,title:'首轮版本锚点',text:anchor.text}] : []),

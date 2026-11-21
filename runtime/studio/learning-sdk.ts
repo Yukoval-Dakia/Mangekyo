@@ -12,11 +12,13 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { purpose } from './identity.ts';
+import { readKnowledgeGraph, type EdgeHit } from './knowledge-graph.ts';
 import { readPythonAttempts } from './python-attempts.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
 import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { checkStudioNotionFact } from './notion.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
+import { readForgettingRisks, type RetentionBasis } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
 
 type Value = {value:PythonReadValue};
@@ -24,8 +26,44 @@ const absent = (method: string, message: string) =>
   toolFailure('not_found',message,{tool:'read_context',args:{intent:'tutoring'}},method);
 
 export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, access: {
-  maySend: WorkspaceSourceRecipient; track: SourceTrack; known(id:string): boolean;
+  maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean;
 }, asOf: string, watermark: Tick): Promise<Value | LearningError> {
+  if (request.method === 'kg_prereqs') {
+    const id = request.args.kc_id;
+    if (!isSourceFactId(id)) return absent('kc_id', '请提供可读取的知识点 ID。');
+    const hops = typeof request.args.depth === 'number' ? request.args.depth : 2;
+    const edgeKinds = ['prereq_of', 'prerequisite', 'successor'] as const;
+    const projectEdge = (edge: EdgeHit) => ({
+      id:edge.id, rev:edge.rev, from:edge.from.fact.id, from_rev:edge.from.fact.rev,
+      to:edge.to.fact.id, to_rev:edge.to.fact.rev, kind:edge.kind, scope:edge.scope,
+    });
+    const traverse = (direction: 'inbound' | 'outbound') => {
+      // Up to eight reads share the 256 KiB Python input with user code and arguments.
+      let remainingBytes = 12 * 1024;
+      return readKnowledgeGraph(tx, {conceptId:id, hops, direction, edgeKinds, conceptsOnly:true},
+        {recipient:'workspace', maySend:access.maySend, track:access.track, exactReadModes:true},
+        (source, _fact, hop) => hop > 0 ? {id:source.id, rev:source.rev, title:source.title, hop} : undefined,
+        (edge, node) => {
+          remainingBytes -= Buffer.byteLength(JSON.stringify([projectEdge(edge), node]));
+          return remainingBytes >= 0;
+        });
+    };
+    const prerequisites = await traverse('inbound');
+    if (!prerequisites) return access.known(id)
+      ? toolFailure('access_revoked','先前打开的知识点已不可用。',{tool:'read_context',args:{intent:'tutoring'}})
+      : absent('kc_id', '请提供可读取的知识点 ID。');
+    const successors = await traverse('outbound');
+    if (!successors) return absent('kc_id', '请提供可读取的知识点 ID。');
+    const edges = new Map([...prerequisites.edges, ...successors.edges].map(edge => [edge.id, projectEdge(edge)]));
+    return {value:{kc_id:id, rev:prerequisites.conceptRef.fact.rev, depth:hops, scope:'authorized', edge_kinds:[...edgeKinds],
+      prerequisites:prerequisites.results, successors:successors.results, edges:[...edges.values()],
+      truncated:prerequisites.truncated || successors.truncated}};
+  }
+  if (request.method === 'forgetting_risks') {
+    return {value:await readForgettingRisks(tx,access.maySend,{asOf,watermark,
+      horizonHours:typeof request.args.horizon_hours === 'number' ? request.args.horizon_hours : 48,
+      track:access.track,trackRetention:access.trackRetention})};
+  }
   if (request.method !== 'attempts' && request.method !== 'evidence_slice')
     return absent(request.method, '该 SDK 查询尚无已授权的生产读取。');
   if (request.args.subject !== undefined) return absent('subject','作答没有可核对的学科归属。');

@@ -37,7 +37,7 @@
 | L3 `learner.preference` | 学习者明确声明的偏好由 learner 持有，独立于模型端点。companion 持有可更正的记忆，允许来源、支持、反证、适用范围、时间和拒绝。旧路由绑定备忘经原授权可读，扩大接收方须用户授权。 |
 | L3 `learner.feedback` | 提议决策、评估申诉、用户编辑与 OCR 更正引用既有回执与事实。指标可由记录推导，避免重复存一份更正。 |
 
-关系至少表达 `prereq_of`（前置到后续）、`part_of`（部分到整体）、`contrasts_with`（对称）、`targets_concept`、`variant_of`、`derived_from`、`explains`、`addresses_pitfall`、`supersedes`。每条确认关系有稳定 ID、端点、类型、方向、适用范围、来源见证及可选元数据。变式保存保留/改变条件、familyId 和有方向的 `spoilsNext`。看见旧题足以解该变式与看见该变式足以解旧题分别表达。端点和关系用途取交集。授权、检索和图遍历在读端逐项复核。
+关系至少表达 `prereq_of`（前置到后续；概念间的 `prerequisite` 和 `successor` 也按这条学习顺序写入，入边给出先修，出边给出后继）、`part_of`（部分到整体）、`contrasts_with`（对称）、`targets_concept`、`variant_of`、`derived_from`、`explains`、`addresses_pitfall`、`supersedes`。每条确认关系有稳定 ID、端点、类型、方向、适用范围、来源见证及可选元数据。变式保存保留/改变条件、familyId 和有方向的 `spoilsNext`。看见旧题足以解该变式与看见该变式足以解旧题分别表达。端点和关系用途取交集。授权、检索和图遍历在读端逐项复核。
 
 ## 推导槽位与同一读入口
 

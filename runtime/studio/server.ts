@@ -33,6 +33,7 @@ import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
 import { openRelationReview } from './workspace-relation.ts';
 import { openResearch } from './research.ts';
+import { validateResearchScoutHost } from './research-scout.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openIqdb } from './iqdb.ts';
 import { executeQuestionVerification, type QuestionEffectHost } from './iqdb-verification.ts';
@@ -72,7 +73,11 @@ const understandingTransport = understandingModule
   ? (await import(pathToFileURL(understandingModule).href)).understandingTransport
   : undefined;
 if (understandingModule && !understandingTransport) throw new Error('宿主模块须导出 understandingTransport');
-const research = openResearch(db, activity, companion, undefined, undefined, understandingTransport);
+const scoutModule = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE;
+const scoutHost = scoutModule
+  ? validateResearchScoutHost((await import(pathToFileURL(scoutModule).href)).researchScoutHost)
+  : undefined;
+const research = openResearch(db, activity, companion, undefined, scoutHost, understandingTransport);
 const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
 const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });

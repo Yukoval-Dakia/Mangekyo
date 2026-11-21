@@ -4,11 +4,13 @@ import { derivationId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Outcome } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { posttestOpensAt } from '../../modules/activity/retention-posttest.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
-import { isStandaloneWorkbookPaper, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
+import { isStandaloneWorkbookPaper, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { forecastType, reconciliationType, type RetentionForecast } from '../../modules/learner/retention.ts';
-import { projectRetentionRead, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
+import { classifyFrozenCrossing, projectForgettingRisks, projectRetentionRead, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
 import { purpose } from './identity.ts';
+import { checkStudioNotionFact } from './notion.ts';
 import { retentionHistoryValid } from './retention.ts';
 import { readLearningOverview } from './learning-overview.ts';
 import { radarArguments } from '../../executors/teaching/workspace-tools.ts';
@@ -181,6 +183,58 @@ export async function readRetentionRadar(tx: ReadTransaction, access: Access, op
   const reconciliations = await collect(reconciliationType);
   // An empty visible set cannot establish that there are no results outside this purpose.
   return forecasts.length || reconciliations.length ? { state: 'available' as const, forecasts, reconciliations } : unknown;
+}
+
+// This read covers active frozen workbook-item forecasts, not the learner's
+// entire question inventory. The method owns the threshold and crossing time.
+export async function readForgettingRisks(tx: ReadTransaction, maySend: WorkspaceSourceRecipient, options: {
+  asOf: string; watermark: Tick; horizonHours: number;
+  track: SourceTrack; trackRetention: (basis: RetentionBasis) => void;
+}) {
+  const { asOf, watermark, horizonHours } = options;
+  const now = Date.parse(asOf);
+  const end = now + horizonHours * 3_600_000;
+  const { rows: candidates } = await tx.query<{ slot_key: string }>(
+    `SELECT s.slot_key FROM slot_state s WHERE s.learner_id=$1 AND s.slot_type=$2
+       AND EXISTS (SELECT 1 FROM derivations d
+         WHERE (d.learner_id,d.slot_type,d.slot_key)=(s.learner_id,s.slot_type,s.slot_key)
+           AND NOT d.is_shadow AND d.effective_tick <= $5::bigint)
+       AND COALESCE(scope_keys #>> '{window,scheduledAt}', scope_keys #>> '{window,requestedAt}', '') <= $3
+       AND (scope_keys #>> '{window,through}' IS NULL OR scope_keys #>> '{window,through}' > $3)
+     ORDER BY changed_tick DESC, slot_key LIMIT $4`, [tx.learner, forecastType, asOf, candidateLimit + 1, watermark],
+  );
+  const risks = [];
+  let classified = 0;
+  for (const { slot_key: key } of candidates.slice(0, candidateLimit)) {
+    const [row] = await currentSelections(tx, forecastType, undefined, key);
+    if (!row || BigInt(row.effective_tick) > BigInt(watermark)) continue;
+    const selected = await readSelection(tx, row, { callerPurpose: purpose, maySend });
+    if (!selected) continue;
+    const { input } = selected.forecast.value;
+    const crossing = classifyFrozenCrossing(selected.forecast.value, posttestOpensAt(input.window), row.effective_tick, now, end);
+    if (!crossing) continue;
+    const projected = projectRetention(selected);
+    const { paper, condition } = input.target;
+    const source = selected.facts.find(({ fact }) => fact.ref.id === paper.id && fact.ref.rev === paper.rev);
+    if (projected?.kind !== 'forecast' || !source) continue;
+    try {
+      for (const { fact } of selected.facts) await checkStudioNotionFact(tx, fact, purpose, maySend);
+    } catch (error) {
+      if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) continue;
+      throw error;
+    }
+    // Out-of-window crossings also support a covered result or true empty set.
+    options.trackRetention(basisOf(selected));
+    for (const { fact, input } of selected.facts) options.track(fact, input.mode);
+    classified++;
+    if (crossing.inHorizon) {
+      risks.push({ forecast_id: row.id, forecast_key: key, item_id: projected.itemId, condition,
+        paper: { ...paper, title: workbookPaper(source.fact.value).title.slice(0, 100).toWellFormed() },
+        crossing_at: crossing.at, forecast_as_of_at: crossing.asOf,
+        forecast_effective_tick: row.effective_tick, method: projected.method });
+    }
+  }
+  return projectForgettingRisks(risks, classified, candidates.length, asOf, end, watermark);
 }
 
 export async function readLearnerRadar(tx: ReadTransaction, args: Record<string, unknown>,
