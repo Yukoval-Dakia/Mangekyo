@@ -93,7 +93,7 @@ export async function openWorkbookQuestionSources(tx: ReadTransaction, submissio
     for (const { id, sourceQuestionRef, prompt } of attempt.paper.questions) {
       if (itemId !== undefined && id !== itemId) continue;
       if (!sourceQuestionRef) continue;
-      const readable = itemId ? await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose) : sourceQuestionRef;
+      const readable = await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose);
       const { type } = await read.fact(factId(readable.id), {mode:'pinned', rev:readable.rev as Revision});
       if (type !== assetType && type !== workspaceEntryType) return;
       const question = await resolveSource(tx, {
