@@ -145,6 +145,31 @@ export type WorkspaceWriteReceipt = WriteReference & { observation?: SavedObserv
   page?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
   relation?: {status:'saved'; undo_token:string} | {status:'proposed'; proposalId:string};
 };
+
+type ChangedWrite = {status: 'changed'} | {status: 'withdrawn'};
+
+export type WorkspaceWriteView = Omit<WorkspaceWriteReceipt, 'observation' | 'memory' | 'page' | 'relation'> & {
+  observation?: NonNullable<WorkspaceWriteReceipt['observation']> | ChangedWrite;
+  memory?: NonNullable<WorkspaceWriteReceipt['memory']> | ChangedWrite;
+  page?: NonNullable<WorkspaceWriteReceipt['page']> | ChangedWrite | {status: 'reverted'};
+  relation?: NonNullable<WorkspaceWriteReceipt['relation']> | ChangedWrite;
+};
+
+export function workspaceWriteNeedsCurrentFact(write: WorkspaceWriteReceipt) {
+  return Boolean(write.observation || write.memory || write.page?.status === 'saved' || write.relation?.status === 'saved');
+}
+
+export function projectStaleWorkspaceWrite(write: WorkspaceWriteReceipt, withdrawn: boolean, pageUndone: boolean): WorkspaceWriteView {
+  const state: ChangedWrite = {status: withdrawn ? 'withdrawn' : 'changed'};
+  if (write.page?.status === 'saved') {
+    return {...write, page: {status: pageUndone ? write.rev === 1 ? 'withdrawn' : 'reverted' : 'changed'}};
+  }
+  if (write.relation?.status === 'saved') return {...write, relation: state};
+  if (write.memory) return {...write, memory: state};
+  if (write.observation) return {...write, observation: state};
+  return write;
+}
+
 export function presentationTool(schema: object, bindings: string) {
   return {type:'function',function:{name:'mount_artifact',
     description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+bindings,

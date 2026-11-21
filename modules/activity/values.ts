@@ -83,6 +83,29 @@ export function studyTurn(input: unknown) {
     baseUrl: field(value, 'baseUrl', 2000),
   };
 }
+export type StudyTurnReplay = {
+  selected?: string;
+  session: string;
+  parent: string | null;
+  answer: string | null;
+  attachment?: ReturnType<typeof studyAttachment> | undefined;
+  grants: ReturnType<typeof studyMcpGrants>;
+  currentObject: StudyCurrentObjectSelection | undefined;
+  allowBackgroundUnderstanding: boolean;
+};
+
+export function matchesStudyTurnReplay(existing: ReturnType<typeof studyTurn>, request: StudyTurnReplay) {
+  const { selected, session, parent, answer, attachment, grants, currentObject, allowBackgroundUnderstanding } = request;
+  return existing.sessionId === session && existing.parentId === parent && existing.answer === answer &&
+    (!selected || existing.caseId === selected) &&
+    JSON.stringify(existing.mcpGrants ?? []) === JSON.stringify(grants) &&
+    existing.currentObject?.kind === currentObject?.kind &&
+    existing.currentObject?.id === currentObject?.id &&
+    existing.currentObject?.rev === currentObject?.rev &&
+    JSON.stringify(existing.attachment) === JSON.stringify(attachment) &&
+    (existing.allowBackgroundUnderstanding ?? false) === allowBackgroundUnderstanding;
+}
+
 export function turnAllowsBackgroundUnderstanding(fact: FactSnapshot) {
   return fact.type === 'activity.studyTurn' && fact.purpose.includes(turnResearchPurpose) &&
     studyTurn(fact.value).allowBackgroundUnderstanding === true;
