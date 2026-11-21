@@ -1,6 +1,6 @@
 # 普通卷面交卷的逐题过程
 
-`POST /api/papers/{paperId}/attempts` 沿用 `requestId`、`answers`、`effectiveDurationMs`、`deletionWatermark` 和既有评阅授权字段。新版普通卷面提交从 GET 的 `revision` 取 `paperRev`，可随交卷附上以下观察。
+`POST /api/papers/{paperId}/attempts` 沿用 `requestId`、`answers`、`effectiveDurationMs`、`deletionWatermark` 和既有评阅授权字段。只有 GET 返回 `pacingVersion: 1` 时才使用扩展字段，从 GET 的 `revision` 取 `paperRev`，可随交卷附上以下观察。
 
 ```json
 {
@@ -20,4 +20,4 @@
 
 普通交卷将版本、有效用时、过程和原作答保存在同一 Activity 事实中。POST 和 GET 的 `attempts[]` 返回原提交的可见过程，题面来自当时的卷版。首次提交时卷版已变化返回 409。版本化普通卷的提交键绑定卷标识、卷版与提交输入，重试复用原作，键已绑定到另一份输入时返回 409。消费者重试应复用原始请求体。
 
-旧客户端可省略扩展字段，旧事实不会补造逐题观察。密封练习与独立受控后测继续发送原请求体。
+旧客户端可省略扩展字段，旧事实不会补造逐题观察。旧宿主、密封练习（含正式交卷释放后）及独立受控后测的 GET 都没有 `pacingVersion`，继续发送原请求体。密封练习和独立后测交卷入口拒绝扩展字段，并保留原有提交流程。
