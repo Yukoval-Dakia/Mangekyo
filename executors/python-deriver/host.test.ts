@@ -29,6 +29,12 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
   } } });
   expect(await host.derive(cognition, sample)).toEqual(initial);
 
+  const planning = { ...sample, events: [{ ...sample.events[0], confidence: 0.3 }],
+    candidate_pool: [{ ref: 'variant', concept_ids: ['K'], item_novelty: 'transfer', est_min: 3 }] };
+  expect(await host.derive('plan/information-gain@1', planning)).toMatchObject({ kind: 'ok', outcome: { value: {
+    ranked_candidates: [{ ref: 'variant', info_gain: expect.closeTo(0.044110417748400965, 14) }],
+  } } });
+
   const invalid = { ...sample, as_of_at: '2026-02-29T00:00:00Z' };
   expect(await host.derive(cognition, invalid)).toEqual({ kind: 'failed', reason: 'invalid CanonicalEvidenceSlice@v1' });
   const processResult = spawnSync(process.env.MANGEKYO_PYTHON ?? 'python3',
