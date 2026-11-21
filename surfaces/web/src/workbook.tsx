@@ -19,6 +19,7 @@ import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
 import { RecurringErrorStrip, type ErrorCluster } from './recurring-error-strip';
+import { ExamTimeValue, type ExamTimeValueView } from './exam-time-value';
 import { WorkbookCorrection } from './workbook-correction';
 import {clearWorkbookTiming, type ItemPacing} from './workbook-pacing';
 import {confirmsPaperSubmission, forgetSubmission, freezeSubmission, readFrozenSubmission} from './workbook-submission';
@@ -34,7 +35,7 @@ type WorkbookQuestionView = BaseQuestion & { readingContext?: ReadingContextEntr
 type WorkbookDetail = Omit<BaseDetail, 'questions' | 'attempts'> & {
   pacingVersion?: 1;
   questions: WorkbookQuestionView[];
-  attempts: (BaseDetail['attempts'][number] & { paperRev?: number; pacing?: ItemPacing; questions?: WorkbookQuestionView[];
+  attempts: (BaseDetail['attempts'][number] & { paperRev?: number; pacing?: ItemPacing; questions?: WorkbookQuestionView[]; examTimeValue?: ExamTimeValueView;
     formalAssessment?: {state: string; score: {earned: number; maximum: number} | null; reason?: string} })[];
 };
 
@@ -1460,6 +1461,11 @@ export function PaperDetail({ paperId, modelSettings, singleQuestionOnly = false
                 </button>
               </div>
             </div>
+            {!singleQuestionOnly && !view.sealedPractice && <ExamTimeValue
+              key={JSON.stringify([paperId, activeAttempt.id, activeAttempt.rev, historical.questionPermit?.permit])}
+              attempt={activeAttempt} paperId={paperId} ids={historical.questionPermit &&
+                frozenQuestions?.every(q => reviewItems.includes(q.id)) ? frozenQuestions.map(q => q.id)
+                : []} />}
             {historical.questionPermit && frozenQuestions && reviewItems.length > 0 && activeAttempt.rev && activeAttempt.paperRev &&
               <div key={activeAttempt.id + ':' + activeAttempt.rev} data-workbook-thought-feedback={activeAttempt.id}
                 data-attempt-rev={activeAttempt.rev} data-paper-id={paperId} data-paper-rev={activeAttempt.paperRev} />}
@@ -1473,7 +1479,8 @@ export function PaperDetail({ paperId, modelSettings, singleQuestionOnly = false
               const question = reviewQuestions.find((item) => item.id === feedback.questionId);
               if (!question) return null;
               return (
-                <div key={feedback.questionId}>
+                <div key={feedback.questionId} id={'workbook-feedback-' + question.id}
+                  tabIndex={-1} role="group" aria-label={'第 ' + (reviewQuestions.indexOf(question) + 1) + ' 题反馈'}>
                   <FeedbackItem
                     paperId={paperId}
                     attemptId={activeAttempt.id}

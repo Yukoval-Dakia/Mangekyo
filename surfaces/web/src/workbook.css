@@ -414,3 +414,42 @@
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
+
+.exam-time-value {
+  margin-block: 12px 20px;
+}
+.exam-time-value h3 { margin: 0; font-size: 1rem; }
+.exam-time-value p { margin: 6px 0 10px; }
+.exam-time-value summary { padding-block: 12px; cursor: pointer; }
+.exam-time-value p, .exam-time-value summary, .exam-time-positions { font-size: .875rem; color: var(--muted); }
+.exam-time-track { display: flex; width: 100%; }
+.exam-time-track > * {
+  flex: none;
+  min-width: 0;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: var(--muted);
+  box-shadow: inset -1px 0 var(--surface);
+}
+.exam-time-track > span {
+  background: repeating-linear-gradient(45deg, var(--line) 0 3px, transparent 3px 6px);
+}
+.exam-time-positions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.exam-time-positions button {
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.exam-time-track button:focus-visible, [id^="workbook-feedback-"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.exam-time-track [data-state="steady"] { background: #527766; }
+.exam-time-track [data-state="fast-slip"] { background: #aa753c; }
+.exam-time-track [data-state="time-sink"] { background: #a05b58; }
+.exam-time-track [data-state="recovered-skip"] { background: #547e98; }

@@ -1,0 +1,59 @@
+{
+  "browser": "157.0.8103.52",
+  "path": "/papers/C9A58795826531346CE55B6D40",
+  "source": "real workbook HTTP; only optional examTimeValue field replayed from @2 worker fixture, rebinding paper and attempt",
+  "result": {
+    "method_version": "plan/exam-pacing@2",
+    "attempt_ref": {
+      "id": "78B6B20DF242F574EB0256C851",
+      "rev": 1
+    },
+    "kind": "observed",
+    "total_duration_ms": 5201,
+    "items": [
+      {
+        "item_id": "q1",
+        "position": 1,
+        "effective_duration_ms": 1000,
+        "state": "steady"
+      },
+      {
+        "item_id": "q2",
+        "position": 2,
+        "effective_duration_ms": 999,
+        "state": "fast-slip"
+      },
+      {
+        "item_id": "q3",
+        "position": 3,
+        "effective_duration_ms": 1801,
+        "state": "time-sink"
+      },
+      {
+        "item_id": "q4",
+        "position": 4,
+        "effective_duration_ms": 401,
+        "state": "recovered-skip"
+      },
+      {
+        "item_id": "q5",
+        "position": 5,
+        "effective_duration_ms": 1000,
+        "state": "unknown"
+      }
+    ],
+    "summary": "本卷有 1 题拿满分、1 题低耗时失分、1 题超估时失分、1 题回访得分，另有 1 题节奏未确认。",
+    "paper": {
+      "id": "C9A58795826531346CE55B6D40",
+      "rev": 2
+    }
+  },
+  "mobileTouchFocus": "workbook-feedback-q3",
+  "text": "本卷用时分布\n\n本卷有 1 题拿满分、1 题低耗时失分、1 题超估时失分、1 题回访得分，另有 1 题节奏未确认。\n\n查看逐题占比 · 未归到题位 13.3%",
+  "negative": {
+    "wrongPaper": "本卷用时分布\n\n用时分布和逐题节奏未知。",
+    "wrongAttempt": "本卷用时分布\n\n用时分布和逐题节奏未知。",
+    "explicitUnknown": "本卷用时分布\n\n用时分布和逐题节奏未知。",
+    "wrongPosition": "本卷用时分布\n\n用时分布和逐题节奏未知。"
+  }
+}

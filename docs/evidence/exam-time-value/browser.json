@@ -1,0 +1,384 @@
+{
+  "browser": "157.0.8103.52",
+  "path": "/papers/4F8811741F770FB04330431897",
+  "attempt": "47AFB29DB6BC997F92A58A631A",
+  "paperRev": 1,
+  "attemptRev": 1,
+  "receipt": {
+    "version": 1,
+    "items": [
+      {
+        "questionId": "q1",
+        "effectiveDurationMs": 375,
+        "skipped": false,
+        "returned": false
+      },
+      {
+        "questionId": "q2",
+        "effectiveDurationMs": 664,
+        "skipped": false,
+        "returned": false
+      },
+      {
+        "questionId": "q3",
+        "effectiveDurationMs": 996,
+        "skipped": false,
+        "returned": false
+      }
+    ]
+  },
+  "total": 2113,
+  "segmentFractions": [
+    0.1774586889795232,
+    0.3142370600849346,
+    0.4713661018374469
+  ],
+  "keyboardFocus": "workbook-feedback-q2",
+  "mobileFocus": "workbook-feedback-q3",
+  "mobileWidth": 390,
+  "text": "本卷用时分布\n\n逐题节奏判断未知。\n\n查看逐题占比 · 未归到题位 3.7%\n第 1 题 · 17.7%\n第 2 题 · 31.4%\n第 3 题 · 47.1%",
+  "sparse": "本卷用时分布\n\n用时分布和逐题节奏未知。",
+  "zero": "本卷用时分布\n\n用时分布和逐题节奏未知。",
+  "revoked": {
+    "grant": {
+      "id": "47AFB29DB6BC997F92A58A631A",
+      "rev": 2,
+      "teaching": true,
+      "changed": true
+    },
+    "revoked": {
+      "id": "47AFB29DB6BC997F92A58A631A",
+      "rev": 3,
+      "teaching": false,
+      "changed": true
+    },
+    "afterOldRevisionClick": "本卷用时分布\n\n用时分布和逐题节奏未知。"
+  },
+  "storageDenied": {
+    "setup": "isolated PGlite fixture withdrew storage purpose on the attempt",
+    "responseOmittedAttempt": true,
+    "pageAfterReopen": "本卷用时分布\n\n用时分布和逐题节奏未知。"
+  },
+  "wire": [
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/reading-context?paperRev=1",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/attempts",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/answer-displays",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/reading-context?paperRev=1&attemptId=47AFB29DB6BC997F92A58A631A&attemptRev=1",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/answer-displays",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/F92D7A2059A5988367E964C7FE/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/F92D7A2059A5988367E964C7FE/answer-displays",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/F92D7A2059A5988367E964C7FE/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/reading-context?paperRev=1&attemptId=F92D7A2059A5988367E964C7FE&attemptRev=1",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/F92D7A2059A5988367E964C7FE/research-permission",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/F92D7A2059A5988367E964C7FE/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/F92D7A2059A5988367E964C7FE/answer-displays",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/3BDADA59B53F2E99D48ACDF6D4/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/3BDADA59B53F2E99D48ACDF6D4/answer-displays",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/3BDADA59B53F2E99D48ACDF6D4/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/3BDADA59B53F2E99D48ACDF6D4/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/reading-context?paperRev=1&attemptId=3BDADA59B53F2E99D48ACDF6D4&attemptRev=1",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/answer-displays",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/reading-context?paperRev=1&attemptId=47AFB29DB6BC997F92A58A631A&attemptRev=2",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/answer-displays",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/answer-displays",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/reading-context?paperRev=1&attemptId=47AFB29DB6BC997F92A58A631A&attemptRev=3",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/research-permission",
+      200
+    ],
+    [
+      "POST",
+      "/api/papers/4F8811741F770FB04330431897/presentation",
+      200
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897/attempts/47AFB29DB6BC997F92A58A631A/answer-displays",
+      404
+    ],
+    [
+      "GET",
+      "/api/papers/4F8811741F770FB04330431897",
+      200
+    ]
+  ]
+}
