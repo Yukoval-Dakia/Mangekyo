@@ -16,6 +16,7 @@ export type ProviderHooks = {
 
 const maximumFrame = 512_000;
 const maximumContent = 64_000;
+const maximumStream = 2 * 1024 * 1024;
 
 /**
  * Read the data payload of each server-sent event. Empty comment and non-data
@@ -32,6 +33,7 @@ export async function readSseData(
   let pending = '';
   let data: string[] = [];
   let dataLength = 0;
+  let received = 0;
   let finished = false;
 
   async function readLine(line: string) {
@@ -54,7 +56,10 @@ export async function readSseData(
   try {
     while (!finished) {
       const { done, value } = await reader.read();
-      pending += decoder.decode(value, { stream: !done });
+      const decoded = decoder.decode(value, { stream: !done });
+      received += decoded.length;
+      if (received > maximumStream) throw new Error('Completion stream too large');
+      pending += decoded;
       let start = 0;
       for (let index = 0; index < pending.length && !finished; index++) {
         const character = pending[index];
@@ -115,34 +120,38 @@ type ProviderChunk = {
 
 export async function readProviderCompletion(response: Response, hooks: ProviderHooks): Promise<Completion> {
   if (response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'text/event-stream') {
-    const value: unknown = await readBoundedText(response, 2 * 1024 * 1024).then((text) => {
-      try {
-        return JSON.parse(text);
-      } catch {
-        return null;
-      }
-    });
-    const completion = value as {
-      id?: unknown;
-      model?: unknown;
-      choices?: { finish_reason?: string; message?: { role?: string; content?: unknown; tool_calls?: unknown; function_call?: unknown } }[];
-    } | null;
+    const raw = await readBoundedText(response, maximumStream);
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      throw new Error('Invalid completion');
+    }
+    const completion = value && typeof value === 'object' && !Array.isArray(value)
+      ? value as {
+        id?: unknown;
+        model?: unknown;
+        error?: unknown;
+        choices?: { finish_reason?: string; message?: { role?: string; content?: unknown; tool_calls?: unknown; function_call?: unknown } }[];
+      } : null;
     const choice = Array.isArray(completion?.choices) ? completion.choices[0] : undefined;
-    const model = completion?.model;
+    if (!completion || completion.error || !choice) throw new Error('Invalid completion');
+    const model = completion.model;
     if (model !== undefined && model !== null) hooks.model?.(model);
-    if (choice?.finish_reason === 'length') return { id: completion?.id, model, truncated: true };
-    const message = choice?.message;
-    if (hooks.allowTools && choice?.finish_reason === 'tool_calls' && message?.role === 'assistant') {
+    if (choice.finish_reason === 'length') return { id: completion.id, model, truncated: true };
+    const message = choice.message;
+    if (hooks.allowTools && choice.finish_reason === 'tool_calls' && message?.role === 'assistant') {
       const calls: FunctionCall[] = [];
       collectCalls(calls, message.tool_calls, false);
-      return { id: completion?.id, model, toolCalls: completedCalls(calls) };
+      return { id: completion.id, model, toolCalls: completedCalls(calls) };
     }
-    if (choice?.finish_reason && choice.finish_reason !== 'stop') throw new Error('Unusable completion');
+    if (choice.finish_reason && choice.finish_reason !== 'stop') throw new Error('Unusable completion');
     if (message?.tool_calls || message?.function_call || (message?.role && message.role !== 'assistant')) {
       throw new Error('Unexpected completion channel');
     }
     const text = message?.content;
-    return { id: completion?.id, model, ...(typeof text === 'string' ? { content: text } : {}) };
+    if (typeof text === 'string' && text.length > maximumContent) throw new Error('Completion content too large');
+    return { id: completion.id, model, ...(typeof text === 'string' ? { content: text } : {}) };
   }
 
   if (!response.body) throw new Error('Missing completion stream');
@@ -151,6 +160,7 @@ export async function readProviderCompletion(response: Response, hooks: Provider
   let pending = '';
   let data: string[] = [];
   let dataLength = 0;
+  let received = 0;
   let output = '';
   let model: unknown;
   let id: unknown;
@@ -216,7 +226,10 @@ export async function readProviderCompletion(response: Response, hooks: Provider
   try {
     while (!finished) {
       const { done, value } = await reader.read();
-      pending += decoder.decode(value, { stream: !done });
+      const decoded = decoder.decode(value, { stream: !done });
+      received += decoded.length;
+      if (received > maximumStream) throw new Error('Completion stream too large');
+      pending += decoded;
       let start = 0;
       for (let index = 0; index < pending.length && !finished; index++) {
         const character = pending[index];

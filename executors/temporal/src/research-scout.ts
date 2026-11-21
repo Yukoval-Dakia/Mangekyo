@@ -30,10 +30,23 @@ export function validateResearchScoutHost(host: ResearchScoutHost) {
 export function scoutReceipt(receipt: Awaited<ReturnType<ResearchScoutHost['sample']>>,
   reserveUsdMicros: number, parse: (reply: string) => string) {
   const reported = receipt?.actualUsdMicros;
+  const validReserve = Number.isSafeInteger(reserveUsdMicros) && reserveUsdMicros > 0;
   const cost = typeof reported === 'number' && Number.isSafeInteger(reported) && reported >= 0 ? reported : null;
-  const decision = cost !== null && cost > reserveUsdMicros ? 'price_exceeded'
-    : typeof receipt?.reply === 'string' && Buffer.byteLength(receipt.reply) <= maxReplyBytes
-      ? parse(receipt.reply) : 'invalid_reply';
+  const malformedCost = reported !== undefined && cost === null;
+  let decision: string;
+  if (!validReserve || malformedCost || (cost !== null && cost > reserveUsdMicros)) {
+    decision = 'price_exceeded';
+  } else if (typeof receipt?.reply === 'string' && receipt.reply.length <= maxReplyBytes &&
+      Buffer.byteLength(receipt.reply) <= maxReplyBytes) {
+    try {
+      decision = parse(receipt.reply);
+    } catch (error) {
+      if (error instanceof SyntaxError) decision = 'invalid_reply';
+      else throw error;
+    }
+  } else {
+    decision = 'invalid_reply';
+  }
   return {
     decision,
     actualUsdMicros: cost,

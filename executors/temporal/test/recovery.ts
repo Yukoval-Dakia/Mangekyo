@@ -12,9 +12,7 @@ import { executions, privateBody } from './executor.ts';
 
 const address = process.env.TEMPORAL_ADDRESS;
 assert(address);
-const namespace = 'probe-' + randomUUID();
-const taskQueue = namespace;
-const deploymentName = namespace;
+const namespace = 'probe-' + randomUUID(), taskQueue = namespace, deploymentName = namespace;
 const connection = await Connection.connect({ address });
 const client = new Client({ connection, namespace });
 const workers: ChildProcess[] = [];
@@ -30,35 +28,24 @@ async function until(label: string, check: () => Promise<boolean>) {
 
 async function worker(buildId: string, activate: boolean) {
   const child = spawn(process.execPath, [fileURLToPath(new URL('../src/run-worker.ts', import.meta.url))], {
-    env: {
-      ...process.env,
-      TEMPORAL_ADDRESS: address,
-      TEMPORAL_NAMESPACE: namespace,
-      TEMPORAL_TASK_QUEUE: taskQueue,
-      TEMPORAL_DEPLOYMENT: deploymentName,
-      TEMPORAL_BUILD_ID: buildId,
-      MANGEKYO_EXECUTE_WORK_MODULE: fileURLToPath(new URL('./executor.ts', import.meta.url)),
-    },
+    env: { ...process.env, TEMPORAL_ADDRESS: address, TEMPORAL_NAMESPACE: namespace, TEMPORAL_TASK_QUEUE: taskQueue,
+      TEMPORAL_DEPLOYMENT: deploymentName, TEMPORAL_BUILD_ID: buildId,
+      MANGEKYO_EXECUTE_WORK_MODULE: fileURLToPath(new URL('./executor.ts', import.meta.url)) },
     stdio: 'inherit',
   });
   workers.push(child);
   if (activate) {
     await until(`${buildId} pollers`, async () => {
       assert.equal(child.exitCode, null);
-      try {
-        await client.workflowService.setWorkerDeploymentCurrentVersion({ namespace, deploymentName, buildId });
-        return true;
-      } catch {
-        return false;
-      }
+      try { await client.workflowService.setWorkerDeploymentCurrentVersion({ namespace, deploymentName, buildId }); return true; }
+      catch { return false; }
     });
   }
   return child;
 }
 
 async function complete(executionRef: string) {
-  await until(`${executionRef} completion`, async () =>
-    (await describeWork(client, executionRef)).status === 'COMPLETED');
+  await until(`${executionRef} completion`, async () => (await describeWork(client, executionRef)).status === 'COMPLETED');
   return describeWork(client, executionRef);
 }
 
@@ -73,21 +60,15 @@ async function cleanup() {
 
 let cleanupRun: Promise<void> | undefined;
 const clean = () => cleanupRun ??= cleanup();
-for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
+for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]] as const)
   process.once(signal, () => void clean().catch(console.error).finally(() => process.exit(exitCode)));
-}
 
 try {
-  await connection.workflowService.registerNamespace({
-    namespace,
-    workflowExecutionRetentionPeriod: msToTs('1 day'),
-  });
-  const lostAck = new Client({ connection, namespace, interceptors: { workflow: [{
-    async startWithDetails(input, next) {
-      await next(input);
-      throw new Error('Injected lost start acknowledgment');
-    },
-  }] } });
+  await connection.workflowService.registerNamespace({ namespace, workflowExecutionRetentionPeriod: msToTs('1 day') });
+  const lostAck = new Client({ connection, namespace, interceptors: { workflow: [{ async startWithDetails(input, next) {
+    await next(input);
+    throw new Error('Injected lost start acknowledgment');
+  } }] } });
   const { recovery, fresh, closed, failure, terminal } = executions;
   await assert.rejects(startWork(client, privateBody, { taskQueue }), /Invalid Temporal execution reference/);
   const old = await worker('old', true);
@@ -125,25 +106,16 @@ try {
   assert(!serialized.includes(privateBody));
   assert(serialized.includes('WorkExecutionFailed'));
   const events = history.events ?? [];
-  const workflowInput = events.find((event) => event.workflowExecutionStartedEventAttributes)
-    ?.workflowExecutionStartedEventAttributes?.input?.payloads;
-  const activityInput = events.find((event) => event.activityTaskScheduledEventAttributes)
-    ?.activityTaskScheduledEventAttributes?.input?.payloads;
-  for (const input of [workflowInput, activityInput]) {
+  const workflowInput = events.find((event) => event.workflowExecutionStartedEventAttributes)?.workflowExecutionStartedEventAttributes?.input?.payloads;
+  const activityInput = events.find((event) => event.activityTaskScheduledEventAttributes)?.activityTaskScheduledEventAttributes?.input?.payloads;
+  for (const input of [workflowInput, activityInput])
     assert.deepEqual(input?.map((payload) => defaultPayloadConverter.fromPayload(payload)), [failure]);
-  }
   const terminalId = await startWork(client, terminal, { taskQueue });
   await until('recorded terminal failure', async () => (await describeWork(client, terminal)).status === 'FAILED');
   const terminalHistory = await client.workflow.getHandle(terminalId).fetchHistory();
   const terminalText = JSON.stringify(terminalHistory);
-  assert(terminalText.includes('WorkExecutionFailed'));
-  assert(terminalText.includes('WorkFailureRecordingFailed'));
-  assert(!terminalText.includes(privateBody));
-  const failureRecord = terminalHistory.events?.find((event) =>
-    event.activityTaskScheduledEventAttributes?.activityType?.name === 'recordWorkFailure');
-  assert.deepEqual(failureRecord?.activityTaskScheduledEventAttributes?.input?.payloads
-    ?.map((payload) => defaultPayloadConverter.fromPayload(payload)), [terminal]);
+  assert(terminalText.includes('WorkExecutionFailed') && terminalText.includes('WorkFailureRecordingFailed') && !terminalText.includes(privateBody));
+  const failureRecord = terminalHistory.events?.find((event) => event.activityTaskScheduledEventAttributes?.activityType?.name === 'recordWorkFailure');
+  assert.deepEqual(failureRecord?.activityTaskScheduledEventAttributes?.input?.payloads?.map((payload) => defaultPayloadConverter.fromPayload(payload)), [terminal]);
   console.log(JSON.stringify({ namespace, waiting, resumed, freshResult, closedResult, failureResult, terminalId }, null, 2));
-} finally {
-  await clean();
-}
+} finally { await clean(); }

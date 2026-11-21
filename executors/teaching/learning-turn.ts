@@ -94,7 +94,8 @@ export function createLearningTurn(host: LearningTools, results: ReturnType<type
   async function execute(name: string, args: ToolArgs, step: number, priorRead: Promise<unknown>) {
     if (name === runCalculationDefinition.function.name) return calculate(args, step);
     if (name === openToolResult.function.name) {
-      if (typeof args.handle !== 'string') return badArgs(name, '请传本轮的结果句柄。');
+      if (Object.keys(args).some(key => key !== 'handle' && key !== 'start') || typeof args.handle !== 'string')
+        return badArgs(name, '请传本轮的结果句柄及可选起始位置。');
       const access = await handlesFor([args.handle], name, step);
       if (!access.ok) return failure(access);
       const entry = access.handles[args.handle]!;

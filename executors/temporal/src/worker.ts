@@ -3,7 +3,7 @@ import type { Client } from '@temporalio/client';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Context, heartbeat } from '@temporalio/activity';
-import { ApplicationFailure } from '@temporalio/common';
+import { ApplicationFailure, CancelledFailure } from '@temporalio/common';
 import { NativeConnection, Worker, type WorkerOptions } from '@temporalio/worker';
 import { createCoordinatorActivity, type AdvanceCoordinator } from './coordinator-activity.ts';
 import { validateExecutionRef } from './ref.ts';
@@ -44,6 +44,11 @@ async function runOpaqueActivity(execute: ExecuteWork, executionRef: string, typ
     validateExecutionRef(executionRef);
     await execute(executionRef);
   } catch {
+    if (Context.current().cancellationSignal.aborted) {
+      const cancellation = new CancelledFailure('Work activity cancelled');
+      delete cancellation.stack;
+      throw cancellation;
+    }
     const failure = ApplicationFailure.create({ message: 'Work activity failed', type });
     delete failure.stack;
     throw failure;

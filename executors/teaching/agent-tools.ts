@@ -369,13 +369,14 @@ function runPythonContainer(name: string, input: string, image: string): Promise
   });
 }
 
-function readEnvelope(text: string): PythonEnvelope | undefined {
+export function readPythonEnvelope(text: string): PythonEnvelope | undefined {
   const marker = '__MANGEKYO_RESULT__';
-  const index = text.lastIndexOf(marker);
-  if (index < 0) return;
+  const lineIndex = text.lastIndexOf('\n' + marker);
+  const start = lineIndex >= 0 ? lineIndex + 1 + marker.length : text.startsWith(marker) ? marker.length : -1;
+  if (start < 0) return;
   let value: unknown;
   try {
-    value = JSON.parse(text.slice(index + marker.length).trim());
+    value = JSON.parse(text.slice(start).trim());
   } catch {
     return;
   }
@@ -422,7 +423,7 @@ async function executePython(payload: string, image: string): Promise<PythonEnve
   if (outcome.kind === 'timeout') return fail('budget_or_limit',`Python 超过 ${PYTHON_TIMEOUT_MS} 毫秒，请缩小计算范围。`,'code');
   if (outcome.kind === 'overflow') return fail('budget_or_limit','Python 输出超过限制，请只输出结果摘要。','code');
   if (outcome.kind === 'unavailable') return fail('tool_unavailable','当前无法启动 Python 沙箱。');
-  const envelope = readEnvelope(outcome.stdout.toString('utf8'));
+  const envelope = readPythonEnvelope(outcome.stdout.toString('utf8'));
   if (!envelope) return fail('tool_unavailable',dockerFailure(outcome.stderr.toString('utf8'), outcome.code, image));
   if (envelope.status === 'fatal') return fail('execution_failed','Python 沙箱未能准备输入。请缩小输入或改用其他工具。','inputs');
   if (envelope.status === 'error') {
@@ -575,10 +576,16 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
         });
         if (!response.ok) { await response.body?.cancel(); return fail(response.status === 429 ? 'budget_or_limit' : 'execution_failed','检索服务返回 HTTP ' + response.status + '。'); }
         const raw = await readBounded(response, MAX_SEARCH_RESPONSE_BYTES);
-        if (!raw) return fail('budget_or_limit','结果超过限制，请缩小检索范围。','query');
+        if (raw === undefined) return fail('budget_or_limit','结果超过限制，请缩小检索范围。','query');
         const packets = response.headers.get('content-type')?.includes('text/event-stream')
-          ? raw.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()) : [raw];
-        const result = packets.map(packet => JSON.parse(packet)).find(packet => packet.id === 1)?.result;
+          ? raw.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).filter(packet => packet && packet !== '[DONE]')
+          : [raw];
+        let result: {isError?: boolean; content?: unknown} | undefined;
+        for (const packet of packets) {
+          let parsed: {id?: unknown; result?: {isError?: boolean; content?: unknown}} | undefined;
+          try { parsed = JSON.parse(packet); } catch { continue; }
+          if (parsed?.id === 1) { result = parsed.result; break; }
+        }
         if (!result || result.isError || !Array.isArray(result.content)) return fail('execution_failed','检索服务未能完成查询。');
         return clip(result.content.filter((part: {type?: string; text?: unknown}) => part.type === 'text' && validText(part.text))
           .map((part: {text: string}) => part.text).join('\n'), MAX_SEARCH_RESULT_CHARS) || 'no results';
@@ -595,7 +602,7 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
         }),
         signal: controller.signal,
       });
-      if (!response.ok) return fail(response.status === 429 ? 'budget_or_limit' : 'execution_failed',`检索服务返回 HTTP ${response.status}。`);
+      if (!response.ok) { await response.body?.cancel(); return fail(response.status === 429 ? 'budget_or_limit' : 'execution_failed',`检索服务返回 HTTP ${response.status}。`); }
       const body = await readBounded(response, MAX_SEARCH_RESPONSE_BYTES);
       if (body === undefined) return fail('budget_or_limit','结果超过限制，请缩小检索范围。','query');
       try {
