@@ -87,20 +87,36 @@ function sameJson(left: unknown, right: unknown): boolean {
     Object.hasOwn(right, key) && sameJson(Reflect.get(left, key), Reflect.get(right, key)));
 }
 
-function extractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue> | null) {
+function parsedExtractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue> | null) {
   if (outcome?.kind !== 'value') return null;
   const { basis, originals, blocks } = outcome.value;
   if (!mayExtract(fact) || basis.target.id !== fact.ref.id || basis.learner !== fact.ref.learner || basis.target.rev > fact.ref.rev ||
       basis.accessEpoch !== fact.accessEpoch || !sameJson(originals, source.originals)) return null;
-  // Historical outcomes may predate the single-image page check. Keep the
-  // valid blocks and drop invalid branches without changing their ancestry.
+  return parseExtractionBlocks(source, blocks);
+}
+
+function validCropBranches(source: SourceEnvelope, blocks: readonly Block[]) {
   const retained = new Set<string>();
-  return parseExtractionBlocks(source, blocks).filter(({ id, parentId, body }) => {
+  return blocks.filter(({ id, parentId, body }) => {
     if ((parentId !== null && !retained.has(parentId)) ||
         (body.crop_ref && !validSourceCropPage(body.crop_ref, source.originals))) return false;
     retained.add(id);
     return true;
   });
+}
+
+function extractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue> | null) {
+  const blocks = parsedExtractionForSource(fact, source, outcome);
+  return blocks && validCropBranches(source, blocks);
+}
+
+// Only paper projection can reconstruct the old printable text from these blocks.
+export function frozenPaperBlocks(fact: FactSnapshot, source: SourceEnvelope, outcome: Outcome<LayeredExtractionValue>) {
+  const all = parsedExtractionForSource(fact, source, outcome);
+  if (!all) throw new Error('分层抽取未获准用于此卷。');
+  const valid = validCropBranches(source, all);
+  return { blocks: mergeExtraction(source, valid),
+    historical: valid.length === all.length ? null : mergeExtraction(source, all) };
 }
 
 export function mayExtract(fact: FactSnapshot) {

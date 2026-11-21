@@ -158,13 +158,20 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   assert.equal(mergeLayeredSource(await current(learnerId),outcome).source.unit.blocks.length,blocks.length);
   const layeredIssue = paperIssuance({source:targetKey.target,epoch:targetKey.accessEpoch,layout:{lines:10,columns:16},
     extraction:{derivationId:sealed.id,sourceRev:1,modelMethod:targetKey.modelMethod}});
-  const preview = await read(context => projectIssuedPaper(bindPaperCommandRead(context, {readExtraction: async (_request, mode) => {
+  const layeredPreview = outcome => read(context => projectIssuedPaper(bindPaperCommandRead(context, {readExtraction: async (_request, mode) => {
     assert.equal(mode, 'current');
     return {deriver:layeredExtractionDeriver,manifest:sealed.manifest,
       snapshot:{id:sealed.id,slot:{learner,type:layeredExtractionSlot,key:learnerId},outcome}};
   }}), layeredIssue));
+  const preview = await layeredPreview(outcome);
   assert.match(preview.pages.flatMap(page=>page.pieces).map(piece=>piece.text).join(''), /请答第 1 题/);
   assert.doesNotMatch(JSON.stringify(preview), /hidden|blobRef|sha256/);
+  const invalidMaterial = captureBlock('invalid-material', { layer:'material', status:'known', text:'M'.repeat(160),
+    crop_ref:{original:0,page:2,bbox:[0.1,0.2,0.8,0.9]} });
+  const revised = await layeredPreview({ ...outcome, value:{ ...outcome.value, blocks:[invalidMaterial,...outcome.value.blocks] } });
+  assert.notEqual(revised.issuanceId, preview.issuanceId);
+  assert.deepEqual(revised.pages, preview.pages);
+  await assert.rejects(send('capture.issuePaper', { ...layeredIssue, edition:'layered-print-crops-v1' }), /版记由服务端/);
   const [region] = clarificationRegions(savedSource, outcome);
   assert.equal(region.originalSha256, savedSource.value.originals[0].sha256);
   assert.equal(region.id, 'unknown');
