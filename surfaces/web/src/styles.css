@@ -179,6 +179,12 @@ p, h1, h2, h3, ol, ul, figure { margin: 0; }
 .waiting-dot { display: inline-block; width: 8px; height: 8px; background: var(--pulse); border-radius: 50%; animation: pulse 1.5s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .36; } }
 
+.recovery-guide { display: grid; gap: 8px; }
+.recovery-guide p { margin: 0; }
+.recovery-detail { display: block; margin-top: 4px; font-size: 13px; opacity: .92; overflow-wrap: anywhere; }
+.recovery-actions { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; }
+.recovery-actions .tonal-button { color: inherit; }
+
 .composer { margin: 0 16px 16px; padding: 9px; border: 1px solid var(--line); border-radius: 24px; background: var(--surface); }
 .composer:focus-within { border-color: var(--focus); }
 .composer textarea { display: block; width: 100%; min-height: 58px; max-height: 200px; resize: vertical; color: var(--ink); background: transparent; border: none; border-radius: 13px; padding: 8px 10px 5px; line-height: 1.55; font-size: 15px; }

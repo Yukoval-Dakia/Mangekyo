@@ -8,7 +8,7 @@ import './classroom.css';
 type Action = 'adjust' | 'advance' | 'skip' | 'finish' | 'archive';
 const states = {active: '上课中', finished: '已结课', archived: '已归档'};
 
-export function ClassroomRoom({id}: {id: string}) {
+export function ClassroomRoom({id, onOpenAiActivity}: {id: string; onOpenAiActivity?: (() => void) | undefined}) {
   const [room, setRoom] = useState<Classroom>();
   const [rechecking, setRechecking] = useState(false);
   const [readError, setReadError] = useState('');
@@ -84,9 +84,9 @@ export function ClassroomRoom({id}: {id: string}) {
     <a className="back-link" href="/classroom">‹ 学习课堂</a>
     {rechecking ? <p role="status">正在核对课堂读取权限…</p> : <PageTitle title={room.topic} meta={states[room.status] + ' · ' + room.minutes + ' 分钟 · 第 ' + room.rev + ' 版'} />}
     {!rechecking && <a className="tonal-button" href={'/classroom/' + encodeURIComponent(room.id) + '/print'}>打开打印版</a>}
-    <ClassroomLesson key={room.sessionId + ':' + room.rev} room={room} visible={!rechecking} />
+    <ClassroomLesson key={room.sessionId + ':' + room.rev} room={room} visible={!rechecking} onOpenAiActivity={onOpenAiActivity} />
     {!rechecking && <>
-    {room.generation === 'pending' && <p role="status">正在编排课堂…</p>}
+    {room.generation === 'pending' && <p role="status" className="visually-hidden">正在编排课堂…</p>}
     {room.status === 'active' && room.adjustmentFailed && <p role="status">这次调整没有完成。可以继续原步骤，或重新调整后续步骤。</p>}
     <fieldset className="classroom-controls" disabled={busy || !!pending || room.generation === 'pending'}>
       {room.status === 'active' && <>

@@ -65,6 +65,7 @@ export function ClassroomStart({ settings }: {settings?: Settings | undefined}) 
       {route && <p>本次教学账户 · {route.model} · {route.baseUrl}</p>}
       {blocked && <p role="status">请检查学习设置中的教学账户后刷新。</p>}
       {error && <p role="alert">{error}</p>}
+      {busy && <p role="status" className="classroom-form-wait">正在为你开课；首次生成课堂通常需要一到两分钟，请勿重复提交。</p>}
       <button className="primary-button" disabled={busy || !!blocked || !topic.trim()}>{busy ? '正在开课…' : pending ? '重发开课请求' : '开始上课'}</button>
     </form>
     {!!rooms.length && <section className="surface-section"><h2>本机打开过的课堂</h2><ul>{rooms.map(id => <li key={id}><a href={roomPath(id)}>打开课堂 · {id.slice(-8)}</a></li>)}</ul></section>}

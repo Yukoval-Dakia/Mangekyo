@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Icon } from "../icons";
 import {
   readAiActivity,
+  callModelName,
+  callTokenText,
+  summarizeUsageTokens,
   type ActivityFallback,
   type AiActivity,
   type AiHandoffItem,
@@ -61,16 +64,37 @@ function runningKindLabel(kind: string) {
   }
 }
 
+function runningKind(item: AiRunningItem) {
+  if (item.slotType?.includes("Feedback")) return "teaching";
+  return item.kind;
+}
+
 function runningStateLabel(item: AiRunningItem) {
   const raw = item.state ?? item.status ?? "";
   switch (raw) {
     case "running": return "运行中";
     case "queued": return "排队中";
     case "waiting": return "等待中";
-    case "blocked": return "已受阻";
+    case "blocked": return "已阻塞需处理";
     default: return raw || "处理中";
   }
 }
+
+function runningItemHref(item: AiRunningItem) {
+  const kind = runningKind(item);
+  if (kind === "teaching") return "/companion";
+  if (kind === "intake") return "/materials";
+  if (kind === "research" || kind === "retention") return "/today";
+  return "/me?section=models";
+}
+
+function runningItemTitle(item: AiRunningItem) {
+  const title = cleanHumanTitle(item.title ?? "");
+  if (!title || /^[a-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(title)) return runningKindLabel(runningKind(item));
+  return title;
+}
+
+const BLOCKED_HINT = "这项后台任务已安全暂停：不会重复扣费，也不会继续改动你的内容。前往核对并重新放行后才会继续。";
 
 function handoffChannelLabel(item: AiHandoffItem) {
   switch (item.channel ?? item.kind) {
@@ -141,8 +165,41 @@ function usageCallStateLabel(call: AiUsageCallItem) {
 }
 
 function usageCallMeta(call: AiUsageCallItem) {
-  const cost = formatMicros(call.actualMicros ?? call.reservedMicros ?? call.costMicros);
-  return [call.route || call.model || null, usageCallStateLabel(call), cost].filter(Boolean).join(" · ");
+  const parts: string[] = [];
+  const model = callModelName(call);
+  if (model) parts.push(model);
+  const stateLabel = usageCallStateLabel(call);
+  if (stateLabel) parts.push(stateLabel);
+  const tokens = callTokenText(call);
+  if (tokens) parts.push(`${tokens} tokens`);
+  const micros = call.actualMicros ?? call.reservedMicros ?? call.costMicros;
+  const cost = formatMicros(micros);
+  parts.push(cost ?? (model ? "本地网关 · 免费" : "费用待结算"));
+  return parts.join(" · ");
+}
+
+function usageHeadline(activity: AiActivity) {
+  const spent = activity.usage.spentMicros;
+  const summary = summarizeUsageTokens(activity.usage.recentCalls);
+  const limit = typeof activity.usage.limitMicros === "number" && Number.isFinite(activity.usage.limitMicros)
+    ? ` / ${formatMicros(activity.usage.limitMicros)} USD`
+    : " USD（未设上限）";
+  if (spent === 0 && summary) {
+    const tokenText = summary.countedCalls
+      ? `本次已用 ${summary.total.toLocaleString("zh-CN")} tokens`
+      : "token 明细待记录";
+    const models = summary.modelNames.length ? summary.modelNames.join("、") : "本地模型";
+    return {
+      metric: `本地网关 · ${tokenText}`,
+      hint: `模型：${models} · 费用 ${formatMicros(spent) ?? "$0.0000"}${limit}`,
+      summary,
+    };
+  }
+  return {
+    metric: `${formatMicros(spent) ?? "$0.0000"}${limit}`,
+    hint: null,
+    summary,
+  };
 }
 
 function proposalKindLabel(kind: string) {
@@ -299,12 +356,26 @@ export function AiActivityDrawer({
             <Section title="运行中" count={state.activity.running.length}>
               {state.activity.running.length ? (
                 <ul className="drawer-card-list">
-                  {state.activity.running.map(item => (
-                    <li key={item.id}>
-                      <strong>{cleanHumanTitle(item.title)}</strong>
-                      <span>{runningKindLabel(item.kind)} · {runningStateLabel(item)}</span>
-                    </li>
-                  ))}
+                  {state.activity.running.map(item => {
+                    const blocked = (item.state ?? item.status) === "blocked";
+                    const href = runningItemHref(item);
+                    return (
+                      <li key={item.id} className="drawer-running-item">
+                        <div className="drawer-running-head">
+                          <a href={href} onClick={event => {
+                            event.preventDefault();
+                            onNavigate(href);
+                          }}>{runningItemTitle(item)}</a>
+                          <span className={blocked ? "state-pill blocked" : "state-pill live"}>
+                            {!blocked && <i className="breathing live" aria-hidden="true" />}
+                            {runningStateLabel(item)}
+                          </span>
+                        </div>
+                        <span>{runningKindLabel(runningKind(item))}</span>
+                        {blocked && <span className="drawer-blocked-hint">{BLOCKED_HINT}</span>}
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : <Empty text="现在没有运行中的任务。" />}
             </Section>
@@ -360,12 +431,20 @@ export function AiActivityDrawer({
               ) : <Empty text="暂无工具调用。" />}
             </Section>
             <Section title="模型用量">
-              <p className="drawer-metric">
-                {formatMicros(state.activity.usage.spentMicros) ?? "$0.0000"}
-                {typeof state.activity.usage.limitMicros === "number" && Number.isFinite(state.activity.usage.limitMicros)
-                  ? ` / ${formatMicros(state.activity.usage.limitMicros)} USD`
-                  : " USD（未设上限）"}
-              </p>
+              {(() => {
+                const headline = usageHeadline(state.activity);
+                return (
+                  <>
+                    <p className="drawer-metric">{headline.metric}</p>
+                    {headline.hint && <p className="drawer-hint">{headline.hint}</p>}
+                    {headline.summary && headline.summary.countedCalls > 0 && state.activity.usage.spentMicros !== 0 && (
+                      <p className="drawer-hint">
+                        共 {headline.summary.total.toLocaleString("zh-CN")} tokens（输入 {headline.summary.prompt.toLocaleString("zh-CN")} / 输出 {headline.summary.completion.toLocaleString("zh-CN")}）
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
               {((state.activity.usage.settledMicros ?? 0) > 0 || (state.activity.usage.heldMicros ?? 0) > 0) && (
                 <p className="drawer-hint">
                   已结算 {formatMicros(state.activity.usage.settledMicros) ?? "$0.0000"} · 预占 {formatMicros(state.activity.usage.heldMicros) ?? "$0.0000"}

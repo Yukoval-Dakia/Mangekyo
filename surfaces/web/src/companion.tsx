@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, remembered, remember, sessionPath, type Session, type Settings, type StudyAttachment } from './api';
 import { useConversation } from './conversation';
 import { Icon, Mark } from './icons';
+import { RecoveryGuide } from './recovery';
 import { TeachingTurn } from './demo';
 import { chatPath, materialPath, PageTitle, ReadState, useResource, type ChatLink, type Material, type Resource } from './workspace';
 
@@ -217,9 +218,12 @@ function ChatRoom({
           </div>}
           <div ref={feedEnd} />
           {unavailable && (
-            <p className="notice problem" role="status">
-              {session?.error || '这次对话暂时无法继续。'}
-            </p>
+            <RecoveryGuide
+              status={session?.status === 'unknown' ? 'unknown' : 'failed'}
+              detail={session?.error}
+              onResend={chat.retry}
+              resendLabel="重新发送"
+            />
           )}
           {chat.problem && (
             <div className="notice problem" role="alert">
