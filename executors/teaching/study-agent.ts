@@ -337,9 +337,9 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
           ...(attempts.issues.length ? {...learningToolError('partial_success','refs','部分作答未打开，详见逐项结果。'), issues:attempts.issues} : {}),
         }) : saved.output;
       }
-      if (narrowSaves && (name === 'save_page' || name === 'save_edge' || name === 'save_belief')) {
+      if (narrowSaves && (name === 'open_learning' || name === 'save_page' || name === 'save_edge' || name === 'save_belief')) {
         const adapted = adaptWorkspaceResult(output,name,'workspace-v2');
-        if (!adapted.ok) output = JSON.stringify(adapted);
+        if (!adapted.ok || adapted.warnings?.length) output = JSON.stringify(adapted);
       }
       const files = name === 'python' ? Object.entries(tools!.snapshotFiles()).filter(([name, value]) => before[name] !== value) : [];
       const result = results.publish(name, step, output, files);

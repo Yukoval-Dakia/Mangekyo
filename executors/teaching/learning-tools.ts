@@ -18,7 +18,8 @@ export type ToolDefinition = {
 type Definitions<T extends string> = {[K in T]: ToolDefinition & {function: {name: K}}};
 
 export type LearningError = ToolError & {field?: string; valid_fields?: readonly string[]};
-export type LearningResult = LearningError | {ok: true; data: unknown; warnings?: readonly LearningError[]};
+export type LearningResult = (LearningError & {items?: readonly unknown[]}) |
+  {ok: true; data: unknown; warnings?: readonly LearningError[]};
 // Off-wire provenance for a complete inline response or a range expanded from its handle.
 export type DeliveredToolRange = {step: number; output: string; start: number; end: number};
 export type ResultHandle = {step: number; value: string; mediaType?: 'image/png'};
@@ -134,21 +135,45 @@ function tool<K extends string>(name: K, description: string, properties: object
   return {type:'function',function:{name,description,parameters:{type:'object',additionalProperties:false,properties,required}}};
 }
 export const learningToolFallback = (name: string) => ({tool:'find_tools',args:{query:name}});
-export function adaptWorkspaceResult(raw: string, name: HostedTool, catalog?: 'workspace-v2'): LearningResult {
-  const value = JSON.parse(raw);
-  if (value?.ok !== false) return {ok:true,data:value};
+type WorkspaceFailure = {
+  code?: unknown;
+  field?: unknown;
+  message?: unknown;
+  next?: {tool: string; args: JsonObject};
+};
+
+function adaptWorkspaceError(value: WorkspaceFailure, name: HostedTool, catalog?: 'workspace-v2'): LearningError {
   const code = value.code;
   const next = value.next?.tool;
   const redirect = next === 'read_workspace' ? 'open_learning' : next === 'search_workspace' && !catalog ? 'search_learning' :
     next === 'save_relation' ? 'save_edge' : next;
-  const args = next === 'read_workspace' ? {refs:value.next.args.id} : value.next?.args;
+  const id = value.next?.args?.id;
+  const args = next === 'read_workspace' ? (typeof id === 'string' ? {refs:id} : undefined) : value.next?.args;
   const emptyWrite = catalog && redirect?.startsWith('save_') && args && !Object.keys(args).length;
   const retry = redirect && args && !emptyWrite &&
     ['open_learning','search_learning','search_workspace','save_page','save_edge','save_belief'].includes(redirect)
     ? {tool:redirect,args} : learningToolFallback(name);
-  return toolFailure(code === 'budget_or_limit' ? 'limit_exceeded' :
-    ['invalid_args','not_found','access_revoked','basis_stale','version_conflict','evidence_not_opened','limit_exceeded'].includes(code)
-      ? code : 'invalid_args',String(value.message ?? '工具无法完成。'),retry,value.field);
+  const normalized = code === 'budget_or_limit' ? 'limit_exceeded' :
+    code === 'not_found' || code === 'access_revoked' || code === 'basis_stale' ||
+    code === 'version_conflict' || code === 'evidence_not_opened' || code === 'limit_exceeded' ? code : 'invalid_args';
+  return toolFailure(normalized,String(value.message ?? '工具无法完成。'),retry,
+    typeof value.field === 'string' ? value.field : undefined);
+}
+
+export function adaptWorkspaceResult(raw: string, name: HostedTool, catalog?: 'workspace-v2'): LearningResult {
+  const value = JSON.parse(raw);
+  if (value?.ok !== false) return {ok:true,data:value};
+  if (name !== 'open_learning' || !Array.isArray(value.items)) return adaptWorkspaceError(value,name,catalog);
+  const warnings: LearningError[] = [];
+  const items = value.items.map((item: unknown) => {
+    if (!item || typeof item !== 'object' || !('ok' in item) || item.ok !== false) return item;
+    // A failed item may come from an older receipt without a witness for its hint.
+    const warning = adaptWorkspaceError({...item,next:{tool:'search_workspace',args:{}}},name,catalog);
+    warnings.push(warning);
+    return warning;
+  });
+  if (value.code === 'partial_success') return {ok:true,data:{code:value.code,items},warnings};
+  return {...adaptWorkspaceError(value,name,catalog),items};
 }
 
 const saveQuestionDefinition = tool('save_question','保存独立题面草稿。题库核验前不可发放。',{
