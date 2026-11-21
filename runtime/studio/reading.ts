@@ -29,9 +29,9 @@ export async function readOwnStudyTurn(tx: ReadTransaction, id: string, options:
   }
 }
 
-export async function readMaterialText(tx: ReadTransaction, id: string) {
+export async function readMaterialText(tx: ReadTransaction, id: string, materialPurpose = storagePurpose) {
   if (!isSourceFactId(id)) return null;
-  const read = createCommandReadContext(tx, storagePurpose);
+  const read = createCommandReadContext(tx, materialPurpose);
   return await readable(async () => {
     const snapshot = await read.fact(factId(id), {mode: 'following'});
     if (snapshot.type !== materialType) return null;
@@ -41,7 +41,7 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
       return {id, title: material.title, text: material.text, sourceRef: sourceReference(snapshot, {kind:'whole'})};
     }
     if (!link.matches) return null;
-    const source = await read.fact(link.id, {mode: 'following'});
+    const source = await createCommandReadContext(tx, storagePurpose).fact(link.id, {mode: 'following'});
     if (!isMaterialIntakePair(snapshot.ref.id, source)) return null;
     const document = intakeTextOf(source);
     return {
@@ -54,14 +54,14 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
 }
 
 export async function attachmentSources(tx: ReadTransaction, attachment: ReturnType<typeof studyAttachment>) {
-  const source = await readMaterialText(tx, attachment.id);
+  const source = await readMaterialText(tx, attachment.id, purpose);
   if (!source || source.title !== attachment.title || !source.text.includes(attachment.text)) return;
-  const read = createCommandReadContext(tx, storagePurpose);
-  const witnesses = await Promise.all([source.sourceRef.fact, ...(source.sourceRef.textFact ? [source.sourceRef.textFact] : [])]
-    .map(async ({id, rev}) => {
-      const {ref, accessEpoch} = await read.fact(factId(id), {mode:'pinned', rev:rev as Revision});
-      return {ref:{id:ref.id, rev:ref.rev}, accessEpoch};
-    }));
+  const pinned = async ({id, rev}: {id: string; rev: number}, use: string) => {
+    const {ref, accessEpoch} = await createCommandReadContext(tx, use).fact(factId(id), {mode:'pinned', rev:rev as Revision});
+    return {ref:{id:ref.id, rev:ref.rev}, accessEpoch};
+  };
+  const witnesses = await Promise.all([pinned(source.sourceRef.fact, purpose),
+    ...(source.sourceRef.textFact ? [pinned(source.sourceRef.textFact, storagePurpose)] : [])]);
   return {witnesses, digest:createHash('sha256').update(JSON.stringify(witnesses)).digest('hex')};
 }
 
