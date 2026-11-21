@@ -1,10 +1,10 @@
 import {
   type EffectRequest, type FactId, type GatherContext, type GatherInput,
-  type Json, type JsonObject, type Outcome, type ReadContext, type Revision,
+  type Json, type JsonObject, type Outcome, type Revision,
 } from '@mangekyo/kernel';
 import {
   assetType, checkQuestionTeachingSources, freezeQuestionAssessment, parseAsset, questionAsset, questionPrompt,
-  type AssetReference, type Block, type BlockBody, type QuestionAsset,
+  type AssetReadContext, type AssetReference, type Block, type BlockBody, type QuestionAsset,
 } from './asset.ts';
 import { pageId, record, revision } from './parse.ts';
 import type { AnswerSlot } from './assessment-values.ts';
@@ -51,7 +51,7 @@ export async function gather(
   return { kind: 'input', data, effects };
 }
 
-export async function projectQuestionPrompt(read: ReadContext, asset: QuestionAsset, slots?: readonly AnswerSlot[]) {
+export async function projectQuestionPrompt(read: AssetReadContext['read'], asset: QuestionAsset, slots?: readonly AnswerSlot[]) {
   const controls = [];
   for (const { body } of asset.blocks) {
     if (body.kind !== 'interaction') continue;
@@ -109,7 +109,7 @@ function captureMaterial(value: Json, anchor: AssetReference['anchor']) {
   return result.length ? result : undefined;
 }
 
-async function projectSharedMaterial(read: ReadContext, question: QuestionAsset, block: Block) {
+async function projectSharedMaterial(read: AssetReadContext['read'], question: QuestionAsset, block: Block) {
   if (block.body.kind !== 'sharedMaterial') return undefined;
   const { source: { fact: ref, type, anchor } } = block.body;
   const basis = question.basis?.find(entry => entry.id === ref.id && entry.rev === ref.rev && entry.type === type);

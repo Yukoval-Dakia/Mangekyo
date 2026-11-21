@@ -51,7 +51,8 @@ export async function seedCorrectionMicroVariant(db: Db) {
     const from = { kind: 'question', sourceUse: use(candidate) };
     const to = kind === 'instance_of' ? { kind: 'archetype', sourceUse: use(archetype) } : { kind: 'question', sourceUse: use(source) };
     return command(createKnowledgeEdgeCommand, { id, purpose: 'teaching', edge: {
-      kind, from, to, sourceUses: [from.sourceUse, to.sourceUse], scope: 'average-speed',
+      kind: kind === 'instance_of' ? 'canonical_archetype' : kind,
+      from, to, sourceUses: [from.sourceUse, to.sourceUse], scope: 'average-speed',
       ...(kind === 'variant_of' ? { variant: { familyId: 'average-speed', relation: 'numbers_only',
         preserved: ['两段速度'], changed: ['第二段时长'], spoilsNext: 'none' } } : {}),
     } });
