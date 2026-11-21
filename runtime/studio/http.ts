@@ -27,12 +27,15 @@ import type { openPractice } from './practice.ts';
 import { handleIntakeRequest, type openIntake } from './intake.ts';
 import type { openCapturePapers } from './capture-papers.ts';
 import type { openWorkbook } from './workbook.ts';
+import type { openPracticeAdmission } from './sealed-practice.ts';
+import { readWorkbookDisplayAccess } from './workbook-display-access.ts';
 import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
 import type { openWorkspaceAccess } from './workspace-access.ts';
 import type { openResearch } from './research.ts';
 import type { openRetention } from './retention.ts';
 import type { openRetentionComparison } from './retention-comparison.ts';
+import type { openIqdb } from './iqdb.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from './review.ts';
@@ -105,6 +108,7 @@ export function serve(
     textbook: ReturnType<typeof openTextbook>;
     relationReview: ReturnType<typeof openRelationReview>;
     workbook: ReturnType<typeof openWorkbook>;
+    practiceAdmission?: ReturnType<typeof openPracticeAdmission>;
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
     memoryManagement: ReturnType<typeof openMemoryManagement>;
@@ -115,6 +119,7 @@ export function serve(
     recall: RecallHttp;
     retention: ReturnType<typeof openRetention>;
     retentionComparison: ReturnType<typeof openRetentionComparison>;
+    iqdb: ReturnType<typeof openIqdb>;
   },
   port: number,
 ) {
@@ -145,6 +150,15 @@ export function serve(
         res.setHeader('X-Deletion-Watermark',watermark);
         return json(res,status,result);
       };
+      if (path === '/api/iqdb/questions' && method === 'GET') {
+        return json(res, 200, await student.iqdb.questions());
+      }
+      if (path === '/api/iqdb/proposals' && method === 'POST') {
+        return await offlineSubmission(201,(input,watermark) => student.iqdb.proposals(input,watermark));
+      }
+      if (path === '/api/iqdb/papers' && method === 'POST') {
+        return await offlineSubmission(201,(input,watermark) => student.iqdb.papers(input,watermark));
+      }
       if (path === '/api/notion/settings' && method === 'GET') return json(res,200,await student.notion.settings());
       const notionAction = /^\/api\/notion\/selections\/(grant|revoke|sync)$/.exec(path)?.[1];
       const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})(\/purpose)?$/.exec(path);
@@ -240,8 +254,18 @@ export function serve(
       }
       if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());
       if (path === '/api/papers' && method === 'POST') return json(res, 201, await student.workbook.save(await body(req)));
+      if (path === '/api/papers/sealed-practice' && method === 'POST' && student.practiceAdmission)
+        return await offlineSubmission(201,student.practiceAdmission.admit);
+      const practiceTeaching = /^\/api\/papers\/sealed-practice\/([0-9A-HJKMNP-TV-Z]{26})\/teaching$/.exec(path);
+      if (practiceTeaching?.[1] && method === 'GET' && student.practiceAdmission)
+        return json(res, 200, await student.practiceAdmission.getTeaching(practiceTeaching[1]));
+      if (practiceTeaching?.[1] && method === 'PUT' && student.practiceAdmission)
+        return json(res, 200, await student.practiceAdmission.teaching(practiceTeaching[1],await body(req)));
+      const displayAccess = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/answer-displays$/.exec(path);
+      if (displayAccess && method === 'GET')
+        return json(res,200,await readWorkbookDisplayAccess(db,displayAccess[1]!,displayAccess[2]!,url.searchParams.get('after')));
       if (path === '/api/retention/posttests' && method === 'GET')
-        return json(res, 200, await student.retention.listPosttests());
+        return json(res, 200, await student.retention.listPosttests(url.searchParams.get('forecastKey')));
       if (path === '/api/retention/papers' && method === 'POST') {
         return json(res, 201, await student.retention.savePosttestPaper(await body(req)));
       }
@@ -282,10 +306,23 @@ export function serve(
       if (assessment?.[1] && assessment[2] && method === 'POST') {
         return json(res, 200, await student.workbook.assess(assessment[1], assessment[2], await body(req)));
       }
-      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print|presentation))?$/.exec(path);
+      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print|presentation|reading-context))?$/.exec(path);
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));
       if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return await offlineSubmission(200,input => student.workbook.submit(paper[1]!,input));
+      if (paper?.[1] && paper[2] === 'reading-context' && (method === 'GET' || method === 'POST')) {
+        const controller = new AbortController();
+        res.once('close',() => controller.abort());
+        try {
+          const result = method === 'GET'
+            ? await student.workbook.readingLabels(paper[1],url.searchParams,controller.signal)
+            : await student.workbook.readingContext(paper[1],await body(req),controller.signal);
+          if (!controller.signal.aborted) json(res,200,result);
+        } catch (error) {
+          if (!controller.signal.aborted) throw error;
+        }
+        return;
+      }
       if (paper?.[1] && method === 'POST' && paper[2] === 'presentation')
         return json(res, 200, await student.workbook.recordPresentation(paper[1], await body(req)));
       if (path === '/api/review' && method === 'GET') {

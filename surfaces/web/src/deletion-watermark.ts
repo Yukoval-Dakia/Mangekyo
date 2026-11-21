@@ -38,7 +38,8 @@ export function recordNewSubmission(id:string) {
 }
 
 export function guardedPath(path:string) {
-  return path === '/materials' || path === '/practice/riding' || /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/attempts$/.test(path);
+  return path === '/iqdb/proposals' || path === '/iqdb/papers' || path === '/materials' || path === '/practice/riding' || path === '/papers/sealed-practice' ||
+    /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/attempts$/.test(path);
 }
 
 export function verifyGenerationReceipt(response:Response, expected:string) {

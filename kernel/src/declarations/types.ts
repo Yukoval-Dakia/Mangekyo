@@ -49,11 +49,14 @@ export type RangeSnapshot<Value = Json> = {
   readonly members: readonly DerivationSnapshot<Value>[];
 };
 
+export type FactReadOptions =
+  | { readonly mode: 'pinned'; readonly rev: Revision; readonly requirePurpose?: string }
+  | { readonly mode: 'following' };
+
 export type ReadContext = {
   fact<Value = Json>(
     id: FactId,
-    options: { readonly mode: 'pinned'; readonly rev: Revision }
-      | { readonly mode: 'following' },
+    options: FactReadOptions,
   ): Promise<FactSnapshot<Value>>;
   slot<Value = Json>(
     ref: SlotRef,

@@ -1,9 +1,11 @@
 import { derivationId, factId, learnerId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { expect, it } from 'vitest';
+import { checkQuestionTeachingSources } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease as openReleaseContract } from '@mangekyo/module-content/facts/question-release';
 import {
   gather, openQuestionForRelease, questionVerificationEffectResult, settle, type QuestionVerificationEffectReceipt,
 } from '@mangekyo/module-content/question-verification';
+import { bindQuestionExecution, type QuestionExecution } from '../question-effects.ts';
 
 const learner = learnerId('01KFS4AAA00000000000000000');
 const id = factId('01KFS4AAA00000000000000001');
@@ -36,13 +38,17 @@ async function plan(blocks: readonly unknown[] = [statement, solution], recheck 
 }
 
 it('matches unordered ledger receipts to the sealed owner, step, method, and full input', async () => {
-  const sealed = { id: ownerId, plan: await plan() };
+  const raw = await plan();
+  const executions = [0, 1, 2, 3].map(index => ({
+    kind: 'local_wasm', moduleDigest: String(index).repeat(64), executableDigest: String(index).repeat(64), feeMicroUsd: 0,
+  } satisfies QuestionExecution));
+  const sealed = { id: ownerId, plan: {...raw, effects: raw.effects.map((request,index) => bindQuestionExecution(request, executions[index]!))} };
   const invocationIds = [0, 1, 2, 3].map(index => `01KFS4AAA0000000000000010${index}`);
   const receipts: QuestionVerificationEffectReceipt[] = sealed.plan.effects.map((request, index) => ({
     ownerId, request, state: 'done',
     result: questionVerificationEffectResult(invocationIds[index]!, {
       answerKey: '5', conditionKey: 'addition', reasoning: '2 + 3', eligible: true, invocationId: 'untrusted-model-id',
-    }),
+    }, executions[index]!),
   }));
   const replay = JSON.parse(JSON.stringify([...receipts].reverse(), (_key, value) => {
     return value && typeof value === 'object' && !Array.isArray(value)
@@ -60,6 +66,11 @@ it('matches unordered ledger receipts to the sealed owner, step, method, and ful
     [{ ...first!, request: { ...first!.request, label: 'question-contract-validation' } }, ...rest],
   ];
   for (const received of mismatches) expect(settle(sealed, received)).toMatchObject({ value: { status: 'needs-review' } });
+  const repeated = { id: ownerId, plan: {...raw, effects: raw.effects.map(request => bindQuestionExecution(request, executions[0]!))} };
+  expect(settle(repeated, receipts.map((receipt,index) => ({
+    ...receipt, request: repeated.plan.effects[index]!,
+    result: questionVerificationEffectResult(invocationIds[index]!, {answerKey:'5',conditionKey:'addition',reasoning:'2 + 3',eligible:true}, executions[0]!),
+  })))).toMatchObject({value:{status:'needs-review'}});
   for (const changed of [{ id: materialId }, { rev: 2 }, { accessEpoch: '6' }, { recheck: 1 }, { methodVersion: '1' }]) {
     const request = first!.request;
     const input = { ...request.input as object, verification: { ...sealed.plan.data, ...changed } };
@@ -92,4 +103,27 @@ it('projects only designated prompt and known shared material and blocks unclass
     expect(blocked.effects).toEqual([]);
     expect(settle({ id: ownerId, plan: blocked }, [])).toMatchObject({ value: { status: 'needs-review' } });
   }
+});
+
+it('pins the selected workspace entry and follows the version of its evidence', async () => {
+  const reads: [typeof id, Parameters<ReadContext['fact']>[1]][] = [];
+  const workspace: FactSnapshot = {
+    type: 'activity.workspaceEntry', ref: { learner, id: materialId, rev }, accessEpoch: epoch,
+    purpose: ['storage', 'teaching'], value: { basis: [{ id, rev, epoch }] },
+  };
+  const asset = { basis: [{ id: materialId, rev, epoch, type: workspace.type }] };
+  let sourceRev = rev;
+  const read = {
+    async fact(target: typeof id, options: Parameters<ReadContext['fact']>[1]): Promise<FactSnapshot> {
+      reads.push([target, options]);
+      return target === materialId ? workspace : {
+        type: 'capture.source', ref: { learner, id, rev: sourceRev }, accessEpoch: epoch,
+        purpose: ['storage', 'teaching'], value: {},
+      };
+    },
+  };
+  await checkQuestionTeachingSources(read, asset);
+  expect(reads).toEqual([[materialId, { mode: 'pinned', rev, requirePurpose: 'teaching' }], [id, { mode: 'following' }]]);
+  sourceRev = 2 as Revision;
+  await expect(checkQuestionTeachingSources(read, asset)).rejects.toThrow('依据已变化');
 });

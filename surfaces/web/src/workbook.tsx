@@ -1,10 +1,12 @@
+import { BankAttachment, BankFeedback, BankFields, BankOrigin, bankSubmission } from './bank-question';
+import { fixedLink } from './concept-reading';
 import { useDraftWatermark } from './draft-watermark';
 import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
-  WorkbookDetail,
-  WorkbookQuestionView,
+  WorkbookDetail as BaseDetail,
+  WorkbookQuestionView as BaseQuestion,
   WorkbookRubricAssessmentView,
   WorkbookSummary,
   WorkbookSourceQuestionRef,
@@ -15,8 +17,19 @@ import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
 import { observePaperTime } from './workbook-duration';
-import { useWorkbookPresentation } from './workbook-presentation';
+import { QuestionContext } from './reading-drawer';
+import type { ReadingContextEntry } from './paper-reading-capsule';
+import { QuestionPresentation, useWorkbookPresentation } from './workbook-presentation';
+import { SealedPracticeAuthor } from './sealed-practice';
+import { WorkbookAccess } from './workbook-access';
 import './workbook.css';
+
+type WorkbookQuestionView = BaseQuestion & { readingContext?: ReadingContextEntry[] };
+type WorkbookDetail = Omit<BaseDetail, 'questions' | 'attempts'> & {
+  questions: WorkbookQuestionView[];
+  attempts: (BaseDetail['attempts'][number] & { paperRev?: number; questions?: WorkbookQuestionView[];
+    formalAssessment?: {state: string; score: {earned: number; maximum: number} | null; reason?: string} })[];
+};
 
 export type WorkbookProps = {
   modelSettings: Resource<Settings>;
@@ -56,6 +69,7 @@ function ListPage() {
         <a className="primary-button" href="/papers/new">
           新建试卷
         </a>
+        <a className="tonal-button" href="/materials?view=iqdb">从智能题库选题</a>
         <a className="tonal-button" href="/materials/workspace?kind=question">同伴存入的题目</a>
         <a className="tonal-button" href="/papers/issued">纸面发行与回收</a>
       </div>
@@ -114,9 +128,13 @@ type EditorQuestion = (NumericEditor | ExactEditor | RubricEditor) & {
   sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
 
-function QuestionSource({ source }: { source: WorkbookSourceQuestionRef }) {
+function QuestionSource({ source, sealedPractice }: { source: WorkbookSourceQuestionRef; sealedPractice?: boolean }) {
   return <p className="workbook-source-note">
-    引用原题第 {source.rev} 版 · <a href={'/materials/records/' + encodeURIComponent(source.id)}>查看当前记录</a>
+    {sealedPractice ? <>引用原题第 {source.rev} 版 · <a href="#question-teaching">管理原题题面权限</a></> : <>
+      <a href={fixedLink({v: 1, fact: {...source, type: 'activity.workspaceEntry'}, anchor: {kind: 'question', itemId: 'question'}})}>
+        查看引用的第 {source.rev} 版题面
+      </a> · <a href={'/materials/records/' + encodeURIComponent(source.id)}>查看当前记录</a>
+    </>}
     <br /><small>{source.id}</small>
   </p>;
 }
@@ -388,6 +406,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
         ‹ 返回试卷
       </a>
       <PageTitle title="新建试卷" meta="可写任意学科；保存后试卷即冻结，内容不再改动" />
+      <SealedPracticeAuthor />
       <form className="workbook-editor" onSubmit={submitSave}>
         <section className="workbook-editor-block">
           <label className="field">
@@ -626,6 +645,7 @@ type AttemptDraft = {
   requestId: string;
   answers: Record<string, string>;
   focusIds: string[];
+  scratch?: Record<string, string>;
 };
 
 function attemptDraftKey(paperId: string) {
@@ -645,6 +665,8 @@ function restoreAttemptDraft(paperId: string): AttemptDraft | null {
       typeof draft.answers !== 'object' ||
       Array.isArray(draft.answers) ||
       Object.values(draft.answers).some((value) => typeof value !== 'string') ||
+      (draft.scratch !== undefined && (!draft.scratch || typeof draft.scratch !== 'object' ||
+        Array.isArray(draft.scratch) || Object.values(draft.scratch).some(value => typeof value !== 'string'))) ||
       !Array.isArray(draft.focusIds) ||
       draft.focusIds.some((id) => typeof id !== 'string')
     ) {
@@ -696,25 +718,29 @@ function FeedbackItem({
   attemptId,
   question,
   feedback,
+  showFeedback,
   assessments,
   onAssess,
   allowSearch,
   destination,
   assessing,
+  sealedPractice,
 }: {
   paperId: string;
   attemptId: string;
   question: WorkbookQuestionView;
+  showFeedback: boolean;
   feedback: WorkbookDetail['attempts'][number]['feedback'][number];
   assessments: WorkbookRubricAssessmentView[];
   onAssess: (questionId: string, query?: string) => void;
   allowSearch: boolean;
   destination: string;
   assessing: string | null;
+  sealedPractice: boolean;
 }) {
   const [query, setQuery] = useState('');
   const assessment = assessments.at(-1);
-  const shownResult = assessment?.verdict ?? feedback.result;
+  const shownResult = showFeedback ? assessment?.verdict ?? feedback.result : undefined;
   const className = shownResult === 'correct'
     ? 'workbook-result-correct'
     : shownResult === 'incorrect'
@@ -723,14 +749,19 @@ function FeedbackItem({
   return (
     <article className={`workbook-feedback-item ${className}`}>
       <header className="workbook-feedback-head">
-        <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>
+        {showFeedback && <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>}
         <span className="workbook-feedback-question">{question.prompt}</span>
       </header>
-      {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
+      <QuestionContext itemId={question.id} historical readingContext={question.readingContext} source={sealedPractice || question.kind === 'bank' ? undefined : question.sourceQuestionRef}
+        referencesAllowed={showFeedback} previous={feedback.answer !== null && <p>我的作答 · {String(feedback.answer)}</p>} />
+      {question.kind === 'bank' && <BankOrigin source={question.sourceQuestionRef}/>}
+      {showFeedback && <>
+        {sealedPractice && question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} sealedPractice />}
       {feedback.result === 'self-check' && (
         <SelfCheckMarks paperId={paperId} attemptId={attemptId} questionId={feedback.questionId} />
       )}
-      {feedback.answer !== null && (
+      {question.kind === 'bank' && feedback.answer !== null && <BankFeedback question={question} answer={String(feedback.answer)}/>}
+      {question.kind !== 'bank' && feedback.answer !== null && (
         <p className="workbook-answer">
           你的作答：<code>{String(feedback.answer)}</code>
         </p>
@@ -780,6 +811,7 @@ function FeedbackItem({
           </button>
         </section>
       )}
+      </>}
     </article>
   );
 }
@@ -859,7 +891,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   const wrongQuestionIds = activeAttempt
     ? activeAttempt.feedback
         .filter((feedback) =>
-          feedback.result === 'incorrect' ||
+          feedback.result === 'incorrect' || feedback.result === 'partial' ||
           (activeAttempt.assessments ?? []).some(
             (assessment) =>
               assessment.questionId === feedback.questionId &&
@@ -871,12 +903,21 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   const showForm = Boolean(draft) || attempts.length === 0;
   const answerDisabled = busy || !draft;
   const revision = view?.id === paperId ? view.revision : undefined;
-  const feedback = (activeAttempt?.feedback ?? []).filter(item => view?.questions.some(q => q.id === item.questionId));
+  const frozenQuestions = activeAttempt?.questions;
+  const reviewQuestions = frozenQuestions ?? view?.questions ?? [];
+  const feedback = (activeAttempt?.feedback ?? []).filter(item => reviewQuestions.some(q => q.id === item.questionId));
+  const reviewItems = feedback.map(item => item.questionId);
   const questions = useWorkbookPresentation(paperId, revision, [
-    ...(showForm ? visibleQuestions.map(q => q.id) : []), ...feedback.map(item => item.questionId),
+    ...(showForm ? visibleQuestions.map(q => q.id) : []), ...(frozenQuestions ? [] : reviewItems),
   ]);
-  const solutions = useWorkbookPresentation(paperId, revision, questions.allowed
-    ? feedback.filter(item => item.expected && item.expected.kind !== 'rubric').map(item => item.questionId) : [], activeAttempt);
+  const reviewRevision = frozenQuestions ? (view?.id === paperId ? activeAttempt.paperRev : undefined) : revision;
+  const historical = useWorkbookPresentation(paperId, reviewRevision,
+    frozenQuestions && questions.allowed ? reviewItems : [],
+    activeAttempt && {kind: 'question', attempt: activeAttempt});
+  const reviewAllowed = questions.allowed && historical.allowed;
+  const solutions = useWorkbookPresentation(paperId, reviewRevision, reviewAllowed
+    ? feedback.filter(item => item.expected && item.expected.kind !== 'rubric').map(item => item.questionId) : [],
+    activeAttempt && {kind: 'solution', attempt: activeAttempt});
 
   const form = useRef<HTMLFormElement>(null);
   const clock = useRef<ReturnType<typeof observePaperTime> | null>(null);
@@ -892,9 +933,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     };
   }, [paperId, timingId]);
 
-  function changeAnswer(questionId: string, value: string) {
+  function changeAnswer(questionId: string, value: string, field: 'answers'|'scratch' = 'answers') {
     if (!draft) return;
-    const next = { ...draft, answers: { ...draft.answers, [questionId]: value } };
+    const next = { ...draft, [field]: { ...draft[field], [questionId]: value } };
     remember(attemptDraftKey(paperId), JSON.stringify(next));
     setDraft(next);
   }
@@ -926,7 +967,12 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     const answers: Record<string, string | null> = {};
     for (const question of visibleQuestions) {
       const value = draft.answers[question.id]?.trim();
-      answers[question.id] = value ? value : null;
+      try {
+        answers[question.id] = question.kind === 'bank' ? bankSubmission(question, value ?? '') : value || null;
+      } catch (failure) {
+        setError(failure instanceof Error ? failure.message : '请核对本题作答。');
+        return;
+      }
     }
     if (!Object.values(answers).some((value) => value !== null)) {
       setError('请至少作答一题再交卷。');
@@ -1038,6 +1084,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
           )}
         </section>
       )}
+      {view.sealedPractice && <WorkbookAccess key={paperId} paperId={paperId} />}
       <div className="workbook-detail-grid">
         {watermark.notice}
         {showForm && (
@@ -1047,6 +1094,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
               <span className="workbook-count">已答 {visibleQuestions.filter((question) => draft?.answers[question.id]?.trim()).length} / {visibleQuestions.length}</span>
             </div>
             {draft?.focusIds.length && <p className="workbook-focus-note">其余题目这次会记为未作答，不影响试卷冻结内容。</p>}
+            <QuestionPresentation value={questions.questionPermit}>
             <form ref={form} onSubmit={(event) => void submit(event)}>
               {visibleQuestions.map((question, index) => (
                 <article key={question.id} className="workbook-answer-item">
@@ -1057,12 +1105,19 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                         ? '数值题'
                         : question.kind === 'exact'
                           ? '精确题'
-                          : '评分标准题'}
+                          : question.kind === 'bank' ? '题库题' : '评分标准题'}
                     </span>
                   </header>
-                  {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
+                  <QuestionContext itemId={question.id} readingContext={question.readingContext} source={view.sealedPractice || question.kind === 'bank' ? undefined : question.sourceQuestionRef} />
+                  {question.kind === 'bank' && <BankOrigin source={question.sourceQuestionRef}/>}
+                  {view.sealedPractice && question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} sealedPractice />}
                   <p className="workbook-answer-prompt">{question.prompt}</p>
-                  {question.kind === 'numeric' ? (
+                  <details><summary>本题草稿</summary><label className="field"><span>演算或思路（仅本机）</span>
+                    <textarea rows={3} maxLength={4000} disabled={answerDisabled} value={draft?.scratch?.[question.id] ?? ''}
+                      onChange={e => changeAnswer(question.id,e.target.value,'scratch')}/></label></details>
+                  {question.kind === 'bank' && <BankAttachment question={question} paperId={paperId}/>}
+                  {question.kind === 'bank' ? <BankFields question={question} raw={draft?.answers[question.id] ?? ''}
+                    disabled={answerDisabled} change={value => changeAnswer(question.id, value)}/> : question.kind === 'numeric' ? (
                     <label className="field">
                       <span>{question.unit ? `${question.unit}（数字）` : '数字答案'}</span>
                       <input
@@ -1123,6 +1178,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </button>
               </div>
             </form>
+            </QuestionPresentation>
           </section>
         )}
         {activeAttempt && (
@@ -1130,6 +1186,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
             <div className="workbook-review-head" ref={feedbackHeading} tabIndex={-1}>
               <div>
                 <h2>本次反馈</h2>
+                {activeAttempt.formalAssessment?.score && <p>整卷得分 {activeAttempt.formalAssessment.score.earned} / {activeAttempt.formalAssessment.score.maximum}</p>}
+                {activeAttempt.formalAssessment?.state === 'queued' && <button className="text-button" onClick={() => setReload(n => n + 1)}>刷新批改进度</button>}
+                {activeAttempt.formalAssessment?.reason && <p role="status">{activeAttempt.formalAssessment.reason}</p>}
                 <p className="muted">
                   {dateLabel(activeAttempt.submittedAt)} · {activeAttempt.total ? '自动核对答对 ' + activeAttempt.correctCount + ' / ' + activeAttempt.total : '查看各题反馈'}
                   {'effectiveDurationMs' in activeAttempt && typeof activeAttempt.effectiveDurationMs === 'number' && (
@@ -1151,12 +1210,12 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
             </div>
             <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} />
             {solutions.error && <p role="alert">{solutions.error} <button onClick={solutions.retry}>重试</button></p>}
-            {activeAttempt.feedback.map((feedback) => {
-              const question = view.questions.find((item) => item.id === feedback.questionId);
+            {historical.error && <p role="alert">{historical.error} <button onClick={historical.retry}>重试</button></p>}
+            {!historical.allowed && !historical.error && <p role="status">正在确认历史题面展示许可…</p>}
+            <QuestionPresentation value={historical.questionPermit}>
+            {reviewAllowed && feedback.map((feedback) => {
+              const question = reviewQuestions.find((item) => item.id === feedback.questionId);
               if (!question) return null;
-              if (feedback.expected && feedback.expected.kind !== 'rubric' && !solutions.allowed) {
-                return <p key={question.id} className="workbook-feedback-question">{question.prompt}</p>;
-              }
               return (
                 <div key={feedback.questionId}>
                   <FeedbackItem
@@ -1164,6 +1223,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     attemptId={activeAttempt.id}
                     question={question}
                     feedback={feedback}
+                    showFeedback={!feedback.expected || feedback.expected.kind === 'rubric' || solutions.allowed}
                     assessments={(activeAttempt.assessments ?? []).filter(
                       (assessment) => assessment.questionId === feedback.questionId,
                     )}
@@ -1171,6 +1231,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     destination={settings ? settings.model + ' · ' + settings.baseUrl : '模型服务'}
                     onAssess={assessRubric}
                     assessing={assessing}
+                    sealedPractice={view.sealedPractice === true}
                   />
                   {settingsError && question.kind === 'rubric' && !(activeAttempt.assessments ?? []).some(
                     (assessment) => assessment.questionId === feedback.questionId,
@@ -1178,6 +1239,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </div>
               );
             })}
+            </QuestionPresentation>
+            <WorkbookAccess key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} displayId={solutions.displayId} />
           </section>
         )}
       </div>

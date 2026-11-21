@@ -48,6 +48,19 @@ export function posttestIssuance(input: unknown) {
   };
 }
 
+export function matchesCurrentPosttest(issuance: ReturnType<typeof posttestIssuance>,
+  current: { frozen: {derivationId: DerivationId; effectiveTick: Tick}; window: RetentionWindow;
+    opened: { sealed: boolean; accessEpoch: Tick; target: {paper: ReturnType<typeof helpRef>; itemId: string; gradingVersion: string} } },
+) {
+  const { opened, frozen, window } = current;
+  const { target } = opened;
+  return opened.sealed && issuance.forecastId === frozen.derivationId &&
+    issuance.effectiveTick === frozen.effectiveTick && issuance.paperEpoch === opened.accessEpoch &&
+    issuance.paper.id === target.paper.id && issuance.paper.rev === target.paper.rev &&
+    issuance.itemId === target.itemId && issuance.gradingVersion === target.gradingVersion &&
+    issuance.through === window.through && issuance.startedAt >= posttestOpensAt(window);
+}
+
 export function matchesControlledSubmission(
   attempt: WorkbookAttempt,
   admittedAt: Tick,

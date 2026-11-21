@@ -1,11 +1,12 @@
-import { factId, type FactId, type FactRef, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
+import { workbookAttemptUsage, workbookAttemptView, workbookSummary, workbookMistakes } from './workbook-assessment-values.ts';
+import { factId, type FactId, type FactRef, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { projectHelpExposure, type AdmittedHelpEvent } from './help-exposure.ts';
 import type { HelpTarget } from './help-exposure-values.ts';
 import type { SourceRefV1 } from './source-values.ts';
 import type { ActivityEvidenceReadScope } from './evidence-read.ts';
 import {
-  workbookAttempt, workbookAttemptType, workbookCorrectCount, workbookPaperType,
-  type WorkbookAttempt, type WorkbookAttemptView, type WorkbookPaper, type WorkbookRubricAssessmentView,
+  workbookAttempt, workbookAttemptType,
+  type WorkbookAttempt, type WorkbookDetail, type WorkbookPaper, type WorkbookQuestionView, type WorkbookRubricAssessmentView,
   type WorkbookSourceView, type WorkbookSummary,
 } from './workbook-values.ts';
 
@@ -19,42 +20,25 @@ export type ReviewEntry = {
   explanation: string | null;
 };
 
-export function attemptView(
-  id: string,
-  attempt: WorkbookAttempt,
-  assessments: WorkbookRubricAssessmentView[],
-): WorkbookAttemptView {
-  return {
-    id,
-    requestId: attempt.requestId,
-    submittedAt: attempt.submittedAt,
-    ...(attempt.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: attempt.effectiveDurationMs }),
-    gradingVersion: attempt.gradingVersion,
-    answers: attempt.answers,
-    feedback: attempt.feedback.map(item => item.result === 'unanswered' ? {...item, expected: null, explanation: null} : item),
-    assessments,
-    correctCount: workbookCorrectCount(attempt.feedback),
-    total: attempt.paper.questions.filter(
-      q => q.kind !== 'rubric' && (q.kind !== 'exact' || !q.selfCheck),
-    ).length,
-  };
-}
-
 export async function readWorkbookAttempts(
   tx: ActivityEvidenceReadScope,
-  read: ReadContext, unavailable: (error: unknown) => boolean,
-): Promise<{ id: FactId; rev: Revision; attempt: WorkbookAttempt }[]> {
+  read: ReadContext, unavailable: (error: unknown) => boolean, paperId?: FactId,
+): Promise<{ id: FactId; rev: Revision; attempt: WorkbookAttempt; fact: FactSnapshot }[]> {
   const { rows } = await tx.query<{ id: string }>(
-    `SELECT id FROM facts
-     WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-     ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookAttemptType],
+    `SELECT f.id FROM facts f
+     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
+       AND ($3::text IS NULL OR EXISTS (
+         SELECT FROM fact_revs r WHERE (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+           AND r.data->>'paperId'=$3
+       ))
+     ORDER BY f.created_tick DESC, f.id`,
+    [tx.learner, workbookAttemptType, paperId ?? null],
   );
   const attempts: Awaited<ReturnType<typeof readWorkbookAttempts>> = [];
   for (const row of rows) {
     try {
       const fact = await read.fact(factId(row.id), { mode: 'following' });
-      attempts.push({ id: fact.ref.id, rev: fact.ref.rev, attempt: workbookAttempt(fact.value) });
+      attempts.push({ id: fact.ref.id, rev: fact.ref.rev, attempt: workbookAttempt(fact.value),fact });
     } catch (error) {
       if (!unavailable(error)) throw error;
     }
@@ -62,49 +46,54 @@ export async function readWorkbookAttempts(
   return attempts;
 }
 
-export async function readWorkbookSummaries(tx: ActivityEvidenceReadScope,
+export async function readWorkbookSummaries(paperIds: readonly FactId[],
   attempts: readonly {attempt: WorkbookAttempt}[], openPaper: (id: FactId) => Promise<WorkbookPaper>,
   openSource: (id: string) => Promise<WorkbookSourceView>, unavailable: (error: unknown) => boolean,
 ): Promise<WorkbookSummary[]> {
-  const grouped = new Map<string, { count: number; last: string | null }>();
-  for (const { attempt } of attempts) {
-    const current = grouped.get(attempt.paperId) ?? { count: 0, last: null };
-    current.count += 1;
-    if (current.last === null || attempt.submittedAt > current.last) {
-      current.last = attempt.submittedAt;
-    }
-    grouped.set(attempt.paperId, current);
-  }
-  const { rows } = await tx.query<{ id: string }>(
-    `SELECT id FROM facts
-     WHERE learner_id=$1 AND type=$2 AND retracted_rev IS NULL
-     ORDER BY created_tick DESC, id`,
-    [tx.learner, workbookPaperType],
-  );
+  const grouped = workbookAttemptUsage(attempts);
   const summaries: WorkbookSummary[] = [];
-  for (const row of rows) {
+  for (const id of paperIds) {
     try {
-      const paper = await openPaper(factId(row.id));
+      const paper = await openPaper(id);
       const source = paper.materialId === null
         ? null
         : await openSource(paper.materialId);
-      const usage = grouped.get(row.id);
-      summaries.push({
-        id: row.id,
-        title: paper.title,
-        questionCount: paper.questions.length,
-        savedAt: paper.savedAt,
-        sourceId: paper.materialId,
-        sourceTitle: source?.title ?? null,
-        attemptCount: usage?.count ?? 0,
-        lastAttemptAt: usage?.last ?? null,
-      });
+      summaries.push(workbookSummary(id,paper,source,grouped.get(id)));
     } catch (error) {
       if (unavailable(error)) continue;
       throw error;
     }
   }
   return summaries;
+}
+
+type WorkbookAssessmentResult = Parameters<typeof workbookAttemptView>[3];
+
+export async function projectWorkbookDetail<Question extends WorkbookQuestionView, Formal>(
+  id: FactId, revision: Revision, paper: WorkbookPaper, source: WorkbookSourceView | null, sealedPractice: boolean,
+  reads: {
+    attempts: Awaited<ReturnType<typeof readWorkbookAttempts>>;
+    assessments: ReadonlyMap<string, WorkbookRubricAssessmentView[]>;
+    frozenAttempt(fact: FactSnapshot, paper: WorkbookPaper): Promise<{questions: Question[]; paperRev?: Revision} | undefined>;
+    formalAssessment(paper: WorkbookPaper, ref: {id: FactId; rev: Revision}):
+      Promise<{view: Formal; result: WorkbookAssessmentResult} | undefined>;
+    questions(): Promise<Question[]>;
+  },
+) {
+  const attempts: (WorkbookDetail['attempts'][number] & { rev: Revision; questions: Question[]; paperRev?: Revision; formalAssessment?: Formal })[] = [];
+  for (const { id: attemptId, rev, attempt, fact } of reads.attempts) {
+    const frozen = await reads.frozenAttempt(fact, attempt.paper);
+    if (!frozen) continue;
+    const formal = await reads.formalAssessment(attempt.paper, {id:attemptId,rev});
+    const view = workbookAttemptView(attemptId, attempt, reads.assessments.get(attemptId) ?? [], formal?.result);
+    attempts.push({ ...view, rev, ...frozen, ...(formal ? {formalAssessment:formal.view} : {}) });
+  }
+  return {
+    id, revision, title: paper.title, savedAt: paper.savedAt, source,
+    questions: await reads.questions(), attempts,
+    ...(sealedPractice ? { sealedPractice:true as const } : {}),
+    ...(paper.assessmentRelease ? { assessmentReleaseRef:paper.assessmentRelease.releaseRef } : {}),
+  };
 }
 
 export async function projectWorkbookReview(attempts: readonly {id: FactId; attempt: WorkbookAttempt}[],
@@ -116,23 +105,7 @@ export async function projectWorkbookReview(attempts: readonly {id: FactId; atte
   for (const { id, attempt } of attempts) {
     if (!available.has(attempt.paperId)) available.set(attempt.paperId, await paperAvailable(attempt.paperId));
     if (!available.get(attempt.paperId)) continue;
-    for (const f of attempt.feedback) {
-      const key = attempt.paperId + '/' + f.questionId;
-      const grade = assessments.get(id)?.find(result => result.questionId === f.questionId);
-      const verdict = grade?.verdict ?? f.result;
-      if (verdict === 'pending' || verdict === 'unanswered' || verdict === 'self-check' || seen.has(key)) continue;
-      seen.add(key);
-      if (verdict !== 'incorrect' && verdict !== 'partial') continue;
-      const q = attempt.paper.questions.find(q => q.id === f.questionId);
-      if (!q) continue;
-      const expected = f.expected.kind === 'exact'
-        ? f.expected.values.join(' / ')
-        : f.expected.kind === 'rubric'
-          ? f.expected.rubric
-          : [f.expected.value, f.expected.unit].filter(x => x !== null).join(' ');
-      result.push({ paperId: attempt.paperId, title: attempt.paper.title, questionId: q.id,
-        prompt: q.prompt, answer: String(f.answer), expected, explanation: grade?.feedback ?? f.explanation });
-    }
+    result.push(...workbookMistakes(attempt, assessments.get(id) ?? [], seen));
   }
   return result;
 }
@@ -145,13 +118,14 @@ export function workbookDiagnosisView<Formal>(
   { ref, cutoff, targets, events }: DiagnosisHelp,
   assessments: readonly Pick<WorkbookRubricAssessmentView, 'questionId' | 'verdict' | 'score'>[],
   formalAssessment: Formal | undefined,
+  feedback: readonly {result: string}[] = attempt.feedback,
 ) {
   const unavailable = { state: 'unavailable' } as const;
   const byQuestion = new Map(assessments.map(({ questionId, verdict, score }) => [questionId, { verdict, ...(score ? { score } : {}) }]));
   const questions = attempt.paper.questions.map((question, index) => {
     const { id, prompt, kind } = question;
     const observed = projectHelpExposure({ submission: { ref, target: targets[index]!, cutoff }, events, coverage: null });
-    const { result } = attempt.feedback[index]!;
+    const { result } = feedback[index]!;
     const assessment = byQuestion.get(id) ?? { verdict: result };
     return { id, prompt, answer: attempt.answers[id], kind, assessment,
       ...(kind === 'numeric' ? { unit: question.unit } : {}),

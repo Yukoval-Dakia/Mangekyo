@@ -23,7 +23,7 @@ export default defineCommand({
       : state.restrictions.filter(entry => entry.scope !== disposition.scope);
     if (disposition.action === 'stop' || disposition.action === 'withdraw') restrictions.push(disposition);
     return [{ kind: 'correct', id: snapshot.ref.id, expectedRev: stateRev,
-      data: { questionId: id, restrictions, last: disposition, recheck: state.recheck + Number(disposition.action === 'recheck') },
+      data: { ...state, restrictions, last: disposition, recheck: state.recheck + Number(disposition.action === 'recheck') },
     }];
   },
 });

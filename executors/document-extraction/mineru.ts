@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { unzipSync } from 'fflate';
 
 export type MineruMediaType = 'application/pdf' | 'image/png' | 'image/jpeg';
@@ -318,3 +319,15 @@ export async function readMineru(input: ReadInput): Promise<MineruReadResult> {
 }
 
 export { MineruError };
+
+/** Poll the existing batch. The caller confirms that its original authority is current before each read. */
+export async function pollMineru(read: typeof readMineru, input: Pick<ReadInput, 'token' | 'batchId' | 'dataId' | 'beforeDownload'>,
+  isCurrent: () => Promise<boolean>, intervalMs: number) {
+  const signal = AbortSignal.timeout(120_000);
+  while (await isCurrent()) {
+    const result = await read({ ...input, signal });
+    if (result.state !== 'pending') return await isCurrent() ? result : undefined;
+    await delay(intervalMs, undefined, { signal });
+  }
+  return undefined;
+}

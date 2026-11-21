@@ -4,7 +4,7 @@ import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
-import { requestWork } from '../../kernel/src/work/index.ts';
+import { requestCatalogedWork } from '../../kernel/src/work/index.ts';
 import {
   settledAssessmentState, type FormalAssessmentValue, type AssessmentRevisionRef,
 } from '../../modules/activity/assessment-values.ts';
@@ -34,12 +34,7 @@ export async function registerFormalAssessment(
   };
   const type = policy.slot.type;
   const key = formalAssessmentSlotKey(type, scope.releaseRef, scope.submissionRef);
-  const inserted = await tx.query(
-    `INSERT INTO slot_state (learner_id, slot_type, slot_key, scope_keys, changed_tick)
-     VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-    [tx.learner, type, key, JSON.stringify(scope), tick],
-  );
-  if (inserted.rowCount) await requestWork(tx, tick, { slotType: type, slotKey: key, deriver: policy.deriver });
+  await requestCatalogedWork(tx, tick, {slotType:type, slotKey:key, deriver:policy.deriver}, JSON.stringify(scope));
 }
 
 export async function readFormalAssessment(

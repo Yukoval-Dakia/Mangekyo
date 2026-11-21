@@ -20,6 +20,8 @@ import { openCapturePapers } from './capture-papers.ts';
 import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } from './intake-cloud.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
+import { workbookBacktrace } from './workbook-backtrace.ts';
+import { openPracticeAdmission } from './sealed-practice.ts';
 import {
   artifactAssessmentSlot, executeArtifactAssessment, type ReadArtifactAssessmentWitness,
 } from './artifact-assessment.ts';
@@ -34,6 +36,9 @@ import { openRelationReview } from './workspace-relation.ts';
 import { openResearch } from './research.ts';
 import { validateResearchScoutHost } from './research-scout.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
+import { openIqdb } from './iqdb.ts';
+import { executeQuestionVerification, openLocalQuestionEffects } from './iqdb-verification.ts';
+import { questionVerificationType } from '../../modules/content/question-verification.ts';
 import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
@@ -87,6 +92,7 @@ const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 const pythonHost = createPythonDeriverHost();
 const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
 const retentionComparison = openRetentionComparison(db, pythonHost);
+const iqdbHost = await openLocalQuestionEffects(process.env.MANGEKYO_IQDB_LOCAL_WASM);
 const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
 const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
   ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
@@ -107,14 +113,17 @@ async function openWeb() {
   const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
     assessment: workbookAssessment,
+    context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
     onResearchFactsChanged: research.workbookChanged,
   });
+  const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank);
   const student = { notion:openStudioNotion(db,capture), textbook, relationReview:openRelationReview(db,content),
-    workbook, organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
+    workbook, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),
+    organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
-    research, recall, retention, retentionComparison };
+    research, recall, retention, retentionComparison, iqdb };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -144,6 +153,7 @@ async function runWorker(storeId: string) {
     if (!work || [confirmedTeachingMethod,learningToolsMethod].includes(work.deriver)) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
+    else if (work.slotType === questionVerificationType) await executeQuestionVerification(db, ref, iqdbHost, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
     else if (work.slotType === retentionComparisonWork) await retentionComparison.execute(ref, work.slotKey, terminal);
     else if (isRetentionSlot(work.slotType)) await retention.execute(ref, terminal);

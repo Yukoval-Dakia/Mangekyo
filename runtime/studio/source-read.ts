@@ -1,15 +1,17 @@
-import {assetType, parseAsset, assetBodyReference} from '../../modules/content/asset.ts';
+import {assetType, parseAsset, assetBodyReference, questionPrompt} from '../../modules/content/asset.ts';
+import {openArithmeticPractice} from '../../modules/content/arithmetic-practice.ts';
 import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
 import { projectSource as project } from '../../modules/activity/workspace-source-projection.ts';
 export { sourceQuestions, sourceSearchExcerpt, textbookText } from '../../modules/activity/workspace-source-projection.ts';
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
-import {factId, type Revision} from '../../kernel/src/declarations/ids.ts';
+import {factId, type FactId, type Revision} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {intakeFactType} from '../../modules/capture/intake-values.ts';
 import {materialType, storagePurpose} from '../../modules/activity/library-values.ts';
 import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from '../../modules/activity/source-values.ts';
-import {workbookAttemptType} from '../../modules/activity/workbook-values.ts';
+import {readFrozenWorkbookRecord} from '../../modules/activity/workbook-bank.ts';
+import {workbookAttemptType, WorkbookSourceMismatch} from '../../modules/activity/workbook-values.ts';
 import {openTextbookReference, textbookPageFrom, textbookPageType} from '../../modules/content/textbook-page.ts';
 import {
   WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
@@ -22,7 +24,12 @@ import {openWorkbookQuestionSources} from './workbook-diagnosis.ts';
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = NotionRecipient;
-export type SourceAccess = { track?: SourceTrack; exactReadModes?: true } & (
+export type SourceAccess = {
+  track?: SourceTrack;
+  exactReadModes?: true;
+  rootType?: string;
+  readNotionWitness?: (fact: FactSnapshot) => Promise<FactSnapshot>;
+} & (
   | {recipient: 'learner'}
   | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string; ownerNotionRead?: true}
 );
@@ -35,7 +42,8 @@ export function sourceMaySend(access: SourceAccess, fact: FactSnapshot): boolean
   return access.recipient === 'learner' || access.maySend(fact);
 }
 
-export async function resolveSource(tx: ReadTransaction, input: unknown, access: SourceAccess, mode: SourceReadMode = 'pinned') {
+export async function resolveSource(tx: ReadTransaction, input: unknown, access: SourceAccess, mode: SourceReadMode = 'pinned',
+  bound?: ReturnType<typeof createAuthorizedFactReader>) {
   const reference = sourceRefV1(input);
   const textReference = reference?.textFact;
   if (textReference && (reference.fact.type !== materialType || textReference.type !== intakeFactType ||
@@ -44,22 +52,25 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   if (!isSourceFactId(id) || (mode !== 'pinned' && mode !== 'following')) return;
   const anchor: SourceAnchorV1 = reference?.anchor ?? {kind: 'whole'};
   const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
-  const reader = createAuthorizedFactReader(tx, sourcePurpose(access), accepts);
+  const pinnedQuestion = reference?.fact.type === assetType && access.recipient === 'learner' && mode === 'pinned' && !access.rootType;
+  if (pinnedQuestion && (reference.anchor.kind !== 'question' || reference.anchor.itemId !== 'question' || reference.textFact)) return;
+  const reader = pinnedQuestion ? createAuthorizedFactReader(tx, purpose, accepts) :
+    bound ?? createAuthorizedFactReader(tx, sourcePurpose(access), accepts);
   const seen = new Map<string, {fact:FactSnapshot; pinned:boolean}>();
   const path = new Set<string>();
   const questionSources: Parameters<SourceTrack>[] = [];
   const checkedAttempts = new Set<string>();
   const rootType = (fact: FactSnapshot) =>
-    (!reference || fact.type === reference.fact.type) &&
-    (workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
+    (!access.rootType || fact.type === access.rootType) && (!reference || fact.type === reference.fact.type) &&
+    (fact.type === assetType || workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
       fact.type === textbookPageType);
 
   async function visit(sourceId: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(sourceId)) return;
     const fact = await reader.fact(factId(sourceId), revision === undefined ? {mode: 'following'} : {mode: 'pinned', rev: revision});
     if (access.recipient === 'learner' || access.ownerNotionRead)
-      await checkStudioNotionFact(tx, fact, storagePurpose, 'learner');
-    else await checkStudioNotionFact(tx, fact, sourcePurpose(access), access.maySend);
+      await checkStudioNotionFact(tx, fact, storagePurpose, 'learner', access.readNotionWitness);
+    else await checkStudioNotionFact(tx, fact, sourcePurpose(access), access.maySend, access.readNotionWitness);
     const key = `${sourceId}:${fact.ref.rev}`;
     if (path.has(key)) return;
     const visited = seen.get(key);
@@ -69,6 +80,11 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     }
     if (sourceId === id && !path.size && !rootType(fact)) return;
     path.add(key);
+    const bankSources: [FactSnapshot, 'pinned' | 'following'][] = [];
+    await readFrozenWorkbookRecord(reader, fact, (...proof) => bankSources.push(proof));
+    for (const [source, mode] of bankSources) {
+      if (!await visit(source.ref.id,mode === 'pinned' ? source.ref.rev : undefined)) return;
+    }
     if (fact.type === workspaceEntryType) {
       const entry = workspaceEntry(fact.value);
       for (const witness of entry.basis) {
@@ -114,10 +130,21 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
           return {...anchor, start:offset, end:nextOffset ?? oldText.length};
         })() : anchor;
         if (!project(text, originalAnchor, access.recipient)) return;
+      } else if (original.type === assetType) {
+        if (!pinnedQuestion && !await openArithmeticPractice(reader,original.ref.id,original)) return;
       } else if (!project(original, anchor, access.recipient)) return;
     }
     const fact = await visit(id, mode === 'pinned' ? rootRevision : undefined);
     if (!fact) return;
+    if (fact.type === assetType && !pinnedQuestion) {
+      if (anchor.kind !== 'whole' && (anchor.kind !== 'question' || anchor.itemId !== 'question')) return;
+      const result = await openArithmeticPractice(reader,fact.ref.id,fact);
+      if (!result) return;
+      access.track?.(fact, reference ? mode : 'following');
+      access.track?.(result.state,'following');
+      return {id:fact.ref.id,rev:fact.ref.rev,sourceRef:sourceReference(fact,anchor),
+        kind:'question' as const,title:result.title,content:result.prompt};
+    }
     let body = fact;
     let linkedMaterial: FactSnapshot | undefined;
     if (fact.type === materialType || fact.type === intakeFactType) {
@@ -160,7 +187,11 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     }
     const projectionAnchor = (mode === 'following' && anchor.kind === 'text' && body.type === intakeFactType)
       ? {...anchor, end:Math.min(anchor.end, intakeTextOf(body).text.length)} : anchor;
-    const projection = project(body, projectionAnchor, access.recipient);
+    const question = pinnedQuestion ? parseAsset(fact.value) : undefined;
+    if (question && question.kind !== 'question') return;
+    const projection: ReturnType<typeof project> = question?.kind === 'question'
+      ? {title: question.title, content: questionPrompt(question)}
+      : project(body, projectionAnchor, access.recipient);
     if (!projection) return;
     for (const {fact:witness, pinned} of seen.values()) {
       const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
@@ -173,7 +204,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     for (const proof of questionSources) access.track?.(...proof);
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkspaceInputError) return;
+    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
+        error instanceof WorkspaceInputError || error instanceof WorkbookSourceMismatch) return;
     throw error;
   }
 }

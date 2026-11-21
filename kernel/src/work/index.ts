@@ -11,7 +11,7 @@ function deliveryLane(lane: WorkDeliveryLane) {
     ? {pending:lane, delivered:'delivered', deriver:null}
     : {pending:'routed_pending' as const, delivered:'routed_delivered', deriver:lane.deriver};
 }
-export { readReadyWork, requestWork } from './demand.ts';
+export { readReadyWork, requestCatalogedWork, requestWork } from './demand.ts';
 export type { WaitRegistration, WaitTransition, WaitTerminalState } from './wait.ts';
 export { registerWorkWait, wakeWaitingWork } from './wait.ts';
 

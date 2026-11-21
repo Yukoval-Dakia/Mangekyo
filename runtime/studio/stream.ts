@@ -5,6 +5,7 @@ import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { notionReadScope, teachingResultAuthority, type NotionReadScope } from './notion.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import type { Client } from 'pg';
+import { listenForNotifications } from '../../kernel/src/db/notifications.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbQuery, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { workerStorage } from '../../kernel/src/schema.ts';
@@ -93,65 +94,16 @@ const subscriptions = new WeakMap<Db, Set<Subscriber>>();
 export async function listenForSessionEvents(db: Db, createListener: () => Client): Promise<() => void> {
   const channel = 'studio_teaching_' + (await workerStorage(db)).toLowerCase();
   const subscribers = new Set<Subscriber>();
-  let current: Client | undefined;
-  let reconnect: ReturnType<typeof setTimeout> | undefined;
-  let stopped = false;
-
-  const disconnectSubscribers = () => {
-    subscriptions.delete(db);
-    for (const subscriber of subscribers) subscriber.disconnect();
-  };
-
-  function scheduleReconnect() {
-    reconnect = setTimeout(() => {
-      void listen().catch(scheduleReconnect);
-    }, 1000);
-    reconnect.unref();
-  }
-
-  async function listen() {
-    if (stopped) return;
-    const client = createListener();
-    current = client;
-    const lost = () => {
-      if (current !== client) return;
-      current = undefined;
-      void client.end().catch(() => {});
-      disconnectSubscribers();
-      if (!stopped) scheduleReconnect();
-    };
-    client.on('error', lost);
-    client.once('end', lost);
-    client.on('notification', ({ channel: received, payload }) => {
-      if (received !== channel) return;
-      for (const subscriber of subscribers) {
-        if (subscriber.sessionId === payload) subscriber.refresh();
-      }
-    });
-    try {
-      await client.connect();
-      if (current !== client) return;
-      // Quoting permits the identifier while escaping any quote defensively.
-      await client.query('LISTEN "' + channel.replaceAll('"', '""') + '"');
-    } catch (error) {
-      if (current === client) {
-        current = undefined;
-        void client.end().catch(() => {});
-        throw error;
-      }
-    }
-    if (current === client) subscriptions.set(db, subscribers);
-  }
-
-  await listen();
-  return () => {
-    stopped = true;
-    clearTimeout(reconnect);
-    disconnectSubscribers();
-    const client = current;
-    current = undefined;
-    void client?.end().catch(() => {});
-  };
+  return listenForNotifications(createListener, channel, {
+    connected() { subscriptions.set(db,subscribers); },
+    disconnected() {
+      subscriptions.delete(db);
+      for (const subscriber of subscribers) subscriber.disconnect();
+    },
+    message(payload) {
+      for (const subscriber of subscribers) if (subscriber.sessionId === payload) subscriber.refresh();
+    },
+  });
 }
 
 async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
@@ -198,7 +150,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
     if (!allowed && status === 'pending')
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     const authority = !allowed ? 'withdrawn' : manifest
-      ? (await teachingResultAuthority(tx, row.turnId, submission, manifest, grantCurrent, check)).state : 'authorized';
+      ? (await teachingResultAuthority(tx, row.turnId, submission, manifest, grantCurrent, check, undefined, status === 'ready' ? 'history' : 'publish')).state : 'authorized';
     if (authority !== 'authorized') row.draft = null;
     if (status === 'ready' && (authority !== 'authorized' || row.message === null)) {
       row.message = authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage;

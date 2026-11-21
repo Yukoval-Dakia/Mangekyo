@@ -6,10 +6,13 @@ import {
   helpExposureType,
   recordHelpExposureCommand,
   sameHelpTarget,
+  reopenControlledHelpBasis,
+  sameHelpRef,
   type HelpExposureEvent,
   type HelpPresentation,
   type HelpRef,
 } from '../help-exposure-values.ts';
+import { posttestIssuance, posttestIssuanceType, retentionTeachingPurpose } from '../retention-posttest.ts';
 import { storagePurpose } from '../library-values.ts';
 
 function readPinned(ctx: CommandContext, ref: HelpRef) {
@@ -23,8 +26,15 @@ async function readHelp(ctx: CommandContext, ref: HelpRef) {
 }
 
 async function verifyPresentation(ctx: CommandContext, presentation: HelpPresentation): Promise<void> {
-  await readPinned(ctx, presentation.mount.issuance);
+  const release = await readPinned(ctx, presentation.mount.issuance);
   await readPinned(ctx, presentation.content);
+  if (presentation.controlledBasis) {
+    if (release.type !== posttestIssuanceType || !release.purpose.includes(retentionTeachingPurpose) ||
+        presentation.mount.activityId !== release.ref.id || posttestIssuance(release.value).itemId !== presentation.mount.item.itemId ||
+        presentation.alsoAppliesTo.length || !presentation.controlledBasis.some(w => sameHelpRef(w,presentation.content)) ||
+        !await reopenControlledHelpBasis(ctx.read,ctx.learner,presentation.controlledBasis,retentionTeachingPurpose))
+      throw new Error('受控帮助与本次教学发放不符。');
+  }
 }
 
 async function readDisplay(ctx: CommandContext, ref: HelpRef) {
@@ -77,6 +87,8 @@ export default defineCommand({
   schema: { parse: helpExposureInput },
   write: async (ctx, { id, data }) => {
     await verifyReferences(ctx, data);
-    return [{ kind: 'create', id, factType: helpExposureType, data, purpose: [storagePurpose] }];
+    const purpose = ('controlledBasis' in data && data.controlledBasis)
+      ? [storagePurpose, retentionTeachingPurpose] : [storagePurpose];
+    return [{ kind: 'create', id, factType: helpExposureType, data, purpose }];
   },
 });

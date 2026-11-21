@@ -211,3 +211,17 @@ export type WorkspaceTools = {
   writes: () => readonly WorkspaceWriteReceipt[];
   execute: (name: string, args: Record<string, unknown>, step: number, receiveImage?: ReceiveStudyImage) => Promise<string>;
 };
+
+/** A learner decision or undo can still be managed after its originating reply is hidden. */
+export function revokedReplyWriteReceipts(writes: readonly WorkspaceWriteReceipt[]) {
+  return writes.flatMap<WorkspaceWriteReceipt>(write => {
+    if (write.memory) return [{id: write.id, rev: write.rev, title: '记忆回执', memory: write.memory}];
+    const relation = write.relation?.status === 'proposed'
+      ? { status: 'proposed' as const, proposalId: write.relation.proposalId }
+      : write.relation?.status === 'saved'
+        ? { status: 'saved' as const, undo_token: write.relation.undo_token }
+        : undefined;
+    if (!relation) return [];
+    return [{ id: write.id, rev: write.rev, title: '知识关系回执', relation }];
+  });
+}

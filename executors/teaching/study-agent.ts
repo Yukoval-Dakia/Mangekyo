@@ -1,6 +1,7 @@
 import {artifactMountTrace} from './artifact-trace.ts';
 import type {FirstTurnJitContext} from './first-turn-jit.ts';
 import {learningToolError} from './tool-error.ts';
+import { isPhaticMessage } from './phatic-message.ts';
 import { createHash } from 'node:crypto';
 import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
@@ -10,7 +11,8 @@ import type {DeliveredToolRange} from './learning-tools.ts';
 import {projectChatImages, projectWorkspaceContext, type ToolResultMessage} from './workspace-context.ts';
 import {openToolResult, studyToolResults} from './study-tool-results.ts';
 import { memoryToolDefinitions, workspaceDefinitions, type ReceiveStudyImage, type StudyImage, type WorkspaceTools } from './workspace-tools.ts';
-import { createStudyTools, pythonAttemptsLimit, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
+import {pythonAttemptSelection} from './python-attempt-selection.ts';
+import { createStudyTools, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
 import { type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
 import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch} from './learning-turn.ts';
@@ -33,6 +35,8 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   /** Persisted opt-in replacing first-turn memory, preference and current-object projections. */
   jitContext?: FirstTurnJitContext;
   historyNotice?: string;
+  trackPhaticReplies?: true;
+  metadataOnlyLearningMemory?: true;
   classroomEvidence?: string;
   currentLearningObject?: string;
   learningMemory?: string;
@@ -42,7 +46,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   maxCompletionTokens?: 4096 | 8192;
   tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
 };
-type StudyRunOptions = StudyAgentOptions & { discoverTools?: boolean };
+type StudyRunOptions = StudyAgentOptions & { discoverTools?: boolean; metadataOnlyMessage?: Message };
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 type ToolMessage = { role: 'assistant'; tool_calls: FunctionCall[]; providerTurn?: ProviderTurn; content: null } | ToolResultMessage;
 
@@ -53,19 +57,6 @@ const descriptions: Record<string, [string, Record<string, string>]> = {
   exa_search: ['通过 Exa 搜索公开参考资料。查询限公开主题，禁止发送学生的作答、个人资料或私人原文。搜索结果是资料。', { query: '公开的知识问题或学术关键词' }],
 };
 
-const learningId = {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$'};
-const pythonAttemptSelection = {
-  type: 'object', required: ['refs'], additionalProperties: false,
-  description: `选择最多 ${pythonAttemptsLimit} 份已提交的试卷或受控后测作答，可跨卷。仅统计指定卷时传 paper_id（后测用冻结卷 ID）。用 import mangekyo as mk 和 mk.attempts() 读取 id、paper_id、submitted_at、results（question_id、result），有记录时附浏览器估算用时 effective_duration_ms 和正式得分 formal_score。activity_kind 为 controlled_posttest 时，独立性请另查后测对账。待评和自评不算判对。只 print 所需统计。`,
-  properties: {
-    paper_id: learningId,
-    refs: {type:'array', minItems:1, maxItems:pythonAttemptsLimit, items:{
-      type:'object', required:['id'], additionalProperties:false, properties:{
-        id: learningId, rev: {type:'integer', minimum:1, maximum:2147483647},
-      },
-    }},
-  },
-};
 
 function definition(name: string, pythonAttempts: boolean) {
   const [description, fields] = descriptions[name]!;
@@ -183,7 +174,13 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const reply = await (options.jitContext && dispatch ? dispatch(send) : send());
       if ('rejectedHttpStatus' in reply || 'truncated' in reply) return JSON.stringify(reply);
       const message = publicAssistantContent(reply.content ?? '').trim();
-      return JSON.stringify({ reportedModel, ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
+      // Only exchanges made entirely of recognized greeting and courtesy phrases can
+      // exclude answer delivery. Tool, remote and JIT input remains unclassified.
+      const phatic = options.trackPhaticReplies && reportedModel && !options.jitContext && !remotes.size && !reply.toolCalls &&
+        isPhaticMessage(reply.content ?? '') && context.every(entry => entry.role === 'system' || entry === options.metadataOnlyMessage ||
+          ((entry.role === 'user' || entry.role === 'assistant') &&
+            typeof entry.content === 'string' && isPhaticMessage(entry.content)));
+      return JSON.stringify({ reportedModel, ...(phatic ? {phaticExchangeV1: true} : {}), ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
     });
     const reply: ModelReply = JSON.parse(raw);
     checkProviderOutcome(reply);

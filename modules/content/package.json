@@ -17,6 +17,7 @@
     "./facts/paper-capsules": "./paper-capsules.ts",
     "./facts/correction-micro-variant": "./correction-micro-variant.ts",
     "./facts/question-release": "./question-release.ts",
+    "./facts/arithmetic-practice": "./arithmetic-practice.ts",
     "./facts/assessment": "./assessment-values.ts",
     "./facts/material": "./facts/material.ts"
   },
