@@ -15,25 +15,40 @@
   font-weight: 600;
 }
 .today-modes a[aria-current="page"] {
-  background: var(--primary, #314e41);
-  color: white;
+  background: var(--primary);
+  color: var(--primary-ink);
 }
 
 .day-sheet {
   max-width: 52rem;
-  padding: clamp(1rem, 3vw, 2rem);
-  border: 1px solid #d8ddd4;
-  border-radius: 1.5rem;
-  background: var(--surface, #fbfaf4);
+  margin-top: 18px;
+  padding: clamp(1.1rem, 2.5vw, 1.75rem);
+  border-radius: var(--radius-lg);
+  background: var(--surface-container-low);
 }
 .day-item {
   margin-top: 1rem;
-  padding: 1.1rem 0;
-  border-top: 1px solid #d8ddd4;
+  padding: 1.1rem 1.25rem;
+  border-radius: var(--radius-md);
+  background: var(--surface);
   overflow-wrap: anywhere;
 }
-.day-item h3 { margin: .4rem 0; font-size: 1.25rem; }
-.day-item small, .day-sheet .subhead span { color: #4e5e54; }
-.day-item p { margin: .35rem 0; }
+.day-item h3 { margin: .4rem 0; font-size: 1.12rem; line-height: 1.4; font-weight: 660; }
+.day-item small, .day-sheet .subhead span { color: var(--muted); }
+.day-item p { margin: .35rem 0; line-height: 1.65; }
+.day-item details,
+.day-sheet > details {
+  margin-top: .75rem;
+  padding: .65rem .9rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container);
+}
+.day-item details summary,
+.day-sheet > details summary {
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--forest);
+}
 .day-item .study-actions { margin-top: .75rem; flex-wrap: wrap; }
-.today-links { flex-wrap: wrap; }
+.today-links { flex-wrap: wrap; margin-top: 20px; }

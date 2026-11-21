@@ -192,6 +192,15 @@ function TodayPlanPage({ mode, duration }: { mode: Mode; duration: Duration | un
   }
   const locked = busy || loading || !!pending;
   const restRule = plan?.rules.find((rule) => rule.data.kind === 'rest' && rule.data.date === plan.day);
+  function activityTitleFor(id: string | undefined) {
+    if (!id || !plan) return '这项安排';
+    const found =
+      plan.protectedItems.find(item => item.id === id) ??
+      plan.items.find(item => item.candidate.id === id)?.candidate ??
+      plan.alternatives.find(item => item.id === id);
+    return found?.title ?? '这项安排';
+  }
+
   function card(candidate: Candidate, why: string[], actions: Action[], protectedItem: boolean) {
     if (!plan) return null;
     const lock = plan.rules.find(
@@ -396,7 +405,7 @@ function TodayPlanPage({ mode, duration }: { mode: Mode; duration: Duration | un
                 disabled={locked}
                 onClick={() => changeRule(null, r)}
               >
-                {r.data.kind === 'defer' ? '撤回推迟' : '撤回换选'} · {r.data.activityId}
+                {r.data.kind === 'defer' ? '撤回推迟' : '撤回换选'} · {activityTitleFor(r.data.activityId)}
               </button>
             ))}
           {plan.goal && (
@@ -438,8 +447,7 @@ function TodayPlanPage({ mode, duration }: { mode: Mode; duration: Duration | un
                 <p>{plan.forecast.reason}</p>
               ) : (
                 <p>
-                  {plan.forecast.value.low}–{plan.forecast.value.high} / {plan.forecast.value.maximum} ·
-                  {plan.forecast.value.methodVersion} · 绝对误差 {plan.forecast.value.absoluteError}
+                  预计 {plan.forecast.value.low}–{plan.forecast.value.high} / {plan.forecast.value.maximum}（参考误差 ±{plan.forecast.value.absoluteError}）
                 </p>
               )}
             </details>
