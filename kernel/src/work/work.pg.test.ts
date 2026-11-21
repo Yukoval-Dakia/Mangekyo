@@ -2,7 +2,7 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../test/learner-databas
 import { aroundEach, describe, expect, it, vi } from 'vitest';
 import { effectBudgetUsage, EffectBudgetExceeded, EffectIdentityMismatch, recordLocalRead } from './effects.ts';
 import type { Db, DbTransaction } from '../db/types.ts';
-import { commandId, factId, learnerId } from '../declarations/ids.ts';
+import { commandId, factId, learnerId, type FactId } from '../declarations/ids.ts';
 import type { Json, Outcome } from '../declarations/types.ts';
 import { gatherSnapshot } from '../derivations/gather.ts';
 import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../schema.ts';
@@ -29,6 +29,24 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     await applyKernelSchema(db);
     await run();
   }, { initialize: legacyWorkSchema }));
+
+  const authorPricing = {route:'one', limitUsdMicros:40, reserveUsdMicros:10, actualUsdMicros:() => 10,
+    workStages:{followups:['solve-0','solve-1']}};
+  function preparePricedTodo(key: string, comparison?: FactId) {
+    const source = factId(newUlid()), now = Date.now();
+    const ref = (id: FactId) => ({id, revision:1, accessEpoch:'0'});
+    return db.tx({learner}, tx => tx.withLearnerWrite(async tick => {
+      if (comparison) await tx.insert('facts', {learner_id:learner, id:comparison, type:'test.original',
+        current_rev:1, created_tick:tick, changed_tick:tick});
+      const todo = await emitTodo(tx,tick,{dedupKey:key, goal:key, trigger:{kind:'immediate'}, workerProfile:'question_author',
+        sourceFactRev:ref(source), refs:comparison ? [ref(comparison)] : [], autonomyTier:1,
+        budgetCap:30, settingsRevision:1, expiresAtMs:now+60_000},now,async () => true);
+      const work = {learner, workId:todo!.id, generation:'1'};
+      expect(await bindWorkPayload(tx,work,comparison ? [source,comparison] : [source],
+        {factId:factId(newUlid()), commandId:commandId(newUlid())})).toBe(true);
+      return {source, work};
+    }));
+  }
 
   const slot = (key: string) => ({ learner, type: 'test.grade', key });
   const scope = { knowledgePoint: 'K' };
@@ -147,23 +165,50 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect(await usage()).toEqual({ held: 180n, settled: 30n });
   });
 
-  it('replays a durable paid decision when publishing its effect state fails', async () => {
-    const request = { learner, ownerKind: 'session', ownerId: newUlid(), label: 'priced-test', stepKey: 'scout', input: {} } as const;
-    const pricing = { route: 'one', limitUsdMicros: 85, reserveUsdMicros: 60, actualUsdMicros: () => 25 };
-    const response = { decision: 'review' };
-    const send = vi.fn(async () => response);
-    await db.query(`CREATE FUNCTION stop_effect_publication() RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN RAISE EXCEPTION 'publication interrupted'; END $$`);
-    await db.query(`CREATE TRIGGER stop_effect_publication BEFORE UPDATE OF state ON effects
+  it.each([false, true])('reserves all author stages before send and replays the receipt (interrupted: %s)', async interrupted => {
+    const prepare = async (key: string) => {
+      const {source, work} = await preparePricedTodo(key);
+      return {learner, ownerKind:'derivation', ownerId:source, label:'priced-test', stepKey:'author', input:{}, payloadWork:work} as const;
+    };
+    const request = await prepare('author-a'), contender = await prepare('author-b');
+    const response = {title:'Test', question:'2+2?', answer:4};
+    const entered = Promise.withResolvers<void>(), reply = Promise.withResolvers<typeof response>();
+    const send = vi.fn(async () => { entered.resolve(); return reply.promise; });
+    const run = () => runEffect(db,request,send,undefined,undefined,authorPricing);
+    const usage = () => db.snapshot({learner}, effectBudgetUsage);
+    if (interrupted) {
+      await db.query(`CREATE FUNCTION stop_effect_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'publication interrupted'; END $$`);
+      await db.query(`CREATE TRIGGER stop_effect_publication BEFORE UPDATE OF state ON effects
         FOR EACH ROW EXECUTE FUNCTION stop_effect_publication()`);
-    await expect(runEffect(db, request, send, undefined, undefined, pricing)).rejects.toThrow('publication interrupted');
-    expect((await db.query('SELECT state,result,actual_usd_micros FROM effects WHERE learner_id=$1', [learner])).rows)
-      .toEqual([{ state: 'started', result: response, actual_usd_micros: '25' }]);
-    await db.query('DROP TRIGGER stop_effect_publication ON effects');
-    expect(await runEffect(db, request, send, undefined, undefined, pricing)).toEqual({ kind: 'done', result: response });
-    expect(await runEffect(db, request, send, undefined, undefined, pricing)).toEqual({ kind: 'done', result: response });
+    }
+    const first = run();
+    void first.catch(entered.reject);
+    try {
+      await entered.promise;
+      expect(await usage()).toEqual({held:30n, settled:0n});
+      const secondSend = vi.fn(async () => response);
+      await expect(runEffect(db,contender,secondSend,undefined,undefined,authorPricing)).rejects.toBeInstanceOf(EffectBudgetExceeded);
+      expect(secondSend).not.toHaveBeenCalled();
+    } finally { reply.resolve(response); }
+    const retained = {held:20n, settled:10n};
+    const done = {kind:'done', result:response};
+    if (interrupted) {
+      await expect(first).rejects.toThrow('publication interrupted');
+      expect((await db.query("SELECT state,result,actual_usd_micros FROM effects WHERE step_key='author'")).rows)
+        .toEqual([{state:'started', result:response, actual_usd_micros:'10'}]);
+      await db.query('DROP TRIGGER stop_effect_publication ON effects');
+    } else expect(await first).toEqual(done);
+    expect(await usage()).toEqual(retained);
+    expect(await run()).toEqual(done);
+    expect(await run()).toEqual(done);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(await db.snapshot({ learner }, effectBudgetUsage)).toEqual({ held: 0n, settled: 25n });
+    const solve = vi.fn(async () => ({answer:4}));
+    const results = await Promise.all(authorPricing.workStages.followups.map(stepKey => runEffect(db, {...request,stepKey},
+      solve, undefined, undefined, {...authorPricing,workStages:'claim',actualUsdMicros:() => interrupted ? null : 10})));
+    expect(results).toEqual([0,1].map(() => ({kind:'done',result:{answer:4}})));
+    expect(solve).toHaveBeenCalledTimes(2);
+    expect(await usage()).toEqual(interrupted ? retained : {held:0n, settled:30n});
   });
 
   it.each([false, true])('settles only the amount after erasure (receipt compacted: %s)', async compacted => {
@@ -195,21 +240,10 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect(await db.snapshot({ learner }, effectBudgetUsage)).toEqual({ held: 60n, settled: 25n });
   });
 
-  it('erases registered work payloads and records late cost without letting them resend', async () => {
-    const root = factId(newUlid()), primary = factId(newUlid()), now = Date.now();
+  it.each(['erasure','failure'])('releases unsent holds and settles late cost after work %s', async terminal => {
+    const root = factId(newUlid());
     const usage = () => db.snapshot({learner}, effectBudgetUsage);
-    const todo = await db.tx({learner}, tx => tx.withLearnerWrite(async tick => {
-      await tx.insert('facts', {learner_id:learner, id:root, type:'test.original', current_rev:1,
-        created_tick:tick, changed_tick:tick});
-      return emitTodo(tx,tick,{
-        dedupKey:'compare', trigger:{kind:'immediate'}, workerProfile:'heavy_tutor_prep', goal:'compare',
-        sourceFactRev:{id:primary,revision:1,accessEpoch:'0'}, refs:[{id:root,revision:1,accessEpoch:'0'}],
-        autonomyTier:1, budgetCap:20, settingsRevision:1, expiresAtMs:now+60000,
-      },now,async () => true);
-    }));
-    const work = { learner, workId:todo!.id, generation:'1' };
-    await db.tx({learner}, tx => bindWorkPayload(tx,work,[root,primary],
-      {factId:factId(newUlid()), commandId:commandId(newUlid())}));
+    const {source:primary, work} = await preparePricedTodo('compare', root);
     const request = {learner, ownerKind:'derivation', ownerId:primary, stepKey:'send',
       label:'priced-test', input:{}} as const;
     const cache = {...request,label:'cached-test'};
@@ -218,31 +252,38 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     const authorize = async () => {};
     await recordLocalRead(db,other,async () => 'unrelated result',authorize);
     const cached = Promise.withResolvers<string>(), reply = Promise.withResolvers<number>();
-    const send = vi.fn(async (id: string) => {
+    const send = vi.fn<Parameters<typeof runEffect>[2]>(async (id, checkDispatch) => {
       await recordLocalRead(db,{...cache,payloadWork:work},async () => 'mixed result',authorize);
       cached.resolve(id);
-      return reply.promise;
+      await reply.promise;
+      return {saved:await db.tx({learner},checkDispatch).then(() => true, () => false)};
     });
-    const pricing = {route:'local',limitUsdMicros:40,reserveUsdMicros:20,actualUsdMicros:() => 7};
-    const running = runEffect(db,linked,send,undefined,undefined,pricing);
+    const run = () => runEffect(db,linked,send,undefined,undefined,authorPricing);
+    const running = run();
     void running.catch(cached.reject);
     let providerEffectId: string;
     try {
       providerEffectId = await cached.promise;
-      expect(await runEffect(db,linked,send,undefined,undefined,pricing))
-        .toEqual({kind:'unknown',providerEffectId,inFlight:true});
-      await eraseOriginal(db,{learner},{actor:'learner',confirmed:true,requestId:commandId(newUlid()),root,expectedRev:1},
-        async () => ({ids:[root],commandTypes:[]}),async () => {});
-      expect(await usage()).toEqual({held:20n,settled:0n});
-      expect((await db.query('SELECT step_key,result FROM effects WHERE learner_id=$1 AND owner_id=$2',[learner,primary])).rows)
-        .toEqual([{step_key:other.stepKey,result:'unrelated result'}]);
+      expect(await run()).toEqual({kind:'unknown',providerEffectId,inFlight:true});
+      if (terminal === 'erasure') {
+        await eraseOriginal(db,{learner},{actor:'learner',confirmed:true,requestId:commandId(newUlid()),root,expectedRev:1},
+          async () => ({ids:[root],commandTypes:[]}),async () => {});
+        expect((await db.query('SELECT step_key,result FROM effects WHERE learner_id=$1 AND owner_id=$2',[learner,primary])).rows)
+          .toEqual([{step_key:other.stepKey,result:'unrelated result'}]);
+      } else expect(await failWork(db,work)).toBe(true);
+      expect(await usage()).toEqual({held:10n,settled:0n});
     } finally {
-      reply.resolve(7);
+      reply.resolve(10);
       await running;
     }
-    expect(await running).toEqual({kind:'unknown',providerEffectId});
-    expect(await usage()).toEqual({held:0n,settled:7n});
-    expect(await runEffect(db,request,send,undefined,undefined,pricing)).toEqual({kind:'unknown',providerEffectId});
+    expect(await usage()).toEqual({held:0n,settled:10n});
+    if (terminal === 'erasure') {
+      expect(await running).toEqual({kind:'unknown',providerEffectId});
+      expect(await run()).toEqual({kind:'unknown',providerEffectId});
+    } else {
+      expect(await running).toEqual({kind:'done',result:{saved:false}});
+      await expect(run()).rejects.toThrow('Work payload is no longer active');
+    }
     expect(send).toHaveBeenCalledTimes(1);
   });
 
