@@ -4,13 +4,17 @@ import { derivationId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Outcome } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
-import { isSourceFactId, sourceReference } from '../../modules/activity/source-values.ts';
-import { workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
-import { forecastType, reconciliationType, type RetentionForecast, type RetentionObservation, reconcileRetention } from '../../modules/learner/retention.ts';
+import { posttestOpensAt } from '../../modules/activity/retention-posttest.ts';
+import { isSourceFactId } from '../../modules/activity/source-values.ts';
+import { isStandaloneWorkbookPaper, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
+import { forecastType, reconciliationType, type RetentionForecast } from '../../modules/learner/retention.ts';
+import { classifyFrozenCrossing, projectForgettingRisks, projectRetentionRead, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
 import { purpose } from './identity.ts';
+import { checkStudioNotionFact } from './notion.ts';
 import { retentionHistoryValid } from './retention.ts';
 import { readLearningOverview } from './learning-overview.ts';
-import { textSlice } from './reading.ts';
+import { radarArguments } from '../../executors/teaching/workspace-tools.ts';
+import { radarInventory, radarOverview, retentionEvidenceLink } from '../../modules/activity/workspace-source-projection.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
 
@@ -18,10 +22,9 @@ export type RadarSlot = Extract<ManifestInput, { kind: 'slot' }>;
 type FactInput = Extract<ManifestInput, { kind: 'fact' }>;
 export type RetentionBasis = { slot: RadarSlot; facts: FactInput[] };
 type Access = { callerPurpose: string; maySend: WorkspaceSourceRecipient };
-type Reconciliation = ReturnType<typeof reconcileRetention> & { forecastId: string; observedThrough: Tick };
 type Selection = {
   id: string; slot_type: string; slot_key: string; deriver: string;
-  effective_tick: Tick; value: Outcome<RetentionForecast | Reconciliation>; manifest: unknown;
+  effective_tick: Tick; value: Outcome<RetentionForecast | RetentionReconciliation>; manifest: unknown;
 };
 
 // The controlled posttest publisher uses the same retention result contract.
@@ -147,55 +150,13 @@ export async function readMissedPosttest(tx: ReadTransaction, key: string, resul
   return rowCount ? derivationId(row.id) : undefined;
 }
 
-function projectRetention(selected: SelectionRead) {
-  const { row, facts, forecast } = selected;
-  if (row.value.kind !== 'value') return;
-  const { method, estimate, input } = forecast.value;
-  const value = row.value.value;
-  const { itemId, paper } = input.target;
-  const matches = (ref: RetentionObservation['submission'], types: string[]) => facts.find(({ fact }) =>
-    fact.ref.id === ref.id && fact.ref.rev === ref.rev && types.includes(fact.type))?.fact;
+function projectRetention({ row, facts, forecast }: SelectionRead) {
   const href = `/api/retention/${row.slot_key}`;
-  const source = matches(paper, [workbookPaperType, retentionPaper]);
-  if (!source) return;
-  const observation = 'observation' in value ? value.observation : undefined;
-  const refs = [...input.observations.map(item => item.submission), ...(observation ? [observation.submission] : [])];
-  if (refs.some(ref => !matches(ref, [workbookAttemptType, posttestSubmission]))) return;
-  // Keep the tool result small. The frozen result URL and the dispatch witness retain the full basis.
-  const sources = new Set([source]);
-  const forecastBasis = estimate.kind === 'categorical' ? estimate.basis : input.observations.at(-1)?.submission;
-  for (const ref of [forecastBasis, observation?.submission]) {
-    if (!ref) continue;
-    const fact = matches(ref, [workbookAttemptType, posttestSubmission]);
-    if (!fact) return;
-    sources.add(fact);
-  }
-  const evidence = [...sources].map(fact => {
-    const ref = { id: fact.ref.id, rev: fact.ref.rev, type: fact.type };
-    if (fact.type === workbookPaperType || fact.type === workbookAttemptType) {
-      const anchor = fact.type === workbookPaperType ? { kind: 'question', itemId } as const
-        : { kind: 'answer-slot', itemId, slotId: 'answer' } as const;
-      return { ...ref, open: { tool: 'open_learning', args: { refs: JSON.stringify(sourceReference(fact, anchor)) } } };
-    }
-    return { ...ref, href };
-  });
-  const common = { id: row.id, key: row.slot_key, state: 'current' as const, effectiveTick: row.effective_tick,
-    method: { id: method.id, version: method.version }, itemId,
-    window: { requestedAt: input.window.requestedAt, through: input.window.through }, evidence, href };
-  if ('status' in value && observation) return { ...common, kind: 'reconciliation' as const,
-    forecastId: forecast.row.id, status: value.status,
-    observation: { result: observation.result, exposure: observation.exposure.kind } };
-  if ('estimate' in value) {
-    if (estimate.kind === 'probabilistic') {
-      return { ...common, kind: 'forecast' as const,
-        estimate: { kind: 'probabilistic' as const, probability: estimate.probability,
-          interval: estimate.interval, uncertainty: estimate.uncertainty } };
-    }
-    return { ...common, kind: 'forecast' as const,
-      estimate: estimate.kind === 'unknown' ? { kind: 'unknown' as const, reason: estimate.reason }
-        : { kind: 'categorical' as const, expected: estimate.expected } };
-  }
-  return undefined;
+  return projectRetentionRead({ id: row.id, key: row.slot_key, effectiveTick: row.effective_tick, value: row.value },
+    { id: forecast.row.id, value: forecast.value }, {
+      papers: facts.filter(({ fact }) => fact.type === workbookPaperType || fact.type === retentionPaper).map(({ fact }) => fact),
+      submissions: facts.filter(({ fact }) => fact.type === workbookAttemptType || fact.type === posttestSubmission).map(({ fact }) => fact),
+    }, href, (fact, itemId) => retentionEvidenceLink(fact, itemId, href));
 }
 
 export async function readRetentionRadar(tx: ReadTransaction, access: Access, options: {
@@ -224,35 +185,61 @@ export async function readRetentionRadar(tx: ReadTransaction, access: Access, op
   return forecasts.length || reconciliations.length ? { state: 'available' as const, forecasts, reconciliations } : unknown;
 }
 
-function radarArguments(args: Record<string, unknown>) {
-  const { scope, horizon_hours: hours } = args;
-  if (hours !== undefined && (typeof hours !== 'number' || !Number.isSafeInteger(hours) || hours < 1 || hours > 168)) return;
-  if (scope !== undefined) {
-    if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return;
-    const { subject_id, kc_ids, ...other } = scope as Record<string, unknown>;
-    if (Object.keys(other).length || (subject_id !== undefined && !isSourceFactId(subject_id)) ||
-        (kc_ids !== undefined && (!Array.isArray(kc_ids) || kc_ids.length > 8 || !kc_ids.every(isSourceFactId)))) return;
-    if (subject_id !== undefined || (Array.isArray(kc_ids) && kc_ids.length)) return { scoped: true };
+// This read covers active frozen workbook-item forecasts, not the learner's
+// entire question inventory. The method owns the threshold and crossing time.
+export async function readForgettingRisks(tx: ReadTransaction, maySend: WorkspaceSourceRecipient, options: {
+  asOf: string; watermark: Tick; horizonHours: number;
+  track: SourceTrack; trackRetention: (basis: RetentionBasis) => void;
+}) {
+  const { asOf, watermark, horizonHours } = options;
+  const now = Date.parse(asOf);
+  const end = now + horizonHours * 3_600_000;
+  const { rows: candidates } = await tx.query<{ slot_key: string }>(
+    `SELECT s.slot_key FROM slot_state s WHERE s.learner_id=$1 AND s.slot_type=$2
+       AND EXISTS (SELECT 1 FROM derivations d
+         WHERE (d.learner_id,d.slot_type,d.slot_key)=(s.learner_id,s.slot_type,s.slot_key)
+           AND NOT d.is_shadow AND d.effective_tick <= $5::bigint)
+       AND COALESCE(scope_keys #>> '{window,scheduledAt}', scope_keys #>> '{window,requestedAt}', '') <= $3
+       AND (scope_keys #>> '{window,through}' IS NULL OR scope_keys #>> '{window,through}' > $3)
+     ORDER BY changed_tick DESC, slot_key LIMIT $4`, [tx.learner, forecastType, asOf, candidateLimit + 1, watermark],
+  );
+  const risks = [];
+  let classified = 0;
+  for (const { slot_key: key } of candidates.slice(0, candidateLimit)) {
+    const [row] = await currentSelections(tx, forecastType, undefined, key);
+    if (!row || BigInt(row.effective_tick) > BigInt(watermark)) continue;
+    const selected = await readSelection(tx, row, { callerPurpose: purpose, maySend });
+    if (!selected) continue;
+    const { input } = selected.forecast.value;
+    const crossing = classifyFrozenCrossing(selected.forecast.value, posttestOpensAt(input.window), row.effective_tick, now, end);
+    if (!crossing) continue;
+    const projected = projectRetention(selected);
+    const { paper, condition } = input.target;
+    const source = selected.facts.find(({ fact }) => fact.ref.id === paper.id && fact.ref.rev === paper.rev);
+    if (projected?.kind !== 'forecast' || !source) continue;
+    try {
+      for (const { fact } of selected.facts) await checkStudioNotionFact(tx, fact, purpose, maySend);
+    } catch (error) {
+      if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) continue;
+      throw error;
+    }
+    // Out-of-window crossings also support a covered result or true empty set.
+    options.trackRetention(basisOf(selected));
+    for (const { fact, input } of selected.facts) options.track(fact, input.mode);
+    classified++;
+    if (crossing.inHorizon) {
+      risks.push({ forecast_id: row.id, forecast_key: key, item_id: projected.itemId, condition,
+        paper: { ...paper, title: workbookPaper(source.fact.value).title.slice(0, 100).toWellFormed() },
+        crossing_at: crossing.at, forecast_as_of_at: crossing.asOf,
+        forecast_effective_tick: row.effective_tick, method: projected.method });
+    }
   }
-  const now = Date.now();
-  return { scoped: false, horizon: hours === undefined ? undefined : {
-    from: new Date(now).toISOString(), through: new Date(now + hours * 3_600_000).toISOString(),
-  } };
-}
-
-function standalonePaper(fact: FactSnapshot, maySend: WorkspaceSourceRecipient) {
-  if (fact.type !== workbookPaperType || !maySend(fact)) return false;
-  try {
-    const { materialId, assessmentRelease, questions } = workbookPaper(fact.value);
-    return materialId === null && !assessmentRelease && questions.every(question => !question.sourceQuestionRef);
-  } catch {
-    return false;
-  }
+  return projectForgettingRisks(risks, classified, candidates.length, asOf, end, watermark);
 }
 
 export async function readLearnerRadar(tx: ReadTransaction, args: Record<string, unknown>,
   maySend: WorkspaceSourceRecipient, track: SourceTrack, trackRetention?: (basis: RetentionBasis) => void) {
-  const query = radarArguments(args);
+  const query = radarArguments(args, isSourceFactId);
   if (!query) return { ok: false, code: 'invalid_args', message: 'horizon_hours 须为 1–168 的整数，scope 只接受 subject_id 或最多 8 个 kc_ids。' };
   const prerequisites = { tool: 'search_workspace', args: { hops: 2, direction: 'inbound', edgeKinds: ['prereq_of'] },
     required: ['conceptId'] };
@@ -263,21 +250,14 @@ export async function readLearnerRadar(tx: ReadTransaction, args: Record<string,
   const observed = new Map<string, FactSnapshot>();
   const overview = await readLearningOverview(tx, { callerPurpose: purpose, maySend: (_, fact) => maySend(fact),
     track: fact => observed.set(fact.ref.id, fact) });
-  const { tasks, goal } = overview;
-  const active = 'items' in tasks ? tasks.items.filter(task => !task.done).slice(0, detailLimit) : [];
-  for (const id of [...(goal.state === 'set' ? [goal.witness.id] : []), ...active.map(task => task.id)]) {
+  const projected = radarOverview(overview, detailLimit);
+  for (const id of projected.witnessIds) {
     const fact = observed.get(id);
     if (fact) track(fact, 'following');
   }
   const inventory = await workspaceQuery(tx, { kind: 'paper' }, {
-    recipient: 'workspace', maySend: fact => standalonePaper(fact, maySend), track,
+    recipient: 'workspace', maySend: fact => fact.type === workbookPaperType && maySend(fact) && isStandaloneWorkbookPaper(fact.value), track,
   });
   const papers = inventory && 'results' in inventory ? inventory.results : [];
-  return { retention, prerequisites,
-    goal: goal.state === 'set' ? { ...goal, text: goal.text === null ? null : textSlice(goal.text, 0, 240).content } : goal,
-    tasks: active.length ? { state: tasks.state, items: active.map(task => ({ ...task, title: textSlice(task.title, 0, 100).content })) }
-      : { state: tasks.state === 'partial' ? 'unknown' : tasks.state === 'unavailable' ? 'unknown' : 'empty' },
-    inventory: papers.length ? { state: 'available', items: papers.map(({ id, rev, title, sourceRef }) =>
-      ({ id, rev, title: textSlice(title, 0, 100).content, sourceRef, kind: 'paper', status: 'ready', usage: 'unknown' })) } : unknown,
-  };
+  return { retention, prerequisites, ...projected.view, inventory: radarInventory(papers) };
 }

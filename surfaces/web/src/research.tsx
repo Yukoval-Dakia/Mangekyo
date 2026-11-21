@@ -4,7 +4,9 @@ import { api, ApiError, requestId } from './api';
 import { ExpectedView } from './expected-view';
 import { ReadState, useResource } from './workspace';
 
-type Receipt = { revision: number; enabled: boolean } | { revision: number; allowed: boolean };
+type ScoutOffer = { route: string; maxRetentionDays: number; maxPerCallMicros: number };
+type ScoutBudget = ScoutOffer & { limitMicros: number; expiresAtMs: number };
+type Receipt = { revision: number; enabled: boolean; scoutBudget?: ScoutBudget | null; scoutOffer?: ScoutOffer; heldUsdMicros?: string; settledUsdMicros?: string } | { revision: number; allowed: boolean };
 type Sheet = { id: string; title: string; steps: string[]; tier: number; cost: number; source: { href: string } };
 type Source = { paperTitle: string; questionNumber: number; prompt: string; feedback: WorkbookFeedback };
 
@@ -47,7 +49,7 @@ function ResearchChoice({ path, field, label, help, children }: {
     setMessage('');
     try {
       setReceipt(await api<Receipt>(path, { method: 'PUT', body: {
-        revision: receipt.revision, requestId: requestId(), [field]: choice,
+        revision: receipt.revision, requestId: requestId(), [field]: choice, ...(field === 'enabled' && {scoutBudget: null}),
       } }));
       setChoice(undefined);
     } catch (error) {
@@ -68,6 +70,12 @@ function ResearchChoice({ path, field, label, help, children }: {
       <strong>{label}</strong>
     </label>
     <p className="field-help">{help}</p>
+    {receipt && 'enabled' in receipt && <>
+      {receipt.scoutBudget && <p>{receipt.scoutBudget.expiresAtMs > Date.now() ? '已授权前哨将开放作答的卷名和作答摘要发送至' : '前哨授权已到期，原接收方为'} {receipt.scoutBudget.route}。
+        每次上限 {receipt.scoutBudget.maxPerCallMicros} USD 微元，累计上限 {receipt.scoutBudget.limitMicros} USD 微元，留存上限 {receipt.scoutBudget.maxRetentionDays} 天，
+        有效至 {new Date(receipt.scoutBudget.expiresAtMs).toLocaleString()}。</p>}
+      {receipt.settledUsdMicros !== undefined && <p>前哨累计实付 {receipt.settledUsdMicros} USD 微元，待核占用 {receipt.heldUsdMicros} USD 微元。</p>}
+    </>}
     <div className="research-controls">
       <span role="status">{readFailed ? '无法读取当前状态' : !receipt ? '正在读取…' :
         field === 'enabled' ? (current ? '当前已启用' : '当前已关闭') : (current ? '本次作答已开放' : '本次作答未授权')}</span>
@@ -75,14 +83,59 @@ function ResearchChoice({ path, field, label, help, children }: {
         <button type="button" className="text-button" disabled={!receipt || choice === undefined || current === choice || busy}
           onClick={() => void save()}>{busy ? '保存中…' : field === 'enabled' ? '保存教研设置' : '保存本次授权'}</button>}
     </div>
+    {receipt && 'enabled' in receipt && receipt.scoutOffer && receipt.enabled && <ScoutGrant key={receipt.revision}
+      offer={receipt.scoutOffer} current={receipt.scoutBudget} revision={receipt.revision} refresh={refresh} />}
     {message && <p role="alert" className="error-text">{message}</p>}
     {receipt && children?.(Boolean(current), receipt.revision, refresh)}
   </section>;
 }
 
+function ScoutGrant({ offer, current, revision, refresh }: {
+  offer: ScoutOffer; current: ScoutBudget | null | undefined; revision: number; refresh: () => void;
+}) {
+  const [limit, setLimit] = useState('');
+  const [until, setUntil] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const pending = useRef<{ body: string; id: string } | null>(null);
+  const expiresAtMs = Date.parse(until);
+  const valid = /^\d+$/.test(limit) && Number.isSafeInteger(Number(limit)) &&
+    Number(limit) >= offer.maxPerCallMicros && expiresAtMs > Date.now();
+
+  async function save(grant: boolean) {
+    if (busy || (grant && !valid)) return;
+    const scoutBudget = grant ? { ...offer, limitMicros: Number(limit), expiresAtMs } : null;
+    const body = JSON.stringify({ revision, enabled: true, scoutBudget });
+    if (pending.current?.body !== body) pending.current = { body, id: requestId() };
+    setBusy(true);
+    setError('');
+    try {
+      await api('/research/settings', {method: 'PUT', body: {revision, enabled: true, scoutBudget, requestId: pending.current.id}});
+      refresh();
+      window.dispatchEvent(new Event(researchSettingsChanged));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) refresh();
+      else setError('尚未收到保存回执，可重试同一操作。');
+    } finally { setBusy(false); }
+  }
+
+  return <details className="research-sheet">
+    <summary>付费前哨授权</summary>
+    <p>接收方 {offer.route} 会收到已开放作答的标识、卷名、提交时间和首道错题序号，用于选择复习任务。
+      最多留存 {offer.maxRetentionDays} 天，每次最多 {offer.maxPerCallMicros} USD 微元。</p>
+    <p>1 美元为 1,000,000 微元。累计上限包含已付及待结算的费用。</p>
+    <label>累计上限（USD 微元）<input type="number" min={offer.maxPerCallMicros} step="1" value={limit}
+      onChange={e => setLimit(e.target.value)} /></label>
+    <label>授权到期时间<input type="datetime-local" value={until} onChange={e => setUntil(e.target.value)} /></label>
+    <button type="button" disabled={busy || !valid} onClick={() => void save(true)}>确认外发范围与费用上限</button>
+    {current && <button type="button" disabled={busy} onClick={() => void save(false)}>撤回付费授权</button>}
+    {error && <p role="alert">{error}</p>}
+  </details>;
+}
+
 export function ResearchSettings() {
   return <ResearchChoice path="/research/settings" field="enabled" label="启用后台教研"
-    help="启用后，同伴可以为你准备零费用复习单。你可以在原卷开放单次作答，也可以在后测对账中开放该次摘要。" />;
+    help="从这里启用时只运行本地教研。关闭会撤回付费前哨授权。你可以在原卷或后测对账中逐次开放作答。" />;
 }
 
 function WorksheetSource({ href, unavailable }: { href: string; unavailable: () => void }) {
@@ -114,7 +167,7 @@ function WorksheetSource({ href, unavailable }: { href: string; unavailable: () 
 function WorksheetContents({ sheet }: { sheet: Sheet }) {
   return <>
     <h3>{sheet.title}</h3>
-    <p className="field-help">Tier {sheet.tier} · 费用 {sheet.cost}</p>
+    <p className="field-help">Tier {sheet.tier} · 复习单生成费用 {sheet.cost}</p>
     <ol>{sheet.steps.map((step, i) => <li key={i}>{step}</li>)}</ol>
   </>;
 }
@@ -134,7 +187,7 @@ function Worksheet({ path, refresh }: { path: string; refresh: () => void }) {
 export function AttemptResearch({ paperId, attemptId }: { paperId: string; attemptId: string }) {
   const path = '/papers/' + encodeURIComponent(paperId) + '/attempts/' + encodeURIComponent(attemptId) + '/research';
   return <ResearchChoice path={path + '-permission'} field="allowed" label="向后台教研开放本次作答"
-    help="开放后，后台教研可读取这份原答。收回后，这次作答的复习单及其来源将不再可读。">
+    help="开放后，后台教研可读取这份原答。如已另行授权付费前哨，该服务可收到卷名、提交时间与错题摘要。收回后，这次作答的复习单及其来源将不再可读。">
     {(allowed, revision, refresh) => allowed && <Worksheet key={revision} path={path} refresh={refresh} />}
   </ResearchChoice>;
 }

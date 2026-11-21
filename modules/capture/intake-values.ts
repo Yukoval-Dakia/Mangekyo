@@ -142,6 +142,21 @@ function mediaType(input: unknown): IntakeMediaType {
   return input as IntakeMediaType;
 }
 
+export function intakeFilename(value: unknown) {
+  let name = typeof value === 'string' ? value : '';
+  name = name.replace(/\\/g, '/').split('/').at(-1) ?? '';
+  name = name.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return name.slice(0, 180).toWellFormed();
+}
+
+export function intakeTitle(value: unknown, fallback: string) {
+  let title = typeof value === 'string' ? value.trim() : '';
+  title = title.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 240);
+  if (!title || !title.isWellFormed() || title.includes('\u0000')) title = fallback;
+  title = title.slice(0, 240).toWellFormed();
+  return title || '未命名材料';
+}
+
 function originalName(input: unknown): string {
   const name = text(input, '原件名称', 180, true);
   if (!name.trim() || /[\u0000-\u001f\u007f/\\:*?"<>|]/.test(name)) {
@@ -164,6 +179,32 @@ export function intakeOriginal(input: unknown): IntakeOriginal {
     mediaType: mediaType(value.mediaType),
     size: size(value.size),
     sha256: hex(value.sha256),
+  };
+}
+
+export function pendingMineruExtraction(): IntakeExtraction {
+  return {status:'pending', method:'mineru', text:'', error:null, warnings:[], pages:null, truncated:false, characterCount:0};
+}
+
+export function failedMineruExtraction(error: string): IntakeExtraction {
+  const message = error.replaceAll(String.fromCharCode(0), '').trim().slice(0, 1_000).toWellFormed();
+  return {
+    status: 'failed', method: 'mineru', error: message || 'MinerU 识别失败。',
+    text: '', characterCount: 0, pages: null, warnings: [], truncated: false,
+  };
+}
+
+export function completeMineruExtraction(text: string, pages: number | null): IntakeExtraction {
+  if (!text.trim() || !text.isWellFormed() || text.includes('\u0000'))
+    return failedMineruExtraction('MinerU 没有返回可用正文。');
+  const truncated = text.length > intakeTextLimit;
+  const content = truncated ? text.slice(0, intakeTextLimit).toWellFormed() : text;
+  if (!content.trim()) return failedMineruExtraction('MinerU 没有返回可用正文。');
+  return {
+    status: truncated ? 'partial' : 'ok', method: 'mineru', text: content,
+    pages: pages !== null && Number.isSafeInteger(pages) && pages >= 0 && pages <= 1_000 ? pages : null, error: null,
+    warnings: truncated ? ['识别正文超过保存上限，已保留前 200 万字。'] : [],
+    truncated, characterCount: content.length,
   };
 }
 

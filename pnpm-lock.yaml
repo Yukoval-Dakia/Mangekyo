@@ -26,8 +26,17 @@ importers:
       fflate:
         specifier: 0.8.3
         version: 0.8.3
+      sharp:
+        specifier: 0.35.5
+        version: 0.35.5(@types/node@25.9.9)
 
   executors/python-deriver:
+    dependencies:
+      '@mangekyo/kernel':
+        specifier: workspace:*
+        version: link:../../kernel
+
+  executors/teaching:
     dependencies:
       '@mangekyo/kernel':
         specifier: workspace:*
@@ -134,9 +143,6 @@ importers:
       pg:
         specifier: ^8.23.1
         version: 8.23.1
-      sharp:
-        specifier: 0.35.5
-        version: 0.35.5(@types/node@25.9.9)
       tsx:
         specifier: ^4.20.0
         version: 4.23.15

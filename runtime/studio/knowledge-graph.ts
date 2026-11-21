@@ -20,6 +20,7 @@ export type GraphQuery = {
   hops: number;
   direction: 'inbound' | 'outbound' | 'both';
   edgeKinds: readonly KnowledgeEdgeKind[];
+  conceptsOnly?: boolean;
 };
 
 function versionKey(id: string, rev: number): string {
@@ -118,7 +119,7 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
   }
 }
 
-type EdgeHit = NonNullable<Awaited<ReturnType<typeof openKnowledgeEdge>>>['value'] & {
+export type EdgeHit = NonNullable<Awaited<ReturnType<typeof openKnowledgeEdge>>>['value'] & {
   hop: number;
   traversal: 'forward' | 'reverse';
 };
@@ -128,6 +129,7 @@ type FrontierRecord = { source: WorkspaceSource; path: readonly TraversedEdge[] 
 export async function readKnowledgeGraph<Result>(
   tx: ReadTransaction, query: GraphQuery, access: SourceAccess,
   select: (source: WorkspaceSource, fact: FactSnapshot, hop: number) => Result | undefined,
+  fits?: (edge: EdgeHit, node: Result) => boolean,
 ) {
   const rootWitnesses: Parameters<SourceTrack>[] = [];
   const concept = await resolveSource(tx, query.conceptId, { ...access, track: (...witness) => rootWitnesses.push(witness) });
@@ -153,11 +155,12 @@ export async function readKnowledgeGraph<Result>(
        WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.kind='value'
          AND f.purpose && ARRAY[$3,'all']::text[] AND r.purpose && ARRAY[$3,'all']::text[]
          AND (cardinality($4::text[])=0 OR r.data->>'kind'=ANY($4))
+         AND (NOT $7::boolean OR (r.data#>>'{from,kind}'='concept' AND r.data#>>'{to,kind}'='concept'))
          AND EXISTS (SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS n(id text, rev integer)
            WHERE ($6<>'inbound' AND r.data#>>'{from,sourceUse,id}'=n.id AND r.data#>>'{from,sourceUse,rev}'=n.rev::text)
               OR ($6<>'outbound' AND r.data#>>'{to,sourceUse,id}'=n.id AND r.data#>>'{to,sourceUse,rev}'=n.rev::text))
        ORDER BY f.id`,
-      [tx.learner, knowledgeEdgeType, sourcePurpose(access), query.edgeKinds, JSON.stringify(endpoints), query.direction],
+      [tx.learner, knowledgeEdgeType, sourcePurpose(access), query.edgeKinds, JSON.stringify(endpoints), query.direction, query.conceptsOnly === true],
     );
     const next = new Map<string, FrontierRecord>();
     for (const { id } of rows) {
@@ -171,6 +174,7 @@ export async function readKnowledgeGraph<Result>(
       if (!origin) continue;
       const target = forward ? edge.to : edge.from;
       const { id: targetId, rev } = target.sourceRef.fact;
+      if (query.conceptsOnly && targetId === root.ref.id) continue;
       const fact = edge.opened.find(([item]) => item.ref.id === targetId && item.ref.rev === rev)?.[0];
       if (!fact) continue;
       if (seenEdges.size === graphLimit) return output(true);
@@ -181,6 +185,7 @@ export async function readKnowledgeGraph<Result>(
       const key = versionKey(targetId, rev);
       const match = select(target, fact, hop);
       if (match !== undefined) {
+        if (fits && !fits(path[path.length - 1]!.hit, match)) return output(true);
         for (const step of path) {
           if (edges.has(step.hit.id)) continue;
           edges.set(step.hit.id, step.hit);

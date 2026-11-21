@@ -4,6 +4,7 @@ import { PageTitle } from './workspace';
 import { RetentionPosttests } from './retention-posttests';
 import { openLink, TodayActivity, type ActivityRef } from './today-pack';
 import { rememberPlan, SavedTodayAnswers, TodayHistory } from './today-history';
+import { TodayClassrooms } from './today-classrooms';
 import './today.css';
 
 type Mode = 'any' | 'one-hand' | 'voice';
@@ -305,6 +306,7 @@ function TodayPlanPage({ mode }: { mode: Mode }) {
   return (
     <>
       <PageTitle title="今天" meta={plan?.day ?? new Date().toLocaleDateString('zh-CN')} />
+      <TodayClassrooms />
       <div className="filter-row today-modes">
         {(
           [

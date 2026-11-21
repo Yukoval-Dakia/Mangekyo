@@ -1,5 +1,5 @@
 import {
-  derivationId, factId, FactNotFoundError, type DerivationId, type DerivationSnapshot, type FactSnapshot, type FactWrite,
+  derivationId, factId, FactNotFoundError, type DerivationId, type DerivationSnapshot, type FactId, type FactSnapshot, type FactWrite,
   type LearnerId, type ReadContext,
 } from '@mangekyo/kernel';
 import { assetType, checkQuestionTeachingSources, checkTextbookBasis, parseTextbookPage, questionAsset, questionPrompt, textbookPageType,
@@ -457,6 +457,40 @@ export function collectPaperInput(input: unknown) {
     original: row.original,
     ...(row.retryId === undefined ? {} : { retryId: factId(text(row.retryId, '再做标识', 26)) }),
   };
+}
+
+export function paperReturnSelection(input: {issuanceId: unknown; page: unknown; purpose: unknown; retryId?: unknown}, id: FactId) {
+  const selected = typeof input.page === 'string' && /^\d+$/.test(input.page) ? Number(input.page) : null;
+  const {page, original: _, ...refs} = collectPaperInput({...input,page:selected,source:{id,rev:1},original:0});
+  if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1 ||
+      (input.purpose !== 'storage' && input.purpose !== 'learning' && input.purpose !== 'teaching' && input.purpose !== 'background-research'))
+    throw new Error('请选择发放页码和原件用途。');
+  return {...refs,page,original:0,purpose:input.purpose};
+}
+
+export function validPaperReturnIndices(page: unknown, original: unknown) {
+  return typeof page === 'number' && Number.isSafeInteger(page) && page >= 1 &&
+    typeof original === 'number' && Number.isSafeInteger(original) && original >= 0;
+}
+
+export function paperReturnView(id: FactId, rev: number, captured: ReturnType<typeof sourceEnvelope>) {
+  return { title: captured.unit.title, source: { id, rev },
+    originals: captured.originals.map(({ name }, index) => ({ name, index })) };
+}
+
+export function paperCollectionReceipt(data: ReturnType<typeof collectPaperInput>, runId: FactId, rev: number) {
+  return { issuanceId: data.issuanceId, runId, rev, page: data.page, independence: 'unknown' as const };
+}
+
+export function readPaperReprintInput(body: Record<string, unknown>) {
+  if (Object.keys(body).length !== 1 || typeof body.issuanceId !== 'string') throw new Error('请选择已发放的纸卷。');
+  return factId(body.issuanceId);
+}
+
+export function readPaperDisplayInput(body: Record<string, unknown>) {
+  if (Object.keys(body).length !== 2 || typeof body.issuanceId !== 'string' || typeof body.permit !== 'string')
+    throw new Error('显示回执格式无效。');
+  return [factId(body.issuanceId), factId(body.permit)] as const;
 }
 
 export async function collectPaperWrites(

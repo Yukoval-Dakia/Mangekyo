@@ -6,7 +6,7 @@
 
 | 活动 | 生产事实与取证 | 正常入口与本轮证据 |
 | --- | --- | --- |
-| 同伴对话 | `activity.studyTurn` 有已完成的教学选择时扫描，模型只收到 learner 的原话，不附对话上下文或原件。 | 已对齐 #50 的即时 Claim。现行 `submitTurn` 只给教学用途，缺少普通入口的独立教研授权。未跑异步对话产出。 |
+| 同伴对话 | `activity.studyTurn` 保留原话。只有本人逐轮授权并有已接受的完成回执时，后台才读取这一轮的原话片段。抽取只存待核验观察及来源版本和精确范围。 | 普通 `/api/sessions` 和 `/answers` 可声明 `allowBackgroundUnderstanding`。会话返回当前授权版本，原话撤源命令可单独撤回 `background-research`。同轮已有即时 Claim 时拦住重复抽取。 |
 | 交卷与后测 | `activity.workbookAttempt`、`activity.retentionPosttestSubmission`。复用生产提交回执读取。只使用有确定性结果的内嵌题原答，保留题项锚点。 | 普通交卷和已有教研授权 HTTP 路径已跑通。同一次或帮助未知的证据只留弱观察。后测默认无教研用途，未跑异步后测，评分标准题仍缺接线。 |
 | 原件 | `activity.intakeDocument`，只读本人更正的抽取文字。未判定的 OCR、页图和印刷／手写／红笔作者分层暂无资格。 | 已有本人更正入口。现行原件默认保存用途，未跑获准异步原件。 |
 | 活教材与笔记 | `content.textbookPage` 的正文块和 `activity.organizerNote` 的正文，保留块或字段锚点和来源版本。 | 用正式 Studio 教材服务明确提交 `storage/teaching/background-research` 用途。活教材进入实际 outbox 和 Temporal。HTTP 创建默认保存用途，未跑旧笔记。 |

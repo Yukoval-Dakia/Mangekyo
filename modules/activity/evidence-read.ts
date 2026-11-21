@@ -20,6 +20,31 @@ const submissionCommands = {
   [recallSubmissionType]: submitRecallCommand,
 } as const;
 
+/** A later single-fact grant may license the same frozen question. Every intervening revision
+ * must preserve the complete original, including its private scoring fields.
+ * The host still opens the selected copy and its dependencies for the actual recipient.
+ */
+export async function licensedQuestionCopy(tx: ActivityEvidenceReadScope, source: WorkbookSourceQuestionRef, purpose: string) {
+  const {rows: [copy]} = await tx.query<{rev: Revision}>(`
+    SELECT f.current_rev AS rev FROM facts f
+    JOIN fact_revs original ON (original.learner_id,original.fact_id,original.rev)=(f.learner_id,f.id,$3)
+    WHERE f.learner_id=$1 AND f.id=$2 AND f.retracted_rev IS NULL AND $4=ANY(f.purpose)
+      AND NOT original.purpose && ARRAY[$4,'all'] AND original.kind='value' AND original.rev<f.current_rev
+      AND NOT EXISTS (SELECT 1 FROM fact_revs r WHERE (r.learner_id,r.fact_id)=(f.learner_id,f.id)
+        AND r.rev>original.rev AND (r.kind<>'value' OR r.data IS DISTINCT FROM original.data))`,
+    [tx.learner, source.id, source.rev, purpose]);
+  return copy ? {...source, rev: copy.rev} : source;
+}
+
+export async function frozenWorkbookRevision(tx: ActivityEvidenceReadScope, id: FactId, cutoff: Tick, releaseRevision: Revision | null) {
+  const { rows: [version] } = await tx.query<{ rev: Revision }>(
+    `SELECT rev FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND tick<$3::bigint AND kind='value'
+       AND ($4::int IS NULL OR rev=$4) ORDER BY rev DESC LIMIT 1`,
+    [tx.learner, id, cutoff, releaseRevision],
+  );
+  return version;
+}
+
 export async function readActivitySubmissionBirth(
   tx: ActivityEvidenceReadScope, ref: FactRef, type: keyof typeof submissionCommands,
 ) {
@@ -44,7 +69,7 @@ export async function readActivitySubmissionBirth(
 }
 
 export async function readActivityHelpEvents(
-  tx: ActivityEvidenceReadScope, read: ReadContext, query: {
+  tx: ActivityEvidenceReadScope, read: {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>}, query: {
     activities: readonly FactId[];
     cutoff: Tick;
     mode: 'pinned' | 'following';

@@ -3,9 +3,10 @@ import { startOrWakeCoordinator } from '../../executors/temporal/src/index.ts';
 import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import { consumePricedEffect, effectBudgetUsage } from '../../kernel/src/work/effects.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
+import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, readReadyWork, readWork, type WorkRef,
@@ -14,22 +15,25 @@ import {
   cancelResearchTodos, checkTodoTriggers, completeTodo, emitTodo, endDispatchedTodo, enqueueWork,
   readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec,
 } from '../../kernel/src/work/todos.ts';
+import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
+import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import {
   allowRetentionReview, configureResearch, publishWorksheet, readResearchBasis, ResearchBasisChanged, researchOrder,
-  researchPurpose, researchSettings, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType, worksheetDraft,
+  researchPurpose, researchScoutBudget, researchSettings, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType, worksheetDraft,
 } from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';
 import {
-  activeRetentionReview, readWorksheet, readWorksheetById, researchReader, retentionReviewAnchor,
+  activeRetentionReview, independentScoutSource, reviewMaterialAvailable, readWorksheet, readWorksheetById, researchReader, retentionReviewAnchor,
   retentionReviewPermissionId, reviewEvidence, whenAvailable, workbookSource, worksheetId, type ReviewEvidence,
 } from './research-sources.ts';
 import {
-  prepareResearchTriage, reviewDedupKey, reviewGoal, selectResearchTodo, type ResearchTriageTransport,
+  preparePaidResearchTriage, prepareResearchTriage, reviewDedupKey, reviewGoal, researchDecision,
+  scoutEffectIdentity,
 } from './research-triage-host.ts';
+import { sampleResearchScout, ScoutAuthorizationChanged, type ResearchScoutHost } from './research-scout.ts';
 import { discoverUnderstandingTodos, eligibleExtraction, openUnderstandingExtraction, type UnderstandingTransport } from './research-understanding.ts';
 import { activityEvidenceTypes, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';
 import { extractorProfile } from '../../modules/companion/understanding.ts';
@@ -68,7 +72,8 @@ const retentionReviewDraft = {
 async function settings(tx: ReadTransaction) {
   return whenAvailable(async () => {
     const fact = await researchReader(tx).fact(settingsId, { mode: 'following' });
-    return { ...researchSettings(fact.value), revision: fact.ref.rev };
+    const { enabled, coordinatorRef, scoutConsent } = researchSettings(fact.value);
+    return { enabled, coordinatorRef, scoutBudget: scoutConsent, revision: fact.ref.rev };
   });
 }
 
@@ -93,6 +98,7 @@ async function eligibleBasis(tx: ReadTransaction, spec: TodoSpec) {
     }
     if (source.type !== workbookAttemptType ||
         workbookAttempt(source.value).feedback.find(item => item.result === 'incorrect')?.questionId !== anchor) return null;
+    if (!await reviewMaterialAvailable(tx, workbookAttempt(source.value).paper)) return null;
     return { basis, evidence: reviewEvidence(source.value, anchor) };
   });
 }
@@ -116,7 +122,7 @@ async function updateSettings<T>(action: () => Promise<T>) {
 }
 
 export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule,
-  agent?: ResearchAgent, triageTransport?: ResearchTriageTransport, understandingTransport?: UnderstandingTransport) {
+  agent?: ResearchAgent, scoutHost?: ResearchScoutHost, understandingTransport?: UnderstandingTransport) {
   const extract = openUnderstandingExtraction(db, companion, understandingTransport);
   const settingsCurrent = async (tx: ReadTransaction, revision: number) => {
     const current = await settings(tx);
@@ -138,7 +144,13 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
 
   const read = () => db.snapshot(scope, async tx => {
     const current = await settings(tx);
-    return { enabled: current?.enabled ?? false, revision: current?.revision ?? 0, paidBudget: 0 };
+    const budget = current?.scoutBudget;
+    const { held, settled } = await effectBudgetUsage(tx);
+    return { enabled: current?.enabled ?? false, revision: current?.revision ?? 0, paidBudget: budget?.limitMicros ?? 0,
+      ...(scoutHost && {scoutOffer: {route: scoutHost.route, maxRetentionDays: scoutHost.retentionDays,
+        maxPerCallMicros: scoutHost.reserveUsdMicros}}),
+      ...(budget || held > 0n || settled > 0n ? { scoutBudget: budget ?? null, unit: 'USD_MICROS',
+        heldUsdMicros: held.toString(), settledUsdMicros: settled.toString() } : {}) };
   });
   const permission = (paperId: string, attemptId: string) => db.snapshot(scope, async tx => {
     const fact = await workbookSource(tx, paperId, attemptId);
@@ -174,8 +186,14 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
 
   const activityChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
     if (extract && changes.some(change => change.factType !== turnEvidenceType &&
-        activityEvidenceTypes.includes(change.factType) && change.kind !== 'retract') &&
+        (activityEvidenceTypes.includes(change.factType) || change.kind === 'set_purpose' &&
+          [workbookPaperType, workspaceEntryType].includes(change.factType)) && change.kind !== 'retract') &&
         (await settings(tx))?.enabled) await enqueueWork(tx, tick, wake);
+  };
+
+  const turnCompleted = async (tx: DbTransaction, tick: Tick, id: string) => {
+    if (extract && (await settings(tx))?.enabled &&
+        await whenAvailable(() => researchReader(tx).fact(factId(id), {mode: 'following'}))) await enqueueWork(tx, tick, wake);
   };
 
   const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => {
@@ -186,43 +204,63 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       signal.throwIfAborted();
       const now = Date.now();
       const eligible = async (spec: TodoSpec) => (await (extract && spec.workerProfile === extractorProfile
-        ? eligibleExtraction(tx, spec) : eligibleBasis(tx, spec))) !== null;
+        ? eligibleExtraction(tx, spec, understandingTransport?.maySend) : eligibleBasis(tx, spec))) !== null;
       const due = await checkTodoTriggers(tx, now, eligible);
       if (due.advanced) return { status: 'advanced' } as const;
       const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
       const watermark = await newResearchWatermark(tx);
-      if (!watermark) return waiting;
-      if (extract) {
-        const todos = await discoverUnderstandingTodos(tx, watermark.reviewed, current.revision, now);
-        if (todos.length) {
-          await tx.withLearnerWrite(async tick => {
-            for (const spec of todos) await emitTodo(tx, tick, spec, now, eligible);
-          });
+      if (watermark) {
+        if (extract) {
+          const todos = await discoverUnderstandingTodos(tx, watermark.reviewed, current.revision, now, understandingTransport?.maySend);
+          if (todos.length) {
+            await tx.withLearnerWrite(async tick => {
+              for (const spec of todos) await emitTodo(tx, tick, spec, now, eligible);
+            });
+            return { status: 'advanced' } as const;
+          }
+        }
+        const local = await prepareResearchTriage(tx, watermark.reviewed, current.revision, now, Boolean(current.scoutBudget), eligible);
+        if (local?.intent && researchDecision(local) === 'review') {
+          const todo = local.intent;
+          await tx.withLearnerWrite(tick => emitTodo(tx, tick, todo, now, eligible));
           return { status: 'advanced' } as const;
         }
-      }
-      const prepared = await prepareResearchTriage(tx, watermark.reviewed, current.revision, now, eligible);
-      if (!prepared) {
         await saveFactWatermark(tx, watermark.observed);
-        return waiting;
       }
-      return { status: 'sample', prepared, watermark, waiting, settingsRevision: current.revision } as const;
+      const budget = current.scoutBudget;
+      if (!budget || scoutHost?.route !== budget.route || budget.expiresAtMs <= Date.now()) return waiting;
+      const prepared = await preparePaidResearchTriage(tx, settingsId, current.revision, now);
+      return prepared ? { status: 'sample', prepared, waiting, settingsRevision: current.revision, budget } as const : waiting;
     });
-    if (scan.status !== 'sample') return scan;
+    if (scan.status !== 'sample' || !scoutHost) return scan.status === 'sample' ? scan.waiting : scan;
     signal.throwIfAborted();
-    const intent = await selectResearchTodo(scan.prepared, triageTransport, signal);
-    return db.tx(scope, async tx => {
-      await lockLearner(tx, tx.learner);
-      signal.throwIfAborted();
+    const { budget, prepared, settingsRevision } = scan;
+    const authorizeScout = async (tx: ReadTransaction) => {
       const current = await settings(tx);
-      if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' };
-      const watermark = await newResearchWatermark(tx);
-      if (current.revision !== scan.settingsRevision || watermark?.observed !== scan.watermark.observed ||
-          watermark.reviewed !== scan.watermark.reviewed) return { status: 'advanced' };
-      if (intent) await tx.withLearnerWrite(tick =>
-        emitTodo(tx, tick, intent, Date.now(), async spec => (await eligibleBasis(tx, spec)) !== null));
-      await saveFactWatermark(tx, watermark.observed);
-      return scan.waiting;
+      if (current?.enabled !== true || current.revision !== settingsRevision ||
+          current.coordinatorRef !== coordinatorRef || !(await eligibleBasis(tx, prepared.intent)))
+        throw new ScoutAuthorizationChanged();
+      const { id } = prepared.intent.sourceFactRev;
+      const source = await whenAvailable(() => researchReader(tx).fact(id, { mode: 'following' }));
+      if (!source || !await independentScoutSource(tx, source) || budget.expiresAtMs <= Date.now())
+        throw new ScoutAuthorizationChanged();
+    };
+    const review = await sampleResearchScout(db, settingsId, settingsRevision, budget, scoutHost,
+      prepared, authorizeScout, signal);
+    if (review === undefined) return scan.waiting;
+    return db.tx(scope, async tx => {
+      signal.throwIfAborted();
+      const consumed = await consumePricedEffect(tx, scoutEffectIdentity(settingsId, prepared.intent.dedupKey), review === 'superseded' ? 'discard' : async tick => {
+        if (!review) return null;
+        try {
+          await authorizeScout(tx);
+        } catch (error) {
+          if (error instanceof ScoutAuthorizationChanged) return null;
+          throw error;
+        }
+        return (await emitTodo(tx, tick, prepared.intent, Date.now(), async spec => Boolean(await eligibleBasis(tx, spec))))?.id ?? null;
+      });
+      return consumed ? { status: 'advanced' } : scan.waiting;
     });
   };
 
@@ -230,9 +268,15 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     read,
     async configure(input: Record<string, unknown>) {
       const { requestId, revision, value: enabled } = settingInput(input, 0, 'enabled');
+      let scoutBudget: ReturnType<typeof researchScoutBudget> | undefined;
+      try {
+        if (input.scoutBudget !== undefined) scoutBudget = researchScoutBudget(input.scoutBudget);
+      } catch {
+        throw new RequestError(400, '前哨额度、到期时间、服务标识或留存天数无效。');
+      }
       await updateSettings(() => handle({
         ...scope, actor: 'learner', purpose: researchPurpose, type: configureResearch,
-        id: commandId(stableId('configure-research', requestId)), input: { id: settingsId, revision, enabled },
+        id: commandId(stableId('configure-research', requestId)), input: { id: settingsId, revision, enabled, ...(scoutBudget !== undefined && { scoutBudget }) },
       }));
       return read();
     },
@@ -276,6 +320,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     },
     workbookChanged,
     activityChanged,
+    turnCompleted,
     advance,
     async reconcile() {
       await db.tx(scope, async tx => {

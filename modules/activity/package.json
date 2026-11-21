@@ -11,6 +11,7 @@
   },
   "exports": {
     ".": "./module.ts",
+    "./facts/current-object": "./current-object-basis.ts",
     "./facts/*": "./facts/*.ts"
   }
 }

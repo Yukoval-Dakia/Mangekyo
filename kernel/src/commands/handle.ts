@@ -243,19 +243,22 @@ async function commitCommand(
   return tx.withLearnerWrite(async (tick) => {
     const changes = decide?.state === 'rejected' ? [] :
       await applyFactWrites(tx, tick, writes, writeOptions(request), writeTarget);
-    if (decide?.state !== 'rejected') await options.hooks.onFactsChanged(tx, tick, changes);
-    if (decide) await tx.query(
-      'UPDATE proposals SET state=$3, decided_tick=$4 WHERE learner_id=$1 AND command_id=$2',
-      [request.learner, decide.proposalId, decide.state, tick],
-    );
+    const scopedPurposeChanges = changes.flatMap(({ref, scopedPurpose}) => scopedPurpose === undefined ? [] :
+      [{id: ref.id, rev: ref.rev, purpose: scopedPurpose}]);
     const receipt: CommandReceipt = {
       commandId: request.id,
       state: decide?.state === 'rejected' ? 'rejected' : 'done',
       wrote: changes.map((change) => change.ref),
       proposals: [],
+      ...(scopedPurposeChanges.length ? {scopedPurposeChanges} : {}),
       ...(decide ? {output: request.input} : {}),
     };
     await insertCommand(tx, request, receipt.state, receipt, tick);
+    if (decide?.state !== 'rejected') await options.hooks.onFactsChanged(tx, tick, changes);
+    if (decide) await tx.query(
+      'UPDATE proposals SET state=$3, decided_tick=$4 WHERE learner_id=$1 AND command_id=$2',
+      [request.learner, decide.proposalId, decide.state, tick],
+    );
     return receipt;
   });
 }

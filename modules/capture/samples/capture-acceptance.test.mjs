@@ -47,6 +47,7 @@ function numericQuestion(title, prompt, criterionId, value, blocks) {
   };
 }
 
+const connectionString = process.env.MANGEKYO_CAPTURE_ACCEPTANCE_URL ?? testDatabaseUrl;
 await withLearnerDatabase(learner, async db => {
   const gather = (plan, purpose = 'teaching') => gatherSnapshot(db, { learner, purpose }, plan);
   const gatherValue = (read, purpose) => gather(async context => ({
@@ -111,8 +112,8 @@ await withLearnerDatabase(learner, async db => {
   await run(fixture);
   await exerciseLayeredPaper(fixture);
   await exerciseNotion(fixture);
-  await exerciseTextbook(fixture);
-}, { postgres: Boolean(testDatabaseUrl) });
+  await exerciseTextbook(fixture, handle.decideProposal);
+}, { postgres: Boolean(connectionString), connectionString });
 
 async function run({ send, read, current, gatherValue, extract, ingestPhoto, proposeExtraction }) {
   const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, projectNewPaper, paperIssuance,

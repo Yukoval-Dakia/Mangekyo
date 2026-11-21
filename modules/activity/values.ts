@@ -1,5 +1,8 @@
-import { factId } from '@mangekyo/kernel';
+import { factId, type FactSnapshot } from '@mangekyo/kernel';
+import { classroomTurn } from './classroom.ts';
 import { isSourceFactId } from './source-values.ts';
+
+export const turnResearchPurpose = 'background-research';
 
 export function object(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('记录格式无效');
@@ -45,6 +48,10 @@ function studyCurrentObject(input: unknown) {
 export function studyTurn(input: unknown) {
   const value = object(input);
   const answer = value.answer === null ? null : field(value, 'answer');
+  const caseId = field(value, 'caseId', 120);
+  const optedIn = value.allowBackgroundUnderstanding;
+  if (optedIn !== undefined && (optedIn !== true || caseId !== 'companion' || answer === null))
+    throw new Error('本轮后台理解授权无效。');
   const accountRevision = value.accountRevision;
   if (accountRevision !== undefined && (typeof accountRevision !== 'string' || !/^[0-9a-f-]{36}$/.test(accountRevision)))
     throw new Error('模型账户代次无效。');
@@ -52,9 +59,12 @@ export function studyTurn(input: unknown) {
     throw new Error('首轮教学资料版本无效。');
   return {
     sessionId: factId(field(value, 'sessionId')),
-    caseId: field(value, 'caseId', 120),
+    caseId,
     parentId: value.parentId === null ? null : factId(field(value, 'parentId')),
     answer,
+    ...(optedIn === true ? {allowBackgroundUnderstanding: true as const} : {}),
+    ...(value.classroom === undefined ? {} : {classroom: classroomTurn(value.classroom)}),
+    ...(value.learningToolsVersion === 1 ? {learningToolsVersion:1 as const} : {}),
     ...(value.memoryVersion === 1 ? {memoryVersion: 1 as const} : {}),
     ...(value.jitContextVersion === 1 ? {jitContextVersion: 1 as const, jitCounterId: field(value, 'jitCounterId', 100)} : {}),
     ...(value.agentVersion === 1 ? {agentVersion: 1 as const, allowSearch: value.allowSearch === true} : {}),
@@ -73,6 +83,13 @@ export function studyTurn(input: unknown) {
     baseUrl: field(value, 'baseUrl', 2000),
   };
 }
+export function turnAllowsBackgroundUnderstanding(fact: FactSnapshot) {
+  return fact.type === 'activity.studyTurn' && fact.purpose.includes(turnResearchPurpose) &&
+    studyTurn(fact.value).allowBackgroundUnderstanding === true;
+}
+export const turnResearchAccess = (fact: FactSnapshot) => ({
+  allowed: turnAllowsBackgroundUnderstanding(fact), rev: fact.ref.rev, accessEpoch: fact.accessEpoch,
+});
 export function studyAttachment(input: unknown) {
   const value = object(input);
   if (value.mode !== 'ask' && value.mode !== 'prepare') throw new Error('材料使用方式无效');

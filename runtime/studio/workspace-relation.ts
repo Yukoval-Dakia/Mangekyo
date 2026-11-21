@@ -5,7 +5,7 @@ import {commandId, factId} from '../../kernel/src/declarations/ids.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory, type LoadedModule} from '../../kernel/src/loader.ts';
 import {openLearningLimit, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
-import {isSourceFactId, type SourceRefV1} from '../../modules/activity/source-values.ts';
+import {isSourceFactId, parseLearningReference, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {
   createKnowledgeEdgeCommand, createVerifiedKnowledgeEdgeCommand, withdrawKnowledgeEdgeCommand,
   knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeEndpointKind, knowledgeUseKey,
@@ -18,7 +18,6 @@ import {RequestError} from './sessions.ts';
 import type {WorkspaceSourceRecipient} from './source-read.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
-import {parseLearningReference} from './workspace-open.ts';
 
 const scope = {learner:studioLearner};
 const whole = {kind:'whole'} as const;
@@ -35,7 +34,7 @@ export function openWorkspaceRelation(options: {
   db:Db; turn:string;
   opened:ReadonlyMap<string, OpenedRelationSource>;
   maySend:WorkspaceSourceRecipient;
-  modelBasis?:readonly WorkspaceWitness[] | undefined;
+  modelBasis?(): readonly WorkspaceWitness[];
   authorize(tx:ReadTransaction):Promise<void>;
   saved(key:string, receipt:WorkspaceWriteReceipt):void;
 }) {
@@ -72,7 +71,7 @@ export function openWorkspaceRelation(options: {
     const refs = [...new Set(picked.map(({ref}) => ref.fact.id))].slice(0,openLearningLimit);
     const uses = picked.map(({witness:w}) => sourceUse({id:w.id,rev:w.rev,accessEpoch:w.epoch}));
     const proof = verification === undefined ? undefined : uses.pop()!;
-    for (const {id,rev,epoch} of options.modelBasis ?? []) uses.push(sourceUse({id,rev,accessEpoch:epoch}));
+    for (const {id,rev,epoch} of options.modelBasis?.() ?? []) uses.push(sourceUse({id,rev,accessEpoch:epoch}));
     const id = factId(stableId('knowledge-edge',options.turn,String(step)));
     const key = commandId(stableId('save-relation-command',options.turn,String(step)));
     const read = (tx:ReadTransaction) => createAuthorizedFactReader(tx,purpose,options.maySend);

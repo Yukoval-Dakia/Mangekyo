@@ -1,9 +1,10 @@
+import { isDeepStrictEqual } from 'node:util';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import { workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
+import { independentlyAuthoredPaper, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import {
   readResearchSource, ResearchBasisChanged, researchOrder, researchOrderType, researchPurpose, researchWorksheet,
   researchWorksheetType, retentionReviewPermission, retentionReviewPermissionType,
@@ -41,12 +42,34 @@ export async function workbookSource(tx: ReadTransaction, paperId: string, attem
   return fact;
 }
 
+/** Paid scout titles come only from a provably independent frozen paper and its current source. */
+export async function independentScoutSource(tx: ReadTransaction, fact: FactSnapshot) {
+  if (fact.type !== workbookAttemptType) return false;
+  const { paper, paperId } = workbookAttempt(fact.value);
+  if (!independentlyAuthoredPaper(paper) || !explicitIndependentPaper(fact.value, 'paper')) return false;
+  const live = await whenAvailable(() => createCommandReadContext(tx, storagePurpose)
+    .fact(factId(paperId), { mode: 'following' }));
+  return live?.type === workbookPaperType && explicitIndependentPaper(live.value) &&
+    isDeepStrictEqual(workbookPaper(live.value), paper);
+}
+
+function explicitIndependentPaper(value: FactSnapshot['value'], key?: 'paper') {
+  const paper = key && value && typeof value === 'object' && 'paper' in value ? value.paper : value;
+  return paper !== null && typeof paper === 'object' && 'materialId' in paper && paper.materialId === null;
+}
+
+export async function reviewMaterialAvailable(tx: ReadTransaction, paper: ReturnType<typeof workbookPaper>) {
+  const { materialId } = paper;
+  return materialId === null || Boolean(await whenAvailable(() => createCommandReadContext(tx, storagePurpose)
+    .fact(factId(materialId), { mode: 'following' })));
+}
+
 export function reviewEvidence(data: unknown, questionId: string) {
   const attempt = workbookAttempt(data);
   const index = attempt.paper.questions.findIndex(question => question.id === questionId);
   const question = attempt.paper.questions[index];
   const feedback = attempt.feedback.find(item => item.questionId === questionId);
-  if (!question || feedback?.result !== 'incorrect') throw new ResearchBasisChanged('原卷判题已变更。');
+  if (!question || question.sourceQuestionRef || feedback?.result !== 'incorrect') throw new ResearchBasisChanged('原卷判题已变更。');
   return { paperId: attempt.paperId, paperTitle: attempt.paper.title, submittedAt: attempt.submittedAt,
     questionNumber: index + 1, questionId, prompt: question.prompt, feedback };
 }
@@ -80,6 +103,7 @@ export async function readWorksheetById(tx: ReadTransaction, id: FactId) {
     const retention = source.type === retentionReviewPermissionType && ref.questionId === retentionReviewAnchor
       ? await activeRetentionReview(tx, source) : null;
     if (source.type !== workbookAttemptType && !retention) return null;
+    if (!retention && !await reviewMaterialAvailable(tx, workbookAttempt(source.value).paper)) return null;
     const evidence = retention ? null : reviewEvidence(source.value, ref.questionId);
     if (evidence) await createCommandReadContext(tx, storagePurpose).fact(ref.attemptId, { mode: 'following' });
     const href = retention ? `/api/retention/${retention.key}`

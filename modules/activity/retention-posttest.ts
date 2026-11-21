@@ -96,6 +96,15 @@ export function retentionFreezeRequest(input: Record<string, unknown>) {
   };
 }
 
+export function retentionFollowupRequest(input: Record<string, unknown>) {
+  if (Object.keys(input).length !== 2) throw new Error('保持预测请求格式无效。');
+  const scheduledAt = retentionDeadline(input.scheduledAt);
+  return {
+    requestId: workbookRequestId(input.requestId), scheduledAt,
+    through: retentionDeadline(new Date(Date.parse(scheduledAt) + 24 * 60 * 60 * 1000).toISOString()),
+  };
+}
+
 export function workbookRetentionTarget(paper: WorkbookPaper, source: ReturnType<typeof helpRef>, itemId: string) {
   return {
     activity: 'frozen-workbook-item' as const,

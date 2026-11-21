@@ -1,3 +1,5 @@
+import type { ClassroomEvidence } from '../../modules/activity/classroom.ts';
+import { assertClassroomAction } from './classroom.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
@@ -114,9 +116,9 @@ function unavailableMount(error: unknown) {
   return error instanceof MountUnavailable || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
 }
 
-async function readMount(tx: ReadTransaction, sessionId: string, mountId: string, check: CheckNotionRead) {
+async function readMount(tx: ReadTransaction, sessionId: string, mountId: string, check: CheckNotionRead, through?: number) {
   try {
-    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(tx), check);
+    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(tx), check, through);
   } catch (error) {
     if (error instanceof NotionReadUnconfirmed) throw new RequestError(503, '暂时无法核对作品来源，请重试。');
     if (unavailableMount(error)) throw conflict(error instanceof MountUnavailable ? error.message : '作品或依据已不可读。');
@@ -125,7 +127,7 @@ async function readMount(tx: ReadTransaction, sessionId: string, mountId: string
 }
 
 async function projectMount(
-  tx: ReadTransaction, sessionId: string, mountId: string, grantCurrent: ReturnType<typeof workspaceGrantChecker>, check: CheckNotionRead,
+  tx: ReadTransaction, sessionId: string, mountId: string, grantCurrent: ReturnType<typeof workspaceGrantChecker>, check: CheckNotionRead, through?: number,
 ) {
   const reader = createCommandReadContext(tx, purpose);
   const source = await reader.fact(factId(mountId), { mode: 'following' });
@@ -145,20 +147,21 @@ async function projectMount(
   if (!work || work.failed) throw new MountUnavailable('此回合已停止。');
   const result = validateArtifact(data.view);
   if (!result.ok) throw new MountUnavailable('无法读取这个作品版本。');
-  const authority = await teachingResultAuthority(tx, submission, data.manifest, grantCurrent, check);
+  const {state: authority} = await teachingResultAuthority(tx, data.turnId, submission, data.manifest, grantCurrent, check);
   if (authority === 'unconfirmed') throw new NotionReadUnconfirmed();
   if (authority === 'withdrawn') throw new MountUnavailable('作品的依据已变更。');
   const events = await tx.query<{ id: string; receipt: CommandReceipt | null }>(
     `SELECT f.id,c.receipt FROM facts f JOIN fact_revs r ON
     r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev LEFT JOIN commands c ON c.learner_id=r.learner_id AND c.id=r.command_id
-    WHERE f.learner_id=$1 AND f.type='activity.artifactAction' AND r.data->>'mountId'=$2 ORDER BY f.created_tick`,
-    [tx.learner, mountId],
+    WHERE f.learner_id=$1 AND f.type='activity.artifactAction' AND r.data->>'mountId'=$2
+      AND ($3::bigint IS NULL OR (r.data->>'stateRev')::bigint<=$3) ORDER BY f.created_tick`,
+    [tx.learner, mountId, through ?? null],
   );
   const history = [];
   for (const { id, receipt } of events.rows) {
     const fact = await reader.fact<ActionRecord>(factId(id), { mode: 'following' });
-    if (fact.ref.rev !== 1) throw new MountUnavailable('操作记录的版本已变化。');
-    history.push({ ...fact.value, id, receipt });
+    if (fact.ref.rev !== 1 || (through !== undefined && fact.value.stateRev !== history.length + 1)) throw new MountUnavailable('操作记录的版本已变化。');
+    history.push({ ...fact.value, id, receipt, witness:fact });
   }
   const { mount, grant, projected, hostState, submitted, predicting, unavailable, prediction, submissionEvent } =
     projectArtifactMountState(result.view, data.predictionPrompt, history,
@@ -180,7 +183,7 @@ async function projectMount(
     saved: savedArtifactCheckpoints(history),
     commandId: latest?.receipt?.commandId ?? null,
   };
-  return { mount, grant, history, snapshot, release, source };
+  return { mount, grant, history, snapshot, release, source, manifest:data.manifest };
 }
 
 export async function turnArtifacts(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
@@ -202,6 +205,24 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
     }
   }
   return {snapshots, unconfirmed};
+}
+
+export async function classroomMountEvidence(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
+  const {snapshots,unconfirmed} = await turnArtifacts(tx,session,turn,check);
+  if (unconfirmed.length) throw new RequestError(503,'暂时无法核对课堂作品依据。');
+  return snapshots.filter(item => item.stateRev > 0).map(item => ({
+    mountId:item.mountId,stateRev:item.stateRev,
+    assessmentId:item.assessment && 'derivationId' in item.assessment ? item.assessment.derivationId : null,
+  }));
+}
+
+export async function readClassroomMountEvidence(tx: ReadTransaction, session: string, turn: string,
+  evidence: ClassroomEvidence, check: CheckNotionRead) {
+  const result = await readMount(tx,session,evidence.mountId,check,evidence.stateRev);
+  if (result.mount.turnId !== turn || result.snapshot.stateRev !== evidence.stateRev) return;
+  const assessment = result.snapshot.assessment;
+  if (evidence.assessmentId && (!assessment || !('derivationId' in assessment) || assessment.derivationId !== evidence.assessmentId)) return;
+  return {...result,assessment:evidence.assessmentId === null ? undefined : assessment};
 }
 
 export function mountPermissionFields(unconfirmed: readonly string[], known: ReadonlySet<string>) {
@@ -264,6 +285,7 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
       modules: [await (activity ??= load('activity'))],
       hooks: createStudioCommandHooks({
         afterFactsChanged: async (tx, tick) => {
+          await assertClassroomAction(tx,session,mount.turnId);
           const current = await readMount(tx, session, mountId, notion.check(tx));
           if (current.release && action.intent === 'submit') {
             const submitted = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });

@@ -3,31 +3,28 @@ import type { CommandHandler, CommandHooks } from '../../kernel/src/commands/con
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { CommandReceipt, FactRef, Json } from '../../kernel/src/declarations/types.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { notionReadScope, teachingResultAllowed, type CheckNotionRead } from './notion.ts';
+import { notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
-import { helpExposure, helpExposureRequest, helpExposureType, sameHelpRef, sameHelpTarget, type HelpRef } from '../../modules/activity/help-exposure-values.ts';
-import { projectHelpExposure } from '../../modules/activity/help-exposure.ts';
+import { helpExposure, helpExposureRequest, helpExposureType, sameHelpRef, type HelpRef } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import {
-  gradeRecallItem, recallFields, parseRecallMount, issueRecallCommand, recallIssuance, recallIssuanceType, recallResponseId, recallSubmission,
-  recallSubmissionType, recallTarget, recallText, submitRecallCommand,
+  issueRecallCommand, parseRecallMount, recallDisplayEvent, recallIssuance, recallIssuanceType, recallItemView, recallMountedItem,
+  recallResponseId, recallResultView, recallRevealInput, recallRevealView, recallSubmission, recallSubmissionType, recallSubmitInput,
+  recallTarget, submitRecallCommand, type RecallMount,
 } from '../../modules/activity/recall-values.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { workbookRequestId } from '../../modules/activity/workbook-values.ts';
 import { attachmentSources, teachingOrigin } from './reading.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { purpose, slotType, stableId, studioLearner } from './identity.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 
-export type RecallMount = { turnId: string; derivationId: string; itemId: string };
 type DisplayWitness = { mount: RecallMount; revealId: string };
 type Issuance = ReturnType<typeof recallIssuance>;
 type Item = Issuance['items'][number];
-type Mount = ReturnType<typeof parseRecallMount>;
 type Submission = ReturnType<typeof recallSubmission>;
 const firstRevision = 1 as Revision;
 
@@ -45,15 +42,13 @@ function input<T>(parse: () => T): T {
   catch { throw new RecallRequestError(400, '回忆题请求格式无效。'); }
 }
 
-function issuanceRef(mount: Mount): HelpRef {
+function issuanceRef(mount: RecallMount): HelpRef {
   return { id: factId(stableId('recall-issuance', mount.turnId, mount.derivationId)), rev: firstRevision };
 }
 
-function itemFor(issuance: Issuance, mount: Mount): Item {
-  const item = issuance.items.find(item => item.itemId === mount.itemId);
-  if (!item || issuance.turn.id !== mount.turnId || issuance.version !== mount.derivationId) {
-    throw new RecallRequestError(404, '回忆题与此回合版本不匹配。');
-  }
+function itemFor(issuance: Parameters<typeof recallMountedItem>[0], mount: RecallMount) {
+  const item = recallMountedItem(issuance, mount);
+  if (!item) throw new RecallRequestError(404, '回忆题与此回合版本不匹配。');
   return item;
 }
 
@@ -75,7 +70,7 @@ async function optionalPinned(tx: ReadTransaction, ref: HelpRef) {
   }
 }
 
-async function readSource(tx: ReadTransaction, mount: Mount, requireCurrent: boolean, check: CheckNotionRead) {
+async function readSource(tx: ReadTransaction, mount: RecallMount, requireCurrent: boolean, check: CheckNotionRead) {
   const { rows: [row] } = await tx.query<{ value: unknown; manifest: unknown }>(
     `SELECT d.value, d.manifest FROM derivations d
      WHERE d.learner_id=$1 AND d.slot_type=$2 AND d.slot_key=$3 AND d.id=$4
@@ -94,14 +89,14 @@ async function readSource(tx: ReadTransaction, mount: Mount, requireCurrent: boo
   const manifest = parseManifest(row.manifest);
   if (turn.type !== 'activity.studyTurn' || manifest.purpose !== purpose ||
       !manifest.inputs.some(entry => entry.kind === 'fact' && entry.id === turn.ref.id &&
-        entry.rev === turn.ref.rev && entry.accessEpoch === turn.accessEpoch) ||
-      !await teachingResultAllowed(tx, submission, manifest, workspaceGrantChecker(tx), check, origin)) {
+        (entry.mode === 'following' || (entry.rev === turn.ref.rev && entry.accessEpoch === turn.accessEpoch))) ||
+      (await teachingResultAuthority(tx, mount.turnId, submission, manifest, workspaceGrantChecker(tx), check, origin)).state !== 'authorized') {
     throw new RecallRequestError(409, '回忆题的教学依据已变化。');
   }
   return { turn, feedback: row.value, attachment: origin.attachment };
 }
 
-async function readIssuance(tx: ReadTransaction, mount: Mount, ref: HelpRef, value: unknown, check: CheckNotionRead) {
+async function readIssuance(tx: ReadTransaction, mount: RecallMount, ref: HelpRef, value: unknown, check: CheckNotionRead) {
   const issuance = recallIssuance(value);
   const item = itemFor(issuance, mount);
   const { turn } = await readSource(tx, mount, false, check);
@@ -114,15 +109,11 @@ async function readIssuance(tx: ReadTransaction, mount: Mount, ref: HelpRef, val
   return { ref, item };
 }
 
-async function mounted(tx: ReadTransaction, mount: Mount, check: CheckNotionRead) {
+async function mounted(tx: ReadTransaction, mount: RecallMount, check: CheckNotionRead) {
   const ref = issuanceRef(mount);
   const fact = await optionalPinned(tx, ref);
   if (fact?.type !== recallIssuanceType) throw new RecallRequestError(404, '这道回忆题尚未发放。');
   return readIssuance(tx, mount, ref, fact.value, check);
-}
-
-function view(mount: Mount, ref: HelpRef, item: Item) {
-  return { ...mount, issuanceId: ref.id, responseId: recallResponseId, prompt: item.prompt };
 }
 
 function writtenRef(receipt: CommandReceipt) {
@@ -134,14 +125,10 @@ function writtenRef(receipt: CommandReceipt) {
 async function resultFor(tx: ReadTransaction, submission: Submission, ref: FactRef, item: Item) {
   const admission = await readActivitySubmissionBirth(tx, ref, recallSubmissionType);
   if (!admission) throw new RecallRequestError(409, '回忆题交答尚未确认。');
-  const target = recallTarget(submission.issuance, submission.itemId);
-  const cutoff = admission.tick;
-  const { events, omitted } = await readActivityHelpEvents(tx, createCommandReadContext(tx, storagePurpose), {
-    activities: [target.activityId], cutoff, mode: 'pinned', issuance: submission.issuance,
+  const review = await readActivityHelpEvents(tx, createCommandReadContext(tx, storagePurpose), {
+    activities: [submission.issuance.id], cutoff: admission.tick, mode: 'pinned', issuance: submission.issuance,
   });
-  const coverage = !omitted && submission.observation === 'complete' ? { submission: ref, target, through: cutoff } : null;
-  return { submission: ref, itemId: item.itemId, responseId: recallResponseId,
-    result: gradeRecallItem(item, submission.answer), exposure: projectHelpExposure({ submission: { ref, target, cutoff }, events, coverage }) };
+  return recallResultView(submission, ref, item, admission.tick, review);
 }
 
 export function openRecall(db: Db, activity: LoadedModule, options: {
@@ -153,7 +140,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
   const hooks = options.hooks ?? { async onFactsChanged() {} };
 
   const notionRead = () => notionReadScope(db, studioLearner);
-  function write<T>(mount: Mount, run: (tx: DbTransaction, handle: CommandHandler, check: CheckNotionRead) => Promise<T>, notion = notionRead()) {
+  function write<T>(mount: RecallMount, run: (tx: DbTransaction, handle: CommandHandler, check: CheckNotionRead) => Promise<T>, notion = notionRead()) {
     return authorized(() => notion.read((tx, check) => readSource(tx, mount, false, check), async (tx, check) => {
       const handle = createCommandHandler(withinLearnerTransaction(db, tx), { modules: [activity], hooks });
       try { return await run(tx, handle, check); }
@@ -178,7 +165,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
         if (existing) {
           if (existing.type !== recallIssuanceType) throw new Error('Invalid Recall issuance identity');
           const { item } = await readIssuance(tx, mount, ref, existing.value, check);
-          return view(mount, ref, item);
+          return recallItemView(mount, ref, item);
         }
         const { turn, feedback, attachment } = await readSource(tx, mount, true, check);
         const kit = studyKit(feedback && typeof feedback === 'object' && 'studyKit' in feedback ? feedback.studyKit : null);
@@ -193,7 +180,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
         };
         const item = itemFor(data, mount);
         writtenRef(await execute(handle, ref.id, issueRecallCommand, data, purpose));
-        return view(mount, ref, item);
+        return recallItemView(mount, ref, item);
       }, notion);
     },
 
@@ -201,7 +188,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
       const mount = input(() => parseRecallMount(locator));
       return authorized(() => notion.read(async (tx, check) => {
         const { ref, item } = await mounted(tx, mount, check);
-        return view(mount, ref, item);
+        return recallItemView(mount, ref, item);
       }));
     },
 
@@ -227,10 +214,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
     },
 
     async requestReveal(body: unknown) {
-      const { mount, requestId } = input(() => {
-        const row = recallFields(body, ['mount', 'requestId']);
-        return { mount: parseRecallMount(row.mount), requestId: workbookRequestId(row.requestId) };
-      });
+      const { mount, requestId } = input(() => recallRevealInput(body));
       return write(mount, async (tx, handle, check) => {
         const { ref, item } = await mounted(tx, mount, check);
         const revealId = factId(stableId('recall-reveal', requestId));
@@ -239,7 +223,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
           step: { kind: 'solution', order: 1 }, alsoAppliesTo: [],
         });
         writtenRef(await handle({ ...scope, actor: 'learner', ...request }));
-        return { revealId, itemId: item.itemId, reference: item.answer, ...(item.rubric ? { rubric: item.rubric } : {}) };
+        return recallRevealView(revealId, item);
       });
     },
 
@@ -252,23 +236,17 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
         const { ref, item } = await mounted(tx, mount, check);
         const fact = await optionalPinned(tx, { id: revealId, rev: firstRevision });
         const reveal = fact?.type === helpExposureType ? helpExposure(fact.value) : null;
-        if (reveal?.kind !== 'opened' || !sameHelpTarget(reveal.mount, recallTarget(ref, item.itemId)) ||
-            !sameHelpRef(reveal.content, ref) || reveal.step.kind !== 'solution' ||
-            reveal.step.order !== 1 || reveal.alsoAppliesTo.length !== 0) {
-          throw new RecallRequestError(409, '显示回执与获准揭示的题项不匹配。');
-        }
+        const display = recallDisplayEvent(reveal, ref, item);
+        if (!display) throw new RecallRequestError(409, '显示回执与获准揭示的题项不匹配。');
         const displayId = factId(stableId('recall-display', revealId));
-        const request = helpExposureRequest(displayId, { ...reveal, kind: 'displayed' });
+        const request = helpExposureRequest(displayId, display);
         return { display: writtenRef(await handle({ ...scope, actor: 'learner', ...request })) };
       });
     },
 
     /** Only the server host can attest complete coverage. Preserve its first admission on retries. */
     async submit(body: unknown, observation: Submission['observation'] = 'unknown') {
-      const { mount, requestId, answer } = input(() => {
-        const row = recallFields(body, ['mount', 'requestId', 'answer']);
-        return { mount: parseRecallMount(row.mount), requestId: workbookRequestId(row.requestId), answer: recallText(row.answer, 4000) };
-      });
+      const { mount, requestId, answer } = input(() => recallSubmitInput(body));
       return write(mount, async (tx, handle, check) => {
         const { ref, item } = await mounted(tx, mount, check);
         const id = factId(stableId('recall-submission', requestId));

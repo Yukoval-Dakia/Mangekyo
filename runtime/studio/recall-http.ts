@@ -7,17 +7,17 @@ import { factId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { parseRecallMount } from '../../modules/activity/recall-values.ts';
+import { parseRecallMount, type RecallMount } from '../../modules/activity/recall-values.ts';
 import { workbookRequestId } from '../../modules/activity/workbook-values.ts';
 import { purpose, studioLearner } from './identity.ts';
 import type { NotionReadScope } from './notion.ts';
-import { openRecall, recallItemId, RecallRequestError, type RecallMount } from './recall.ts';
+import { openRecall, recallItemId, RecallRequestError } from './recall.ts';
 
 export const recallDisplayToken = 'x-recall-display-token';
 const idPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const isId = (value: unknown): value is string => typeof value === 'string' && idPattern.test(value);
 
-function readMount(value: unknown): RecallMount {
+function readMount(value: unknown) {
   try { return parseRecallMount(value); }
   catch { throw new RecallRequestError(400, '回忆题挂载标识无效。'); }
 }

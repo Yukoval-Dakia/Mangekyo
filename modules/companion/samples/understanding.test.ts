@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { claimRef } from '../claim.ts';
-import { extractedUnderstanding, extractUnderstandings, reviewUnderstanding, understandingPresentation } from '../understanding.ts';
+import { citationExcerpt, extractedUnderstanding, extractUnderstandings, opensCitation, reviewUnderstanding, understandingPresentation } from '../understanding.ts';
 
 const ref = claimRef({id: '01ARZ3NDEKTSV4RRFFQ69G5FB3', rev: 1, accessEpoch: '0'});
 const source = {ref, kind: 'attempt', fragments: [{anchor: 'area', text: '6 + 4 = 10'}]};
@@ -22,6 +22,15 @@ describe('post-activity understanding', () => {
     expect(() => parse({...entry, stable:true})).toThrow();
   });
 
+  it('keeps a linked objective result scoped to the observed item and submission', () => {
+    const question = {...source, fragments: [{...source.fragments[0]!, independence: 'unknown' as const, result: 'incorrect'}]};
+    const selected = {...entry, kind: 'observation', scope: {kind: 'object', object: ref.id}, ttl: null};
+    const read = (input: object) => extractUnderstandings(JSON.stringify({entries: [input]}), question, at);
+    expect(read(selected)[0]?.data.text).toBe('题项 area 的作答片段为「6 + 4」，客观评阅为错误。');
+    expect(() => read({...selected, kind: 'misconception'})).toThrow();
+    expect(() => read({...selected, scope: {kind: 'general'}})).toThrow();
+  });
+
   it('keeps unsupported stable labels weak even after a learner edit', () => {
     const draft = parse({...entry, kind:'playbook', ttl:null})[0]!.data;
     const value = extractedUnderstanding({...draft, version:2, sticky:true, undo_token:ref.id});
@@ -29,5 +38,22 @@ describe('post-activity understanding', () => {
     expect(reviewUnderstanding(ref.id, value, [source])).toMatchObject({
       kind:'value', value:{outcome:{kind:'unresolved'}},
     });
+  });
+
+  it('anchors a tentative turn observation without copying the learner quote', () => {
+    const turn = {ref, kind: 'conversation', quoteOnly: true as const,
+      fragments: [{anchor: 'message', text: '🧭 先猜两段各耗时多久。'}]};
+    const observation = {...entry, kind: 'observation', ttl: null,
+      evidence_refs: [{...ref, anchor: 'message', excerpt: '先猜两段', direction: 'support'}]};
+    const extract = (data: object, input = turn) => extractUnderstandings(JSON.stringify({entries: [data]}), input, at)[0]!.data;
+    const data = extract(observation);
+    const [citation] = data.evidence_refs;
+    expect(citation).toEqual({...ref, anchor: 'message', direction: 'support', span: {start: 3, end: 7}});
+    expect(citationExcerpt(turn, citation!)).toBe('先猜两段');
+    expect(opensCitation({...turn, ref: claimRef({...ref, accessEpoch: '1'})}, citation!)).toBe(false);
+    expect(extract({...observation, evidence_refs: data.evidence_refs})).toEqual(data);
+    for (const kind of ['preference', 'claim', 'state', 'playbook'])
+      expect(() => extract({...observation, kind, ttl: entry.ttl})).toThrow();
+    expect(() => extract(observation, {...turn, fragments: [{anchor: 'message', text: '先猜两段；先猜两段'}]})).toThrow();
   });
 });

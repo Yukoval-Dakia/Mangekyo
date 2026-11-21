@@ -27,5 +27,8 @@ export function withinLearnerTransaction(db: Db, tx: DbTransaction): Db {
     if (scope.learner !== tx.learner) throw new Error('Transaction learner mismatch');
     return run(tx);
   };
-  return {...db, query: tx.query, snapshot: nested, tx: nested};
+  return {...db, query:tx.query, tx:nested, snapshot(scope, read, options) {
+    if (options?.lockLearner) throw new Error('A locked snapshot requires a new transaction');
+    return nested(scope,read);
+  }};
 }

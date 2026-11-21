@@ -8,14 +8,14 @@ import { knowledgeEdgeType, workspaceEntryType } from '../../modules/content/kno
 import { readPosttestIssuance, type PosttestFactReader } from './retention-posttest.ts';
 import { RequestError } from './sessions.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
-import { resolveSource, type SourceTrack } from './source-read.ts';
+import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 
 export const retentionPurpose = retentionTeachingPurpose;
 
-async function trackSource(tx: ReadTransaction, read: PosttestFactReader, reference: string | SourceRefV1) {
+async function trackSource(tx: ReadTransaction, read: PosttestFactReader, reference: string | SourceRefV1, as: string, maySend: WorkspaceSourceRecipient) {
   const opened: Parameters<SourceTrack>[] = [];
   const source = await resolveSource(tx, reference, {
-    recipient: 'workspace', purpose: retentionPurpose, maySend: () => true, track: (...witness) => opened.push(witness),
+    recipient: 'workspace', purpose: as, maySend, track: (...witness) => opened.push(witness),
   });
   if (!source) throw new FactReadDeniedError('changed', '冻结题项的来源当前不可用。');
   for (const [fact, mode] of opened) {
@@ -24,17 +24,19 @@ async function trackSource(tx: ReadTransaction, read: PosttestFactReader, refere
   return source;
 }
 
-const evidence = workbookEvidenceReader<ReadTransaction>({
-  trackSource,
-  openEdge: (tx,id) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:retentionPurpose,maySend:() => true}),
+export const studioWorkbookEvidence = (as: string, maySend: WorkspaceSourceRecipient) => workbookEvidenceReader<ReadTransaction>({
+  trackSource: (tx,read,ref) => trackSource(tx,read,ref,as,maySend),
+  openEdge: (tx,id) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:as,maySend}),
   readPosttestIssuance,
-  createRead: tx => createCommandReadContext(tx,retentionPurpose),
+  createRead: tx => createCommandReadContext(tx,as),
   unavailable: error => error instanceof FactNotFoundError || error instanceof FactReadDeniedError,
   unavailableRelease: error => error instanceof RequestError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError,
   reject: (status,message) => new RequestError(status,message),
   edgeType: knowledgeEdgeType,
   questionType: workspaceEntryType,
 });
+
+const evidence = studioWorkbookEvidence(retentionPurpose, () => true);
 
 export const { openRetentionTarget, openControlledSubmission, readWorkbookEvidence,
   readComparableWorkbookEvidence, readItemDimensions } = evidence;

@@ -25,9 +25,12 @@ export type DbTransaction = ReadTransaction & {
   withLearnerWrite<Result>(write: (tick: Tick) => Promise<Result>): Promise<Result>;
 };
 
+/** A learner-locked projection can be retried and must be side-effect-free. */
+export type SnapshotOptions = { readonly lockLearner?: boolean };
+
 export type Db = DbQuery & {
   schemaTransaction<Result>(run: (tx: DbQuery) => Promise<Result>): Promise<Result>;
-  snapshot<Result>(scope: LearnerScope, read: (tx: ReadTransaction) => Promise<Result>): Promise<Result>;
+  snapshot<Result>(scope: LearnerScope, read: (tx: ReadTransaction) => Promise<Result>, options?: SnapshotOptions): Promise<Result>;
   tx<Result>(scope: LearnerScope, run: (tx: DbTransaction) => Promise<Result>): Promise<Result>;
   close(): Promise<void>;
 };

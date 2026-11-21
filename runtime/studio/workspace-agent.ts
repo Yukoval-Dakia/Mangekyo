@@ -11,13 +11,14 @@ import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
 import type {PreparedPythonAttempts} from '../../executors/teaching/study-agent.ts';
-import {openLearningLimit, workspaceDefinitions, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
+import {observationToolInput, parseOpenLearningArgs, presentationTool, validateWorkspaceToolArgs, workspaceStoredReceipt, workspaceWriteResult, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceReadMode, SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
-import {openLearningBatch, parseLearningReference, parseOpenLearningArgs} from './workspace-open.ts';
+import {openLearningBatch} from './workspace-open.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
-import {sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
+import {parseLearningReference, sourceReference, sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
+import {posttestSubmissionType} from '../../modules/activity/retention-posttest.ts';
 import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/plan/goal-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
@@ -34,15 +35,13 @@ import {mountArtifact} from './presentation-store.ts';
 import type { ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import {textbookPageType} from '../../modules/content/textbook-page.ts';
+import {openedAnswerCitations} from '../../modules/companion/belief.ts';
+import {openObjectiveActivity} from './belief-evidence.ts';
+import type {ActivityCitation} from '../../modules/companion/understanding.ts';
 import {openWorkspaceTextbook} from './workspace-textbook.ts';
 import {openWorkspaceRelation, type OpenedRelationSource} from './workspace-relation.ts';
 
-const presentationTool = {type:'function',function:{name:'mount_artifact',
-  description:'用组件目录创作当前回合的互动作品。view 只含可向学生展示的题面，排除答案和评分依据。需要先冻结预测时提供 predictionPrompt。正式断句另传 sentenceBreaks（两套完整断点 ID），预测必填，题面和回复都不得包含断法。宿主独立核验后才正式发放。'+presentationCatalog.bindings,
-  parameters:{type:'object',required:['view'],additionalProperties:false,properties:{
-    view:presentationCatalog.schema,predictionPrompt:{type:'string',maxLength:160},
-    sentenceBreaks:{type:'array',minItems:2,maxItems:2,items:{type:'array',minItems:1,maxItems:128,items:{type:'string'}}}
-  }}}};
+const artifactTool = presentationTool(presentationCatalog.schema, presentationCatalog.bindings);
 export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode; writeBasis?: true; jitBasis?: true};
 type Seen = {id: string; title: string; text: string; workspace: true};
 const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
@@ -56,9 +55,11 @@ export function openWorkspaceTools(options: {
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
   trackRetention?: (basis: RetentionBasis) => void;
   trackDiagnosis?: () => void;
+  beliefTools?: boolean;
   presentationManifest?: (tx:ReadTransaction)=>Promise<Manifest>;
   readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
   prior: WorkspaceWitness[];
+  learningBasis?(): readonly WorkspaceWitness[];
   pageBasis?: readonly WorkspaceWitness[];
   jitBasis?: readonly WorkspaceWitness[];
   currentObject?: OpenedCurrentLearningObject | undefined;
@@ -72,6 +73,7 @@ export function openWorkspaceTools(options: {
   const retainForWrites = (w: WorkspaceWitness) => writeBasis.set(`${w.id}:${w.rev}`,{...w,writeBasis:true});
   const opened = new Map<string, Seen>();
   const openedAnswers = new Map<string, WorkspaceWitness>();
+  const beliefEvidence = new Map<string, ReturnType<typeof openedAnswerCitations>[number]>();
   const produced = new Map<string, number>();
   const receipts = new Map<string,WorkspaceWriteReceipt>();
   const pageSources = new Map<string, WorkspaceWitness>();
@@ -84,7 +86,7 @@ export function openWorkspaceTools(options: {
     relationOpened.set(key,{ref,witness});
   };
   const saveRelation = openWorkspaceRelation({db,turn,opened:relationOpened,
-    authorize:options.authorize,maySend:options.maySend, modelBasis:jitBasis,
+    authorize:options.authorize,maySend:options.maySend, modelBasis:() => [...jitBasis,...(options.learningBasis?.() ?? [])],
     saved(key, receipt) { receipts.set(key, receipt); },
   });
   const rememberPageSource = (w: WorkspaceWitness) => pageSources.set(`${w.id}:${w.rev}`,w);
@@ -93,6 +95,7 @@ export function openWorkspaceTools(options: {
   const savePage = openWorkspaceTextbook({
     db, turn, authorize:options.authorize, maySend:options.maySend, opened:pageOpened,
     basis() {
+      for (const witness of options.learningBasis?.() ?? []) rememberPageSource(witness);
       for (const witness of pageSources.values()) options.track(witness,true);
       return [...pageSources.values()];
     },
@@ -144,8 +147,23 @@ export function openWorkspaceTools(options: {
             text = JSON.stringify({ok:true});
           }
         } else text = JSON.stringify(await openLearningBatch(tx,{...parsed,part:parsed.part},{...access,currentObject:currentObject?.view},
-          (id, itemTrack) => workspaceRead(tx,{id},itemTrack,options.maySend,
-            parsed.part.kind === 'assessment' ? trackAssessment : undefined)));
+          async (id, itemTrack) => {
+            const ref = parseLearningReference(id);
+            if (options.beliefTools && ref && typeof ref !== 'string' && ref.fact.type === posttestSubmissionType &&
+                ref.anchor.kind === 'answer-slot' && ref.anchor.slotId === 'answer' &&
+                !ref.anchor.path?.length) {
+              const source = await openObjectiveActivity(tx, ref.fact.id, purpose, options.maySend);
+              const itemId = ref.anchor.itemId;
+              const fragment = source?.ref.rev === ref.fact.rev ? source.fragments.find(item => item.anchor === itemId) : undefined;
+              if (source && fragment) {
+                itemTrack(source.fact, 'following');
+                return JSON.stringify({id: source.ref.id, rev: source.ref.rev, title: '后测原答',
+                  content: fragment.text.slice(0, 600).toWellFormed(), sourceRef: sourceReference(source.fact, ref.anchor)});
+              }
+            }
+            return workspaceRead(tx,{id},itemTrack,options.maySend,
+              parsed.part.kind === 'assessment' ? trackAssessment : undefined);
+          }));
       } else if (name === 'read_workspace') {
         text = await workspaceRead(tx,args,track,options.maySend,trackAssessment);
       } else if (name === 'read_learner_radar') {
@@ -288,6 +306,27 @@ export function openWorkspaceTools(options: {
         }
       }
     }
+    if (options.beliefTools && (name === 'open_learning' || name === 'read_workspace')) {
+      const citations = await db.snapshot({learner:studioLearner}, async tx => {
+        await options.authorize(tx);
+        const entries = [];
+        for (const item of values) {
+          const ref = sourceRefV1(item.sourceRef);
+          if (!ref || item.ok === false || (ref.anchor.kind !== 'whole' && ref.anchor.kind !== 'answer-slot') ||
+              (typeof item.content !== 'string' && typeof item.content !== 'number')) continue;
+          const source = await openObjectiveActivity(tx, ref.fact.id, purpose, options.maySend);
+          if (!source || source.ref.rev !== ref.fact.rev ||
+              !witnesses.some(w => w.id === source.ref.id && w.rev === source.ref.rev && w.epoch === source.ref.accessEpoch)) continue;
+          entries.push(...openedAnswerCitations(source, source.ref, String(item.content),
+            ref.anchor.kind === 'answer-slot' ? ref.anchor.itemId : undefined));
+        }
+        return entries;
+      });
+      if (citations.length) {
+        for (const citation of citations) beliefEvidence.set(`${citation.id}:${citation.anchor}`, citation);
+        return JSON.stringify({...value, belief_evidence:citations});
+      }
+    }
     return text;
   }
   async function save(args: Record<string, unknown>, step: number, observation?: WorkspaceWitness[]) {
@@ -360,12 +399,9 @@ export function openWorkspaceTools(options: {
       const written = receipt.wrote[0];
       if (written) {
         produced.set(written.id, written.rev);
-        receipts.set(written.id, {id:written.id, rev:written.rev, title:String(entry.title),
-          ...(observation ? {observation:{status:'saved',text:String(entry.body),undo_token:key}} : {})});
+        receipts.set(written.id, workspaceStoredReceipt(written, entry, key, Boolean(observation)));
       }
-      if (written && observation) return JSON.stringify({ok:true, status:'saved', kind:'inferred',
-        ref:{id:written.id,rev:written.rev}, undo_token:key});
-      return JSON.stringify(written ? {state: receipt.state, id: written.id, rev: written.rev} : {state: receipt.state, command: key});
+      return JSON.stringify(workspaceWriteResult(receipt.state, key, written, Boolean(observation)));
     } catch (error) {
       if (error instanceof TeachingError) throw error;
       // Return domain validation feedback to the model; never return SQL/transport details.
@@ -383,14 +419,11 @@ export function openWorkspaceTools(options: {
     }
   }
   async function recordObservation(args: Record<string, unknown>, step: number) {
-    const {title, text, evidence_refs: refs} = args;
-    if (typeof title !== 'string' || !title.trim() || typeof text !== 'string' || !text.trim())
-      return JSON.stringify(learningToolError('invalid_args','text','请填写标题和作为推断的观察正文。'));
-    if (!Array.isArray(refs) || !refs.length || refs.length > openLearningLimit ||
-        !refs.every(ref => typeof ref === 'string' && ref.length <= 4096 && parseLearningReference(ref)))
-      return JSON.stringify(learningToolError('invalid_args','evidence_refs','请提供 1–8 个原答引用。'));
+    const input = observationToolInput(args, value => Boolean(parseLearningReference(value)));
+    if ('ok' in input) return JSON.stringify(input);
+    const {title, text, refs} = input;
     const evidence = new Map<string, WorkspaceWitness>();
-    for (const input of refs as string[]) {
+    for (const input of refs) {
       const ref = parseLearningReference(input)!;
       const id = typeof ref === 'string' ? ref : ref.fact.id;
       const witness = openedAnswers.get(id);
@@ -414,20 +447,15 @@ export function openWorkspaceTools(options: {
       if (args.sentenceBreaks !== undefined && 'state' in result && result.state === 'done') publishedFormalArtifact = true;
       return JSON.stringify(result);
     }
-    const tool = workspaceDefinitions.find(tool => tool.function.name === name);
-    if (!tool) return JSON.stringify(learningToolError('tool_unavailable',undefined,'请从本轮提供的工作区工具中选择。'));
-    const fields = tool.function.parameters.properties;
-    const unknown = Object.keys(args).find(key => !Object.hasOwn(fields,key));
-    if (unknown) return JSON.stringify({...learningToolError('invalid_args',unknown.slice(0,60),'发现工具定义之外的字段。',{
-          tool:name,args:Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(fields,key))),why:'仅传工具支持的字段。',
-        }),valid_fields:Object.keys(fields)});
+    const invalid = validateWorkspaceToolArgs(name, args);
+    if (invalid) return JSON.stringify(invalid);
     if (name === 'record_observation') return recordObservation(args,step);
     if (name === 'save_page') return JSON.stringify(await savePage(args,step));
     if (name === 'save_relation') return JSON.stringify(await saveRelation(args,step));
     return name === 'save_workspace' ? save(args, step) : read(name, args, step, priorRead, receiveImage);
   }
   return {
-    ...(options.presentationManifest ? {presentationTool} : {}),
+    ...(options.presentationManifest ? {presentationTool:artifactTool} : {}),
     execute: (name: string, args: Record<string, unknown>, step: number, receiveImage?: ReceiveStudyImage) =>
       execute(name, args, step, undefined, receiveImage),
     async preparePythonAttempts(args: Record<string, unknown>, step: number): Promise<PreparedPythonAttempts> {
@@ -437,18 +465,28 @@ export function openWorkspaceTools(options: {
       name === 'search_workspace' || name === 'read_workspace' || name === 'open_learning' || name === 'read_learner_radar'
         ? execute(name, args, step, priorRead, receiveImage)
         : execute(name, args, step),
+    openedBeliefEvidence({id, rev, accessEpoch, anchor, excerpt}: ActivityCitation) {
+      const opened = beliefEvidence.get(`${id}:${anchor}`);
+      return opened?.rev === rev && opened.accessEpoch === accessEpoch && excerpt !== undefined && opened.excerpt.includes(excerpt);
+    },
+    knows:(id: string) => sources.has(id),
     publishedFormalArtifact: () => publishedFormalArtifact,
     reads: () => [...opened.values()],
     writes: () => [...receipts.values()],
     basis() {
       const ordinary = new Map([...sources, ...overviewBasis]);
-      const basis = new Map([...ordinary.values()].map(w => [`${w.id}:${w.rev}`, w]));
-      for (const [key, witness] of writeBasis) basis.set(key, witness);
-      for (const witness of jitBasis) basis.set(`${witness.id}:${witness.rev}`,{...witness,writeBasis:true,jitBasis:true});
+      const basis = new Map([...options.prior, ...ordinary.values()].map(w => [workspaceProofKey(w), w]));
+      for (const w of options.learningBasis?.() ?? []) basis.set(workspaceProofKey(w),w);
+      for (const witness of writeBasis.values()) basis.set(workspaceProofKey(witness), witness);
+      for (const witness of jitBasis) basis.set(workspaceProofKey(witness),{...witness,writeBasis:true,jitBasis:true});
       return [...basis.values()];
     },
   };
 }
+export function workspaceProofKey(w: WorkspaceWitness) {
+  return `${w.id}:${w.rev}:${workspaceInput(w).mode}`;
+}
+
 export function workspaceInput(w: WorkspaceWitness) {
   return {kind: 'fact' as const, id: factId(w.id), rev: w.rev as Revision, accessEpoch: w.epoch as Tick,
     mode: w.mode ?? (w.type === 'activity.workspaceEntry' || w.type === textbookPageType ? 'pinned' : 'following')};

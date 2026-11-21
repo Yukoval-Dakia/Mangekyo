@@ -32,12 +32,27 @@ export function retentionReviewPermission(value: unknown) {
   return { key: factId(String(key)), resultId: derivationId(String(resultId)), allowed: researchEnabled(allowed) };
 }
 
+/** One cumulative USD budget, denominated in integer millionths of a dollar. */
+export function researchScoutBudget(value: unknown) {
+  if (value === null) return null;
+  const { limitMicros, expiresAtMs, route, maxRetentionDays, maxPerCallMicros } = object(value);
+  if (typeof limitMicros !== 'number' || !Number.isSafeInteger(limitMicros) || limitMicros <= 0 ||
+      typeof expiresAtMs !== 'number' || !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= 0 ||
+      typeof maxPerCallMicros !== 'number' || !Number.isSafeInteger(maxPerCallMicros) || maxPerCallMicros <= 0 ||
+      typeof maxRetentionDays !== 'number' || !Number.isSafeInteger(maxRetentionDays) || maxRetentionDays < 0 ||
+      typeof route !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$/.test(route))
+    throw new Error('前哨额度、到期时间、服务标识或留存天数无效。');
+  return { limitMicros, expiresAtMs, route, maxRetentionDays, maxPerCallMicros };
+}
+
 export function researchSettings(value: unknown) {
-  const { enabled, coordinatorRef } = object(value);
+  const { enabled, coordinatorRef, scoutConsent } = object(value);
   if (typeof coordinatorRef !== 'string' ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(coordinatorRef))
     throw new Error('教研协调器标识无效。');
-  return { enabled: researchEnabled(enabled), coordinatorRef };
+  // Earlier workers can only read scoutBudget. A consent with retention and price terms
+  // uses its own field so those workers cannot dispatch without enforcing the terms.
+  return { enabled: researchEnabled(enabled), coordinatorRef, scoutConsent: researchScoutBudget(scoutConsent ?? null) };
 }
 
 function researchSource(value: unknown) {

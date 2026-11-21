@@ -1,4 +1,3 @@
-import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
 import { evolveGraphCommand, splitConceptHierarchyEdgeId } from '@mangekyo/module-content/graph-evolution';
 import { createKnowledgeEdgeCommand, openKnowledgeEdgeRevision, walkKnowledgeEdges } from '@mangekyo/module-content/knowledge-edge';
 import { openKnowledgeEntity, openKnowledgeName } from '@mangekyo/module-content/knowledge-entity';
@@ -121,8 +120,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   assert.equal(discipline.value.kind, 'discipline');
   assert.deepEqual(discipline.value.discipline_context, discipline_context);
 
-  await exerciseGraphEvolution(fixture,
-    decideProposal ?? createCommandHandler(db, { modules: [content], hooks }).decideProposal);
+  await exerciseGraphEvolution(fixture, decideProposal);
 }
 
 async function exerciseGraphEvolution({ learner, send, stableId, assert, read, content }, decideProposal) {

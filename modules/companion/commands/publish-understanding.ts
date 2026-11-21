@@ -1,9 +1,9 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
-import { activityEvidence } from '../activity-evidence.ts';
+import { activityEvidence, hasLinkedAttempt, reopenLinkedCitation } from '../activity-evidence.ts';
 import { claimId, claimRecord, claimRef, ClaimInputError } from '../claim.ts';
 import { memoryAssertionType } from '../memory-assertion.ts';
 import { researchPurpose } from '../research.ts';
-import { extractedUnderstanding, opensCitation, publishUnderstandingCommand, sameUnderstanding } from '../understanding.ts';
+import { questionObservation, extractedUnderstanding, opensCitation, publishUnderstandingCommand, sameUnderstanding } from '../understanding.ts';
 
 export default defineCommand({
   type: publishUnderstandingCommand,
@@ -22,11 +22,27 @@ export default defineCommand({
       if (data.sticky || (data.ttl && data.ttl <= new Date().toISOString()))
         throw new ClaimInputError('抽取结果已失效或由本人管理。');
       let teaching = true;
+      let quoteOnly = false;
       for (const citation of data.evidence_refs) {
         const fact = await ctx.read.fact(citation.id, {mode: 'following'});
-        const source = activityEvidence(fact);
+        const linked = hasLinkedAttempt(fact) && citation.basis_digest !== undefined;
+        if (citation.question_evidence && !linked) throw new ClaimInputError('题项见证与活动不匹配。');
+        if (linked) {
+          const proof = await reopenLinkedCitation(ctx.read, citation);
+          if (!proof) throw new ClaimInputError('来源题依据已变更。');
+          teaching &&= proof.teaching;
+        }
+        const source = activityEvidence(fact, linked ? citation.anchor : undefined);
         if (!source || !opensCitation({...source, ref: {...fact.ref, accessEpoch: fact.accessEpoch}}, citation))
           throw new ClaimInputError('活动证据已变更。');
+        if (source.quoteOnly) {
+          if (!citation.span || data.kind !== 'observation' || prior || data.evidence_refs.length !== 1)
+            throw new ClaimInputError('本轮原话只支持带精确范围的观察。');
+          quoteOnly = true;
+        }
+        if (citation.question_evidence &&
+            questionObservation({...source, ref: {...fact.ref, accessEpoch: fact.accessEpoch}}, citation, data) !== data.text)
+          throw new ClaimInputError('题项观察须与实际作答和客观评阅一致。');
         teaching &&= fact.purpose.includes('teaching') || fact.purpose.includes('all');
       }
       if (prior) {
@@ -42,7 +58,7 @@ export default defineCommand({
         writes.push({kind: 'revise', id, expectedRev: prior.rev, data});
       } else {
         writes.push({kind: 'create', id, factType: memoryAssertionType, data,
-          purpose: ['storage', researchPurpose, ...(teaching ? ['teaching'] : [])]});
+          purpose: quoteOnly ? ['storage'] : ['storage', researchPurpose, ...(teaching ? ['teaching'] : [])]});
       }
     }
     return writes;
