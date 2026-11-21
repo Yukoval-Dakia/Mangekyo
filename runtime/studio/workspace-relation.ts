@@ -1,4 +1,5 @@
 import {fileURLToPath} from 'node:url';
+import type {CommandHooks} from '../../kernel/src/commands/contracts.ts';
 import {createCommandHandler, readCommandProposals} from '../../kernel/src/commands/handle.ts';
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import {commandId, factId} from '../../kernel/src/declarations/ids.ts';
@@ -37,6 +38,7 @@ export function openWorkspaceRelation(options: {
   modelBasis?(): readonly WorkspaceWitness[];
   authorize(tx:ReadTransaction):Promise<void>;
   saved(key:string, receipt:WorkspaceWriteReceipt):void;
+  afterFactsChanged?: CommandHooks['onFactsChanged'];
 }) {
   const {db,opened} = options;
   const access = {recipient:'workspace',maySend:options.maySend} as const;
@@ -102,7 +104,10 @@ export function openWorkspaceRelation(options: {
       await db.snapshot(scope, authorize);
       const handle = createCommandHandler(db,{
         modules:[await (content ??= loadModuleDirectory(fileURLToPath(new URL('../../modules/content',import.meta.url))))],
-        hooks:{...createStudioCommandHooks({afterFactsChanged:authorize}),beforeProposal:authorize},
+        hooks:{...createStudioCommandHooks({async afterFactsChanged(tx,tick,changes) {
+          await authorize(tx);
+          await options.afterFactsChanged?.(tx,tick,changes);
+        }}),beforeProposal:authorize},
       });
       const receipt = await handle({...scope,actor:'companion',purpose,id:key,
         type:proof ? createVerifiedKnowledgeEdgeCommand : createKnowledgeEdgeCommand,
@@ -129,8 +134,8 @@ export function openWorkspaceRelation(options: {
   };
 }
 
-export function openRelationReview(db:Db, contentModule:LoadedModule) {
-  const handle = createCommandHandler(db,{modules:[contentModule],hooks:createStudioCommandHooks()});
+export function openRelationReview(db:Db, contentModule:LoadedModule, afterFactsChanged?: CommandHooks['onFactsChanged']) {
+  const handle = createCommandHandler(db,{modules:[contentModule],hooks:createStudioCommandHooks(afterFactsChanged ? {afterFactsChanged} : {})});
   function unavailableBasis(error:unknown) {
     return error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof KnowledgeEdgeBasisError;
   }

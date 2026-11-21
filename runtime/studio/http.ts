@@ -180,9 +180,9 @@ export function serve(
       }
       if (path === '/api/notion/settings' && method === 'GET') return json(res,200,await student.notion.settings());
       const notionAction = /^\/api\/notion\/selections\/(grant|revoke|sync)$/.exec(path)?.[1];
-      const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})(\/purpose)?$/.exec(path);
-      if (method === 'POST' && (notionAction || notionSource?.[2]))
-        return await offlineSubmission(200,input => student.notion.mutate(notionAction ?? 'purpose',input,notionSource?.[1]));
+      const notionSource = /^\/api\/notion\/sources\/([0-9A-HJKMNP-TV-Z]{26})(\/(purpose|retract))?$/.exec(path);
+      if (method === 'POST' && (notionAction || notionSource?.[3]))
+        return await offlineSubmission(200,input => student.notion.mutate(notionAction ?? notionSource![3]!,input,notionSource?.[1]));
       if (method === 'GET' && notionSource?.[1] && !notionSource[2])
         return await student.notion.read(notionSource[1],url.searchParams.get('view'), data => json(res,200,data));
       if (path === '/api/workspace/access' && method === 'GET') {

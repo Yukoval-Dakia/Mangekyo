@@ -2,11 +2,13 @@ import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
 import { teachingMemoryBasis } from './memory-claims.ts';
 import type { studyTurn } from '../../modules/activity/values.ts';
 import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
+import { findManifestDependents } from '../../kernel/src/derivations/manifest-dependents.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { withLearnerLock, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
+import type { CommandHooks, FactChange } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import { commandId, factId, type FactId, type LearnerId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId, type DerivationId, type FactId, type LearnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { assertDeletionWatermark, deletionWatermark, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -20,13 +22,18 @@ import { notionPageKey, notionPageReadFence, type CheckNotionRead } from '../../
 import { notionConfirmPageAccess, NotionSourceChanged, NotionSourceUnavailable, NotionTemporaryFailure } from '../../modules/capture/notion-api.ts';
 import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, selectionChange, selectionGrant,
   readNotionSelection, type NotionSelection, type NotionReadOptions } from '../../modules/capture/notion-selection.ts';
-import { NotionSelectionUnavailable, openSelectedNotionSource, notionSourceTarget, setNotionPurposeCommand, notionPageObservationType, prepareNotionRefreshInput, prepareSelectedNotionPages, refreshNotionSourceCommand } from '../../modules/capture/notion-source.ts';
+import { buildNotionInvalidationTarget, filterInvalidatedNotionTargets, notionBlockRetirementMatchesSlot,
+  notionPageObservationType, notionRecordPurpose, notionSelectionFromSnapshot, NotionSelectionUnavailable,
+  notionSourceTarget, openSelectedNotionSource, parseNotionBlockSlotKey, planNotionBlockRetirements,
+  planNotionSelectionInvalidation, prepareNotionRefreshInput, prepareSelectedNotionPages, reconstructNotionFactPair,
+  refreshNotionSourceCommand, revokeNotionSourceCommand, setNotionPurposeCommand,
+  type NotionFactTransitionRow, type NotionInvalidationSourceRow } from '../../modules/capture/notion-source.ts';
 import { NotionBlockUnavailable, openCurrentNotionBlock } from '../../modules/capture/notion-blocks.ts';
 import { changedNotionBlockWork, gatherNotionBlock, notionBlockDeriver, notionBlockRecoveryPages, NotionBlockResolverUnavailable,
   notionBlockSlot, notionBlockWorkKey, parseNotionBlockWorkKey, planNotionBlockRecovery } from '../../modules/capture/notion-block-work.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { notionModelRecipient, purpose as teaching, stableId, studioLearner } from './identity.ts';
+import { notionModelRecipient, purpose as teaching, slotType as teachingSlotType, stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { teachingTurnAllowed } from './reading.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
@@ -258,11 +265,157 @@ function blockWithdrawn(error: unknown) {
       error instanceof FactReadDeniedError || (error instanceof RequestError && error.status === 403));
 }
 
-const notionHooks = createStudioCommandHooks({async afterFactsChanged(tx, tick, changes) {
-  const read = createCommandReadContext(tx, 'storage');
-  for await (const basis of changedNotionBlockWork(read, blockPolicy.purpose, changes)) await requestCatalogedWork(tx, tick,
-    {slotType:notionBlockSlot, slotKey:notionBlockWorkKey(basis), deriver:notionBlockDeriver}, '{}', {pendingState:'routed_pending'});
-}});
+const blockScopeKeys = JSON.stringify({ purpose: blockPolicy.purpose, recipientId: learningReader.id });
+const liveDerivationSql = `NOT d.is_shadow AND d.invalidated_tick IS NULL AND (d.lifecycle='candidate' OR (d.lifecycle IN ('effective','superseded') AND d.effective_tick IS NOT NULL))`;
+const turnJoinSql = (alias: string) => `LEFT JOIN facts tf ON tf.learner_id=${alias}.learner_id AND tf.id=${alias}.slot_key AND ${alias}.slot_type=$4 AND tf.type='activity.studyTurn'
+  LEFT JOIN fact_revs tr ON (tr.learner_id,tr.fact_id,tr.rev)=(tf.learner_id,tf.id,tf.current_rev)`;
+
+const turnModelRecipient = (data: unknown) => {
+  if (!data || typeof data !== 'object') return undefined;
+  const turn = data as Record<string, unknown>;
+  return typeof turn.providerId === 'string' && typeof turn.baseUrl === 'string' && typeof turn.protocol === 'string' &&
+    typeof turn.model === 'string' && typeof turn.workspaceRevision === 'string'
+    ? notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision) : undefined;
+};
+
+async function readFactTransition(tx: ReadTransaction, change: FactChange) {
+  if (change.ref.rev <= 1) return null;
+  const { rows } = await tx.query<NotionFactTransitionRow>(
+    `SELECT f.type, f.access_epoch::text AS "accessEpoch", r.rev, r.kind, r.purpose, r.data
+     FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id)=(f.learner_id,f.id)
+     WHERE f.learner_id=$1 AND f.id=$2 AND r.rev IN ($3,$4) ORDER BY r.rev`,
+    [tx.learner, change.ref.id, change.ref.rev - 1, change.ref.rev],
+  );
+  return reconstructNotionFactPair(tx.learner, change.ref.id, change.kind, rows);
+}
+
+async function invalidateDerivations(tx: DbTransaction, tick: Tick, initial: readonly DerivationId[], reason: string) {
+  const error = JSON.stringify({ reason });
+  const seen = new Set<string>(), queue = [...initial];
+  while (queue.length) {
+    const currentId = queue.shift()!;
+    if (seen.has(currentId)) continue;
+    seen.add(currentId);
+    const { rows: [staleRow] } = await tx.query<{ slotType: string; slotKey: string }>(
+      `UPDATE derivations d SET lifecycle='stale', invalidated_tick=$3, error=$4 WHERE d.learner_id=$1 AND d.id=$2 AND ${liveDerivationSql}
+       RETURNING d.slot_type AS "slotType", d.slot_key AS "slotKey"`,
+      [tx.learner, currentId, tick, error],
+    );
+    if (!staleRow) continue;
+    await tx.query(
+      `UPDATE slot_state SET current_id=NULL, changed_tick=$5, last_error=$6
+       WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3 AND current_id=$4`,
+      [tx.learner, staleRow.slotType, staleRow.slotKey, currentId, tick, error],
+    );
+    for (const dependent of await findManifestDependents(tx, { kind: 'derivation-invalidated', derivationId: currentId })) queue.push(dependent.derivationId);
+  }
+}
+
+async function cancelOpenWork(tx: DbTransaction, tick: Tick, rows: readonly { id: string; slotType: string; slotKey: string }[], reason: string) {
+  const error = JSON.stringify({ reason });
+  for (const row of rows) {
+    const updated = await tx.query(
+      `UPDATE work SET state='cancelled', revision=revision + CASE WHEN slot_type='working.todo' THEN 1 ELSE 0 END, gather=NULL, gather_manifest=NULL
+       WHERE learner_id=$1 AND id=$2 AND (state IN ('ready','waiting') OR (slot_type=$3 AND state='blocked'))`,
+      [tx.learner, row.id, notionBlockSlot],
+    );
+    if (!updated.rowCount) continue;
+    await tx.query('DELETE FROM work_waits WHERE learner_id=$1 AND work_id=$2', [tx.learner, row.id]);
+    await tx.query(`UPDATE slot_state SET pending='none', changed_tick=$4, last_error=$5
+      WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3`, [tx.learner, row.slotType, row.slotKey, tick, error]);
+  }
+}
+
+async function retireNotionChanges(tx: DbTransaction, tick: Tick, changes: readonly FactChange[]) {
+  type LiveRow = { id: string; slotType: string; slotKey: string; scopeKeys?: unknown; slotScopeKeys?: unknown; manifest?: unknown; turnData?: unknown };
+  const toTarget = (row: LiveRow) => buildNotionInvalidationTarget(row, {
+    blockSlotType: notionBlockSlot,
+    blockSourceId: row.slotType === notionBlockSlot ? parseNotionBlockSlotKey(row.slotKey)?.id : undefined,
+    fallbackRecipientId: row.slotType === teachingSlotType ? turnModelRecipient(row.turnData) : undefined,
+  });
+  for (const change of changes) {
+    if (change.factType === notionSelectionType && change.kind === 'correct') {
+      const pair = await readFactTransition(tx, change);
+      if (!pair) continue;
+      const invalidation = planNotionSelectionInvalidation(notionSelectionFromSnapshot(pair.previous), notionSelectionFromSnapshot(pair.current));
+      if (!invalidation.retracted.length) continue;
+      const { rows: sourceRows } = await tx.query<NotionInvalidationSourceRow>(
+        `SELECT f.id, r.data->>'sourceSelectionId' AS "sourceSelectionId", r.data->>'sourceSelectionEpoch' AS "sourceSelectionEpoch", r.data->>'externalId' AS "externalId"
+         FROM facts f JOIN fact_revs r ON (f.learner_id,f.id,f.current_rev)=(r.learner_id,r.fact_id,r.rev)
+         WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'kind'='notion' AND r.data->>'sourceSelectionId'=$3`,
+        [tx.learner, captureSourceType, invalidation.selectionId],
+      );
+      const sourceIds = sourceRows.map(row => row.id);
+      if (!sourceIds.length) continue;
+      const { rows: derivationRows } = await tx.query<LiveRow>(
+        `SELECT d.id, d.slot_type AS "slotType", d.slot_key AS "slotKey", d.scope_keys AS "scopeKeys", s.scope_keys AS "slotScopeKeys", d.manifest, tr.data AS "turnData"
+         FROM derivations d LEFT JOIN slot_state s ON (s.learner_id,s.slot_type,s.slot_key)=(d.learner_id,d.slot_type,d.slot_key) ${turnJoinSql('d')}
+         WHERE d.learner_id=$1 AND ${liveDerivationSql} AND ((CASE WHEN d.slot_type=$3 THEN (d.slot_key::jsonb)->>'id' END)=ANY($2::text[])
+             OR EXISTS (SELECT 1 FROM jsonb_array_elements(d.manifest->'inputs') entry WHERE entry->>'kind'='fact' AND entry->>'id'=ANY($2::text[])))`,
+        [tx.learner, sourceIds, notionBlockSlot, teachingSlotType],
+      );
+      await invalidateDerivations(tx, tick, filterInvalidatedNotionTargets(invalidation, sourceRows, derivationRows.map(toTarget))
+        .map(row => row.id as DerivationId), 'notion-selection-invalidated');
+      const { rows: workRows } = await tx.query<LiveRow>(
+        `SELECT w.id, w.slot_type AS "slotType", w.slot_key AS "slotKey", s.scope_keys AS "scopeKeys", w.gather_manifest AS manifest, tr.data AS "turnData"
+         FROM work w JOIN slot_state s ON (s.learner_id,s.slot_type,s.slot_key)=(w.learner_id,w.slot_type,w.slot_key) ${turnJoinSql('w')}
+         WHERE w.learner_id=$1 AND (w.state IN ('ready','waiting') OR (w.slot_type=$3 AND w.state='blocked'))
+           AND ((CASE WHEN w.slot_type=$3 THEN (w.slot_key::jsonb)->>'id' END)=ANY($2::text[])
+             OR (w.gather_manifest IS NOT NULL AND EXISTS (SELECT 1 FROM jsonb_array_elements(w.gather_manifest->'inputs') entry WHERE entry->>'kind'='fact' AND entry->>'id'=ANY($2::text[]))))`,
+        [tx.learner, sourceIds, notionBlockSlot, teachingSlotType],
+      );
+      await cancelOpenWork(tx, tick, filterInvalidatedNotionTargets(invalidation, sourceRows, workRows.map(toTarget)), 'notion-selection-invalidated');
+    } else if (change.factType === captureSourceType) {
+      const pair = await readFactTransition(tx, change);
+      if (!pair) continue;
+      const blockPlan = planNotionBlockRetirements(pair.previous, pair.current);
+      if (blockPlan.retire.length) {
+        const { rows: blockDerivations } = await tx.query<{ id: string; slotKey: string; manifest: unknown }>(
+          `SELECT d.id, d.slot_key AS "slotKey", d.manifest FROM derivations d
+           WHERE d.learner_id=$1 AND d.slot_type=$2 AND ${liveDerivationSql} AND (CASE WHEN d.slot_type=$2 THEN (d.slot_key::jsonb)->>'id' END)=$3`,
+          [tx.learner, notionBlockSlot, change.ref.id],
+        );
+        await invalidateDerivations(tx, tick, blockDerivations
+          .filter(row => notionBlockRetirementMatchesSlot(blockPlan.retire, row.slotKey, notionRecordPurpose(row.manifest)))
+          .map(row => row.id as DerivationId), 'notion-block-retired');
+        const { rows: blockWork } = await tx.query<{ id: string; slotType: string; slotKey: string; scopeKeys: unknown; manifest: unknown }>(
+          `SELECT w.id, w.slot_type AS "slotType", w.slot_key AS "slotKey", s.scope_keys AS "scopeKeys", w.gather_manifest AS manifest
+           FROM work w JOIN slot_state s ON (s.learner_id,s.slot_type,s.slot_key)=(w.learner_id,w.slot_type,w.slot_key)
+           WHERE w.learner_id=$1 AND w.slot_type=$2 AND w.state IN ('ready','waiting','blocked') AND (CASE WHEN w.slot_type=$2 THEN (w.slot_key::jsonb)->>'id' END)=$3`,
+          [tx.learner, notionBlockSlot, change.ref.id],
+        );
+        await cancelOpenWork(tx, tick, blockWork.filter(row =>
+          notionBlockRetirementMatchesSlot(blockPlan.retire, row.slotKey, notionRecordPurpose(row.manifest, row.scopeKeys))), 'notion-block-retired');
+      }
+      if (change.kind === 'retract' || change.kind === 'set_purpose') {
+        const { rows: gatheredWork } = await tx.query<{ id: string; slotType: string; slotKey: string; manifest: unknown }>(
+          `SELECT w.id, w.slot_type AS "slotType", w.slot_key AS "slotKey", w.gather_manifest AS manifest
+           FROM work w WHERE w.learner_id=$1 AND w.state IN ('ready','waiting') AND w.gather_manifest IS NOT NULL
+             AND EXISTS (SELECT 1 FROM jsonb_array_elements(w.gather_manifest->'inputs') entry WHERE entry->>'kind'='fact' AND entry->>'id'=$2)`,
+          [tx.learner, change.ref.id],
+        );
+        const cancelled = change.kind === 'retract' ? gatheredWork : gatheredWork.filter(row => {
+          const workPurpose = notionRecordPurpose(row.manifest);
+          return workPurpose !== undefined && !pair.current.purpose.includes(workPurpose) && !pair.current.purpose.includes('all');
+        });
+        await cancelOpenWork(tx, tick, cancelled, change.kind === 'retract' ? 'notion-source-retracted' : 'notion-purpose-changed');
+      }
+    }
+  }
+}
+
+function createNotionHooks(afterFactsChanged?: CommandHooks['onFactsChanged']) {
+  return createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
+    await retireNotionChanges(tx, tick, changes);
+    const read = createCommandReadContext(tx, 'storage');
+    for await (const basis of changedNotionBlockWork(read, blockPolicy.purpose, changes)) await requestCatalogedWork(
+      tx, tick, { slotType: notionBlockSlot, slotKey: notionBlockWorkKey(basis), deriver: notionBlockDeriver }, blockScopeKeys, { pendingState: 'routed_pending' },
+    );
+    await afterFactsChanged?.(tx, tick, changes);
+  } });
+}
+
+const notionHooks = createNotionHooks();
 
 export async function executeNotionBlockWork(db: Db, ref: WorkRef, terminal: boolean, cause?: WorkFailureCause) {
   const prepare = async (tx: DbTransaction, check: CheckNotionRead) => {
@@ -291,9 +444,10 @@ export async function executeNotionBlockWork(db: Db, ref: WorkRef, terminal: boo
   });
 }
 
-export function openStudioNotion(db: Db, capture: LoadedModule) {
+export function openStudioNotion(db: Db, capture: LoadedModule, afterFactsChanged?: CommandHooks['onFactsChanged']) {
   const {connection, snapshot, locked, live, provider} = notionHost(db);
-  const handle = (tx: DbTransaction) => createCommandHandler(withinLearnerTransaction(db, tx), {modules:[capture], hooks:notionHooks});
+  const hooks = afterFactsChanged ? createNotionHooks(afterFactsChanged) : notionHooks;
+  const handle = (tx: DbTransaction) => createCommandHandler(withinLearnerTransaction(db, tx), {modules:[capture], hooks});
 
   async function settings() {
     return snapshot(async tx => {
@@ -324,20 +478,31 @@ export function openStudioNotion(db: Db, capture: LoadedModule) {
     if (raw.deletionWatermark === undefined) throw new RequestError(400, '需要设备原始删除水位。');
     const watermark = submittedWatermark(raw);
     const {requestId: _request, deletionWatermark: _watermark, ...fields} = raw;
-    if (action === 'purpose' && sourceId) {
+    if ((action === 'purpose' || action === 'retract') && sourceId) {
       const {expectedRev,accessEpoch,preset,...selectionFields} = fields;
       const {selectionId,expectedEpoch,recipient} = parseSettings(() => selectionChange(selectionFields));
-      if (recipient || preset !== 'storage') throw new RequestError(400,'此操作只将该原件收窄为本人存储。');
+      if (recipient || (action === 'purpose' ? preset !== 'storage' : preset !== undefined))
+        throw new RequestError(400, action === 'purpose' ? '此操作只将该原件收窄为本人存储。' : '此操作仅撤回单个原件。');
       const target = parseSettings(() => notionSourceTarget({id:sourceId,selectionId,expectedRev,accessEpoch}));
       return locked(async tx => {
         const read = () => openFollowing(tx,target.id,ownerAccess);
-        const saved = await record(tx,requestId,{action,target,preset,expectedEpoch,watermark},async () => {
+        const saved = await record(tx,requestId,action === 'purpose'
+          ? {action,target,preset:'storage',expectedEpoch,watermark}
+          : {action,target,expectedEpoch,watermark},async () => {
           const fact = await read();
           if (sourceEnvelope(fact.value).sourceSelectionId !== selectionId || fact.ref.rev !== expectedRev || fact.accessEpoch !== accessEpoch) throw stale();
-          await handle(tx)({learner:tx.learner,actor:'learner',purpose:'storage',deletionWatermark:watermark,type:setNotionPurposeCommand,
-            id:commandId(stableId('notion-purpose',requestId)),input:{...target,preset}});
-          return (await read()).ref.rev.toString();
+          const receipt = await handle(tx)({learner:tx.learner,actor:'learner',purpose:'storage',deletionWatermark:watermark,
+            type:action === 'purpose' ? setNotionPurposeCommand : revokeNotionSourceCommand,
+            id:commandId(stableId(action === 'purpose' ? 'notion-purpose' : 'notion-retract',requestId)),
+            input:(action === 'purpose' ? {...target,preset:'storage'} : target) as Json});
+          return String(receipt.wrote[0]?.rev ?? expectedRev);
         },async () => { await live(tx,selectionId,expectedEpoch,watermark); });
+        if (action === 'retract') {
+          const {rows:[row]} = await tx.query<{retracted_rev:number|null; access_epoch:string}>(
+            'SELECT retracted_rev, access_epoch::text FROM facts WHERE learner_id=$1 AND id=$2', [tx.learner, target.id]);
+          if (!row || String(row.retracted_rev) !== saved) throw stale();
+          return {id:sourceId,rev:row.retracted_rev,accessEpoch:row.access_epoch,retracted:true};
+        }
         const fact = await read();
         if (String(fact.ref.rev) !== saved || fact.purpose.length !== 1 || fact.purpose[0] !== 'storage') throw stale();
         return {id:sourceId,rev:fact.ref.rev,accessEpoch:fact.accessEpoch,purpose:fact.purpose};
