@@ -1,4 +1,4 @@
-import { FactNotFoundError, type BusWitness, type FactId, type FactSnapshot, type Json, type JsonObject, type ReadContext, type Revision } from '@mangekyo/kernel';
+import { FactNotFoundError, type BusWitness, type FactId, type FactSnapshot, type Json, type JsonObject, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import {
   AssetBasisError, assetType, checkTextbookBasis, parseAsset, type AssetReadContext,
 } from './asset.ts';
@@ -190,6 +190,13 @@ function validPractice(practice: ArchetypeFoldingActivityHandle) {
     Number.isSafeInteger(practice.rev) && practice.rev > 0;
 }
 
+export type ArchetypeFoldingClockWatermark = Tick | number;
+
+function validClockWatermark(value: unknown): value is ArchetypeFoldingClockWatermark {
+  return (typeof value === 'string' && /^(?:0|[1-9][0-9]*)$/.test(value)) ||
+    (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
+}
+
 function validInput(input: {
   readonly scope: string;
   readonly items: readonly ArchetypeFoldingItem[];
@@ -198,14 +205,14 @@ function validInput(input: {
   readonly mastery?: {
     readonly complete: boolean;
     readonly asOf?: string;
-    readonly clockWatermark?: number;
+    readonly clockWatermark?: ArchetypeFoldingClockWatermark;
   };
 }) {
   const scope = input.scope.trim();
   return Boolean(scope && scope.length <= 1000 && input.items.length > 0 && input.items.length <= 128 &&
     input.memberships.complete && input.variants.complete && (input.mastery?.complete ?? true) &&
     (input.mastery?.asOf === undefined || (typeof input.mastery.asOf === 'string' && input.mastery.asOf.trim().length > 0)) &&
-    (input.mastery?.clockWatermark === undefined || (typeof input.mastery.clockWatermark === 'number' && Number.isSafeInteger(input.mastery.clockWatermark) && input.mastery.clockWatermark >= 0)) &&
+    (input.mastery?.clockWatermark === undefined || validClockWatermark(input.mastery.clockWatermark)) &&
     input.memberships.edgeIds.length <= 128 && input.variants.edgeIds.length <= 128 &&
     input.items.every(({ anchor, practice }) => anchor !== null && typeof anchor === 'object' && !Array.isArray(anchor) &&
       validPractice(practice)));
@@ -370,9 +377,9 @@ export async function readArchetypeFolding(
     readonly mastery?: {
       readonly complete: boolean;
       readonly asOf?: string;
-      readonly clockWatermark?: number;
+      readonly clockWatermark?: ArchetypeFoldingClockWatermark;
       readonly read: (access: ArchetypeFoldingAccess, questions: readonly KnowledgeSourceUse[],
-        at?: { readonly asOf?: string; readonly clockWatermark?: number }) =>
+        at?: { readonly asOf?: string; readonly clockWatermark?: ArchetypeFoldingClockWatermark }) =>
         Promise<readonly ArchetypeFoldingMasteryRead[]>;
     };
   },
