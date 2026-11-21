@@ -58,15 +58,18 @@ export function projectSessionClosure(evidence: SessionClosureEvidence): Session
   const { submissions, refutations, blockers, openThoughtIds } = evidence;
   const refuted = submissions === null || refutations === null ? null : new Map<string, string | null>();
   if (refuted && submissions && refutations) {
+    const key = (ref: FixedRef) => JSON.stringify([ref.id, ref.rev]);
+    const members = new Set(submissions.map(({ ref }) => key(ref)));
     for (const { submission, hypothesisId, oldStep } of refutations) {
-      if (submissions.some(({ ref }) => sameClosureRef(submission, ref)))
+      if (members.has(key(submission)))
         refuted.set(hypothesisId, refuted.get(hypothesisId) ?? oldStep);
     }
   }
+  const visibleSteps = refuted && [...refuted.values()].filter((step): step is string => step !== null);
   return {
     stabilized: submissions === null ? null : stabilizedCount(submissions),
     contradicted: refuted?.size ?? null,
-    refutedSteps: refuted ? [...refuted.values()].filter((step): step is string => step !== null) : null,
+    refutedSteps: refuted?.size && !visibleSteps?.length ? null : visibleSteps,
     blocker: blockers?.[0] ? { text: blockers[0].text } : null,
     blockerKnown: blockers !== null,
     openThoughts: openThoughtIds === null ? null : new Set(openThoughtIds).size,
