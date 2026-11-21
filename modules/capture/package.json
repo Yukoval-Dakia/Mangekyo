@@ -16,6 +16,7 @@
     "./paper-answers": "./paper-answers.ts",
     "./request": "./request.ts",
     "./intake-operations": "./intake-operations.ts",
+    "./vision-paper-ocr": "./vision-paper-ocr.ts",
     "./facts/intake-document": "./intake-values.ts",
     "./facts/*": "./facts/*.ts"
   },

@@ -11,8 +11,10 @@ import {
   intakeTextLimit,
   intakeTitle,
   type IntakeOriginal,
+  type IntakeRequestedExtraction,
 } from './intake-values.ts';
 import { projectIntakeMetadata, type IntakeMetadata } from './intake-view.ts';
+import { visionOcrSupports } from './vision-paper-ocr.ts';
 import { paperReturnSelection } from './paper.ts';
 import { clientRequest, RequestError } from './request.ts';
 import { captureSourceType, sourceEnvelope } from './source.ts';
@@ -181,12 +183,22 @@ export function resolveCaptureExtraction(
   extraction: unknown,
   mediaType: string,
   mineruSupports: (mediaType: string) => boolean,
-): { readonly requested: 'local' | 'mineru'; readonly cloud: boolean } {
+  options?: { readonly asyncPhotoDefault?: boolean },
+): { readonly requested: 'local' | 'mineru' | 'vision_llm'; readonly cloud: boolean; readonly asyncVision: boolean } {
   const requested = extraction ?? 'local';
-  if (requested !== 'local' && requested !== 'mineru') throw new RequestError(400, '请选择有效的识别方式。');
+  if (requested !== 'local' && requested !== 'mineru' && requested !== 'vision_llm')
+    throw new RequestError(400, '请选择有效的识别方式。');
+  if (requested === 'vision_llm') {
+    if (!visionOcrSupports(mediaType))
+      throw new RequestError(415, '强视觉识别只支持照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF/WebP）。');
+    return { requested: 'vision_llm', cloud: false, asyncVision: true };
+  }
   const cloud = requested === 'mineru';
   if (cloud && !mineruSupports(mediaType)) throw new RequestError(415, 'MinerU 支持 PDF、PNG 和 JPEG。');
-  return { requested, cloud };
+  if (!cloud && extraction === undefined && options?.asyncPhotoDefault === true && visionOcrSupports(mediaType)) {
+    return { requested: 'vision_llm', cloud: false, asyncVision: true };
+  }
+  return { requested: requested as 'local' | 'mineru', cloud, asyncVision: false };
 }
 
 export function matchesCaptureReplay(
@@ -194,7 +206,7 @@ export function matchesCaptureReplay(
   original: IntakeOriginal,
   title: string,
   mediaType: string,
-  requested: 'local' | 'mineru',
+  requested: 'local' | 'mineru' | 'vision_llm',
 ): boolean {
   return (
     prior.original.sha256 === original.sha256 &&
@@ -249,6 +261,16 @@ export function isExpectedCloudCompletion(
   return [documentRef, materialRef].every((target) =>
     changes.some((change) => change.kind === 'correct' && change.ref.id === target.id && change.ref.rev === target.rev + 1),
   );
+}
+
+export function isExpectedVisionCompletion(
+  work: { readonly slotType: string; readonly slotKey: string } | null | undefined,
+  expectedSlotType: string,
+  documentRef: { readonly id: string; readonly rev: number },
+  materialRef: { readonly id: string; readonly rev: number },
+  changes: readonly { readonly kind: string; readonly ref: { readonly id: string; readonly rev: number } }[],
+): boolean {
+  return isExpectedCloudCompletion(work, expectedSlotType, documentRef, materialRef, changes);
 }
 
 export function prepareIntakeCorrection(input: IntakeCorrectInput, intakeIdFor: (id: FactId) => FactId) {
@@ -398,6 +420,7 @@ export type IntakeHttpAdapter<Bytes extends Uint8Array> = {
   readonly readLifecycleError: (error: unknown, includeCode: boolean) =>
     { readonly status: number; readonly message: string; readonly code?: string | undefined } | null;
   readonly mineruEnabled: () => boolean;
+  readonly visionOcrEnabled?: () => boolean;
   readonly hasPapers: boolean;
   readonly lifecycleState: () => Promise<{ readonly watermark: string }>;
   readonly erase: (id: string, input: Record<string, unknown>) => Promise<unknown>;
@@ -440,7 +463,14 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
     const state = await adapter.lifecycleState();
     return { kind: 'json', status: 200, headers: { 'X-Deletion-Watermark': state.watermark }, body: state };
   }
-  if (route.kind === 'options') return { kind: 'json', status: 200, body: { mineru: adapter.mineruEnabled() } };
+  if (route.kind === 'options') {
+    const vision = adapter.visionOcrEnabled?.();
+    return {
+      kind: 'json', status: 200,
+      body: vision === undefined ? { mineru: adapter.mineruEnabled() }
+        : { mineru: adapter.mineruEnabled(), visionOcr: vision },
+    };
+  }
   if (route.kind === 'intake') {
     try {
       const rawContentType = typeof adapter.headers['content-type'] === 'string' ? adapter.headers['content-type'] : '';
@@ -468,7 +498,10 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
         watermark = parsed.watermark;
         result = await adapter.capture({ ...parsed.fields, bytes });
       }
-      return { kind: 'json', status: 201, headers: { 'X-Deletion-Watermark': watermark }, body: result };
+      const asyncReceipt = typeof result === 'object' && result !== null &&
+        (result as { requestedExtraction?: unknown }).requestedExtraction === 'vision_llm' &&
+        (result as { extraction?: { status?: unknown } }).extraction?.status === 'pending';
+      return { kind: 'json', status: asyncReceipt ? 202 : 201, headers: { 'X-Deletion-Watermark': watermark }, body: result };
     } catch (error) {
       return fail(error, '交入未能完成。', { includeCode: true });
     }
