@@ -177,7 +177,7 @@ export type MetacognitiveRead = {
   } | undefined>;
 };
 
-async function supportsAcrossDisciplines(evidence: readonly unknown[], read: MetacognitiveRead) {
+async function supportsAcrossDisciplines(evidence: readonly unknown[], read: MetacognitiveRead, when: AsOf) {
   async function open(ref: Witness, mode: BusWitness['mode'] = 'following') {
     const fact = await read.reopen(ref, mode === 'following' ? {mode} : {mode, rev: ref.rev}, read.purpose);
     if (fact?.ref.learner === read.learner && allows(fact.purpose, read.purpose) &&
@@ -209,7 +209,10 @@ async function supportsAcrossDisciplines(evidence: readonly unknown[], read: Met
     if (subject?.type !== discipline.type || !subject.value || typeof subject.value !== 'object' ||
         !('kind' in subject.value) || subject.value.kind !== 'discipline') return false;
     const events = slice.events.filter(event => event.ref === ref.id && event.rev === ref.rev);
-    if (!events.length || events.some(event => event.help_level !== 'independent' || event.outcome === 'unknown') ||
+    const observedAt = Date.parse(slice.as_of_at);
+    const cutoff = Math.min(Date.parse(when.validAt), observedAt);
+    if (!(observedAt <= Date.parse(when.knownAt)) ||
+        !events.length || events.some(event => !(Date.parse(event.occurred_at) <= cutoff) || event.help_level !== 'independent' || event.outcome === 'unknown') ||
         slice.omissions?.some(({ref: omitted}) => omitted.id === ref.id && omitted.rev === ref.rev)) continue;
     const subjects = subjectsBySource.get(ref.id) ?? new Set<string>();
     subjects.add(discipline.id);
@@ -220,16 +223,34 @@ async function supportsAcrossDisciplines(evidence: readonly unknown[], read: Met
 
 // Read the owner revisions and logical edges admitted by the same bus snapshot.
 // Opposite claims can remain valid simultaneously. Both sides stay addressable.
-export async function hypothesesAsOf<Scope, Evidence>(rows: readonly OpenHypothesis<Scope, Evidence>[],
-  edges: readonly (BeliefTime & import('./extraction.ts').BeliefEdge)[], when: AsOf,
-  openedEvidence: readonly BusWitness[] = [], metacognitive?: MetacognitiveRead) {
-  const visible: OpenHypothesis<Scope, Evidence>[] = [];
+type TimedEdge = BeliefTime & import('./extraction.ts').BeliefEdge;
+type HypothesisProjection<S, E> = ReturnType<typeof projectRelations<S, E>>;
+
+export function hypothesesAsOf<S, E>(rows: readonly OpenHypothesis<S, E>[], edges: readonly TimedEdge[],
+  when: AsOf, openedEvidence?: readonly BusWitness[]): HypothesisProjection<S, E>;
+export function hypothesesAsOf<S, E>(rows: readonly OpenHypothesis<S, E>[], edges: readonly TimedEdge[],
+  when: AsOf, openedEvidence: readonly BusWitness[], metacognitive: MetacognitiveRead | undefined):
+  HypothesisProjection<S, E> | Promise<HypothesisProjection<S, E>>;
+export function hypothesesAsOf<S, E>(rows: readonly OpenHypothesis<S, E>[], edges: readonly TimedEdge[],
+  when: AsOf, openedEvidence: readonly BusWitness[] = [], metacognitive?: MetacognitiveRead) {
+  const current = rows.filter(row => beliefsAsOf([row.value], when).length > 0);
+  if (!metacognitive)
+    return projectRelations(current.filter(row => row.value.kind !== 'metacognitive_habit'), edges, when, openedEvidence);
+  return readHabits(current, edges, when, openedEvidence, metacognitive);
+}
+
+async function readHabits<S, E>(rows: readonly OpenHypothesis<S, E>[], edges: readonly TimedEdge[],
+  when: AsOf, openedEvidence: readonly BusWitness[], read: MetacognitiveRead) {
+  const visible: OpenHypothesis<S, E>[] = [];
   for (const row of rows) {
-    if (!beliefsAsOf([row.value], when).length) continue;
-    if (row.value.kind === 'metacognitive_habit' &&
-        (!metacognitive || !await supportsAcrossDisciplines(row.value.evidence_refs, metacognitive))) continue;
-    visible.push(row);
+    if (row.value.kind !== 'metacognitive_habit' || await supportsAcrossDisciplines(row.value.evidence_refs, read, when))
+      visible.push(row);
   }
+  return projectRelations(visible, edges, when, openedEvidence);
+}
+
+function projectRelations<S, E>(visible: readonly OpenHypothesis<S, E>[], edges: readonly TimedEdge[],
+  when: AsOf, openedEvidence: readonly BusWitness[]) {
   const endpoints = new Set(visible.map(row => witnessIdentity(row.ref)));
   // For submission → hypothesis edges the caller reopens the entire evidence chain
   // under the actual recipient and purpose in the same learner snapshot.

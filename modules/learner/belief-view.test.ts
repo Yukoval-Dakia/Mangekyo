@@ -125,11 +125,13 @@ it('requires two reopened independent submissions in distinct disciplines for a 
     observe: async (source, citation) => ({discipline: proof(citation.anchor === 'first' ? 3 : secondSubject), basis: [proof(3)],
       slice: activityEvidenceSlice(ref(1).accessEpoch, at(3), undefined, [{submission: source.ref, occurredAt: at(2),
         concepts: [], novelty: 'transfer', helpLevel: source.ref.id === ref(1).id ? 'independent' : secondHelp, result: 'incorrect'}])})};
-  const count = async (second = ref(2), reader: MetacognitiveRead | null = read) => (await hypothesesAsOf([{ref: ref(5), value: {
+  const count = async (second = ref(2), reader: MetacognitiveRead | null = read, when = asOf(3)) => (await hypothesesAsOf([{ref: ref(5), value: {
     ...revisionTime, validTo: null, category: 'hypothesis', kind: 'metacognitive_habit', status: 'tentative', sticky: false,
     scope: {}, text: '漏读限制词', evidence_refs: [{...ref(1), direction: 'support', anchor: 'first'}, {...second, direction: 'support'}],
-  }}], [], asOf(3), [], reader ?? undefined)).hypotheses.length;
+  }}], [], when, [], reader ?? undefined)).hypotheses.length;
   expect(await count()).toBe(1);
+  expect(await count(ref(2), read, asOf(1, 3))).toBe(0);
+  expect(await count(ref(2), read, asOf(3, 2))).toBe(0);
   expect(await count(ref(1))).toBe(0);
   expect(await count(ref(2), null)).toBe(0);
   expect(await count(ref(2, '1'))).toBe(0);
