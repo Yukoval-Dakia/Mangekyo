@@ -31,6 +31,7 @@ import { Today } from './today';
 import { AppShell, destinations } from './shell/AppShell';
 import { IntakeSurface, TodaySurface } from './today-v2';
 import type { Duration } from './today-pack';
+import { WorkbookSurface, type CompanionCitation } from './workbook-v2';
 import './styles/tokens.css';
 import './styles.css';
 import './shell.css';
@@ -172,6 +173,16 @@ function App() {
   function citeToCompanion(citation: { title: string; text: string; topic?: string }) {
     setCompanionCitation({ ...citation, seq: Date.now() });
   }
+  function citeWorkbookToCompanion(citation: CompanionCitation) {
+    if (citation.kind === 'question') {
+      citeToCompanion({ title: citation.title, text: citation.excerpt });
+    } else {
+      citeToCompanion({
+        title: citation.title,
+        text: `手写过程图附件 ${citation.originalId}（第 ${citation.rev} 版）`,
+      });
+    }
+  }
   function close() {
     if (path === '/textbooks/page' && (dialog === 'textbook-access' || dialog === 'settings')) setTextbookVersion(n => n + 1);
     setDialog(null);
@@ -223,10 +234,21 @@ function App() {
   else if (path === '/papers/issued') content = <IssuedPapers />;
   else if (path === '/papers' || path.startsWith('/papers/')) {
     const id = path.slice('/papers/'.length);
-    content = id === 'new' && !library.data ? <ReadState resource={library} /> : <>
-      {id && id !== 'new' && <a className="text-button" href={'/papers/'+id+'/print'}>打开打印版</a>}
-      <Workbook key={routeKey} modelSettings={settings} {...(id ? {id} : {})} materials={library.data?.materials ?? []} />
-    </>;
+    if (id && id !== 'new' && /^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) {
+      content = <>
+        <a className="text-button" href={'/papers/'+id+'/print'}>打开打印版</a>
+        <WorkbookSurface
+          key={routeKey}
+          paperId={id}
+          onCiteToCompanion={citeWorkbookToCompanion}
+        />
+      </>;
+    } else {
+      content = id === 'new' && !library.data ? <ReadState resource={library} /> : <>
+        {id && id !== 'new' && <a className="text-button" href={'/papers/'+id+'/print'}>打开打印版</a>}
+        <Workbook key={routeKey} modelSettings={settings} {...(id ? {id} : {})} materials={library.data?.materials ?? []} />
+      </>;
+    }
   }
   else if (path === '/notes') content = <Organizer key={routeKey} section="notes" materials={library.data?.materials ?? []} />;
   else if (path === '/materials/riding') content = <StarterLesson />;
