@@ -12,7 +12,7 @@ import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, readReadyWork, readWork, type WorkRef,
 } from '../../kernel/src/work/index.ts';
 import {
-  cancelResearchTodos, checkTodoTriggers, completeTodo, emitTodo, endDispatchedTodo, enqueueWork,
+  cancelResearchTodos, checkTodoTriggers, completeTodo, emitTodo, enqueueWork,
   readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec,
 } from '../../kernel/src/work/todos.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
@@ -39,8 +39,7 @@ import { discoverUnderstandingTodos, eligibleExtraction, openUnderstandingExtrac
 import { activityEvidenceTypes, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';
 import { extractorProfile } from '../../modules/companion/understanding.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-import { isCorrectionRetest } from '../../modules/learner/correction-check.ts';
-import { eligibleCorrectionRetest, executeCorrectionRetest, registerCorrectionRetest, type CorrectionRetestAuthority } from './research-correction.ts';
+import { correctionRetestDeriver, eligibleCorrectionRetest, executeCorrectionRetest, registerCorrectionRetest, type CorrectionRetestAuthority } from './research-correction.ts';
 
 const scope = { learner: studioLearner };
 const settingsId = factId(stableId('research-settings', studioLearner));
@@ -112,7 +111,6 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     const current = await settings(tx);
     return current?.enabled === true && current.revision === revision;
   };
-  const generate = agent ?? deterministicReview;
   const hooks: CommandHooks = { async onFactsChanged(tx, tick, changes) {
     for (const change of changes) {
       if (change.factType === researchSettingsType) {
@@ -157,7 +155,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     const correction = changes.find(change => change.factType === workbookCorrectionType && change.kind === 'create');
     if (correction) {
       const current = await settings(tx);
-      if (current?.enabled && await registerCorrectionRetest(tx, tick, correction.ref.id, current.revision))
+      if (current?.enabled && await registerCorrectionRetest(tx, tick, correction.ref.id, current.revision, settingsId))
         await enqueueWork(tx, tick, wake);
     }
     const created = changes.find(change => change.factType === workbookAttemptType && change.kind === 'create');
@@ -195,8 +193,8 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       const now = Date.now();
       const eligible = async (spec: TodoSpec) => (await (extract && spec.workerProfile === extractorProfile
         ? eligibleExtraction(tx, spec, understandingTransport?.maySend) : eligibleBasis(tx, spec))) !== null;
-      const due = await checkTodoTriggers(tx, now, spec => isCorrectionRetest(spec.dedupKey)
-        ? eligibleCorrectionRetest(tx, spec, current.revision, now, correctionAuthority) : eligible(spec));
+      const due = await checkTodoTriggers(tx, now, (spec, route) => route === correctionRetestDeriver
+        ? eligibleCorrectionRetest(tx, spec, current.revision, now, correctionAuthority) : eligible(spec), correctionRetestDeriver);
       if (due.advanced) return { status: 'advanced' } as const;
       const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
       const watermark = await newResearchWatermark(tx);
@@ -342,60 +340,52 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
       }
       if (work.slotType !== todoSlot) return false;
       const todoId = factId(work.slotKey);
-      if (!terminal && work.deriver === extractorProfile) {
-        if (extract) await extract(ref, todoId, settingsCurrent);
-        else await cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
+      if (terminal) {
+        await failWork(db, ref);
         return true;
       }
-      if (terminal) {
-        await failWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'failed'));
+      if (work.deriver === extractorProfile) {
+        if (extract) await extract(ref, todoId, settingsCurrent);
+        else await cancelWork(db, ref);
+        return true;
+      }
+      if (work.deriver === correctionRetestDeriver) {
+        await executeCorrectionRetest(db, ref, todoId, settingsCurrent, correctionAuthority);
         return true;
       }
       const prepared = await db.snapshot(scope, async tx => {
         if (!(await readReadyWork(tx, ref))) return null;
         const todo = await readTodo(tx, todoId);
-        if (!todo || todo.state !== 'dispatched') return todo?.state === 'completed' ? { status: 'completed' } as const : null;
-        if (isCorrectionRetest(todo.spec.dedupKey)) return { status: 'correction' } as const;
+        if (todo?.state !== 'dispatched') return null;
         const eligible = await eligibleBasis(tx, todo.spec);
         if (!eligible) return null;
         const { basis, evidence } = eligible;
         const { attemptId, revision, accessEpoch } = basis.source;
         const id = worksheetId(attemptId, revision, accessEpoch);
-        return { status: 'ready', todo, id, basis, evidence } as const;
+        return { todo, id, basis, evidence };
       });
-      const cancel = () => cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
       if (!prepared) {
-        await cancel();
+        await cancelWork(db, ref);
         return true;
       }
-      if (prepared.status === 'correction') {
-        await executeCorrectionRetest(db, ref, todoId, settingsCurrent, correctionAuthority);
-        return true;
-      }
-      if (prepared.status === 'ready') {
-        const draft = worksheetDraft(prepared.evidence ? await generate(prepared.evidence) : retentionReviewDraft);
-        const publish = createCommandHandler(db, {
-          modules: [companion],
-          hooks: { async onFactsChanged(tx, tick) {
-            const current = await readTodo(tx, todoId);
-            if (current?.revision !== prepared.todo.revision || !(await readReadyWork(tx, ref)) ||
-                !(await eligibleBasis(tx, current.spec)) || !await completeTodo(tx, tick, ref, current, prepared.id))
-              throw new ResearchBasisChanged('工作单已失效。');
-            await enqueueWork(tx, tick, wake);
-          } },
-        });
-        const receipt = await whenAvailable(() => publish({
-          ...scope, actor: 'companion', purpose: researchPurpose, type: publishWorksheet,
-          id: commandId(stableId('publish-worksheet', prepared.id)),
-          input: { id: prepared.id, todoId, basis: prepared.basis, draft,
-            method: agent && prepared.evidence ? 'local-agent' : 'deterministic-v1', questionNumber: prepared.evidence?.questionNumber ?? 1 },
-        }));
-        if (!receipt) {
-          await cancel();
-          return true;
-        }
-      }
-      await finishWork(db, ref);
+      const draft = worksheetDraft(prepared.evidence ? await (agent ?? deterministicReview)(prepared.evidence) : retentionReviewDraft);
+      const publish = createCommandHandler(db, {
+        modules: [companion],
+        hooks: { async onFactsChanged(tx, tick) {
+          const current = await readTodo(tx, todoId);
+          if (current?.revision !== prepared.todo.revision || !(await readReadyWork(tx, ref)) ||
+              !(await eligibleBasis(tx, current.spec)) || !await completeTodo(tx, tick, ref, current, prepared.id))
+            throw new ResearchBasisChanged('工作单已失效。');
+          await enqueueWork(tx, tick, wake);
+        } },
+      });
+      const receipt = await whenAvailable(() => publish({
+        ...scope, actor: 'companion', purpose: researchPurpose, type: publishWorksheet,
+        id: commandId(stableId('publish-worksheet', prepared.id)),
+        input: { id: prepared.id, todoId, basis: prepared.basis, draft,
+          method: agent && prepared.evidence ? 'local-agent' : 'deterministic-v1', questionNumber: prepared.evidence?.questionNumber ?? 1 },
+      }));
+      if (!receipt) await cancelWork(db, ref);
       return true;
     },
   };

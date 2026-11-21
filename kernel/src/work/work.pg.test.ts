@@ -315,21 +315,28 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect((await inspect(tail.id))?.state).toBe('cancelled');
   });
 
-  it('keeps a deferred scheduled Todo and fences a previous dispatch generation', async () => {
+  it('isolates and defers routed Todos, fencing a previous dispatch generation', async () => {
     const write = <T>(fn: (tx: DbTransaction, tick: Parameters<typeof emitTodo>[1]) => Promise<T>) =>
       db.tx({ learner }, tx => tx.withLearnerWrite(tick => fn(tx, tick)));
     const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const route = { deriver: 'scheduled-v1', erasureBasis: [factId(source.id)], settingsFactId: factId(newUlid()) };
     const deferred = { status: 'not_dispatched', reason: 'unavailable', retryAtMs: 10 } as const;
     const decide = vi.fn(async () => deferred);
-    const sweep = (now: number, eligible = async () => true) => db.tx({ learner }, tx => checkTodoTriggers(tx, now, eligible));
+    const sweep = (now: number, eligible = async () => true) =>
+      db.tx({ learner }, tx => checkTodoTriggers(tx, now, eligible, route.deriver));
     const root = (await write((tx, tick) => emitTodo(tx, tick, { dedupKey: 'deferred', goal: 'Review',
       trigger: { kind: 'scheduled', fireAtMs: 5 }, workerProfile: 'deterministic_compute', budgetCap: 0,
-      refs: [], sourceFactRev: source, autonomyTier: 1, settingsRevision: 1, expiresAtMs: 50 }, 1, decide)))!;
-    expect(await db.tx({ learner }, tx => checkTodoTriggers(tx, 5, decide))).toEqual({ advanced: false, nextAt: 10 });
+      refs: [], sourceFactRev: source, autonomyTier: 1, settingsRevision: 1, expiresAtMs: 50 }, 1, decide, route)))!;
+    expect(await db.tx({ learner }, tx => checkTodoTriggers(tx, 5, async () => false))).toEqual({ advanced: false, nextAt: undefined });
+    expect(await db.tx({ learner }, tx => checkTodoTriggers(tx, 5, decide, route.deriver))).toEqual({ advanced: false, nextAt: 10 });
     expect(await sweep(9)).toEqual({ advanced: false, nextAt: 10 });
     expect((await db.query('SELECT intent_id FROM work_outbox')).rowCount).toBe(0);
     expect(await sweep(10)).toMatchObject({ advanced: true });
     const ref = { learner, workId: root.id, generation: '1' };
+    const { rows: [firstDelivery] } = await db.query<{ intent_id: string }>('SELECT intent_id FROM work_outbox');
+    expect(await relayPending(db, async () => {})).toBe(0);
+    expect(await acknowledgeStartedWork(db, firstDelivery!.intent_id)).toBeNull();
+    expect(await acknowledgeStartedWork(db, firstDelivery!.intent_id, route)).toEqual(ref);
     await write(async (tx, tick) => {
       const dispatched = (await readTodo(tx, root.id))!;
       expect(await deferDispatchedTodo(tx, ref, dispatched, { ...deferred, retryAtMs: 20 }, 11)).toBe(true);
@@ -338,6 +345,11 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect(await sweep(20)).toMatchObject({ advanced: true });
     expect((await db.query('SELECT generation::text FROM work_outbox ORDER BY generation')).rows)
       .toEqual([{ generation: '1' }, { generation: '2' }]);
+    const { rows: [retry] } = await db.query<{ intent_id: string }>("SELECT intent_id FROM work_outbox WHERE generation=2");
+    await eraseOriginal(db, { learner }, { actor: 'learner', confirmed: true, root: factId(source.id),
+      requestId: commandId(newUlid()), expectedRev: 1 }, async () => ({ ids: [factId(source.id)], commandTypes: [] }), async () => {});
+    expect(await db.snapshot({ learner }, tx => readTodo(tx, root.id))).toMatchObject({ state: 'cancelled' });
+    expect(await acknowledgeStartedWork(db, retry!.intent_id, route)).toBeNull();
   });
 
   it('keeps v6 SQL on the same work row while old pinned workers drain', async () => {
@@ -487,7 +499,8 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     await db.query('DROP TABLE work_outbox');
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
-    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }]);
+    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows)
+      .toEqual(Array.from({ length: 14 }, (_, i) => ({ version: i + 1 })));
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -499,8 +512,8 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (14)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (15)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 14');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 15');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
   }, { initialize: legacyWorkSchema }));

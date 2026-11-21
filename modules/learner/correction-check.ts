@@ -11,7 +11,6 @@ const teaching = 'teaching';
 const storage = 'storage';
 const retestGoal = '订正后补做一道同壳换数题';
 const retestPrefix = 'correction-retest:';
-export const isCorrectionRetest = (dedupKey: string) => dedupKey.startsWith(retestPrefix);
 
 // The host supplies the learner's recorded correction and the exact source question
 // from the original incorrect submission, using the same admission clock as Activity.

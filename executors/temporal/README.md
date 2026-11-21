@@ -75,6 +75,20 @@ git diff --check
 
 上游接入后需复验实际 PG 配置和 outbox 交接、代次与撤权准入、效果回执及预算、已授权旧作读取和无人值守交付。生产部署、协调器换版及服务器故障恢复另验。
 
+### 定时订正预约的滚动升级
+
+新 Studio 应用 schema v14 后，订正预约以原 Work ID 保持 pending。已在线的旧协调器仍可处理普通 Todo。定时订正的扫描只由支持该能力的协调器 Activity 执行，派发只走 `correction-retest-v1` 能力队列。旧 Studio 的删除及教研设置修订仍会在各自的提交事务中取消受影响的预约。
+
+在同一 store 和 namespace 启动新 Worker 并将普通队列与订正能力队列设为新构建。若 `coordinator:<coordinatorRef>` 的活跃 Run 仍固定在旧构建，要用原 Workflow ID 和 Run ID 将该 Run 换绑到普通队列的新构建。以 `describe` 结果中的部署名为准，Studio 默认使用含 store ID 的普通队列名。
+
+```sh
+temporal workflow update-options --workflow-id "$workflow" --run-id "$run" \
+  --versioning-override-behavior pinned --versioning-override-deployment-name "$deployment" \
+  --versioning-override-build-id "$build"
+```
+
+Worker 启动校对和普通教研变更均通过已提交的 wake outbox 唤醒原 Workflow。已绑定新构建的 Run 可直接响应唤醒及定时复查。闭合的 Run 由下一次正常唤醒以同一 Workflow ID 重开。预约的时点、截止时间、去重键及 Work ID 沿用 PG 数据。已终态取消的旧草稿预约不会重新发放。新订正请求应由新 Web 接收，重启 Web 时也使用兼容 v14 的构建。
+
 ## Studio v6/v7 原地切换到生命周期 v8
 
 v8 将最低 Worker schema 提到 8。此切换需要停机。支持同一 PG 集群上的 **Studio 专库、直连数据库名、原对象目录、同一 Temporal namespace 与队列**。旧 Web 的读取、离线提交以及已启动 Worker 均使用原数据库名。变更该名字保留库 OID、store ID、工作与收费身份，并使旧 DSN 失效。共享库、维护库、会把旧 DSN 自动改指新库的代理、可继续提供旧副本的其他宿主需要先隔离，本流程仅覆盖上述专库拓扑。

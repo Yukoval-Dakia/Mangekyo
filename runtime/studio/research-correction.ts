@@ -9,6 +9,7 @@ import { completeTodo, deferDispatchedTodo, emitTodo, readTodo, type TodoDeferra
 import { readActivitySubmissionBirth, workbookLinkCandidates } from '../../modules/activity/evidence-read.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { posttestIssuanceType } from '../../modules/activity/retention-posttest.ts';
+import { memoWorkbookFacts } from '../../modules/activity/workbook-context-read.ts';
 import { openWorkbookCorrectionTarget, recordWorkbookCorrection, workbookCorrection, workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { sameWorkbookJson, setWorkbookResearchUse, workbookAttemptType, workbookPaper, workbookPaperType, WorkbookSourceMismatch } from '../../modules/activity/workbook-values.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
@@ -18,6 +19,7 @@ import { whenAvailable } from './research-sources.ts';
 
 type NotDispatched = 'coverage_unknown' | 'no_unexposed_variant';
 type ScheduledCorrection = { correction: RecordedCorrection; through: string };
+export const correctionRetestDeriver = 'studio/correction-retest-v1';
 export type CorrectionRetestAuthority = {
   // Both calls use the locked learner transaction. No external I/O or payload is handed to Temporal.
   probe(tx: ReadTransaction, input: ScheduledCorrection): Promise<'ready' | NotDispatched>;
@@ -26,58 +28,64 @@ export type CorrectionRetestAuthority = {
 };
 const explicitResearch = (fact: FactSnapshot) => fact.purpose.includes(researchPurpose);
 const witness = ({ ref, type, accessEpoch }: FactSnapshot, mode: BusWitness['mode']): BusWitness => ({ ...ref, type, accessEpoch, mode });
-const reopen = (tx: ReadTransaction): CorrectionReopen => async (ref, purpose) =>
-  (await whenAvailable(() => createAuthorizedFactReader(tx, purpose, purpose === researchPurpose ? explicitResearch : () => true)
-    .reopen(ref))) ?? undefined;
 
-async function readCorrection(tx: ReadTransaction, id: FactId): Promise<RecordedCorrection | null> {
-  try {
-    return await whenAvailable(async () => {
-      const read = createCommandReadContext(tx, storagePurpose);
-      const source = await read.fact(id, { mode: 'following' });
-      if (source.type !== workbookCorrectionType || source.ref.rev !== 1) return null;
-      const correction = workbookCorrection(source.value);
-      const grant = await createAuthorizedFactReader(tx, researchPurpose, explicitResearch).fact(correction.attempt.id, { mode: 'following' });
-      if (grant.type !== workbookAttemptType || grant.ref.rev !== correction.attempt.rev || grant.accessEpoch !== correction.accessEpoch) return null;
-      const { rows: [birth] } = await tx.query<{ tick: Tick }>(`
+async function readCorrection(tx: ReadTransaction, id: FactId) {
+  return whenAvailable(async () => {
+    const erasureBasis = new Set<FactId>();
+    const storage = createCommandReadContext(tx, storagePurpose);
+    const read = { ...storage, ...memoWorkbookFacts(async (id, options) => {
+      const fact = await storage.fact(id, options);
+      erasureBasis.add(id);
+      return fact;
+    }) };
+    const source = await read.fact(id, { mode: 'following' });
+    if (source.type !== workbookCorrectionType || source.ref.rev !== 1) return null;
+    const correction = workbookCorrection(source.value);
+    const grant = await createAuthorizedFactReader(tx, researchPurpose, explicitResearch).fact(correction.attempt.id, { mode: 'following' });
+    if (grant.type !== workbookAttemptType || grant.ref.rev !== correction.attempt.rev || grant.accessEpoch !== correction.accessEpoch) return null;
+    const { rows: [birth] } = await tx.query<{ tick: Tick }>(`
         SELECT r.tick::text FROM fact_revs r JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
         JOIN fact_revs g ON (g.learner_id,g.fact_id,g.rev)=(r.learner_id,$4,$5)
         JOIN commands a ON (a.learner_id,a.id)=(g.learner_id,g.command_id)
         WHERE r.learner_id=$1 AND r.fact_id=$2 AND r.rev=1 AND r.author='learner' AND r.kind='value'
           AND c.type=$3 AND c.state='done' AND g.author='learner' AND g.kind='value' AND g.tick<r.tick
           AND a.type=$6 AND a.state='done' AND a.input#>'{input,allowed}'='true'::jsonb`,
-      [tx.learner, id, recordWorkbookCorrection, grant.ref.id, grant.ref.rev, setWorkbookResearchUse]);
-      if (!birth) return null;
-      const submitted = await readActivitySubmissionBirth(tx, grant.ref, workbookAttemptType);
-      if (!submitted?.unchanged || BigInt(submitted.tick) >= BigInt(birth.tick)) return null;
-      const { attempt } = await openWorkbookCorrectionTarget(read, correction);
-      const release = attempt.paper.assessmentRelease?.releaseRef;
-      const item = attempt.paper.questions.find(question => question.id === correction.itemId);
-      if (release?.id !== correction.paperId || item?.kind !== 'bank') return null;
-      const paper = await read.fact(release.id, { mode: 'pinned', rev: release.rev });
-      if (paper.type !== workbookPaperType || !sameWorkbookJson(workbookPaper(paper.value), attempt.paper)) return null;
-      const question = await createCommandReadContext(tx, 'teaching').fact(factId(item.sourceQuestionRef.id), { mode: 'pinned', rev: item.sourceQuestionRef.rev });
-      return { source: witness(source, 'following'), originalQuestion: witness(question, 'pinned'),
-        researchAuthorization: witness(grant, 'following'), frozenPaper: witness(paper, 'pinned'),
-        admittedAt: birth.tick, correctedAt: correction.correctedAt };
-    });
-  } catch (error) {
+    [tx.learner, id, recordWorkbookCorrection, grant.ref.id, grant.ref.rev, setWorkbookResearchUse]);
+    if (!birth) return null;
+    const submitted = await readActivitySubmissionBirth(tx, grant.ref, workbookAttemptType);
+    if (!submitted?.unchanged || BigInt(submitted.tick) >= BigInt(birth.tick)) return null;
+    const { attempt } = await openWorkbookCorrectionTarget(read, correction);
+    const release = attempt.paper.assessmentRelease?.releaseRef;
+    const item = attempt.paper.questions.find(question => question.id === correction.itemId);
+    if (release?.id !== correction.paperId || item?.kind !== 'bank') return null;
+    const paper = await read.fact(release.id, { mode: 'pinned', rev: release.rev });
+    if (paper.type !== workbookPaperType || !sameWorkbookJson(workbookPaper(paper.value), attempt.paper)) return null;
+    const question = await read.fact(factId(item.sourceQuestionRef.id), { mode: 'pinned', rev: item.sourceQuestionRef.rev, requirePurpose: 'teaching' });
+    const recorded: RecordedCorrection = { source: witness(source, 'following'), originalQuestion: witness(question, 'pinned'),
+      researchAuthorization: witness(grant, 'following'), frozenPaper: witness(paper, 'pinned'),
+      admittedAt: birth.tick, correctedAt: correction.correctedAt };
+    // Reuse authorized snapshots only within this locked read. The worker opens a fresh set.
+    const reopen: CorrectionReopen = async (ref, purpose) => purpose === researchPurpose ? grant
+      : purpose === 'teaching' ? question : ref.id === id ? source : paper;
+    return { recorded, reopen, erasureBasis: [...erasureBasis] };
+  }).catch(error => {
     if (error instanceof WorkbookSourceMismatch) return null;
     throw error;
-  }
+  });
 }
 
-export async function registerCorrectionRetest(tx: DbTransaction, tick: Tick, id: FactId, settingsRevision: number) {
-  const correction = await readCorrection(tx, id);
-  const now = Date.now();
-  const plan = correction && await scheduleCorrectionRetest(reopen(tx), correction, settingsRevision, now);
-  return plan && await emitTodo(tx, tick, plan.todo, now, async () => false);
+export async function registerCorrectionRetest(tx: DbTransaction, tick: Tick, id: FactId, settingsRevision: number, settingsFactId: FactId) {
+  const basis = await readCorrection(tx, id), now = Date.now();
+  if (!basis) return null;
+  const plan = await scheduleCorrectionRetest(basis.reopen, basis.recorded, settingsRevision, now);
+  return plan && emitTodo(tx, tick, plan.todo, now, async () => false,
+    { deriver: correctionRetestDeriver, erasureBasis: basis.erasureBasis, settingsFactId });
 }
 
 async function dueCorrection(tx: ReadTransaction, spec: TodoSpec, settingsRevision: number, now: number) {
-  const correction = await readCorrection(tx, spec.sourceFactRev.id);
-  return correction && await correctionRetestDue(reopen(tx), correction, spec, settingsRevision, now)
-    ? { correction, through: new Date(spec.expiresAtMs).toISOString() } : null;
+  const basis = await readCorrection(tx, spec.sourceFactRev.id);
+  return basis && await correctionRetestDue(basis.reopen, basis.recorded, spec, settingsRevision, now)
+    ? { correction: basis.recorded, through: new Date(spec.expiresAtMs).toISOString() } : null;
 }
 
 const deferred = (reason: NotDispatched, now: number): TodoDeferral =>
@@ -104,7 +112,7 @@ export async function executeCorrectionRetest(db: Db, ref: WorkRef, todoId: Fact
   const learner = learnerId(ref.learner);
   return db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
-    if (!await readReadyWork(tx, ref)) return;
+    if ((await readReadyWork(tx, ref))?.deriver !== correctionRetestDeriver) return;
     const todo = await readTodo(tx, todoId);
     if (todo?.state !== 'dispatched') return;
     const now = Date.now();
