@@ -1,3 +1,4 @@
+import { flashCheckPriority, nearFlashCrossing } from './flash-check.ts';
 import type { FactSnapshot, Outcome, Tick } from '@mangekyo/kernel';
 import { reconcileRetention, type RetentionForecast, type RetentionObservation, type RetentionTarget } from './retention.ts';
 
@@ -42,12 +43,14 @@ export function projectRetentionRead<Evidence>(row: RetentionSelection, forecast
     forecastId: forecast.id, status: value.status,
     observation: { result: observation.result, exposure: observation.exposure.kind } };
   if ('estimate' in value) {
+    const priority = flashCheckPriority(forecast.value);
+    const flag = priority ? { flash_check_priority: priority } : {};
     if (estimate.kind === 'probabilistic') {
-      return { ...common, kind: 'forecast' as const,
+      return { ...common, ...flag, kind: 'forecast' as const,
         estimate: { kind: 'probabilistic' as const, probability: estimate.probability,
           interval: estimate.interval, uncertainty: estimate.uncertainty } };
     }
-    return { ...common, kind: 'forecast' as const,
+    return { ...common, ...flag, kind: 'forecast' as const,
       estimate: estimate.kind === 'unknown' ? { kind: 'unknown' as const, reason: estimate.reason }
         : { kind: 'categorical' as const, expected: estimate.expected } };
   }
@@ -114,6 +117,8 @@ export function projectForgettingRisks<Risk extends { crossing_at: string; forec
     scope: 'active_frozen_workbook_forecasts',
     state: !classified ? 'unknown' : classified === candidates ? 'complete' : 'partial',
     as_of_at: asOf, through: new Date(end).toISOString(), clock_watermark: watermark,
-    risks: risks.sort((a, b) => a.crossing_at.localeCompare(b.crossing_at) || a.forecast_id.localeCompare(b.forecast_id)),
+    risks: risks.map(risk => nearFlashCrossing(risk.crossing_at, Date.parse(asOf))
+      ? { ...risk, flash_check_priority: 'threshold-crossing' as const } : risk)
+      .sort((a, b) => a.crossing_at.localeCompare(b.crossing_at) || a.forecast_id.localeCompare(b.forecast_id)),
   };
 }
