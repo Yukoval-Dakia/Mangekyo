@@ -475,14 +475,18 @@ export function openWorkspaceTools(options: {
     writes: () => [...receipts.values()],
     basis() {
       const ordinary = new Map([...sources, ...overviewBasis]);
-      const basis = new Map([...ordinary.values()].map(w => [`${w.id}:${w.rev}`, w]));
-      for (const w of options.learningBasis?.() ?? []) basis.set(`${w.id}:${w.rev}`,w);
-      for (const [key, witness] of writeBasis) basis.set(key, witness);
-      for (const witness of jitBasis) basis.set(`${witness.id}:${witness.rev}`,{...witness,writeBasis:true,jitBasis:true});
+      const basis = new Map([...options.prior, ...ordinary.values()].map(w => [workspaceProofKey(w), w]));
+      for (const w of options.learningBasis?.() ?? []) basis.set(workspaceProofKey(w),w);
+      for (const witness of writeBasis.values()) basis.set(workspaceProofKey(witness), witness);
+      for (const witness of jitBasis) basis.set(workspaceProofKey(witness),{...witness,writeBasis:true,jitBasis:true});
       return [...basis.values()];
     },
   };
 }
+export function workspaceProofKey(w: WorkspaceWitness) {
+  return `${w.id}:${w.rev}:${workspaceInput(w).mode}`;
+}
+
 export function workspaceInput(w: WorkspaceWitness) {
   return {kind: 'fact' as const, id: factId(w.id), rev: w.rev as Revision, accessEpoch: w.epoch as Tick,
     mode: w.mode ?? (w.type === 'activity.workspaceEntry' || w.type === textbookPageType ? 'pinned' : 'following')};
