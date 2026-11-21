@@ -124,7 +124,8 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   const originals = [firstPage('f')];
   const base = stableId('capture-pg-fixture');
   const passage = '跨页共享材料🙂。'.repeat(120);
-  const unknowable = captureBlock('unknown',{layer:'handwriting',status:'unknown',itemId:'q2',slotId:'slot1',candidates:['0.5','0.8']});
+  const unknowable = captureBlock('unknown',{crop_ref:{original:0,page:1,bbox:[0.1,0.2,0.8,0.26]},
+    layer:'handwriting',status:'unknown',itemId:'q2',slotId:'slot1',candidates:['0.5','0.8']});
   const blocks = [
     captureBlock('shared',{layer:'material',status:'known',text:passage}),
     captureBlock('prompt1',{layer:'prompt',status:'known',text:'请答第 1 题。',itemId:'q1'}),
@@ -344,6 +345,28 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   assert.equal((await current(source)).ref.rev,old.source.rev);
   assert.equal((await send('capture.correctPaperAnswer',{...input,witness:fresh,text:'4'})).wrote.length,1);
   assert.equal((await send('capture.clarifyPaperAnswer',{...input,runId:redo,witness:await reopen(redo)})).wrote.length,1);
+  const ink = (id, left, right, top = 0.2, bottom = 0.26) => captureBlock(id, { layer:'handwriting', status:'known', text:'9',
+    itemId:'q2', slotId:'slot1', crop_ref:{original:0,page:1,bbox:[left,top,right,bottom]} });
+  const rerun = async (...blocks) => extract({...key,target:(await current(source)).ref},blocks,photo);
+  const values = async runId => (await layerView(runId)).map(answer =>
+    answer.value.status === 'known' ? answer.value.text : answer.value.region.clarification);
+  for (const [id,left] of [['renamed',0.1],[unknowable.id,0.11],['renamed',0.11]]) {
+    await rerun(ink(id,left,0.8));
+    assert.deepEqual(await values(first),['4']);
+    assert.deepEqual(await values(redo),['asked']);
+  }
+  await rerun(ink(unknowable.id,0.1,0.8,0.21,0.27),ink('next-line',0.1,0.8,0.25,0.31));
+  assert.deepEqual(await values(first),['4','9']);
+  assert.deepEqual(await values(redo),['asked','9']);
+  assert.equal((await send('capture.clarifyPaperAnswer',{...input,runId:redo,witness:await reopen(redo)})).wrote.length,0);
+  const otherSlot = ink('other-slot',0.1,0.8);
+  await rerun({...otherSlot,body:{...otherSlot.body,slotId:'slot2'}});
+  assert.deepEqual((await layerView(first)).map(answer=>[answer.slotId,answer.value.text]),[['slot1','4'],['slot2','9']]);
+  await rerun(ink('upper',0.11,0.8),ink('neighbor',0.12,0.81),ink('independent',0.82,0.95));
+  assert.deepEqual(await values(first),['4','pending','pending','9']);
+  const conflict = (await layerView(first)).find(answer=>answer.witness.blockId==='neighbor');
+  assert.equal((await send('capture.clarifyPaperAnswer',{...input,witness:conflict.witness})).wrote.length,1);
+
   console.log(JSON.stringify({checked:'paper witness pg',first,redo,old:old.basis,current:fresh.basis,invalidWrites:0,currentWrites:2}));
   console.log(JSON.stringify({checked:'capture pg',pages:projected.pages.length,returned:run.pages.length,stickyText:'0.5'}));
 }
