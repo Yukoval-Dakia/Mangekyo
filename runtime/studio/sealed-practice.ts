@@ -6,7 +6,7 @@ import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { assertUnburned } from '../../kernel/src/lifecycle.ts';
-import { arithmeticPractice, arithmeticQuestionId, openArithmeticPractice } from '../../modules/content/arithmetic-practice.ts';
+import { arithmeticQuestionId, openArithmeticPractice } from '../../modules/content/arithmetic-practice.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { saveQuestionCommand } from '../../modules/content/question-writes.ts';
 import {
@@ -15,6 +15,7 @@ import {
 import { saveWorkbookPaperCommand, workbookRequestId } from '../../modules/activity/workbook-values.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
+import { parsePracticeAdmission, resolvePracticeAdmission } from './generated-practice.ts';
 
 const scope = {learner:studioLearner};
 const unavailable = () => new RequestError(404,'找不到当前可用的封闭练习。');
@@ -52,19 +53,22 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
     async admit(input: Record<string,unknown>, deletionWatermark: string) {
       const {requestId:raw,allowTeaching,deletionWatermark:_,...definition} = input;
       let requestId;
-      let practice;
+      let requested;
       try {
         requestId = workbookRequestId(raw);
-        practice = arithmeticPractice(definition);
+        requested = parsePracticeAdmission(definition);
       } catch (error) {
         throw new RequestError(400,error instanceof Error ? error.message : '练习参数无效。');
       }
       if (allowTeaching !== undefined && typeof allowTeaching !== 'boolean')
         throw new RequestError(400,'题面伴学用途无效。');
-      const questionId = await arithmeticQuestionId(practice);
-      const id = await arithmeticPracticePaperId(questionId);
       return db.tx(scope,async tx => {
         await lockLearner(tx,tx.learner);
+        const command = commandId(stableId(sealedPracticePurpose,'source-command',requestId));
+        await assertUnburned(tx,'command',[command]);
+        const practice = await resolvePracticeAdmission(tx,command,requested);
+        const questionId = await arithmeticQuestionId(practice);
+        const id = await arithmeticPracticePaperId(questionId);
         await assertUnburned(tx,'fact',[id,questionId,await practiceCustodyId(id)]);
         const read = createCommandReadContext(tx,'storage');
         const handle = createCommandHandler(withinLearnerTransaction(db,tx),{
@@ -72,7 +76,6 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
           // Keep the existing identity for retries of a previously authorized admission.
           bindCommandRead: (_tx, request, base) => request.type === saveQuestionCommand ? read : base,
         });
-        const command = commandId(stableId(sealedPracticePurpose,'source-command',requestId));
         const prior = await readPracticeCustody(read,await practiceCustodyId(id));
         try {
           await handle({...scope,actor:'learner',purpose:allowTeaching ? purpose : 'storage',

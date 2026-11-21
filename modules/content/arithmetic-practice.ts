@@ -5,21 +5,30 @@ import { readQuestionState } from './question-state.ts';
 import { contentStableId } from './knowledge-entity.ts';
 
 export const arithmeticPracticeV1 = 'sealed-arithmetic-practice-v1';
+export const independentArithmeticV1 = 'independent-arithmetic-v1';
+
+export function arithmeticBounds(operation: 'add' | 'subtract' | 'multiply') {
+  return operation === 'multiply' ? [10_000_000, 90_000_000] as const
+    : [100_000_000_000_000, 300_000_000_000_000] as const;
+}
 
 export function arithmeticPractice(input: unknown) {
   const row = record(input);
-  fields(row, 'operation', 'left', 'right');
-  const {operation, left, right} = row;
-  if ((operation !== 'add' && operation !== 'subtract' && operation !== 'multiply') ||
-      typeof left !== 'number' || !Number.isSafeInteger(left) || left < 1 || left > 999 ||
-      typeof right !== 'number' || !Number.isSafeInteger(right) || right < 1 || right > 999)
-    throw new Error('练习需要两个 1 至 999 的整数，以及加、减或乘。');
-  if (operation !== 'subtract' && left > right) return {operation,left:right,right:left} as const;
-  return {operation,left,right} as const;
+  fields(row, 'operation', 'left', 'right', 'generation');
+  const {operation, left, right, generation} = row;
+  if (operation !== 'add' && operation !== 'subtract' && operation !== 'multiply')
+    throw new Error('练习支持加、减或乘。');
+  if (generation !== undefined && generation !== independentArithmeticV1) throw new Error('练习生成方式无效。');
+  const [minimum, upper] = generation ? arithmeticBounds(operation) : [1, 1000];
+  if (typeof left !== 'number' || !Number.isSafeInteger(left) || left < minimum || left >= upper ||
+      typeof right !== 'number' || !Number.isSafeInteger(right) || right < minimum || right >= upper)
+    throw new Error('练习操作数不在当前生成方式的范围中。');
+  const operands = operation !== 'subtract' && left > right ? {left:right,right:left} : {left,right};
+  return {operation,...operands,...(generation && {generation})};
 }
 
-export function arithmeticQuestionId({operation,left,right}: ReturnType<typeof arithmeticPractice>) {
-  return contentStableId(arithmeticPracticeV1,operation,String(left),String(right));
+export function arithmeticQuestionId({operation,left,right,generation}: ReturnType<typeof arithmeticPractice>) {
+  return contentStableId(generation ?? arithmeticPracticeV1,operation,String(left),String(right));
 }
 
 export function arithmeticQuestion(practice: ReturnType<typeof arithmeticPractice>) {

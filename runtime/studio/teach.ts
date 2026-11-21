@@ -56,6 +56,7 @@ import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { checkProviderAccount, loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
+import { companionReplyStartedLabel, companionReplyTrackingLabel, questionReceiptsCurrent } from './question-exposure.ts';
 import { confirmedTeachingMethod, learningToolsMethod, notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
 class UncertainEffect extends Error {
@@ -145,7 +146,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     const prior = await createCommandReadContext(tx, purpose).fact(factId(id), {mode: 'following'});
     const manifest = parseManifest(row.manifest);
     if (prior.type !== 'activity.studyTurn') return;
-    const authority = await teachingResultAuthority(tx, id, studyTurn(prior.value), manifest, workspaceGrantChecker(tx), check);
+    const authority = await teachingResultAuthority(tx, id, studyTurn(prior.value), manifest, workspaceGrantChecker(tx), check, undefined, 'history');
     if (authority.state !== 'authorized') return;
     return {...row, manifest, memoryBasis: authority.memoryBasis};
   }
@@ -159,7 +160,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     }
     if (reply.memoryBasis.ids.size) protectWorkspaceDispatch = true;
   }
-  async function validInputs(tx: ReadTransaction) {
+  async function validInputs(tx: ReadTransaction, use: 'publish' | 'dispatch' = 'publish') {
     if ((checkTurnAccount && !await checkTurnAccount()) || (attachmentOrigin && !await attachmentCurrent(tx, attachmentOrigin)))
       throw new ChangedEvidence();
     try { await notionSendBasis(tx,notionWitnesses.values(),maySend); } catch { throw new ChangedEvidence(); }
@@ -192,7 +193,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       gatherTick: clock?.tick,
       inputs: [...inputs.values()],
     });
-    if (!await teachingMemoryBasis(tx, manifest, slotKey, maySend)) throw new ChangedEvidence();
+    if (!await teachingMemoryBasis(tx, manifest, slotKey, maySend) || !await questionReceiptsCurrent(tx,slotKey,use))
+      throw new ChangedEvidence();
     return manifest;
   }
   const settle = (feedback: DisplayTurn, optedIn: boolean) => finishWork(db, ref, async (tx, tick) => {
@@ -275,8 +277,18 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       if (!sameRoute(origin, settings) || !sameRoute(previous, settings))
         throw new TeachingError('provider_configuration', '此对话使用过不同端点，请新建对话。');
     }
+    let recordedReplyProgress = false;
     const onProgress: NonNullable<TeachingDependencies['onProgress']> = async (progress) => {
       try {
+        if (learningV1 && progress.phase === 'replying' && !recordedReplyProgress) {
+          // Some providers send public text before tool calls. Journal possible
+          // delivery before any draft can reach the learner, including on replay.
+          await recordLocalRead(db,{...scope,ownerKind:'session',ownerId:slotKey,
+            stepKey:'replying',label:companionReplyStartedLabel,input:{}},async () => 'possible',async tx => {
+            if (!(await readReadyWork(tx,ref))) throw new ChangedEvidence();
+          });
+          recordedReplyProgress = true;
+        }
         await publishTurnProgress(db, ref, job.slotKey, submission.sessionId, progress, validInputs);
       } catch (error) {
         if (error instanceof ChangedEvidence) throw error;
@@ -300,7 +312,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       } : undefined;
       const authorize = async (tx: ReadTransaction, current?: typeof settings) => {
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
-        await validInputs(tx);
+        await validInputs(tx,'dispatch');
         const localCalculation = learningV1 && step.provider === 'tool:run_calculation';
         if (retention.size && (step.model !== settings.model ||
             (!step.provider.startsWith('tool:') && step.provider !== providerEndpoint(settings)))) throw new ChangedEvidence();
@@ -668,6 +680,12 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         },
       }) : undefined;
       if (learningV1 && (!workspace || !turnMemory)) throw new ChangedEvidence();
+      if (learningV1) await recordLocalRead(db,{...scope,ownerKind:'session',ownerId:slotKey,
+        stepKey:'replying',label:companionReplyTrackingLabel,input:{}},async tx => {
+        const previous = await tx.query(`SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind='session'
+          AND owner_id=$2 AND label='teaching-model' LIMIT 1`, [tx.learner,slotKey]);
+        return previous.rowCount ? 'unknown' : 'tracked';
+      },authorizeLearning);
       const toolsV1 = learningV1 && workspace && turnMemory ? openLearningTools({db,turn:slotKey,workspace,maySend,manageBeliefs,
         authorize:authorizeLearning,trackRetention,track(w) {
           keepLearningBasis(w);

@@ -16,6 +16,7 @@ import { purpose } from './identity.ts';
 import { openKnowledgeEdge, type WorkspaceSource } from './knowledge-graph.ts';
 import { checkStudioNotionFact } from './notion.ts';
 import { resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
+import { questionNegativeCurrent, questionScope } from './question-exposure.ts';
 
 const scanLimit = 96;
 const outputBytes = 12 * 1024;
@@ -66,7 +67,7 @@ async function confirmedAnswerDisplay(tx: ReadTransaction, source: WorkbookSourc
 }
 
 export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead['args'], through: Tick, access: {
-  maySend: WorkspaceSourceRecipient; track: SourceTrack; known(id: string): boolean;
+  maySend: WorkspaceSourceRecipient; track: SourceTrack; known(id: string): boolean; turn: string;
 }) {
   const sourceAccess = { recipient: 'workspace', maySend: access.maySend, exactReadModes: true } as const;
   const concepts: WorkspaceSource['sourceRef']['fact'][] = [];
@@ -152,7 +153,9 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
       }
       if (!custody) continue;
     } else if (root.type !== workspaceEntryType) continue;
-    const answerExposed = custody?.kind === 'sealed' ? false : await confirmedAnswerDisplay(tx, root.ref, through, access.maySend, track);
+    const confirmed = await confirmedAnswerDisplay(tx, root.ref, through, access.maySend, track);
+    const answerExposed = confirmed ?? (custody?.kind === 'sealed' &&
+      await questionNegativeCurrent(tx,root.ref.id,access.turn,true) ? false : null);
     if (answerExposed === null) unknown++;
     else known++;
     // A row excluded by the answer filter may still determine the coverage status.
@@ -171,5 +174,5 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
   }
   for (const witness of conceptWitnesses) access.track(...witness);
   const coverage = unknown || truncated ? (known ? 'partial' : 'unknown') : 'complete';
-  return { value: { scope: 'authorized_workbook_source_questions', coverage, truncated, items } };
+  return { value: { scope: questionScope, coverage, truncated, items } };
 }
