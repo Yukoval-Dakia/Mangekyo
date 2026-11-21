@@ -4,6 +4,7 @@ import type { FactId, LearnerId, Revision, Tick } from '../declarations/ids.ts';
 import type {
   DerivationSnapshot,
   FactSnapshot,
+  FactReadOptions,
   Json,
   JsonObject,
   RangeSnapshot,
@@ -31,10 +32,6 @@ export class FactReadDeniedError extends Error {
     this.reason = reason;
   }
 }
-
-type FactReadOptions =
-  | { readonly mode: 'pinned'; readonly rev: Revision }
-  | { readonly mode: 'following' };
 
 type ParsedFactOptions =
   | { readonly mode: 'following' }
@@ -160,7 +157,8 @@ async function readFact(
 
   const currentPurpose = toPurposeList(fact.purpose, 'facts.purpose');
   const revisionPurpose = toPurposeList(fact.revision_purpose, 'fact_revs.purpose');
-  if (!purposeAllows(currentPurpose, purpose) || !purposeAllows(revisionPurpose, purpose)) {
+  const required = options.mode === 'pinned' ? requirePurpose(options.requirePurpose ?? purpose) : purpose;
+  if (![purpose, required].every(use => purposeAllows(currentPurpose, use) && purposeAllows(revisionPurpose, use))) {
     throw new FactReadDeniedError(
       'purpose',
       `Fact ${factId} does not allow read purpose ${purpose}`,
@@ -223,7 +221,7 @@ export type FactAccessRef = {
   readonly type?: string;
 } & (
   | {readonly mode: 'following'; readonly rev?: number}
-  | {readonly mode: 'pinned'; readonly rev: number}
+  | {readonly mode: 'pinned'; readonly rev: number; readonly requirePurpose?: string}
 );
 
 /** The host binds the learner transaction, purpose and recipient before accepting a reference. */
@@ -236,7 +234,7 @@ async function guardFactAccess(tx: ReadTransaction, ref: FactAccessRef, actor: F
   if (ref.learner !== undefined && ref.learner !== tx.learner) {
     throw new FactReadDeniedError('recipient', 'Fact is unavailable to the recipient');
   }
-  const options = ref.mode === 'pinned' ? {mode: ref.mode, rev: ref.rev as Revision} : {mode: ref.mode};
+  const options = ref.mode === 'pinned' ? {...ref, rev: ref.rev as Revision} : {mode: ref.mode};
   const snapshot = await load(tx, requirePurpose(actor.purpose), ref.id, options);
   if (actor.maySend(snapshot) !== true) {
     throw new FactReadDeniedError('recipient', 'Fact is unavailable to the recipient');
@@ -271,7 +269,7 @@ export function createAuthorizedFactReader(tx: ReadTransaction, purpose: string,
 export function snapshotFactReaders(tx: ReadTransaction) {
   const reads = new Map<string,Promise<FactSnapshot>>();
   const load: typeof readFact = (_tx,purpose,id,options) => {
-    const key = JSON.stringify([purpose,id,options.mode,options.mode==='pinned' ? options.rev : null]);
+    const key = JSON.stringify([purpose,id,options.mode,options.mode==='pinned' ? [options.rev, options.requirePurpose] : null]);
     const existing = reads.get(key);
     if (existing) return existing;
     const result = readFact(tx,purpose,id,options);
