@@ -1,0 +1,266 @@
+{
+  "origin": "http://127.0.0.1:58321",
+  "startedAt": "2026-11-21T14:54:34.975Z",
+  "checks": [
+    {
+      "name": "me-memory-light",
+      "url": "/me",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "light",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "horizontalOverflow": false,
+      "title": "我 · Mangekyō",
+      "hasDuplicateNavList": false,
+      "consoleErr": [
+        "Loading the font 'data:font/woff2;base64,d09GMgABAAAAAA4oAA4AAAAAHbQAAA3TAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAgRQIDgmcDBEICo1oijYBNgIkA14LMgAEIAWJAAeBHAyBHBvbGiMRdnO0IkRRkiYDgr9KsJ1NUAf2kILNxgUmgqIgq1P89vcbIcmsQbRps3vCcXdYOKSWEPEKgZgQkprQQsxIXUgq0DqpGKmIvrgkeVGtEQD9DzAO29fM9jYhxZEsL2FeURH2JN4MIcTdO049NCVdxQ/w9NrSYFEBKTDKpLKfNkCGDc1RwjZLQcm3vqJ2UW9Xfa3tgAHz6ivp6vgC2yD4/6352ndnN0X0TL7seypkjZlMsjmZnf0Mm5Q+JykRWQBKCVCVPbARPXWyQtb5VgLB6Biq7/Uixcj2WGqdI8tGSgkuRG+t910GKP2D7AQH0DB9FMDW/obJZ8giFI3Wg8Cvevz0M+5m0rTh7XDBlvo9Y4vm13EXmftt...mCahLsdlyA5fdQkRSan9LgnnLEyGSkaKJCJog0wAgvepWBt80+1yKln1bMVtCljfNWDueKLsWwaEbBSfSPTEmVRsUcYYMnEjcjeyCZzBXK9E9BYBXLKjOSpUDR+nEV3TFSUdQaz+ot98QxgXwx0GQ+EEUAKB2qZPkQQ0GqFD8UPFMqyaCHM24BZmSGic9EYMagKizOw9Hz50DMrDLrqqLkTAhplMictiCAx5S3BIUQdeJeLnBy2CNtMfz6cV4u8XKoFZQesbf9YZiIERiHjaNodDW6LgcirX/mPnJIkBGDUpTBhSa0EIr38D5hCIszhCM8URGBqImoWjpvpt1ebu/v3Gl3qJfMnNM+9V+kiRFyROTPHQWOcs1dNW94/ukKMPZBvDi55i5CttdeJz84DLngLqjcdwEZ87bFFR8CIG35OAkDVN6VRDZ7aq67NteYqZ2lpT8oYB2CytoBd6VuAx4WgiAsnuj3WohG+LugzXiQRDeM3XYXlULv4dp5VFYC' violates the following Content Security Policy directive: \"default-src 'self'\". Note that 'font-src' was not explicitly set, so 'default-src' is used as a fallback. The action has been blocked."
+      ],
+      "pageErr": [],
+      "apiResponses": [
+        {
+          "url": "http://127.0.0.1:58321/api/memory/overview",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/lifecycle",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/workspace",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/conversations",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/settings",
+          "status": 200
+        }
+      ],
+      "file": "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-memory-light.png"
+    },
+    {
+      "name": "me-goals-light",
+      "url": "/me?section=goals",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "light",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "horizontalOverflow": false,
+      "title": "我 · Mangekyō",
+      "hasDuplicateNavList": false,
+      "consoleErr": [
+        "Loading the font 'data:font/woff2;base64,d09GMgABAAAAAA4oAA4AAAAAHbQAAA3TAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAgRQIDgmcDBEICo1oijYBNgIkA14LMgAEIAWJAAeBHAyBHBvbGiMRdnO0IkRRkiYDgr9KsJ1NUAf2kILNxgUmgqIgq1P89vcbIcmsQbRps3vCcXdYOKSWEPEKgZgQkprQQsxIXUgq0DqpGKmIvrgkeVGtEQD9DzAO29fM9jYhxZEsL2FeURH2JN4MIcTdO049NCVdxQ/w9NrSYFEBKTDKpLKfNkCGDc1RwjZLQcm3vqJ2UW9Xfa3tgAHz6ivp6vgC2yD4/6352ndnN0X0TL7seypkjZlMsjmZnf0Mm5Q+JykRWQBKCVCVPbARPXWyQtb5VgLB6Biq7/Uixcj2WGqdI8tGSgkuRG+t910GKP2D7AQH0DB9FMDW/obJZ8giFI3Wg8Cvevz0M+5m0rTh7XDBlvo9Y4vm13EXmftt...mCahLsdlyA5fdQkRSan9LgnnLEyGSkaKJCJog0wAgvepWBt80+1yKln1bMVtCljfNWDueKLsWwaEbBSfSPTEmVRsUcYYMnEjcjeyCZzBXK9E9BYBXLKjOSpUDR+nEV3TFSUdQaz+ot98QxgXwx0GQ+EEUAKB2qZPkQQ0GqFD8UPFMqyaCHM24BZmSGic9EYMagKizOw9Hz50DMrDLrqqLkTAhplMictiCAx5S3BIUQdeJeLnBy2CNtMfz6cV4u8XKoFZQesbf9YZiIERiHjaNodDW6LgcirX/mPnJIkBGDUpTBhSa0EIr38D5hCIszhCM8URGBqImoWjpvpt1ebu/v3Gl3qJfMnNM+9V+kiRFyROTPHQWOcs1dNW94/ukKMPZBvDi55i5CttdeJz84DLngLqjcdwEZ87bFFR8CIG35OAkDVN6VRDZ7aq67NteYqZ2lpT8oYB2CytoBd6VuAx4WgiAsnuj3WohG+LugzXiQRDeM3XYXlULv4dp5VFYC' violates the following Content Security Policy directive: \"default-src 'self'\". Note that 'font-src' was not explicitly set, so 'default-src' is used as a fallback. The action has been blocked."
+      ],
+      "pageErr": [],
+      "apiResponses": [
+        {
+          "url": "http://127.0.0.1:58321/api/conversations",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/lifecycle",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/workspace",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/settings",
+          "status": 200
+        }
+      ],
+      "file": "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-goals-light.png"
+    },
+    {
+      "name": "me-privacy-dark",
+      "url": "/me?section=privacy",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "dark",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "horizontalOverflow": false,
+      "title": "我 · Mangekyō",
+      "hasDuplicateNavList": false,
+      "consoleErr": [
+        "Loading the font 'data:font/woff2;base64,d09GMgABAAAAAA4oAA4AAAAAHbQAAA3TAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAgRQIDgmcDBEICo1oijYBNgIkA14LMgAEIAWJAAeBHAyBHBvbGiMRdnO0IkRRkiYDgr9KsJ1NUAf2kILNxgUmgqIgq1P89vcbIcmsQbRps3vCcXdYOKSWEPEKgZgQkprQQsxIXUgq0DqpGKmIvrgkeVGtEQD9DzAO29fM9jYhxZEsL2FeURH2JN4MIcTdO049NCVdxQ/w9NrSYFEBKTDKpLKfNkCGDc1RwjZLQcm3vqJ2UW9Xfa3tgAHz6ivp6vgC2yD4/6352ndnN0X0TL7seypkjZlMsjmZnf0Mm5Q+JykRWQBKCVCVPbARPXWyQtb5VgLB6Biq7/Uixcj2WGqdI8tGSgkuRG+t910GKP2D7AQH0DB9FMDW/obJZ8giFI3Wg8Cvevz0M+5m0rTh7XDBlvo9Y4vm13EXmftt...mCahLsdlyA5fdQkRSan9LgnnLEyGSkaKJCJog0wAgvepWBt80+1yKln1bMVtCljfNWDueKLsWwaEbBSfSPTEmVRsUcYYMnEjcjeyCZzBXK9E9BYBXLKjOSpUDR+nEV3TFSUdQaz+ot98QxgXwx0GQ+EEUAKB2qZPkQQ0GqFD8UPFMqyaCHM24BZmSGic9EYMagKizOw9Hz50DMrDLrqqLkTAhplMictiCAx5S3BIUQdeJeLnBy2CNtMfz6cV4u8XKoFZQesbf9YZiIERiHjaNodDW6LgcirX/mPnJIkBGDUpTBhSa0EIr38D5hCIszhCM8URGBqImoWjpvpt1ebu/v3Gl3qJfMnNM+9V+kiRFyROTPHQWOcs1dNW94/ukKMPZBvDi55i5CttdeJz84DLngLqjcdwEZ87bFFR8CIG35OAkDVN6VRDZ7aq67NteYqZ2lpT8oYB2CytoBd6VuAx4WgiAsnuj3WohG+LugzXiQRDeM3XYXlULv4dp5VFYC' violates the following Content Security Policy directive: \"default-src 'self'\". Note that 'font-src' was not explicitly set, so 'default-src' is used as a fallback. The action has been blocked."
+      ],
+      "pageErr": [],
+      "apiResponses": [
+        {
+          "url": "http://127.0.0.1:58321/api/workspace",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/lifecycle",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/conversations",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/notion/settings",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/care/support",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/settings",
+          "status": 200
+        }
+      ],
+      "file": "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-privacy-dark.png"
+    },
+    {
+      "name": "me-models-dark",
+      "url": "/me?section=models",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "dark",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "horizontalOverflow": false,
+      "title": "我 · Mangekyō",
+      "hasDuplicateNavList": false,
+      "consoleErr": [
+        "Loading the font 'data:font/woff2;base64,d09GMgABAAAAAA4oAA4AAAAAHbQAAA3TAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAgRQIDgmcDBEICo1oijYBNgIkA14LMgAEIAWJAAeBHAyBHBvbGiMRdnO0IkRRkiYDgr9KsJ1NUAf2kILNxgUmgqIgq1P89vcbIcmsQbRps3vCcXdYOKSWEPEKgZgQkprQQsxIXUgq0DqpGKmIvrgkeVGtEQD9DzAO29fM9jYhxZEsL2FeURH2JN4MIcTdO049NCVdxQ/w9NrSYFEBKTDKpLKfNkCGDc1RwjZLQcm3vqJ2UW9Xfa3tgAHz6ivp6vgC2yD4/6352ndnN0X0TL7seypkjZlMsjmZnf0Mm5Q+JykRWQBKCVCVPbARPXWyQtb5VgLB6Biq7/Uixcj2WGqdI8tGSgkuRG+t910GKP2D7AQH0DB9FMDW/obJZ8giFI3Wg8Cvevz0M+5m0rTh7XDBlvo9Y4vm13EXmftt...mCahLsdlyA5fdQkRSan9LgnnLEyGSkaKJCJog0wAgvepWBt80+1yKln1bMVtCljfNWDueKLsWwaEbBSfSPTEmVRsUcYYMnEjcjeyCZzBXK9E9BYBXLKjOSpUDR+nEV3TFSUdQaz+ot98QxgXwx0GQ+EEUAKB2qZPkQQ0GqFD8UPFMqyaCHM24BZmSGic9EYMagKizOw9Hz50DMrDLrqqLkTAhplMictiCAx5S3BIUQdeJeLnBy2CNtMfz6cV4u8XKoFZQesbf9YZiIERiHjaNodDW6LgcirX/mPnJIkBGDUpTBhSa0EIr38D5hCIszhCM8URGBqImoWjpvpt1ebu/v3Gl3qJfMnNM+9V+kiRFyROTPHQWOcs1dNW94/ukKMPZBvDi55i5CttdeJz84DLngLqjcdwEZ87bFFR8CIG35OAkDVN6VRDZ7aq67NteYqZ2lpT8oYB2CytoBd6VuAx4WgiAsnuj3WohG+LugzXiQRDeM3XYXlULv4dp5VFYC' violates the following Content Security Policy directive: \"default-src 'self'\". Note that 'font-src' was not explicitly set, so 'default-src' is used as a fallback. The action has been blocked."
+      ],
+      "pageErr": [],
+      "apiResponses": [
+        {
+          "url": "http://127.0.0.1:58321/api/conversations",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/lifecycle",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/workspace",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/settings",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/research/settings",
+          "status": 200
+        }
+      ],
+      "file": "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-models-dark.png"
+    },
+    {
+      "name": "me-memory-mobile",
+      "url": "/me",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "horizontalOverflow": false,
+      "title": "我 · Mangekyō",
+      "hasDuplicateNavList": false,
+      "consoleErr": [
+        "Loading the font 'data:font/woff2;base64,d09GMgABAAAAAA4oAA4AAAAAHbQAAA3TAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAgRQIDgmcDBEICo1oijYBNgIkA14LMgAEIAWJAAeBHAyBHBvbGiMRdnO0IkRRkiYDgr9KsJ1NUAf2kILNxgUmgqIgq1P89vcbIcmsQbRps3vCcXdYOKSWEPEKgZgQkprQQsxIXUgq0DqpGKmIvrgkeVGtEQD9DzAO29fM9jYhxZEsL2FeURH2JN4MIcTdO049NCVdxQ/w9NrSYFEBKTDKpLKfNkCGDc1RwjZLQcm3vqJ2UW9Xfa3tgAHz6ivp6vgC2yD4/6352ndnN0X0TL7seypkjZlMsjmZnf0Mm5Q+JykRWQBKCVCVPbARPXWyQtb5VgLB6Biq7/Uixcj2WGqdI8tGSgkuRG+t910GKP2D7AQH0DB9FMDW/obJZ8giFI3Wg8Cvevz0M+5m0rTh7XDBlvo9Y4vm13EXmftt...mCahLsdlyA5fdQkRSan9LgnnLEyGSkaKJCJog0wAgvepWBt80+1yKln1bMVtCljfNWDueKLsWwaEbBSfSPTEmVRsUcYYMnEjcjeyCZzBXK9E9BYBXLKjOSpUDR+nEV3TFSUdQaz+ot98QxgXwx0GQ+EEUAKB2qZPkQQ0GqFD8UPFMqyaCHM24BZmSGic9EYMagKizOw9Hz50DMrDLrqqLkTAhplMictiCAx5S3BIUQdeJeLnBy2CNtMfz6cV4u8XKoFZQesbf9YZiIERiHjaNodDW6LgcirX/mPnJIkBGDUpTBhSa0EIr38D5hCIszhCM8URGBqImoWjpvpt1ebu/v3Gl3qJfMnNM+9V+kiRFyROTPHQWOcs1dNW94/ukKMPZBvDi55i5CttdeJz84DLngLqjcdwEZ87bFFR8CIG35OAkDVN6VRDZ7aq67NteYqZ2lpT8oYB2CytoBd6VuAx4WgiAsnuj3WohG+LugzXiQRDeM3XYXlULv4dp5VFYC' violates the following Content Security Policy directive: \"default-src 'self'\". Note that 'font-src' was not explicitly set, so 'default-src' is used as a fallback. The action has been blocked."
+      ],
+      "pageErr": [],
+      "apiResponses": [
+        {
+          "url": "http://127.0.0.1:58321/api/workspace",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/lifecycle",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/conversations",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/settings",
+          "status": 200
+        },
+        {
+          "url": "http://127.0.0.1:58321/api/memory/overview",
+          "status": 200
+        }
+      ],
+      "file": "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-memory-mobile.png"
+    }
+  ],
+  "api": {
+    "memoryOverview": {
+      "status": 200,
+      "body": {
+        "asOf": "2026-11-21T14:54:35.249Z",
+        "categories": {
+          "preference": [],
+          "claim": [],
+          "state": [],
+          "refusal": []
+        },
+        "stickyDirectives": [],
+        "hypotheses": [],
+        "calibration": {
+          "status": "unknown",
+          "totalReconciliations": 0,
+          "confirmed": 0,
+          "missed": 0,
+          "recent": []
+        }
+      }
+    },
+    "careSupport": {
+      "status": 200,
+      "body": {
+        "card": {
+          "version": "d10-crisis-support-v1",
+          "title": "需要帮助",
+          "safetyQuestion": "你现在眼前安全吗？如果马上有危险，请先联系当地紧急服务。",
+          "trustedContact": "可以的话，联系一位你信任的人，请对方现在陪你。",
+          "localEmergencyGuidance": "请联系你所在地区的紧急服务或危机支持资源；这里不提供任何具体号码。",
+          "regionQuestion": "如果需要查找本地资源，请告诉我你所在的地区。",
+          "noAutomaticThirdPartyContact": true,
+          "noPermanentProfile": true,
+          "noHarmContent": true
+        },
+        "pause": {
+          "active": false,
+          "scope": "nudges_and_paid_background",
+          "expiresAt": null,
+          "revision": 0
+        }
+      }
+    }
+  },
+  "consoleErrors": 5,
+  "pageExceptions": 0,
+  "shots": [
+    "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-memory-light.png",
+    "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-goals-light.png",
+    "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-privacy-dark.png",
+    "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-models-dark.png",
+    "/Users/yuqi/.t3/worktrees/Mangekyō/t3-5704f5db-86bf91733d584a13/docs/evidence/web-m3e-wave2b2/me-memory-mobile.png"
+  ],
+  "finishedAt": "2026-11-21T14:54:44.927Z"
+}

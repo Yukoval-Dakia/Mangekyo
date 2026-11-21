@@ -1,0 +1,381 @@
+/* Mangekyō 2.0 「M3E 森绿 × Option A」— 「我」表面 Wave 2 容器
+   继承森绿纸白基因：--paper / --rail / --forest / --soft-green
+   20–24px 表达性圆角 + M3E 胶囊分段 + 390px 零横向溢出 */
+
+.me-v2 {
+  --me-card: #f4f8f1;
+  --me-card-ink: #1d2922;
+  --me-line: #d7e2d5;
+  --me-accent: #2c5a3e;
+  --me-soft: #ddebdc;
+  --me-tonal: #e4ecdf;
+  min-width: 0;
+}
+
+.me-v2-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.me-v2-head h1 {
+  font-size: clamp(30px, 3.4vw, 44px);
+  letter-spacing: -0.055em;
+  font-weight: 720;
+  line-height: 1.16;
+}
+.me-v2-meta {
+  font-size: 13px;
+  font-weight: 640;
+  color: var(--me-accent);
+  margin-bottom: 6px;
+}
+
+/* M3E 胶囊分段页签 */
+.me-v2-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  background: var(--me-tonal);
+  border-radius: 999px;
+  margin-bottom: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.me-v2-tabs::-webkit-scrollbar { display: none; }
+.me-v2-tabs button {
+  flex: 1 0 auto;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #3c5243;
+  font-size: 14px;
+  font-weight: 620;
+  white-space: nowrap;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.me-v2-tabs button:hover { background: #d7e4d2; }
+.me-v2-tabs button[aria-pressed='true'] {
+  background: var(--me-accent);
+  color: #f3faf0;
+  font-weight: 700;
+}
+.me-v2-hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 6px 22px;
+}
+
+/* 卡片栈 */
+.me-v2-stack {
+  display: grid;
+  gap: 18px;
+}
+.me-v2-card {
+  background: var(--me-card);
+  border: 1px solid var(--me-line);
+  border-radius: 22px;
+  padding: 22px 24px;
+  min-width: 0;
+}
+.me-v2-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.me-v2-card-head h2,
+.me-v2-card-head h3 {
+  font-size: 19px;
+  letter-spacing: -0.03em;
+  font-weight: 680;
+  line-height: 1.35;
+}
+.me-v2-card-sub {
+  margin-top: 4px;
+  font-size: 13.5px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.me-v2-copy {
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--me-card-ink);
+}
+.me-v2-foot {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.me-v2-alert {
+  margin-top: 10px;
+  font-size: 13.5px;
+  color: var(--danger);
+}
+
+/* 目标 */
+.me-v2-goal-text {
+  margin: 0;
+  padding: 16px 18px;
+  border-left: 3px solid var(--me-accent);
+  background: #eef4ea;
+  border-radius: 0 14px 14px 0;
+}
+.me-v2-goal-text p {
+  font-size: 16px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 空态 */
+.me-v2-empty {
+  padding: 18px;
+  border-radius: 16px;
+  background: #eef4ea;
+}
+.me-v2-empty h3 {
+  font-size: 16px;
+  margin-bottom: 6px;
+}
+.me-v2-empty p {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.me-v2-empty-inline {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.me-v2-empty-inline code {
+  background: #e1eadb;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* 插槽容器（承载既有面板） */
+.me-v2-slot {
+  min-width: 0;
+}
+.me-v2-slot :where(fieldset, section, article) {
+  min-width: 0;
+}
+
+/* 按钮 */
+.me-v2-pill-button,
+.me-v2-tonal {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 640;
+  white-space: nowrap;
+}
+.me-v2-pill-button {
+  background: var(--me-accent);
+  color: #f5fbef;
+}
+.me-v2-pill-button:hover { background: #38674a; }
+.me-v2-tonal {
+  background: var(--me-soft);
+  color: #1c3f2a;
+}
+.me-v2-tonal:hover { background: #d4e5d0; }
+.me-v2-pill-button svg { width: 18px; }
+
+/* 安心暂停 */
+.me-v2-pause {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #f4ecd9;
+  border: 1px solid #e5d9bb;
+  margin-bottom: 14px;
+}
+.me-v2-pause p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.me-v2-pause svg { flex: none; color: #7a5a1f; }
+
+/* 危机支持卡（card） */
+.me-v2-care-card {
+  background: #eef4ea;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid #dbe6d3;
+}
+.me-v2-care-card p {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.me-v2-care-card p:last-child { margin-bottom: 0; }
+
+/* 模型与预算 */
+.me-v2-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 6px;
+  cursor: pointer;
+}
+.me-v2-check input {
+  margin-top: 4px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--me-accent);
+}
+.me-v2-check span {
+  display: grid;
+  gap: 3px;
+  font-size: 14.5px;
+}
+.me-v2-check small {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.me-v2-routes {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.me-v2-routes li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-radius: 12px;
+  background: #eaf1e5;
+  font-size: 14px;
+}
+.me-v2-routes span { color: var(--muted); }
+.me-v2-budget-detail {
+  margin: 14px 0 0;
+  display: grid;
+  gap: 8px;
+  font-size: 14px;
+}
+.me-v2-budget-detail div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #eaf1e5;
+}
+.me-v2-budget-detail dt { color: var(--muted); }
+.me-v2-budget-detail dd { margin: 0; font-weight: 620; }
+
+/* 页脚底注 */
+.me-v2-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 26px;
+  padding: 16px 18px;
+  border: 1px solid var(--me-line);
+  border-radius: 16px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.me-v2-footnote svg { flex: none; margin-top: 2px; color: var(--me-accent); }
+.me-v2-footnote p { margin: 0; }
+
+/* 移动端 390px 零横向溢出 */
+@media (max-width: 480px) {
+  .me-v2-card { padding: 18px; border-radius: 20px; }
+  .me-v2-card-head { flex-direction: column; gap: 10px; }
+  .me-v2-pill-button { align-self: flex-start; }
+  .me-v2-tabs { padding: 4px; gap: 4px; }
+  .me-v2-tabs button { min-height: 38px; padding: 0 12px; font-size: 13.5px; }
+}
+
+/* Ensure card heads wrap instead of clipping action buttons on narrow viewports */
+.me-v2-card-head { flex-wrap: wrap; }
+
+/* 暗色森绿适配：变量切换到 tokens.css 中的 dark palette。 */
+[data-theme='dark'] .me-v2 {
+  --me-card: #1b2620;
+  --me-card-ink: #edf4ee;
+  --me-line: #31453a;
+  --me-accent: #a5cfb3;
+  --me-soft: #25382e;
+  --me-tonal: #202d25;
+}
+
+[data-theme='dark'] .me-v2-tabs button { color: #a9bcad; }
+[data-theme='dark'] .me-v2-tabs button:hover { background: #27372d; }
+[data-theme='dark'] .me-v2-tabs button[aria-pressed='true'] {
+  background: var(--me-accent);
+  color: #10211a;
+}
+
+[data-theme='dark'] .me-v2-goal-text,
+[data-theme='dark'] .me-v2-empty {
+  background: #1f2f25;
+}
+
+[data-theme='dark'] .me-v2-empty-inline code {
+  background: #27372d;
+}
+
+[data-theme='dark'] .me-v2-pill-button {
+  background: var(--me-accent);
+  color: #10211a;
+}
+[data-theme='dark'] .me-v2-pill-button:hover { background: #b8dcc4; }
+
+[data-theme='dark'] .me-v2-tonal {
+  background: #2a4034;
+  color: #dcefe1;
+}
+[data-theme='dark'] .me-v2-tonal:hover { background: #35513f; }
+
+[data-theme='dark'] .me-v2-pause {
+  background: #2f2a1a;
+  border-color: #54491f;
+}
+[data-theme='dark'] .me-v2-pause svg { color: #d7b45c; }
+
+[data-theme='dark'] .me-v2-routes li,
+[data-theme='dark'] .me-v2-budget-detail div {
+  background: #1f2f25;
+}
+
+[data-theme='dark'] .me-v2-check input { accent-color: var(--me-accent); }
+
+[data-theme='dark'] .me-v2-care-card {
+  background: #1f2f25;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+[data-theme='dark'] .me-v2-care-card p {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.6;
+}
