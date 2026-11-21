@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,13 +14,15 @@ import { loadStudioTestModule } from './modules.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC', 'base64');
 describe.skipIf(!testDatabaseUrl)('async vision intake in PostgreSQL', () => {
-  let db: Parameters<typeof openIntake>[0], intake: ReturnType<typeof openIntake>, origin = '', modelOrigin = '', directory = '';
+  let db: Parameters<typeof openIntake>[0], intake: ReturnType<typeof openIntake>, origin = '', modelOrigin = '', directory = '', settingsFile = '';
   const modelRequests: unknown[] = [];
   aroundAll(run => withLearnerDatabase(studioLearner, async database => {
     db = database;
     directory = await mkdtemp(join(tmpdir(), 'mangekyo-intake-vision-'));
+    settingsFile = join(directory, 'provider.json');
     vi.stubEnv('MANGEKYO_INTAKE_DATA_DIR', directory);
     vi.stubEnv('MANGEKYO_VISION_OCR_BASE_URL', '');
+    vi.stubEnv('MANGEKYO_SETTINGS_FILE', settingsFile);
     intake = openIntake(db, await loadStudioTestModule('capture'), await loadStudioTestModule('content'));
     const serve = (body: (request: unknown) => unknown) => createServer((request, response) => {
       let raw = ''; request.on('data', chunk => raw += chunk); request.on('end', () => {
@@ -60,22 +62,26 @@ describe.skipIf(!testDatabaseUrl)('async vision intake in PostgreSQL', () => {
     }, visionIntakeRoute);
     if (!selected) throw new Error('missing vision work'); return selected;
   }
-  it('returns receipts, completes strong vision, falls back, and respects manual corrections', async () => {
+  it('reads strong settings, rejects weak settings, and respects manual corrections', async () => {
     const first = await capture('vision-success'); const receipt = first.receipt;
     expect(first.response.status).toBe(202); expect(first.elapsed).toBeLessThan(2000);
     expect(receipt).toMatchObject({ requestedExtraction: 'vision_llm', intakeStatus: 'queued', extraction: { status: 'pending' } });
     expect((await db.query("SELECT o.state FROM work w JOIN work_outbox o ON o.work_id=w.id WHERE w.slot_type='activity.intakeVisionExtraction' AND w.slot_key=$1", [intakeIdFor(factId(receipt.id))])).rows[0]).toEqual({ state: 'routed_pending' });
-    await openVisionIntakeWork(db, intake, { resolveVisionConfig: () => ({ baseUrl: modelOrigin, model: 'vision-strong' }) }).execute(await workFor(receipt));
-    expect(modelRequests[0]).toMatchObject({ model: 'vision-strong', messages: expect.any(Array) });
+    expect(await (await fetch(origin + '/api/intake/options')).json()).toMatchObject({visionOcr: false});
+    await writeFile(settingsFile, JSON.stringify({version: 2, providers: [{id: 'studio', label: 'Studio', baseUrl: modelOrigin, protocol: 'openai', model: 'group/powerful', reasoningEffort: 'default', apiKey: 'test-key'}], activeProviderId: 'studio', mcpServers: [], allowSearch: false}));
+    expect(await (await fetch(origin + '/api/intake/options')).json()).toMatchObject({visionOcr: true});
+    await openVisionIntakeWork(db, intake).execute(await workFor(receipt));
+    expect(modelRequests[0]).toMatchObject({model: 'group/powerful', messages: expect.any(Array)});
     expect(await intake.metadata(receipt.id)).toMatchObject({ fullText: expect.stringContaining('计算 $\\frac{1}{2}$'), intakeStatus: 'ready',
       extraction: { method: 'vision_llm', status: 'ok', drafts: { pendingConfirmationCount: 1 } } });
     const { receipt: fallback } = await capture('vision-fallback'); const ref = await workFor(fallback);
-    await openVisionIntakeWork(db, intake, { resolveVisionConfig: () => null, fallbackExtractLocal: async () => ({
+    await writeFile(settingsFile, JSON.stringify({version: 2, providers: [{id: 'studio', label: 'Studio', baseUrl: modelOrigin, protocol: 'openai', model: 'group/flash', reasoningEffort: 'default', apiKey: 'test-key'}], activeProviderId: 'studio', mcpServers: [], allowSearch: false}));
+    await openVisionIntakeWork(db, intake, {fallbackExtractLocal: async () => ({
       status: 'ok', method: 'vision', text: '本地识别', error: null, warnings: [], pages: 1, truncated: false, characterCount: 4 }) }).execute(ref);
     expect(await intake.metadata(fallback.id)).toMatchObject({ fullText: '本地识别', intakeStatus: 'fallback', extraction: { method: 'vision_fallback', status: 'ok' } });
     const { receipt: corrected } = await capture('vision-corrected'); const stale = await workFor(corrected);
     await intake.correct({ materialId: corrected.id, expectedRev: corrected.revision, text: '人工更正', requestId: 'manual-vision' });
-    await openVisionIntakeWork(db, intake, { resolveVisionConfig: () => ({ baseUrl: modelOrigin, model: 'vision-strong' }) }).execute(stale);
+    await openVisionIntakeWork(db, intake).execute(stale);
     expect(await intake.metadata(corrected.id)).toMatchObject({ fullText: '人工更正', extraction: { status: 'corrected', method: 'learner' } });
     expect((await db.query("SELECT count(*)::int AS count FROM facts WHERE type ILIKE '%question%'")).rows[0]).toEqual({ count: 0 });
   });

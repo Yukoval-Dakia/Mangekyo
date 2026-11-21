@@ -164,7 +164,7 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
         await tx.insert('derivations', { learner_id: studioLearner, id: fbId, slot_type: slotType, slot_key: turnId, deriver: 'activity/evidence-tutor-v1', scope_keys: '{}', value: JSON.stringify(fbVal), lifecycle: 'effective', freshness: 'current', gather_tick: tick, effective_tick: tick, manifest: JSON.stringify(fbManifest) });
         await tx.insert('slot_state', { learner_id: studioLearner, slot_type: slotType, slot_key: turnId, current_id: fbId, last_id: fbId, pending: 'running', changed_tick: tick, scope_keys: '{}' });
         await tx.insert('work', { learner_id: studioLearner, id: stableId('tr', 'work1'), slot_type: slotType, slot_key: turnId, deriver: 'activity/evidence-tutor-v1', state: 'ready', generation: 1, requested_tick: tick, execution_ref: stableId('tr', 'exec1') });
-        await tx.insert('effects', { learner_id: studioLearner, owner_kind: 'session', owner_id: turnId, step_key: 'step1', label: 'teaching-model', input_digest: 'd1', provider_effect_id: 'pe1', state: 'done', reserved_usd_micros: 1200, actual_usd_micros: 800, budget_route: 'default', started_tick: tick, ended_tick: tick });
+        await tx.insert('effects', { learner_id: studioLearner, owner_kind: 'session', owner_id: turnId, step_key: 'step1', label: 'teaching-model', input_digest: 'd1', input: JSON.stringify({model: 'group/powerful'}), result: JSON.stringify({message: '无上报模型'}), provider_effect_id: 'pe1', state: 'done', reserved_usd_micros: 1200, actual_usd_micros: 800, budget_route: 'default', started_tick: tick, ended_tick: tick });
       }));
 
       // A classroom turn: same companion caseId but the classroom flag routes the handoff to /classroom.
@@ -212,6 +212,7 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       expect(ai.usage).toMatchObject({ currency: 'USD_MICROS', spentMicros: 1400, limitMicros: 500000 });
       const call = ai.usage.recentCalls.find(c => c.ownerId === turnId2);
       expect(call).toMatchObject({ model: 'kimi-k3.1-pro', route: 'magpie', promptTokens: 120, completionTokens: 45, totalTokens: 165 });
+      expect(ai.usage.recentCalls.find(c => c.ownerId === turnId)?.model).toBe('group/powerful');
       expect(new Set(ai.pendingProposals.map(p => p.kind))).toEqual(new Set(['knowledge_edge', 'textbook_patch', 'question_draft', 'question_meta']));
 
       // Revoke Notion selection, revoke companion turn teaching access, and bump c1 access_epoch

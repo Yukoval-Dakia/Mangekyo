@@ -1,4 +1,4 @@
-import { extractPhotoWithVisionOrFallback, readVisionLlmConfigFromEnv, type LocalExtractionResult, type VisionLlmConfig } from '@mangekyo/executor-document-extraction/vision-ocr';
+import { extractPhotoWithVisionOrFallback, isWeakVisionModel, readVisionLlmConfigFromEnv, type LocalExtractionResult, type VisionLlmConfig } from '@mangekyo/executor-document-extraction/vision-ocr';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,10 +14,20 @@ import { buildVisionPaperOcrPrompt, parseStructuredPaperOcr, visionIntakeDeriver
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
+import { loadSettings } from './settings.ts';
 import { RequestError } from './sessions.ts';
 
 export { visionIntakeRoute, visionIntakeSlot };
-export const resolveVisionIntakeConfig = readVisionLlmConfigFromEnv;
+export async function resolveVisionIntakeConfig(): Promise<VisionLlmConfig | null> {
+  const fromEnv = readVisionLlmConfigFromEnv();
+  if (fromEnv) return fromEnv;
+  for (const task of ['preparation', 'companion'] as const) {
+    const settings = await loadSettings(task).catch(() => null);
+    if (!settings?.baseUrl || !settings.model || settings.protocol === 'anthropic' || isWeakVisionModel(settings.model)) continue;
+    return { baseUrl: settings.baseUrl, ...(settings.apiKey ? { apiKey: settings.apiKey } : {}), model: settings.model };
+  }
+  return null;
+}
 export async function enqueueVisionIntake(tx: DbTransaction, tick: Tick, intakeId: string) {
   await tx.insert('slot_state', { learner_id: tx.learner, slot_type: visionIntakeSlot, slot_key: intakeId, scope_keys: '{}', changed_tick: tick });
   await requestWork(tx, tick, { slotType: visionIntakeSlot, slotKey: intakeId, deriver: visionIntakeDeriver }, 'routed_pending');
@@ -53,7 +63,7 @@ const stopped = (error: unknown) => error instanceof StoppedVisionIntake || erro
 export function openVisionIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
   completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction): Promise<void>;
-}, deps: { resolveVisionConfig?: () => VisionLlmConfig | null; fetch?: typeof fetch; fallbackExtractLocal?: (kind:string,path:string,bytes:Buffer,limit:number) => Promise<LocalExtractionResult> } = {}) {
+}, deps: { resolveVisionConfig?: () => VisionLlmConfig | null | Promise<VisionLlmConfig | null>; fetch?: typeof fetch; fallbackExtractLocal?: (kind:string,path:string,bytes:Buffer,limit:number) => Promise<LocalExtractionResult> } = {}) {
   async function execute(ref: WorkRef, terminalFailure = false, signal?: AbortSignal) {
     if (ref.learner !== studioLearner) throw new Error('Invalid intake learner');
     const current = async (tx: ReadTransaction) => {
@@ -81,8 +91,9 @@ export function openVisionIntakeWork(db: Db, intake: {
         await db.snapshot({ learner: learnerId(ref.learner) }, unchanged);
         const prompt = buildVisionPaperOcrPrompt({ filename: frozen.value.original.name, titleHint: frozen.value.title });
         const outcome = await extractPhotoWithVisionOrFallback({
-          bytes, storedPath, textLimit: intakeTextLimit, visionConfig: deps.resolveVisionConfig?.() ??
-            readVisionLlmConfigFromEnv(), systemPrompt: prompt.systemPrompt, userPrompt: prompt.userPrompt,
+          bytes, storedPath, textLimit: intakeTextLimit,
+          visionConfig: 'resolveVisionConfig' in deps && deps.resolveVisionConfig ? await deps.resolveVisionConfig() : await resolveVisionIntakeConfig(),
+          systemPrompt: prompt.systemPrompt, userPrompt: prompt.userPrompt,
           parseStructuredOutput: parseStructuredPaperOcr, signal, ...(deps.fetch ? { fetch: deps.fetch } : {}),
           ...(deps.fallbackExtractLocal ? { fallbackExtractLocal: deps.fallbackExtractLocal } : {}),
         });

@@ -32,6 +32,7 @@ import { checkPack, openPack, packCandidates } from '../../modules/plan/offline-
 import type { GoalStatus } from '../../modules/plan/goal-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
 import { integer } from '../../modules/plan/validation.ts';
+import { allAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { readGoal, readTasks } from '../../modules/activity/learning-overview.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -132,7 +133,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
           const candidates = [
             ...papers.flatMap(fact => todayPaper(fact, completed, day) ?? []),
             ...packCandidates().map(c => completed.has(c.id + '@' + c.open?.rev) ? {...c, state: 'completed' as const, date: day} : c),
-            ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts)),
+            ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts, await allAssessments(tx))),
             ...projectFreshMaterialCandidates(collectFreshMaterialSources(pendingFacts), settings.now),
           ];
           return {

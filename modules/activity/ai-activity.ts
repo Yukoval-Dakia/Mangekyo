@@ -190,10 +190,10 @@ function parseEffectResult(raw: unknown): Record<string, unknown> | undefined {
   }
 }
 
-function effectModel(result: Record<string, unknown> | undefined): string | null {
-  if (!result) return null;
+function effectModel(result: Record<string, unknown> | undefined, inputModel: string | null): string | null {
+  if (!result) return inputModel || null;
   const served = result.servedModel ?? result.reportedModel ?? result.model;
-  return typeof served === 'string' && served ? served : null;
+  return typeof served === 'string' && served ? served : inputModel || null;
 }
 
 function tokenCount(value: unknown): number | null {
@@ -262,12 +262,12 @@ export async function readAiActivity(
     owner_kind: 'derivation' | 'session'; owner_id: string; step_key: string; label: string;
     state: 'started' | 'done' | 'unknown'; budget_route: string | null;
     reserved_usd_micros: string | null; actual_usd_micros: string | null;
-    started_tick: Tick; ended_tick: Tick | null; result: unknown;
+    started_tick: Tick; ended_tick: Tick | null; result: unknown; input_model: string | null;
     fact_retracted: boolean | null; fact_erased: boolean;
   }>(`
     SELECT e.owner_kind, e.owner_id, e.step_key, e.label, e.state, e.budget_route,
            e.reserved_usd_micros::text, e.actual_usd_micros::text,
-           e.started_tick::text, e.ended_tick::text, e.result,
+           e.started_tick::text, e.ended_tick::text, e.result, e.input->>'model' AS input_model,
            (f.retracted_rev IS NOT NULL) AS fact_retracted,
            EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=e.learner_id AND t.kind='fact' AND t.id=e.owner_id) AS fact_erased
     FROM effects e
@@ -443,7 +443,7 @@ export async function readAiActivity(
       stepKey: row.step_key,
       label: row.label,
       state: row.state,
-      model: effectModel(result),
+      model: effectModel(result, row.input_model),
       route: row.budget_route,
       ...effectTokens(result),
       reservedMicros: row.reserved_usd_micros === null ? null : Number(row.reserved_usd_micros),

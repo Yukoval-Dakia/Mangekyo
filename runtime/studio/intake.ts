@@ -267,6 +267,7 @@ export async function handleIntakeRequest(
   method: string | undefined,
   papers?: ReturnType<typeof openCapturePapers>,
 ): Promise<boolean> {
+  const visionOcr = method === 'GET' && pathname === '/api/intake/options' ? Boolean(await resolveVisionIntakeConfig()) : false;
   const outcome = await intakeOps.dispatchIntakeHttp(pathname, method, {
     headers: request.headers,
     readBody: (limit) => readBody(request, limit),
@@ -276,7 +277,7 @@ export async function handleIntakeRequest(
     readLifecycleError: (error, includeCode) => error instanceof LifecycleError
       ? { status: error.status, message: error.message, ...(includeCode ? { code: error.code } : {}) } : null,
     mineruEnabled: () => Boolean(mineruToken()),
-    visionOcrEnabled: () => Boolean(resolveVisionIntakeConfig()),
+    visionOcrEnabled: () => visionOcr,
     hasPapers: Boolean(papers),
     lifecycleState: () => intake.lifecycle.state(),
     erase: (id, input) => intake.lifecycle.erase(id, input),
