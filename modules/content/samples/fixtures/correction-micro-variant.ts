@@ -45,16 +45,12 @@ export async function seedCorrectionMicroVariant(db: Db) {
   const handle = createCommandHandler(db, { modules, hooks: { async onFactsChanged() {} } });
   const command = (type: string, input: JsonObject & { id: FactId }, requestId: string = input.id) =>
     handle({ learner, type, input, id: commandId(id(requestId)), purpose: 'storage', actor: 'learner' });
-  function edge(id: FactId, kind: 'instance_of' | 'variant_of', candidate: typeof first) {
-    const from = { kind: 'question', sourceUse: use(candidate) };
-    const to = kind === 'instance_of' ? { kind: 'archetype', sourceUse: use(archetype) } : { kind: 'question', sourceUse: use(source) };
-    return command(createKnowledgeEdgeCommand, { id, purpose: 'teaching', edge: {
-      kind: kind === 'instance_of' ? 'canonical_archetype' : kind,
-      from, to, sourceUses: [from.sourceUse, to.sourceUse], scope: 'average-speed',
-      ...(kind === 'variant_of' ? { variant: { familyId: 'average-speed', relation: 'numbers_only',
-        preserved: ['两段速度'], changed: ['第二段时长'], spoilsNext: 'none' } } : {}),
+  type Endpoint = { kind: string; sourceUse: ReturnType<typeof use>; blockId?: string };
+  const edge = (id: FactId, kind: string, from: Endpoint, to: Endpoint, variant?: JsonObject) =>
+    command(createKnowledgeEdgeCommand, { id, purpose: 'teaching', edge: {
+      kind, from, to, sourceUses: [from.sourceUse, to.sourceUse], scope: 'average-speed', ...(variant && { variant }),
     } });
-  }
+  const questionNode = (ref: typeof first) => ({ kind: 'question', sourceUse: use(ref) });
 
   const questions = [source, first, second] as const;
   for (const [index, { id }] of questions.entries()) {
@@ -69,15 +65,16 @@ export async function seedCorrectionMicroVariant(db: Db) {
     page: { title: '平均速度', blocks: [{ id: block.blockId, parentId: null, body: { kind: 'text', text: '总路程除以总时间' } }] } });
   const node = { kind: 'concept', sourceUse: use({ id: concept, rev }) };
   const chapter = { kind: 'chapter', sourceUse: use(block), blockId: block.blockId };
-  for (const [edgeId, kind, from, to] of [[targetEdges.edgeIds[0]!, 'targets_concept', { kind: 'question', sourceUse: use(source) }, node],
-    [blockEdges.edgeIds[0]!, 'maps_to_chapter', node, chapter], [blockEdges.edgeIds[1]!, 'explains', chapter, node]] as const) {
-    await command(createKnowledgeEdgeCommand, { id: edgeId, purpose: 'teaching', edge: { kind, from, to,
-      sourceUses: [from.sourceUse, to.sourceUse], scope: 'average-speed' } });
-  }
+  await edge(targetEdges.edgeIds[0]!, 'targets_concept', questionNode(source), node);
+  await edge(blockEdges.edgeIds[0]!, 'maps_to_chapter', node, chapter);
+  await edge(blockEdges.edgeIds[1]!, 'explains', chapter, node);
   for (const [index, candidate] of questions.entries()) {
-    await edge(input.archetypeEdgeIds[index]!, 'instance_of', candidate);
+    const from = questionNode(candidate);
+    await edge(input.archetypeEdgeIds[index]!, 'canonical_archetype', from, { kind: 'archetype', sourceUse: use(archetype) });
     if (index === 0) continue;
-    await edge(input.variantEdgeIds[index - 1]!, 'variant_of', candidate);
+    await edge(input.variantEdgeIds[index - 1]!, 'variant_of', from, questionNode(source), {
+      familyId: 'average-speed', relation: 'numbers_only', preserved: ['两段速度'], changed: ['第二段时长'], spoilsNext: 'none',
+    });
     const key = questionVerificationKey(candidate);
     const basis = {
       ...use(candidate), recheck: 0, methodVersion: questionVerificationMethodVersion,

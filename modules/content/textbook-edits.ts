@@ -37,6 +37,45 @@ export type TextbookRevision = {
   readonly basis?: readonly TextbookBasis[];
 };
 
+export function textbookPositionAnchors(edit: TextbookEdit): readonly string[] {
+  if (edit.kind === 'insert_after') return [edit.afterId];
+  if (edit.kind === 'insert' || edit.kind === 'move') {
+    return [edit.parentId, edit.beforeId].filter(id => id !== null);
+  }
+  return [];
+}
+
+export function changesTextbookPosition(edit: TextbookEdit) {
+  return edit.kind === 'insert' || edit.kind === 'insert_after' || edit.kind === 'move';
+}
+
+/** A position reference and the edit that creates, moves or removes that anchor are reviewed together. */
+export function groupTextbookEdits(edits: readonly TextbookEdit[]) {
+  const groups = new Map(edits.map(edit => [edit.blockId, new Set([edit.blockId])]));
+  const positionTargets = new Set(edits.filter(edit => changesTextbookPosition(edit) || edit.kind === 'delete_block')
+    .map(edit => edit.blockId));
+  for (const edit of edits) {
+    for (const anchor of textbookPositionAnchors(edit)) {
+      if (!positionTargets.has(anchor)) continue;
+      const group = groups.get(edit.blockId)!;
+      const dependency = groups.get(anchor)!;
+      if (group === dependency) continue;
+      for (const id of dependency) {
+        group.add(id);
+        groups.set(id, group);
+      }
+    }
+  }
+  const ordered = new Map<Set<string>, TextbookEdit[]>();
+  for (const edit of edits) {
+    const group = groups.get(edit.blockId)!;
+    const members = ordered.get(group);
+    if (members) members.push(edit);
+    else ordered.set(group, [edit]);
+  }
+  return [...ordered.values()];
+}
+
 function parseEdit(input: unknown): TextbookEdit {
   const value = record(input);
   const blockId = key(value.blockId);
@@ -223,10 +262,10 @@ type EditReview = {
   | { readonly state: 'invalid'; readonly reason: string }
 );
 
-export async function previewTextbookRevision(ctx: TextbookReadContext, input: unknown) {
+export async function previewTextbookRevision(ctx: TextbookReadContext, input: unknown, orderedGroup = false) {
   const revision = parseTextbookRevision(input);
   const snapshot = await ctx.read.fact(revision.id, { mode: 'pinned', rev: revision.expectedRev });
-  const page = textbookPageFrom(snapshot);
+  let page = textbookPageFrom(snapshot);
   const basis = revision.basis && mergeTextbookBasis(page.basis, revision.basis);
   const items: EditReview[] = [];
   for (const edit of revision.edits) {
@@ -236,6 +275,7 @@ export async function previewTextbookRevision(ctx: TextbookReadContext, input: u
       if (basis && 'body' in edit) requireTextbookBodyBasis(edit.body, basis);
       const source = 'body' in edit ? await verifyTextbookBodyReference(ctx, edit.body) : null;
       items.push({ edit, before, state: 'ready', after: locateTextbookBlock(next.blocks, edit.blockId), source });
+      if (orderedGroup) page = next;
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       items.push({ edit, before, state: 'invalid', reason: error.message });

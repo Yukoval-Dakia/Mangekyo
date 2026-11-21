@@ -1,4 +1,5 @@
 import { evolveGraphCommand, splitConceptHierarchyEdgeId } from '@mangekyo/module-content/graph-evolution';
+import { previewTextbookDiffItem, textbookDiffProposals } from '@mangekyo/module-content/textbook-diff';
 import { createKnowledgeEdgeCommand, openKnowledgeEdgeRevision, walkKnowledgeEdges } from '@mangekyo/module-content/knowledge-edge';
 import { openKnowledgeEntity, openKnowledgeName } from '@mangekyo/module-content/knowledge-entity';
 import { gather, openQuestionMetaDraft, questionKey, questionMetaDeriver, questionMetaEffectResult, questionMetaType,
@@ -36,8 +37,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   await assert.rejects(send('content.splitTextbookPage', { ...split, newId: source }), /Fact already exists/);
   await send('content.splitTextbookPage', { ...split, newId: child });
   const proof = await openBlock('proof', 'following');
-  assert.equal(proof.ref.id, child);
-  assert.deepEqual(proof.block, block('proof', '子块', moved.block.id));
+  assert.deepEqual([proof.ref.id, proof.block], [child, block('proof', '子块', moved.block.id)]);
   assert.deepEqual((await openBlock('intro')).block, block('intro', '来源块'));
   await send('content.archiveTextbookPage', { id: child, expectedRev: 1 });
   await assert.rejects(send('content.reviseTextbookPage', {
@@ -73,6 +73,11 @@ export default async function exerciseContent(fixture, decideProposal) {
       { kind: 'delete_block', blockId: 'intro' },
     ],
   };
+  const dependent = { ...insert, blockId: 'followup', afterId: example.id };
+  const groups = await textbookDiffProposals(learner, idFor('edition-review'), { ...revision, edits: [...revision.edits, dependent] });
+  assert.deepEqual(groups.map(item => item.input.edits), revision.edits.map(edit => edit === insert ? [edit, dependent] : [edit]));
+  assert.deepEqual((await read(context => previewTextbookDiffItem({ learner, read: context }, groups[3].input), 'teaching'))
+    .items.map(item => item.state), ['ready', 'ready']);
   const proposal = await sendCompanion('content.reviseTextbookPage', revision, 'teaching');
   assert.equal(proposal.state, 'proposed');
   assert.equal((await current(id)).ref.rev, 4);
@@ -85,8 +90,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   assert.deepEqual(insertDiff.after, { block: example, siblingIndex: 2 });
   assert.deepEqual(deleteDiff.before, { block: savedIntro, siblingIndex: 2 });
   assert.equal(deleteDiff.after, null);
-  assert.deepEqual(selectTextbookEdits(preview, ['formula']), { ...revision, edits: [rewriteFormula] });
-  assert.deepEqual(selectTextbookEdits(preview, ['example']), { ...revision, edits: [insert] });
+  for (const edit of [rewriteFormula, insert]) assert.deepEqual(selectTextbookEdits(preview, [edit.blockId]), { ...revision, edits: [edit] });
   const decide = blockIds => textbook.proposal({ learner, id }, proposal.commandId, { blockIds });
   await assert.rejects(decide(['missing']), /请选择有效/);
   const accepted = await decide(['formula', 'example']);
@@ -115,8 +119,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   await assert.rejects(save(loser, {}, 'delayed-save'), /草稿编辑序号已过时/);
   await assert.rejects(save(loser, { ...nextDraft, base_rev: 7 }, 'wrong-base'), /草稿所属页或基版本不符/);
   const copies = await read(context => openTextbookConflict({ learner, read: context }, draftId));
-  assert.equal(copies.base.rev, 3);
-  assert.equal(copies.saved.ref.rev, 4);
+  assert.deepEqual([copies.base.rev, copies.saved.ref.rev], [3, 4]);
   assert.deepEqual(copies.saved.page.blocks, [formula, note, savedIntro]);
   assert.equal(copies.ref.rev, 2);
   assert.equal(copies.draft.clientEditSeq, 2);
@@ -296,9 +299,11 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
     { explanation: '改成另一种说法。', verification: 'unverified' },
   ]);
   assert.deepEqual((await read(context => context.fact(question, pin))).value, questionWithSolution);
+  const seedLegacyHintAnchor = ({ id, rev }, anchor) => db.query(
+    "UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
+    [learner, id, rev, anchor]);
   // Simulate an already-published pre-fix draft and matching overlay.
-  await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
-    [learner, draft.snapshot.ref.id, draft.snapshot.ref.rev, missingAnchor]);
+  await seedLegacyHintAnchor(draft.snapshot.ref, missingAnchor);
   await db.query("UPDATE derivations SET value=jsonb_set(value,'{value,hint_ladder,source_ref}',to_jsonb($3::text)) WHERE learner_id=$1 AND id=$2",
     [learner, derivationId, missingAnchor]);
   await assert.rejects(openDraft(), /固定公开锚点/);
@@ -313,8 +318,7 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
   const { wrote: [before] } = await confirmMeta({ expectedMetaRev: repaired.snapshot.ref.rev,
     append_metadata: { hint_ladder: { ...hint_ladder, source_ref: sourceId } }, basis: [sourceUse(1)] });
   assert.deepEqual(JSON.parse((await openDraft()).draft.append_metadata.hint_ladder.source_ref), refOf(sourceUse(1)));
-  await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
-    [learner, before.id, before.rev, sourceId]);
+  await seedLegacyHintAnchor(before, sourceId);
   await send('content.correctQuestion', { id: sourceId, expectedRev: 1, patch: {
     prompt: { block_id: 'prompt', anchor: '平均速度', replacement: '全程用时' },
   } });

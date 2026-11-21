@@ -6,8 +6,8 @@ import { questionMetaEffectResult, questionMetaMethodVersion, settle as settleQu
 import {
   gather, openQuestionForRelease, questionVerificationEffectResult, settle, type QuestionVerificationEffectReceipt,
 } from '@mangekyo/module-content/question-verification';
-import { bindQuestionExecution, type QuestionExecution } from '../question-effects.ts';
-import { localVerificationExecution, numericQuestion } from './fixtures/question.ts';
+import type { QuestionExecution } from '../question-effects.ts';
+import { bindFixtureVerifiers, localVerificationExecution, numericQuestion } from './fixtures/question.ts';
 
 const learner = learnerId('01KFS4AAA00000000000000000');
 const id = factId('01KFS4AAA00000000000000001');
@@ -15,7 +15,6 @@ const materialId = factId('01KFS4AAA00000000000000002');
 const ownerId = derivationId('01KFS4AAA00000000000000003');
 const rev = 1 as Revision;
 const epoch = '5' as Tick;
-const statement = { id: 'statement', parentId: null, body: { kind: 'text', text: '2 + 3 = ?' } };
 const solution = { id: 'solution', parentId: null, body: { kind: 'text', text: 'SOLUTION SECRET' } };
 const unused = async (): Promise<never> => { throw new Error('Unexpected read'); };
 const fact = (id: FactId, type: string, value: Json, purpose: readonly string[] = ['teaching']): FactSnapshot => ({
@@ -28,7 +27,8 @@ const readFacts = (find: (id: FactId, options: Parameters<ReadContext['fact']>[1
     return snapshot as FactSnapshot<Value>;
   },
 });
-const assessment = numericQuestion('练习', statement.body.text, 'sum', { key: 'RUBRIC SECRET' }, []);
+const assessment = numericQuestion('练习', '2 + 3 = ?', 'sum', { key: 'RUBRIC SECRET' }, []);
+const [statement] = assessment.blocks;
 
 async function plan(blocks: readonly JsonObject[] = [statement, solution], recheck = 0, material?: FactSnapshot) {
   const basis = material ? [{ id: material.ref.id, rev, epoch, type: material.type }] : [];
@@ -42,14 +42,14 @@ it('matches unordered ledger receipts to the sealed owner, step, method, and ful
   const executions = ['0', '1', '2', '3'].map(localVerificationExecution);
   const invocationIds = [0, 1, 2, 3].map(index => `01KFS4AAA0000000000000010${index}`);
   function seal(executionAt: (index: number) => QuestionExecution, response: { invocationId?: string } = {}) {
-    const effects = raw.effects.map((request, index) => bindQuestionExecution(request, executionAt(index)));
-    const receipts: QuestionVerificationEffectReceipt[] = effects.map((request, index) => ({
+    const sealed = { id: ownerId, plan: bindFixtureVerifiers(raw, executionAt) };
+    const receipts: QuestionVerificationEffectReceipt[] = sealed.plan.effects.map((request, index) => ({
       ownerId, request, state: 'done',
       result: questionVerificationEffectResult(invocationIds[index]!, {
         answerKey: '5', conditionKey: 'addition', reasoning: '2 + 3', eligible: true, ...response,
       }, executionAt(index)),
     }));
-    return { sealed: { id: ownerId, plan: { ...raw, effects } }, receipts };
+    return { sealed, receipts };
   }
   const { sealed, receipts } = seal(index => executions[index]!, { invocationId: 'untrusted-model-id' });
   const replay = JSON.parse(JSON.stringify([...receipts].reverse(), (_key, value) => {
