@@ -46,3 +46,20 @@ export const first45Histories = {
     },
   ],
 };
+
+export const introductoryStudyCases = [
+  {
+    id: 'independent',
+    title: '学习史一',
+    description: '第一次见到分段行程题时，留下过自己的完整草稿。',
+    question: first45Question,
+    initialAnswer: first45Answer,
+  },
+  {
+    id: 'workedExample',
+    title: '学习史二',
+    description: '过去做过同一道分段行程题，当时看过完整例题。',
+    question: first45Question,
+    initialAnswer: first45Answer,
+  },
+] as const;
