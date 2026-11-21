@@ -8,7 +8,7 @@ import { gatherSnapshot } from '../derivations/gather.ts';
 import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../schema.ts';
 import { eraseOriginal } from '../lifecycle.ts';
 import { newUlid } from './identity.ts';
-import { bindWorkPayload } from './payload.ts';
+import { bindSessionPayloadSources, bindWorkPayload } from './payload.ts';
 import {
   checkTodoTriggers, completeTodo, deferDispatchedTodo, emitTodo, maxTodoHops, newFactWatermark, readTodo, updateOrCancelTodo, type TodoInput,
 } from './todos.ts';
@@ -58,6 +58,24 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
   }
   const request = (slotKey: string) => db.tx({ learner }, tx =>
     tx.withLearnerWrite(tick => requestWork(tx, tick, { slotType: 'test.grade', slotKey, deriver: 'derive' })));
+  it('records session sources once when replaying a completed effect', async () => {
+    const ownerId = newUlid(), source = factId(newUlid());
+    await addSlot(ownerId);
+    const ref = await request(ownerId);
+    const effect = {learner, ownerKind:'session', ownerId, stepKey:'old', label:'teaching-model', input:{}} as const;
+    const send = vi.fn(async () => 'first reply');
+    const clock = async () => BigInt((await db.query<{clock:string}>('SELECT clock::text FROM learners WHERE id=$1',[learner])).rows[0]!.clock);
+    const original = await runEffect(db,effect,send);
+    const before = await clock();
+    const replay = () => runEffect(db,effect,send,tx => bindSessionPayloadSources(tx,ref,[source]));
+    await expect(replay()).resolves.toEqual(original);
+    expect(await clock()).toBe(before + 1n);
+    expect((await db.query('SELECT payload_sources FROM work WHERE id=$1',[ref.workId])).rows).toEqual([{payload_sources:[source]}]);
+    await expect(replay()).resolves.toEqual(original);
+    expect(await clock()).toBe(before + 1n);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   const gatherRange = () => gatherSnapshot(db, { learner, purpose: 'study' }, async ctx => {
     const range = await ctx.read.range('test.grade', scope);
     return { kind: 'input', data: range.members.map(member => member.outcome), effects: [] };
