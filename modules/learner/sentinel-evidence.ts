@@ -1,5 +1,5 @@
 import type { BusWitness, FactSnapshot, LearnerId, Tick } from '@mangekyo/kernel';
-import { instant } from './memory-evidence.ts';
+import { allows, instant } from './memory-evidence.ts';
 import { learnerPreferenceType, type PreferenceScope } from './preference-values.ts';
 import type { RetentionForecast } from './retention.ts';
 import { classifyFrozenCrossing } from './retention-view.ts';
@@ -22,7 +22,7 @@ function admitted(access: SentinelAccess, {fact, witness}: SentinelFact) {
   return access.purpose === researchPurpose && access.recipient.trim().length > 0 &&
     fact.ref.learner === access.learner && witness.learner === access.learner &&
     fact.ref.id === witness.id && fact.ref.rev === witness.rev && fact.type === witness.type &&
-    fact.accessEpoch === witness.accessEpoch && fact.purpose.includes(researchPurpose) && access.maySend(fact) === true;
+    fact.accessEpoch === witness.accessEpoch && allows(fact.purpose, researchPurpose) && access.maySend(fact) === true;
 }
 
 function shortText(value: string, size: number) {
