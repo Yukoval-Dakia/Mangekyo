@@ -13,7 +13,6 @@ import {
   checkTextbookBasis, openTextbookReference, parseTextbookReference, textbookPageFrom, textbookPageType,
   verifyTextbookBodyReference, type TextbookBlockBody, type TextbookReference,
 } from './textbook-page.ts';
-import { text } from './parse.ts';
 
 export type TextbookDistillationReference = {
   readonly ref: TextbookReference;
@@ -43,6 +42,7 @@ export type TextbookDistillationChoice = {
 };
 
 export type TextbookDistillationInput = {
+  readonly speaker: 'learner' | 'companion';
   readonly turn: TextbookDistillationReference;
   /** Enumerate current candidates for this storage scope in the same snapshot as the reads. */
   readonly candidates: { readonly edgeIds: readonly FactId[]; readonly complete: boolean };
@@ -248,21 +248,32 @@ function insertionAnchor(page: ReturnType<typeof textbookPageFrom>, support: rea
 export async function previewTextbookDistillation(
   access: TextbookDistillationAccess, input: TextbookDistillationInput,
 ): Promise<TextbookDistillationPreview> {
+  // Teaching feedback lives in a separate derivation. The current Ref contract
+  // pins the learner answer stored on the studyTurn fact.
+  if (input.speaker !== 'learner') return { status: 'source_unavailable' };
   const { candidates, selection } = input;
   const turn = { ...input.turn, ref: parseTextbookReference(input.turn.ref) };
+  const { anchor } = turn.ref;
+  if (turn.ref.type !== 'activity.studyTurn' || anchor.kind !== 'path' ||
+      anchor.path.length !== 1 || anchor.path[0] !== 'answer') return { status: 'source_unavailable' };
   if (!turn.witness || !matches(turn.ref, turn.witness)) return { status: 'missing_witness' };
-  if (turn.ref.type !== 'activity.studyTurn') return { status: 'source_unavailable' };
   const ctx = authorizedStorage(access);
-  let discussion: Awaited<ReturnType<TextbookDistillationAccess['openDiscussion']>>;
+  let answer: string;
   const roots = [];
   const evidence = new Map<string, BusWitness>();
   try {
-    await reopen(ctx, turn);
+    const { value } = await reopen(ctx, turn);
+    const original = value && typeof value === 'object' && 'answer' in value ? value.answer : null;
+    if (typeof original !== 'string' || !original.trim() || !original.isWellFormed() || original.includes('\u0000')) {
+      return { status: 'source_unavailable' };
+    }
+    answer = original;
     evidence.set(versionKey(turn.witness), turn.witness);
-    discussion = await access.openDiscussion(turn);
+    const discussion = await access.openDiscussion(turn);
     if (!discussion?.complete || !discussion.refs.length || discussion.refs.length > refLimit) {
       return { status: 'missing_witness' };
     }
+    if (discussion.text !== answer) return { status: 'source_unavailable' };
     if (discussion.witnesses.length + 1 > basisLimit) return { status: 'basis_limit' };
     for (const witness of discussion.witnesses) {
       if (witness.learner !== ctx.learner) return { status: 'missing_witness' };
@@ -300,7 +311,7 @@ export async function previewTextbookDistillation(
     .map(({ ref, witness }) => ({ ref, witness }))];
   const blockId = await contentStableId('textbook-distillation', ctx.learner, refKey(turn.ref));
   const bodies: readonly Body[] = [
-    { kind: 'text', text: text(discussion.text, '讨论正文') },
+    { kind: 'text', text: answer },
     ...backlinks.map(({ ref }, index) => ({
       kind: 'reference' as const, role: index ? 'question' as const : 'citation' as const, target: ref,
     })),
