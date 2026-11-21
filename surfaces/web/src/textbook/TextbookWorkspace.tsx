@@ -10,6 +10,7 @@ import {
   type Slots,
   type Transport,
 } from './contract.ts';
+import { TextbookPulse } from './TextbookPulse';
 import { BlockTree, BodyView, Fields, blockNames, newBodies } from './blocks.tsx';
 import './textbook.css';
 import { useEditor } from './useEditor.ts';
@@ -126,6 +127,7 @@ function Editor({ address, transport, draftScope, slots, chapters }: Props & { a
     edit.kind !== 'move' &&
     ((edit.body.kind === 'text' && !edit.body.text.trim()) ||
       (edit.body.kind === 'formula' && !edit.body.latex.trim()));
+  const blocks = page && <BlockTree page={page} editable={editable} pinned={pinned} slots={slots} stage={start} />;
   return (
     <main ref={container}>
       <header>
@@ -306,7 +308,9 @@ function Editor({ address, transport, draftScope, slots, chapters }: Props & { a
       {address.block && page && !page.blocks.some((b) => b.id === address.block) && (
         <p>此版本中找不到指定块。</p>
       )}
-      {page && <BlockTree page={page} editable={editable} pinned={pinned} slots={slots} stage={start} />}
+      {ready && !pinned && page?.pulse
+        ? <TextbookPulse key={JSON.stringify([page.id, page.rev, page.accessEpoch])} {...page.pulse}>{blocks}</TextbookPulse>
+        : blocks}
       {page && slots?.review?.(page)}
       {lastReceipt && (
         <details className="tb-receipt">

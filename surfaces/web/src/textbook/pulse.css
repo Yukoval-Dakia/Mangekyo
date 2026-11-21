@@ -1,0 +1,7 @@
+.tb-pulse-marks { display: flex; flex-wrap: wrap; gap: .4rem; margin-inline: auto .5rem; }
+.tb-pulse-mark { position: relative; }
+.tb-workspace .tb-pulse-mark > button { background: transparent; border: 0; color: #52665d; font-size: .8rem; min-height: 2rem; }
+.tb-pulse-popup { position: absolute; z-index: 2; right: 0; width: max-content; max-width: 80vw; padding: .7rem 1rem;
+  display: grid; gap: .5rem; background: var(--surface); border: 1px solid var(--line); border-radius: .7rem; }
+.tb-pulse-paper { width: min(38rem, 100vw); }
+.tb-pulse-paper > section { padding: 1rem; }

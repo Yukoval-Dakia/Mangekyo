@@ -869,7 +869,9 @@ function durationLabel(ms: number) {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
-function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
+export function PaperDetail({ paperId, modelSettings, singleQuestionOnly = false }: {
+  paperId: string; modelSettings?: Resource<Settings>; singleQuestionOnly?: boolean;
+}) {
   const foreground = useVisibleDocument();
   const watermark = useDraftWatermark(foreground);
   const deletionGeneration = useSyncExternalStore(subscribeDeletionWatermark, observedDeletionWatermark);
@@ -880,8 +882,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   const [coveredItem, coverItem] = useState<string | null>(null);
   const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
   const [assessing, setAssessing] = useState<string | null>(null);
-  const settings = modelSettings.data && forTask(modelSettings.data, 'assessment');
-  const settingsError = modelSettings.error ? '无法读取模型设置。' : '';
+  const settings = modelSettings?.data && forTask(modelSettings.data, 'assessment');
+  const settingsError = modelSettings?.error ? '无法读取模型设置。' : '';
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
@@ -921,13 +923,18 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     setError('');
     api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}`, { signal: controller.signal, cache: 'no-store' })
       .then((result) => {
-        if (!controller.signal.aborted && observedDeletionWatermark() === deletionGeneration) setView(result);
+        if (controller.signal.aborted || observedDeletionWatermark() !== deletionGeneration) return;
+        if (singleQuestionOnly && (result.id !== paperId || result.questions.length !== 1)) {
+          setError('领取回执未对应到一份单题卷。');
+          return;
+        }
+        setView(result);
       })
       .catch(() => {
         if (!controller.signal.aborted) setError('试卷载入失败。请重试。');
       });
     return () => controller.abort();
-  }, [foreground, paperId, reload, deletionGeneration]);
+  }, [foreground, paperId, reload, deletionGeneration, singleQuestionOnly]);
 
   const sittingId = draft?.requestId;
   const scope = foreground && watermark.ready && currentGeneration && sittingId && view?.id === paperId
@@ -1525,5 +1532,5 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
 export function Workbook({ id, materials, modelSettings }: WorkbookProps) {
   if (id === undefined) return <ListPage />;
   if (id === 'new') return <AuthorPage materials={materials} />;
-  return <PaperDetail paperId={id} materials={materials} modelSettings={modelSettings} />;
+  return <PaperDetail paperId={id} modelSettings={modelSettings} />;
 }
