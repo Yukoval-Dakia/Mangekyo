@@ -1,8 +1,13 @@
-import { defineFact } from '@mangekyo/kernel';
+import { defineCommand, defineFact } from '@mangekyo/kernel';
 
 export const note = defineFact({
   type: 'boundary.note',
   schema: { parse: (value: unknown) => ({ body: String(value) }) },
+});
+
+export const savePrivateNote = defineCommand({
+  type: 'boundary.save', requiredPurpose: 'storage', destructive: true,
+  schema: note.schema, write: () => [],
 });
 
 import type { BusMutation, CanonicalEvidenceSliceV1, Directive, PipelineBus, ToolError } from '@mangekyo/kernel';
