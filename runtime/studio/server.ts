@@ -45,6 +45,7 @@ import { questionVerificationType } from '../../modules/content/question-verific
 import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
+import { openCarePause } from './care-pause.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 import { confirmedTeachingMethod, learningToolsMethod } from './identity.ts';
 import type { StudioJitCounter } from './first-turn-jit.ts';
@@ -83,7 +84,8 @@ const scoutHost = scoutModule
   : undefined;
 const tariffModule = process.env.MANGEKYO_RESEARCH_WORKER_TARIFF;
 const tariff = tariffModule ? (await import(pathToFileURL(tariffModule).href)).workerTariff : undefined;
-const research = openResearch(db, activity, companion, scoutHost, understandingTransport, undefined, tariff);
+const carePause = openCarePause(db, companion);
+const research = openResearch(db, activity, companion, scoutHost, understandingTransport, undefined, tariff, carePause);
 const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
 const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
@@ -125,11 +127,11 @@ async function openWeb() {
   const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank);
   const student = { notion:openStudioNotion(db,capture), textbook, relationReview:openRelationReview(db,content),
     workbook, takeaways, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),
-    organizer: openOrganizer(db, activity, plan), memory: openMemory(db, companion),
+    organizer: openOrganizer(db, activity, plan, createStudioCommandHooks(), carePause), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
-    research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db) };
+    research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db), carePause };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -165,7 +167,7 @@ async function runWorker(storeId: string) {
     else if (work.slotType === retentionComparisonWork) await retentionComparison.execute(ref, work.slotKey, terminal);
     else if (isRetentionSlot(work.slotType)) await retention.execute(ref, terminal);
     else if (terminal) await recordTerminalFailure(db, ref);
-    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters, research.turnCompleted);
+    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters, research.turnCompleted, carePause);
   }
   const workerConfig = {
     address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
@@ -185,7 +187,7 @@ async function runWorker(storeId: string) {
       async run(ref: WorkRef, terminal: boolean) {
         if ((await readWork(db,ref))?.deriver !== deriver) return;
         if (terminal) await recordTerminalFailure(db,ref);
-        else await teach(db,ref,readArtifactAssessmentWitness,jitCounters,research.turnCompleted);
+        else await teach(db,ref,readArtifactAssessmentWitness,jitCounters,research.turnCompleted,carePause);
       },
     })),
     { queue: capabilityTaskQueue(queue, 'notion-block-v1'), route: notionBlockRoute,

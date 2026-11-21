@@ -22,7 +22,7 @@ import { parseManifest, type Manifest } from '../../kernel/src/derivations/manif
 import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
 import { bindSessionPayloadSources } from '../../kernel/src/work/payload.ts';
 import { failWork, finishWork, readWork, readReadyWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
-import { TeachingError } from '../../executors/teaching/index.ts';
+import { TeachingError, type CarePauseSignal } from '../../executors/teaching/index.ts';
 import { ChangedEvidence, classifyTeachingFailure, terminalRecoveryFailure } from '../../executors/teaching/turn-errors.ts';
 import { createTurnWitnessLedger } from '../../executors/teaching/turn-witness.ts';
 import { createTeachingModelEffect } from '../../executors/teaching/turn-effect.ts';
@@ -50,7 +50,8 @@ const hasTeachingModelEffect = async (tx: ReadTransaction, learner: ReturnType<t
 
 export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness,
   jitCounters: readonly StudioJitCounter[] = [],
-  onTurnCompleted?: (tx: DbTransaction, tick: Tick, id: string) => Promise<void>) {
+  onTurnCompleted?: (tx: DbTransaction, tick: Tick, id: string) => Promise<void>,
+  carePause?: { pause: (key: string) => Promise<unknown> }) {
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
@@ -376,6 +377,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           isMemoryConflict,
         },
       );
+      if ((feedback as DisplayTurn & { carePause?: CarePauseSignal }).carePause)
+        await carePause?.pause(job.slotKey);
     } else {
       const selected = caseId(submission.caseId);
       if (selected !== 'independent' && selected !== 'workedExample') throw new Error('Unknown teaching case');
