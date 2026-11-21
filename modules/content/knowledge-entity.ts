@@ -1,7 +1,7 @@
 import { FactNotFoundError, factId, type FactId, type FactSnapshot } from '@mangekyo/kernel';
 import { fields, list, pageId, record, text } from './parse.ts';
 
-import { assetType, checkTextbookBasis, parseAsset, type AssetReadContext } from './asset.ts';
+import { AssetBasisError, assetType, checkTextbookBasis, parseAsset, type AssetReadContext } from './asset.ts';
 export const knowledgeNameType = 'content.knowledgeName';
 export const knowledgeEntityKinds = ['concept', 'method', 'archetype'] as const;
 export type KnowledgeEntityKind = (typeof knowledgeEntityKinds)[number];
@@ -86,17 +86,17 @@ export async function openKnowledgeEntity(read: AssetReadContext['read'], id: Fa
   let kind: KnowledgeEntityKind | undefined;
   const visited = new Set<FactId>();
   for (;;) {
-    if (snapshot.type !== assetType) throw new Error('规范实体类型不符。');
+    if (snapshot.type !== assetType) throw new AssetBasisError('规范实体类型不符。');
     const asset = parseAsset(snapshot.value);
     if (asset.kind !== 'concept' && asset.kind !== 'method' && asset.kind !== 'archetype') {
-      throw new Error('规范实体类型不符。');
+      throw new AssetBasisError('规范实体类型不符。');
     }
     await checkTextbookBasis(read, asset.basis ?? []);
     const { kind: entityKind, title, aliases, embedding, merged_into } = asset;
     const entity = { kind: entityKind, canonicalName: title, aliases, ...(embedding ? { embedding } : {}), merged_into };
-    if (kind !== undefined && entity.kind !== kind) throw new Error('规范实体重定向类型不符。');
+    if (kind !== undefined && entity.kind !== kind) throw new AssetBasisError('规范实体重定向类型不符。');
     if (pinned !== undefined || entity.merged_into === null) return { snapshot, entity, redirects };
-    if (visited.has(snapshot.ref.id)) throw new Error('规范实体重定向成环。');
+    if (visited.has(snapshot.ref.id)) throw new AssetBasisError('规范实体重定向成环。');
     visited.add(snapshot.ref.id);
     kind = entity.kind;
     redirects.push(snapshot.ref);

@@ -142,6 +142,7 @@ export default async function exerciseContent(fixture, decideProposal) {
 
 async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stableId, assert, snapshot, read, content, load, publish }, decideProposal) {
   const question = graph.question.id;
+  const targetBasis = stableId('graph-merge-target-basis');
   const parent = graph.split.id;
   const child = graph.split.children[1].id;
   const edgeId = graph.edge.id;
@@ -155,7 +156,12 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
   const questionWithSolution = { ...graph.question.asset, blocks: [...graph.question.asset.blocks,
     { id: 'private-solution', parentId: null, body: { kind: 'text', text: '仅供解答。' } }] };
   await send(saveQuestionCommand, { ...graph.question, asset: questionWithSolution });
-  for (const concept of graph.concepts) await send('content.createKnowledgeEntity', concept);
+  await send(saveQuestionCommand, { ...graph.question, id: targetBasis });
+  for (const concept of graph.concepts) {
+    await send('content.createKnowledgeEntity', concept.id === graph.merge.into ? {
+      ...concept, resolution: { ...concept.resolution, sourceUses: [{ id: targetBasis, rev: 1, accessEpoch: '0' }] },
+    } : concept);
+  }
   await send(createKnowledgeEdgeCommand, graph.edge);
 
   const rejected = await sendCompanion(evolveGraphCommand, graph.split);
@@ -190,21 +196,69 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
   await assert.rejects(decide(evolveGraphCommand, collision.commandId), /已有同名实体/);
   assert.equal(await name('等时段'), undefined);
 
-  const hierarchy = await splitConceptHierarchyEdgeId(child, parent);
+  const hierarchies = await Promise.all(graph.split.children.map(item => splitConceptHierarchyEdgeId(item.id, parent)));
+  const hierarchy = hierarchies[1];
+  const openHierarchy = (mode, purpose) => read(read => openKnowledgeEdgeRevision({ learner, read }, hierarchy,
+    mode === 'pinned' ? { mode, rev: 1 } : { mode }), purpose);
+  for (const [index, id] of hierarchies.entries()) {
+    const { edge } = await read(read => openKnowledgeEdgeRevision({ learner, read }, id, { mode: 'following' }));
+    assert.deepEqual([edge.from.sourceUse.id, edge.to.sourceUse.id], [graph.split.children[index].id, parent]);
+  }
   const evolved = await read(async read => walkKnowledgeEdges({ learner, read }, {
     root: (await openKnowledgeEdgeRevision({ learner, read }, edgeId, { mode: 'following' })).edge.from,
     edgeIds: [edgeId, hierarchy], mode: 'following', hops: 2, direction: 'outbound',
   }), 'teaching');
   assert.deepEqual(evolved.paths.map(step => step.endpoint.sourceUse.id), [child, parent]);
 
+  const absorbedEdge = stableId('graph-edge-between-merge-pair');
+  const left = graph.edge.edge.to;
+  const right = { ...left, sourceUse: { ...left.sourceUse, id: graph.merge.into } };
+  await send(createKnowledgeEdgeCommand, { ...graph.edge, id: absorbedEdge,
+    edge: { ...graph.edge.edge, kind: 'related_to', from: left, to: right, sourceUses: [left.sourceUse, right.sourceUse] } });
   const merge = await sendCompanion(evolveGraphCommand, graph.merge);
+  assert.equal(merge.state, 'proposed');
+  assert.deepEqual(merge.wrote, []);
   assert.equal((await name('均速'))?.id, parent);
   await decide(evolveGraphCommand, merge.commandId);
   assert.equal((await name('均速'))?.id, graph.merge.into);
+  const followed = await openHierarchy('following', 'teaching');
+  assert.equal(followed.edge.to.sourceUse.id, graph.merge.into);
+  assert.equal(followed.snapshot.value.to.sourceUse.id, parent);
+  assert.equal((await openHierarchy('pinned')).edge.to.sourceUse.id, parent);
+  await assert.rejects(read(read => openKnowledgeEdgeRevision({ learner, read }, absorbedEdge, { mode: 'following' })),
+    /两端已合并/);
+  const oldEdge = await read(read => openKnowledgeEdgeRevision({ learner, read }, absorbedEdge, { mode: 'pinned', rev: 1 }));
+  assert.deepEqual([oldEdge.edge.from, oldEdge.edge.to], [left, right]);
+  const childrenOfMerged = await read(read => walkKnowledgeEdges({ learner, read }, {
+    root: { kind: 'concept', sourceUse: { id: parent, rev: 1, accessEpoch: '0' } },
+    edgeIds: hierarchies, mode: 'following', hops: 1, direction: 'inbound',
+  }), 'teaching');
+  assert.equal(childrenOfMerged.root.sourceUse.id, graph.merge.into);
+  assert.deepEqual(childrenOfMerged.paths.map(({ endpoint, via }) => [endpoint.sourceUse.id, via.id]),
+    graph.split.children.map(({ id }, index) => [id, hierarchies[index]]));
+  const staleMerge = await sendCompanion(evolveGraphCommand, graph.merge);
+  await assert.rejects(decide(evolveGraphCommand, staleMerge.commandId), /当前的规范实体修订/);
+  const reverseMerge = await sendCompanion(evolveGraphCommand, {
+    ...graph.merge, id: graph.merge.into, into: parent, targetRev: 2,
+  });
+  await assert.rejects(decide(evolveGraphCommand, reverseMerge.commandId), /当前的规范实体修订/);
   const prior = await read(context => openKnowledgeEntity(context, parent, 1));
   assert.deepEqual(prior.snapshot.ref, { learner, id: parent, rev: 1 });
   assert.equal(prior.entity.merged_into, null);
   assert.equal((await openEdge('pinned')).edge.to.sourceUse.id, parent);
+  // A legacy cycle must fail closed even if all individual revisions are readable.
+  const fixtureRedirect = into => db.query(
+    "UPDATE fact_revs SET data=jsonb_set(data,'{merged_into}',$3::jsonb) WHERE learner_id=$1 AND fact_id=$2 AND rev=1",
+    [learner, graph.merge.into, JSON.stringify(into)]);
+  await fixtureRedirect(parent);
+  await assert.rejects(openHierarchy('following', 'teaching'), /重定向成环/);
+  assert.equal((await openHierarchy('pinned', 'teaching')).edge.to.sourceUse.id, parent);
+  await fixtureRedirect(null);
+  await send('content.setQuestionTeaching', { id: targetBasis, expectedRev: 1, allowed: false });
+  await assert.rejects(openHierarchy('following', 'teaching'), /does not allow read purpose teaching/);
+  assert.equal((await openHierarchy('pinned', 'teaching')).edge.to.sourceUse.id, parent);
+  console.log(JSON.stringify({ graphEvolutionAcceptance: { following: graph.merge.into, pinned: parent,
+    splitEdges: hierarchies, staleMerge: 'denied', reverseMerge: 'denied', legacyCycle: 'denied', targetProvenanceRevoked: 'denied' } }));
 
   assert.equal(content.slots.get(questionMetaType)?.policy, 'lazy');
   const { createAuthorizedFactReader, FactReadDeniedError } = await load('kernel/src/commands/reads.ts');
@@ -328,4 +382,5 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
   console.log(JSON.stringify({ questionHintAcceptance: { opened, elapsedMs, afterRevocation: null, coldRevision: savedQuestion.ref.rev } }));
   await assert.rejects(openEdge('pinned'), /访问代次/);
   await assert.rejects(openEdge('following'), /访问代次/);
+  await assert.rejects(openHierarchy('following', 'teaching'), /does not allow read purpose teaching/);
 }
