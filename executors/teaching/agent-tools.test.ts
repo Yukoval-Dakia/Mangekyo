@@ -1,29 +1,23 @@
-import { execFileSync } from 'node:child_process';
-import { afterEach, expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 import { createStudyTools } from './agent-tools.ts';
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
+import { watchFetch } from './test/chat.ts';
+import { hasDockerImage } from './test/docker.ts';
 
 it('exposes scratch tools and offers keyless Exa only with search permission', () => {
-  expect([...createStudyTools().names]).toEqual(['python', 'read_file', 'write_file']);
-  expect([...createStudyTools({ exaApiKey: 'secret' }).names])
-    .toEqual(['python', 'read_file', 'write_file']);
-  expect([...createStudyTools({ allowSearch: true }).names])
-    .toEqual(['python', 'read_file', 'write_file', 'exa_search']);
-  expect([...createStudyTools({ exaApiKey: 'secret', allowSearch: true }).names])
-    .toEqual(['python', 'read_file', 'write_file', 'exa_search']);
+  const scratch = ['python', 'read_file', 'write_file'];
+  for (const credentials of [{}, { exaApiKey: 'secret' }]) {
+    expect([...createStudyTools(credentials).names]).toEqual(scratch);
+    expect([...createStudyTools({ ...credentials, allowSearch: true }).names]).toEqual([...scratch, 'exa_search']);
+  }
 });
 
 it('round-trips flat scratch files and replaces content within quota', async () => {
   const tools = createStudyTools();
-  expect(await tools.execute('write_file', { name: 'notes.txt', content: '第一版' }))
-    .toBe('wrote notes.txt (9 bytes)');
-  expect(await tools.execute('read_file', { name: 'notes.txt' })).toBe('第一版');
-  expect(await tools.execute('write_file', { name: 'notes.txt', content: '' }))
-    .toBe('wrote notes.txt (0 bytes, replaced)');
-  expect(await tools.execute('read_file', { name: 'notes.txt' })).toBe('');
+  const name = 'notes.txt';
+  for (const [content, receipt] of [['第一版', 'wrote notes.txt (9 bytes)'], ['', 'wrote notes.txt (0 bytes, replaced)']] as const) {
+    expect(await tools.execute('write_file', { name, content })).toBe(receipt);
+    expect(await tools.execute('read_file', { name })).toBe(content);
+  }
   expect(await tools.execute('read_file', { name: 'missing.txt' }))
     .toMatchObject({ok:false, code:'not_found', field:'name'});
 });
@@ -49,7 +43,7 @@ it('rejects paths, non-text content, oversized files and quota overflow', async 
 
 it('returns bounded errors for unknown tools, bad arguments and unavailable Exa', async () => {
   const tools = createStudyTools();
-  const send = vi.spyOn(globalThis, 'fetch');
+  const send = watchFetch();
   expect(await tools.execute('nope', {})).toMatchObject({ok:false, code:'tool_unavailable'});
   expect(JSON.stringify(await tools.execute('x'.repeat(100_000), {})).length).toBeLessThan(700);
   expect(await tools.execute('python', { code: '' })).toMatchObject({ok:false, code:'invalid_args'});
@@ -59,7 +53,7 @@ it('returns bounded errors for unknown tools, bad arguments and unavailable Exa'
 });
 
 it('calls the fixed Exa endpoint with bounded request fields and hides the key', async () => {
-  const send = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+  const send = watchFetch().mockResolvedValue(Response.json({
     results: [
       { title: 'Sea breeze', url: 'https://example.test/sea', highlights: ['land warms faster', 'air flows seaward'] },
       { title: 'Land breeze', url: 'https://example.test/land', highlights: ['night reversal'] },
@@ -86,26 +80,14 @@ it('calls the fixed Exa endpoint with bounded request fields and hides the key',
 });
 
 it('reports Exa HTTP failures without echoing credentials', async () => {
-  vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ error: 'unauthorized' }, { status: 401 }));
+  watchFetch().mockResolvedValue(Response.json({ error: 'unauthorized' }, { status: 401 }));
   const tools = createStudyTools({ exaApiKey: 'secret-key', allowSearch: true });
   const output = await tools.execute('exa_search', { query: 'wind' });
   expect(output).toMatchObject({ok:false, code:'execution_failed', message:expect.stringContaining('401')});
   expect(JSON.stringify(output)).not.toContain('secret-key');
 });
 
-function dockerReady(): boolean {
-  try {
-    execFileSync('docker', ['image', 'inspect', 'python:3.12-alpine'], {
-      stdio: 'ignore',
-      timeout: 3_000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-it.skipIf(!dockerReady())('runs genuine Python with the scratch workspace shared over stdin', async () => {
+it.skipIf(!hasDockerImage('python:3.12-alpine', { timeout: 3_000 }))('runs genuine Python with the scratch workspace shared over stdin', async () => {
   const tools = createStudyTools();
   await tools.execute('write_file', { name: 'data.txt', content: 'sea breeze\n' });
   const output = await tools.execute('python', {
