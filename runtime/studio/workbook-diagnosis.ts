@@ -7,6 +7,8 @@ import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { frozenWorkbookRevision, licensedQuestionCopy } from '../../modules/activity/evidence-read.ts';
 import { helpAppliesTo } from '../../modules/activity/help-exposure-values.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
+import { arithmeticPracticePaperId } from '../../modules/activity/sealed-practice.ts';
+import { assetType } from '../../modules/content/asset.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
@@ -92,8 +94,9 @@ export async function openWorkbookQuestionSources(tx: ReadTransaction, submissio
       if (itemId !== undefined && id !== itemId) continue;
       if (!sourceQuestionRef) continue;
       const readable = itemId ? await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose) : sourceQuestionRef;
+      const type = await arithmeticPracticePaperId(factId(sourceQuestionRef.id)) === attempt.paperId ? assetType : workspaceEntryType;
       const question = await resolveSource(tx, {
-        v: 1, fact: { ...readable, type: workspaceEntryType }, anchor: { kind: 'question', itemId: 'question' },
+        v: 1, fact: { ...readable, type }, anchor: { kind: 'question', itemId: 'question' },
       }, sourceAccess);
       if (question?.content !== prompt) return;
     }

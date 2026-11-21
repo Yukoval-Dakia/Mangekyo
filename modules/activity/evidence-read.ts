@@ -7,6 +7,7 @@ import { recallSubmissionType, submitRecallCommand } from './recall-values.ts';
 import { closedPosttest, issuePosttestCommand, posttestIssuanceType, posttestSubmissionType, retentionPaperType } from './retention-posttest.ts';
 import { saveWorkbookPaperCommand, submitWorkbookAttemptCommand, workbookAttemptType, workbookPaperType, type WorkbookSourceQuestionRef } from './workbook-values.ts';
 import { recordWorkbookPresentationCommand, workbookPresentationType } from './workbook-presentation.ts';
+import { releasePracticeFeedbackCommand } from './sealed-practice.ts';
 
 export type ActivityEvidenceReadScope = {
   learner: LearnerId;
@@ -181,7 +182,7 @@ export async function workbookAnswerDisplayCandidates(
       AND d.retracted_rev IS NULL AND p.retracted_rev IS NULL AND a.retracted_rev IS NULL
       AND born.data=display.data AND born.author='learner' AND dc.type=$8 AND dc.state='done'
       AND born.tick<=$9::bigint AND born.data->>'kind'='solution' AND born.data->>'phase'='displayed'
-      AND pb.data=frozen.data AND frozen.data=pc.data AND sc.type=$10 AND sc.state='done'
+      AND pb.data=frozen.data AND frozen.data=pc.data AND sc.type=ANY($10::text[]) AND sc.state='done'
       AND ab.data=submitted.data AND submitted.data=actual.data AND ab.author='learner'
       AND ac.type=$11 AND ac.state='done' AND ab.tick<born.tick
       AND ab.data->>'paperId'=p.id AND ab.data->'paper'=frozen.data
@@ -194,7 +195,7 @@ export async function workbookAnswerDisplayCandidates(
       )
     ORDER BY born.tick DESC,d.id LIMIT $12`,
   [tx.learner, source.id, source.rev, workbookPresentationType, workbookPaperType, workbookAttemptType,
-    purpose, recordWorkbookPresentationCommand, through, saveWorkbookPaperCommand, submitWorkbookAttemptCommand, limit]);
+    purpose, recordWorkbookPresentationCommand, through, [saveWorkbookPaperCommand,releasePracticeFeedbackCommand], submitWorkbookAttemptCommand, limit]);
   return rows;
 }
 

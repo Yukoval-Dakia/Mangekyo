@@ -1,4 +1,4 @@
-import type { CommandContext, FactId, FactWrite } from '@mangekyo/kernel';
+import { FactNotFoundError, type CommandContext, type FactId, type FactWrite } from '@mangekyo/kernel';
 import {
   assetBodyReference, assetType, checkTextbookBasis, mergeTextbookBasis, parseAssetBlocks, parseTextbookBasis,
   checkQuestionTeachingSources, freezeQuestionAssessment, questionAsset, requireTextbookBodyBasis, verifyAssetBlockReference, type Block, type QuestionAsset,
@@ -6,6 +6,7 @@ import {
 import { fields, pageId, record, revision, text } from './parse.ts';
 import { parseSaveQuestion } from './question-authoring.ts';
 import { questionMetaDraftId, questionMetaDraftType, questionStateId, questionStateType, readQuestionState } from './question-state.ts';
+import { arithmeticPractice, arithmeticQuestion, arithmeticQuestionId, openArithmeticPractice } from './arithmetic-practice.ts';
 
 export const saveQuestionCommand = 'content.saveQuestion';
 export const correctQuestionCommand = 'content.correctQuestion';
@@ -17,6 +18,11 @@ const patchFields = ['title', 'prompt', 'response_schema', 'assessment_contract'
 export function parseQuestionWrite(input: unknown) {
   const value = record(input);
   const id = pageId(value.id);
+  if (value.arithmeticPractice !== undefined) {
+    fields(value, 'id', 'arithmeticPractice');
+    const practice = arithmeticPractice(value.arithmeticPractice);
+    return {id, asset: arithmeticQuestion(practice).asset, teaching: true, arithmeticPractice: practice};
+  }
   if (value.expectedRev === undefined) {
     fields(value, 'id', 'asset', 'purpose');
     if (value.purpose !== undefined && value.purpose !== 'storage' && value.purpose !== 'teaching') {
@@ -84,6 +90,8 @@ export async function writeQuestion(ctx: CommandContext, input: ReturnType<typeo
     if (current.ref.rev !== input.expectedRev) throw new Error(`Fact revision conflict: ${id}`);
     if (current.type !== assetType) throw new Error('请选择题目资产。');
     const old = questionAsset(current.value);
+    if ((await readQuestionState(ctx.read,id)).state.arithmeticPractice)
+      throw new Error('封闭练习题版固定，请新建更正后的练习题。');
     await checkTextbookBasis(ctx.read, old.basis ?? []);
     const next = patchAsset(old, input);
     await verifyQuestion(ctx, id, revision(input.expectedRev + 1), next);
@@ -92,13 +100,25 @@ export async function writeQuestion(ctx: CommandContext, input: ReturnType<typeo
     return [{ kind, id, expectedRev: input.expectedRev, data: next }, meta];
   }
   if (kind === 'correct') throw new Error('本人更正需要固定基版本。');
+  const practice = 'arithmeticPractice' in input ? input.arithmeticPractice : undefined;
+  if (practice) {
+    if (id !== await arithmeticQuestionId(practice)) throw new Error('整数练习来源与题目定义不匹配。');
+    const current = await ctx.read.fact(id,{mode:'following'}).catch(error => {
+      if (!(error instanceof FactNotFoundError)) throw error;
+    });
+    if (current) {
+      if (!await openArithmeticPractice(ctx.read,id,current)) throw new Error('当前版本不可用于整数练习。');
+      return [];
+    }
+  }
   await verifyQuestion(ctx, id, revision(1), input.asset);
   if (input.teaching) await checkQuestionTeachingSources(ctx.read, input.asset);
   const purpose = input.teaching ? ['storage', 'teaching'] : ['storage'];
   return [
     { kind: 'create', id, factType: assetType, data: input.asset, purpose },
     { kind: 'create', id: await questionStateId(id), factType: questionStateType, purpose,
-      data: { questionId: id, restrictions: [], last: null, recheck: 0 } },
+      data: { questionId: id, restrictions: [], last: null, recheck: 0,
+        ...(practice ? {arithmeticPractice:practice} : {}) } },
     await newQuestionMeta(ctx, id, revision(1), purpose),
   ];
 }

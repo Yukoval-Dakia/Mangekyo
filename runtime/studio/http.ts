@@ -27,6 +27,7 @@ import type { openPractice } from './practice.ts';
 import { handleIntakeRequest, type openIntake } from './intake.ts';
 import type { openCapturePapers } from './capture-papers.ts';
 import type { openWorkbook } from './workbook.ts';
+import type { openPracticeAdmission } from './sealed-practice.ts';
 import type { openOrganizer } from './organizer.ts';
 import type { openMemory } from './memory.ts';
 import type { openWorkspaceAccess } from './workspace-access.ts';
@@ -105,6 +106,7 @@ export function serve(
     textbook: ReturnType<typeof openTextbook>;
     relationReview: ReturnType<typeof openRelationReview>;
     workbook: ReturnType<typeof openWorkbook>;
+    practiceAdmission?: ReturnType<typeof openPracticeAdmission>;
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
     memoryManagement: ReturnType<typeof openMemoryManagement>;
@@ -240,6 +242,11 @@ export function serve(
       }
       if (path === '/api/papers' && method === 'GET') return json(res, 200, await student.workbook.list());
       if (path === '/api/papers' && method === 'POST') return json(res, 201, await student.workbook.save(await body(req)));
+      if (path === '/api/papers/sealed-practice' && method === 'POST' && student.practiceAdmission)
+        return await offlineSubmission(201,student.practiceAdmission.admit);
+      const practiceTeaching = /^\/api\/papers\/sealed-practice\/([0-9A-HJKMNP-TV-Z]{26})\/teaching$/.exec(path);
+      if (practiceTeaching?.[1] && method === 'PUT' && student.practiceAdmission)
+        return json(res, 200, await student.practiceAdmission.teaching(practiceTeaching[1],await body(req)));
       if (path === '/api/retention/posttests' && method === 'GET')
         return json(res, 200, await student.retention.listPosttests());
       if (path === '/api/retention/papers' && method === 'POST') {

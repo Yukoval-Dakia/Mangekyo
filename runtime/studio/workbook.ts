@@ -57,6 +57,7 @@ import {
 import { recordWorkbookPresentationCommand, workbookPresentation, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { isPracticeWorkbook, sealedPracticePaper, submitWithPracticeCustody } from './sealed-practice.ts';
 import { RequestError } from './sessions.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { loadSettings } from './settings.ts';
@@ -110,7 +111,13 @@ function mapReadFailure(error: unknown, missing: string, denied: string): never 
 }
 
 async function readPaperSnapshot(tx: ReadTransaction, id: FactId) {
-  if (await factType(tx, id) !== workbookPaperType) {
+  const type = await factType(tx,id);
+  if (type === null) {
+    await assertUnburned(tx,'fact',[id]);
+    const opened = await sealedPracticePaper(tx,id);
+    if (opened) return {paper:opened.paper,revision:opened.custody.value.paper.rev,pending:true as const};
+  }
+  if (type !== workbookPaperType) {
     throw new RequestError(404, '找不到这份试卷。');
   }
   try {
@@ -243,6 +250,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         savedAt: paper.savedAt,
         source,
         questions: workbookQuestionsView(paper),
+        ...(await isPracticeWorkbook(tx,paperId) ? {sealedPractice:true as const} : {}),
         ...(paper.assessmentRelease ? { assessmentReleaseRef: paper.assessmentRelease.releaseRef } : {}),
         attempts,
       };
@@ -372,7 +380,8 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         return readAttemptOrNull(tx,attemptId);
       });
       const existing = await priorAttempt();
-      const paper = existing?.paper ?? await db.snapshot({ learner: studioLearner }, (tx) => readPaper(tx, paperId));
+      const snapshot = existing ? undefined : await db.snapshot({ learner: studioLearner }, tx => readPaperSnapshot(tx,paperId));
+      const paper = existing?.paper ?? snapshot!.paper;
       let graded: ReturnType<typeof gradeWorkbook>;
       try {
         graded = gradeWorkbook(paper, data.answers);
@@ -390,9 +399,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         return get(paperId);
       }
       try {
-        await handle({
+        const request = {
           learner: studioLearner,
-          actor: 'learner',
+          actor: 'learner' as const,
           purpose: storagePurpose,
           type: submitWorkbookAttemptCommand, deletionWatermark,
           id: commandId(stableId('submit-workbook-attempt', attemptId)),
@@ -400,7 +409,9 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
             id: attemptId,
             data,
           },
-        });
+        };
+        if (snapshot?.pending) await submitWithPracticeCustody(db,activity,hooks,paperId,request);
+        else await handle(request);
       } catch (error) {
         if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) {
           throw new RequestError(403, '这份试卷当前不可读取。');

@@ -16,6 +16,7 @@ import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
 import { observePaperTime } from './workbook-duration';
 import { useWorkbookPresentation } from './workbook-presentation';
+import { SealedPracticeAuthor } from './sealed-practice';
 import './workbook.css';
 
 export type WorkbookProps = {
@@ -388,6 +389,7 @@ function AuthorPage({ materials }: { materials: Material[] }) {
         ‹ 返回试卷
       </a>
       <PageTitle title="新建试卷" meta="可写任意学科；保存后试卷即冻结，内容不再改动" />
+      <SealedPracticeAuthor />
       <form className="workbook-editor" onSubmit={submitSave}>
         <section className="workbook-editor-block">
           <label className="field">
@@ -1060,7 +1062,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                           : '评分标准题'}
                     </span>
                   </header>
-                  {question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} />}
+                  {question.sourceQuestionRef && (view.sealedPractice
+                    ? <small>原题第 {question.sourceQuestionRef.rev} 版</small>
+                    : <QuestionSource source={question.sourceQuestionRef} />)}
                   <p className="workbook-answer-prompt">{question.prompt}</p>
                   {question.kind === 'numeric' ? (
                     <label className="field">

@@ -3,6 +3,7 @@ import { assetType, checkQuestionTeachingSources, freezeQuestionAssessment, pars
 import { contentStableId, normalizeKnowledgeName } from './knowledge-entity.ts';
 import { fields, list, pageId, record, revision, text } from './parse.ts';
 import { parseQuestionMetadata } from './question-authoring.ts';
+import { arithmeticPractice as parseArithmeticPractice } from './arithmetic-practice.ts';
 
 export const questionStateType = 'content.questionState';
 export const questionMetaType = 'overlay.question_meta';
@@ -30,7 +31,7 @@ export function parseQuestionDisposition(input: unknown) {
 
 export function parseQuestionState(input: unknown) {
   const value = record(input);
-  fields(value, 'questionId', 'restrictions', 'last', 'recheck');
+  fields(value, 'questionId', 'restrictions', 'last', 'recheck', 'arithmeticPractice');
   const recheck = value.recheck;
   if (typeof recheck !== 'number' || !Number.isSafeInteger(recheck) || recheck < 0) throw new Error('复验代次无效。');
   const restrictions = list(value.restrictions).map(parseQuestionDisposition);
@@ -38,12 +39,14 @@ export function parseQuestionState(input: unknown) {
       restrictions.some(entry => entry.action !== 'stop' && entry.action !== 'withdraw')) {
     throw new Error('题目停发记录无效。');
   }
+  const practice = value.arithmeticPractice === undefined ? undefined : parseArithmeticPractice(value.arithmeticPractice);
   return { questionId: pageId(value.questionId), restrictions, recheck,
+    ...(practice === undefined ? {} : {arithmeticPractice: practice}),
     last: value.last === null ? null : parseQuestionDisposition(value.last),
   };
 }
 
-export async function readQuestionState(read: Pick<ReadContext, 'fact'>, id: FactId) {
+export async function readQuestionState(read: {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>}, id: FactId) {
   const snapshot = await read.fact(await questionStateId(id), { mode: 'following' });
   if (snapshot.type !== questionStateType) throw new Error('题目处置记录类型不匹配。');
   const state = parseQuestionState(snapshot.value);
@@ -126,6 +129,7 @@ export async function openQuestionForRelease(
   }
   await checkQuestionTeachingSources(read, asset);
   const { state } = await readQuestionState(read, id);
+  if (state.arithmeticPractice) throw new Error('整数练习须经封闭练习发放。');
   const stop = state.restrictions.find(entry => entry.scope === 'all' || releaseUses.includes(entry.scope));
   if (stop) throw new Error(stop.reason);
   const slot = await read.slot<QuestionVerification>({

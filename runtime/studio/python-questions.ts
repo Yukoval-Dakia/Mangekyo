@@ -3,10 +3,13 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import type { WorkbookSourceQuestionRef } from '../../modules/activity/workbook-values.ts';
 import { workbookAnswerDisplayCandidates } from '../../modules/activity/evidence-read.ts';
+import { arithmeticPracticePaperId, practiceCustodyId, practiceCustodyType, readPracticeCustody } from '../../modules/activity/sealed-practice.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { workbookPaper } from '../../modules/activity/workbook-values.ts';
 import { workspaceEntry, workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
+import { assetType } from '../../modules/content/asset.ts';
+import { openArithmeticPractice } from '../../modules/content/arithmetic-practice.ts';
 import { toolFailure } from '../../executors/teaching/learning-tools.ts';
 import type { PythonRead } from '../../executors/teaching/python-sdk.ts';
 import { purpose } from './identity.ts';
@@ -17,7 +20,23 @@ import { resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourc
 const scanLimit = 96;
 const outputBytes = 12 * 1024;
 type Witness = Parameters<SourceTrack>;
-type Question = { id: string; rev: number; title: string; prompt: string; kc_ids: string[]; answer_exposed: true | null };
+type Question = { id: string; rev: number; title: string; prompt: string; kc_ids: string[]; answer_exposed: boolean | null;
+  practice_id?: string };
+
+async function practiceExposure(tx: ReadTransaction, ref: Parameters<typeof arithmeticPracticePaperId>[0],
+  version: number, maySend: WorkspaceSourceRecipient, track: SourceTrack) {
+  const id = await arithmeticPracticePaperId(ref);
+  const read = createAuthorizedFactReader(tx,purpose,maySend);
+  const record = await readPracticeCustody(read,await practiceCustodyId(id));
+  if (!record || record.value.question.id !== ref || record.value.paper.id !== id) return;
+  if (record.value.kind === 'sealed' && record.value.question.rev !== version) {
+    const fact = await read.fact(ref,{mode:'pinned',rev:record.value.question.rev});
+    if (!await openArithmeticPractice(read,ref,fact)) return;
+    track(fact,'pinned');
+  }
+  track(record.fact,'following');
+  return {kind:record.value.kind,paperId:id};
+}
 
 async function confirmedAnswerDisplay(tx: ReadTransaction, source: WorkbookSourceQuestionRef, through: Tick,
   maySend: WorkspaceSourceRecipient, track: SourceTrack): Promise<true | null> {
@@ -65,9 +84,14 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
   const { rows } = await tx.query<{ id: string }>(`
     SELECT f.id FROM facts f JOIN fact_revs r
       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.kind='value'
+    WHERE f.learner_id=$1 AND f.type=ANY($2::text[]) AND f.retracted_rev IS NULL AND r.kind='value'
       AND f.purpose && ARRAY[$3,'all'] AND r.purpose && ARRAY[$3,'all'] AND r.tick<=$4::bigint
       AND r.data->>'kind'='question'
+      AND (f.type<>$9 OR EXISTS (
+        SELECT 1 FROM facts c JOIN fact_revs cr ON (cr.learner_id,cr.fact_id,cr.rev)=(c.learner_id,c.id,c.current_rev)
+        WHERE c.learner_id=f.learner_id AND c.type=$10 AND c.retracted_rev IS NULL AND cr.data#>>'{question,id}'=f.id
+          AND c.purpose && ARRAY[$3,'all']
+      ))
       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
       AND ($7::boolean OR EXISTS (
         SELECT 1 FROM facts e JOIN fact_revs er
@@ -80,7 +104,8 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
           AND (er.data#>>'{from,sourceUse,id}',er.data#>>'{from,sourceUse,rev}')=(f.id,f.current_rev::text)
       ))
     ORDER BY f.created_tick DESC,f.id LIMIT $8`,
-  [tx.learner, workspaceEntryType, purpose, through, knowledgeEdgeType, JSON.stringify(concepts), !concepts.length, scanLimit + 1]);
+  [tx.learner, [workspaceEntryType,assetType], purpose, through, knowledgeEdgeType, JSON.stringify(concepts),
+    !concepts.length, scanLimit + 1, assetType, practiceCustodyType]);
 
   const items: Question[] = [];
   let truncated = rows.length > scanLimit;
@@ -93,7 +118,7 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
     const track: SourceTrack = (...w) => witnesses.push(w);
     const source = await resolveSource(tx, id, { ...sourceAccess, track });
     const root = witnesses.find(([fact]) => fact.ref.id === id)?.[0];
-    if (!isSourceFactId(id) || source?.kind !== 'question' || root?.type !== workspaceEntryType) continue;
+    if (!isSourceFactId(id) || source?.kind !== 'question' || !root) continue;
     const kcIds = new Set<string>();
     if (concepts.length) {
       const { rows: edges } = await tx.query<{ id: string }>(`
@@ -118,14 +143,24 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
       }
       if (!kcIds.size) continue;
     }
-    const answerExposed = await confirmedAnswerDisplay(tx, root.ref, through, access.maySend, track);
+    let custody;
+    if (root.type === assetType) {
+      try { custody = await practiceExposure(tx, root.ref.id, root.ref.rev, access.maySend, track); }
+      catch (error) {
+        if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+      }
+      if (!custody) continue;
+    } else if (root.type !== workspaceEntryType) continue;
+    const answerExposed = custody?.kind === 'sealed' ? false : await confirmedAnswerDisplay(tx, root.ref, through, access.maySend, track);
     if (answerExposed === null) unknown++;
     else known++;
     // A row excluded by the answer filter may still determine the coverage status.
     for (const witness of witnesses) access.track(...witness);
     if (args.answer_exposed !== undefined && args.answer_exposed !== answerExposed) continue;
-    const { title, body } = workspaceEntry(root.value);
-    const item = { id, rev: source.rev, title, prompt: body, kc_ids: [...kcIds].sort(), answer_exposed: answerExposed };
+    const prompt = root.type === workspaceEntryType ? workspaceEntry(root.value).body : source.content;
+    if (typeof prompt !== 'string') continue;
+    const item = { id, rev: source.rev, title:source.title, prompt, kc_ids: [...kcIds].sort(),
+      answer_exposed:answerExposed, ...(custody && {practice_id:custody.paperId}) };
     remainingBytes -= Buffer.byteLength(JSON.stringify(item)) + 1;
     if (items.length === limit || remainingBytes < 0) {
       truncated = true;
