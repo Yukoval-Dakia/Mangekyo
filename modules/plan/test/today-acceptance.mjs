@@ -39,7 +39,8 @@ test('固定周三晚，明日作业取消时仅重排未开始项；三分钟�
   assert.equal(session.expiresAt,'2026-11-18T15:00:00.000Z');
   assert.deepEqual(planToday({...next,candidates:[draft],rules:[session]}).protectedItems,[draft]);
   assert.equal(planToday({...next,candidates:[],rules:[session]}).budgetMinutes,20);
-  const one = planToday({...next,candidates,mode:'one-hand'});
+  const one = planToday({...next,candidates:applyCandidateInformation(candidates, [], [{ref:'pack/reading'}]),mode:'one-hand'});
+  assert.ok(!one.shortlist.includes('pack/reading'));
   assert.equal(one.totalMinutes,3); assert.equal(one.items[0].candidate.input,'tap');
   const long = {...next,candidates:[make('forty-four',44,1),make('forty-five',45,1),make('hour',60,1,{input:'voice'})],
     constraints:{budget_min:60,locks:[],deadlines:[]},duration:'45min+'};

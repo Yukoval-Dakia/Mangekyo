@@ -45,7 +45,9 @@ export function applyCandidateInformation(
 ): PlanCandidate[] {
   const screened = new Set(pool.map(candidate => candidate.ref));
   const information = new Map(rankedCandidates.map(row => [row.ref, row]));
-  return candidates.map(candidate => {
+  const explicitIds = new Set(candidates.map(candidate => candidate.id));
+  const screenedPacks = packCandidates().filter(pack => screened.has(pack.id) && !explicitIds.has(pack.id));
+  return [...candidates, ...screenedPacks].map(candidate => {
     if (!screened.has(candidate.id)) return candidate;
     const row = information.get(candidate.id);
     if (!row) return { ...candidate, excludedFromProbePool: true };
