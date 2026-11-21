@@ -1,5 +1,4 @@
 // Each page writes its own clock, so blur/pagehide in one tab cannot overwrite another tab.
-import {requestId} from './api';
 
 export type ItemPacing = {version: 1; items: {
   questionId: string; effectiveDurationMs: number; skipped: boolean; returned: boolean;
@@ -17,10 +16,17 @@ function keysStartingWith(start: string) {
 export function clearWorkbookTiming(paperId: string, sitting: string) {
   for (const key of keysStartingWith(prefix(paperId, sitting))) localStorage.removeItem(key);
 }
+export function pruneWorkbookTiming(expired: (id: string) => boolean) {
+  const root = 'mangekyo:workbook:pacing:';
+  for (const key of keysStartingWith(root)) {
+    const [, sitting] = key.slice(root.length).split(':');
+    if (sitting && expired(sitting)) localStorage.removeItem(key);
+  }
+}
 export function workbookTimingParts(paperId: string, sitting: string) {
   const start = prefix(paperId, sitting);
   const clocks = start + 'clock:';
-  writer ??= requestId();
+  writer ??= crypto.getRandomValues(new Uint32Array(4)).join('-');
   return {
     clockKey: clocks + writer,
     skip(id: string) { localStorage.setItem(start + 'skip:' + id, '1'); },

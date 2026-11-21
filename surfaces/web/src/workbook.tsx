@@ -914,24 +914,51 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     return () => controller.abort();
   }, [foreground, paperId, reload, deletionGeneration]);
 
-  useEffect(() => {
-    if (!view || !draft) return;
-    const submitted = view.attempts.find((attempt) => attempt.requestId === draft.requestId);
-    if (!submitted) return;
-    let current = true;
-    void readFrozenSubmission(paperId, draft.requestId).then(body => {
-      if (!current) return;
-      if ((body && !confirmsPaperSubmission(submitted, body)) || (!body && draft.frozenSubmission)) {
-        setError('服务端记录与原交卷请求无法核对。');
-        return;
+  const sittingId = draft?.requestId;
+  const scope = foreground && watermark.ready && currentGeneration && sittingId && view?.id === paperId
+    ? JSON.stringify([paperId, sittingId, deletionGeneration]) : null;
+  const [recovery, setRecovery] = useState<{scope: string; state: 'editable' | 'frozen' | 'error'}>();
+  const hintedFrozen = draft?.frozenSubmission === true;
+  useLayoutEffect(() => {
+    if (!scope || !sittingId || !view) return;
+    const id = sittingId, binding = scope, attempts = view.attempts;
+    let sequence = 0;
+    async function check() {
+      const token = ++sequence;
+      setRecovery(undefined);
+      try {
+        const current = () => sequence === token && observedDeletionWatermark() === deletionGeneration &&
+          bindDeletionWatermark(id) === deletionGeneration &&
+          (restoreAttemptDraft(paperId) ?? unsaved.current)?.requestId === id;
+        const body = await readFrozenSubmission(paperId, id, current);
+        if (!current()) return;
+        if (body && (body.requestId !== sittingId || body.deletionWatermark !== deletionGeneration))
+          throw new Error('原交卷请求的归属无法核对。');
+        const receipt = attempts.find(attempt => attempt.requestId === sittingId);
+        if ((!body && hintedFrozen) || (body && receipt && !confirmsPaperSubmission(receipt, body)))
+          throw new Error('原交卷请求或服务端回执无法核对。');
+        if (receipt) {
+          setDraft(retireAttemptDraft(paperId, id));
+          return;
+        }
+        setRecovery({scope: binding, state: body ? 'frozen' : 'editable'});
+      } catch (error) {
+        if (sequence !== token) return;
+        setError(error instanceof Error ? error.message : '无法核对本机交卷请求。');
+        setRecovery({scope: binding, state: 'error'});
       }
-      setDraft(retireAttemptDraft(paperId, draft.requestId));
-    }).catch(() => { if (current) setError('无法核对本机交卷请求。'); });
-    return () => { current = false; };
-  }, [view, draft, paperId]);
+    }
+    void check();
+    window.addEventListener('focus', check);
+    return () => { sequence++; window.removeEventListener('focus', check); };
+  }, [scope, paperId, sittingId, deletionGeneration, view, hintedFrozen]);
+  const recovered = recovery?.scope === scope ? recovery.state : undefined;
+  const frozen = hintedFrozen || recovered === 'frozen';
 
   useEffect(() => {
     if (!watermark.ready || !view || draft || view.attempts.length > 0) return;
+    const existing = restoreAttemptDraft(paperId);
+    if (existing) { setDraft(existing); return; }
     const next: AttemptDraft = {
       version: paperId,
       ...(view?.revision !== undefined && {paperRev: view.revision}),
@@ -972,8 +999,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         .map((feedback) => feedback.questionId)
     : [];
   const showForm = Boolean(draft) || attempts.length === 0;
-  const submissionDisabled = busy || !draft || !watermark.ready || !currentGeneration;
-  const answerDisabled = submissionDisabled || !!draft?.frozenSubmission;
+  const submissionDisabled = busy || !draft || !watermark.ready || !currentGeneration ||
+    (recovered !== 'editable' && recovered !== 'frozen');
+  const answerDisabled = submissionDisabled || frozen;
 
   const revision = view?.id === paperId ? view.revision : undefined;
   const frozenQuestions = activeAttempt?.questions;
@@ -995,11 +1023,10 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   const form = useRef<HTMLFormElement>(null);
   const clock = useRef<ReturnType<typeof observePaperTime> | null>(null);
   const draftAvailable = watermark.ready && currentGeneration && draft && (draft.paperRev ?? 1) === revision;
-  const timingId = questions.allowed && draftAvailable && view && (draft.frozenSubmission || !attempts.some((attempt) => attempt.requestId === draft.requestId))
+  const timingId = recovered === 'editable' && questions.allowed && draftAvailable && view && !attempts.some((attempt) => attempt.requestId === draft.requestId)
     ? draft.requestId : null;
   const versioned = view?.pacingVersion === 1 && !view.sealedPractice;
   const trackItems = versioned && draft?.pacingVersion === 1;
-  const frozen = draft?.frozenSubmission === true;
   useEffect(() => {
     if (!timingId || !form.current || frozen) return;
     const observation = observePaperTime(form.current, paperId, timingId, trackItems ? {
@@ -1070,8 +1097,15 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     setAttemptId(id);
   }
 
-  function startRedo(focus: 'wrong' | 'full') {
+  function releaseCurrentDraft() {
+    const stored = restoreAttemptDraft(paperId) ?? unsaved.current;
+    if (stored?.requestId !== draft?.requestId) { setDraft(stored); return false; }
     if (draft) retireAttemptDraft(paperId, draft.requestId);
+    return true;
+  }
+
+  function startRedo(focus: 'wrong' | 'full') {
+    if (!releaseCurrentDraft()) return;
     const next: AttemptDraft = {
       version: paperId,
       ...(view?.revision !== undefined && {paperRev: view.revision}),
@@ -1097,14 +1131,15 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const sitting = submissionDraft();
-    if (!view || !sitting || coveredItem) return;
+    if (!view || !sitting || (coveredItem && !frozen)) return;
     setBusy(true);
     setError('');
     let bodyFrozen = false;
     try {
-      const body = await freezeSubmission(paperId, sitting.requestId, () => {
+      const currentSitting = () => submissionDraft()?.requestId === sitting.requestId;
+      const body = await freezeSubmission(paperId, sitting.requestId, currentSitting, () => {
         const stored = currentStoredDraft(true);
-        if (stored?.requestId !== sitting.requestId || stored.frozenSubmission)
+        if (frozen || stored?.requestId !== sitting.requestId || stored.frozenSubmission)
           throw new Error('原交卷请求无法核对，请重新打开试卷。');
         const answers: Record<string, string | null> = {};
         for (const question of visibleQuestions) {
@@ -1193,10 +1228,23 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   if (!questions.allowed) return <p role="status">{questions.error ?? '正在确认试卷展示许可…'}
     {questions.error && <button onClick={questions.retry}>重试</button>}</p>;
 
+  if (draft && scope && (!recovered || recovered === 'error' || frozen)) {
+    if (!recovered) return <p role="status">正在核对本机交卷请求…</p>;
+    return <section>
+      <p role="status">{recovered === 'error' ? '交卷状态待核对，原草稿已保留。' :
+        '本次交卷内容已固定。重试将使用首次交卷的作答和用时。'}</p>
+      {error && <p role="alert">{error}</p>}
+      {recovered === 'error'
+        ? <button type="button" onClick={() => setReload(value => value + 1)}>重新核对</button>
+        : <button type="button" disabled={submissionDisabled} onClick={() => void submit()}>重试原交卷请求</button>}
+      <button type="button" disabled={busy} onClick={() => {
+        setDraft(retireAttemptDraft(paperId, draft.requestId)); coverItem(null);
+      }}>清空草稿</button>
+    </section>;
+  }
   if (draft && !draftAvailable) {
     return <section>{watermark.notice}{watermark.ready && <>
       <p>草稿对应的试卷版本或删除水位已变化。</p>
-      {frozen && currentGeneration && <button type="button" disabled={busy} onClick={() => void submit()}>重试原交卷请求</button>}
       {error && <p role="alert">{error}</p>}
       <button type="button" onClick={() => {setDraft(retireAttemptDraft(paperId, draft.requestId)); coverItem(null);}}>清除旧草稿并重新打开</button>
     </>}</section>;
@@ -1327,7 +1375,6 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                   </ResumeScratch>
                 </article>
               ))}
-              {frozen && <p role="status">本次交卷内容已固定。重试将使用首次交卷的作答和用时。</p>}
               {error && (
                 <p className="error-text" role="alert">{error}</p>
               )}
@@ -1339,7 +1386,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </>}
                 <button type="button" className="text-button" disabled={busy || (!watermark.ready && !view.attempts.length)} onClick={() => {
                   coverItem(null);
-                  if (draft) retireAttemptDraft(paperId, draft.requestId);
+                  if (!releaseCurrentDraft()) return;
                   if (view.attempts.length === 0) {
                     const next: AttemptDraft = {
                       version: paperId,
@@ -1357,7 +1404,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                   清空草稿
                 </button>
                 <button type="submit" className="primary-button" disabled={submissionDisabled || !!coveredItem || (!frozen && !visibleQuestions.some((question) => draft?.answers[question.id]?.trim()))}>
-                  {busy ? '交卷中…' : frozen ? '重试原交卷请求' : markedQuestions.length ? '直接交卷' : '交卷并查看反馈'}
+                  {busy ? '交卷中…' : markedQuestions.length ? '直接交卷' : '交卷并查看反馈'}
                 </button>
               </div>
             </form>
