@@ -17,6 +17,7 @@
     "./facts/paper-capsules": "./paper-capsules.ts",
     "./facts/knowledge-reads": "./knowledge-reads.ts",
     "./facts/textbook-mastery-pulse": "./textbook-mastery-pulse.ts",
+    "./facts/textbook-distillation": "./textbook-distillation.ts",
     "./facts/correction-micro-variant": "./correction-micro-variant-read.ts",
     "./facts/question-release": "./question-release.ts",
     "./facts/arithmetic-practice": "./arithmetic-practice.ts",
