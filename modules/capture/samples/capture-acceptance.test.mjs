@@ -19,6 +19,7 @@ const { createStudioCommandHooks } = await load('runtime/studio/command-hooks.ts
 const { stableId } = await load('runtime/studio/identity.ts');
 const { createCommandReadContext, UnsupportedReadError } = await load('kernel/src/commands/reads.ts');
 const { gatherSnapshot } = await load('kernel/src/derivations/gather.ts');
+const { readEffectiveSlotVersion } = await load('kernel/src/derivations/revalidate.ts');
 const { sealCandidate, submitCandidate } = await load('kernel/src/derivations/candidate.ts');
 const { runEffect } = await load('kernel/src/work/index.ts');
 const { enqueueWork } = await load('kernel/src/work/todos.ts');
@@ -55,11 +56,20 @@ await withLearnerDatabase(learner, async db => {
   }), purpose);
   const modules = await Promise.all(['capture', 'content', 'activity'].map(loadStudioTestModule));
   const hooks = createStudioCommandHooks();
-  const handle = createCommandHandler(db, { modules, hooks });
+  const withExtraction = (tx, purpose, base) => ({ ...base, async slot(ref, options) {
+    if (ref.type !== layeredExtractionSlot || options.mode !== 'following') return base.slot(ref, options);
+    const effective = await readEffectiveSlotVersion(tx, ref, layeredExtractionDeriver, purpose);
+    if (!effective) throw new Error('Expected an effective extraction');
+    return effective.snapshot;
+  } });
+  const handle = createCommandHandler(db, { modules, hooks, bindCommandRead: (tx, request, base) => withExtraction(tx, request.purpose, base) });
   function send(type, input, { actor = 'learner', purpose = 'storage', commandId: id = commandId() } = {}) {
     return handle({ learner, id, type, input, actor, purpose });
   }
-  const read = (action, purpose = 'storage') => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
+  const read = (action, purpose = 'storage', layered = false) => db.snapshot({ learner }, tx => {
+    const base = createCommandReadContext(tx, purpose);
+    return action(layered ? withExtraction(tx, purpose, base) : base);
+  });
   const current = (id, purpose) => read(context => context.fact(id, { mode: 'following' }), purpose);
   const ingestPhoto = (id, title, originals, options) => send('capture.ingest', {
     id, purpose: ['storage', 'teaching'], envelope: visualEnvelope('photo', title, originals),
@@ -303,5 +313,28 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   await assert.rejects(read(ctx=>openPaperRun(ctx,{issuanceId:next.wrote[0].id,runId})),/回收与发卷不匹配/);
   assert.deepEqual(await read(ctx=>projectIssuedPaper(ctx,issue)),projected);
   assert.equal((await item()).status,'recognized');
+  const photo = [firstPage('a')], source = stableId('paper witness photo');
+  const captured = await send('capture.ingest', {id:source,purpose:['storage','teaching'],envelope:visualEnvelope('paper-return','手写',photo)});
+  const returned = {issuanceId,source:captured.wrote[0],page:questionPages[0],original:0};
+  const [first,redo] = ['paper witness run','paper witness redo'].map(label=>stableId(label));
+  for (const retryId of [first,redo]) await send('capture.collectPaper',{...returned,retryId});
+  const key = {target:returned.source,accessEpoch:'0',modelMethod:'fixture/vision-v1'};
+  const reopen = async runId => (await read(ctx=>openPaperRun(ctx,{issuanceId,runId,extraction:'layered'}),'storage',true))
+    .items.find(item=>item.itemId==='q2').answers[0].witness;
+  const input = {issuanceId,runId:first,itemId:'q2',slotId:'slot1'};
+  const previous = await extract(key,[unknowable],photo);
+  const old = await reopen(first);
+  const latest = await extract(key,[{...unknowable,body:{...unknowable.body,candidates:['4','9']}}],photo);
+  const fresh = await reopen(first);
+  assert.deepEqual([old.basis.derivationId,fresh.basis.derivationId],[previous.sealed.id,latest.sealed.id]);
+  assert.deepEqual(old.source,fresh.source);
+  await assert.rejects(send('capture.correctPaperAnswer',{...input,witness:old,text:'0.5'}),/抽取版本已变更/);
+  await assert.rejects(send('capture.clarifyPaperAnswer',{...input,witness:fresh,runId:redo}),/作答见证与发卷/);
+  await assert.rejects(send('capture.clarifyPaperAnswer',{...input,witness:fresh,extraction:'saved'}),/见证与抽取方式/);
+  await assert.rejects(send('capture.correctPaperAnswer',{...input,witness:{...fresh,originalPage:2},text:'4'}),/作答位置已变更/);
+  assert.equal((await current(source)).ref.rev,old.source.rev);
+  assert.equal((await send('capture.correctPaperAnswer',{...input,witness:fresh,text:'4'})).wrote.length,1);
+  assert.equal((await send('capture.clarifyPaperAnswer',{...input,runId:redo,witness:await reopen(redo)})).wrote.length,1);
+  console.log(JSON.stringify({checked:'paper witness pg',first,redo,old:old.basis,current:fresh.basis,invalidWrites:0,currentWrites:2}));
   console.log(JSON.stringify({checked:'capture pg',pages:projected.pages.length,returned:run.pages.length,stickyText:'0.5'}));
 }

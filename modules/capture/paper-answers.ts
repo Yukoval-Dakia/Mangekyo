@@ -1,4 +1,4 @@
-import { factId, FactNotFoundError, type FactId, type FactWrite, type ReadContext } from '@mangekyo/kernel';
+import { derivationId, factId, FactNotFoundError, learnerId, type FactId, type FactWrite, type ReadContext } from '@mangekyo/kernel';
 import { clarificationRegion, cropKey, firstAnswerBlocks, layeredExtractionSlot, mayExtract, mergeLayeredSource,
   type LayeredExtractionValue } from './extraction.ts';
 import { paperInteger } from './paper-anchor.ts';
@@ -37,16 +37,19 @@ async function openPage(read: ReadContext, page: CollectedPage, runId: FactId,
     throw new Error('回收原图已变更。');
 
   const blocks = new Map<string, Block>();
-  if (!mayExtract(fact)) return { fact, source, blocks };
-  const outcome = extraction === 'layered' ? (await read.slot<LayeredExtractionValue>(
-    { learner: fact.ref.learner, type: layeredExtractionSlot, key: fact.ref.id }, { mode: 'following' },
-  )).outcome : null;
+  const slot = { learner: fact.ref.learner, type: layeredExtractionSlot, key: fact.ref.id };
+  const snapshot = extraction === 'layered' && mayExtract(fact)
+    ? await read.slot<LayeredExtractionValue>(slot, { mode: 'following' }) : null;
+  if (snapshot && (snapshot.slot.learner !== slot.learner || snapshot.slot.type !== slot.type || snapshot.slot.key !== slot.key))
+    throw new Error('分层抽取与回收原件不匹配。');
+  const basis = snapshot ? { mode: 'layered' as const, derivationId: snapshot.id } : { mode: 'saved' as const, derivationId: null };
+  if (!mayExtract(fact)) return { fact, source, blocks, basis };
   const allowed = new Set(questions.filter(question => question.pages.includes(page.number)).map(question => question.itemId));
   function accept(block: Block) {
     return block.body.crop_ref?.original === page.original && block.body.itemId &&
       allowed.has(block.body.itemId) && block.body.slotId;
   }
-  const extracted = mergeLayeredSource(fact, outcome).source.unit.blocks;
+  const extracted = mergeLayeredSource(fact, snapshot?.outcome ?? null).source.unit.blocks;
   for (const block of firstAnswerBlocks(extracted)) {
     if (!accept(block)) continue;
     const key = cropKey(block)!;
@@ -65,13 +68,14 @@ async function openPage(read: ReadContext, page: CollectedPage, runId: FactId,
     if (retained.has(location(block))) blocks.delete(key);
   }
   for (const { block } of edits) blocks.set(cropKey(block)!, block);
-  return { fact, source, blocks };
+  return { fact, source, blocks, basis };
 }
 
 /**
  * Read through the recipient-authorized context. Recognition uses the exact itemId
  * from the printed question anchor. Pass an answer's witness to the clarification
- * or correction command. For layered mode, both readers need authorized slot access.
+ * or correction command unchanged. The command reopens the same read mode in
+ * its transaction. For layered mode, both readers need authorized slot access.
  */
 export async function openPaperRun(read: ReadContext, request: PaperRunRequest) {
   const { id, run, printed } = await openRun(read, request, true);
@@ -80,11 +84,13 @@ export async function openPaperRun(read: ReadContext, request: PaperRunRequest) 
     opened.push({ page: page.number, opened: await openPage(read, page, id, printed.questionAnchors, request.extraction) });
   }
   const items = printed.questionAnchors.map(question => {
-    const answers = opened.flatMap(({ page, opened: { fact, source, blocks } }) =>
+    const answers = opened.flatMap(({ page, opened: { fact, source, blocks, basis } }) =>
       [...blocks].flatMap(([regionKey, block]) => {
         const { body } = block;
         if (body.itemId !== question.itemId) return [];
-        const witness = { page, source: fact.ref, accessEpoch: fact.accessEpoch, regionKey,
+        const witness = { issuanceId: run.issuanceId, runId: id, itemId: question.itemId, slotId: body.slotId!, basis,
+          page, original: body.crop_ref!.original, originalPage: body.crop_ref!.page, blockId: block.id,
+          source: fact.ref, accessEpoch: fact.accessEpoch, regionKey,
           originalSha256: source.originals[body.crop_ref!.original]!.sha256 };
         return [{ slotId: body.slotId!, witness, value: body.status === 'unknown'
           ? { status: 'waiting' as const, region: clarificationRegion(fact, source, { id: block.id, body }) }
@@ -105,15 +111,21 @@ export function paperAnswerInput(input: unknown) {
   const { extraction } = row;
   if (extraction !== undefined && extraction !== 'saved' && extraction !== 'layered')
     throw new Error('纸卷抽取方式无效。');
+  const basis = object(witness.basis);
+  const mode = basis.mode;
+  if ((mode !== 'saved' && mode !== 'layered') || (mode === 'saved' && basis.derivationId !== null) ||
+      (extraction !== undefined && extraction !== mode)) throw new Error('作答见证与抽取方式不符。');
+  const context = paperAnswerContext(row);
   return {
-    issuanceId: factId(text(row.issuanceId, '发卷标识', 26)),
-    runId: factId(text(row.runId, '作答标识', 26)),
-    itemId: text(row.itemId, '固定题位', 200),
-    slotId: text(row.slotId, '作答位', 200),
-    ...(extraction === undefined ? {} : { extraction } as const),
+    ...context,
     witness: {
+      ...paperAnswerContext(witness),
+      basis: { mode, derivationId: mode === 'layered' ? derivationId(text(basis.derivationId, '抽取版本', 26)) : null } as const,
       page: paperInteger(witness.page, 1, 1_000_000, '回收页码'),
-      source: captureRef(witness.source),
+      original: paperInteger(witness.original, 0, 1_000_000, '回收图片位置'),
+      originalPage: paperInteger(witness.originalPage, 1, Number.MAX_SAFE_INTEGER, '原图页码'),
+      blockId: text(witness.blockId, '手写块标识', 200),
+      source: { ...captureRef(witness.source), learner: learnerId(text(object(witness.source).learner, '原件归属', 26)) },
       accessEpoch: text(witness.accessEpoch, '原件授权版本', 100),
       originalSha256: sha256(witness.originalSha256),
       regionKey: text(witness.regionKey, '手写区域', 500),
@@ -121,16 +133,29 @@ export function paperAnswerInput(input: unknown) {
   };
 }
 
+function paperAnswerContext(row: Record<string, unknown>) {
+  return { issuanceId: factId(text(row.issuanceId, '发卷标识', 26)),
+    runId: factId(text(row.runId, '作答标识', 26)),
+    itemId: text(row.itemId, '固定题位', 200),
+    slotId: text(row.slotId, '作答位', 200) };
+}
+
 export async function paperAnswerWrites(read: ReadContext, input: ReturnType<typeof paperAnswerInput>,
   correction?: string): Promise<readonly FactWrite[]> {
-  const { id, run, printed } = await openRun(read, input);
   const { witness, itemId, slotId } = input;
+  if (witness.issuanceId !== input.issuanceId || witness.runId !== input.runId ||
+      witness.itemId !== itemId || witness.slotId !== slotId)
+    throw new Error('作答见证与发卷、作答或题位不符。');
+  const { id, run, printed } = await openRun(read, input);
   const page = run.pages.find(page => page.number === witness.page);
-  if (!page || page.source.id !== witness.source.id || page.hash !== witness.originalSha256)
+  if (!page || page.source.id !== witness.source.id || page.hash !== witness.originalSha256 || page.original !== witness.original)
     throw new Error('已回收页与原图见证不符。');
-  const { fact, source, blocks } = await openPage(read, page, id, printed.questionAnchors, input.extraction);
+  const { fact, source, blocks, basis } = await openPage(read, page, id, printed.questionAnchors, witness.basis.mode);
+  if (basis.mode !== witness.basis.mode || basis.derivationId !== witness.basis.derivationId)
+    throw new Error('纸卷抽取版本已变更，请重新打开作答。');
   const block = blocks.get(witness.regionKey);
-  if (!block || block.body.itemId !== itemId || block.body.slotId !== slotId ||
+  if (!block || block.id !== witness.blockId || block.body.crop_ref?.page !== witness.originalPage ||
+      block.body.itemId !== itemId || block.body.slotId !== slotId || fact.ref.learner !== witness.source.learner ||
       fact.accessEpoch !== witness.accessEpoch || witness.source.rev < page.source.rev)
     throw new Error('原件授权或纸卷作答位置已变更。');
   const { body } = block;
