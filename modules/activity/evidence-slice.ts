@@ -1,6 +1,8 @@
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1, FactId, FactRef, Revision, Tick } from '@mangekyo/kernel';
 import { projectHelpExposure, type AdmittedHelpEvent, type HelpExposureEvidence } from './help-exposure.ts';
 import { helpAppliesTo, type HelpTarget } from './help-exposure-values.ts';
+import type { AssessmentRevisionRef, FormalAssessmentValue } from './assessment-values.ts';
+import type { WorkbookAttempt } from './workbook-values.ts';
 
 export type ActivityEvidenceObservation = {
   submission: { id: FactId; rev: Revision };
@@ -12,6 +14,27 @@ export type ActivityEvidenceObservation = {
   score?: number;
   duration?: number;
 };
+
+/** Project an authorized frozen whole paper and its settled result, if any. */
+export function workbookExamPacingEvent(
+  { id, rev }: FactRef, {submittedAt, effectiveDurationMs, paper}: WorkbookAttempt, frozen: AssessmentRevisionRef,
+  formal?: { state: string; releaseRef: AssessmentRevisionRef; score: FormalAssessmentValue['score'] },
+) {
+  const releaseItems = paper.assessmentRelease?.items;
+  const score = formal?.state === 'complete' && releaseItems?.length === paper.questions.length &&
+    paper.questions.every(question => releaseItems.some(item => item.itemId === question.id)) ? formal.score : null;
+  const scored = score && Number.isFinite(score.maximum) && score.maximum > 0 &&
+    Number.isFinite(score.earned) && score.earned >= 0 && score.earned <= score.maximum;
+  return {
+    ref:id, rev, occurred_at:submittedAt, concept_ids:[], item_novelty:'same', help_level:'unknown',
+    outcome:'unknown', claim_ids:[],
+    ...(effectiveDurationMs === undefined ? {} : {effective_duration_ms:effectiveDurationMs}),
+    exam_pacing: {
+      paper_key:JSON.stringify([frozen.id,frozen.rev]),
+      ...(scored && formal ? {scale_key:JSON.stringify(['workbook-formal-assessment@1',formal.releaseRef.id,formal.releaseRef.rev]),score} : {}),
+    },
+  } as const;
+}
 
 export function activityEvidenceSlice(
   watermark: Tick,

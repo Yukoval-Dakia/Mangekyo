@@ -4,8 +4,9 @@ import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import { pythonAttemptsLimit } from '../../executors/teaching/agent-tools.ts';
 import { toolFailure, type LearningError } from '../../executors/teaching/learning-tools.ts';
 import type { PythonRead, PythonReadValue } from '../../executors/teaching/python-sdk.ts';
-import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
-import { posttestIssuanceType, posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
+import { readWorkbookSubmissionCandidates } from '../../modules/activity/evidence-read.ts';
+import { activityEvidenceSlice, type ActivityEvidenceObservation, type workbookExamPacingEvent } from '../../modules/activity/evidence-slice.ts';
+import { posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -90,23 +91,14 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
         : absent('paper_ids','请提供当前获准的试卷引用。');
     }
   }
-  const {rows: refs} = await tx.query<{id:string;rev:number}>(`
-    SELECT f.id,f.current_rev AS rev FROM facts f JOIN fact_revs r
-      ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.type=ANY($2) AND f.retracted_rev IS NULL
-      AND f.purpose && ARRAY[$3,'all'] AND NOT EXISTS
-        (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id) AND f.changed_tick<=$4::bigint
-      AND ($5::text IS NULL OR r.data->>'submittedAt'>=$5) AND r.data->>'submittedAt'<=$6
-      AND ($7::text[] IS NULL OR (f.type=$8 AND r.data->>'paperId'=ANY($7)) OR
-        (f.type=$9 AND EXISTS (SELECT 1 FROM facts i JOIN fact_revs ir
-          ON (ir.learner_id,ir.fact_id,ir.rev)=(i.learner_id,i.id,1)
-          WHERE i.learner_id=f.learner_id AND i.id=r.data->>'paperId' AND i.type=$10
-            AND ir.data->'paper'->>'id'=ANY($7))))
-    ORDER BY f.created_tick DESC,f.id LIMIT $11`,[tx.learner,[workbookAttemptType,posttestSubmissionType],purpose,watermark,
-      typeof request.args.since === 'string' ? new Date(request.args.since).toISOString() : null,asOf,paperIds,workbookAttemptType,posttestSubmissionType,posttestIssuanceType,pythonAttemptsLimit + 1]);
+  const wholePaper = request.method === 'evidence_slice' && request.args.exam_pacing === true;
+  const refs = await readWorkbookSubmissionCandidates(tx,{purpose,through:watermark,asOf,paperIds,wholePaper,
+    since:typeof request.args.since === 'string' ? new Date(request.args.since).toISOString() : null,limit:pythonAttemptsLimit+1});
   if (refs.length > pythonAttemptsLimit)
     return toolFailure('limit_exceeded',`本次选择超过 ${pythonAttemptsLimit} 份作答，请缩小时间范围。`,{tool:'read_context',args:{intent:'tutoring'}});
-  const declared = refs.length ? await readPythonAttempts(tx,{refs},access) : undefined;
+  const events: ReturnType<typeof workbookExamPacingEvent>[] = [];
+  const declared = refs.length ? await readPythonAttempts(tx,{refs},
+    wholePaper ? {...access,recordExam:event=>events.push(event)} : access) : undefined;
   const rows = declared?.ok ? declared.rows : [];
   if (declared?.issues?.some(item => item.code === 'access_revoked'))
     return toolFailure('access_revoked','先前打开的作答已不可使用。',{tool:'read_context',args:{intent:'tutoring'}});
@@ -115,6 +107,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
     return {value:rows};
   }
   if (declared && (!declared.ok || declared.issues.length)) return absent('evidence_slice','部分作答来源无法确认，不能当作空证据切片。');
+  if (wholePaper) return {value:{...activityEvidenceSlice(watermark,asOf,undefined,[]),events}};
   const observations: ActivityEvidenceObservation[] = [];
   const omissions: NonNullable<CanonicalEvidenceSliceV1['omissions']>[number][] = [];
   const evidence = studioWorkbookEvidence(purpose,access.maySend);

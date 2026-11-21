@@ -21,6 +21,30 @@ const submissionCommands = {
   [recallSubmissionType]: submitRecallCommand,
 } as const;
 
+/** Select candidates in the requested snapshot. No reference is disclosed before it is reopened. */
+export async function readWorkbookSubmissionCandidates(tx: ActivityEvidenceReadScope, filter: {
+  purpose: string; through: Tick; since: string | null; asOf: string; paperIds: readonly string[] | null;
+  wholePaper: boolean; limit: number;
+}) {
+  const types = filter.wholePaper ? [workbookAttemptType] : [workbookAttemptType, posttestSubmissionType];
+  const {rows} = await tx.query<{id: FactId; rev: Revision}>(`
+    SELECT f.id,f.current_rev AS rev FROM facts f JOIN fact_revs r
+      ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+    WHERE f.learner_id=$1 AND f.type=ANY($2) AND f.retracted_rev IS NULL
+      AND f.purpose && ARRAY[$3,'all'] AND NOT EXISTS
+        (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id) AND f.changed_tick<=$4::bigint
+      AND ($5::text IS NULL OR r.data->>'submittedAt'>=$5) AND r.data->>'submittedAt'<=$6
+      AND ($7::text[] IS NULL OR (f.type=$8 AND r.data->>'paperId'=ANY($7)) OR
+        (f.type=$9 AND EXISTS (SELECT 1 FROM facts i JOIN fact_revs ir
+          ON (ir.learner_id,ir.fact_id,ir.rev)=(i.learner_id,i.id,1)
+          WHERE i.learner_id=f.learner_id AND i.id=r.data->>'paperId' AND i.type=$10
+            AND ir.data->'paper'->>'id'=ANY($7))))
+    ORDER BY f.created_tick DESC,f.id LIMIT $11`, [tx.learner, types, filter.purpose, filter.through,
+      filter.since, filter.asOf, filter.paperIds, workbookAttemptType, posttestSubmissionType,
+      posttestIssuanceType, filter.limit]);
+  return rows;
+}
+
 /** A later single-fact grant may license the same frozen question. Every intervening revision
  * must preserve the complete original, including its private scoring fields.
  * The host still opens the selected copy and its dependencies for the actual recipient.
