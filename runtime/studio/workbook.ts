@@ -1,3 +1,4 @@
+import { storeSettledValue } from '../../kernel/src/derivations/settled-value.ts';
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
 import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
@@ -593,24 +594,11 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         if (latest?.id !== prior?.id) return;
         await tx.withLearnerWrite(async tick => {
           const id = derivationId(stableId('rubric-result', selected.assessmentId, generation, request.requestId));
-          if (prior) await tx.query("UPDATE derivations SET lifecycle='superseded',selection_ended_tick=$3 WHERE learner_id=$1 AND id=$2", [tx.learner,prior.id,tick]);
-          await tx.insert('derivations', {
-            learner_id: tx.learner, id, slot_type: workbookRubricAssessmentType, slot_key: selected.assessmentId,
-            deriver: workbookRubricAssessmentVersion, scope_keys: JSON.stringify({paperId,attemptId}),
-            value: JSON.stringify(data), lifecycle: 'effective', freshness: 'current', is_shadow: false,
-            gather_tick: selected.manifest.gatherTick, effective_tick: tick, manifest: JSON.stringify(selected.manifest),
-          });
-          await tx.query(`INSERT INTO slot_state (learner_id,slot_type,slot_key,current_id,last_id,changed_tick,scope_keys)
-            VALUES ($1,$2,$3,$4,$4,$5,$6) ON CONFLICT (learner_id,slot_type,slot_key)
-            DO UPDATE SET current_id=EXCLUDED.current_id,last_id=EXCLUDED.last_id,changed_tick=EXCLUDED.changed_tick`,
-            [tx.learner,workbookRubricAssessmentType,selected.assessmentId,id,tick,JSON.stringify({paperId,attemptId})]);
-          await hooks.onSlotChanged(tx, tick, {
-            kind: 'effective',
-            slot: { learner: tx.learner, type: workbookRubricAssessmentType, key: selected.assessmentId },
-            id,
-            previousCurrent: prior ? derivationId(prior.id) : null,
-            freshness: 'current',
-          });
+          await storeSettledValue(tx, tick, {
+            kind: 'publish', id, slotType: workbookRubricAssessmentType, key: selected.assessmentId,
+            deriver: workbookRubricAssessmentVersion, scope: {paperId,attemptId}, value: data,
+            manifest: selected.manifest, previous: prior ? derivationId(prior.id) : null,
+          }, hooks);
         });
       });
       return get(paperId);

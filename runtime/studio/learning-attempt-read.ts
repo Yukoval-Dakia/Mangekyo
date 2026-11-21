@@ -1,7 +1,9 @@
+import { storeSettledValue } from '../../kernel/src/derivations/settled-value.ts';
 import type { FactChange } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, type DerivationId, type FactId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { isJson } from '../../kernel/src/declarations/define.ts';
 import type { FactRef, FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
 import { parseManifest, type Manifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
@@ -118,27 +120,16 @@ export async function carryRubricAssessments(
   );
   for (const row of rows) {
     const basis = await unchangedAssessmentBasis(tx, row);
-    if (!basis?.teaching) continue;
+    if (!basis?.teaching || !isJson(row.value)) continue;
     const manifest = parseManifest({ version: 1, learner: tx.learner, purpose: storagePurpose, gatherTick: tick, inputs: basis.inputs });
     if ((await revalidateManifest(tx, manifest, teachingPurpose)).kind !== 'valid') continue;
     const { assessment } = basis;
     const id = derivationId(stableId('rubric-purpose-carry', row.id, tick));
     const scope = { paperId: assessment.paperId, attemptId: assessment.attemptId, originalAssessmentId: row.original_id ?? row.id };
-    await tx.insert('derivations', {
-      learner_id: tx.learner, id, slot_type: workbookRubricAssessmentType, slot_key: row.slot_key,
-      deriver: workbookRubricAssessmentVersion, scope_keys: JSON.stringify(scope), value: JSON.stringify(row.value),
-      lifecycle: 'effective', freshness: 'current', is_shadow: false,
-      gather_tick: tick, effective_tick: tick, manifest: JSON.stringify(manifest),
-    });
-    await tx.query(
-      `UPDATE slot_state SET current_id=$4,last_id=$4,changed_tick=$5,last_error=NULL
-       WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3`,
-      [tx.learner, workbookRubricAssessmentType, row.slot_key, id, tick],
-    );
-    await rubricPropagation.onSlotChanged(tx, tick, {
-      kind: 'effective', slot: { learner: tx.learner, type: workbookRubricAssessmentType, key: row.slot_key },
-      id, previousCurrent: null, freshness: 'current',
-    });
+    await storeSettledValue(tx, tick, {
+      kind: 'carry', id, slotType: workbookRubricAssessmentType, key: row.slot_key,
+      deriver: workbookRubricAssessmentVersion, scope, value: row.value, manifest,
+    }, rubricPropagation);
   }
 }
 
