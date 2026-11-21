@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import type { BusWitness, CanonicalEvidenceSliceV1, EvidenceEventV1, LearnerId, Revision, Tick } from '@mangekyo/kernel';
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import { createAuthorizedFactReader } from '../../kernel/src/commands/reads.ts';
+import { snapshotFactReaders } from '../../kernel/src/commands/reads.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../kernel/test/learner-database.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { factWriter, id, learner, seed, use } from './test/facts.ts';
@@ -86,9 +86,14 @@ it('projects real Python cognition@3 mastery on Postgres and hides revoked nodes
           const out = await python.derive(method.deriver, slice);
           return out.kind === 'ok' && out.outcome.kind === 'value' ? out.outcome.value as CognitionOutput : null;
         },
-        reopen: async (_s, refs) => (await Promise.all(refs.map(async ref =>
-          (await readable(() => createAuthorizedFactReader(tx, 'teaching', () => true).reopen(ref))) ? ref : undefined)))
-          .filter((r): r is BusWitness => r !== undefined),
+        reopen: async (_s, refs) => {
+          const reader = snapshotFactReaders(tx)('teaching', () => true);
+          await reader.preloadFollowing(refs.map(ref => ref.id));
+          const opened: BusWitness[] = [];
+          for (const ref of refs)
+            if (await readable(() => reader.reopen(ref))) opened.push(ref);
+          return opened;
+        },
       }));
       const before = await run();
       expect(before.concepts[0]).toMatchObject({ conceptId: 'c-live', status: 'weak', independentAttempts: 1 });

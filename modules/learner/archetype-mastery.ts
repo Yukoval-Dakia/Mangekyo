@@ -5,7 +5,7 @@ import {
   type TextbookMasteryEvidenceBatch, type TextbookMasteryScope,
   type TextbookMasterySources,
 } from './textbook-mastery.ts';
-import type { CognitionOutput, PythonRetentionMethod } from './retention.ts';
+import { defaultRetentionMethod, readPythonRetentionMethod, type PythonRetentionMethod } from './retention.ts';
 
 export type ArchetypeFoldingMemberProof =
   | { readonly membership: BusWitness; readonly basis: readonly BusWitness[] }
@@ -293,6 +293,9 @@ export async function projectArchetypeMastery(request: ArchetypeMasteryRequest,
   const questions = new Map(acceptedClusters.flatMap(cluster => cluster.members.map(member =>
     [fixedQuestionKey(member.question), member.question] as const)));
   if (!questions.size) return { asOf: scope.asOf, clusters: [] };
+  if (readPythonRetentionMethod(sources.methodVersion ?? defaultRetentionMethod)) {
+    sources.prepareEvidence?.(scope, [...questions.values()].map(archetypeQuestionConceptId));
+  }
   const evidence = await sources.readEvidence(scope, [...questions.values()]);
   if (!evidence) return { asOf: scope.asOf, clusters: [] };
   const bound = bindEvidence(evidence, questions, scope);
