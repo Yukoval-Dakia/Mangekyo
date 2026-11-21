@@ -2,6 +2,7 @@ import { derivationId, factId, learnerId, type FactSnapshot, type ReadContext, t
 import { expect, it } from 'vitest';
 import { checkQuestionTeachingSources } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease as openReleaseContract } from '@mangekyo/module-content/facts/question-release';
+import { questionMetaEffectResult, questionMetaMethodVersion, settle as settleQuestionMeta } from '@mangekyo/module-content/question-meta';
 import {
   gather, openQuestionForRelease, questionVerificationEffectResult, settle, type QuestionVerificationEffectReceipt,
 } from '@mangekyo/module-content/question-verification';
@@ -66,6 +67,8 @@ it('matches unordered ledger receipts to the sealed owner, step, method, and ful
     [{ ...first!, request: { ...first!.request, label: 'question-contract-validation' } }, ...rest],
   ];
   for (const received of mismatches) expect(settle(sealed, received)).toMatchObject({ value: { status: 'needs-review' } });
+  const unbound = { ...first!, result: { invocationId: invocationIds[0]!, result: { answerKey: '5' } } };
+  expect(settle(sealed, [unbound, ...rest])).toMatchObject({ value: { status: 'needs-review' } });
   const repeated = { id: ownerId, plan: {...raw, effects: raw.effects.map(request => bindQuestionExecution(request, executions[0]!))} };
   expect(settle(repeated, receipts.map((receipt,index) => ({
     ...receipt, request: repeated.plan.effects[index]!,
@@ -76,6 +79,21 @@ it('matches unordered ledger receipts to the sealed owner, step, method, and ful
     const input = { ...request.input as object, verification: { ...sealed.plan.data, ...changed } };
     expect(settle(sealed, [{ ...first!, request: { ...request, input } }, ...rest])).toMatchObject({ value: { status: 'needs-review' } });
   }
+});
+
+it('accepts a gardening receipt without a verification module identity', () => {
+  const question = { id, rev, type: 'content.asset', epoch };
+  const gardening = { methodVersion: questionMetaMethodVersion, question, metadata: question,
+    sources: [{ ref: 'statement', basis: question }] };
+  const request = { stepKey: 'garden', label: 'question-meta-gardening', input: { gardening } };
+  const draft = { id, expectedRev: rev, append_metadata: null, basis: [], sticky: false };
+  const sealed = { id: ownerId, plan: { kind: 'input' as const, data: { draft, gardening }, effects: [request] } };
+  const result = questionMetaEffectResult('gardening-invocation', {
+    solutions: [{ method: '直接相加', explanation: '把 2 和 3 相加。', source_ref: 'statement' }],
+  });
+  expect(settleQuestionMeta(sealed, [{ ownerId, request, state: 'done', result }])).toMatchObject({ value: {
+    gardening: { status: 'suggestions' }, solutions: [{ method: '直接相加', verification: 'unverified' }],
+  } });
 });
 
 it('projects only designated prompt and known shared material and blocks unclassified inputs', async () => {
