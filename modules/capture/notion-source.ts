@@ -285,3 +285,26 @@ export function notionRefreshHasChanges(previous: SourceEnvelope, next: SourceEn
   const diff = notionRevisionDiff(previous, next);
   return previous.unit.title !== next.unit.title || Object.values(diff).some(ids => ids.length > 0);
 }
+
+export async function readActiveNotionSelectionSummary(
+  tx: { readonly learner: LearnerId; query<Row>(sql: string, params: readonly (string | number | null)[]): Promise<{ readonly rows: readonly Row[] }> },
+  selectionRead: NotionFactReader,
+  openSource: (id: FactId) => Promise<FactSnapshot | undefined>,
+  selectionId: string,
+) {
+  const selection = await readNotionSelection(selectionRead, tx.learner, selectionId);
+  if (!selection?.active) return undefined;
+  const { rows } = await tx.query<{ id: string }>(
+    `SELECT f.id FROM facts f JOIN fact_revs r ON (f.learner_id,f.id,f.current_rev)=(r.learner_id,r.fact_id,r.rev)
+     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
+       AND r.data->>'kind'='notion' AND r.data->>'sourceSelectionId'=$3 AND r.data->>'sourceSelectionEpoch'=$4`,
+    [tx.learner, captureSourceType, selection.id, selection.selectionEpoch],
+  );
+  let sourceCount = 0;
+  for (const row of rows) if (await openSource(factId(row.id))) sourceCount += 1;
+  return {
+    title: `Notion 选源 · ${selection.id}`,
+    summary: `已授权 ${sourceCount} 份同步来源（代次 ${selection.selectionEpoch}）`,
+    sourceCount,
+  };
+}

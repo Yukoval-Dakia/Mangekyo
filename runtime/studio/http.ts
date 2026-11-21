@@ -36,6 +36,7 @@ import type { openResearch } from './research.ts';
 import type { openRetention } from './retention.ts';
 import type { openRetentionComparison } from './retention-comparison.ts';
 import type { openIqdb } from './iqdb.ts';
+import { openTransparency } from './transparency.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import { ridingReview } from '../../modules/activity/workbook-views.ts';
@@ -120,9 +121,11 @@ export function serve(
     retention: ReturnType<typeof openRetention>;
     retentionComparison: ReturnType<typeof openRetentionComparison>;
     iqdb: ReturnType<typeof openIqdb>;
+    transparency?: ReturnType<typeof openTransparency>;
   },
   port: number,
 ) {
+  const transparency = student.transparency ?? openTransparency(db);
   const hosts = new Set(['localhost', '127.0.0.1'].map((host) => host + ':' + port));
   return createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -153,6 +156,9 @@ export function serve(
       if (path === '/api/iqdb/questions' && method === 'GET') {
         return json(res, 200, await student.iqdb.questions());
       }
+      if (path === '/api/ai/activity' && method === 'GET') return json(res, 200, await transparency.aiActivity());
+      if (path === '/api/knowledge/graph' && method === 'GET') return json(res, 200, await transparency.knowledgeGraph(url.searchParams));
+      if (path === '/api/memory/overview' && method === 'GET') return json(res, 200, await transparency.memoryOverview());
       if (path === '/api/iqdb/proposals' && method === 'POST') {
         return await offlineSubmission(201,(input,watermark) => student.iqdb.proposals(input,watermark));
       }

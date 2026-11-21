@@ -9,7 +9,10 @@ import { manifestFactInputs, revalidateManifest } from '../../kernel/src/derivat
 import { memoryReceipt, saveBeliefCommand } from '../../modules/companion/belief.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { applyClaimCommand, claimType, claimValue, ClaimInputError, matchesClaimEvidence, type ClaimRef } from '../../modules/companion/claim.ts';
+import { applyClaimCommand, claimType, matchesClaimEvidence, type ClaimRef } from '../../modules/companion/claim.ts';
+import {
+  activeClaimSuccessorSql, checkMemoryClaimsCurrent, parseStoredClaim, queryCurrentMemoryClaims,
+} from '../../modules/companion/memory-overview.ts';
 import { purpose, stableId } from './identity.ts';
 
 export const claimUndoToken = (command: string, id: string) => stableId('memory-undo-token', command, id);
@@ -18,44 +21,13 @@ export const claimWitness = (fact: FactSnapshot): ClaimRef => ({
   id: fact.ref.id, rev: fact.ref.rev, accessEpoch: fact.accessEpoch,
 });
 
-const activeSuccessor = (ignoreEntry = 'NULL') => `SELECT 1 FROM facts sf JOIN fact_revs sr
-  ON (sr.learner_id,sr.fact_id,sr.rev)=(sf.learner_id,sf.id,sf.current_rev)
-  WHERE sf.learner_id=f.learner_id AND sf.type=f.type AND sf.retracted_rev IS NULL
-    AND COALESCE(sr.data#>>'{supersedes,id}', sr.data#>>'{belief,supersedes,id}')=f.id
-    AND (sr.data->>'version'='1' OR sr.data ? 'belief') AND sf.id IS DISTINCT FROM ${ignoreEntry}
-    AND ($3::text IS NULL OR COALESCE(sr.data#>>'{belief,turn}', sr.data#>>'{evidence_refs,0,id}') IS DISTINCT FROM $3)`;
-
-export async function currentMemoryClaims(tx: ReadTransaction, options: {
-  ownTurn?: string | undefined; management?: boolean; query?: string; before?: string; learner?: boolean; type?: string;
-}) {
-  const {ownTurn, management, query, before, learner, type = claimType} = options;
-  const {rows} = await tx.query<{id: ClaimRef['id']; tick: string}>(`
-    SELECT f.id,f.created_tick::text AS tick FROM facts f
-    JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
-      AND ($2='companion.claim' OR r.data ? 'belief')
-      AND ($3::text IS NULL OR COALESCE(r.data#>>'{belief,turn}', r.data#>>'{evidence_refs,0,id}') IS DISTINCT FROM $3)
-      AND NOT EXISTS (${activeSuccessor()})
-      AND ($4::text IS NULL OR position(lower($4) in lower(COALESCE(r.data->>'text',r.data->>'quote','')))>0)
-      AND ($5::text IS NULL OR f.id<$5)
-      AND ($6::boolean OR (r.data->>'action' IS DISTINCT FROM 'forget' AND r.data#>>'{belief,forgotten}' IS DISTINCT FROM 'true' AND (f.purpose && ARRAY['teaching','all'])))
-    ORDER BY CASE WHEN $6 THEN 0 ELSE f.created_tick END DESC,f.id DESC LIMIT $7`,
-    [tx.learner, type, ownTurn ?? null, query ?? null, before ?? null, Boolean(learner), learner || management ? 51 : 24]);
-  return rows;
-}
-
-export async function areMemoryClaimsCurrent(tx: ReadTransaction, ids: readonly string[], ownTurn?: string, ignoreEntry?: string, allowRetracted = false, type = claimType) {
-  if (!ids.length) return true;
-  const {rowCount} = await tx.query(`SELECT 1 FROM facts f
-    WHERE f.learner_id=$1 AND f.type=$2 AND ($6::boolean OR f.retracted_rev IS NULL) AND f.id=ANY($4::text[])
-      AND NOT EXISTS (${activeSuccessor('$5::text')})`, [tx.learner, type, ownTurn ?? null, ids, ignoreEntry ?? null, allowRetracted]);
-  return rowCount === ids.length;
-}
+export const currentMemoryClaims = queryCurrentMemoryClaims;
+export const areMemoryClaimsCurrent = checkMemoryClaimsCurrent;
 
 export async function teachingMemoryBasis(tx: ReadTransaction, manifest: Manifest, turn: string, maySend: WorkspaceSourceRecipient = () => true) {
   if ((await revalidateManifest(tx, manifest)).kind !== 'valid') return;
   const facts = await manifestFactInputs(tx, manifest.inputs);
-  const {rows} = await tx.query<{id: string; superseded: boolean; hypothesis: unknown}>(`SELECT f.id, EXISTS (${activeSuccessor()}) AS superseded,
+  const {rows} = await tx.query<{id: string; superseded: boolean; hypothesis: unknown}>(`SELECT f.id, EXISTS (${activeClaimSuccessorSql()}) AS superseded,
     CASE WHEN r.data ? 'belief' AND r.data#>>'{scope,kind}'='object' THEN r.data END AS hypothesis
     FROM (SELECT DISTINCT * FROM unnest($4::text[], $5::int[]) AS input(id,rev)) input
     JOIN facts f ON f.learner_id=$1 AND f.id=input.id AND f.type=ANY($2::text[])
@@ -112,12 +84,7 @@ export async function openClaimEvidence(tx: ReadTransaction, ref: ClaimRef, exce
   return source?.author === 'learner' ? fact : undefined;
 }
 
-export function readClaimValue(value: unknown) {
-  try { return claimValue(value); } catch (error) {
-    if (!(error instanceof ClaimInputError)) throw error;
-    return undefined;
-  }
-}
+export const readClaimValue = parseStoredClaim;
 
 export async function managedClaimEvidence(tx: ReadTransaction, claim: ReturnType<typeof readClaimValue>) {
   if (!claim) return 'unknown';
