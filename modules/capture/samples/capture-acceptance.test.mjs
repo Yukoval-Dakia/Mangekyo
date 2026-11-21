@@ -8,6 +8,7 @@ import {
   clarificationRegions, gatherLayeredExtraction, layeredExtractionDeriver, layeredExtractionSlot,
   mergeLayeredSource, settleLayeredExtraction,
 } from '../extraction.ts';
+import { sourceBlocks } from '../source.ts';
 import exerciseLayeredPaper from './layered-paper-assessment.test.mjs';
 import exerciseNotion from './notion-acceptance.test.mjs';
 import exerciseTextbook from '../../content/samples/textbook-acceptance.test.mjs';
@@ -93,7 +94,7 @@ await withLearnerDatabase(learner, async db => {
     return { sealed, outcome };
   }
 
-  const extract = (key, blocks, originals, { inspect, authorize } = {}) =>
+  const extract = (key, blocks, originals, { inspect, authorize, settle = settleLayeredExtraction } = {}) =>
     publish(layeredExtractionSlot, key.target.id, layeredExtractionDeriver, {
       plan: ctx => gatherLayeredExtraction(ctx, key),
       inspect,
@@ -104,7 +105,7 @@ await withLearnerDatabase(learner, async db => {
         return { version: stepKey, blocks };
       },
       authorize,
-      settle: ({ plan }, receipts) => settleLayeredExtraction(plan.data, receipts),
+      settle: ({ plan }, receipts) => settle(plan.data, receipts),
     });
   const fixture = { db, learner, stableId, load, send, sendCompanion, assert, snapshot, read, current, hooks, gatherValue, publish, extract,
     proposeExtraction, confirmExtraction, captureBlock, ingestPhoto, jpeg, numericQuestion,
@@ -309,10 +310,21 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   const [first,redo] = ['paper witness run','paper witness redo'].map(label=>stableId(label));
   for (const retryId of [first,redo]) await send('capture.collectPaper',{...returned,retryId});
   const key = {target:returned.source,accessEpoch:'0',modelMethod:'fixture/vision-v1'};
-  const reopen = async runId => (await read(ctx=>openPaperRun(ctx,{issuanceId,runId,extraction:'layered'}),'storage',true))
-    .items.find(item=>item.itemId==='q2').answers[0].witness;
+  const layerView = async runId => (await read(ctx=>openPaperRun(ctx,{issuanceId,runId,extraction:'layered'}),'storage',true))
+    .items.find(item=>item.itemId==='q2').answers;
+  const reopen = async runId => (await layerView(runId))[0].witness;
   const input = {issuanceId,runId:first,itemId:'q2',slotId:'slot1'};
-  const previous = await extract(key,[unknowable],photo);
+  const wrongPage = {...unknowable.body.crop_ref,page:2};
+  const legacyBlocks = [unknowable, captureBlock('invalid-page',{...unknowable.body,crop_ref:wrongPage}),
+    captureBlock('child-of-invalid',unknowable.body,0,'invalid-page')];
+  const previous = await extract(key,legacyBlocks,photo,{settle(plan,receipts) {
+    assert.equal(settleLayeredExtraction(plan,receipts).kind,'unknown');
+    return {kind:'value',value:{basis:plan.basis,originals:photo,blocks:sourceBlocks(legacyBlocks,'paper-return',photo)}};
+  }});
+  const legacySource = await current(source);
+  assert.deepEqual(clarificationRegions(legacySource,previous.outcome).map(region=>region.id),[unknowable.id]);
+  assert.deepEqual(mergeLayeredSource(legacySource,previous.outcome).source.unit.blocks.map(block=>block.id),[unknowable.id]);
+  assert.deepEqual((await layerView(first)).map(answer=>answer.witness.originalPage),[1]);
   const old = await reopen(first);
   const latest = await extract(key,[{...unknowable,body:{...unknowable.body,candidates:['4','9']}}],photo);
   const fresh = await reopen(first);

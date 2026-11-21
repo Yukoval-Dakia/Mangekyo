@@ -92,7 +92,15 @@ function extractionForSource(fact: FactSnapshot, source: SourceEnvelope, outcome
   const { basis, originals, blocks } = outcome.value;
   if (!mayExtract(fact) || basis.target.id !== fact.ref.id || basis.learner !== fact.ref.learner || basis.target.rev > fact.ref.rev ||
       basis.accessEpoch !== fact.accessEpoch || !sameJson(originals, source.originals)) return null;
-  return extractedBlocks(source, blocks);
+  // Historical outcomes may predate the single-image page check. Keep the
+  // valid blocks and drop invalid branches without changing their ancestry.
+  const retained = new Set<string>();
+  return parseExtractionBlocks(source, blocks).filter(({ id, parentId, body }) => {
+    if ((parentId !== null && !retained.has(parentId)) ||
+        (body.crop_ref && !validSourceCropPage(body.crop_ref, source.originals))) return false;
+    retained.add(id);
+    return true;
+  });
 }
 
 export function mayExtract(fact: FactSnapshot) {
@@ -118,16 +126,21 @@ export function mergeLayeredSource(fact: FactSnapshot, outcome: Outcome<LayeredE
   return { source: { ...source, unit: { ...source.unit, blocks: mergeExtraction(source, candidate) } }, differences };
 }
 
-export function extractedBlocks(source: VisualSource, input: unknown): readonly Block[] {
+function parseExtractionBlocks(source: VisualSource, input: unknown): readonly Block[] {
   const blocks = sourceBlocks(input, source.kind, source.originals);
   for (const { body } of blocks) {
-    requireSourceCropPage(body.crop_ref, source.originals);
     if (body.status === 'known' ? body.sticky : body.clarification !== 'pending')
       throw new Error('自动抽取不得声明本人更正或已澄清。');
     if ((body.layer === 'prompt' || body.layer === 'handwriting') && !body.itemId)
       throw new Error('题干或手写内容缺少题目锚点。');
     if (body.layer === 'handwriting' && !body.slotId) throw new Error('手写内容缺少作答位。');
   }
+  return blocks;
+}
+
+export function extractedBlocks(source: VisualSource, input: unknown): readonly Block[] {
+  const blocks = parseExtractionBlocks(source, input);
+  for (const { body } of blocks) requireSourceCropPage(body.crop_ref, source.originals);
   return blocks;
 }
 
