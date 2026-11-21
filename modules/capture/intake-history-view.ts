@@ -242,12 +242,26 @@ function projectSource(fact: FactSnapshot, source: SourceEnvelope,
 
 function projectIntake(fact: FactSnapshot, document: ReturnType<typeof intakeDocument>): IntakeHistoryEntry {
   const { extraction } = document;
-  const status: IntakeStatus = extraction.status === 'pending' ? 'organizing'
-    : extraction.status === 'failed' ? 'needs_confirmation' : 'ready';
-  const image = document.original.mediaType.startsWith('image/') || document.original.mediaType === 'application/pdf';
-  const previews: IntakeQuestionPreview[] = extraction.text.trim() && extraction.status !== 'pending' && extraction.status !== 'failed'
-    ? [{ questionId: null, blockId: 'text', excerpt: excerpt(extraction.text), needsConfirmation: false }]
+  const drafts = extraction.drafts;
+  const draftPreviews: IntakeQuestionPreview[] = drafts
+    ? drafts.questions.map(question => ({
+        questionId: null,
+        blockId: question.draftId,
+        excerpt: excerpt(question.stem),
+        needsConfirmation: true,
+      }))
     : [];
+  const draftPending = drafts && drafts.pendingConfirmationCount > 0 ? drafts.pendingConfirmationCount : 0;
+  const status: IntakeStatus = extraction.status === 'pending' ? 'organizing'
+    : extraction.status === 'failed' ? 'needs_confirmation'
+    : draftPending > 0 ? 'needs_confirmation'
+    : 'ready';
+  const image = document.original.mediaType.startsWith('image/') || document.original.mediaType === 'application/pdf';
+  const previews: IntakeQuestionPreview[] = draftPreviews.length > 0
+    ? draftPreviews
+    : extraction.text.trim() && extraction.status !== 'pending' && extraction.status !== 'failed'
+      ? [{ questionId: null, blockId: 'text', excerpt: excerpt(extraction.text), needsConfirmation: false }]
+      : [];
   return {
     id: fact.ref.id, rev: fact.ref.rev, accessEpoch: fact.accessEpoch,
     kind: document.original.mediaType.startsWith('image/') ? 'photo'
@@ -256,9 +270,9 @@ function projectIntake(fact: FactSnapshot, document: ReturnType<typeof intakeDoc
     recordedAt: null, occurredAt: null,
     preview: image ? { kind: 'original', originalIndex: 0, name: document.original.name, mediaType: document.original.mediaType } : null,
     pageCount: extraction.pages,
-    extractedQuestionCount: previews.length,
+    extractedQuestionCount: drafts ? drafts.questions.length : previews.length,
     status, statusLabel: statusLabel[status],
-    pendingConfirmationCount: status === 'needs_confirmation' ? 1 : 0,
+    pendingConfirmationCount: draftPending > 0 ? draftPending : status === 'needs_confirmation' ? 1 : 0,
     questionPreviews: previews,
     proof: [witnessOf(fact, 'following')],
   };
