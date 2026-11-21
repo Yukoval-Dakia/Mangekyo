@@ -44,9 +44,14 @@ export function matchesQuestionExecution(request: EffectRequest, execution: Ques
     sameEffectInput(request.input.execution, execution);
 }
 
-/** The host records the module actually invoked, apart from untrusted solver output. */
-export function questionEffectResult(invocationId: string, result: Json, execution: QuestionExecution): JsonObject {
-  return { invocationId, result, execution };
+/** Wrap the provider result inside the ledger callback with its actual invocation ID. */
+export function questionEffectResult(invocationId: string, result: Json): JsonObject {
+  return { invocationId, result };
+}
+
+/** The verification host records the module it invoked apart from the solver output. */
+export function questionVerificationEffectResult(invocationId: string, result: Json, execution: QuestionExecution): JsonObject {
+  return { ...questionEffectResult(invocationId, result), execution };
 }
 
 export function jsonObject(value: Json | undefined): value is JsonObject {
@@ -74,8 +79,14 @@ export function readQuestionEffect(ownerId: DerivationId, expected: EffectReques
   if (typeof invocationId !== 'string' || !invocationId || invocationId.trim() !== invocationId || result === undefined) {
     return { kind: 'invalid' as const, reason: '效果缺少服务端调用身份或结果。' };
   }
-  const execution = readQuestionExecution(receipt.result.execution);
+  return { kind: 'done' as const, invocationId, result, envelope: receipt.result };
+}
+
+export function readQuestionVerificationEffect(ownerId: DerivationId, expected: EffectRequest, receipt: QuestionEffectReceipt | undefined) {
+  const checked = readQuestionEffect(ownerId, expected, receipt);
+  if (checked.kind !== 'done') return checked;
+  const execution = readQuestionExecution(checked.envelope.execution);
   if (!execution || !matchesQuestionExecution(expected, execution))
     return { kind: 'invalid' as const, reason: '效果回执未绑定封存的实际核验方。' };
-  return { kind: 'done' as const, invocationId, result, execution };
+  return { kind: 'done' as const, invocationId: checked.invocationId, result: checked.result, execution };
 }
