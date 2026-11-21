@@ -112,6 +112,73 @@ it('prioritizes the shortest matching variant with the frozen error revision', a
   expect(await host.derive('learner/cognition@2', helped)).toMatchObject(success({state: 'unknown'}));
 });
 
+it('weights error_stage losses and labels anomalies for graded methods only', async () => {
+  const event = sample.events[0]!;
+  const error = (ref: string, error_stage?: string, confidence = 0.8, concept_ids = ['K']) =>
+    ({ ...event, ref, concept_ids, outcome: 'incorrect', confidence, ...(error_stage ? { error_stage } : {}) });
+  const input = { ...sample, events: [
+    event, error('execution-slip', 'execution'),
+    { ...event, concept_ids: ['K2'] }, error('modeling-miss', 'modeling', 0.8, ['K2']),
+    error('unclassified', undefined), error('quiet-slip', 'execution', 0.4, ['K3']),
+  ] };
+  const graded = await host.derive('learner/cognition@3', input);
+  expect(graded).toMatchObject(success({
+    state_vector: [
+      // a=2; execution loss 0.5 + unclassified full loss -> b=2.5; K2 loses 1 fully.
+      { concept_id: 'K', mastery_prob: 2 / 4.5 },
+      { concept_id: 'K2', mastery_prob: 0.5 },
+      // confidence 0.4 stays below the anomaly threshold; execution still halves its loss.
+      { concept_id: 'K3', mastery_prob: 1 / 2.5 },
+    ],
+    anomalies: [
+      { refs: ['unclassified'] },
+      { refs: ['execution-slip'], error_stage: 'execution' },
+      { refs: ['modeling-miss'], error_stage: 'modeling' },
+    ],
+  }));
+  // cognition@1 keeps full loss and collapses stages into one unlabeled anomaly.
+  const legacy = await host.derive('learner/cognition@1', input);
+  expect(legacy).toMatchObject(success({
+    anomalies: [{ refs: ['execution-slip', 'modeling-miss', 'unclassified'] }],
+  }));
+  expect(JSON.stringify(legacy)).not.toContain('error_stage');
+});
+
+it('marks only reading or execution misses on fast items as fast-slip in exam time-value', async () => {
+  const at = '2026-11-21T10:00:00.000Z';
+  const attemptRef = { id: 'sub', rev: 1 };
+  const attempt = { ref: 'sub', rev: 1, occurred_at: at, concept_ids: [], item_novelty: 'same',
+    help_level: 'unknown', outcome: 'unknown', claim_ids: [], effective_duration_ms: 200_000,
+    exam_pacing: { paper_key: 'paper@1', scale_key: 'release@1', score: { earned: 4, maximum: 6 } } };
+  const item = (role: 'proc' | 'est' | 'formal', item_id: string, position: number, fields: Record<string, unknown>) =>
+    ({ ref: `${role}-${item_id}`, rev: 1, occurred_at: at, concept_ids: [], item_novelty: 'same',
+      help_level: 'unknown', outcome: 'unknown', claim_ids: [],
+      ...(role === 'proc' ? { effective_duration_ms: fields.duration } : {}),
+      ...(fields.stage ? { error_stage: fields.stage } : {}),
+      exam_pacing_item: { attempt_ref: attemptRef, paper_key: 'paper@1', item_id, position, item_count: 3,
+        ...(role === 'est' ? { estimated_duration_ms: fields.estimate } : {}),
+        ...(role === 'formal' ? { scale_key: 'release@1', score: fields.score } : {}) } });
+  const events = (stageA?: string, stageB?: string) => [
+    attempt,
+    item('proc', 'q1', 1, { duration: 5_000 }), item('proc', 'q2', 2, { duration: 4_000 }),
+    item('proc', 'q3', 3, { duration: 95_000 }),
+    item('est', 'q1', 1, { estimate: 10_000 }), item('est', 'q2', 2, { estimate: 10_000 }),
+    item('est', 'q3', 3, { estimate: 80_000 }),
+    item('formal', 'q1', 1, { score: { earned: 0, maximum: 2 }, stage: stageA }),
+    item('formal', 'q2', 2, { score: { earned: 0, maximum: 2 }, stage: stageB }),
+    item('formal', 'q3', 3, { score: { earned: 2, maximum: 2 } }),
+  ];
+  const slice = (stageA?: string, stageB?: string) => ({ ...sample, as_of_at: at, events: events(stageA, stageB) });
+  const derive = (stageA?: string, stageB?: string) =>
+    host.derive('plan/exam-pacing@2', { slice: slice(stageA, stageB), attempt_ref: attemptRef });
+  const states = (result: unknown) => (result as { outcome?: { value?: { items?: { state: string }[] } } })
+    .outcome?.value?.items?.map(row => row.state);
+  expect(states(await derive('reading', 'modeling'))).toEqual(['fast-slip', 'unknown', 'steady']);
+  expect(states(await derive('execution', 'strategy'))).toEqual(['fast-slip', 'unknown', 'steady']);
+  expect(states(await derive('expression'))).toEqual(['unknown', 'unknown', 'steady']);
+  expect(states(await derive())).toEqual(['unknown', 'unknown', 'steady']);
+});
+
 it('starts the worker from warmup while derive keeps the same request contract', async ({ onTestFinished }) => {
   let starts = 0;
   const host = createPythonDeriverHost({

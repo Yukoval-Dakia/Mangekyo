@@ -50,4 +50,8 @@ it('labels error reviews with the actual independent or hinted basis', async () 
   await expect(projectOwnWordsTakeaway(read, post({slice: slice('incorrect', 'independent')}))).resolves.toMatchObject({kind: 'error-review', helpLevel: 'independent'});
   await expect(projectOwnWordsTakeaway(read, post({slice: slice('incorrect', 'hinted'), l0Display: display}))).resolves.toMatchObject({kind: 'error-review', helpLevel: 'hinted'});
   await expect(projectOwnWordsTakeaway(read, post({slice: slice('incorrect', 'independent'), takeawayAdmittedAt: '7' as Tick}))).resolves.toEqual({kind: 'hidden', reason: 'unknown'});
+  // Without a formal error_stage the review stays hidden rather than inventing one.
+  const {error_stage: _, ...unstaged} = event('incorrect', 'independent');
+  const unclassified = {...slice('incorrect'), events: [unstaged]};
+  await expect(projectOwnWordsTakeaway(read, post({slice: unclassified}))).resolves.toEqual({kind: 'hidden', reason: 'unknown'});
 });
