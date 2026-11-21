@@ -2,6 +2,8 @@
 export * from './belief-view.ts';
 export * from './extraction.ts';
 export * from './experience.ts';
+export * from './textbook-mastery.ts';
+export * from './recurring-error-cluster.ts';
 export { projectClassroomRadar, type ClassroomRadarSources } from './classroom-radar.ts';
 export { playbook, readVerifiedPlaybook, playbookType, understandingStatusType, type PlaybookStatus } from './playbook.ts';
 export * from './correction-check.ts';

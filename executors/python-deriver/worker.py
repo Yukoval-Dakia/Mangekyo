@@ -6,7 +6,7 @@ from pathlib import Path
 # The host starts Python in isolated mode. Load only sibling worker modules.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from schema_validation import DERIVERS, is_cognition_result, is_evidence_slice
+from schema_validation import DERIVERS, is_cognition_result, is_evidence_slice, is_information_gain_result
 
 
 def handle(request):
@@ -33,6 +33,13 @@ def handle(request):
             return {"id": request_id, "value": {"kind": "value", "value": result}}
         if not is_evidence_slice(evidence):
             return {"id": request_id, "error": "invalid CanonicalEvidenceSlice@v1"}
+        if version == "plan/information-gain@1":
+            import information_gain
+
+            result = information_gain.derive(evidence)
+            if not is_information_gain_result(result):
+                return {"id": request_id, "error": "invalid information gain output"}
+            return {"id": request_id, "value": {"kind": "value", "value": result}}
         from cognition import derive
 
         result = derive(evidence, method_version=version)
