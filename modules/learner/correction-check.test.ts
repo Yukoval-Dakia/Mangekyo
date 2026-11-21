@@ -11,7 +11,7 @@ import {
   correctionContradictions, correctionRetestDue, planCorrectionCheck, type ActiveMisconception, type CorrectionObservation,
   type CorrectionReopen, type CorrectionVariant,
 } from './correction-check.ts';
-import { factWriter, learner, snapshot, use as ref } from './test/facts.ts';
+import { factWriter, learner, seed, snapshot, use as ref } from './test/facts.ts';
 
 const day = 86_400_000;
 const now = Date.parse('2026-11-21T05:00:00.000Z');
@@ -38,7 +38,6 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
   const mount = { activityId: issuance.id, issuance, item: { itemId: 'q' } };
   const shown = { ref: ref(11, 'activity.helpExposure'), admittedAt: '12' as Tick,
     value: { kind: 'displayed', mount, content: proof, alsoAppliesTo: [], step: { kind: 'solution', order: 1 } } } satisfies AdmittedHelpEvent;
-  const opened: AdmittedHelpEvent = { ...shown, value: { ...shown.value, kind: 'opened' } };
   let revoked: BusWitness | undefined;
   const reopen: CorrectionReopen = async (ref, purpose) => ref.id !== revoked?.id ? snapshot(ref, {}, [purpose]) : undefined;
   const evidence = (at = cutoff.at, events: readonly AdmittedHelpEvent[] = [], novelty: 'isomorphic' | 'same' = 'isomorphic', confidence?: number) => {
@@ -73,9 +72,9 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
   const submitted = (at: string, confidence?: number) => ({cutoff: {...cutoff, at}, slice: evidence(at, [], 'isomorphic', confidence)});
   expect(await result(submitted(cutoff.at.replace('.000Z', 'Z')))).toHaveLength(1);
   expect(await result(submitted(at(30_001), 0.36))).toHaveLength(1);
-  const inadmissible = [evidence(cutoff.at, [shown]), evidence(cutoff.at, [opened]),
-    evidence(cutoff.at, [], 'same'), evidence(cutoff.at, [], 'isomorphic', 0.35)];
-  for (const changes of [...inadmissible.map(slice => ({slice})),
+  for (const kind of ['displayed', 'opened'] as const)
+    expect(await result({slice: evidence(cutoff.at, [{...shown, value: {...shown.value, kind}}])}), kind).toEqual([]);
+  for (const changes of [{slice: evidence(cutoff.at, [], 'same')}, {slice: evidence(cutoff.at, [], 'isomorphic', 0.35)},
     {variant: {...variant, question: correction.originalQuestion}}, {cutoff: {...cutoff, tick: '14' as Tick}},
     {through: at(29_999)}, {issuedAt: cutoff.tick}, {itemId: 'unassigned-item'}])
     expect(await result(changes)).toEqual([]);
@@ -94,8 +93,8 @@ it('rechecks the 24h reservation against the pinned question and current authori
     const { source, originalQuestion } = correction;
     const apply = factWriter(db, {learner, purpose: 'storage'});
     await apply([
-      { kind: 'create', id: source.id, factType: source.type, data: {}, purpose: ['storage', 'background-research'] },
-      { kind: 'create', id: originalQuestion.id, factType: originalQuestion.type, data: {}, purpose: ['storage', 'teaching'] },
+      seed(source, ['storage', 'background-research']),
+      seed(originalQuestion, ['storage', 'teaching']),
     ], 20);
     const reopen = (tx: ReadTransaction): CorrectionReopen => (ref, purpose) =>
       readable(() => createAuthorizedFactReader(tx, purpose, () => true).reopen(ref));

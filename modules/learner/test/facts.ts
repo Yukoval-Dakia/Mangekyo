@@ -9,6 +9,8 @@ export const ref = (n: number, epoch = '0') => ({id: id(n), rev: 1 as Revision, 
 export const use = (n: number, type: string): BusWitness => ({...ref(n), learner, type, mode: 'following'});
 export const snapshot = (ref: BusWitness, value: FactSnapshot['value'] = {}, purpose: readonly string[] = ['teaching']): FactSnapshot =>
   ({type: ref.type, ref, accessEpoch: ref.accessEpoch, value, purpose});
+export const seed = ({id, type}: Pick<BusWitness, 'id' | 'type'>, purpose: readonly string[]): FactWrite =>
+  ({kind: 'create', id, factType: type, data: {}, purpose});
 
 /** Seed arbitrary evidence types while exercising the kernel's transactional writes and access epochs. */
 export const factWriter = (db: Db, scope: { learner: LearnerId; purpose: string }) =>
