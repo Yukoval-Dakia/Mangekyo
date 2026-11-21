@@ -47,13 +47,8 @@ import {
 
 import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
 
-export class RequestError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string, readonly responseCode?: string) {
-    super(message);
-    this.status = status;
-  }
-}
+import { RequestError } from '../../modules/capture/request.ts';
+export { RequestError };
 const confirmAccount = () => new RequestError(409, '请重新选择材料或开始新对话，并确认当前模型账户。',
   'provider_account_confirmation_required');
 const requestedAccount = (route:unknown) => route && typeof route === 'object' && 'accountRevision' in route
@@ -70,11 +65,7 @@ export function caseId(value: unknown): CaseId {
     throw new RequestError(400, '对话类型无效。');
   return value;
 }
-export function clientRequest(value: unknown): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(value))
-    throw new RequestError(400, '请求标识无效。');
-  return value;
-}
+export { clientRequest } from '../../modules/capture/request.ts';
 export type DisplayTurn = TeachingFeedback & {
   writes?: WorkspaceWriteReceipt[];
   workspaceBasis?: WorkspaceWitness[];
