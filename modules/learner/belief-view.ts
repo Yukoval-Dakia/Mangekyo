@@ -197,7 +197,6 @@ async function supportsAcrossDisciplines(evidence: readonly unknown[], read: Met
     const source = await open(ref);
     if (!source || (source.type !== 'activity.workbookAttempt' &&
         source.type !== 'activity.retentionPosttestSubmission')) return false;
-    if (citation.direction !== 'support') continue;
     const observation = await read.observe(source, {...citation, ...ref});
     if (!observation || !observation.basis.length) return false;
     const {slice, discipline, basis} = observation;
@@ -212,8 +211,10 @@ async function supportsAcrossDisciplines(evidence: readonly unknown[], read: Met
     const observedAt = Date.parse(slice.as_of_at);
     const cutoff = Math.min(Date.parse(when.validAt), observedAt);
     if (!(observedAt <= Date.parse(when.knownAt)) ||
-        !events.length || events.some(event => !(Date.parse(event.occurred_at) <= cutoff) || event.help_level !== 'independent' || event.outcome === 'unknown') ||
-        slice.omissions?.some(({ref: omitted}) => omitted.id === ref.id && omitted.rev === ref.rev)) continue;
+        !events.length || events.some(event => !(Date.parse(event.occurred_at) <= cutoff)) ||
+        slice.omissions?.some(({ref: omitted}) => omitted.id === ref.id && omitted.rev === ref.rev)) return false;
+    if (citation.direction !== 'support') continue;
+    if (events.some(event => event.help_level !== 'independent' || event.outcome === 'unknown')) return false;
     const subjects = subjectsBySource.get(ref.id) ?? new Set<string>();
     subjects.add(discipline.id);
     subjectsBySource.set(ref.id, subjects);

@@ -114,10 +114,11 @@ const elapsedIndependentEvidence: RetentionMethod = {
 
 const retentionMethods = [lastIndependentResult, elapsedIndependentEvidence];
 const pythonRetentionMethods: PythonRetentionMethod[] = [
+  { id: 'cognition', version: '2', engine: 'python', deriver: 'learner/cognition@2' },
   { id: 'cognition', version: '1', engine: 'python', deriver: 'learner/cognition@1' },
   { id: 'dimensioned-retention', version: '1', engine: 'python', deriver: 'learner/retention-forecast@1' },
 ];
-export const defaultRetentionMethod = 'cognition@1';
+export const defaultRetentionMethod = 'cognition@2';
 
 export function readRetentionMethod(ref: string) {
   return retentionMethods.find(method => method.id + '@' + method.version === ref);
@@ -258,7 +259,8 @@ function targetBucket(input: RetentionInput) {
 
 function bucketEvidence(input: RetentionInput, slice: CanonicalEvidenceSliceV1) {
   const { kcId, representation, context, method, itemNovelty } = targetBucket(input);
-  return slice.events.filter(event => event.concept_ids.includes(kcId) && event.item_novelty === itemNovelty &&
+  const omitted = new Set(slice.omissions?.map(({ref}) => ref.id + '/' + ref.rev));
+  return slice.events.filter(event => !omitted.has(event.ref + '/' + event.rev) && event.concept_ids.includes(kcId) && event.item_novelty === itemNovelty &&
     event.representation === representation && event.context === context && event.method === method);
 }
 

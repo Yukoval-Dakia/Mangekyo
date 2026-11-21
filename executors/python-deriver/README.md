@@ -6,12 +6,13 @@ and closes the host during shutdown.
 
 | Deriver route | Method version |
 | --- | --- |
+| `learner/cognition@2` | `cognition@2` (graded exposure, error stage and high-confidence probes) |
 | `learner/cognition@1` | `cognition@1` |
 | `learner/retention-forecast@1` | `dimensioned-retention@1` |
 | `learner/intervention-lift@1` | `intervention-lift@1` |
 | `plan/exam-pacing@1` | `plan/exam-pacing@1` |
 
-The two retention routes accept only the v1 slice defined by [schema.json](./schema.json).
+All three retention routes accept only the v1 slice defined by [schema.json](./schema.json).
 `@mangekyo/kernel` exports the input type `CanonicalEvidenceSliceV1`.
 `schema.ts` exports `CognitionResult` and the input and output guards
 for composition callers. Ticks are unsigned decimal strings. Timestamps use UTC
@@ -19,7 +20,7 @@ for composition callers. Ticks are unsigned decimal strings. Timestamps use UTC
 
 Lift takes the sealed intervention and prospectively paired baseline and posttest records. The host validates its Outcome against that input. An insufficient sample returns `{kind: "unknown", reason}`. The gather must have research authorization for the full evidence chain.
 
-Exam pacing takes up to eight authorized attempts on the same frozen paper and scoring scale. Its input contains the actual effective duration and official score for each attempt. Missing observations remain unknown in the result. The caller retains the source revisions and restores their authorization before displaying the diagnosis.
+Exam pacing accepts the v1 slice and selects up to eight authorized whole-paper attempts. It compares attempts with matching frozen paper, scoring scale and maximum score. The earlier sealed attempts input remains supported. Its input contains the actual effective duration and official score for each attempt. Missing observations remain unknown in the result. The caller retains the source revisions and restores their authorization before displaying the diagnosis.
 
 The worker receives only `{id, deriver, input}`. It replies with
 `{id, value: {kind: "value", value: result}}` or a Lift unknown Outcome, or `{id, error}`. An estimate

@@ -96,14 +96,21 @@ it('prioritizes the shortest matching variant with the frozen error revision', a
     candidate_pool: [{ ...candidate, ref: 'long', est_min: 4 }, { ...candidate, ref: 'short' },
       { ...candidate, ref: 'different-context', context: 'other', est_min: 1 }] };
   try {
-    expect(await host.derive(cognition, input)).toMatchObject({ kind: 'ok', outcome: { value: {
+    expect(await host.derive(cognition, input)).toMatchObject({kind: 'ok', outcome: {value: {
+      method_version: 'cognition@1', state_vector: [{mastery_prob: 0.5}], anomalies: [{refs: ['wrong']}],
+    }}});
+    const withheld = {...input, omissions: [{ref: {id: 'wrong', rev: 2}, reason: 'withheld'}]};
+    const filtered = await host.derive('learner/cognition@2', withheld);
+    expect(filtered).toMatchObject({kind: 'ok', outcome: {value: {anomalies: [], state_vector: [{mastery_prob: 2 / 3}]}}});
+    expect(JSON.stringify(filtered)).not.toContain('wrong');
+    expect(await host.derive('learner/cognition@2', input)).toMatchObject({ kind: 'ok', outcome: { value: {
       state_vector: [{ mastery_prob: 2 / 3.5 }],
       ranked_candidates: [{ ref: 'short', reason_code: 'probe-high-confidence-error', evidence_refs: [{ ref: 'wrong', rev: 2 }] },
         { ref: 'long' }, { ref: 'different-context', reason_code: 'probe-unknown' }],
       anomalies: [{ refs: ['wrong'], evidence_refs: [{ ref: 'wrong', rev: 2 }], error_stage: 'execution' }],
     } } });
     const helped = { ...input, events: [{ ...event, help_level: 'hint_l1' }, { ...error, help_level: 'hint_l2' }] };
-    expect(await host.derive(cognition, helped)).toMatchObject({ kind: 'ok', outcome: { value: { state: 'unknown' } } });
+    expect(await host.derive('learner/cognition@2', helped)).toMatchObject({ kind: 'ok', outcome: { value: { state: 'unknown' } } });
   } finally {
     await host.close();
   }

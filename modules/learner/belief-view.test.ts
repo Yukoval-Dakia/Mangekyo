@@ -116,20 +116,22 @@ it('narrows legacy all-purpose preferences when the learner removes teaching', a
 });
 
 it('requires two reopened independent submissions in distinct disciplines for a cross-subject habit', async () => {
-  const submissions = [fact(1, 'activity.workbookAttempt', {}), fact(2, 'activity.retentionPosttestSubmission', {})];
+  const submissions = [fact(1, 'activity.workbookAttempt', {}), fact(2, 'activity.retentionPosttestSubmission', {}), fact(6, 'activity.workbookAttempt', {})];
   const subjects = [fact(3, 'content.asset', {kind: 'discipline'}), fact(4, 'content.asset', {kind: 'discipline'})];
   const proof = (number: number) => ({...ref(number), learner, type: 'content.asset', mode: 'following' as const});
   let secondSubject = 4, secondHelp: 'independent' | 'hinted' = 'independent';
   const read: MetacognitiveRead = {learner, purpose: 'teaching',
     reopen: async ({id}) => [...submissions, ...subjects].find(row => row.ref.id === id),
     observe: async (source, citation) => ({discipline: proof(citation.anchor === 'first' ? 3 : secondSubject), basis: [proof(3)],
-      slice: activityEvidenceSlice(ref(1).accessEpoch, at(3), undefined, [{submission: source.ref, occurredAt: at(2),
+      slice: activityEvidenceSlice(ref(1).accessEpoch, source.ref.id === ref(6).id ? at(4) : at(3), undefined, [{submission: source.ref, occurredAt: source.ref.id === ref(6).id ? at(4) : at(2),
         concepts: [], novelty: 'transfer', helpLevel: source.ref.id === ref(1).id ? 'independent' : secondHelp, result: 'incorrect'}])})};
-  const count = async (second = ref(2), reader: MetacognitiveRead | null = read, when = asOf(3)) => (await hypothesesAsOf([{ref: ref(5), value: {
+  const count = async (second = ref(2), reader: MetacognitiveRead | null = read, when = asOf(3), includeLater = false) => (await hypothesesAsOf<unknown, unknown>([{ref: ref(5), value: {
     ...revisionTime, validTo: null, category: 'hypothesis', kind: 'metacognitive_habit', status: 'tentative', sticky: false,
-    scope: {}, text: '漏读限制词', evidence_refs: [{...ref(1), direction: 'support', anchor: 'first'}, {...second, direction: 'support'}],
+    scope: {}, text: '漏读限制词', evidence_refs: [{...ref(1), direction: 'support', anchor: 'first'}, {...second, direction: 'support'},
+      ...(includeLater ? [{...ref(6), direction: 'support', excerpt: 'later evidence'}] : [])],
   }}], [], when, [], reader ?? undefined)).hypotheses.length;
   expect(await count()).toBe(1);
+  expect(await count(ref(2), read, asOf(3, 4), true)).toBe(0);
   expect(await count(ref(2), read, asOf(1, 3))).toBe(0);
   expect(await count(ref(2), read, asOf(3, 2))).toBe(0);
   expect(await count(ref(1))).toBe(0);

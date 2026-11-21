@@ -56,7 +56,7 @@ def _interval(alpha, beta):
     return max(0.0, mean - spread), min(1.0, mean + spread)
 
 
-def estimate(dimension, observations, now, dynamic):
+def estimate(dimension, observations, now, dynamic, graded):
     """Leaky Beta evidence counts; spaced independent retrieval changes the decay time."""
     ordered = sorted(observations, key=lambda pair: (pair[0], pair[1]["ref"], pair[1]["rev"]))
     row = dict(zip(("concept_id", *AXES, "item_novelty"), dimension))
@@ -76,14 +76,14 @@ def estimate(dimension, observations, now, dynamic):
         # Old responses contribute less following an extended gap.
         a, b = _decay(a, b, gap, half_life)
         help_level = event["help_level"]
-        help_weight = GRADED_HELP[help_level] if dynamic else HELP.get(help_level, HELP["hinted"])
+        help_weight = GRADED_HELP[help_level] if graded else HELP.get(help_level, HELP["hinted"])
         weight = NOVELTY[event["item_novelty"]] * help_weight
         score = float(event["outcome"] == "correct")
         if dynamic:
             score = event.get("score_norm", score)
         a += weight * score
         loss = 1 - score
-        if dynamic and event["outcome"] == "incorrect":
+        if graded and event["outcome"] == "incorrect":
             loss *= ERROR_LOSS.get(event.get("error_stage"), 1.0)
         b += weight * loss
         if dynamic and help_level == "independent":
@@ -134,21 +134,23 @@ def information(posterior, novelty):
 
 
 def derive(slice, method_version="cognition@1"):
-    if method_version not in ("cognition@1", "dimensioned-retention@1"):
+    if method_version not in ("cognition@1", "cognition@2", "dimensioned-retention@1"):
         raise ValueError("unsupported cognition method")
     now = instant(slice["as_of_at"])
-    dynamic = method_version == "cognition@1"
+    dynamic = method_version != "dimensioned-retention@1"
+    graded = method_version == "cognition@2"
+    omitted = {(item["ref"]["id"], item["ref"]["rev"]) for item in slice.get("omissions", [])}
     groups = defaultdict(list)
     seen = {}
     anomalies = defaultdict(set)
     probe_sources = defaultdict(set)
     for event in slice["events"]:
         at = instant(event["occurred_at"])
-        if at > now:
+        if at > now or (event["ref"], event["rev"]) in omitted:
             continue
         high_error = event["outcome"] == "incorrect" and event.get("confidence", 0) >= 0.8
         if high_error:
-            anomalies[event.get("error_stage") if dynamic else None].add((event["ref"], event["rev"]))
+            anomalies[event.get("error_stage") if graded else None].add((event["ref"], event["rev"]))
         for key in dimensions(event):
             identity = (key, event["ref"])
             if identity in seen:
@@ -157,13 +159,13 @@ def derive(slice, method_version="cognition@1"):
                 continue
             seen[identity] = event
             groups[key].append((at, event))
-            if dynamic and high_error:
+            if graded and high_error:
                 probe_sources[key[:-1]].add((event["ref"], event["rev"]))
 
     vector = []
     posteriors = {}
     for key in sorted(groups, key=lambda k: tuple(part or "" for part in k)):
-        row, posterior = estimate(key, groups[key], now, dynamic)
+        row, posterior = estimate(key, groups[key], now, dynamic, graded)
         vector.append(row)
         posteriors[key] = posterior
     ranked = []
@@ -186,7 +188,7 @@ def derive(slice, method_version="cognition@1"):
     signals = []
     for stage, sources in sorted(anomalies.items(), key=lambda pair: pair[0] or ""):
         signal = {"type": "high-confidence-error", "refs": sorted({ref for ref, _ in sources})}
-        if dynamic:
+        if graded:
             signal["evidence_refs"] = [{"ref": ref, "rev": rev} for ref, rev in sorted(sources)]
             if stage:
                 signal["error_stage"] = stage
