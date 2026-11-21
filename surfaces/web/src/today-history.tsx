@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { latestKey, validWatermark } from './deletion-watermark';
 import { savedDrafts } from './today-draft';
 import { remember, remembered } from './api';
-import { cachedPack, durationLabels, openLink, type Duration, otherCachedPacks, type ActivityRef } from './today-pack';
+import { cachedPack, durationLabel, openLink, type Duration, otherCachedPacks, type ActivityRef } from './today-pack';
 
 type PlanItem = { open: ActivityRef | null };
 type Plan = {
@@ -39,7 +39,7 @@ export function TodayHistory() {
   return <>
     {snapshot && <section className="day-sheet">
       <h2>上次读取的组合</h2>
-      <p>{snapshot.day} · {modes[snapshot.mode]}{snapshot.duration && ' · ' + durationLabels[snapshot.duration]} · 约 {snapshot.totalMinutes} 分钟 ·
+      <p>{snapshot.day} · {modes[snapshot.mode]} · {durationLabel(snapshot.mode, snapshot.duration)} · 约 {snapshot.totalMinutes} 分钟 ·
         {snapshot.day === today ? '离线副本' : '历史安排，日期已过期'}。联网后可核对当前安排。</p>
       {snapshot.resting && <p>当时安排了休息。</p>}
       <ol>{snapshot.slots.map((ref, i) => {

@@ -28,6 +28,10 @@ type Result = { id: string; rev: number; result: 'correct' | 'incorrect'; explan
 
 export type Duration = '3min' | '15min' | '45min+';
 export const durationLabels: Record<Duration, string> = {'3min': '3 分钟', '15min': '15 分钟', '45min+': '45 分钟以上'};
+export function durationLabel(mode: string, duration?: Duration) {
+  if (duration) return durationLabels[duration];
+  return mode === 'one-hand' ? '默认时长（3 分钟）' : '默认时长';
+}
 export function todayParams(mode: string, duration?: Duration) {
   return new URLSearchParams({mode, ...(duration && {duration})});
 }

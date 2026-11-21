@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, remember, remembered, requestId } from './api';
 import { PageTitle } from './workspace';
 import { RetentionPosttests } from './retention-posttests';
-import { durationLabels, openLink, todayParams, TodayActivity, type ActivityRef, type Duration } from './today-pack';
+import { durationLabel, openLink, todayParams, TodayActivity, type ActivityRef, type Duration } from './today-pack';
 import { rememberPlan, SavedTodayAnswers, TodayHistory } from './today-history';
 import { TodayClassrooms } from './today-classrooms';
 import './today.css';
@@ -308,7 +308,7 @@ function TodayPlanPage({ mode, duration }: { mode: Mode; duration: Duration | un
       <div role="group" aria-label="可用时间" className="filter-row today-modes">
         {([undefined, '3min', '15min', '45min+'] as const).map(value =>
           <a key={value ?? 'any'} className="tonal-button" aria-current={duration === value ? 'page' : undefined}
-            href={'/today?' + todayParams(mode, value)}>{value ? durationLabels[value] : '不限时长'}</a>)}
+            href={'/today?' + todayParams(mode, value)}>{durationLabel(mode, value)}</a>)}
       </div>
       <div role="group" aria-label="作答方式" className="filter-row today-modes">
         {(
