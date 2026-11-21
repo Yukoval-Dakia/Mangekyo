@@ -1,5 +1,5 @@
 import { FactNotFoundError, factId, type FactId, type FactSnapshot, type ReadContext } from '@mangekyo/kernel';
-import { arithmeticPracticeV1, openArithmeticPractice } from '@mangekyo/module-content/facts/arithmetic-practice';
+import { arithmeticPracticeV1, independentArithmeticV1, openArithmeticPractice } from '@mangekyo/module-content/facts/arithmetic-practice';
 import { helpRef } from './help-exposure-values.ts';
 import { object } from './values.ts';
 import { workbookPaper, type WorkbookPaper } from './workbook-values.ts';
@@ -33,6 +33,15 @@ export async function readPracticeCustody(read: FactReader, id: FactId) {
     if (!(error instanceof FactNotFoundError)) throw error;
     return undefined;
   }
+}
+
+export async function readIndependentSealedPractice(read: FactReader, id: FactId) {
+  const paperId = await arithmeticPracticePaperId(id);
+  const custody = await readPracticeCustody(read, await practiceCustodyId(paperId));
+  if (custody?.value.kind !== 'sealed' || custody.value.question.id !== id || custody.value.paper.id !== paperId) return;
+  const source = await openArithmeticPractice(read,id);
+  if (source?.practice.generation !== independentArithmeticV1) return undefined;
+  return {paperId, practice:source.practice};
 }
 
 export function arithmeticPracticePaper(opened: NonNullable<Awaited<ReturnType<typeof openArithmeticPractice>>>, savedAt: string): WorkbookPaper {

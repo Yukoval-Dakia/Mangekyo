@@ -1,6 +1,7 @@
 import {artifactMountTrace} from './artifact-trace.ts';
 import type {FirstTurnJitContext} from './first-turn-jit.ts';
 import {learningToolError} from './tool-error.ts';
+import { isPhaticMessage } from './phatic-message.ts';
 import { createHash } from 'node:crypto';
 import type { TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
@@ -33,7 +34,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   /** Persisted opt-in replacing first-turn memory, preference and current-object projections. */
   jitContext?: FirstTurnJitContext;
   historyNotice?: string;
-  arithmeticFreeProse?: (text: string) => boolean;
+  trackPhaticReplies?: true;
   metadataOnlyLearningMemory?: true;
   classroomEvidence?: string;
   currentLearningObject?: string;
@@ -185,14 +186,13 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const reply = await (options.jitContext && dispatch ? dispatch(send) : send());
       if ('rejectedHttpStatus' in reply || 'truncated' in reply) return JSON.stringify(reply);
       const message = publicAssistantContent(reply.content ?? '').trim();
-      // Record only a conservative negative scope, never duplicate the prompt.
-      // Tool messages/arguments, native blocks and JIT inputs remain opaque.
-      const prose = options.arithmeticFreeProse;
-      const arithmeticFree = prose && reportedModel && !options.jitContext && !remotes.size && !reply.toolCalls &&
-        message && prose(reply.content ?? '') && context.every(entry => entry.role === 'system' || entry === options.metadataOnlyMessage ||
+      // Only exchanges made entirely of recognized greeting and courtesy phrases can
+      // exclude answer delivery. Tool, remote and JIT input remains unclassified.
+      const phatic = options.trackPhaticReplies && reportedModel && !options.jitContext && !remotes.size && !reply.toolCalls &&
+        isPhaticMessage(reply.content ?? '') && context.every(entry => entry.role === 'system' || entry === options.metadataOnlyMessage ||
           ((entry.role === 'user' || entry.role === 'assistant') &&
-            typeof entry.content === 'string' && prose(entry.content)));
-      return JSON.stringify({ reportedModel, ...(arithmeticFree ? {arithmeticFree: true} : {}), ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
+            typeof entry.content === 'string' && isPhaticMessage(entry.content)));
+      return JSON.stringify({ reportedModel, ...(phatic ? {phaticExchangeV1: true} : {}), ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
     });
     const reply: ModelReply = JSON.parse(raw);
     checkProviderOutcome(reply);

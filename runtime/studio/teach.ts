@@ -56,7 +56,7 @@ import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { checkProviderAccount, loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
-import { arithmeticFreeProse, companionReplyStartedLabel, companionReplyTrackingLabel, questionReceiptsCurrent } from './question-exposure.ts';
+import { companionReplyStartedLabel, companionReplyTrackingLabel, questionReceiptsCurrent } from './question-exposure.ts';
 import { confirmedTeachingMethod, learningToolsMethod, notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
 class UncertainEffect extends Error {
@@ -722,7 +722,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }) : undefined;
       const result = await runCompanionTurn(answer, publicHistory, material, {
         provider: settings, runEffect: runModelEffect,
-        ...(learningV1 && !classroom ? {arithmeticFreeProse} : {}),
+        ...(learningV1 && !classroom ? {trackPhaticReplies:true} : {}),
         ...(learningMemory && !Object.keys(learningMemory.bundle.data).length &&
           learningMemory.bundle.omitted.every(item => item.reason === 'unknown') ? {metadataOnlyLearningMemory:true} : {}),
         ...(toolsV1 ? {learningTools:toolsV1} : {}),

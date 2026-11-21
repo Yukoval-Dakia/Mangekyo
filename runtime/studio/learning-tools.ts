@@ -17,7 +17,8 @@ import { readRetentionBasis, type RetentionBasis } from './learner-radar.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import { openWorkspaceQuestion, type DraftWitness } from './workspace-question.ts';
 import { workspaceInput, type openWorkspaceTools, type WorkspaceWitness } from './workspace-agent.ts';
-import { learningPythonReadLabel, questionExposureReceiptVersion, questionReceiptsCurrent } from './question-exposure.ts';
+import { learningPythonReadLabel, questionExposureReceiptVersion } from '../../executors/teaching/question-read-receipts.ts';
+import { questionReceiptsCurrent } from './question-exposure.ts';
 
 const scope = {learner:studioLearner};
 const native = {search_learning:'search_workspace',open_learning:'open_learning',

@@ -16,7 +16,8 @@ import { purpose } from './identity.ts';
 import { openKnowledgeEdge, type WorkspaceSource } from './knowledge-graph.ts';
 import { checkStudioNotionFact } from './notion.ts';
 import { resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
-import { questionNegativeCurrent, questionScope } from './question-exposure.ts';
+import { questionScope } from '../../executors/teaching/question-read-receipts.ts';
+import { questionNegativeCurrent } from './question-exposure.ts';
 
 const scanLimit = 96;
 const outputBytes = 12 * 1024;
