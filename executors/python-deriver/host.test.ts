@@ -87,6 +87,28 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
   }
 });
 
+it('prioritizes the shortest matching variant with the frozen error revision', async () => {
+  const host = createPythonDeriverHost();
+  const event = sample.events[0]!;
+  const error = { ...event, ref: 'wrong', rev: 2, outcome: 'incorrect', confidence: 0.8, error_stage: 'execution' };
+  const candidate = { concept_ids: ['K'], item_novelty: 'isomorphic', est_min: 2 };
+  const input = { ...sample, events: [event, error, { ...error, ref: 'later', occurred_at: '2026-11-22T00:00:00Z' }],
+    candidate_pool: [{ ...candidate, ref: 'long', est_min: 4 }, { ...candidate, ref: 'short' },
+      { ...candidate, ref: 'different-context', context: 'other', est_min: 1 }] };
+  try {
+    expect(await host.derive(cognition, input)).toMatchObject({ kind: 'ok', outcome: { value: {
+      state_vector: [{ mastery_prob: 2 / 3.5 }],
+      ranked_candidates: [{ ref: 'short', reason_code: 'probe-high-confidence-error', evidence_refs: [{ ref: 'wrong', rev: 2 }] },
+        { ref: 'long' }, { ref: 'different-context', reason_code: 'probe-unknown' }],
+      anomalies: [{ refs: ['wrong'], evidence_refs: [{ ref: 'wrong', rev: 2 }], error_stage: 'execution' }],
+    } } });
+    const helped = { ...input, events: [{ ...event, help_level: 'hint_l1' }, { ...error, help_level: 'hint_l2' }] };
+    expect(await host.derive(cognition, helped)).toMatchObject({ kind: 'ok', outcome: { value: { state: 'unknown' } } });
+  } finally {
+    await host.close();
+  }
+});
+
 it.each([
   { reason: 'timed out', script: 'import sys\nfor _ in sys.stdin: pass' },
   { reason: 'exited', script: 'import sys\nsys.stdin.readline()\nsys.exit(1)' },

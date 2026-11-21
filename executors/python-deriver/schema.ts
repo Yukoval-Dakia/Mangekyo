@@ -51,7 +51,7 @@ function matches(schema: Schema, value: unknown): boolean {
         Object.entries(record).every(([key, field]) => {
           const property = Object.hasOwn(properties, key) ? properties[key] : undefined;
           return property ? matches(property, field) : schema.additionalProperties !== false;
-        });
+        }) && (schema !== definitions.examScore || Number(record.earned) <= Number(record.maximum));
     }
     case 'array':
       return Array.isArray(value) && [...value].every(item => schema.items !== undefined && matches(schema.items, item));
@@ -111,8 +111,10 @@ export type CognitionResult = {
   readonly uncertainty: UnknownUncertainty | Interval;
   readonly r_now?: number;
   readonly crossing_at?: string;
-  readonly ranked_candidates: readonly { readonly ref: string; readonly info_gain: number; readonly est_min: number; readonly reason_code: string }[];
-  readonly anomalies: readonly { readonly type: string; readonly refs: readonly string[] }[];
+  readonly ranked_candidates: readonly { readonly ref: string; readonly info_gain: number; readonly est_min: number;
+    readonly reason_code: string; readonly evidence_refs?: readonly EvidenceRef[] }[];
+  readonly anomalies: readonly { readonly type: string; readonly refs: readonly string[];
+    readonly evidence_refs?: readonly EvidenceRef[]; readonly error_stage?: EvidenceEventV1['error_stage'] }[];
   readonly artifacts?: readonly string[];
 };
 

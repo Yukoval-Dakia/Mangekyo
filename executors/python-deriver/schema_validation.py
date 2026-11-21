@@ -40,6 +40,7 @@ def _matches(schema, value):
                 _matches(properties[key], field) if key in properties else schema.get("additionalProperties", True)
                 for key, field in value.items()
             )
+            and (schema is not DEFINITIONS["examScore"] or value["earned"] <= value["maximum"])
         )
     if kind == "array":
         return isinstance(value, list) and all(_matches(schema["items"], item) for item in value)

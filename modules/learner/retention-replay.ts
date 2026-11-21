@@ -1,6 +1,6 @@
 import type { DerivationId, Tick } from '@mangekyo/kernel';
 import {
-  evaluateFrozenRetention, reconcileRetention, retentionSlice, retentionBucketId,
+  evaluateFrozenRetention, reconcileRetention, independentRetentionEvidence,
   type RetentionForecast, type RetentionObservation,
 } from './retention.ts';
 
@@ -51,11 +51,7 @@ function forecastScore({ estimate }: RetentionForecast): Score {
 }
 
 function recentRate({ input }: RetentionForecast): Score {
-  const dims = input.target.dimensions ?? {};
-  const novelty = { 'same-item': 'same', variant: 'isomorphic', 'fresh-context': 'transfer' } as const;
-  const recent = retentionSlice(input).events.filter(e => e.help_level === 'independent' && e.outcome !== 'unknown' &&
-    e.item_novelty === novelty[input.target.condition] && e.concept_ids.includes(dims.kcId ?? retentionBucketId(input)) &&
-    e.representation === dims.representation && e.context === dims.context && e.method === dims.method)
+  const recent = independentRetentionEvidence(input)
     .sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at) || a.ref.localeCompare(b.ref)).slice(0, 10);
   if (!recent.length) return { probability: null };
   const probability = recent.filter(o => o.outcome === 'correct').length / recent.length;

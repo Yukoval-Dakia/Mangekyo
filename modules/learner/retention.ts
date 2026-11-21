@@ -24,11 +24,13 @@ export type RetentionObservation = {
   novelty?: 'same-item' | 'variant' | 'fresh-context';
   scoreNorm?: number;
   effectiveDurationMs?: number;
+  confidence?: NonNullable<EvidenceEventV1['confidence']>;
+  errorStage?: NonNullable<EvidenceEventV1['error_stage']>;
   polarity?: 'support' | 'counterevidence';
   dimensions?: RetentionDimensions;
   exposure:
     | { kind: 'independent' }
-    | { kind: 'exposed'; level?: 'hinted' | 'solution_seen'; refs: readonly { id: FactId; rev: Revision }[] }
+    | { kind: 'exposed'; level?: Exclude<EvidenceEventV1['help_level'], 'independent'>; refs: readonly { id: FactId; rev: Revision }[] }
     | { kind: 'unknown'; reason: string };
 };
 
@@ -205,9 +207,10 @@ export function retentionSlice(input: RetentionInput): CanonicalEvidenceSliceV1 
       const observation = scoped.get(key);
       if (counts.get(key) !== 1 || !observation || event.item_novelty !== 'same' ||
           event.outcome !== observation.result || Date.parse(event.occurred_at) !== Date.parse(observation.submittedAt) ||
-          (observation.exposure.kind === 'independent' ? 'independent' :
-            observation.exposure.kind === 'exposed' ? observation.exposure.level : undefined) !== event.help_level ||
           event.concept_ids.includes(localBucket)) return event;
+      const { exposure } = observation;
+      if (exposure.kind === 'unknown' || (exposure.kind === 'independent') !== (event.help_level === 'independent') ||
+          (exposure.kind === 'exposed' && exposure.level !== undefined && exposure.level !== event.help_level)) return event;
       return { ...event, concept_ids: [...event.concept_ids, localBucket] };
     }) };
   }
@@ -217,12 +220,16 @@ export function retentionSlice(input: RetentionInput): CanonicalEvidenceSliceV1 
     if (!help || BigInt(observation.admittedAt) > BigInt(input.observedThrough) ||
         Date.parse(observation.submittedAt) > Date.parse(input.window.requestedAt)) return [];
     const { kcId, ...otherAxes } = dimensions;
+    const itemNovelty = novelty[observation.novelty ?? 'same-item'];
+    const concept = kcId ?? (itemNovelty === 'same' ? retentionBucketId(input) : undefined);
     return [{
       ref: observation.submission.id, rev: observation.submission.rev, occurred_at: observation.submittedAt,
-      concept_ids: [kcId ?? retentionBucketId(input)], item_novelty: novelty[observation.novelty ?? 'same-item'],
+      concept_ids: concept ? [concept] : [], item_novelty: itemNovelty,
       ...otherAxes, help_level: help, outcome: observation.result, claim_ids: [],
       ...(observation.scoreNorm === undefined ? {} : { score_norm: observation.scoreNorm }),
       ...(observation.effectiveDurationMs === undefined ? {} : { effective_duration_ms: observation.effectiveDurationMs }),
+      ...(observation.confidence === undefined ? {} : { confidence: observation.confidence }),
+      ...(observation.errorStage === undefined ? {} : { error_stage: observation.errorStage }),
     }];
   });
   return {
@@ -244,11 +251,26 @@ type CognitionRow = {
 
 export type CognitionOutput = { method_version: string; state_vector: readonly CognitionRow[] };
 
+function targetBucket(input: RetentionInput) {
+  const { kcId = retentionBucketId(input), representation, context, method } = input.target.dimensions ?? {};
+  return { kcId, representation, context, method, itemNovelty: novelty[input.target.condition] };
+}
+
+function bucketEvidence(input: RetentionInput, slice: CanonicalEvidenceSliceV1) {
+  const { kcId, representation, context, method, itemNovelty } = targetBucket(input);
+  return slice.events.filter(event => event.concept_ids.includes(kcId) && event.item_novelty === itemNovelty &&
+    event.representation === representation && event.context === context && event.method === method);
+}
+
+export function independentRetentionEvidence(input: RetentionInput) {
+  return bucketEvidence(input, retentionSlice(input)).filter(event => event.help_level === 'independent' && event.outcome !== 'unknown');
+}
+
 export function freezeCognition(input: RetentionInput, output: CognitionOutput): RetentionForecast {
   const method = readPythonRetentionMethod(output.method_version);
   if (!method) throw new Error('Unknown Python retention method');
-  const { kcId = retentionBucketId(input), representation, context, method: strategy } = input.target.dimensions ?? {};
-  const row = output.state_vector.find(r => r.concept_id === kcId && r.item_novelty === novelty[input.target.condition] &&
+  const { kcId, representation, context, method: strategy, itemNovelty } = targetBucket(input);
+  const row = output.state_vector.find(r => r.concept_id === kcId && r.item_novelty === itemNovelty &&
     r.representation === (representation ?? null) && r.context === (context ?? null) && r.method === (strategy ?? null));
   if (!row || row.state === 'unknown') return evaluateRetention(method, input, { kind: 'unknown',
     reason: row?.uncertainty.kind === 'unknown' ? row.uncertainty.reason : 'missing-independent-scored-evidence',
@@ -256,12 +278,12 @@ export function freezeCognition(input: RetentionInput, output: CognitionOutput):
   if (row.uncertainty.kind !== 'interval' || row.r_now === undefined || row.effective_evidence === undefined)
     throw new Error('Incomplete known retention output');
   const slice = retentionSlice(input);
-  const independent = new Set(slice.events.filter(e => e.help_level === 'independent' && e.outcome !== 'unknown' &&
-    e.concept_ids.includes(kcId) && e.item_novelty === novelty[input.target.condition] &&
-    e.representation === representation && e.context === context && e.method === strategy).map(e => e.ref + '/' + e.rev));
-  const source = row.evidence_refs.findLast(r => independent.has(r.ref + '/' + r.rev));
-  const basis = source && input.observations.find(item => item.submission.id === source.ref && item.submission.rev === source.rev);
+  const events = new Map(bucketEvidence(input, slice).map(event => [event.ref + '/' + event.rev, event]));
+  const refs = row.evidence_refs.map(ref => events.get(ref.ref + '/' + ref.rev));
+  if (refs.some(event => !event)) throw new Error('Retention output referenced evidence outside the frozen target');
+  const source = refs.findLast(event => event?.help_level === 'independent' && event.outcome !== 'unknown');
   if (!source) throw new Error('Missing independent basis for known forecast');
+  const basis = input.observations.find(item => item.submission.id === source.ref && item.submission.rev === source.rev);
   return evaluateRetention(method, input, {
     kind: 'probabilistic', probability: row.r_now, expected: row.r_now >= 0.5 ? 'correct' : 'incorrect',
     interval: [row.uncertainty.low, row.uncertainty.high], uncertainty: 1 / (1 + row.effective_evidence),
@@ -284,7 +306,10 @@ export async function evaluateFrozenRetention(method: RetentionMethod | PythonRe
   const slice = retentionSlice(input);
   // A scheduled posttest projects the same evidence forward. Its evidence cutoff
   // and snapshot watermark remain frozen in input.canonicalEvidence.
-  const projected = input.window.scheduledAt ? { ...slice, as_of_at: input.window.scheduledAt } : slice;
+  const scheduledAt = input.window.scheduledAt;
+  if (scheduledAt && !(Date.parse(scheduledAt) >= Date.parse(slice.as_of_at)))
+    throw new Error('Retention projection predates the frozen forecast cutoff');
+  const projected = scheduledAt ? { ...slice, as_of_at: scheduledAt } : slice;
   const result = await derive(projected, version);
   if (result.method_version !== version) throw new Error('Retention worker returned a different method');
   return freezeCognition(input, result);

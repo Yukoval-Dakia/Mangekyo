@@ -20,6 +20,8 @@ it('binds the frozen cutoff and selects only the exact target from a multi-dimen
     uncertainty: { kind: 'interval' as const, low: 0.2, high: 0.8 } };
   const output = { method_version: 'cognition@1', state_vector: [{ ...row, context: 'class', r_now: 0.4 }, row] };
   expect(freezeCognition(input, output).estimate).toMatchObject({ kind: 'probabilistic', probability: 0.7 });
+  expect(() => freezeCognition(input, { ...output, state_vector: [{ ...row,
+    evidence_refs: [...row.evidence_refs, { ref: 'answer-b', rev: 1 }] }] })).toThrow(/frozen target/);
   expect(freezeCognition({ ...input, target: { ...input.target, condition: 'variant' } }, output).estimate.kind).toBe('unknown');
 });
 
