@@ -31,7 +31,7 @@ import { captureSourceType } from '../../modules/capture/source.ts';
 import type { paperReturnSelection } from '../../modules/capture/paper.ts';
 import type { openCapturePapers } from './capture-papers.ts';
 import { intakeCaptureId, intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
-import { submittedWatermark } from './deletion-watermark.ts';
+import { submittedWatermark } from '../../modules/capture/request.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 
 export { intakeSwiftTimeoutMs } from '@mangekyo/executor-document-extraction/local';

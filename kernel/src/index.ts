@@ -1,3 +1,13 @@
 export * from './declarations/index.ts';
+export { createHmac, randomInt, stableId, timingSafeEqual } from './declarations/random.ts';
 export { FactNotFoundError } from './declarations/read-errors.ts';
 export type * from './pipeline-contracts.ts';
+export type { FactChange } from './commands/contracts.ts';
+export { createCommandReadContext, FactReadDeniedError } from './commands/reads.ts';
+export { readable } from './commands/fact-collection.ts';
+export { LifecycleError } from './lifecycle.ts';
+export type { DbTransaction, ReadTransaction } from './db/types.ts';
+export { parseManifest, type Manifest, type ManifestInput } from './derivations/manifest.ts';
+export { createPropagationHooks } from './derivations/propagation.ts';
+export { revalidateManifest } from './derivations/revalidate.ts';
+export { storeSettledValue } from './derivations/settled-value.ts';

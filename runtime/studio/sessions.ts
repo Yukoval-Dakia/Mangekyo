@@ -16,7 +16,7 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { first45Histories, introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 export { introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
-import { turnTask } from './model-routes.ts';
+import { turnTask } from '../../executors/teaching/model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
 import { matchesStudyTurnReplay, studyAttachmentRequest, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchAccess,
   type StudyTurnReplay } from '../../modules/activity/values.ts';

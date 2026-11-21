@@ -26,7 +26,7 @@ import { studyTurn, turnAllowsBackgroundUnderstanding } from '../../modules/acti
 import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
-import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
+import { readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { notionModelRecipient, purpose, slotType, stableId, studioLearner } from './identity.ts';
 import { currentResearchSettings, whenAvailable } from './research-sources.ts';
 import { workspaceGrantChecker } from './harness.ts';

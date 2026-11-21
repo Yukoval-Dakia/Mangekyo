@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { loadTriageFixtures, scoreTriageFixtures } from './fixtures.ts';
+import { loadTriageFixtures, scoreTriageFixtures } from '../../../modules/companion/research-triage-fixtures.ts';
 const file = new URL('./fixtures.json', import.meta.url);
 const fixtures = loadTriageFixtures(JSON.parse(await readFile(file, 'utf8')));
 const summary = scoreTriageFixtures(fixtures);

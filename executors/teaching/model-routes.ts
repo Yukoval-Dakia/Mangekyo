@@ -13,3 +13,8 @@ export function readModelRoutes(value: unknown, providers: readonly {id: string}
   }
   return result;
 }
+
+export function turnTask(caseId: string, preparation: boolean): ModelTask {
+  if (caseId !== 'companion' && caseId !== 'riding') return 'diagnostic';
+  return preparation ? 'preparation' : 'companion';
+}

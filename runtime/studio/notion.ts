@@ -37,7 +37,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { notionModelRecipient, purpose as teaching, slotType as teachingSlotType, stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { teachingTurnAllowed } from './reading.ts';
-import { submittedWatermark } from './deletion-watermark.ts';
+import { submittedWatermark } from '../../modules/capture/request.ts';
 import { notionTeachingRecipients } from './workspace-access.ts';
 import { notionConnection } from './notion-transport.ts';
 import { questionReceiptsCurrent } from './question-exposure.ts';

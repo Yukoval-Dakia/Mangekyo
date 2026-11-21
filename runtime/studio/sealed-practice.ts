@@ -15,7 +15,7 @@ import {
 import { saveWorkbookPaperCommand, workbookRequestId } from '../../modules/activity/workbook-values.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
-import { parsePracticeAdmission, resolvePracticeAdmission } from './generated-practice.ts';
+import { parsePracticeAdmission, resolveStudioPracticeAdmission as resolvePracticeAdmission } from './generated-practice.ts';
 
 const scope = {learner:studioLearner};
 const unavailable = () => new RequestError(404,'找不到当前可用的封闭练习。');

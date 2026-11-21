@@ -19,7 +19,7 @@ import {
 import { formalDiagnosisSummary, workbookDiagnosisView } from '../../modules/activity/workbook-views.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { purpose } from './identity.ts';
-import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
+import { readActivityHelpEvents, readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorkspaceAttemptAssessments, type WorkspaceAssessmentBasis } from './workspace-read.ts';

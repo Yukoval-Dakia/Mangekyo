@@ -35,14 +35,14 @@ MANGEKYO_ACTIVATE_LOCAL_BUILD=1 pnpm dev
 要复验外部工具，可选一个返回已知回执的只读工具，用下面的命令新开真实同伴对话。预期回执仅供验收脚本核对，问题中应省略回执。
 
 ```sh
-node runtime/studio/test/mcp-acceptance.mjs http://127.0.0.1:4317 服务ID 工具名 本轮问题 预期回执 --live
+node scripts/acceptance/studio/mcp-acceptance.mjs http://127.0.0.1:4317 服务ID 工具名 本轮问题 预期回执 --live
 ```
 
 同伴答疑、从材料备课与试卷的 LLM 判分使用多轮工具调用。Python 使用本机 Docker 中的 `python:3.12-alpine` 镜像，首次使用前运行 `docker pull python:3.12-alpine`。每次调用在无网络、无宿主挂载的容器中执行。每轮有独立的临时文本文件，供模型和 Python 交换数据。「模型与工具」可开启 Exa 的公共额度或填写单独的 API 密钥。带材料、备忘或历史的对话需要检索时，在当前消息中另起一行写「公开检索：主题」。模型端点需支持所选协议的流式回复和工具调用。
 
 在试卷中添加「评分标准」题，填写题面和评阅标准，交卷后点「发送本题并批改」。标准写明「总分 3 分」等数值总分时，模型按标准逐项给分，系统核对分值范围和满分合计。系统核对原答引用，保存评阅方法版本、来源和工具记录。可在批改前单独填写允许发送给 Exa 的公开主题。[真实评阅与工具记录](docs/evidence/study-agent/observed.json)
 
-复验 LLM 判分可运行 `node runtime/studio/test/assessment-acceptance.mjs http://127.0.0.1:4317 --live`。它会在指定本机实例新建一份开放题试卷，通过正式交卷与评阅入口检查部分得分、原文引用、Python 结果、重复请求和重新打开。
+复验 LLM 判分可运行 `node scripts/acceptance/studio/assessment-acceptance.mjs http://127.0.0.1:4317 --live`。它会在指定本机实例新建一份开放题试卷，通过正式交卷与评阅入口检查部分得分、原文引用、Python 结果、重复请求和重新打开。
 
 打开服务后，`pnpm verify:teaching --live` 会通过同一个 HTTP 入口新建两份会话并调用模型，检查读取原作、追问或跳过，以及对明确错步的回应。传入两个已有会话 ID 可以只读复验。这两种用法都会打印当轮依据和回答。[验收与实例](docs/evidence/unit40/README.md)
 

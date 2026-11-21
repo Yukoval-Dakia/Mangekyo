@@ -16,7 +16,7 @@ import { readKnowledgeGraph } from './knowledge-graph.ts';
 import { readPythonAttempts } from './python-attempts.ts';
 import { readPythonQuestions } from './python-questions.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
-import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
+import { readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { checkStudioNotionFact } from './notion.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { readForgettingRisks, type RetentionBasis } from './learner-radar.ts';

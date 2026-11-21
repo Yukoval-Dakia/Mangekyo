@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { studioJsonApi } from './acceptance-fixtures.mjs';
+import { providerRoute, studioJsonApi } from './acceptance-fixtures.mjs';
 
 const studio = new URL(process.argv[2] ?? 'http://127.0.0.1:4317');
 if (studio.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(studio.hostname) || process.argv[3] !== '--live') {
@@ -9,11 +9,9 @@ if (studio.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(studio.h
 const api = studioJsonApi(studio);
 
 const settings = await api('settings');
-const providerId = settings.routes?.assessment ?? settings.activeProviderId;
+const route = providerRoute(settings, 'assessment');
+const { providerId } = route;
 const provider = settings.providers.find(profile => profile.id === providerId);
-assert.ok(provider);
-const route = {providerId, protocol: provider.protocol, model: provider.model,
-  baseUrl: provider.baseUrl, reasoningEffort: provider.reasoningEffort};
 const paper = await api('papers', {
   requestId: randomUUID(), title: '矩形的面积与周长', materialId: null,
   questions: [{kind: 'rubric', prompt: '矩形长 293 厘米，宽 137 厘米。算出面积和周长。',

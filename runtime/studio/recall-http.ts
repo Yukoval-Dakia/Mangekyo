@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -7,45 +7,23 @@ import { factId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { parseRecallMount, type RecallMount } from '../../modules/activity/recall-values.ts';
-import { workbookRequestId } from '../../modules/activity/workbook-values.ts';
 import { purpose, studioLearner } from './identity.ts';
 import type { NotionReadScope } from './notion.ts';
 import { openRecall, recallItemId, RecallRequestError } from './recall.ts';
+import { displaySigner, parseDisplayBody, readMount, readRequestId, verifyDisplayReceipt } from '../../modules/activity/recall-http-support.ts';
 
-export const recallDisplayToken = 'x-recall-display-token';
-const idPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const isId = (value: unknown): value is string => typeof value === 'string' && idPattern.test(value);
-
-function readMount(value: unknown) {
-  try { return parseRecallMount(value); }
-  catch { throw new RecallRequestError(400, '回忆题挂载标识无效。'); }
-}
-
-function readRequestId(value: unknown) {
-  try { return workbookRequestId(value); }
-  catch { throw new RecallRequestError(400, '回忆题请求标识无效。'); }
-}
-
-type DisplayReceipt = { sessionId: string; mount: RecallMount; revealId: string; requestId: string; token: string };
+export { recallDisplayToken } from '../../modules/activity/recall-http-support.ts';
 
 export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHooks) {
   const key = randomBytes(32);
-  function sign({ sessionId, mount, revealId, requestId }: Omit<DisplayReceipt, 'token'>) {
-    return createHmac('sha256', key).update(JSON.stringify([
-      studioLearner, sessionId, mount.turnId, mount.derivationId, mount.itemId, revealId, requestId,
-    ])).digest();
-  }
+  const sign = displaySigner(studioLearner, key);
 
   const service = openRecall(db, activity, {
     ...(hooks ? { hooks } : {}),
     async verifyDisplay(receipt: unknown) {
       // Only display() below forwards a receipt to the service. A signed grant
       // binds the app's report to the delivered reveal and its original request.
-      const report = receipt as DisplayReceipt;
-      const supplied = Buffer.from(report.token, 'hex');
-      if (supplied.length !== 32 || !timingSafeEqual(supplied, sign(report))) return null;
-      return { mount: report.mount, revealId: report.revealId };
+      return verifyDisplayReceipt(receipt, sign);
     },
   });
 
@@ -101,15 +79,9 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
       return { data, token: sign({ sessionId, mount, revealId: data.revealId, requestId }).toString('hex') };
     },
     async display(sessionId: string, body: Record<string, unknown>, headers: IncomingHttpHeaders) {
-      const token = headers[recallDisplayToken];
-      const { revealId, requestId, observed } = body;
-      if (headers['sec-fetch-site'] !== 'same-origin' || typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token) ||
-          observed !== 'mounted-visible') throw new RecallRequestError(403, '缺少获准的回忆题显示回执。');
-      if (Object.keys(body).length !== 4 || !isId(revealId)) throw new RecallRequestError(400, '回忆题显示回执格式无效。');
-      const mount = readMount(body.mount);
-      const id = readRequestId(requestId);
+      const { mount, revealId, requestId, token } = parseDisplayBody(body, headers);
       await requireSessionTurn(sessionId, mount.turnId);
-      return service.confirmDisplay({ sessionId, mount, revealId, requestId: id, token } satisfies DisplayReceipt);
+      return service.confirmDisplay({ sessionId, mount, revealId, requestId, token });
     },
     async submit(sessionId: string, body: Record<string, unknown>) {
       const mount = readMount(body.mount);

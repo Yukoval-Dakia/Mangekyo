@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { scoutReceipt } from '../../../executors/temporal/src/research-scout.ts';
 import { researchDecision, reviewAction, noop, response } from '../../../modules/companion/research-triage-policy.ts';
-import { loadTriageFixtures, scoreTriageFixture, scoreTriageFixtures } from '../research-triage/fixtures.ts';
+import { loadTriageFixtures, scoreTriageFixture, scoreTriageFixtures } from '../../../modules/companion/research-triage-fixtures.ts';
 import { parseTriageResponse, TriageResponseError } from '../research-triage/response.ts';
 import { parseTriageSnapshot } from '../research-triage/snapshot.ts';
 import { selectTriageCards, triageSkillCards, triagePromptBlock } from '../research-triage/skills.ts';

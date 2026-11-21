@@ -2,7 +2,7 @@ import { classroomPath, factId as classroomFactId } from './classroom.ts';
 import type { ClassroomOperation } from '../../modules/activity/classroom.ts';
 import type { openStudioNotion } from './notion.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
-import { submittedWatermark } from './deletion-watermark.ts';
+import { submittedWatermark } from '../../modules/capture/request.ts';
 import type { openMemoryManagement } from './memory-management.ts';
 import { browseMcpTools } from '../../executors/teaching/mcp-client.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';

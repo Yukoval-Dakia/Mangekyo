@@ -9,7 +9,7 @@
   "scripts": {
     "test": "node scripts/check-test-budget.mjs && vitest run",
     "test:pg": "node scripts/check-test-budget.mjs && vitest run --config vitest.pg.config.ts",
-    "verify:teaching": "node runtime/studio/test/teaching-acceptance.mjs",
+    "verify:teaching": "node scripts/acceptance/studio/teaching-acceptance.mjs",
     "test:boundary": "node kernel/test/package-boundary/check.mjs",
     "build:kernel": "tsrs -p kernel/tsconfig.build.json",
     "typecheck": "pnpm build:kernel && tsrs --noEmit && pnpm --filter @mangekyo/web typecheck",

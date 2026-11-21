@@ -7,9 +7,9 @@ import { withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { fileURLToPath } from 'node:url';
 import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
 import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
-import { intakeWriteTargets } from '../intake.ts';
-import { methodName, purpose, slotType, stableId, studioLearner } from '../identity.ts';
-import { openRecall, recallItemId } from '../recall.ts';
+import { intakeWriteTargets } from '../../../runtime/studio/intake.ts';
+import { methodName, purpose, slotType, stableId, studioLearner } from '../../../runtime/studio/identity.ts';
+import { openRecall, recallItemId } from '../../../runtime/studio/recall.ts';
 
 const config = await mkdtemp(join(tmpdir(),'mangekyo-recall-settings-'));
 const baseUrl = 'http://127.0.0.1:1/v1';

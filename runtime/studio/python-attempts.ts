@@ -9,7 +9,7 @@ import {workbookExamPacingEvent, workbookExamPacingItems} from '../../modules/ac
 import {workbookAttemptView} from '../../modules/activity/workbook-assessment-values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {purpose} from './identity.ts';
-import {readActivitySubmissionBirth} from './learning-attempt-read.ts';
+import {readActivitySubmissionBirth} from '../../modules/activity/learning-attempt-read.ts';
 import {openControlledSubmission} from './retention-workbook.ts';
 import {RequestError} from './sessions.ts';
 import type {SourceTrack, WorkspaceSourceRecipient} from './source-read.ts';

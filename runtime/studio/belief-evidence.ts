@@ -7,7 +7,7 @@ import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts
 import { opensCitation, type ActivityCitation } from '../../modules/companion/understanding.ts';
 import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
 import { posttestSubmissionType } from '../../modules/activity/retention-posttest.ts';
-import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
+import { readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { areMemoryClaimsCurrent, claimWitness } from './memory-claims.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 

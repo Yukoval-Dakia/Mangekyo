@@ -55,7 +55,7 @@ OpenCode 模型包的实验没有经过 OpenCode 完整会话或界面。Codex �
 
 这三项操作共用一套对象标识。题目、教材、概念和观察可显式链接原作。用于检查用途的内部依赖另行保存，标题出现在搜索结果中不能据此宣称同伴读过全文。修订保留原字段的来源，撤回原作的教学用途后，新的模型调用也无法读取沿用那份原作的衍生记录。
 
-在已授权提供方的本机隔离实例运行 `node runtime/studio/test/agent-workspace-acceptance.mjs http://127.0.0.1:端口 输出.json`，会实际交一份新卷、让同伴跨会话查原答、存题、编教材并检查撤权。[两份学习史、工具回执与失败记录](../evidence/study-agent/workspace.json)
+在已授权提供方的本机隔离实例运行 `node scripts/acceptance/studio/agent-workspace-acceptance.mjs http://127.0.0.1:端口 输出.json`，会实际交一份新卷、让同伴跨会话查原答、存题、编教材并检查撤权。[两份学习史、工具回执与失败记录](../evidence/study-agent/workspace.json)
 
 ## 后续 always-on 如何接入
 

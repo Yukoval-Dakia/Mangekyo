@@ -20,8 +20,11 @@ import { studyTurn } from '../../modules/activity/values.ts';
 import { attachmentSources, teachingOrigin } from './reading.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { purpose, slotType, stableId, studioLearner } from './identity.ts';
-import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
+import { readActivityHelpEvents, readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
+import { RecallRequestError } from '../../modules/activity/recall-http-support.ts';
+
+export { RecallRequestError };
 
 type DisplayWitness = { mount: RecallMount; revealId: string };
 type Issuance = ReturnType<typeof recallIssuance>;
@@ -29,9 +32,6 @@ type Item = Issuance['items'][number];
 type Submission = ReturnType<typeof recallSubmission>;
 const firstRevision = 1 as Revision;
 
-export class RecallRequestError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
-}
 
 /** Existing StudyKits have positional questions. A position is meaningful only in its frozen version. */
 export function recallItemId(turnId: string, version: string, position: number): FactId {

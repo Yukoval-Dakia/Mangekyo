@@ -12,7 +12,7 @@ import { classifyFrozenCrossing, projectForgettingRisks, projectRetentionRead, t
 import { purpose } from './identity.ts';
 import { checkStudioNotionFact } from './notion.ts';
 import { retentionHistoryValid } from './retention.ts';
-import { readLearningOverview } from './learning-overview.ts';
+import { readLearningOverview } from '../../modules/activity/learning-overview.ts';
 import { radarArguments } from '../../executors/teaching/workspace-tools.ts';
 import { radarInventory, radarOverview, retentionEvidenceLink } from '../../modules/activity/workspace-source-projection.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';

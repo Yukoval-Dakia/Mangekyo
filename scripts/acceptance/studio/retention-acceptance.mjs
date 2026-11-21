@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
-import { studioJsonApi } from './acceptance-fixtures.mjs';
+import { pollUntil, studioJsonApi } from './acceptance-fixtures.mjs';
 
 const studio = new URL(process.argv[2]);
 assert.match(studio.origin, /^http:\/\/127\.0\.0\.1(?::\d+)?$/);
@@ -12,28 +11,23 @@ const api = studioJsonApi(studio, (response, path, result, status = 200) => {
 });
 
 async function current(key) {
-  for (let i = 0; i < 80; i++) {
+  return pollUntil(async () => {
     const result = await api('retention/' + key);
-    if (result.state === 'current') return result;
-    assert.equal(result.state, 'pending', JSON.stringify(result));
-    await delay(250);
-  }
-  throw new Error('Retention work did not settle');
+    if (result.state !== 'current') assert.equal(result.state, 'pending', JSON.stringify(result));
+    return result.state === 'current' && result;
+  }).catch(error => { throw new Error('Retention work did not settle', { cause: error }); });
 }
 
 async function compare(reconciliationKeys) {
   const input = { requestId: randomUUID(), method: 'elapsed-independent-evidence@1', reconciliationKeys };
   const { key } = await api('retention/comparisons', input, 'POST', 202);
-  for (let i = 0; i < 80; i++) {
+  return pollUntil(async () => {
     const result = await api('retention/comparisons/' + key);
-    if (result.state === 'complete') {
-      assert.deepEqual(await api('retention/comparisons', input, 'POST'), result);
-      return result;
-    }
-    assert.equal(result.state, 'pending');
-    await delay(250);
-  }
-  throw new Error('Retention comparison did not settle');
+    if (result.state !== 'complete') assert.equal(result.state, 'pending');
+    if (result.state !== 'complete') return undefined;
+    assert.deepEqual(await api('retention/comparisons', input, 'POST'), result);
+    return result;
+  }).catch(error => { throw new Error('Retention comparison did not settle', { cause: error }); });
 }
 
 const paper = await api('papers', {
@@ -190,11 +184,7 @@ assert.deepEqual(await api(reviewPath), { enabled: true, revision: 0, allowed: f
 const permission = { requestId: randomUUID(), revision: 0, allowed: true };
 await api('retention/' + overlap.result.key + '/research', permission, 'PUT', 409);
 assert.equal((await api(reviewPath, permission, 'PUT')).allowed, true);
-let review;
-for (let i = 0; i < 80 && !review?.failure; i++) {
-  review = await api(reviewPath);
-  if (!review.failure) await delay(250);
-}
+const review = await pollUntil(async () => (await api(reviewPath)).failure && await api(reviewPath));
 assert.deepEqual(review, { enabled: true, revision: 1, allowed: true, worksheet: null, failure: 'model_unavailable' });
 assert.deepEqual(await api(reviewPath, permission, 'PUT'), review);
 assert.deepEqual(await api(reviewPath, { requestId: randomUUID(), revision: 1, allowed: false }, 'PUT'),
@@ -213,10 +203,10 @@ if (offer) {
     },
   }, 'PUT');
   assert.equal((await api(reviewPath, { requestId: randomUUID(), revision: 2, allowed: true }, 'PUT')).allowed, true);
-  for (let attemptIndex = 0; attemptIndex < 80 && !fundedReview?.worksheet && !fundedReview?.failure; attemptIndex++) {
-    fundedReview = await api(reviewPath);
-    if (!fundedReview.worksheet && !fundedReview.failure) await delay(250);
-  }
+  fundedReview = await pollUntil(async () => {
+    const current = await api(reviewPath);
+    return (current.worksheet || current.failure) && current;
+  });
   assert.equal(fundedReview.enabled, true);
   assert.equal(fundedReview.revision, 3);
   assert.equal(fundedReview.allowed, true);

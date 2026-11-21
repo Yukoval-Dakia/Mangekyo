@@ -1,4 +1,4 @@
-import { factId, type FactSnapshot, type ReadContext } from '@mangekyo/kernel';
+import { createCommandReadContext, factId, readable, type FactSnapshot, type ReadContext, type ReadTransaction } from '@mangekyo/kernel';
 import goal from '@mangekyo/module-plan/facts/goal';
 import task from '@mangekyo/module-plan/facts/organizer-task';
 import type { ActivityEvidenceReadScope } from './evidence-read.ts';
@@ -6,6 +6,12 @@ import type { LearningOverview, LearningOverviewFact, LearningOverviewTask, Lear
 
 export const learningOverviewPurpose = 'teaching';
 const taskLimit = 50;
+
+export const readGoal = (tx: ReadTransaction & ActivityEvidenceReadScope, access: LearningOverviewAccess,
+  read: Pick<ReadContext, 'fact'> = createCommandReadContext(tx, access.callerPurpose)) =>
+  readGoalOverview(tx, access, read, readable);
+export const readTasks = (tx: ReadTransaction & ActivityEvidenceReadScope, access: LearningOverviewAccess, limit?: number | null) =>
+  readTasksOverview(tx, access, createCommandReadContext(tx, access.callerPurpose), readable, limit);
 
 export type LearningOverviewAccess = {
   readonly callerPurpose: string;
@@ -82,3 +88,6 @@ export async function readActivityLearningOverview(
   const tasks = await readTasksOverview(tx, access, read, open);
   return { goal: goalView, tasks, witnesses: [...(goalView.state === 'set' ? [goalView.witness] : []), ...tasks.witnesses] };
 }
+
+export const readLearningOverview = (tx: ReadTransaction & ActivityEvidenceReadScope, access: LearningOverviewAccess) =>
+  readActivityLearningOverview(tx, access, createCommandReadContext(tx, access.callerPurpose), readable);

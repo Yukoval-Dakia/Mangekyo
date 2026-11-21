@@ -12,7 +12,7 @@ import {
 } from '../../modules/companion/research.ts';
 import { isWorksheetProfile, type WorkerConsent } from '../../modules/companion/worker-consent.ts';
 import { completedWorksheetEvent, reviewDedupKey, summarizeReviewAttempt, worksheetInventoryItem } from '../../modules/companion/worksheet-policy.ts';
-import { readLearningOverview } from './learning-overview.ts';
+import { readLearningOverview } from '../../modules/activity/learning-overview.ts';
 import { readRetentionRadar } from './learner-radar.ts';
 import { textSlice } from './reading.ts';
 import { readResearchForeground } from './research-foreground.ts';
