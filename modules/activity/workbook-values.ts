@@ -186,6 +186,13 @@ type WorkbookPacingFields = {
   pacing?: WorkbookPacingV1;
 };
 
+export type WorkbookPreSubmitRevisionClaim = {
+  readonly draftRequestId: string;
+  readonly paperRev: Revision;
+  readonly itemId: string;
+  readonly originalAnswer: string | readonly Json[] | null;
+};
+
 export type WorkbookAttempt = {
   paperId: string;
   requestId: string;
@@ -198,6 +205,7 @@ export type WorkbookAttempt = {
   feedback: WorkbookAttemptFeedback[];
   effectiveDurationMs?: number;
   assessmentConsent?: typeof workbookAssessmentConsent;
+  preSubmitRevised?: true;
 } & WorkbookPacingFields;
 
 export type WorkbookAttemptRequest = {
@@ -208,6 +216,7 @@ export type WorkbookAttemptRequest = {
   questionAttachments?: WorkbookQuestionAttachments;
   effectiveDurationMs?: number;
   assessmentConsent?: typeof workbookAssessmentConsent;
+  preSubmitRevisions?: readonly WorkbookPreSubmitRevisionClaim[];
 } & WorkbookPacingFields;
 
 export type WorkbookQuestionView =
@@ -275,6 +284,7 @@ export type WorkbookAttemptView = {
   assessments: WorkbookRubricAssessmentView[];
   correctCount: number;
   total: number;
+  preSubmitRevised?: true;
 } & WorkbookPacingFields;
 
 export type WorkbookAssessmentVerdict = 'correct' | 'partial' | 'incorrect' | 'pending';
@@ -541,6 +551,7 @@ export function workbookAttemptRequest(input: unknown, mounted?: { paperId: Fact
     ...(questionAttachments === undefined ? {} : { questionAttachments }),
     ...workbookPacingFields(row),
     ...assessmentConsent(row.assessmentConsent),
+    ...workbookPreSubmitRevisions(row.preSubmitRevisions),
   };
 }
 
@@ -607,6 +618,42 @@ function assessmentConsent(value: unknown): Pick<WorkbookAttemptRequest, 'assess
   return { assessmentConsent: value };
 }
 
+function workbookPreSubmitRevisions(value: unknown): Pick<WorkbookAttemptRequest, 'preSubmitRevisions'> {
+  if (value === undefined) return {};
+  if (!Array.isArray(value) || value.length > maxQuestions) {
+    throw new Error('交卷自检记录无效。');
+  }
+  const items: WorkbookPreSubmitRevisionClaim[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const { draftRequestId, paperRev, itemId, originalAnswer, ...extra } = record(entry);
+    if (Object.keys(extra).length) throw new Error('交卷自检记录包含未知字段。');
+    const requestId = workbookRequestId(draftRequestId);
+    if (typeof paperRev !== 'number' || !Number.isSafeInteger(paperRev) || paperRev < 1 || paperRev > 2_147_483_647) {
+      throw new Error('交卷自检卷版无效。');
+    }
+    if (typeof itemId !== 'string' || !questionIdPattern.test(itemId) || seen.has(itemId)) {
+      throw new Error('交卷自检题位无效或重复。');
+    }
+    if (originalAnswer !== null && typeof originalAnswer !== 'string' && !(Array.isArray(originalAnswer) && isJson(originalAnswer))) {
+      throw new Error('交卷自检原答格式无效。');
+    }
+    seen.add(itemId);
+    items.push({ draftRequestId: requestId, paperRev: paperRev as Revision, itemId, originalAnswer });
+  }
+  return { preSubmitRevisions: items };
+}
+
+function storedPreSubmitRevised(value: unknown): Pick<WorkbookAttempt, 'preSubmitRevised'> {
+  if (value === undefined) return {};
+  if (value !== true) throw new Error('交卷自检改写标记无效。');
+  return { preSubmitRevised: true };
+}
+
+export function normalizeExactWorkbookAnswer(value: string): string {
+  return normalizeExact(value);
+}
+
 export function workbookAssessmentRequest(input: unknown): WorkbookAssessmentRequest {
   const row = record(input);
   if (row.consent !== workbookAssessmentConsent) {
@@ -652,6 +699,27 @@ export function sameWorkbookJson(left: unknown, right: unknown): boolean {
   return canonical(left) === canonical(right);
 }
 
+export function normalizeWorkbookAnswer(
+  paper: WorkbookPaper,
+  question: WorkbookQuestion,
+  supplied: unknown,
+  index: number,
+): WorkbookAnswer {
+  const item = question.kind === 'bank' ? paper.assessmentRelease?.items.find(entry => entry.itemId === question.id) : undefined;
+  const slot = item?.slots.length === 1 ? item.slots[0] : undefined;
+  const plainText = slot?.fields.length === 1 && slot.fields[0]?.kind === 'text' && slot.fields[0].path === '';
+  const raw = item && !plainText && Array.isArray(supplied) && isJson(supplied) ? JSON.stringify(supplied) : supplied;
+  if (raw !== null && typeof raw !== 'string') throw new Error(`第 ${index + 1} 题作答格式无效。`);
+  const trimmed = raw === null ? null : raw.trim() || null;
+  if (question.kind === 'numeric') {
+    if (trimmed === null) return null;
+    const parsed = Number(trimmed.normalize('NFKC'));
+    if (!Number.isFinite(parsed)) throw new Error(`第 ${index + 1} 题需要一个数字。`);
+    return parsed === 0 ? 0 : parsed;
+  }
+  return trimmed;
+}
+
 export function gradeWorkbook(
   paper: WorkbookPaper,
   input: unknown,
@@ -668,19 +736,9 @@ export function gradeWorkbook(
   paper.questions.forEach((question, index) => {
     const supplied = row[question.id] ?? null;
     const hasAttachment = (questionAttachments?.[question.id]?.length ?? 0) > 0;
-    const item = question.kind === 'bank' ? paper.assessmentRelease?.items.find(item => item.itemId === question.id) : undefined;
-    const slot = item?.slots.length === 1 ? item.slots[0] : undefined;
-    const plainText = slot?.fields.length === 1 && slot.fields[0]?.kind === 'text' && slot.fields[0].path === '';
-    const raw = item && !plainText && Array.isArray(supplied) && isJson(supplied) ? JSON.stringify(supplied) : supplied;
-    if (raw !== null && typeof raw !== 'string') throw new Error(`第 ${index + 1} 题作答格式无效。`);
-    const trimmed = raw === null ? null : raw.trim() || null;
+    const normalized = normalizeWorkbookAnswer(paper, question, supplied, index);
     if (question.kind === 'numeric') {
-      let answer: number | null = null;
-      if (trimmed !== null) {
-        const parsed = Number(trimmed.normalize('NFKC'));
-        if (!Number.isFinite(parsed)) throw new Error(`第 ${index + 1} 题需要一个数字。`);
-        answer = parsed === 0 ? 0 : parsed;
-      }
+      const answer = normalized as number | null;
       const result = answer === null
         ? (hasAttachment ? 'pending' : 'unanswered')
         : Math.abs(answer - question.answer) <= question.tolerance
@@ -702,7 +760,7 @@ export function gradeWorkbook(
       return;
     }
     if (question.kind === 'rubric' || question.kind === 'bank') {
-      const answer = trimmed;
+      const answer = normalized as string | null;
       answers[question.id] = answer;
       feedback.push({
         questionId: question.id,
@@ -717,7 +775,7 @@ export function gradeWorkbook(
       });
       return;
     }
-    const answer = trimmed;
+    const answer = normalized as string | null;
     const result = answer === null
       ? (hasAttachment ? (question.selfCheck ? 'self-check' : 'pending') : 'unanswered')
       : question.selfCheck
@@ -907,6 +965,7 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     feedback,
     ...pacing,
     ...assessmentConsent(row.assessmentConsent),
+    ...storedPreSubmitRevised(row.preSubmitRevised),
   };
 }
 

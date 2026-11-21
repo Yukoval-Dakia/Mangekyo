@@ -339,9 +339,10 @@ export function serve(
       const takeawayFeedback = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/takeaways\/([A-Za-z0-9_.-]{1,128})$/.exec(path);
       if (takeawayFeedback?.[1] && takeawayFeedback[2] && method === 'GET')
         return json(res, 200, await student.takeaways.read(takeawayFeedback[1]!, takeawayFeedback[2]!, takeawayFeedback[3]!));
-      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|attachments|print|presentation|reading-context))?$/.exec(path);
+      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|attachments|print|presentation|reading-context|pre-submit-pitfalls))?$/.exec(path);
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));
+      if (paper?.[1] && method === 'GET' && paper[2] === 'pre-submit-pitfalls') return json(res, 200, await student.workbook.preSubmitPitfalls(paper[1]));
       if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return await offlineSubmission(200,input => student.workbook.submit(paper[1]!,input));
       if (paper?.[1] && method === 'POST' && paper[2] === 'attachments') {
         const rawWatermark = typeof req.headers['x-deletion-watermark'] === 'string' ? req.headers['x-deletion-watermark'] : undefined;

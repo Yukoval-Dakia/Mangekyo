@@ -157,7 +157,8 @@ Promise<PreSubmitPitfall[]> {
     if (!row || busWitnessKey(row.submission) !== busWitnessKey(item.submission) || row.itemId !== item.itemId ||
         row.activity.id === paper.id || !row.basis.length) return;
     const {evaluation, event} = row;
-    if (!evaluation || evaluation.concept.type !== 'content.asset' || evaluation.concept.mode !== 'following' ||
+    if (!evaluation || !['content.asset', 'activity.workspaceEntry'].includes(evaluation.concept.type) ||
+        evaluation.concept.mode !== 'following' ||
         !event.concept_ids.includes(evaluation.concept.id) || event.outcome !== 'incorrect' || event.help_level !== 'independent' ||
         event.ref !== row.submission.id || event.rev !== row.submission.rev ||
         !(evidenceTime(event.occurred_at) <= asOf) || BigInt(row.admittedAt) > through) return;

@@ -39,6 +39,7 @@ export async function registerFormalAssessment(
 
 export async function readFormalAssessment(
   tx: ReadTransaction, type: string, releaseRef: AssessmentRevisionRef, submissionRef: AssessmentRevisionRef, purpose: string,
+  expectedEpochs?: { readonly releaseEpoch?: string; readonly submissionEpoch?: string },
 ) {
   const { rows: [slot] } = await tx.query<{
     current_id: string | null; last_error: { status: string; reason: string } | null;
@@ -53,8 +54,12 @@ export async function readFormalAssessment(
   const refs = { releaseRef, submissionRef };
   if (slot?.value?.kind === 'value' && slot.current_id) {
     const manifest = parseManifest(slot.manifest);
+    const epochMatches = (id: string, expected: string | undefined) =>
+      expected === undefined || manifest.inputs.some(input => input.kind === 'fact' && input.id === id && input.accessEpoch === expected);
     if ((await revalidateManifest(tx, manifest)).kind !== 'valid' ||
-        (purpose !== manifest.purpose && (await revalidateManifest(tx, manifest, purpose)).kind !== 'valid'))
+        (purpose !== manifest.purpose && (await revalidateManifest(tx, manifest, purpose)).kind !== 'valid') ||
+        !epochMatches(releaseRef.id, expectedEpochs?.releaseEpoch) ||
+        !epochMatches(submissionRef.id, expectedEpochs?.submissionEpoch))
       return { ...refs, state: 'blocked' as const, reason: assessmentInputsBlocked, score: null };
     return { ...refs, ...slot.value.value, state: settledAssessmentState(slot.value.value), derivationId: slot.current_id };
   }

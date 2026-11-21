@@ -313,6 +313,71 @@ export async function validatesWorkbookHistory(
   return !(target.condition === 'variant' && seen) && !(independent && cross_help);
 }
 
+export async function readWorkbookPreSubmitObservation(
+  tx: ActivityEvidenceReadScope,
+  paper: HelpRef,
+  itemId: string,
+  cutoff: Tick,
+) {
+  const { rows: [row] } = await tx.query<{
+    question_displayed: boolean;
+    printed: boolean;
+    solution_presented: boolean;
+    prior_attempt_feedback: boolean;
+  }>(
+    `SELECT
+      EXISTS (
+        SELECT 1 FROM facts f
+        JOIN fact_revs born ON (born.learner_id,born.fact_id,born.rev)=(f.learner_id,f.id,1)
+        JOIN fact_revs cur ON (cur.learner_id,cur.fact_id,cur.rev)=(f.learner_id,f.id,f.current_rev)
+        JOIN commands c ON (c.learner_id,c.id)=(born.learner_id,born.command_id)
+        JOIN facts p ON (p.learner_id,p.id)=(f.learner_id,born.data->>'permit')
+        WHERE f.learner_id=$1 AND f.type=$5 AND f.retracted_rev IS NULL AND p.retracted_rev IS NULL
+          AND f.purpose && ARRAY['storage','all']::text[] AND p.purpose && ARRAY['storage','all']::text[]
+          AND born.author='learner' AND born.kind='value' AND cur.kind='value' AND born.data=cur.data
+          AND c.type=$6 AND c.state='done' AND born.tick<$4::bigint
+          AND born.data->>'kind'='question' AND born.data->>'phase'='displayed'
+          AND born.data#>>'{paper,id}'=$2 AND (born.data#>>'{paper,rev}')::int=$3
+          AND NOT (born.data ? 'issuanceId') AND NOT (born.data ? 'attemptRef')
+          AND (born.data->'items') ? $7
+          AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id IN (f.id, p.id))
+      ) AS question_displayed,
+      EXISTS (
+        SELECT 1 FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+        WHERE r.learner_id=$1 AND f.type=$5 AND c.type=$6 AND c.state='done'
+          AND r.rev=1 AND r.kind='value' AND r.tick<$4::bigint
+          AND r.data#>>'{paper,id}'=$2 AND (r.data ? 'issuanceId')
+      ) AS printed,
+      EXISTS (
+        SELECT 1 FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+        WHERE r.learner_id=$1 AND f.type=$5 AND c.type=$6 AND c.state='done'
+          AND r.rev=1 AND r.kind='value' AND r.tick<$4::bigint
+          AND r.data#>>'{paper,id}'=$2 AND r.data->>'kind'='solution'
+          AND (r.data->'items') ? $7
+      ) AS solution_presented,
+      EXISTS (
+        SELECT 1 FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+        JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
+        WHERE r.learner_id=$1 AND f.type=$8 AND c.type=$9 AND c.state='done'
+          AND r.rev=1 AND r.kind='value' AND r.author='learner' AND r.tick<$4::bigint
+          AND r.data->>'paperId'=$2
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(r.data->'feedback') b
+            WHERE b->>'questionId'=$7 AND b->>'result'<>'unanswered'
+          )
+      ) AS prior_attempt_feedback`,
+    [
+      tx.learner, paper.id, paper.rev, cutoff,
+      workbookPresentationType, recordWorkbookPresentationCommand, itemId,
+      workbookAttemptType, submitWorkbookAttemptCommand,
+    ],
+  );
+  if (!row) throw new Error('Missing workbook pre-submit observation result');
+  return row;
+}
+
 export function workbookReadAtWatermark(tx: ActivityEvidenceReadScope, base: ReadContext, tracked: ReadContext,
   cutoff: Tick, unavailable: () => Error,
 ): ReadContext {

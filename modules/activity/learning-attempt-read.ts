@@ -1,5 +1,11 @@
-import { createCommandReadContext, createPropagationHooks, derivationId, FactNotFoundError, FactReadDeniedError, isJson, parseManifest, revalidateManifest, stableId, storeSettledValue, type DbTransaction, type FactChange, type FactId, type FactRef, type FactSnapshot, type DerivationId, type Manifest, type ManifestInput, type ReadContext, type ReadTransaction, type Revision, type Tick } from '@mangekyo/kernel';
+import { createCommandReadContext, createPropagationHooks, derivationId, FactNotFoundError, FactReadDeniedError, isJson, parseManifest, revalidateManifest, stableId, storeSettledValue, type CanonicalEvidenceSliceV1, type DbTransaction, type FactChange, type FactId, type FactRef, type FactSnapshot, type DerivationId, type Manifest, type ManifestInput, type ReadContext, type ReadTransaction, type Revision, type Tick } from '@mangekyo/kernel';
 import { readActivityHelpEvents as readHelpEvents } from './evidence-read.ts';
+import {
+  gatherAuthorizedExamTimeValueBundle, revalidateAuthorizedExamTimeValueBundle,
+  type AuthorizedExamTimeValueBundle, type ExamTimeValueEstimate, type ExamTimeValueFormalInput, type ExamTimeValueRef,
+} from './exam-time-value.ts';
+
+export type { AuthorizedExamTimeValueBundle } from './exam-time-value.ts';
 import { storagePurpose } from './library-values.ts';
 import {
   sameWorkbookJson,
@@ -224,4 +230,74 @@ export async function readTeachingAttemptAssessments(
     });
   }
   return result;
+}
+
+export type WorkbookExamTimeValueAccess = {
+  readonly purpose?: string;
+  readonly maySend?: (fact: FactSnapshot) => boolean;
+  readonly asOfAt?: string;
+  readonly estimates?: readonly ExamTimeValueEstimate[];
+  readonly errorStages?: Readonly<Record<string, NonNullable<CanonicalEvidenceSliceV1['events'][number]['error_stage']>>>;
+};
+
+type WorkbookExamTimeValueFormalReader = Parameters<typeof gatherAuthorizedExamTimeValueBundle>[0]['readFormal'];
+
+const denialReason = (error: unknown) =>
+  error instanceof Error && 'reason' in error ? (error as { readonly reason?: unknown }).reason : undefined;
+const isReadDenied = (error: unknown) => ['purpose', 'retracted', 'recipient', 'changed'].includes(String(denialReason(error)));
+const isPurposeDenied = (error: unknown) => denialReason(error) === 'purpose';
+const onlyGrantsChanged = async (tx: ReadTransaction, id: FactId, before: Revision, after: Revision) => {
+  const { rows: [proof] } = await tx.query<{ unchanged: boolean }>(
+    `SELECT count(*) FILTER (WHERE r.kind='value' AND r.data=base.data AND r.corrects_rev=p.rev
+        AND r.purpose IS DISTINCT FROM p.purpose)=($4::int-$3::int) AS unchanged
+     FROM fact_revs base JOIN fact_revs r ON (r.learner_id,r.fact_id)=(base.learner_id,base.fact_id)
+     JOIN fact_revs p ON (p.learner_id,p.fact_id,p.rev)=(r.learner_id,r.fact_id,r.rev-1)
+     WHERE base.learner_id=$1 AND base.fact_id=$2 AND base.rev=$3 AND base.kind='value' AND r.rev>$3 AND r.rev<=$4`,
+    [tx.learner, id, before, after],
+  );
+  return proof?.unchanged === true;
+};
+const authorizedFactReader = (tx: ReadTransaction, purpose: string, maySend: (fact: FactSnapshot) => boolean) => {
+  const read = createCommandReadContext(tx, purpose);
+  return {
+    fact: async (id: FactId, options: Parameters<ReadContext['fact']>[1]) => {
+      const fact = await read.fact(id, options);
+      if (!maySend(fact)) throw new FactReadDeniedError('recipient', `Fact ${id} may not be sent to this recipient`);
+      return fact;
+    },
+  };
+};
+
+export async function openWorkbookExamTimeValueBundle(
+  tx: ReadTransaction,
+  paperId: FactId,
+  attemptId: FactId,
+  readFormal: WorkbookExamTimeValueFormalReader,
+  access: WorkbookExamTimeValueAccess = {},
+): Promise<AuthorizedExamTimeValueBundle | undefined> {
+  const purpose = access.purpose ?? storagePurpose;
+  const maySend = access.maySend ?? (() => true);
+  return gatherAuthorizedExamTimeValueBundle({
+    tx, paperId, attemptId, purpose, readFormal,
+    read: authorizedFactReader(tx, purpose, maySend),
+    asOfAt: access.asOfAt ?? new Date().toISOString(),
+    ...(access.estimates ? { estimates: access.estimates } : {}),
+    ...(access.errorStages ? { errorStages: access.errorStages } : {}),
+    isUnavailable: isReadDenied, isPurposeDenied,
+    onlyGrantsChanged: (id, before, after) => onlyGrantsChanged(tx, id, before, after),
+  });
+}
+
+export async function verifyWorkbookExamTimeValueBundle(
+  tx: ReadTransaction,
+  bundle: AuthorizedExamTimeValueBundle,
+  readFormal: WorkbookExamTimeValueFormalReader,
+  maySend: (fact: FactSnapshot) => boolean = () => true,
+): Promise<boolean> {
+  return revalidateAuthorizedExamTimeValueBundle({
+    bundle, readFormal,
+    read: authorizedFactReader(tx, bundle.purpose, maySend),
+    isUnavailable: isReadDenied, isPurposeDenied,
+    onlyGrantsChanged: (id, before, after) => onlyGrantsChanged(tx, id, before, after),
+  });
 }

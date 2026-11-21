@@ -4,6 +4,7 @@ import { closedPosttest, issuedPosttestPaper, posttestIssuance, posttestIssuance
 import { creation, object } from '../values.ts';
 import { frozenWorkbookSubmission } from '../question-assessment.ts';
 import { readFrozenWorkbookBank } from '../workbook-bank.ts';
+import { resolveWorkbookPreSubmitRevised } from '../pre-submit-revision.ts';
 import { practiceCustodyId, readPracticeCustody } from '../sealed-practice.ts';
 import { authorizeWorkbookSubmissionAttachments } from '../workbook-attachments.ts';
 import {
@@ -38,8 +39,9 @@ export default defineCommand({
     const paper = release
       ? workbookPaper((await ctx.read.fact(release.id, { mode: 'pinned', rev: release.rev })).value)
       : current;
+    const sealed = controlled || Boolean(await readPracticeCustody(ctx.read, await practiceCustodyId(fact.ref.id)));
     if (data.paperRev !== undefined) {
-      if (controlled || await readPracticeCustody(ctx.read, await practiceCustodyId(fact.ref.id))) {
+      if (sealed) {
         throw new Error('只有普通试卷接受逐题过程。');
       }
       if (data.paperRev !== fact.ref.rev || !sameWorkbookJson(current, paper)) {
@@ -56,6 +58,15 @@ export default defineCommand({
       ctx, fact.ref.id, data.questionAttachments, requiredPurposes,
     );
     if (paper.assessmentRelease) frozenWorkbookSubmission(paper.assessmentRelease, { id, rev: 1 as Revision }, graded.answers, data.questionAttachments);
+    const preSubmitRevised = await resolveWorkbookPreSubmitRevised(ctx.read, {
+      paperId: fact.ref.id,
+      paperRev: fact.ref.rev,
+      paper,
+      attemptId: id,
+      data,
+      gradedAnswers: graded.answers,
+      sealed,
+    });
     return [
       {
         kind: 'create',
@@ -77,6 +88,7 @@ export default defineCommand({
           ...(data.paperRev === undefined ? {} : { paperRev: data.paperRev }),
           ...(data.pacing === undefined ? {} : { pacing: data.pacing }),
           ...(data.assessmentConsent === undefined ? {} : { assessmentConsent: data.assessmentConsent }),
+          ...(preSubmitRevised ? { preSubmitRevised: true as const } : {}),
         },
         purpose: controlled ? [storagePurpose, retentionTeachingPurpose]
           : paper.assessmentRelease ? [storagePurpose, workbookAssessmentPurpose] : [storagePurpose],
