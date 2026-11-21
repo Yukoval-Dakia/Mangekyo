@@ -164,6 +164,19 @@ export type WorkbookFeedback = {
 };
 type WorkbookAttemptFeedback = Omit<WorkbookFeedback, 'expected'> & { expected: WorkbookExpected | null };
 
+export type WorkbookPacingV1 = {
+  version: 1;
+  items: ({
+    questionId: string;
+    effectiveDurationMs: number;
+  } & ({ skipped: false; returned: false } | { skipped: true; returned: boolean }))[];
+};
+
+type WorkbookPacingFields = {
+  paperRev?: Revision;
+  pacing?: WorkbookPacingV1;
+};
+
 export type WorkbookAttempt = {
   paperId: string;
   requestId: string;
@@ -174,7 +187,7 @@ export type WorkbookAttempt = {
   feedback: WorkbookAttemptFeedback[];
   effectiveDurationMs?: number;
   assessmentConsent?: typeof workbookAssessmentConsent;
-};
+} & WorkbookPacingFields;
 
 export type WorkbookAttemptRequest = {
   paperId: string;
@@ -183,7 +196,7 @@ export type WorkbookAttemptRequest = {
   answers: Record<string, string | readonly Json[] | null>;
   effectiveDurationMs?: number;
   assessmentConsent?: typeof workbookAssessmentConsent;
-};
+} & WorkbookPacingFields;
 
 export type WorkbookQuestionView =
   | {
@@ -249,7 +262,7 @@ export type WorkbookAttemptView = {
   assessments: WorkbookRubricAssessmentView[];
   correctCount: number;
   total: number;
-};
+} & WorkbookPacingFields;
 
 export type WorkbookAssessmentVerdict = 'correct' | 'partial' | 'incorrect' | 'pending';
 
