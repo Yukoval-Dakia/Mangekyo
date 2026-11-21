@@ -4,6 +4,8 @@ import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
 import {posttestSubmissionType, retentionPaperType} from '../../modules/activity/retention-posttest.ts';
 import {parsePythonAttemptSelection} from '../../executors/teaching/python-attempt-selection.ts';
+import type {EvidenceEventV1} from '../../kernel/src/pipeline-contracts.ts';
+import {workbookExamPacingEvent, workbookExamPacingItems} from '../../modules/activity/evidence-slice.ts';
 import {workbookAttemptView} from '../../modules/activity/workbook-assessment-values.ts';
 import {workbookAttempt, workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
 import {purpose} from './identity.ts';
@@ -15,6 +17,7 @@ import {openWorkbookQuestionSources, readReleasedAssessment} from './workbook-di
 
 export async function readPythonAttempts(tx: ReadTransaction, args: Record<string, unknown>, access: {
   maySend: WorkspaceSourceRecipient; known: (id: string) => boolean; track: SourceTrack;
+  recordExam?: (event: EvidenceEventV1) => void; includeExamItems?: boolean;
 }): Promise<PythonAttemptsRead> {
   const scope = parsePythonAttemptSelection(args);
   if (!scope) return {ok:false, code:'invalid_args', field:'attempts', message:
@@ -88,11 +91,17 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
         issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});
         continue;
       }
-    } else if (await openWorkbookQuestionSources(tx, opened.fact, sources)) {
-      formal = await readReleasedAssessment(tx, attempt, opened.fact, sources);
     } else {
-      issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});
-      continue;
+      const frozen = await openWorkbookQuestionSources(tx, opened.fact, sources);
+      if (!frozen) {
+        issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});
+        continue;
+      }
+      if (!access.includeExamItems) formal = await readReleasedAssessment(tx, attempt, opened.fact, sources);
+      access.recordExam?.(workbookExamPacingEvent(opened.fact.ref, attempt, frozen.paper, formal));
+      if (access.includeExamItems && access.recordExam) {
+        for (const item of workbookExamPacingItems(opened.fact.ref, attempt, frozen.paper)) access.recordExam(item);
+      }
     }
     for (const fact of collected) access.track(...fact);
     access.track(opened.fact, 'following');

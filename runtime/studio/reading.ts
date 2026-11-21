@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { intakeTextOf, materialTextOf } from '../../modules/activity/workspace-source-projection.ts';
 export { intakeTextOf, materialTextOf, textSlice } from '../../modules/activity/workspace-source-projection.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { readable } from '../../kernel/src/commands/fact-collection.ts';
+import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -14,7 +15,7 @@ import { purpose, stableId } from './identity.ts';
 export async function readMaterialText(tx: ReadTransaction, id: string) {
   if (!isSourceFactId(id)) return null;
   const read = createCommandReadContext(tx, storagePurpose);
-  try {
+  return await readable(async () => {
     const snapshot = await read.fact(factId(id), {mode: 'following'});
     if (snapshot.type !== materialType) return null;
     const link = await materialIntakeLink(tx, snapshot.ref.id);
@@ -32,10 +33,7 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
       text: document.text,
       sourceRef: materialIntakeReference(snapshot, source, {kind:'whole'}),
     };
-  } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return null;
-    throw error;
-  }
+  }) ?? null;
 }
 
 export async function attachmentSources(tx: ReadTransaction, attachment: ReturnType<typeof studyAttachment>) {

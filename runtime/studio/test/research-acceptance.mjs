@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { jsonHeaders, requestJson } from './acceptance-fixtures.mjs';
 
 const base = new URL(process.argv[2]);
 assert.equal(base.protocol, 'http:');
 assert.equal(base.hostname, '127.0.0.1');
 assert.equal(process.argv[3], '--isolated', '请使用运行着 Web 和 Worker 的独立空学习库。');
 async function api(path, method = 'GET', data, status = 200) {
-  const response = await fetch(new URL('/api/' + path, base), {
-    method, headers: { 'content-type': 'application/json', connection: 'close' },
-    ...(data && { body: JSON.stringify({ requestId: randomUUID(), ...data }) }),
+  const response = await requestJson(new URL('/api/' + path, base), data && { requestId: randomUUID(), ...data }, {
+    method, headers: { ...jsonHeaders, connection: 'close' },
   });
   assert.equal(response.status, status, path);
   return response.json();

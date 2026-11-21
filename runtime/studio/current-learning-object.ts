@@ -1,5 +1,6 @@
 import { studyObjectBasisDigest, type StudyObjectWitness } from '../../modules/activity/current-object-basis.ts';
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { readable } from '../../kernel/src/commands/fact-collection.ts';
+import { createAuthorizedFactReader } from '../../kernel/src/commands/reads.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { organizerNoteType } from '../../modules/activity/organizer-values.ts';
@@ -18,9 +19,9 @@ export function currentObjectAlias(kind: StudyCurrentObjectSelection['kind']) {
   return kind === 'attempt' ? 'current_attempt' : 'current_page';
 }
 
-export async function readCurrentLearningObject(tx: ReadTransaction, selection: StudyCurrentObjectSelection,
+export function readCurrentLearningObject(tx: ReadTransaction, selection: StudyCurrentObjectSelection,
   maySend: WorkspaceSourceRecipient, ownerNotionRead?: true) {
-  try {
+  return readable(async () => {
     const {kind, id, rev} = selection;
     const fact = await createAuthorizedFactReader(tx, purpose, maySend).fact(factId(id), {mode: 'pinned', rev: rev as Revision});
     const sourceRef = sourceReference(fact, {kind: 'whole'});
@@ -64,10 +65,7 @@ export async function readCurrentLearningObject(tx: ReadTransaction, selection: 
       root, basis, basisDigest, answerSlot, openedAnswer: hasAnswer && nextOffset === null,
       view: {alias: currentObjectAlias(kind), sourceRef, title, content, truncated: nextOffset !== null},
     };
-  } catch (error) {
-    if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
-    return undefined;
-  }
+  });
 }
 
 export type OpenedCurrentLearningObject = NonNullable<Awaited<ReturnType<typeof readCurrentLearningObject>>>;

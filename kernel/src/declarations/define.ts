@@ -82,6 +82,8 @@ export function defineCommand<Input, Read = undefined, Writes extends readonly i
     readonly type: string;
     readonly schema: ValueSchema<Input>;
     readonly destructive: boolean;
+    /** Exact execution purpose for new commands, proposals and decisions. */
+    readonly requiredPurpose?: string;
     readonly read?: (ctx: import('./types.ts').CommandContext) => Promise<Read> | Read;
     readonly write: (
       ctx: import('./types.ts').CommandContext,

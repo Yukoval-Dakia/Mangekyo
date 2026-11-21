@@ -111,3 +111,23 @@ export function researchWorksheet(value: unknown) {
     ? { ...body, orderId: factId(String(orderId)) }
     : { ...body, todoId: factId(String(todoId)), source: researchSource(source), digest: text(digest, 160) };
 }
+
+export const deterministicReview = ({ questionNumber, feedback }: { questionNumber: number; feedback: { expected: { kind: string } } }) => ({
+  title: `第 ${questionNumber} 题复习`,
+  steps: [
+    '这次原答与冻结卷面的判分规则不符。先盖住上次的答案和参考答案，独立重做一遍。',
+    feedback.expected.kind === 'numeric'
+      ? '写下用于求值的式子，再检查代入、运算和单位。'
+      : '写下决定答案的题干条件，再检查回答是否满足每一项。',
+    '做完后对照来源里的原答和参考答案，找出第一次出现差异的地方，记下一项下次要检查的内容。',
+  ],
+});
+
+export const retentionReviewDraft = {
+  title: '后测复习单',
+  steps: [
+    '回想上次独立作答时卡住的位置，先用自己的话写出解题思路。',
+    '隔一段时间再做一道考查同一要点的题，先独立作答，再对照反馈。',
+    '回看这次预测与实际结果的差异，记下需要再练的一点。',
+  ],
+};

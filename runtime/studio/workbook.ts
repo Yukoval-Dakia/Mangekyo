@@ -32,6 +32,7 @@ import {
   textMaterial,
 } from '../../modules/activity/library-values.ts';
 import {
+  checkWorkbookPacingItems,
   gradeWorkbook, independentlyAuthoredPaper,
   saveWorkbookPaperCommand,
   submitWorkbookAttemptCommand,
@@ -42,6 +43,7 @@ import {
   workbookAssessmentRequest,
   workbookAssessmentResult,
   workbookDraft,
+  WorkbookRevisionMismatch,
   WorkbookSourceMismatch,
   workbookPaper,
   workbookPaperType,
@@ -252,17 +254,18 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const assessments = await allAssessments(tx, paperId);
       const attempts = await readAttempts(tx, read, paperId);
       const projectQuestions = capsules.questions(tx);
-      return projectWorkbookDetail(paperId, revision, paper, source, await isPracticeWorkbook(tx,paperId), {
+      return projectWorkbookDetail(paperId, revision, paper, source, pending || await isPracticeWorkbook(tx,paperId), {
         attempts, assessments, read, unavailable: factUnavailable,
         corrections: attempts.length ? await readWorkbookCorrections(await correctionIds(tx, paperId), read, factUnavailable) : new Map(),
-        async frozenAttempt(fact, frozen) {
-          try { await readFrozenWorkbookBank(read, frozen); }
+        async frozenAttempt(fact, attempt) {
+          try { await readFrozenWorkbookBank(read, attempt.paper); }
           catch (error) {
             if (factUnavailable(error) || error instanceof WorkbookSourceMismatch) return;
             throw error;
           }
           const mount = await historicalWorkbookMount(tx,paperId,fact,read);
-          return mount ? { questions: await projectQuestions(frozen,mount), paperRev: mount.paper.rev } : { questions: [] };
+          if (mount) return { questions: await projectQuestions(attempt.paper,mount), paperRev: mount.paper.rev };
+          return attempt.paperRev === undefined ? { questions: [] } : undefined;
         },
         formalAssessment: (frozen, ref) => formalAssessment(tx, frozen, ref),
         questions: async () => pending ? workbookQuestionsView(paper) : projectQuestions(paper,{paper:{id:paperId,rev:revision},epoch}),
@@ -437,52 +440,60 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       }
       const attemptId = factId(stableId('workbook-attempt', paperId, data.requestId));
       const deletionWatermark = submittedWatermark(input);
-      const priorAttempt = () => db.snapshot({ learner:studioLearner }, async tx => {
-        await assertUnburned(tx, 'fact', [attemptId,paperId]);
-        await assertDeletionWatermark(tx,deletionWatermark);
-        return { existing: await readAttemptOrNull(tx, attemptId), snapshot: await readPaperSnapshot(tx,paperId) };
-      });
-      const {existing, snapshot} = await priorAttempt();
-      const paper = existing?.paper ?? snapshot.paper;
-      let graded: ReturnType<typeof gradeWorkbook>;
+      const paperRev = data.paperRev, versioned = paperRev !== undefined;
+      const legacyCommand = commandId(stableId('submit-workbook-attempt', attemptId));
+      const versionedCommand = commandId(stableId('submit-versioned-workbook-attempt', data.requestId));
+      const conflict = () => new RequestError(409, '同一个提交标识已经用于不同的作答。');
       try {
-        graded = gradeWorkbook(paper, data.answers);
-        if (paper.assessmentRelease) frozenSubmission(paper.assessmentRelease, { id: attemptId, rev: 1 as Revision }, graded.answers);
-      } catch (error) {
-        invalid(error, '作答格式无效。');
-      }
-      // The first accepted submission fixes timing alongside its original submission timestamp.
-      const isReplay = (attempt: WorkbookAttempt) => attempt.paperId === paperId &&
-        sameWorkbookJson(attempt.answers, graded.answers) && attempt.assessmentConsent === data.assessmentConsent;
-      if (existing) {
-        if (!isReplay(existing)) {
-          throw new RequestError(409, '同一个提交标识已经用于不同的作答。');
-        }
-        return get(paperId);
-      }
-      try {
-        const request = {
-          learner: studioLearner,
-          actor: 'learner' as const,
-          purpose: storagePurpose,
-          type: submitWorkbookAttemptCommand, deletionWatermark,
-          id: commandId(stableId('submit-workbook-attempt', attemptId)),
-          input: {
-            id: attemptId,
-            data,
-          },
-        };
-        if (snapshot?.pending) await submitWithPracticeCustody(db,activity,hooks,paperId,request);
-        else await handle(request);
+        await locked(async tx => {
+          await assertUnburned(tx, 'fact', [attemptId,paperId]);
+          await assertDeletionWatermark(tx,deletionWatermark);
+          const snapshot = await readPaperSnapshot(tx,paperId);
+          const sealed = snapshot.pending || await isPracticeWorkbook(tx,paperId);
+          if (sealed && versioned) throw new RequestError(400, '只有普通试卷接受逐题过程。');
+          const existing = await readAttemptOrNull(tx,attemptId);
+          if (existing && (existing.paperId !== paperId || existing.requestId !== data.requestId)) throw conflict();
+          const envelope = { actor: 'learner' as const, purpose: storagePurpose, input: { id: attemptId, data } };
+          const legacyReplay = !versioned && existing !== null && existing.paperRev === undefined;
+          if (!sealed) await assertUnburned(tx, 'command', [legacyReplay ? legacyCommand : versionedCommand]);
+          if (!sealed && !legacyReplay) {
+            const recorded = await readRecordedCommand(tx,versionedCommand);
+            if (recorded || existing) {
+              if (!versioned || !existing || recorded?.type !== submitWorkbookAttemptCommand || recorded.state !== 'done' ||
+                  !sameWorkbookJson(recorded.input, { ...envelope,
+                    input: { id: attemptId, data: { ...data, submittedAt: existing.submittedAt } } })) throw conflict();
+              const read = createCommandReadContext(tx,storagePurpose);
+              await read.fact(paperId,{mode:'pinned',rev:paperRev});
+              await readFrozenWorkbookBank(read,existing.paper);
+              return;
+            }
+          }
+          if (versioned && paperRev !== snapshot.revision) throw new WorkbookRevisionMismatch('卷版已变化，请刷新后交卷。');
+          const paper = existing?.paper ?? snapshot.paper;
+          let graded: ReturnType<typeof gradeWorkbook>;
+          try {
+            checkWorkbookPacingItems(paper,data.pacing);
+            graded = gradeWorkbook(paper,data.answers);
+            if (paper.assessmentRelease) frozenSubmission(paper.assessmentRelease,{ id: attemptId, rev: 1 as Revision },graded.answers);
+          } catch (error) {
+            invalid(error, '作答格式无效。');
+          }
+          if (existing) {
+            if (!sameWorkbookJson(existing.answers,graded.answers) || existing.assessmentConsent !== data.assessmentConsent) throw conflict();
+            return;
+          }
+          const local = withinLearnerTransaction(db,tx);
+          const request = { ...envelope, learner: studioLearner, type: submitWorkbookAttemptCommand,
+            deletionWatermark, id: versioned ? versionedCommand : legacyCommand };
+          if (snapshot.pending) await submitWithPracticeCustody(local,activity,hooks,paperId,request);
+          else await createCommandHandler(local,commands)(request);
+        });
       } catch (error) {
         if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch) {
           throw new RequestError(403, '这份试卷当前不可读取。');
         }
-        if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-          const { existing: saved } = await priorAttempt();
-          if (saved && isReplay(saved)) return get(paperId);
-          throw new RequestError(409, '同一个提交标识已经用于不同的作答。');
-        }
+        if (error instanceof WorkbookRevisionMismatch) throw new RequestError(409, error.message);
+        if (error instanceof Error && error.message === 'Command ID already used with a different command identity') throw conflict();
         throw error;
       }
       return get(paperId);

@@ -3,6 +3,10 @@ import { factId, type FactId, type Outcome, type Revision, type Tick } from '@ma
 export const interventionLiftType = 'learner.interventionLift';
 export const interventionLiftMethod = 'learner/intervention-lift@1';
 
+export function interventionLiftKey(playbookId: string, version: number) {
+  return JSON.stringify([playbookId, version]);
+}
+
 export type LiftIdentity = { playbookId: FactId; version: number; strategyId: string };
 export type VerificationRef = { id: FactId; rev: Revision; accessEpoch: Tick };
 export type LiftAssessment = {

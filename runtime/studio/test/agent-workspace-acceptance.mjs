@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {writeFile} from 'node:fs/promises';
-import {setTimeout as delay} from 'node:timers/promises';
+import { studioJsonApi, waitForSession } from './acceptance-fixtures.mjs';
 
 const base = new URL(process.argv[2] ?? '');
 if (base.protocol !== 'http:' || !['localhost','127.0.0.1'].includes(base.hostname))
@@ -10,23 +10,12 @@ const evidencePath = process.argv[3];
 const name = '均速练习 ' + randomUUID().slice(0,8);
 const signature = randomUUID().slice(0,8);
 const evidence = {name, rounds:[]};
-async function api(path, body, method = 'POST') {
-  const response = await fetch(new URL('/api/' + path,base), body === undefined ? {} : {
-    method, headers:{'content-type':'application/json'}, body:JSON.stringify(body),
-  });
-  const data = await response.json();
-  assert.ok(response.ok,path + ' ' + response.status + ' ' + JSON.stringify(data));
-  return data;
-}
+const api = studioJsonApi(base);
 async function chat(question) {
-  let session = await api('sessions',{caseId:'companion',requestId:randomUUID(),question});
-  const row = {session:session.id, question};
+  const pending = await api('sessions',{caseId:'companion',requestId:randomUUID(),question});
+  const row = {session:pending.id, question};
   evidence.rounds.push(row);
-  const until = Date.now()+900_000;
-  while (session.status === 'pending' && Date.now() < until) {
-    await delay(1000);
-    session = await api('sessions/'+session.id);
-  }
+  const session = await waitForSession(pending, id => api('sessions/' + id), 1000, 900_000);
   Object.assign(row,{status:session.status, error:session.error, turn:session.turns?.at(-1)});
   assert.equal(session.status,'ready',JSON.stringify(row));
   return row.turn;

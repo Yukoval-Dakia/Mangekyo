@@ -42,10 +42,13 @@ export async function historicalWorkbookMount(tx: ActivityEvidenceReadScope, pap
   const attempt = workbookAttempt(submission.value);
   const birth = await readActivitySubmissionBirth(tx, submission.ref, workbookAttemptType);
   if (!birth?.unchanged || attempt.paperId !== paperId) return null;
-  const {rows: [row]} = await tx.query<{rev: Revision}>(
-    "SELECT rev FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND kind='value' AND tick<$3 ORDER BY tick DESC LIMIT 1",
-    [tx.learner, paperId, birth.tick]);
-  const rev = attempt.paper.assessmentRelease?.releaseRef.rev ?? row?.rev;
+  let rev = attempt.paperRev ?? attempt.paper.assessmentRelease?.releaseRef.rev;
+  if (rev === undefined) {
+    const {rows: [row]} = await tx.query<{rev: Revision}>(
+      "SELECT rev FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND kind='value' AND tick<$3 ORDER BY tick DESC LIMIT 1",
+      [tx.learner, paperId, birth.tick]);
+    rev = row?.rev;
+  }
   if (!rev) return null;
   const fact = await read.fact(paperId,{mode:'pinned',rev}).catch(error => {
     if (!unavailable(error)) throw error;

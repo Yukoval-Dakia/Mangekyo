@@ -1,9 +1,9 @@
-import type { CanonicalEvidenceSliceV1 } from '../../kernel/src/pipeline-contracts.ts';
+import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '../../kernel/src/pipeline-contracts.ts';
 import type { ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import { pythonAttemptsLimit } from '../../executors/teaching/agent-tools.ts';
 import { toolFailure, type LearningError } from '../../executors/teaching/learning-tools.ts';
-import type { PythonRead, PythonReadValue } from '../../executors/teaching/python-sdk.ts';
+import { pythonPrerequisiteKinds, pythonPrerequisites, type PythonRead, type PythonReadValue } from '../../executors/teaching/python-sdk.ts';
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
 import { posttestIssuanceType, posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
@@ -12,7 +12,7 @@ import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { purpose } from './identity.ts';
-import { readKnowledgeGraph, type EdgeHit } from './knowledge-graph.ts';
+import { readKnowledgeGraph } from './knowledge-graph.ts';
 import { readPythonAttempts } from './python-attempts.ts';
 import { readPythonQuestions } from './python-questions.ts';
 import { studioWorkbookEvidence } from './retention-workbook.ts';
@@ -34,40 +34,19 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
     const id = request.args.kc_id;
     if (!isSourceFactId(id)) return absent('kc_id', '请提供可读取的知识点 ID。');
     const hops = typeof request.args.depth === 'number' ? request.args.depth : 2;
-    const edgeKinds = ['prereq_of', 'prerequisite', 'successor'] as const;
-    const projectEdge = (edge: EdgeHit) => ({
-      id:edge.id, rev:edge.rev, from:edge.from.fact.id, from_rev:edge.from.fact.rev,
-      to:edge.to.fact.id, to_rev:edge.to.fact.rev, kind:edge.kind, scope:edge.scope,
-    });
-    const traverse = (direction: 'inbound' | 'outbound') => {
-      // Up to eight reads share the 256 KiB Python input with user code and arguments.
-      let remainingBytes = 12 * 1024;
-      return readKnowledgeGraph(tx, {conceptId:id, hops, direction, edgeKinds, conceptsOnly:true},
-        {recipient:'workspace', maySend:access.maySend, track:access.track, exactReadModes:true},
-        (source, _fact, hop) => hop > 0 ? {id:source.id, rev:source.rev, title:source.title, hop} : undefined,
-        (edge, node) => {
-          remainingBytes -= Buffer.byteLength(JSON.stringify([projectEdge(edge), node]));
-          return remainingBytes >= 0;
-        });
-    };
-    const prerequisites = await traverse('inbound');
-    if (!prerequisites) return access.known(id)
+    const graph = await pythonPrerequisites(id, hops, (direction, select, fits) =>
+      readKnowledgeGraph(tx, {conceptId:id, hops, direction, edgeKinds:pythonPrerequisiteKinds, conceptsOnly:true},
+        {recipient:'workspace', maySend:access.maySend, track:access.track, exactReadModes:true}, select, fits));
+    if (graph.state === 'ready') return {value:graph.value};
+    return graph.state === 'missing-root' && access.known(id)
       ? toolFailure('access_revoked','先前打开的知识点已不可用。',{tool:'read_context',args:{intent:'tutoring'}})
       : absent('kc_id', '请提供可读取的知识点 ID。');
-    const successors = await traverse('outbound');
-    if (!successors) return absent('kc_id', '请提供可读取的知识点 ID。');
-    const edges = new Map([...prerequisites.edges, ...successors.edges].map(edge => [edge.id, projectEdge(edge)]));
-    return {value:{kc_id:id, rev:prerequisites.conceptRef.fact.rev, depth:hops, scope:'authorized', edge_kinds:[...edgeKinds],
-      prerequisites:prerequisites.results, successors:successors.results, edges:[...edges.values()],
-      truncated:prerequisites.truncated || successors.truncated}};
   }
   if (request.method === 'forgetting_risks') {
     return {value:await readForgettingRisks(tx,access.maySend,{asOf,watermark,
       horizonHours:typeof request.args.horizon_hours === 'number' ? request.args.horizon_hours : 48,
       track:access.track,trackRetention:access.trackRetention})};
   }
-  if (request.method !== 'attempts' && request.method !== 'evidence_slice')
-    return absent(request.method, '该 SDK 查询尚无已授权的生产读取。');
   if (request.args.subject !== undefined) return absent('subject','作答没有可核对的学科归属。');
 
   const reader = createAuthorizedFactReader(tx,purpose,access.maySend);
@@ -90,7 +69,9 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
         : absent('paper_ids','请提供当前获准的试卷引用。');
     }
   }
-  const {rows: refs} = await tx.query<{id:string;rev:number}>(`
+  const includeExamItems = request.method === 'evidence_slice' && request.args.exam_pacing_items === true;
+  const wholePaper = includeExamItems || (request.method === 'evidence_slice' && request.args.exam_pacing === true);
+  const {rows: refs} = await tx.query<{id: string; rev: number}>(`
     SELECT f.id,f.current_rev AS rev FROM facts f JOIN fact_revs r
       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
     WHERE f.learner_id=$1 AND f.type=ANY($2) AND f.retracted_rev IS NULL
@@ -102,11 +83,14 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
           ON (ir.learner_id,ir.fact_id,ir.rev)=(i.learner_id,i.id,1)
           WHERE i.learner_id=f.learner_id AND i.id=r.data->>'paperId' AND i.type=$10
             AND ir.data->'paper'->>'id'=ANY($7))))
-    ORDER BY f.created_tick DESC,f.id LIMIT $11`,[tx.learner,[workbookAttemptType,posttestSubmissionType],purpose,watermark,
-      typeof request.args.since === 'string' ? new Date(request.args.since).toISOString() : null,asOf,paperIds,workbookAttemptType,posttestSubmissionType,posttestIssuanceType,pythonAttemptsLimit + 1]);
+    ORDER BY f.created_tick DESC,f.id LIMIT $11`, [tx.learner, wholePaper ? [workbookAttemptType] : [workbookAttemptType,posttestSubmissionType], purpose, watermark,
+      typeof request.args.since === 'string' ? new Date(request.args.since).toISOString() : null, asOf,
+      paperIds, workbookAttemptType, posttestSubmissionType, posttestIssuanceType, pythonAttemptsLimit+1]);
   if (refs.length > pythonAttemptsLimit)
     return toolFailure('limit_exceeded',`本次选择超过 ${pythonAttemptsLimit} 份作答，请缩小时间范围。`,{tool:'read_context',args:{intent:'tutoring'}});
-  const declared = refs.length ? await readPythonAttempts(tx,{refs},access) : undefined;
+  const events: EvidenceEventV1[] = [];
+  const declared = refs.length ? await readPythonAttempts(tx,{refs},
+    wholePaper ? {...access,includeExamItems,recordExam:event=>events.push(event)} : access) : undefined;
   const rows = declared?.ok ? declared.rows : [];
   if (declared?.issues?.some(item => item.code === 'access_revoked'))
     return toolFailure('access_revoked','先前打开的作答已不可使用。',{tool:'read_context',args:{intent:'tutoring'}});
@@ -115,6 +99,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
     return {value:rows};
   }
   if (declared && (!declared.ok || declared.issues.length)) return absent('evidence_slice','部分作答来源无法确认，不能当作空证据切片。');
+  if (wholePaper) return {value:{...activityEvidenceSlice(watermark,asOf,undefined,[]),events}};
   const observations: ActivityEvidenceObservation[] = [];
   const omissions: NonNullable<CanonicalEvidenceSliceV1['omissions']>[number][] = [];
   const evidence = studioWorkbookEvidence(purpose,access.maySend);

@@ -115,7 +115,7 @@ if "sdk" in payload:
         "forgetting_risks": ("horizon_hours",),
         "kg_prereqs": ("kc_id", "depth"),
         "questions": ("kc_ids", "answer_exposed", "limit"),
-        "evidence_slice": (),
+        "evidence_slice": ("exam_pacing", "since", "paper_ids", "exam_pacing_items"),
     }
     sdk = types.ModuleType("mangekyo")
     def reader(method, fields):

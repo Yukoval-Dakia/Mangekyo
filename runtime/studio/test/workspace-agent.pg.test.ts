@@ -1,9 +1,12 @@
 import {expect,it} from 'vitest';
+import type {CanonicalEvidenceSliceV1} from '../../../kernel/src/pipeline-contracts.ts';
 import {commandId, learnerId} from '../../../kernel/src/declarations/ids.ts';
 import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
 import {recordLocalRead} from '../../../kernel/src/work/effects.ts';
 import {studioLearner,stableId} from '../identity.ts';
-import {resolveSource} from '../source-read.ts';
+import {openLearningTools} from '../learning-tools.ts';
+import {pythonReads} from '../../../executors/teaching/python-sdk.ts';
+import {resolveSource, type WorkspaceSourceRecipient} from '../source-read.ts';
 import {openWorkbook} from '../workbook.ts';
 import {openWorkspaceAccess} from '../workspace-access.ts'; import {openWorkspaceTools, type WorkspaceWitness} from '../workspace-agent.ts';
 import {openLibrary} from '../library.ts'; import {openOrganizer} from '../organizer.ts';
@@ -243,7 +246,25 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
       {kind:'exact',prompt:'写出速度单位。',answers:['内部答案标记']},
       {kind:'rubric',prompt:'解释全程速度。',rubric:'内部评分规则标记'},
     ]});
-    await access.setTeaching(privatePaper.id,{enabled:true,expectedRev:1});
+    const paced = {
+      requestId: 'paced-attempt', paperRev: privatePaper.revision, answers: {q1:'米每秒',q2:null},
+      effectiveDurationMs: 0,
+      pacing: {version:1,items:[{questionId:'q1',effectiveDurationMs:0,skipped:true,returned:true}]},
+    };
+    const legacyPaced = {...timedInput,requestId:paced.requestId};
+    const legacyReceipt = await workbook.submit(paper.id,legacyPaced);
+    const handIn = (input = paced) => workbook.submit(privatePaper.id,input);
+    const [firstPaced, concurrentPaced] = await Promise.all([handIn(),handIn()]);
+    expect(firstPaced.attempts).toMatchObject([{
+      paperRev: paced.paperRev, answers: paced.answers, pacing: paced.pacing, effectiveDurationMs:0,
+    }]);
+    expect(concurrentPaced.attempts).toEqual(firstPaced.attempts);
+    expect((await workbook.submit(paper.id,legacyPaced)).attempts).toEqual(legacyReceipt.attempts);
+    await expect(workbook.submit(paper.id,{...paced,paperRev:paper.revision})).rejects.toMatchObject({status:409});
+    await expect(handIn({...paced,answers:{q1:' 米每秒 ',q2:null}})).rejects.toMatchObject({status:409});
+    const privatePaperGrant = await access.setTeaching(privatePaper.id,{enabled:true,expectedRev:1});
+    await expect(handIn({...paced,requestId:'stale-pacing'})).rejects.toMatchObject({status:409});
+    expect((await handIn()).attempts).toEqual(firstPaced.attempts);
     const preview = await edit('search_workspace',{query:'检索速度卷',kind:'paper'},8);
     expect(preview).toMatchObject({results:[{id:privatePaper.id,excerpt:expect.stringContaining('写出速度单位。')}]});
     expect(JSON.stringify(preview)).not.toMatch(/内部答案标记|内部评分规则标记/u);
@@ -393,4 +414,42 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     expect(blocked.result).toMatchObject({id:gradedAttemptId});
     expect(blocked.result.assessments).toBeUndefined();
     expect(blocked.bases).toEqual([]);
+
+    const runId = stableId('whole-exam-sdk');
+    let allowPaper = true;
+    const maySend: WorkspaceSourceRecipient = fact => allowPaper || fact.ref.id !== privatePaper.id;
+    const authorize = async () => {}, track = () => {};
+    const workspace = openWorkspaceTools({db,turn:runId,prior:[],authorize,track,maySend});
+    const sdk = openLearningTools({db,turn:runId,workspace,authorize,track,maySend,manageBeliefs:false,trackRetention:track,
+      authorizeRemote:async()=>true,readContext:async()=>undefined,draftBasis:()=>[],saveBelief:async()=>'',onDelivered:async()=>{}});
+    const reads = pythonReads([{method:'evidence_slice',args:{exam_pacing:true,paper_ids:[privatePaper.id]}}]);
+    expect(reads).toBeDefined();
+    const packet = await sdk.preparePython!(reads!,1);
+    expect(packet).toMatchObject({ok:true,values:[{events:[{
+      ref:gradedAttempt.id,rev:2,occurred_at:gradedAttempt.submittedAt,help_level:'unknown',
+      exam_pacing:{paper_key:JSON.stringify([privatePaper.id,privatePaperGrant.rev])},
+    }]}]});
+    if (!packet.ok) throw new Error('Missing whole-exam evidence');
+    expect(packet.values[0]).not.toHaveProperty('events.0.exam_pacing.score');
+    expect(JSON.stringify(packet)).not.toMatch(/内部评分规则标记|路程除以时间/u);
+    const pacingAttempt = firstPaced.attempts[0]!;
+    const pacingGrant = await access.setTeaching(pacingAttempt.id,{enabled:true,expectedRev:1});
+    const processReads = pythonReads([{method:'evidence_slice',args:{exam_pacing_items:true,paper_ids:[privatePaper.id]}}]);
+    if (!processReads) throw new Error('逐题过程 SDK 读取尚不可用。');
+    const process = await sdk.preparePython!(processReads,2);
+    if (!process.ok) throw new Error(JSON.stringify(process));
+    const events = (process.values[0] as CanonicalEvidenceSliceV1).events.filter(event => event.exam_pacing_item);
+    expect(events).toMatchObject([{occurred_at:pacingAttempt.submittedAt,help_level:'unknown',claim_ids:[],
+      effective_duration_ms:0,exam_pacing_item:{attempt_ref:{id:pacingAttempt.id,rev:pacingGrant.rev},
+        paper_key:JSON.stringify([privatePaper.id,privatePaper.revision]),item_id:'q1',position:1,item_count:2,
+        skipped:true,returned:true}}]);
+    allowPaper = false;
+    expect(await sdk.preparePython!(reads!,1)).toMatchObject({ok:false,code:'access_revoked'});
+    expect(await sdk.preparePython!(processReads,2)).toMatchObject({ok:false,code:'access_revoked'});
+    allowPaper = true;
+    await access.setTeaching(pacingAttempt.id,{enabled:false,expectedRev:pacingGrant.rev});
+    expect(await sdk.preparePython!(processReads,2)).toMatchObject({ok:false,code:'access_revoked'});
+    const fresh = await sdk.preparePython!(processReads,3);
+    if (!fresh.ok) throw new Error(JSON.stringify(fresh));
+    expect((fresh.values[0] as CanonicalEvidenceSliceV1).events.every(event => !event.exam_pacing_item)).toBe(true);
   }));

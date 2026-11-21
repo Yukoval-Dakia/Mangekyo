@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { describeWork } from '../../../executors/temporal/src/index.ts';
+import { studioJsonApi } from './acceptance-fixtures.mjs';
 
 const cwd = fileURLToPath(new URL('../', import.meta.url));
 const view = {
@@ -104,19 +105,9 @@ async function until(read) {
   throw new Error('等待 Studio 状态超时。');
 }
 
-function request(path, data, method = 'POST') {
-  return fetch(base + path, data === undefined ? {} : {
-    method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(data),
-  });
-}
-
-async function api(...args) {
-  const response = await request(...args);
-  const [path] = args;
-  const result = await response.json();
+const api = studioJsonApi(base, (response, path, result) => {
   assert.ok(response.ok, JSON.stringify({ path, status: response.status, result }));
-  return result;
-}
+});
 
 function snapshot(session) {
   return session.artifacts?.[0] ?? session.turns.at(-1)?.artifacts?.[0];
@@ -267,7 +258,7 @@ try {
     WHERE s.slot_key=$1 AND d.value->>'action'='companion_reply'
   `, [turnId]);
   assert.equal(archive.length, 1);
-  const learnerResponse = await request(path);
+  const learnerResponse = await fetch(base + path);
   assert.ok(learnerResponse.ok);
   const learnerWire = await learnerResponse.text();
   assert.deepEqual(JSON.parse(learnerWire), rejected);

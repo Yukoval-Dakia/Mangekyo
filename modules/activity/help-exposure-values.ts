@@ -14,7 +14,7 @@ export type HelpTarget = {
 };
 
 type HelpStep = {
-  readonly kind: 'hint' | 'explanation' | 'worked-example' | 'solution';
+  readonly kind: 'hint' | 'hint_l1' | 'hint_l2' | 'explanation' | 'worked-example' | 'solution';
   readonly order: number;
 };
 
@@ -90,10 +90,15 @@ function step(input: unknown): HelpStep {
   const value = record(input);
   allowFields(value, ['kind', 'order']);
   const { kind, order } = value;
-  if (kind !== 'hint' && kind !== 'explanation' && kind !== 'worked-example' && kind !== 'solution') {
+  if (kind !== 'hint' && kind !== 'hint_l1' && kind !== 'hint_l2' &&
+      kind !== 'explanation' && kind !== 'worked-example' && kind !== 'solution') {
     throw new Error('帮助阶次类型无效。');
   }
-  return { kind, order: positiveInteger(order) };
+  const position = positiveInteger(order);
+  if ((kind === 'hint_l1' && position !== 1) || (kind === 'hint_l2' && position !== 2)) {
+    throw new Error('分级提示的档次与阶次不一致。');
+  }
+  return { kind, order: position };
 }
 
 function answer(input: unknown): HelpAnswer {

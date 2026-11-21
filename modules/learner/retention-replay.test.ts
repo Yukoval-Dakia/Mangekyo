@@ -20,6 +20,8 @@ it('binds the frozen cutoff and selects only the exact target from a multi-dimen
     uncertainty: { kind: 'interval' as const, low: 0.2, high: 0.8 } };
   const output = { method_version: 'cognition@1', state_vector: [{ ...row, context: 'class', r_now: 0.4 }, row] };
   expect(freezeCognition(input, output).estimate).toMatchObject({ kind: 'probabilistic', probability: 0.7 });
+  expect(() => freezeCognition(input, { ...output, state_vector: [{ ...row,
+    evidence_refs: [...row.evidence_refs, { ref: 'answer-b', rev: 1 }] }] })).toThrow(/frozen target/);
   expect(freezeCognition({ ...input, target: { ...input.target, condition: 'variant' } }, output).estimate.kind).toBe('unknown');
 });
 
@@ -36,6 +38,10 @@ it('scopes only witnessed exact-item submissions to an unclassified target, pres
       admittedAt: tick, result: 'correct', submittedAt: now, exposure: { kind: 'independent' } }] };
   expect(retentionSlice(input).events.map(e => e.concept_ids)).toEqual([['frozen-item/p/2/q'], [], [], []]);
   expect(input.canonicalEvidence!.events.every(e => !e.concept_ids.length)).toBe(true);
+  const exposed = {...input, observations: [{...input.observations[0]!, exposure: {kind: 'exposed' as const, refs: []}}],
+    canonicalEvidence: {...canonicalEvidence, events: [{...event, help_level: 'hinted' as const}]}};
+  expect(retentionSlice(exposed, 'cognition@1').events[0]!.concept_ids).toEqual([]);
+  expect(retentionSlice(exposed, 'cognition@2').events[0]!.concept_ids).toEqual(['frozen-item/p/2/q']);
   const ambiguous = { ...canonicalEvidence, events: [event, { ...event, outcome: 'incorrect' as const }] };
   expect(retentionSlice({ ...input, canonicalEvidence: ambiguous }).events.every(e => !e.concept_ids.length)).toBe(true);
 });

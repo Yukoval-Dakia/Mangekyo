@@ -4,7 +4,9 @@ import { closedPosttest, issuedPosttestPaper, posttestIssuance, posttestIssuance
 import { creation, object } from '../values.ts';
 import { frozenWorkbookSubmission } from '../question-assessment.ts';
 import { readFrozenWorkbookBank } from '../workbook-bank.ts';
+import { practiceCustodyId, readPracticeCustody } from '../sealed-practice.ts';
 import {
+  checkWorkbookPacingItems,
   gradeWorkbook,
   submitWorkbookAttemptCommand,
   workbookAssessmentPurpose,
@@ -14,6 +16,8 @@ import {
   workbookPaper,
   workbookPaperType,
   workbookRubricGradingVersion,
+  WorkbookRevisionMismatch,
+  sameWorkbookJson,
 } from '../workbook-values.ts';
 
 export default defineCommand({
@@ -33,6 +37,15 @@ export default defineCommand({
     const paper = release
       ? workbookPaper((await ctx.read.fact(release.id, { mode: 'pinned', rev: release.rev })).value)
       : current;
+    if (data.paperRev !== undefined) {
+      if (controlled || await readPracticeCustody(ctx.read, await practiceCustodyId(fact.ref.id))) {
+        throw new Error('只有普通试卷接受逐题过程。');
+      }
+      if (data.paperRev !== fact.ref.rev || !sameWorkbookJson(current, paper)) {
+        throw new WorkbookRevisionMismatch('卷版已变化，请刷新后交卷。');
+      }
+      checkWorkbookPacingItems(paper, data.pacing);
+    }
     await readFrozenWorkbookBank(ctx.read, paper);
     const graded = gradeWorkbook(paper, data.answers);
     if (paper.assessmentRelease) frozenWorkbookSubmission(paper.assessmentRelease, { id, rev: 1 as Revision }, graded.answers);
@@ -52,6 +65,8 @@ export default defineCommand({
           answers: graded.answers,
           feedback: graded.feedback,
           ...(data.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: data.effectiveDurationMs }),
+          ...(data.paperRev === undefined ? {} : { paperRev: data.paperRev }),
+          ...(data.pacing === undefined ? {} : { pacing: data.pacing }),
           ...(data.assessmentConsent === undefined ? {} : { assessmentConsent: data.assessmentConsent }),
         },
         purpose: controlled ? [storagePurpose, retentionTeachingPurpose]

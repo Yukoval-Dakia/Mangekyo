@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
+import { requestJson, waitForSession } from './acceptance-fixtures.mjs';
 
 const base = 'http://127.0.0.1:' + (process.env.MANGEKYO_PORT || 4317) + '/api/sessions';
 const args = process.argv.slice(2);
@@ -9,20 +9,12 @@ if (!live && (args.length !== 2 || args.some(id => !/^[0-9A-HJKMNP-TV-Z]{26}$/.t
   throw new Error('传入独立作答、看过例题两份会话 ID 可只读复验。传入 --live 会新建会话并调用所配置的模型。');
 }
 async function api(path, input) {
-  const response = await fetch(base + path, input && {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...input, requestId: randomUUID() }),
-  });
+  const response = await requestJson(base + path, input && { ...input, requestId: randomUUID() });
   if (!response.ok) throw new Error('教研室 HTTP ' + response.status);
   return response.json();
 }
-async function completed(session) {
-  const deadline = Date.now() + 20 * 60_000;
-  while (session.status === 'pending' && Date.now() < deadline) {
-    await delay(1500);
-    session = await api('/' + session.id);
-  }
+async function completed(pending) {
+  const session = await waitForSession(pending, id => api('/' + id), 1500, 20 * 60_000);
   console.log(JSON.stringify(session, null, 2));
   assert.equal(session.status, 'ready', session.error || session.id);
   return session;

@@ -1,5 +1,7 @@
+import { flashCheckPriority, nearFlashCrossing } from './flash-check.ts';
 import type { FactSnapshot, Outcome, Tick } from '@mangekyo/kernel';
 import { reconcileRetention, type RetentionForecast, type RetentionObservation, type RetentionTarget } from './retention.ts';
+import { compareRetentionObservations, retentionBaseline, summarizeRetentionReplay } from './retention-replay.ts';
 
 export type RetentionReconciliation = ReturnType<typeof reconcileRetention> & { forecastId: string; observedThrough: Tick };
 type RetentionSelection = {
@@ -42,12 +44,14 @@ export function projectRetentionRead<Evidence>(row: RetentionSelection, forecast
     forecastId: forecast.id, status: value.status,
     observation: { result: observation.result, exposure: observation.exposure.kind } };
   if ('estimate' in value) {
+    const priority = flashCheckPriority(forecast.value);
+    const flag = priority ? { flash_check_priority: priority } : {};
     if (estimate.kind === 'probabilistic') {
-      return { ...common, kind: 'forecast' as const,
+      return { ...common, ...flag, kind: 'forecast' as const,
         estimate: { kind: 'probabilistic' as const, probability: estimate.probability,
           interval: estimate.interval, uncertainty: estimate.uncertainty } };
     }
-    return { ...common, kind: 'forecast' as const,
+    return { ...common, ...flag, kind: 'forecast' as const,
       estimate: estimate.kind === 'unknown' ? { kind: 'unknown' as const, reason: estimate.reason }
         : { kind: 'categorical' as const, expected: estimate.expected } };
   }
@@ -62,35 +66,32 @@ export function againstFrozenTarget(observation: RetentionObservation, target: R
   };
 }
 
-function metrics(statuses: readonly RetentionReconciliation['status'][]) {
-  const matched = statuses.filter(status => status === 'matched').length;
-  const missed = statuses.filter(status => status === 'missed').length;
-  const eligible = matched + missed + statuses.filter(status => status === 'observed').length;
-  return {
-    eligible, matched, missed,
-    contaminated: statuses.filter(status => status === 'contaminated').length,
-    missingIndependent: statuses.filter(status => status === 'awaiting-independent').length,
-    coverage: eligible ? (matched + missed) / eligible : null,
-    classificationError: matched + missed ? missed / (matched + missed) : null,
-  };
-}
-
-export function retentionComparisonCase<Pair>(pair: Pair, recorded: RetentionForecast, alternate: RetentionForecast,
-  outcome: RetentionReconciliation) {
+export function retentionComparisonCase<Pair extends { forecastId: string }>(pair: Pair, recorded: RetentionForecast,
+  alternate: RetentionForecast, outcome: RetentionReconciliation) {
+  const { observation } = outcome;
   return {
     ...pair, forecastWatermark: recorded.input.observedThrough, observationWatermark: outcome.observedThrough,
-    exposure: outcome.observation.exposure.kind, observed: outcome.observation.result,
+    observation: { admittedAt: observation.admittedAt, submittedAt: observation.submittedAt, submission: { id: observation.submission.id } },
+    exposure: observation.exposure.kind, observed: observation.result,
     recorded: { method: recorded.method, estimate: recorded.estimate, status: outcome.status },
     shadow: { estimate: alternate.estimate, status: reconcileRetention(alternate, outcome.observation).status },
+    baseline: retentionBaseline(recorded),
   };
 }
 
 export function retentionComparisonReport<T extends ReturnType<typeof retentionComparisonCase>>(
   method: RetentionForecast['method'], cases: readonly T[],
 ) {
+  const selected = new Map<string, T>();
+  for (const row of cases) {
+    const prior = selected.get(row.forecastId);
+    if (!prior || compareRetentionObservations({ observation: row.observation, status: row.recorded.status },
+      { observation: prior.observation, status: prior.recorded.status }) < 0) selected.set(row.forecastId, row);
+  }
   return {
-    kind: 'prospective-replay', method: { id: method.id, version: method.version }, cases,
-    recorded: metrics(cases.map(row => row.recorded.status)), shadow: metrics(cases.map(row => row.shadow.status)),
+    kind: 'prospective-replay', method: { id: method.id, version: method.version },
+    cases: cases.map(({ observation: _observation, ...row }) => row),
+    ...summarizeRetentionReplay([...selected.values()]),
   };
 }
 
@@ -114,6 +115,8 @@ export function projectForgettingRisks<Risk extends { crossing_at: string; forec
     scope: 'active_frozen_workbook_forecasts',
     state: !classified ? 'unknown' : classified === candidates ? 'complete' : 'partial',
     as_of_at: asOf, through: new Date(end).toISOString(), clock_watermark: watermark,
-    risks: risks.sort((a, b) => a.crossing_at.localeCompare(b.crossing_at) || a.forecast_id.localeCompare(b.forecast_id)),
+    risks: risks.map(risk => nearFlashCrossing(risk.crossing_at, Date.parse(asOf))
+      ? { ...risk, flash_check_priority: 'threshold-crossing' as const } : risk)
+      .sort((a, b) => a.crossing_at.localeCompare(b.crossing_at) || a.forecast_id.localeCompare(b.forecast_id)),
   };
 }

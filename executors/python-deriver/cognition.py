@@ -7,6 +7,9 @@ DAY_SECONDS = 86_400
 CROSSING = 0.60
 NOVELTY = {"same": 0.4, "isomorphic": 0.8, "transfer": 1.0}
 HELP = {"independent": 1.0, "hinted": 0.3, "solution_seen": 0.2}
+GRADED_HELP = {**HELP, "hint_l1": 0.55, "hint_l2": 0.25}
+# A slip is weaker evidence of a conceptual gap. Unclassified errors retain full weight.
+ERROR_LOSS = {"reading": 0.75, "modeling": 1.0, "strategy": 1.0, "execution": 0.5, "expression": 0.4}
 AXES = ("representation", "context", "method")
 
 
@@ -53,12 +56,12 @@ def _interval(alpha, beta):
     return max(0.0, mean - spread), min(1.0, mean + spread)
 
 
-def estimate(dimension, observations, now, dynamic):
+def estimate(dimension, observations, now, dynamic, graded):
     """Leaky Beta evidence counts; spaced independent retrieval changes the decay time."""
     ordered = sorted(observations, key=lambda pair: (pair[0], pair[1]["ref"], pair[1]["rev"]))
     row = dict(zip(("concept_id", *AXES, "item_novelty"), dimension))
     row["evidence_refs"] = [{"ref": e["ref"], "rev": e["rev"]} for _, e in ordered]
-    scored = [(at, e) for at, e in ordered if e["outcome"] != "unknown" and e.get("help_level") in HELP]
+    scored = [(at, e) for at, e in ordered if e["outcome"] != "unknown"]
     if not any(e["help_level"] == "independent" for _, e in scored):
         return dict(row, state="unknown", uncertainty=unknown("missing-independent-scored-evidence")), None
 
@@ -72,15 +75,20 @@ def estimate(dimension, observations, now, dynamic):
             gaps.append(gap)
         # Old responses contribute less following an extended gap.
         a, b = _decay(a, b, gap, half_life)
-        weight = NOVELTY[event["item_novelty"]] * HELP[event["help_level"]]
+        help_level = event["help_level"]
+        help_weight = GRADED_HELP[help_level] if graded else HELP.get(help_level, HELP["hinted"])
+        weight = NOVELTY[event["item_novelty"]] * help_weight
         score = float(event["outcome"] == "correct")
         if dynamic:
             score = event.get("score_norm", score)
         a += weight * score
-        b += weight * (1 - score)
-        if dynamic and event["help_level"] == "independent":
+        loss = 1 - score
+        if graded and event["outcome"] == "incorrect":
+            loss *= ERROR_LOSS.get(event.get("error_stage"), 1.0)
+        b += weight * loss
+        if dynamic and help_level == "independent":
             spacing = (at - last_independent).total_seconds() / DAY_SECONDS if last_independent else 0.0
-            half_life = min(365.0, max(0.5, half_life * (1 - 0.35 * (1 - score))
+            half_life = min(365.0, max(0.5, half_life * (1 - 0.35 * loss)
                                       + weight * score * (1 + min(spacing, half_life))))
             last_independent = at
         previous = at
@@ -126,18 +134,23 @@ def information(posterior, novelty):
 
 
 def derive(slice, method_version="cognition@1"):
-    if method_version not in ("cognition@1", "dimensioned-retention@1"):
+    if method_version not in ("cognition@1", "cognition@2", "dimensioned-retention@1"):
         raise ValueError("unsupported cognition method")
     now = instant(slice["as_of_at"])
+    dynamic = method_version != "dimensioned-retention@1"
+    graded = method_version == "cognition@2"
+    omitted = {(item["ref"]["id"], item["ref"]["rev"]) for item in slice.get("omissions", [])}
     groups = defaultdict(list)
     seen = {}
-    anomalies = set()
+    anomalies = defaultdict(set)
+    probe_sources = defaultdict(set)
     for event in slice["events"]:
         at = instant(event["occurred_at"])
-        if at > now:
+        if at > now or (event["ref"], event["rev"]) in omitted:
             continue
-        if event["outcome"] == "incorrect" and event.get("confidence", 0) >= 0.8:
-            anomalies.add(event["ref"])
+        high_error = event["outcome"] == "incorrect" and event.get("confidence", 0) >= 0.8
+        if high_error:
+            anomalies[event.get("error_stage") if graded else None].add((event["ref"], event["rev"]))
         for key in dimensions(event):
             identity = (key, event["ref"])
             if identity in seen:
@@ -146,11 +159,13 @@ def derive(slice, method_version="cognition@1"):
                 continue
             seen[identity] = event
             groups[key].append((at, event))
+            if graded and high_error:
+                probe_sources[key[:-1]].add((event["ref"], event["rev"]))
 
     vector = []
     posteriors = {}
     for key in sorted(groups, key=lambda k: tuple(part or "" for part in k)):
-        row, posterior = estimate(key, groups[key], now, method_version == "cognition@1")
+        row, posterior = estimate(key, groups[key], now, dynamic, graded)
         vector.append(row)
         posteriors[key] = posterior
     ranked = []
@@ -159,15 +174,30 @@ def derive(slice, method_version="cognition@1"):
         if not keys:
             continue
         gain = sum(information(posteriors.get(key), item["item_novelty"]) for key in keys) / len(keys)
-        ranked.append({"ref": item["ref"], "est_min": item["est_min"], "info_gain": gain,
-                       "reason_code": "probe-unknown" if any(not posteriors.get(k) for k in keys)
-                       else "reduce-uncertainty"})
-    ranked.sort(key=lambda item: (-item["info_gain"], item["ref"]))
+        reason = "probe-unknown" if any(not posteriors.get(k) for k in keys) else "reduce-uncertainty"
+        candidate = {"ref": item["ref"], "est_min": item["est_min"], "info_gain": gain, "reason_code": reason}
+        if item["item_novelty"] != "same":
+            sources = set().union(*(probe_sources.get(key[:-1], ()) for key in keys))
+            if sources:
+                candidate.update(reason_code="probe-high-confidence-error",
+                                 evidence_refs=[{"ref": ref, "rev": rev} for ref, rev in sorted(sources)])
+        ranked.append(candidate)
+    ranked.sort(key=lambda item: ("evidence_refs" not in item,
+                                 item["est_min"] if "evidence_refs" in item else 0,
+                                 -item["info_gain"], item["ref"]))
+    signals = []
+    for stage, sources in sorted(anomalies.items(), key=lambda pair: pair[0] or ""):
+        signal = {"type": "high-confidence-error", "refs": sorted({ref for ref, _ in sources})}
+        if graded:
+            signal["evidence_refs"] = [{"ref": ref, "rev": rev} for ref, rev in sorted(sources)]
+            if stage:
+                signal["error_stage"] = stage
+        signals.append(signal)
     uncertainty = vector[0]["uncertainty"] if len(vector) == 1 else unknown(
         "multiple-dimensions" if vector else "missing-independent-scored-evidence")
     result = {"method_version": method_version, "state": "known" if any(posteriors.values()) else "unknown",
               "state_vector": vector, "uncertainty": uncertainty, "ranked_candidates": ranked,
-              "anomalies": [{"type": "high-confidence-error", "refs": sorted(anomalies)}] if anomalies else []}
+              "anomalies": signals}
     if len(vector) == 1 and vector[0]["state"] == "known":
         result["r_now"] = vector[0]["r_now"]
         if "crossing_at" in vector[0]:

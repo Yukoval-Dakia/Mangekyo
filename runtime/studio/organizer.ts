@@ -26,6 +26,7 @@ import { todayCompletion, todayPaper, todaySettings } from '../../modules/activi
 import saveRule from '../../modules/plan/commands/save-rule.ts';
 import setGoalStatus from '../../modules/plan/commands/set-goal-status.ts';
 import todayDeriver from '../../modules/plan/derivers/today.ts';
+import { todayDuration } from '../../modules/plan/today.ts';
 import { checkPack, openPack, packCandidates } from '../../modules/plan/offline-pack.ts';
 import type { GoalStatus } from '../../modules/plan/goal-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
@@ -105,7 +106,6 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
       return { tasks, notes };
     });
   }
-
   async function today(params: URLSearchParams) {
     const { dayOf, ...settings } = validate(p => todaySettings(p, new Date().toISOString()), params);
     const scope = { learner, purpose: storagePurpose };
@@ -129,7 +129,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
             ...packCandidates().map(c => completed.has(c.id + '@' + c.open?.rev) ? {...c, state: 'completed' as const, date: day} : c),
           ];
           return {
-            ...settings, ...(goal ? {goal} : {}), rules: rules.map(r => r.data), candidates,
+            ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? {goal} : {}), rules: rules.map(r => r.data), candidates,
             constraints: {budget_min: null, locks: [], deadlines: []},
           };
         }));
