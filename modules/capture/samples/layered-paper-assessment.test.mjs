@@ -33,6 +33,20 @@ export default async function ({
   await ingestPhoto(sourceId, '四页原件', originals);
   const { accessEpoch, ref } = await currentSource();
   const key = { target: ref, accessEpoch, modelMethod: 'fixture/layers', redInkMeaning: '红笔是事后订正' };
+  const impossible = { ...unknown, body: { ...unknown.body, crop_ref: { ...unknown.body.crop_ref, page: 2 } } };
+  const pageTwo = { ...impossible, body: { ...impossible.body, crop_ref: { ...impossible.body.crop_ref, original: 0 } } };
+  const returned = { kind:'paper-return', occurredAt:null, recordedAt:null, retentionPolicy:'retained',
+    originals:[originals[0]], unit:{kind:'capture', title:'第 2 页', blocks:[pageTwo]} };
+  const id = stableId('capture original page validation');
+  await assert.rejects(send('capture.ingest', {id, envelope:returned}), /单幅图片只支持/);
+  await assert.rejects(confirmExtraction({ target:ref, blocks:[impossible] }), /单幅图片只支持/);
+  assert.equal((await extract(key, [impossible], originals)).outcome.kind, 'unknown');
+  const pdf = await send('capture.ingest', {id, purpose:['storage','teaching'], envelope:{...returned,
+    originals:[{...originals[0], name:'paper.pdf', mediaType:'application/pdf'}]}});
+  const pdfRegion = clarificationRegions(await current(id), null)[0];
+  assert.equal(pdfRegion.page,2);
+  assert.equal((await send('capture.clarifyExtraction',{target:pdf.wrote[0],blockId:pageTwo.id})).wrote.length,1);
+  console.log(JSON.stringify({checked:'capture original crop page',jpegIngest:'rejected',jpegExtraction:'unknown',pdfPage:pdfRegion.page,pdfClarifyWrites:1}));
   const { sealed: extraction } = await extract(key, blocks, originals);
   const gap = (await read({ extraction:'layered' })).plan.data;
   assert.equal(gap.kind, 'question-gap');

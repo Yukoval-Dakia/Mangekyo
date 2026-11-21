@@ -141,6 +141,16 @@ export function sourceBlocks(input: unknown, kind: SourceKind, originals: readon
   return blocks;
 }
 
+export function validSourceCropPage(crop: Crop, originals: readonly Original[]) {
+  const mediaType = originals[crop.original]?.mediaType.split(';', 1)[0]?.trim().toLowerCase();
+  // Image frames are not document pages. TIFF may carry a multi-page scan.
+  return mediaType !== undefined && (crop.page === 1 || !mediaType.startsWith('image/') || mediaType === 'image/tiff');
+}
+
+export function requireSourceCropPage(crop: Crop | undefined, originals: readonly Original[]) {
+  if (crop && !validSourceCropPage(crop, originals)) throw new Error('单幅图片只支持原图第 1 页。');
+}
+
 export function sourceEnvelope(input: unknown): SourceEnvelope {
   const row = object(input);
   const kind = row.kind as SourceKind;
@@ -212,6 +222,7 @@ function parsePaperAnswerEdits(input: unknown, kind: SourceKind, originals: read
 export function createSourceWrite(id: string, envelope: unknown, purpose: readonly string[] = ['storage']) {
   const data = sourceEnvelope(envelope);
   if (data.paperAnswerEdits !== undefined) throw new Error('初次交入不能指定作答更正。');
+  for (const { body } of data.unit.blocks) requireSourceCropPage(body.crop_ref, data.originals);
   if (data.notionBlockRevisions !== undefined) throw new Error('初次交入不能指定 Notion 块版本。');
   if (!purpose.includes('storage') || purpose.includes('all')) throw new Error('原件用途须显式指定。');
   if (data.kind === 'url' && data.urlReadConfirmed && !purpose.includes('learning') && !purpose.includes('teaching'))

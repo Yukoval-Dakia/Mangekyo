@@ -2,7 +2,8 @@ import type { EffectReceipt, EffectRequest, FactId, FactSnapshot, GatherContext,
 import { questionPrompt, type QuestionAsset } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease } from '@mangekyo/module-content/facts/question-release';
 import { captureObject, captureRef, captureText } from './parse.ts';
-import { captureSourceType, sourceEnvelope, sourceBlocks, type Block, type SourceEnvelope } from './source.ts';
+import { captureSourceType, requireSourceCropPage, sourceEnvelope, sourceBlocks, validSourceCropPage,
+  type Block, type SourceEnvelope } from './source.ts';
 
 export const layeredExtractionSlot = 'capture.layeredExtraction';
 export const layeredExtractionDeriver = 'capture/layered-extraction-v1';
@@ -120,6 +121,7 @@ export function mergeLayeredSource(fact: FactSnapshot, outcome: Outcome<LayeredE
 export function extractedBlocks(source: VisualSource, input: unknown): readonly Block[] {
   const blocks = sourceBlocks(input, source.kind, source.originals);
   for (const { body } of blocks) {
+    requireSourceCropPage(body.crop_ref, source.originals);
     if (body.status === 'known' ? body.sticky : body.clarification !== 'pending')
       throw new Error('自动抽取不得声明本人更正或已澄清。');
     if ((body.layer === 'prompt' || body.layer === 'handwriting') && !body.itemId)
@@ -177,6 +179,7 @@ export function extractionTarget(input: unknown) {
 
 export function extractionAnchor(source: SourceEnvelope, blockId: string, input: unknown): Block | undefined {
   const saved = source.unit.blocks.find(block => block.id === blockId);
+  requireSourceCropPage(saved?.body.crop_ref, source.originals);
   if (saved || input === undefined) return saved;
   const row = captureObject(input);
   const parentId = source.unit.blocks.some(block => block.id === row.parentId) ? row.parentId : null;
@@ -186,6 +189,7 @@ export function extractionAnchor(source: SourceEnvelope, blockId: string, input:
       (block.body.status === 'unknown' ? block.body.clarification !== 'pending' : block.body.sticky))
     throw new Error('请先打开原件的抽取位置。');
   const key = cropKey(block);
+  requireSourceCropPage(block.body.crop_ref, source.originals);
   return source.unit.blocks.find(entry => cropKey(entry) === key && keepLearnerState(entry)) ?? block;
 }
 
@@ -275,7 +279,7 @@ export function clarificationRegions(fact: FactSnapshot, outcome: Outcome<Layere
   const blocks = candidate ? mergeExtraction(source, candidate) : source.unit.blocks;
   return blocks.flatMap(block => {
     const { body } = block;
-    if (body.status !== 'unknown') return [];
+    if (body.status !== 'unknown' || !validSourceCropPage(body.crop_ref, source.originals)) return [];
     const key = cropKey(block)!;
     if (seen.has(key)) return [];
     seen.add(key);

@@ -4,7 +4,7 @@ import { clarificationRegion, cropKey, firstAnswerBlocks, layeredExtractionSlot,
 import { paperInteger } from './paper-anchor.ts';
 import { defaultPaperRunId, openIssuedPaper, paperRun, paperRunType } from './paper.ts';
 import { captureObject as object, captureRef, captureText as text, sha256 } from './parse.ts';
-import { captureSourceType, sourceEnvelope, type Block } from './source.ts';
+import { captureSourceType, sourceEnvelope, validSourceCropPage, type Block } from './source.ts';
 
 type PaperRunRequest = {
   readonly issuanceId: FactId;
@@ -46,7 +46,8 @@ async function openPage(read: ReadContext, page: CollectedPage, runId: FactId,
   if (!mayExtract(fact)) return { fact, source, blocks, basis };
   const allowed = new Set(questions.filter(question => question.pages.includes(page.number)).map(question => question.itemId));
   function accept(block: Block) {
-    return block.body.crop_ref?.original === page.original && block.body.itemId &&
+    const crop = block.body.crop_ref;
+    return crop?.original === page.original && validSourceCropPage(crop, source.originals) && block.body.itemId &&
       allowed.has(block.body.itemId) && block.body.slotId;
   }
   const extracted = mergeLayeredSource(fact, snapshot?.outcome ?? null).source.unit.blocks;
