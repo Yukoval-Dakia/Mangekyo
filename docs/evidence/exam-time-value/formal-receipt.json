@@ -1,0 +1,162 @@
+{
+  "formal": {
+    "releaseRef": {
+      "id": "061545AA9ED6A2452B1E7B617B",
+      "rev": 1
+    },
+    "submissionRef": {
+      "id": "C36C13A8C8AF795D1E114F3E56",
+      "rev": 1
+    },
+    "score": {
+      "earned": 2,
+      "maximum": 2
+    },
+    "result": {
+      "outcomes": [
+        {
+          "state": "scored",
+          "earned": 2,
+          "itemId": "q1",
+          "evidence": [
+            {
+              "path": "",
+              "slotId": "answer"
+            }
+          ],
+          "feedback": "数值正确。",
+          "criterionId": "value"
+        },
+        {
+          "state": "qualitative",
+          "itemId": "q1",
+          "evidence": [
+            {
+              "path": "",
+              "slotId": "answer"
+            }
+          ],
+          "feedback": "写明了等时长。",
+          "criterionId": "process"
+        }
+      ],
+      "releaseRef": {
+        "id": "061545AA9ED6A2452B1E7B617B",
+        "rev": 1
+      },
+      "submissionRef": {
+        "id": "C36C13A8C8AF795D1E114F3E56",
+        "rev": 1
+      }
+    },
+    "criteria": [
+      {
+        "itemId": "q1",
+        "source": {
+          "ref": {
+            "id": "061545AA9ED6A2452B1E7B617B",
+            "rev": 1
+          },
+          "kind": "product-rubric",
+          "path": "/questions/0/rubric"
+        },
+        "maximum": 2,
+        "evaluator": {
+          "id": "workbook-text-rubric",
+          "version": "1"
+        },
+        "criterionId": "value"
+      },
+      {
+        "itemId": "q1",
+        "source": {
+          "ref": {
+            "id": "061545AA9ED6A2452B1E7B617B",
+            "rev": 1
+          },
+          "kind": "product-rubric",
+          "path": "/questions/0/rubric"
+        },
+        "maximum": null,
+        "evaluator": {
+          "id": "workbook-text-rubric",
+          "version": "1"
+        },
+        "criterionId": "process"
+      }
+    ],
+    "receipts": [
+      {
+        "quote": "45 km/h",
+        "itemId": "q1",
+        "routeId": "isolated-assessment/fixture-v1",
+        "effectId": "01M7YR29ZW0JP8FNS25XPP39EW",
+        "criterionId": "value",
+        "reportedModel": "fixture-assessor"
+      },
+      {
+        "quote": "两段等时长",
+        "itemId": "q1",
+        "routeId": "isolated-assessment/fixture-v1",
+        "effectId": "01M7YR2A0GM58S8GH71K6ZV5EN",
+        "criterionId": "process",
+        "reportedModel": "fixture-assessor"
+      }
+    ],
+    "state": "complete",
+    "derivationId": "01M7YR29ZGGKQRRV9QP8X5XCYF"
+  },
+  "browser": "157.0.8103.52",
+  "path": "/papers/061545AA9ED6A2452B1E7B617B",
+  "scope": "真实PG、原生Temporal Worker、正式评估槽与回执；评分依据和评分执行器采用本机零费用夹具，验收脚本仅为该本机接收方补入发送同意。",
+  "attempt": "C36C13A8C8AF795D1E114F3E56",
+  "rev": 1,
+  "paperRev": 1,
+  "timing": {
+    "version": 1,
+    "items": [
+      {
+        "questionId": "q1",
+        "effectiveDurationMs": 297,
+        "skipped": false,
+        "returned": false
+      },
+      {
+        "questionId": "q2",
+        "effectiveDurationMs": 254,
+        "skipped": false,
+        "returned": false
+      }
+    ]
+  },
+  "total": 564,
+  "bar": "本卷用时分布\n\n用时分布和逐题节奏未知。",
+  "request": {
+    "requestId": "03c11dd9-94bd-4981-8e4f-085c768ef9f3",
+    "answers": {
+      "q1": "45 km/h，因为两段等时长。",
+      "q2": "2"
+    },
+    "effectiveDurationMs": 564,
+    "pacing": {
+      "version": 1,
+      "items": [
+        {
+          "questionId": "q1",
+          "effectiveDurationMs": 297,
+          "skipped": false,
+          "returned": false
+        },
+        {
+          "questionId": "q2",
+          "effectiveDurationMs": 254,
+          "skipped": false,
+          "returned": false
+        }
+      ]
+    },
+    "paperRev": 1,
+    "deletionWatermark": "0"
+  },
+  "hasAuthorizedPack": false
+}
