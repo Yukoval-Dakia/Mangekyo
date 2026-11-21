@@ -162,6 +162,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
       if (kind === 'material') {
         const match = await readable(() => bus.resolve([{id: validate(factId, id), mode: 'following', rev, type: materialType}], 'organizer'));
         if (match?.items[0]?.ref.rev === rev) return {kind, id, rev, href: '/materials/saved/' + encodeURIComponent(id)};
+        throw new RequestError(404, '这份材料的冻结版本当前不可打开。');
       }
       if (kind !== 'activity') throw new RequestError(400, '活动类型无效。');
       const ref = {id: validate(factId, id), mode: 'following' as const, rev, type: workbookPaperType};

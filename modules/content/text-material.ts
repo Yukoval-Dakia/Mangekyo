@@ -16,7 +16,10 @@ export function textMaterial(input: unknown) {
   if (savedAt === undefined) return { title, text };
   if (typeof savedAt !== 'string' ||
     !/^\d{4}-\d{2}-\d{2}T\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d)$/.test(savedAt) ||
-    !Number.isFinite(Date.parse(savedAt)) || new Date(savedAt).toISOString().slice(0, 10) !== savedAt.slice(0, 10))
+    !Number.isFinite(Date.parse(savedAt)))
+    throw new Error('材料保存时间无效');
+  const [year = 0, month = 0, day = 0] = savedAt.slice(0, 10).split('-').map(Number);
+  if (new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10) !== savedAt.slice(0, 10))
     throw new Error('材料保存时间无效');
   return { title, text, savedAt: new Date(savedAt).toISOString() };
 }
