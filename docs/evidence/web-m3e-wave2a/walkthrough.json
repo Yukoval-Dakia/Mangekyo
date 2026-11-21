@@ -1,0 +1,106 @@
+{
+  "base": "http://127.0.0.1:4319",
+  "at": "2026-11-21T14:39:43.904Z",
+  "results": [
+    {
+      "name": "01-materials-graph-desktop-light.png",
+      "url": "/materials?tab=graph",
+      "theme": "light",
+      "width": 1440,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 1440,
+      "clientW": 1440
+    },
+    {
+      "name": "02-materials-graph-tree.png",
+      "url": "/materials?tab=graph",
+      "theme": "light",
+      "width": 1440,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 1440,
+      "clientW": 1440
+    },
+    {
+      "name": "03-materials-bank-desktop-light.png",
+      "url": "/materials?tab=bank",
+      "theme": "light",
+      "width": 1440,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 1440,
+      "clientW": 1440
+    },
+    {
+      "name": "04-materials-bank-cite-companion.png",
+      "url": "/materials?tab=bank",
+      "theme": "light",
+      "width": 1440,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 1440,
+      "clientW": 1440
+    },
+    {
+      "name": "05-materials-textbooks.png",
+      "url": "/materials?tab=textbooks",
+      "theme": "light",
+      "width": 1440,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 1440,
+      "clientW": 1440
+    },
+    {
+      "name": "06-materials-papers.png",
+      "url": "/materials?tab=papers",
+      "theme": "light",
+      "width": 1440,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 1440,
+      "clientW": 1440
+    },
+    {
+      "name": "07-materials-originals.png",
+      "url": "/materials?tab=originals",
+      "theme": "light",
+      "width": 1440,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 1440,
+      "clientW": 1440
+    },
+    {
+      "name": "08-materials-dark-graph.png",
+      "url": "/materials?tab=graph",
+      "theme": "dark",
+      "width": 1440,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 1440,
+      "clientW": 1440
+    },
+    {
+      "name": "09-materials-mobile-bank.png",
+      "url": "/materials?tab=bank",
+      "theme": "light",
+      "width": 390,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 390,
+      "clientW": 390
+    },
+    {
+      "name": "10-materials-mobile-graph.png",
+      "url": "/materials?tab=graph",
+      "theme": "light",
+      "width": 390,
+      "consoleErrors": 0,
+      "overflow": false,
+      "scrollW": 390,
+      "clientW": 390
+    }
+  ]
+}
