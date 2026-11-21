@@ -1,5 +1,6 @@
 import { defineCommand, factId, type FactWrite } from '@mangekyo/kernel';
-import { planRule, planRuleType } from '../rules.ts';
+import { packCandidates } from '../offline-pack.ts';
+import { planRule, planRuleType, sameWarmupOpen, TomorrowWarmupConflict } from '../rules.ts';
 import { object, target, text } from '../validation.ts';
 
 export default defineCommand({
@@ -15,6 +16,17 @@ export default defineCommand({
     },
   },
   async write(ctx, { id, expectedRev, data }): Promise<FactWrite[]> {
+    if (data?.kind === 'lock' && data.warmup) {
+      const { open } = data.warmup;
+      if (open.kind === 'pack') {
+        if (!packCandidates().some(candidate => candidate.id === data.activityId && sameWarmupOpen(candidate.open, open)))
+          throw new TomorrowWarmupConflict('热身包版本已变化。');
+      } else {
+        const artifact = await ctx.read.fact(factId(open.id), { mode: 'following' });
+        if (!artifact.type.startsWith('activity.') || artifact.ref.rev !== open.rev)
+          throw new TomorrowWarmupConflict('热身活动版本已变化。');
+      }
+    }
     if (expectedRev === null && data)
       return [{ kind: 'create', id, factType: planRuleType, data, purpose: ['storage'] }];
     if (expectedRev === null || (await ctx.read.fact(id, { mode: 'following' })).type !== planRuleType)

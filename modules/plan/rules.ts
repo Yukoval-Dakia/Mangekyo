@@ -1,5 +1,7 @@
 import { date, instant, integer, object, oneOf, text } from './validation.ts';
 
+export class TomorrowWarmupConflict extends Error {}
+
 export const planRuleType = 'plan.rule';
 export type WarmupOpen = { kind: 'activity' | 'pack'; id: string; rev: number };
 type WarmupLock = { timeZone: string; open: WarmupOpen };
