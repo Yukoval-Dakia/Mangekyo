@@ -390,3 +390,27 @@
     gap: 6px;
   }
 }
+
+.workbook-question-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-block: 12px;
+}
+.workbook-number {
+  min-width: 40px;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--tonal);
+  color: var(--ink);
+}
+.workbook-number span {
+  color: var(--primary);
+  font-size: 0.7em;
+}
+.workbook-answer-item:focus-visible,
+#workbook-submit-actions:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
