@@ -47,4 +47,3 @@ export function routeMatchesInput(input: unknown, settings: Pick<Settings, 'acti
   return route.providerId === settings.activeProviderId && route.protocol === settings.protocol &&
     route.baseUrl === settings.baseUrl && route.model === settings.model && route.reasoningEffort === settings.reasoningEffort;
 }
-

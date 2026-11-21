@@ -1,5 +1,6 @@
 import { derivationId, factId, learnerId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { expect, it } from 'vitest';
+import { checkQuestionTeachingSources } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease as openReleaseContract } from '@mangekyo/module-content/facts/question-release';
 import {
   gather, openQuestionForRelease, questionVerificationEffectResult, settle, type QuestionVerificationEffectReceipt,
@@ -102,4 +103,27 @@ it('projects only designated prompt and known shared material and blocks unclass
     expect(blocked.effects).toEqual([]);
     expect(settle({ id: ownerId, plan: blocked }, [])).toMatchObject({ value: { status: 'needs-review' } });
   }
+});
+
+it('pins the selected workspace entry and follows the version of its evidence', async () => {
+  const reads: [typeof id, Parameters<ReadContext['fact']>[1]][] = [];
+  const workspace: FactSnapshot = {
+    type: 'activity.workspaceEntry', ref: { learner, id: materialId, rev }, accessEpoch: epoch,
+    purpose: ['storage', 'teaching'], value: { basis: [{ id, rev, epoch }] },
+  };
+  const asset = { basis: [{ id: materialId, rev, epoch, type: workspace.type }] };
+  let sourceRev = rev;
+  const read = {
+    async fact(target: typeof id, options: Parameters<ReadContext['fact']>[1]): Promise<FactSnapshot> {
+      reads.push([target, options]);
+      return target === materialId ? workspace : {
+        type: 'capture.source', ref: { learner, id, rev: sourceRev }, accessEpoch: epoch,
+        purpose: ['storage', 'teaching'], value: {},
+      };
+    },
+  };
+  await checkQuestionTeachingSources(read, asset);
+  expect(reads).toEqual([[materialId, { mode: 'pinned', rev, requirePurpose: 'teaching' }], [id, { mode: 'following' }]]);
+  sourceRev = 2 as Revision;
+  await expect(checkQuestionTeachingSources(read, asset)).rejects.toThrow('依据已变化');
 });
