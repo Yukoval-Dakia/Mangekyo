@@ -93,3 +93,27 @@ export function retentionComparisonReport<T extends ReturnType<typeof retentionC
     recorded: metrics(cases.map(row => row.recorded.status)), shadow: metrics(cases.map(row => row.shadow.status)),
   };
 }
+
+/** Classify a frozen prediction only while its posttest observation window is open. */
+export function classifyFrozenCrossing(forecast: RetentionForecast, opensAt: string, effectiveTick: Tick,
+  now: number, horizonEnd: number) {
+  const { input, estimate } = forecast;
+  const start = Date.parse(opensAt);
+  const end = Date.parse(input.window.through);
+  if (!(start <= now && now < end) || BigInt(input.observedThrough) > BigInt(effectiveTick) ||
+      estimate.kind !== 'probabilistic' || estimate.asOfAt !== opensAt || !estimate.crossingAt) return;
+  const crossing = Date.parse(estimate.crossingAt);
+  if (!(start <= crossing && crossing <= end)) return;
+  return { at: new Date(crossing).toISOString(), asOf: opensAt, inHorizon: now < crossing && crossing <= horizonEnd };
+}
+
+export function projectForgettingRisks<Risk extends { crossing_at: string; forecast_id: string }>(
+  risks: Risk[], classified: number, candidates: number, asOf: string, end: number, watermark: Tick,
+) {
+  return {
+    scope: 'active_frozen_workbook_forecasts',
+    state: !classified ? 'unknown' : classified === candidates ? 'complete' : 'partial',
+    as_of_at: asOf, through: new Date(end).toISOString(), clock_watermark: watermark,
+    risks: risks.sort((a, b) => a.crossing_at.localeCompare(b.crossing_at) || a.forecast_id.localeCompare(b.forecast_id)),
+  };
+}
