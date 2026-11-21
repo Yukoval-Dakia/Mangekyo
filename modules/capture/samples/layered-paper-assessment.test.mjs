@@ -1,13 +1,12 @@
+import * as verification from '../../content/question-verification.ts';
+import { bindQuestionExecution } from '../../content/question-effects.ts';
+import { localVerificationExecution } from '../../content/samples/fixtures/question.ts';
+
 export default async function ({
   learner, stableId, load, send, assert, current, gatherValue, publish, extract, confirmExtraction,
   captureBlock, ingestPhoto, jpeg, numericQuestion,
 }) {
   const { clarificationRegions, openCapturedAssessment } = await load('modules/capture/extraction.ts');
-  const {
-    gather: gatherQuestion, questionVerificationEffectResult, questionVerificationKey,
-    questionVerificationType, settle: settleQuestion,
-  } = await load('modules/content/question-verification.ts');
-  const { bindQuestionExecution } = await load('modules/content/question-effects.ts');
   const sourceId = stableId('four-page-capture');
   const questionId = stableId('captured-distance-item');
   const currentSource = () => current(sourceId, 'teaching');
@@ -83,30 +82,26 @@ export default async function ({
     basis: [{ id: sourceId, rev: source.ref.rev, epoch: source.accessEpoch, type: source.type }],
   } });
   const question = written.wrote.find(row => row.id === questionId);
-  assert.deepEqual((await read({ questionId })).plan.targets,
-    [{kind:'slot',ref:{learner,type:questionVerificationType,key:questionVerificationKey(question)}}]);
-  const verification = await publish(questionVerificationType, questionVerificationKey(question), 'content/question-verification', {
+  const slot = { learner, type: verification.questionVerificationType, key: verification.questionVerificationKey(question) };
+  assert.deepEqual((await read({ questionId })).plan.targets, [{ kind: 'slot', ref: slot }]);
+  const checked = await publish(slot.type, slot.key, 'content/question-verification', {
     plan: async ctx => {
-      const plan = await gatherQuestion(ctx, question);
+      const plan = await verification.gather(ctx, question);
       // Bind distinct synthetic verifier identities before sealing the fixture plan.
-      return { ...plan, effects: plan.effects.map((request, index) => {
-        const digest = (index + 1).toString(16).repeat(64);
-        return bindQuestionExecution(request, {
-          kind:'local_wasm', moduleDigest:digest, executableDigest:digest, feeMicroUsd:0,
-        });
-      }) };
+      const effects = plan.effects.map((request, index) => bindQuestionExecution(request, localVerificationExecution((index + 1).toString(16))));
+      return { ...plan, effects };
     },
     invoke: (request, invocation) => {
       assert.doesNotMatch(JSON.stringify(request.input), /SECRET|candidates|blobRef/);
       assert.equal(request.input.prompt, gap.prompt);
-      return questionVerificationEffectResult(invocation, {
+      return verification.questionVerificationEffectResult(invocation, {
         answerKey:'30 km', conditionKey:'constant speed for two hours', reasoning:'fixture receipt', eligible:true,
       }, request.input.execution);
     },
     settle: (sealed, receipts) => {
       const wrong = { ...receipts[1], result: { ...receipts[1].result, result: { answerKey:'36 km' } } };
-      assert.equal(settleQuestion(sealed, [receipts[0], wrong, ...receipts.slice(2)]).value.status, 'needs-review');
-      return settleQuestion(sealed, receipts);
+      assert.equal(verification.settle(sealed, [receipts[0], wrong, ...receipts.slice(2)]).value.status, 'needs-review');
+      return verification.settle(sealed, receipts);
     },
   });
   const observed = await read({ questionId, extraction:'layered' });
@@ -114,9 +109,9 @@ export default async function ({
   assert.equal(ready.kind, 'ready');
   assert.deepEqual(ready.answers.map(({ id, body }) => [id, body.text, body.sticky, body.crop_ref.original]), [['faint','30',true,2]]);
   assert.deepEqual(source.value.originals, originals);
-  assert.ok(observed.manifest.inputs.some(entry => entry.kind === 'slot' && entry.derivationId === verification.sealed.id));
+  assert.ok(observed.manifest.inputs.some(entry => entry.kind === 'slot' && entry.derivationId === checked.sealed.id));
   console.log(JSON.stringify({
-    pages: originals.length, captureRev: source.ref.rev, extraction: extraction.id, verification: verification.sealed.id,
-    questionSlot: questionVerificationKey(question), firstHandwriting: ready.answers[0].body.text, state: ready.kind,
+    pages: originals.length, captureRev: source.ref.rev, extraction: extraction.id, verification: checked.sealed.id,
+    questionSlot: slot.key, firstHandwriting: ready.answers[0].body.text, state: ready.kind,
   }));
 }

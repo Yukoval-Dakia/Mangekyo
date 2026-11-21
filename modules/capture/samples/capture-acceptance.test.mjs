@@ -11,6 +11,7 @@ import {
 import exerciseLayeredPaper from './layered-paper-assessment.test.mjs';
 import exerciseNotion from './notion-acceptance.test.mjs';
 import exerciseTextbook from '../../content/samples/textbook-acceptance.test.mjs';
+import { numericQuestion } from '../../content/samples/fixtures/question.ts';
 
 const root = new URL('../../../', import.meta.url);
 const load = file => import(new URL(file, root));
@@ -35,19 +36,6 @@ const captureBlock = (id, body, original = 0, parentId = null) => ({
 });
 const jpeg = (name, blobRef, hex) => ({ name, blobRef, mediaType: 'image/jpeg', size: 100, sha256: hex.repeat(64) });
 
-function numericQuestion(title, prompt, criterionId, value, blocks) {
-  const statement = { id: 'statement', parentId: null, body: { kind: 'text', text: prompt } };
-  return {
-    kind: 'question', title, promptBlockId: statement.id, blocks: [statement, ...blocks],
-    response_schema: [{ slotId: 'answer', schemaVersion: '1', fields: [{ kind: 'numeric', path: '' }] }],
-    assessment_contract: [{
-      criterionId, inputs: [{ slotId: 'answer', path: '' }], maximum: 1,
-      missingEvidence: 'insufficient-evidence', evaluator: { id: 'frozen-value-match', version: '1' },
-      parameters: { value },
-    }],
-  };
-}
-
 const connectionString = process.env.MANGEKYO_CAPTURE_ACCEPTANCE_URL ?? testDatabaseUrl;
 await withLearnerDatabase(learner, async db => {
   const gather = (plan, purpose = 'teaching') => gatherSnapshot(db, { learner, purpose }, plan);
@@ -66,7 +54,9 @@ await withLearnerDatabase(learner, async db => {
   function send(type, input, { actor = 'learner', purpose = 'storage', commandId: id = commandId() } = {}) {
     return handle({ learner, id, type, input, actor, purpose });
   }
-  const read = (action, purpose = 'storage', layered = false) => db.snapshot({ learner }, tx => {
+  const sendCompanion = (type, input, purpose) => send(type, input, { actor: 'companion', purpose });
+  const snapshot = action => db.snapshot({ learner }, action);
+  const read = (action, purpose = 'storage', layered = false) => snapshot(tx => {
     const base = createCommandReadContext(tx, purpose);
     return action(layered ? withExtraction(tx, purpose, base) : base);
   });
@@ -116,7 +106,7 @@ await withLearnerDatabase(learner, async db => {
       authorize,
       settle: ({ plan }, receipts) => settleLayeredExtraction(plan.data, receipts),
     });
-  const fixture = { db, learner, stableId, load, send, assert, read, current, hooks, gatherValue, publish, extract,
+  const fixture = { db, learner, stableId, load, send, sendCompanion, assert, snapshot, read, current, hooks, gatherValue, publish, extract,
     proposeExtraction, confirmExtraction, captureBlock, ingestPhoto, jpeg, numericQuestion,
     content: modules.find(module => module.definition.name === 'content') };
   await run(fixture);
