@@ -8,6 +8,7 @@ import intake from '@mangekyo/module-capture/facts/intake';
 import { studyTurn, turnResearchPurpose } from '../values.ts';
 import { materialType, storagePurpose } from '../library-values.ts';
 import { workbookPaperType, workbookResearchPurpose } from '../workbook-values.ts';
+import { isWorkbookAnswerDisplay, workbookPresentationType } from '../workbook-presentation.ts';
 
 /**
  * Learner-only by intent: the command is destructive so a companion request is
@@ -35,7 +36,11 @@ export default defineCommand({
     }
     const use = input.use;
     const revokingTurn = !input.enabled && current.type === 'activity.studyTurn' && studyTurn(current.value).caseId === 'companion';
-    if (!revokingTurn && !workspaceShareableTypes.includes(current.type)) throw new Error('这类记录不能从工作区开放。');
+    const sharingAnswerDisplay = use === 'teaching' && current.type === workbookPresentationType &&
+      isWorkbookAnswerDisplay(current.value);
+    if (!revokingTurn && !sharingAnswerDisplay && !workspaceShareableTypes.includes(current.type)) {
+      throw new Error('这类记录不能从工作区开放。');
+    }
     if (!revokingTurn && use === workbookResearchPurpose && current.type !== workbookPaperType &&
         !(current.type === workspaceEntryType && workspaceEntry(current.value).kind === 'question'))
       throw new Error('只能选择试卷或来源题的后台用途。');

@@ -5,7 +5,7 @@ import {
 } from './help-exposure-values.ts';
 import { recallSubmissionType, submitRecallCommand } from './recall-values.ts';
 import { closedPosttest, issuePosttestCommand, posttestIssuanceType, posttestSubmissionType, retentionPaperType } from './retention-posttest.ts';
-import { submitWorkbookAttemptCommand, workbookAttemptType, workbookPaperType, type WorkbookSourceQuestionRef } from './workbook-values.ts';
+import { saveWorkbookPaperCommand, submitWorkbookAttemptCommand, workbookAttemptType, workbookPaperType, type WorkbookSourceQuestionRef } from './workbook-values.ts';
 import { recordWorkbookPresentationCommand, workbookPresentationType } from './workbook-presentation.ts';
 
 export type ActivityEvidenceReadScope = {
@@ -148,6 +148,54 @@ export type WorkbookHistoryTarget = { paper: HelpRef; itemId: string };
 
 export function throughTick(tick: Tick) {
   return String(BigInt(tick) + 1n) as Tick;
+}
+
+/** A confirmed answer display is a candidate only. The host still reopens each
+ * current, purpose-authorized witness for the actual recipient. The stored
+ * question, frozen workbook and submitted feedback must identify the same item.
+ */
+export async function workbookAnswerDisplayCandidates(
+  tx: ActivityEvidenceReadScope, source: WorkbookSourceQuestionRef, through: Tick, purpose: string, limit: number,
+) {
+  const { rows } = await tx.query<{ display_id: FactId; paper_id: FactId; attempt_id: FactId }>(`
+    SELECT d.id AS display_id, p.id AS paper_id, a.id AS attempt_id
+    FROM facts d
+    JOIN fact_revs born ON (born.learner_id,born.fact_id,born.rev)=(d.learner_id,d.id,1)
+    JOIN commands dc ON (dc.learner_id,dc.id)=(born.learner_id,born.command_id)
+    JOIN fact_revs display ON (display.learner_id,display.fact_id,display.rev)=(d.learner_id,d.id,d.current_rev)
+    JOIN facts p ON (p.learner_id,p.id)=(d.learner_id,born.data#>>'{paper,id}')
+    JOIN fact_revs frozen ON (frozen.learner_id,frozen.fact_id)=(p.learner_id,p.id)
+      AND frozen.rev::text=born.data#>>'{paper,rev}'
+    JOIN fact_revs pc ON (pc.learner_id,pc.fact_id,pc.rev)=(p.learner_id,p.id,p.current_rev)
+    JOIN fact_revs pb ON (pb.learner_id,pb.fact_id,pb.rev)=(p.learner_id,p.id,1)
+    JOIN commands sc ON (sc.learner_id,sc.id)=(pb.learner_id,pb.command_id)
+    JOIN facts a ON (a.learner_id,a.id)=(d.learner_id,born.data#>>'{submission,id}')
+    JOIN fact_revs ab ON (ab.learner_id,ab.fact_id,ab.rev)=(a.learner_id,a.id,1)
+    JOIN commands ac ON (ac.learner_id,ac.id)=(ab.learner_id,ab.command_id)
+    JOIN fact_revs submitted ON (submitted.learner_id,submitted.fact_id)=(a.learner_id,a.id)
+      AND submitted.rev::text=born.data#>>'{submission,rev}'
+    JOIN fact_revs actual ON (actual.learner_id,actual.fact_id,actual.rev)=(a.learner_id,a.id,a.current_rev)
+    JOIN fact_revs question ON (question.learner_id,question.fact_id,question.rev)=(d.learner_id,$2,$3)
+    WHERE d.learner_id=$1 AND d.type=$4 AND p.type=$5 AND a.type=$6
+      AND d.purpose && ARRAY[$7,'all'] AND p.purpose && ARRAY[$7,'all'] AND a.purpose && ARRAY[$7,'all']
+      AND d.retracted_rev IS NULL AND p.retracted_rev IS NULL AND a.retracted_rev IS NULL
+      AND born.data=display.data AND born.author='learner' AND dc.type=$8 AND dc.state='done'
+      AND born.tick<=$9::bigint AND born.data->>'kind'='solution' AND born.data->>'phase'='displayed'
+      AND pb.data=frozen.data AND frozen.data=pc.data AND sc.type=$10 AND sc.state='done'
+      AND ab.data=submitted.data AND submitted.data=actual.data AND ab.author='learner'
+      AND ac.type=$11 AND ac.state='done' AND ab.tick<born.tick
+      AND ab.data->>'paperId'=p.id AND ab.data->'paper'=frozen.data
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(frozen.data->'questions') AS q
+        JOIN fact_revs pinned ON pinned.learner_id=d.learner_id AND pinned.fact_id=$2
+          AND pinned.rev::text=q#>>'{sourceQuestionRef,rev}'
+        WHERE q#>>'{sourceQuestionRef,id}'=$2 AND pinned.kind='value' AND pinned.data=question.data
+          AND (born.data->'items') ? (q->>'id')
+      )
+    ORDER BY born.tick DESC,d.id LIMIT $12`,
+  [tx.learner, source.id, source.rev, workbookPresentationType, workbookPaperType, workbookAttemptType,
+    purpose, recordWorkbookPresentationCommand, through, saveWorkbookPaperCommand, submitWorkbookAttemptCommand, limit]);
+  return rows;
 }
 
 /** These queries identify candidates or check a watermark. The caller still opens each witness. */
