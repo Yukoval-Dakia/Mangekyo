@@ -145,7 +145,7 @@ export async function runEffect(
   db: Db,
   request: EffectRequest,
   invoke: (providerEffectId: string, checkDispatch: (tx: DbTransaction) => Promise<void>) => Promise<Json>,
-  authorize?: (tx: ReadTransaction) => Promise<void> | void,
+  authorize?: (tx: DbTransaction) => Promise<void> | void,
   // Supplied by the host only for a closed set of independently authored fact inputs.
   basis?: { manifest: Manifest; work?: WorkRef & { ownerSlot?: WorkRequest } },
   // Priced effects must persist only content-free receipts. Financial settlement survives withdrawal of consent.

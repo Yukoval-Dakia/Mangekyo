@@ -1,4 +1,5 @@
 import type { DbQuery } from '../db/types.ts';
+import { eraseSessionPayloads, type SessionErasure } from './session-erasure.ts';
 
 export async function migrateWorkPayloads(tx: DbQuery) {
   await tx.query('LOCK TABLE learners IN EXCLUSIVE MODE');
@@ -16,7 +17,7 @@ export async function migrateWorkPayloads(tx: DbQuery) {
 }
 
 export async function erasePayloads(tx: DbQuery, learner: string, ids: readonly string[], tick: string,
-  commandTypes: readonly string[] = []) {
+  commandTypes: readonly string[] = [], sessionErasure?: SessionErasure) {
   const {rows} = await tx.query<{id: string}>(`WITH RECURSIVE affected(id) AS (
     SELECT unnest($2::text[])
     UNION
@@ -24,6 +25,7 @@ export async function erasePayloads(tx: DbQuery, learner: string, ids: readonly 
       AND w.payload_sources @> ARRAY[a.id] WHERE w.result_id IS NOT NULL
   ) SELECT id FROM affected`, [learner,ids]);
   const erased = rows.map(row => row.id);
+  const sessions = sessionErasure ? await eraseSessionPayloads(tx, learner, erased, tick, sessionErasure) : [];
   await tx.query(`INSERT INTO tombstones SELECT $1,id,'fact',$3::bigint FROM unnest($2::text[]) AS id
     ON CONFLICT DO NOTHING`, [learner,erased,tick]);
   const { rows: commands } = await tx.query<{id: string}>(`SELECT c.id FROM fact_revs r
@@ -46,7 +48,7 @@ export async function erasePayloads(tx: DbQuery, learner: string, ids: readonly 
   const works = affectedWork.map(row => row.id);
   await tx.query(`WITH removed AS (
     DELETE FROM effects WHERE learner_id=$1 AND (payload_work_id=ANY($4::text[])
-      OR owner_id=ANY($2::text[]))
+      OR owner_id=ANY($2::text[]) OR (owner_kind='session' AND owner_id=ANY($5::text[])))
     RETURNING *
   )
   INSERT INTO erased_effect_receipts(learner_id,provider_effect_id,owner_id,started_tick,erased_tick,settlement,
@@ -56,7 +58,7 @@ export async function erasePayloads(tx: DbQuery, learner: string, ids: readonly 
     CASE WHEN owner_id<>ALL($2) THEN owner_kind END,
     CASE WHEN owner_id<>ALL($2) THEN step_key END,
     CASE WHEN owner_id<>ALL($2) THEN label END
-  FROM removed WHERE provider_effect_id IS NOT NULL`, [learner,erased,tick,works]);
+  FROM removed WHERE provider_effect_id IS NOT NULL`, [learner,erased,tick,works,sessions]);
   await tx.query(`WITH cancelled AS (
     UPDATE work SET state='cancelled',revision=revision+1,generation=generation+1,
       execution_ref=NULL,gather=NULL,gather_manifest=NULL

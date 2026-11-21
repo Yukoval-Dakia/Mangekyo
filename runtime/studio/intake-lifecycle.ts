@@ -6,6 +6,7 @@ import { captureIntakeCommand, correctIntakeCommand, completeCloudIntakeCommand,
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { teachingErasure } from './teaching-erasure.ts';
 
 export const intakeCaptureId = (requestId: string) => commandId(stableId('intake-capture',requestId));
 
@@ -36,7 +37,7 @@ export function openIntakeLifecycle(db: Db, removeObject: (id: FactId) => Promis
         throw new RequestError(404, '找不到这份交入原件。');
       if (document.ref.rev !== rev) throw new LifecycleError(409, '材料已有新版本。请重新查看后确认。');
       return {ids:[root, documentId], commandTypes:[captureIntakeCommand,correctIntakeCommand,completeCloudIntakeCommand,setIntakeResearchCommand]};
-    }, () => removeObject(root));
+    }, () => removeObject(root), teachingErasure);
   }
   return {erase, state: () => db.snapshot(scope,deletionState),
     checkCapture: async (tx: ReadTransaction, id: FactId, watermark: string) => {

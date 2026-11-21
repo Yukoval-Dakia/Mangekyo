@@ -1,5 +1,6 @@
 import { workerStorage } from '../../../kernel/src/schema.ts';
-import { factId } from '../../../kernel/src/declarations/ids.ts';
+import { derivationId, factId } from '../../../kernel/src/declarations/ids.ts';
+import type { ManifestInput } from '../../../kernel/src/derivations/manifest.ts';
 import { intakeIdFor } from '../intake-lifecycle.ts';
 import { mkdtemp, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -7,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { aroundAll, describe, expect, it, vi } from 'vitest';
 import { acknowledgeStartedWork, relayPending, runEffect, type WorkRef } from '../../../kernel/src/work/index.ts';
-import { studioLearner } from '../identity.ts';
+import { slotType, stableId, studioLearner } from '../identity.ts';
+import { recordLocalRead } from '../../../kernel/src/work/effects.ts';
 import { cloudIntakeRoute, openCloudIntakeWork, type MineruClient } from '../intake-cloud.ts';
 import { handleIntakeRequest, openIntake, type IntakeMetadata } from '../intake.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
@@ -284,5 +286,38 @@ describe.skipIf(!testDatabaseUrl)('MinerU intake in PostgreSQL', () => {
     expect(await (await erase(file)).json()).toMatchObject({original:'pending'});
     expect((await fetch(origin + '/api/materials/' + file.id + '/original')).status).toBe(404);
     expect(await readFile(join(legacy,'original'),'utf8')).toBe('本地文本');
+  });
+  it('erases an unbound teaching read and dependent reply while retaining its effect identity', async () => {
+    const {watermark} = await state();
+    const material = await (await capture('teaching-erasure',null,'text/plain',watermark)).json() as IntakeMetadata;
+    const reader = stableId('erasure-reader'), dependent = stableId('erasure-dependent'), control = stableId('erasure-control');
+    const reply = (turn: string) => derivationId(stableId('erasure-reply', turn));
+    const scope = {learner:studioLearner};
+    await db.tx(scope, tx => tx.withLearnerWrite(async tick => {
+      for (const turn of [reader,dependent,control]) {
+        const inputs: ManifestInput[] = turn === dependent ? [{kind:'slot',mode:'following',slotType,slotKey:reader,
+          derivationId:reply(reader)}] : [];
+        await tx.insert('derivations',{learner_id:studioLearner,id:reply(turn),slot_type:slotType,slot_key:turn,deriver:'test',
+          scope_keys:'{}',value:JSON.stringify({message:turn}),lifecycle:'effective',freshness:'current',
+          gather_tick:tick,effective_tick:tick,manifest:JSON.stringify({version:1,learner:studioLearner,purpose:'teaching',gatherTick:tick,inputs})});
+        await tx.insert('slot_state',{learner_id:studioLearner,slot_type:slotType,slot_key:turn,scope_keys:'{}',
+          current_id:reply(turn),last_id:reply(turn)});
+      }
+    }));
+    const key = { ...scope, ownerKind:'session', ownerId:reader, stepKey:'1', input:{} } as const;
+    await recordLocalRead(db,{...key,label:'local:open_learning'},
+      async () => JSON.stringify({text:'本地文本',witnesses:[{id:material.id}]}),async () => {});
+    const send = vi.fn(async () => '本地文本');
+    const sample = {...key,label:'teaching-model'};
+    await expect(runEffect(db,sample,send)).resolves.toEqual({kind:'done',result:'本地文本'});
+    const { rows:[effect] } = await db.query<{provider_effect_id:string}>(
+      'SELECT provider_effect_id FROM effects WHERE owner_id=$1 AND label=$2',[reader,sample.label]);
+    expect(effect?.provider_effect_id).toBeTruthy();
+    await expectRemoved(material);
+    expect((await db.query('SELECT result FROM effects WHERE owner_id=$1',[reader])).rows).toEqual([]);
+    expect((await db.query('SELECT value FROM derivations WHERE id=ANY($1) ORDER BY value NULLS FIRST',
+      [[reply(reader),reply(dependent),reply(control)]])).rows).toEqual([{value:null},{value:null},{value:{message:control}}]);
+    await expect(runEffect(db,sample,send)).resolves.toEqual({kind:'unknown',providerEffectId:effect?.provider_effect_id});
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

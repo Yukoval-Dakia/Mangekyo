@@ -18,7 +18,9 @@ import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
+import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
+import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
+import { bindSessionPayloadSources } from '../../kernel/src/work/payload.ts';
 import { failWork, finishWork, readWork, readReadyWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
 import { TeachingError } from '../../executors/teaching/index.ts';
 import { ChangedEvidence, classifyTeachingFailure, terminalRecoveryFailure } from '../../executors/teaching/turn-errors.ts';
@@ -175,6 +177,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (submission.workspaceRevision) {
       maySend.notionRecipientId = notionModelRecipient(settings.activeProviderId, settings.baseUrl, settings.protocol, settings.model, submission.workspaceRevision);
     }
+<<<<<<< HEAD
     const onProgress = createTurnProgressHandler({
       learningV1,
       recordReplyStarted: async () => {
@@ -207,6 +210,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       runDispatchTx: fn => db.tx(scope, async tx => { await lockLearner(tx, learner); return fn(tx); }),
       checkFreshEvidence: async () => { await db.snapshot(scope, validInputs); },
       isLifecycleError: error => error instanceof LifecycleError,
+      bindSources: async (tx, manifest) => {
+        const sources = (await manifestFactInputs(tx, manifest.inputs as Manifest['inputs'])).map(input => input.id);
+        if (attachmentOrigin?.attachment) sources.push(attachmentOrigin.attachment.id);
+        await bindSessionPayloadSources(tx, ref, sources);
+      },
     });
 
     let feedback: DisplayTurn;
