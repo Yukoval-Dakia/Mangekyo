@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { gatherSnapshot } from '../../../kernel/src/derivations/gather.ts';
 import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
 import { createCommandReadContext } from '../../../kernel/src/commands/reads.ts';
-import { withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
+import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { openOrganizer } from '../../../runtime/studio/organizer.ts';
 import { studioLearner } from '../../../runtime/studio/identity.ts';
 import { loadStudioTestModule } from '../../../runtime/studio/test/modules.ts';
@@ -36,7 +36,7 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
   const one = planToday({...next,candidates:applyCandidateInformation(candidates, [], [{ref:'pack/reading'}]),mode:'one-hand'});
   assert.ok(!one.shortlist.includes('pack/reading'));
   const long = {...next,candidates:[make('forty-four',44,1),make('forty-five',45,1),make('hour',60,1,{input:'voice'})],
-    constraints:{budget_min:60,locks:[],deadlines:[]},duration:'45min+'};
+    constraints:{...noLocks,budget_min:60},duration:'45min+'};
   for (const [mode,expected] of [['any',['forty-five','hour']],['voice',['hour']],['one-hand',[]]])
     assert.deepEqual(planToday({...long,mode}).shortlist,expected);
   const examScope = {kind:'exam',date:'2026-11-25',scope:['weak','formula'],weights:[{topic:'weak',weight:50},{topic:'formula',weight:50}]};
@@ -169,12 +169,12 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
       assert.deepEqual(ids(view).sort(),expected.sort());
       if (campaign==='recovery') assert.equal(view.scoreReview.kind,'unknown');
     }
-    const date = '2026-11-29', {timeZone} = base;
+    const date = '2026-11-29';
     const paperCandidate = resumed.items[0].candidate;
-    const warmup = {kind:'lock',date,activityId:paper,warmup:{timeZone,open:paperCandidate.open}};
+    const warmup = {kind:'lock',date,activityId:paper,warmup:{timeZone:base.timeZone,open:paperCandidate.open}};
     await save('next-ordinary-lock',{kind:'lock',date,activityId:pinned});
     const anchor = await save('next-warmup',warmup);
-    await assert.rejects(save('warmup-stale',{...warmup,warmup:{timeZone,open:{...paperCandidate.open,rev:2}}},anchor), /热身活动版本已变化/);
+    await assert.rejects(save('warmup-stale',{...warmup,warmup:{...warmup.warmup,open:{...paperCandidate.open,rev:2}}},anchor), /热身活动版本已变化/);
     const protectedIds = async params => (await today(params)).protectedItems.map(c=>c.id);
     assert.deepEqual(await protectedIds(),[]);
     t.mock.timers.setTime(Date.parse(date+'T05:00:00Z'));
@@ -216,5 +216,5 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
     await assert.rejects(()=>handle(req('plan.saveRule',{id:exam.id,expectedRev:exam.rev,data:null})),/revision conflict/);
     await save('clear-exam',null,correctedExam);
     await assert.rejects(()=>read(exam.id));
-  }, {postgres: false});
+  }, {postgres: Boolean(testDatabaseUrl)});
 });

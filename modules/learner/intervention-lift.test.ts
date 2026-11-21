@@ -1,15 +1,15 @@
 import { pythonLines } from '../../executors/python-deriver/test/worker.ts';
-import { command, factWriter, ref, snapshot, use } from './test/facts.ts';
+import { command, factWriter, ref, seed, snapshot, use } from './test/facts.ts';
 import { expect, it } from 'vitest';
-import { derivationId, learnerId, type FactWrite, type GatherContext, type Revision, type Tick } from '@mangekyo/kernel';
+import { derivationId, learnerId, type GatherContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { isInterventionLiftInput, isInterventionLiftOutcome } from '../../executors/python-deriver/intervention-lift-schema.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { createCommandHandler, readCommandProposals } from '../../kernel/src/commands/handle.ts';
 import { sealCandidate, submitCandidate } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
-import { requestCatalogedWork, requestWork } from '../../kernel/src/work/index.ts';
-import { withLearnerDatabase } from '../../kernel/test/learner-database.ts';
+import { enqueueWork } from '../../kernel/src/work/todos.ts';
+import { testDatabaseUrl, withLearnerDatabase } from '../../kernel/test/learner-database.ts';
 import { loadStudioTestModule } from '../../runtime/studio/test/modules.ts';
 import propose from './commands/propose-playbook.ts';
 import retire from './commands/retire-playbook.ts';
@@ -21,6 +21,7 @@ import { playbook, readVerifiedPlaybook, verifiedStatus } from './playbook.ts';
 
 const identity = { playbookId: ref(0).id, strategyId: 'inspect-boundary', version: 1 };
 const asOf = '2026-01-16T00:00:00.000Z';
+const purpose = 'background-research';
 const target = {item: 'transfer', comparisonKey: 'rubric-1:stratum-2', asOf};
 function pair(i: number): InterventionPair {
   const assessment = { comparisonKey: target.comparisonKey, independence: 'independent', novelty: 'transfer' } as const;
@@ -74,7 +75,6 @@ it('TS 与确定性 Python 在固定截止时间按相同配对和缺失边界�
   if (!isInterventionLiftInput(assisted)) throw new Error('invalid fixture');
   expect(isInterventionLiftOutcome(outcomes[0], assisted)).toBe(false);
   expect(() => measureInterventionLift(input([positive[0]!, positive[0]!]))).toThrow('重复');
-
 });
 
 it('正式后测适配器只计独立分数并检查冻结预测身份及截止水位', async () => {
@@ -82,8 +82,8 @@ it('正式后测适配器只计独立分数并检查冻结预测身份及截止�
   const forecastId = derivationId(ref(2).id);
   const observation = {submission, admittedAt:'3' as Tick, submittedAt: asOf, result:'correct' as const,
     novelty: 'fresh-context' as const, exposure: {kind: 'independent' as const}};
-  const ctx = {learner: submission.learner, snapshotTick: '3', read: {
-    fact: async () => snapshot(submission, {}, ['background-research']),
+  const ctx = {learner: submission.learner, snapshotTick: observation.admittedAt, read: {
+    fact: async () => snapshot(submission, {}, [purpose]),
     slot: async () => ({outcome: {kind: 'value', value: {forecastId, status: 'observed', observation}}}),
   }} as unknown as GatherContext;
   const reconcile = (id: number) => reconciledLiftAssessment(ctx, submission,
@@ -104,7 +104,6 @@ it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {t
   const data = playbook({version: 1, strategyId: identity.strategyId, preconditions: ['分段'], strategy_steps: ['画图'],
     counterexamples: ['非连续区间'], exit_conditions: ['独立标出区间'],
     reflection: {rationale: '标图待复验', metric: '独立变式', evidence_refs: [ref(95)]}});
-  const purpose = 'background-research';
   const scope = {learner, purpose};
   const hooks = createPropagationHooks([]);
   const worker = createPythonDeriverHost();
@@ -113,32 +112,27 @@ it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {t
     const handler = createCommandHandler(db, {modules: [await loadStudioTestModule('learner')], hooks});
     const apply = factWriter(db, scope);
     const sources = positive.flatMap(({intervention, baseline, posttest}) => [intervention, baseline!.submission, posttest!.submission]);
-    await apply([ref(94), ref(95), ...sources].map(({id}): FactWrite => ({
-      kind: 'create', id, factType: 'activity.workbookAttempt', data: {},
-      purpose: id === ref(94).id ? [purpose] : [purpose, 'teaching'],
-    })), 100);
+    await apply([seed(use(94, 'activity.workbookAttempt'), [purpose]), ...[ref(95), ...sources].map(({id}) =>
+      seed({id, type: 'activity.workbookAttempt'}, [purpose, 'teaching']))], 100);
     expect(() => propose.schema.parse({id, data: {...data, status: 'verified'}})).toThrow(/未知字段/);
     await handler({...scope, id: command(99), input: {id, data}, type: propose.type, actor: 'learner'});
     const researchOnly = propose.schema.parse({id, data: {...data, reflection: {...data.reflection, evidence_refs: [ref(94)]}}});
-    const candidate = await gatherSnapshot(db, scope, async ({read}) => ({
-      kind: 'input', effects: [], data: await propose.write({learner, read}, researchOnly, undefined),
+    const gather = (plan: Parameters<typeof gatherSnapshot>[2], readPurpose = purpose) =>
+      gatherSnapshot(db, {learner, purpose: readPurpose}, plan);
+    const candidate = await gather(async ctx => ({
+      kind: 'input', effects: [], data: await propose.write(ctx, researchOnly, undefined),
     }));
     expect(candidate.plan).toMatchObject({data: [{kind: 'create', data: researchOnly.data, purpose: ['storage', purpose]}]});
     const gatherState = (ctx: GatherContext) => status.gather(ctx, {playbookId: id});
     const run = async (slotType: string, slotKey: string, deriver: string,
-      gather: Parameters<typeof gatherSnapshot>[2], derive: (input: unknown) => unknown) => {
+      plan: Parameters<typeof gatherSnapshot>[2], derive: (input: unknown) => unknown) => {
       const policy = {slot: {type: slotType}, deriver, purpose};
-      const request = {slotType, slotKey, deriver};
-      const work = await db.tx(scope, tx => tx.withLearnerWrite(async tick => {
-        await requestCatalogedWork(tx, tick, request, '{}');
-        return requestWork(tx, tick, request);
-      }));
-      const snapshot = await gatherSnapshot(db, scope, gather);
-      const sealed = await sealCandidate(db, work, policy, snapshot);
+      const work = await db.tx(scope, tx => tx.withLearnerWrite(tick => enqueueWork(tx, tick, {slotType, slotKey, deriver})));
+      const sealed = await sealCandidate(db, work, policy, await gather(plan));
       if (sealed.kind !== 'sealed') throw new Error('未冻结候选');
       const result = await submitCandidate(db, work, policy, sealed.id, await derive(sealed.plan.data), hooks);
       expect(result, JSON.stringify(result)).toMatchObject({kind: 'effective'});
-      return {id: sealed.id, manifest: snapshot.manifest, plan: sealed.plan};
+      return sealed;
     };
     const liftKey = interventionLiftKey(id, 1);
     for (const [pairs, expected] of [[positive, 'verified'], [negative, 'demoted']] as const) {
@@ -149,8 +143,8 @@ it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {t
       expect(state.plan).toMatchObject({data: {status: expected, liftId: measured.id}});
       expect(state.manifest.inputs).toContainEqual({kind: 'slot', slotType: lift.slot, slotKey: liftKey,
         derivationId: measured.id, mode: 'following'});
-      const teaching = await gatherSnapshot(db, {...scope, purpose: 'teaching'}, async ctx =>
-        ({kind: 'input', effects: [], data: await readVerifiedPlaybook(ctx.read, ref(0))}));
+      const teaching = await gather(async ({read}) =>
+        ({kind: 'input', effects: [], data: await readVerifiedPlaybook(read, ref(0))}), 'teaching');
       expect(teaching.plan).toMatchObject({data: expected === 'verified' ? {status: {status: expected}} : null});
       if (expected === 'verified') continue;
       expect(state.plan).toMatchObject({data: {gardeningProposal: {light: 'yellow'}}});
@@ -166,6 +160,6 @@ it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {t
     const source = positive[0]!.posttest!.submission;
     await apply([{kind: 'set_purpose', id: source.id, expectedRev: source.rev, purpose: ['teaching']}], 103);
     await apply([{kind: 'set_purpose', id: source.id, expectedRev: 2 as Revision, purpose: [purpose, 'teaching']}], 104);
-    await expect(gatherSnapshot(db, scope, gatherState)).rejects.toThrow('Derivation input is invalid or denied');
-  }, {postgres: false});
+    await expect(gather(gatherState)).rejects.toThrow('Derivation input is invalid or denied');
+  }, {postgres: Boolean(testDatabaseUrl)});
 });

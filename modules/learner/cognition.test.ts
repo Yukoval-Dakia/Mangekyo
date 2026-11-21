@@ -1,9 +1,9 @@
 import { expect, it } from 'vitest';
-import { witness } from './memory-evidence.ts';
+import { ref as factRef } from './test/facts.ts';
 import { admitExtraction, extractionDecision, hypothesisView,
   projectExperience, type ExtractionActivity, type HypothesisEvidence } from './cognition.ts';
 
-const ref = (n: number) => witness({id: String(n).padStart(26, '0'), rev: 1, accessEpoch: '1'});
+const ref = (n: number) => factRef(n, '1');
 const at = (n: number) => new Date(n * 1000).toISOString();
 
 it('keeps same-condition counterevidence and tracks improvement, retirement and relapse', () => {

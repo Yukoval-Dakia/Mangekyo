@@ -1,6 +1,7 @@
 import { factId, type DerivationSnapshot, type FactId, type ReadContext, type Revision, type Playbook as KernelPlaybook } from '@mangekyo/kernel';
 import { interventionLiftKey, interventionLiftType } from './intervention-lift.ts';
 import { allows, integer, openWitness, record, text, witnessList, type Witness } from './memory-evidence.ts';
+import { preSubmitRevisionWitness } from './pre-submit-process.ts';
 import { weeklyLiftCutoff, weeklyLiftExpiry } from './weekly-lift.ts';
 
 export const playbookType = 'learner.playbook';
@@ -37,12 +38,15 @@ const experienceSources = new Set(['activity.studyTurn', 'activity.workbookAttem
 
 export async function openReflection(read: ReadContext, candidate: Playbook) {
   let teaching = true;
+  const preSubmitRevised: Witness[] = [];
   for (const ref of candidate.reflection.evidence_refs) {
     const fact = await openWitness(read, ref, 'background-research');
     if (!experienceSources.has(fact.type)) throw new Error('反思须引用已获准的原始活动。');
     teaching &&= allows(fact.purpose, 'teaching');
+    const revision = preSubmitRevisionWitness(fact, 'background-research');
+    if (revision) preSubmitRevised.push(revision);
   }
-  return {teaching};
+  return {teaching, ...(preSubmitRevised.length ? {process: {preSubmitRevised}} : {})};
 }
 
 export function proposalInput(value: unknown) {
@@ -54,6 +58,7 @@ export function proposalInput(value: unknown) {
 export type PlaybookStatus = {
   playbookId: string; version: number; strategyId: string; status: 'candidate' | 'verified' | 'demoted';
   reason: string; liftId: string | null; verificationRefs: Witness[]; expiresAt?: string;
+  process?: {preSubmitRevised: Witness[]};
 };
 
 export function readPlaybookLift(read: ReadContext, learner: DerivationSnapshot<unknown>['slot']['learner'],

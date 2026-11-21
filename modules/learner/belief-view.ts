@@ -1,7 +1,8 @@
 import type { BeliefTime, BusWitness, CanonicalEvidenceSliceV1, Directive, FactReadOptions, FactSnapshot,
-  Hypothesis, LearnerId, RefusalBoundary } from '@mangekyo/kernel';
+  Hypothesis, LearnerId, RefusalBoundary, Tick } from '@mangekyo/kernel';
 export type { RefusalBoundary } from '@mangekyo/kernel';
 import { allows, instant, isAttemptEvidenceType, record, text, witness, witnessIdentity, type Witness } from './memory-evidence.ts';
+import { preSubmitRevisionWitness } from './pre-submit-process.ts';
 
 export function refusalBoundary(value: unknown): RefusalBoundary {
   const fields = record(value);
@@ -60,7 +61,10 @@ export type HypothesisEvidence = {
 };
 export type HypothesisStage = Hypothesis<unknown, unknown>['status'];
 
-export function hypothesisView(history: readonly HypothesisEvidence[], when: AsOf) {
+export function hypothesisView(history: readonly HypothesisEvidence[], when: AsOf, process?: {
+  // Already opened in the same current authorization snapshot and recipient.
+  learner: LearnerId; purpose: string; submissions: readonly FactSnapshot[];
+}) {
   const valid = instant(when.validAt);
   const known = instant(when.knownAt);
   const events = history.filter(e => e.origin === 'chronicle'
@@ -93,7 +97,16 @@ export function hypothesisView(history: readonly HypothesisEvidence[], when: AsO
     }
     if (previous !== stage) trajectory.push({at: event.occurredAt, stage});
   }
-  return {stage, trajectory, evidence: events, confidence: {
+  const preSubmitRevised: Witness[] = [];
+  if (process?.purpose.trim()) {
+    const evidence = new Set(events.map(event => witnessIdentity(event.ref)));
+    for (const fact of process.submissions) {
+      if (fact.ref.learner !== process.learner) continue;
+      const ref = preSubmitRevisionWitness(fact, process.purpose);
+      if (ref && evidence.delete(witnessIdentity(ref))) preSubmitRevised.push(ref);
+    }
+  }
+  return {stage, trajectory, evidence: events, ...(preSubmitRevised.length ? {process: {preSubmitRevised}} : {}), confidence: {
     statement: events.some(event => event.source === 'learner-quote') ? 'directly-attested' : 'unconfirmed',
     fact: stage, outcome: outcomeEvidence ? 'independently-observed' : 'unknown',
   }};
@@ -177,7 +190,8 @@ export type MetacognitiveRead = {
   } | undefined>;
 };
 
-async function supportsAcrossDisciplines(evidence: readonly unknown[], read: MetacognitiveRead, when: AsOf) {
+export async function supportsAcrossDisciplines(evidence: readonly unknown[], read: MetacognitiveRead, when: AsOf,
+  observedThrough?: Tick) {
   async function open(ref: Witness, mode: BusWitness['mode'] = 'following') {
     const fact = await read.reopen(ref, mode === 'following' ? {mode} : {mode, rev: ref.rev}, read.purpose);
     if (fact?.ref.learner === read.learner && allows(fact.purpose, read.purpose) &&
@@ -199,6 +213,7 @@ async function supportsAcrossDisciplines(evidence: readonly unknown[], read: Met
     const observation = await read.observe(source, {...citation, ...ref});
     if (!observation || !observation.basis.length) return false;
     const {slice, discipline, basis} = observation;
+    if (observedThrough !== undefined && slice.clock_watermark !== observedThrough) return false;
     if (discipline.learner !== read.learner || discipline.type !== 'content.asset') return false;
     for (const ref of basis) {
       if (ref.learner !== read.learner || (await open(ref, ref.mode))?.type !== ref.type) return false;

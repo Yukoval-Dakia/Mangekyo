@@ -102,7 +102,7 @@ type Bucket = {
   readonly attempts: Map<string, Attempt>;
 };
 
-function witnessKey(ref: BusWitness) {
+export function masteryWitnessKey(ref: BusWitness) {
   return JSON.stringify([ref.learner, ref.id, ref.rev, ref.accessEpoch, ref.mode, ref.type]);
 }
 
@@ -126,12 +126,12 @@ function attemptWitnesses({ anchor }: Attempt) {
   return [anchor.submission, anchor.question, ...anchor.basis];
 }
 
-function localWitness(ref: BusWitness, scope: TextbookMasteryScope) {
+export function isLocalMasteryWitness(ref: BusWitness, scope: TextbookMasteryScope) {
   return ref.learner === scope.learner && BigInt(ref.accessEpoch) <= BigInt(scope.clockWatermark);
 }
 
 function uniqueWitnesses(refs: Iterable<BusWitness>) {
-  return [...new Map(Array.from(refs, ref => [witnessKey(ref), ref])).values()];
+  return [...new Map(Array.from(refs, ref => [masteryWitnessKey(ref), ref])).values()];
 }
 
 function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMasteryScope, concepts: ReadonlySet<string>) {
@@ -154,7 +154,7 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
     anchors.set(key, isAttemptEvidenceType(submission.type) && itemId && /^\/(?!\/)[^\\\s]*$/u.test(href)
       && BigInt(recordedAt) <= BigInt(scope.clockWatermark)
       && (expiresAt === undefined || cutoff < Date.parse(expiresAt))
-      && [submission, question, ...basis].every(ref => localWitness(ref, scope)) ? anchor : null);
+      && [submission, question, ...basis].every(ref => isLocalMasteryWitness(ref, scope)) ? anchor : null);
   }
 
   const seen = new Map<string, EvidenceEventV1>();
@@ -250,12 +250,12 @@ function projectConcept(conceptId: string, bucket: Bucket, row: CognitionOutput[
     const { priorStable, question, submission } = attempt.anchor;
     if (!priorStable?.conceptIds.includes(conceptId) || !newer(attempt, stable)) continue;
     const { basis } = priorStable;
-    if (basis.some(ref => witnessKey(ref) === witnessKey(question))
-      && basis.some(ref => witnessKey(ref) === witnessKey(submission))
+    if (basis.some(ref => masteryWitnessKey(ref) === masteryWitnessKey(question))
+      && basis.some(ref => masteryWitnessKey(ref) === masteryWitnessKey(submission))
       && basis.some(ref => ref.id === conceptId)
       && basis.some(ref => ref.type === 'activity.retentionPosttest')
       && new Set(basis.filter(ref => isAttemptEvidenceType(ref.type)).map(ref => ref.id)).size >= 2
-      && basis.every(ref => localWitness(ref, scope) && allowed(ref))) stable = attempt;
+      && basis.every(ref => isLocalMasteryWitness(ref, scope) && allowed(ref))) stable = attempt;
   }
   if (!latest) return { conceptId, state: 'unknown', reason: 'unavailable' };
   const decaying = row.r_now <= crossingProbability || (row.crossing_at !== undefined && nearFlashCrossing(row.crossing_at, now));
@@ -272,15 +272,8 @@ function projectConcept(conceptId: string, bucket: Bucket, row: CognitionOutput[
   };
 }
 
-export async function projectTextbookMastery(request: TextbookMasteryRequest, sources: TextbookMasterySources): Promise<TextbookMasteryView> {
-  const { blocks, ...scope } = request;
-  const local = (ref: BusWitness) => localWitness(ref, scope);
-  const visibleBlocks = blocks.filter(block => blockWitnesses(block).every(local)).map(block => ({
-    ...block, concepts: block.concepts.filter(link =>
-      link.basis.some(ref => ref.id === link.conceptId) && edgeWitnesses(link).every(local)),
-  }));
-  const conceptIds = new Set(visibleBlocks.flatMap(block => block.concepts.map(link => link.conceptId)));
-  const pageAndEdgeWitnesses = visibleBlocks.flatMap(block => [...blockWitnesses(block), ...block.concepts.flatMap(edgeWitnesses)]);
+export async function readConceptMastery(scope: TextbookMasteryScope, conceptIds: ReadonlySet<string>,
+  displayWitnesses: readonly BusWitness[], sources: TextbookMasterySources) {
   const version = sources.methodVersion ?? defaultRetentionMethod;
   const method = readPythonRetentionMethod(version);
   const batch = method && conceptIds.size ? await sources.readEvidence(scope, [...conceptIds]) : null;
@@ -297,30 +290,45 @@ export async function projectTextbookMastery(request: TextbookMasteryRequest, so
       else {
         eventConcepts.set(attempt.event, [concept]);
         usedWitnesses.push(...attemptWitnesses(attempt));
-        stabilityWitnesses.push(...(attempt.anchor.priorStable?.basis.filter(local) ?? []));
+        stabilityWitnesses.push(...(attempt.anchor.priorStable?.basis.filter(ref => isLocalMasteryWitness(ref, scope)) ?? []));
       }
     }
   }
   const events = [...eventConcepts].map(([event, concept_ids]) => ({ ...event, concept_ids }));
-  // The worker receives only the scoped activity slice. The page and textbook
-  // edge witnesses authorize the learner-facing view and never enter this dispatch.
+  // Only activity evidence goes to the calculator. The display recipient
+  // reopens its own page or graph context with the exact calculation evidence.
   const calculationWitnesses = uniqueWitnesses(usedWitnesses);
   const result = batch && method && events.length ? await sources.derive(scope, method, {
     as_of_at: scope.asOf, clock_watermark: scope.clockWatermark, events,
     constraints: { budget_min: null, locks: [], deadlines: [] }, candidate_pool: [],
   }, calculationWitnesses) : null;
-  const witnesses = uniqueWitnesses([...pageAndEdgeWitnesses, ...calculationWitnesses, ...stabilityWitnesses]);
+  const witnesses = uniqueWitnesses([...displayWitnesses, ...calculationWitnesses, ...stabilityWitnesses]);
   const reopened = witnesses.length ? await sources.reopen(scope, witnesses) : [];
-  const current = new Set(reopened.map(witnessKey));
-  const allowed = (ref: BusWitness) => current.has(witnessKey(ref));
+  const current = new Set(reopened.map(masteryWitnessKey));
+  const allowed = (ref: BusWitness) => current.has(masteryWitnessKey(ref));
   const projections = new Map<string, TextbookMasteryConcept>();
-  const provenEmpty = (id: string) => coveredBuckets && !coveredBuckets.has(id)
-    && (!batch?.slice.omissions?.length || batch.completeConceptIds?.includes(id));
   for (const [concept, row] of verifiedRows(result, version, buckets)) {
     const bucket = buckets.get(concept);
     if (!row || !bucket || ![...bucket.attempts.values()].every(attempt => attemptWitnesses(attempt).every(allowed))) continue;
     projections.set(concept, projectConcept(concept, bucket, row, scope, allowed));
   }
+  return { allowed, concept: (conceptId: string): TextbookMasteryConcept =>
+    projections.get(conceptId) ?? { conceptId, state: 'unknown',
+      reason: coveredBuckets && !coveredBuckets.has(conceptId) &&
+        (!batch?.slice.omissions?.length || batch.completeConceptIds?.includes(conceptId))
+        ? 'no-independent-evidence' : 'unavailable' } };
+}
+
+export async function projectTextbookMastery(request: TextbookMasteryRequest, sources: TextbookMasterySources): Promise<TextbookMasteryView> {
+  const { blocks, ...scope } = request;
+  const local = (ref: BusWitness) => isLocalMasteryWitness(ref, scope);
+  const visibleBlocks = blocks.filter(block => blockWitnesses(block).every(local)).map(block => ({
+    ...block, concepts: block.concepts.filter(link =>
+      link.basis.some(ref => ref.id === link.conceptId) && edgeWitnesses(link).every(local)),
+  }));
+  const conceptIds = new Set(visibleBlocks.flatMap(block => block.concepts.map(link => link.conceptId)));
+  const pageAndEdgeWitnesses = visibleBlocks.flatMap(block => [...blockWitnesses(block), ...block.concepts.flatMap(edgeWitnesses)]);
+  const { allowed, concept } = await readConceptMastery(scope, conceptIds, pageAndEdgeWitnesses, sources);
   return { asOf: scope.asOf, blocks: visibleBlocks.flatMap(block => {
     if (!blockWitnesses(block).every(allowed)) return [];
     const concepts = new Set(block.concepts.filter(link => edgeWitnesses(link).every(allowed)).map(link => link.conceptId));
@@ -328,10 +336,7 @@ export async function projectTextbookMastery(request: TextbookMasteryRequest, so
     return [{
       page: { id, rev, accessEpoch },
       blockId: block.blockId,
-      concepts: [...concepts].map(conceptId => projections.get(conceptId) ?? {
-        conceptId, state: 'unknown',
-        reason: provenEmpty(conceptId) ? 'no-independent-evidence' : 'unavailable',
-      }),
+      concepts: [...concepts].map(concept),
     }];
   }) };
 }
