@@ -15,7 +15,7 @@ import {
 } from '../../modules/content/question-verification.ts';
 import deriver from '../../modules/content/derivers/question-verification.ts';
 import { purpose } from './identity.ts';
-import { openLocalQuestionVerifier } from '../../executors/teaching/iqdb-local-effect.ts';
+import { openLocalQuestionVerifiers } from '../../executors/teaching/iqdb-local-effect.ts';
 import { bindQuestionExecution, independentQuestionExecutions, matchesQuestionExecution, verificationSteps } from '../../modules/content/question-effects.ts';
 
 const policy: CandidatePolicy = { slot: { type: questionVerificationType }, deriver: deriver.name, purpose };
@@ -25,14 +25,9 @@ type QuestionVersion = NonNullable<ReturnType<typeof parseQuestionVerificationKe
 export async function openLocalQuestionEffects(setting?: string) {
   if (!setting) return undefined;
   try {
-    const paths: unknown = JSON.parse(setting);
-    if (!paths || typeof paths !== 'object' || Array.isArray(paths) || Object.keys(paths).length !== verificationSteps.length)
-      throw new Error('核验需要四个独立模块。');
-    const entries = await Promise.all(verificationSteps.map(async ({stepKey}) =>
-      [stepKey, await openLocalQuestionVerifier(Reflect.get(paths, stepKey))] as const));
-    if (!independentQuestionExecutions(entries.map(([, target]) => target.execution)))
+    const targets = await openLocalQuestionVerifiers(setting, verificationSteps.map(step => step.stepKey));
+    if (!independentQuestionExecutions([...targets.values()].map(target => target.execution)))
       throw new Error('多个核验步骤使用了同一可执行模块。');
-    const targets: ReadonlyMap<string, Awaited<ReturnType<typeof openLocalQuestionVerifier>>> = new Map(entries);
     return targets;
   } catch {
     console.error('题库独立核验不可用。请为三次求解和契约验收分别配置本机核验模块。');

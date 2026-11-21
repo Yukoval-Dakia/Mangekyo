@@ -59,3 +59,11 @@ export async function openLocalQuestionVerifier(path: unknown) {
     },
   };
 }
+
+export async function openLocalQuestionVerifiers(setting: string, steps: readonly string[]) {
+  const paths: unknown = JSON.parse(setting);
+  if (!paths || typeof paths !== 'object' || Array.isArray(paths) || Object.keys(paths).length !== steps.length)
+    throw new Error('核验模块必须与流程步骤一一对应。');
+  return new Map(await Promise.all(steps.map(async step =>
+    [step, await openLocalQuestionVerifier(Reflect.get(paths, step))] as const)));
+}
