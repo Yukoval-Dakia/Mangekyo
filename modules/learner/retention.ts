@@ -30,7 +30,7 @@ export type RetentionObservation = {
   dimensions?: RetentionDimensions;
   exposure:
     | { kind: 'independent' }
-    | { kind: 'exposed'; level?: Exclude<EvidenceEventV1['help_level'], 'independent'>; refs: readonly { id: FactId; rev: Revision }[] }
+    | { kind: 'exposed'; level?: Exclude<EvidenceEventV1['help_level'], 'independent' | 'unknown'>; refs: readonly { id: FactId; rev: Revision }[] }
     | { kind: 'unknown'; reason: string };
 };
 
@@ -175,7 +175,8 @@ export function retentionBucketId(input: RetentionInput) {
   return 'frozen-item/' + paper.id + '/' + paper.rev + '/' + itemId;
 }
 
-export function retentionSlice(input: RetentionInput): CanonicalEvidenceSliceV1 {
+export function retentionSlice(input: RetentionInput, methodVersion = defaultRetentionMethod): CanonicalEvidenceSliceV1 {
+  const historical = methodVersion === 'cognition@1' || methodVersion === 'dimensioned-retention@1';
   if (input.canonicalEvidence) {
     const slice = input.canonicalEvidence;
     if (slice.clock_watermark !== input.observedThrough ||
@@ -205,11 +206,13 @@ export function retentionSlice(input: RetentionInput): CanonicalEvidenceSliceV1 
     }
     return { ...slice, events: slice.events.map(event => {
       const key = event.ref + '/' + event.rev;
+      if ('exam_pacing' in event) return event;
       const observation = scoped.get(key);
       if (counts.get(key) !== 1 || !observation || event.item_novelty !== 'same' ||
           event.outcome !== observation.result || Date.parse(event.occurred_at) !== Date.parse(observation.submittedAt) ||
           event.concept_ids.includes(localBucket)) return event;
       const { exposure } = observation;
+      if (historical && exposure.kind === 'exposed' && exposure.level === undefined) return event;
       if (exposure.kind === 'unknown' || (exposure.kind === 'independent') !== (event.help_level === 'independent') ||
           (exposure.kind === 'exposed' && exposure.level !== undefined && exposure.level !== event.help_level)) return event;
       return { ...event, concept_ids: [...event.concept_ids, localBucket] };
@@ -222,15 +225,15 @@ export function retentionSlice(input: RetentionInput): CanonicalEvidenceSliceV1 
         Date.parse(observation.submittedAt) > Date.parse(input.window.requestedAt)) return [];
     const { kcId, ...otherAxes } = dimensions;
     const itemNovelty = novelty[observation.novelty ?? 'same-item'];
-    const concept = kcId ?? (itemNovelty === 'same' ? retentionBucketId(input) : undefined);
+    const concept = kcId ?? (historical || itemNovelty === 'same' ? retentionBucketId(input) : undefined);
     return [{
       ref: observation.submission.id, rev: observation.submission.rev, occurred_at: observation.submittedAt,
       concept_ids: concept ? [concept] : [], item_novelty: itemNovelty,
       ...otherAxes, help_level: help, outcome: observation.result, claim_ids: [],
       ...(observation.scoreNorm === undefined ? {} : { score_norm: observation.scoreNorm }),
       ...(observation.effectiveDurationMs === undefined ? {} : { effective_duration_ms: observation.effectiveDurationMs }),
-      ...(observation.confidence === undefined ? {} : { confidence: observation.confidence }),
-      ...(observation.errorStage === undefined ? {} : { error_stage: observation.errorStage }),
+      ...(historical || observation.confidence === undefined ? {} : { confidence: observation.confidence }),
+      ...(historical || observation.errorStage === undefined ? {} : { error_stage: observation.errorStage }),
     }];
   });
   return {
@@ -279,7 +282,7 @@ export function freezeCognition(input: RetentionInput, output: CognitionOutput):
     needed: 'independent-scored-attempt-in-target-dimension' });
   if (row.uncertainty.kind !== 'interval' || row.r_now === undefined || row.effective_evidence === undefined)
     throw new Error('Incomplete known retention output');
-  const slice = retentionSlice(input);
+  const slice = retentionSlice(input, output.method_version);
   const events = new Map(bucketEvidence(input, slice).map(event => [event.ref + '/' + event.rev, event]));
   const refs = row.evidence_refs.map(ref => events.get(ref.ref + '/' + ref.rev));
   if (refs.some(event => !event)) throw new Error('Retention output referenced evidence outside the frozen target');
@@ -305,7 +308,7 @@ export async function evaluateFrozenRetention(method: RetentionMethod | PythonRe
   derive: (slice: ReturnType<typeof retentionSlice>, version: string) => Promise<CognitionOutput>) {
   if ('predict' in method) return evaluateRetention(method, input);
   const version = method.id + '@' + method.version;
-  const slice = retentionSlice(input);
+  const slice = retentionSlice(input, version);
   // A scheduled posttest projects the same evidence forward. Its evidence cutoff
   // and snapshot watermark remain frozen in input.canonicalEvidence.
   const scheduledAt = input.window.scheduledAt;

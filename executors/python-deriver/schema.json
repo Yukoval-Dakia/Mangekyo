@@ -42,7 +42,15 @@
         "reason": { "$ref": "#/$defs/text" }
       }
     },
+    "itemHelp": { "enum": ["independent", "hinted", "hint_l1", "hint_l2", "solution_seen"] },
     "event": {
+      "anyOf": [
+        { "type": "object", "properties": { "help_level": { "$ref": "#/$defs/itemHelp" } } },
+        { "type": "object", "required": ["exam_pacing"], "properties": {
+          "help_level": { "enum": ["unknown"] }, "outcome": { "enum": ["unknown"] },
+          "concept_ids": { "type": "array", "maxItems": 0 }
+        } }
+      ],
       "type": "object", "additionalProperties": false,
       "required": ["ref", "rev", "occurred_at", "concept_ids", "item_novelty", "help_level", "outcome", "claim_ids"],
       "properties": {
@@ -51,7 +59,7 @@
         "occurred_at": { "$ref": "#/$defs/time" },
         "concept_ids": { "$ref": "#/$defs/refs" },
         "item_novelty": { "$ref": "#/$defs/novelty" },
-        "help_level": { "enum": ["independent", "hinted", "hint_l1", "hint_l2", "solution_seen"] },
+        "help_level": { "$ref": "#/$defs/text" },
         "outcome": { "enum": ["correct", "incorrect", "unknown"] },
         "score_norm": { "$ref": "#/$defs/probability" },
         "effective_duration_ms": { "$ref": "#/$defs/nonnegative" },

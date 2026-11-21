@@ -1,14 +1,12 @@
-import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '@mangekyo/kernel';
-import { isCanonicalEvidenceSlice } from './schema.ts';
+import { isCanonicalEvidenceSlice, type WireSlice as PacingSlice } from './schema.ts';
 
 export const examPacingMethod = 'plan/exam-pacing@1';
 
 type Score = { earned: number; maximum: number };
 type InputRow = { id: string; effective_duration_ms?: number | null; score?: Score | null };
 type ExamBasis = { paper_key: string; scale_key: string };
-type PacingEvidence = Partial<ExamBasis> & { score?: Score };
-type PacingEvent = EvidenceEventV1 & { readonly exam_pacing?: PacingEvidence };
-type PacingSlice = Omit<CanonicalEvidenceSliceV1, 'events'> & { readonly events: readonly PacingEvent[] };
+type PacingEvent = PacingSlice['events'][number];
+type PacingEvidence = NonNullable<PacingEvent['exam_pacing']>;
 const fields = ['effective_duration_ms', 'score'] as const;
 const basis = ['paper_key', 'scale_key'] as const;
 const canonicalFields = [...fields, ...basis] as const;

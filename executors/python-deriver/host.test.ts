@@ -73,9 +73,11 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
     expect(await host.derive('plan/exam-pacing@1', sample)).toMatchObject({kind: 'ok', outcome: {kind: 'value',
       value: {attempts: [], strategy: {kind: 'unknown'}}}});
     const exam = (ref: string, duration: number, earned: number) => ({...sample.events[0], ref,
-      effective_duration_ms: duration, exam_pacing: {paper_key: 'paper@2', scale_key: 'release@4', score: {earned, maximum: 10}}});
+      concept_ids: [], outcome: 'unknown', help_level: 'unknown', effective_duration_ms: duration, exam_pacing: {paper_key: 'paper@2', scale_key: 'release@4', score: {earned, maximum: 10}}});
     const events = [exam('recent', 2000, 6), exam('prior', 1000, 8), exam('withheld', 9000, 0)];
     const slice = {...sample, events, omissions: [{ref: {id: 'withheld', rev: 1}, reason: 'not available'}]};
+    for (const event of [{...events[0], exam_pacing: undefined}, {...events[0], concept_ids: ['K']}, {...events[0], outcome: 'correct'}])
+      expect(isCanonicalEvidenceSlice({...slice, events: [event]})).toBe(false);
     const pacing = await host.derive('plan/exam-pacing@1', slice);
     expect(pacing).toMatchObject({kind: 'ok', outcome: {kind: 'value', value: {
       attempts: expect.arrayContaining([expect.objectContaining({id: 'recent', paper_key: 'paper@2'})]),

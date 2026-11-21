@@ -26,7 +26,10 @@ def _matches(schema, value):
         name = schema["$ref"].removeprefix("#/$defs/")
         return _matches(DEFINITIONS[name], value)
     if "anyOf" in schema:
-        return any(_matches(branch, value) for branch in schema["anyOf"])
+        if not any(_matches(branch, value) for branch in schema["anyOf"]):
+            return False
+        if "type" not in schema:
+            return True
     if "enum" in schema:
         return value in schema["enum"]
 
@@ -43,7 +46,8 @@ def _matches(schema, value):
             and (schema is not DEFINITIONS["examScore"] or value["earned"] <= value["maximum"])
         )
     if kind == "array":
-        return isinstance(value, list) and all(_matches(schema["items"], item) for item in value)
+        return (isinstance(value, list) and ("maxItems" not in schema or len(value) <= schema["maxItems"])
+                and all(_matches(schema["items"], item) for item in value))
     if kind == "null":
         return value is None
     if kind == "string":

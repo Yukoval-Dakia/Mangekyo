@@ -14,6 +14,7 @@ type Schema = {
   readonly maximum?: number;
   readonly exclusiveMinimum?: number;
   readonly minLength?: number;
+  readonly maxItems?: number;
   readonly pattern?: string;
   readonly format?: string;
 };
@@ -38,7 +39,10 @@ function matches(schema: Schema, value: unknown): boolean {
     const target = definitions[schema.$ref.slice('#/$defs/'.length)];
     return target !== undefined && matches(target, value);
   }
-  if (schema.anyOf) return schema.anyOf.some(branch => matches(branch, value));
+  if (schema.anyOf) {
+    if (!schema.anyOf.some(branch => matches(branch, value))) return false;
+    if (!schema.type) return true;
+  }
   if (schema.enum) return typeof value === 'string' && schema.enum.includes(value);
   switch (schema.type) {
     case 'object': {
@@ -54,7 +58,7 @@ function matches(schema: Schema, value: unknown): boolean {
         }) && (schema !== definitions.examScore || Number(record.earned) <= Number(record.maximum));
     }
     case 'array':
-      return Array.isArray(value) && [...value].every(item => schema.items !== undefined && matches(schema.items, item));
+      return Array.isArray(value) && (schema.maxItems === undefined || value.length <= schema.maxItems) && [...value].every(item => schema.items !== undefined && matches(schema.items, item));
     case 'null':
       return value === null;
     case 'string':
@@ -118,7 +122,15 @@ export type CognitionResult = {
   readonly artifacts?: readonly string[];
 };
 
-export function isCanonicalEvidenceSlice(value: unknown): value is CanonicalEvidenceSliceV1 {
+// Wire compatibility with the shared kernel contract at 966f0bb.
+type ExamPacingEvidence = { readonly paper_key?: string; readonly scale_key?: string;
+  readonly score?: { readonly earned: number; readonly maximum: number } };
+type WireEvent = Omit<EvidenceEventV1, 'help_level' | 'exam_pacing'> & (
+  | { readonly help_level: Exclude<EvidenceEventV1['help_level'], 'unknown'> | 'hint_l1' | 'hint_l2'; readonly exam_pacing?: ExamPacingEvidence }
+  | { readonly help_level: 'unknown'; readonly exam_pacing: ExamPacingEvidence; readonly outcome: 'unknown'; readonly concept_ids: readonly [] }
+);
+export type WireSlice = Omit<CanonicalEvidenceSliceV1, 'events'> & { readonly events: readonly WireEvent[] };
+export function isCanonicalEvidenceSlice(value: unknown): value is WireSlice {
   return matches(wireSchema.$defs.input, value);
 }
 
