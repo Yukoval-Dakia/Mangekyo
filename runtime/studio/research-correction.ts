@@ -55,6 +55,7 @@ async function readCorrection(tx: ReadTransaction, id: FactId) {
     const submitted = await readActivitySubmissionBirth(tx, grant.ref, workbookAttemptType);
     if (!submitted?.unchanged || BigInt(submitted.tick) >= BigInt(birth.tick)) return null;
     const { attempt } = await openWorkbookCorrectionTarget(read, correction);
+    for (const entry of attempt.basis ?? []) erasureBasis.add(entry.id);
     const release = attempt.paper.assessmentRelease?.releaseRef;
     const item = attempt.paper.questions.find(question => question.id === correction.itemId);
     if (release?.id !== correction.paperId || item?.kind !== 'bank') return null;

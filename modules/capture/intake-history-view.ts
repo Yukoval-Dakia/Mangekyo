@@ -307,7 +307,7 @@ async function reopenSource(access: IntakeHistoryAccess, candidate: FactSnapshot
   if (fact.type !== captureSourceType || fact.ref.learner !== access.learner ||
       !purposeAllows(fact, access.purpose)) return null;
   const source = parseValue(() => sourceEnvelope(fact.value));
-  if (!source) return null;
+  if (!source || source.workbookAttachment) return null;
   if (source.kind !== 'notion') return fact;
   const selectionRead = access.selectionRead ?? (access.purpose === 'storage' ? access.read : undefined);
   if (!selectionRead) return null;

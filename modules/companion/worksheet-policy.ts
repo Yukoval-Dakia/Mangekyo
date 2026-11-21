@@ -1,5 +1,10 @@
-import type { FactId, FactSnapshot, ReadContext } from '@mangekyo/kernel';
+import type { FactId, FactRevisionBasis, FactSnapshot, ReadContext } from '@mangekyo/kernel';
 import attemptFact from '@mangekyo/module-activity/facts/workbook-attempt';
+import {
+  matchesWorkbookAttachmentBasis,
+  readWorkbookQuestionAttachments,
+  type WorkbookAttachmentEvidence,
+} from '@mangekyo/module-activity/facts/workbook-attachments';
 import { isWorksheetProfile, type WorkerConsent } from './worker-consent.ts';
 import { readResearchSource, researchOrderType, researchWorksheetType, researchWorksheet,
   readResearchBasis, researchOrder, researchSettings, researchPurpose, ResearchBasisChanged,
@@ -23,14 +28,19 @@ export function reviewDedupKey({ id, revision, accessEpoch }: ReviewRef) {
   return 'review-attempt:' + id + ':' + revision + ':' + accessEpoch;
 }
 
-export function reviewEvidence(data: unknown, questionId: string) {
+export function reviewEvidence(
+  data: unknown,
+  questionId: string,
+  attachments?: readonly WorkbookAttachmentEvidence[],
+) {
   const attempt = workbookAttempt(data);
   const index = attempt.paper.questions.findIndex(question => question.id === questionId);
   const question = attempt.paper.questions[index];
   const feedback = attempt.feedback.find(item => item.questionId === questionId);
   if (!question || question.sourceQuestionRef || feedback?.result !== 'incorrect' || !feedback.expected) throw new ResearchBasisChanged('原卷判题已变更。');
   return { paperId: attempt.paperId, paperTitle: attempt.paper.title, submittedAt: attempt.submittedAt,
-    questionNumber: index + 1, questionId, prompt: question.prompt, feedback: { ...feedback, expected: feedback.expected } };
+    questionNumber: index + 1, questionId, prompt: question.prompt, feedback: { ...feedback, expected: feedback.expected },
+    ...(attachments?.length ? { attachments } : {}) };
 }
 export type ReviewEvidence = ReturnType<typeof reviewEvidence>;
 
@@ -75,7 +85,14 @@ export async function readComparison(access: ReviewAccess, ref: ReviewRef) {
   const source = await access.open(ref.id);
   if (!source || !ref.anchor || !source.purpose.includes('background-research') || source.ref.rev !== ref.revision ||
       source.accessEpoch !== ref.accessEpoch || !await access.independent(source)) return null;
-  return { sourceId:source.ref.id, evidence:reviewEvidence(source.value, ref.anchor) };
+  const attempt = workbookAttempt(source.value);
+  const opened = await readWorkbookQuestionAttachments(access.open, attempt, ref.anchor);
+  const attachments = opened.map(({ originalId, rev, url, mimeType }) => ({ originalId, rev, url, mimeType }));
+  return {
+    sourceId: source.ref.id,
+    attachmentBasis: opened.map(({ basis }) => basis),
+    evidence: reviewEvidence(source.value, ref.anchor, attachments),
+  };
 }
 export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec, settingsId: FactId, quote?: (grant: WorkerConsent) => number) {
   const { id, revision, accessEpoch, anchor } = spec.sourceFactRev;
@@ -97,6 +114,7 @@ export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec,
   if (isRetention && !retention) return null;
   let grant: WorkerConsent | null = null;
   const sourceIds = [source.ref.id];
+  const attachmentBasis: FactRevisionBasis[] = [];
   let comparison: ReviewEvidence | null = null;
   if (model) {
     grant = researchSettings((await read.fact(settingsId, {mode:'following'})).value).workerGrant;
@@ -109,15 +127,23 @@ export async function readEligibleReview(access: ReviewAccess, spec: ReviewSpec,
           ref.revision !== grant.comparisonRevision || ref.accessEpoch !== grant.comparisonAccessEpoch) return null;
       const reopened = await readComparison(access, ref);
       if (!reopened) return null;
-      sourceIds.push(reopened.sourceId);
+      sourceIds.push(reopened.sourceId, ...reopened.attachmentBasis.map(entry => entry.id));
+      attachmentBasis.push(...reopened.attachmentBasis);
       comparison = reopened.evidence;
     } else if (spec.refs.length) return null;
   }
-  if (retention) return { basis, evidence: null, retention: retentionReviewEvidence(retention), grant, comparison, sourceIds };
-  if (source.type !== workbookAttemptType ||
-      workbookAttempt(source.value).feedback.find(item => item.result === 'incorrect')?.questionId !== anchor) return null;
-  if (!await access.material(workbookAttempt(source.value).paper)) return null;
-  return { basis, grant, comparison, sourceIds, retention: null, evidence: reviewEvidence(source.value, anchor) };
+  if (retention) return { basis, evidence: null, retention: retentionReviewEvidence(retention), grant, comparison, sourceIds, attachmentBasis };
+  if (source.type !== workbookAttemptType) return null;
+  const attempt = workbookAttempt(source.value);
+  if (attempt.feedback.find(item => item.result === 'incorrect')?.questionId !== anchor) return null;
+  if (!await access.material(attempt.paper)) return null;
+  const opened = await readWorkbookQuestionAttachments(access.open, attempt, anchor);
+  for (const item of opened) {
+    if (!sourceIds.includes(item.originalId)) sourceIds.push(item.originalId);
+    if (!attachmentBasis.some(entry => entry.id === item.basis.id)) attachmentBasis.push(item.basis);
+  }
+  const attachments = opened.map(({ originalId, rev, url, mimeType }) => ({ originalId, rev, url, mimeType }));
+  return { basis, grant, comparison, sourceIds, attachmentBasis, retention: null, evidence: reviewEvidence(source.value, anchor, attachments) };
 }
 
 
@@ -127,6 +153,10 @@ export async function projectWorksheet(access: ReviewAccess, id: FactId, identif
   if (fact.type !== researchWorksheetType || !fact.purpose.includes(researchPurpose)) return null;
   const result = researchWorksheet(fact.value);
   for (const reference of result.references ?? []) if (!await readComparison(access, reference)) return null;
+  for (const entry of result.attachmentBasis ?? []) {
+    const live = await access.open(entry.id);
+    if (!live || !live.purpose.includes(researchPurpose) || !matchesWorkbookAttachmentBasis(live, entry)) return null;
+  }
   const order = 'todoId' in result ? null : await read.fact(result.orderId, { mode: 'following' });
   if (order && (order.type !== researchOrderType || !order.purpose.includes(researchPurpose))) return null;
   const ref = 'todoId' in result ? result.source : researchOrder(order?.value).source;
@@ -135,8 +165,11 @@ export async function projectWorksheet(access: ReviewAccess, id: FactId, identif
   const retention = source.type === retentionReviewPermissionType && ref.questionId === retentionReviewAnchor
     ? await access.retention(source) : null;
   if (source.type !== workbookAttemptType && !retention) return null;
-  if (!retention && !await access.material(workbookAttempt(source.value).paper)) return null;
-  const evidence = retention ? null : reviewEvidence(source.value, ref.questionId);
+  const attempt = retention ? null : workbookAttempt(source.value);
+  if (attempt && !await access.material(attempt.paper)) return null;
+  const opened = attempt ? await readWorkbookQuestionAttachments(access.open, attempt, ref.questionId) : [];
+  const attachments = opened.map(({ originalId, rev, url, mimeType }) => ({ originalId, rev, url, mimeType }));
+  const evidence = retention ? null : reviewEvidence(source.value, ref.questionId, attachments);
   if (evidence) await openStored(ref.attemptId);
   const href = retention ? `/api/retention/${retention.key}`
     : `/api/papers/${evidence!.paperId}/attempts/${ref.attemptId}/research/${id}/source`;

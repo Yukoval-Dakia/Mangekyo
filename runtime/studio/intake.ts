@@ -230,7 +230,7 @@ function json(response: ServerResponse, status: number, data: unknown) {
   response.end(JSON.stringify(data));
 }
 
-async function readBody(request: IncomingMessage, limit: number) {
+export async function readBody(request: IncomingMessage, limit: number) {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {

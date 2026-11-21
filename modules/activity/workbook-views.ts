@@ -7,6 +7,7 @@ import type { ActivityEvidenceReadScope } from './evidence-read.ts';
 import type { PracticeView } from './practice-values.ts';
 import { withWorkbookWorkspaceBasis } from './workbook-context-read.ts';
 import { openWorkbookCorrectionSource, sameWorkbookCorrectionAttempt, workbookCorrectionItems, type readWorkbookCorrections } from './workbook-correction.ts';
+import { projectWorkbookAttemptAttachments } from './workbook-attachments.ts';
 import {
   workbookAttempt, workbookAttemptType, WorkbookSourceMismatch,
   type WorkbookAttempt, type WorkbookDetail, type WorkbookPaper, type WorkbookQuestionView, type WorkbookRubricAssessmentView,
@@ -108,6 +109,7 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
     if (!frozen) continue;
     const formal = await reads.formalAssessment(attempt.paper, {id:attemptId,rev});
     const view = workbookAttemptView(attemptId, attempt, reads.assessments.get(attemptId) ?? [], formal?.result);
+    const questionAttachments = await projectWorkbookAttemptAttachments(reads.read, attempt, reads.unavailable);
     const eligible = frozen.paperRev === undefined ? [] : workbookCorrectionItems(attempt, view.assessments, formal?.result);
     const correctionItemIds: string[] = [];
     for (const question of attempt.paper.questions) {
@@ -121,7 +123,8 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
     }
     const correctedItemIds = correctionItemIds.filter(itemId => reads.corrections.get(attemptId)?.some(
       saved => saved.itemId === itemId && sameWorkbookCorrectionAttempt(saved, fact)));
-    attempts.push({ ...view, rev, ...frozen, ...(correctionItemIds.length ? { correctionItemIds } : {}),
+    attempts.push({ ...view, ...(questionAttachments ? { questionAttachments } : {}), rev, ...frozen,
+      ...(correctionItemIds.length ? { correctionItemIds } : {}),
       ...(correctedItemIds.length ? { correctedItemIds } : {}),
       ...(formal ? {formalAssessment:formal.view} : {}) });
   }

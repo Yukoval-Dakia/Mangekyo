@@ -40,6 +40,11 @@ export type CaptureBlockBody = Location & (
 );
 export type Block = AssetBlock<CaptureBlockBody>;
 export type Asset = KernelAsset<ContentUnit & { readonly kind: 'capture' }, Block>;
+export type WorkbookAttachmentSource = {
+  readonly paperId: FactId;
+  readonly itemId?: string;
+  readonly scope: 'inherit' | 'once';
+};
 export type SourceEnvelope = {
   readonly kind: SourceKind;
   readonly externalId?: string;
@@ -58,7 +63,27 @@ export type SourceEnvelope = {
   readonly urlReadConfirmed?: true;
   readonly paperReturn?: ReturnType<typeof paperAssignment>;
   readonly paperAnswerEdits?: readonly { readonly runId: FactId; readonly block: Block }[];
+  readonly workbookAttachment?: WorkbookAttachmentSource;
 };
+
+const workbookAttachmentMediaTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const workbookItemPattern = /^[A-Za-z0-9_-]{1,40}$/;
+
+function parseWorkbookAttachment(input: unknown, kind: SourceKind, originals: readonly Original[]): WorkbookAttachmentSource {
+  const { paperId, itemId, scope, ...extra } = object(input);
+  if (Object.keys(extra).length > 0 || (scope !== 'inherit' && scope !== 'once'))
+    throw new Error('单题照片附件元数据无效。');
+  if (kind !== 'photo' || originals.length !== 1 || !workbookAttachmentMediaTypes.has(originals[0]!.mediaType))
+    throw new Error('单题照片附件必须是单张 PNG、JPEG 或 WebP 图片。');
+  const parsedItemId = itemId === undefined ? undefined : text(itemId, '题目标识', 40);
+  if (parsedItemId !== undefined && !workbookItemPattern.test(parsedItemId))
+    throw new Error('单题照片题目标识无效。');
+  return {
+    paperId: factId(text(paperId, '试卷标识', 26)),
+    ...(parsedItemId === undefined ? {} : { itemId: parsedItemId }),
+    scope,
+  };
+}
 
 function timestamp(value: unknown): string {
   const iso = text(value, '原件时间', 24);
@@ -163,6 +188,8 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
   const paperReturn = row.paperReturn === undefined ? undefined : paperAssignment(row.paperReturn);
   if (paperReturn && (kind !== 'paper-return' || !originals[paperReturn.original])) throw new Error('回收归属缺少原图。');
   const paperAnswerEdits = row.paperAnswerEdits === undefined ? undefined : parsePaperAnswerEdits(row.paperAnswerEdits, kind, originals);
+  const workbookAttachment = row.workbookAttachment === undefined
+    ? undefined : parseWorkbookAttachment(row.workbookAttachment, kind, originals);
   const externalId = row.externalId === undefined ? undefined : text(row.externalId, '外部来源标识', 200);
   const sourceSelectionId = row.sourceSelectionId === undefined ? undefined : text(row.sourceSelectionId, '选源标识', 200);
   const sourceSelectionEpoch = row.sourceSelectionEpoch === undefined ? undefined : notionEpoch(row.sourceSelectionEpoch);
@@ -200,6 +227,7 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
     ...(url === undefined ? {} : { url }),
     ...(paperReturn === undefined ? {} : { paperReturn }),
     ...(paperAnswerEdits === undefined ? {} : { paperAnswerEdits }),
+    ...(workbookAttachment === undefined ? {} : { workbookAttachment }),
     ...(kind === 'voice' ? { transcriptConfirmed: true } : {}),
     ...(kind === 'voice' && row.retainAudio === true ? { retainAudio: true } : {}),
     ...(kind === 'url' && row.urlReadConfirmed === true ? { urlReadConfirmed: true } : {}),
@@ -227,6 +255,9 @@ export function createSourceWrite(id: string, envelope: unknown, purpose: readon
   if (!purpose.includes('storage') || purpose.includes('all')) throw new Error('原件用途须显式指定。');
   if (data.kind === 'url' && data.urlReadConfirmed && !purpose.includes('learning') && !purpose.includes('teaching'))
     throw new Error('仅保存的链接不能抓取正文。');
+  if (data.workbookAttachment?.scope === 'once' &&
+      purpose.some(use => use === 'background-research' || use === 'teaching' || use === 'learning'))
+    throw new Error('仅本次使用的单题照片不能授予后台教研或教学用途。');
   if (data.unit.blocks.some(({ body: block }) => block.status === 'unknown' ? block.clarification === 'asked' : block.sticky))
     throw new Error('创建原件不能声明已澄清或手改。');
   return { kind: 'create' as const, id: factId(id), factType: captureSourceType, data, purpose };

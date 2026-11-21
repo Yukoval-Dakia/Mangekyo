@@ -235,7 +235,7 @@ export function projectIntakeFacts(
 export function extractPaperReturnOriginal(source: { readonly type: string; readonly value: unknown }, id: FactId) {
   if (source.type !== captureSourceType) return null;
   const envelope = sourceEnvelope(source.value);
-  return envelope.kind === 'paper-return' && envelope.originals[0]?.blobRef === id ? envelope.originals[0] : null;
+  return (envelope.kind === 'paper-return' || envelope.workbookAttachment) && envelope.originals.length === 1 && envelope.originals[0]?.blobRef === id ? envelope.originals[0] : null;
 }
 
 export function isExpectedCloudCompletion(

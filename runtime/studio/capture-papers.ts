@@ -152,7 +152,7 @@ async function listPapers(tx: ReadTransaction) {
       const captured = fact.type === captureSourceType ? await ifAvailable(async () => sourceEnvelope(fact.value)) : undefined;
       if (captured?.kind === 'paper-return') {
         returns.push(paperReturnView(id, fact.ref.rev, captured));
-      } else {
+      } else if (!captured?.workbookAttachment) {
         const kind = captured?.kind === 'photo' || captured?.kind === 'pdf' ? captured.kind : printKinds.get(fact.type);
         if (kind) {
           const candidate = await ifAvailable(() => printCandidate(tx, read, fact, kind));

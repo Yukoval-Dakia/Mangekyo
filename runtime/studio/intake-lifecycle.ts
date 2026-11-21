@@ -26,7 +26,7 @@ export function openIntakeLifecycle(db: Db, removeObject: (id: FactId) => Promis
       const material = await read.fact(root, {mode:'following'});
       if (material.type === captureSourceType) {
         const source = sourceEnvelope(material.value);
-        if (source.kind !== 'paper-return' || source.originals.length !== 1 || source.originals[0]?.blobRef !== root)
+        if ((source.kind !== 'paper-return' && !source.workbookAttachment) || source.originals.length !== 1 || source.originals[0]?.blobRef !== root)
           throw new RequestError(404, '找不到这份交入原件。');
         if (material.ref.rev !== rev) throw new LifecycleError(409, '原件已有新版本。请重新查看后确认。');
         return {ids:[root],commandTypes:[captureSourceCommand]};

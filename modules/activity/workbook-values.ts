@@ -1,6 +1,14 @@
-import { factId, isJson, type FactId, type Json, type JsonObject, type Revision } from '@mangekyo/kernel';
+import { factId, isJson, type FactId, type FactRevisionBasis, type Json, type JsonObject, type Revision } from '@mangekyo/kernel';
 import { parseTextbookBasis, type TextbookBasis } from '@mangekyo/module-content/facts/asset-contract';
 import { assessmentRelease, type AssessmentRelease } from './assessment-values.ts';
+import {
+  checkWorkbookAttachmentsBasis,
+  checkWorkbookQuestionAttachments,
+  parseWorkbookAttemptBasis,
+  parseWorkbookQuestionAttachments,
+  type WorkbookQuestionAttachmentViews,
+  type WorkbookQuestionAttachments,
+} from './workbook-attachments.ts';
 
 const pinnedPromptLimit = 8000;
 const pinnedAnswerLimit = 4000;
@@ -185,6 +193,8 @@ export type WorkbookAttempt = {
   gradingVersion: string;
   paper: WorkbookPaper;
   answers: Record<string, WorkbookAnswer>;
+  questionAttachments?: WorkbookQuestionAttachments;
+  basis?: readonly FactRevisionBasis[];
   feedback: WorkbookAttemptFeedback[];
   effectiveDurationMs?: number;
   assessmentConsent?: typeof workbookAssessmentConsent;
@@ -195,6 +205,7 @@ export type WorkbookAttemptRequest = {
   requestId: string;
   submittedAt: string;
   answers: Record<string, string | readonly Json[] | null>;
+  questionAttachments?: WorkbookQuestionAttachments;
   effectiveDurationMs?: number;
   assessmentConsent?: typeof workbookAssessmentConsent;
 } & WorkbookPacingFields;
@@ -258,6 +269,7 @@ export type WorkbookAttemptView = {
   submittedAt: string;
   gradingVersion: string;
   answers: Record<string, WorkbookAnswer>;
+  questionAttachments?: WorkbookQuestionAttachmentViews;
   effectiveDurationMs?: number;
   feedback: WorkbookAttemptFeedback[];
   assessments: WorkbookRubricAssessmentView[];
@@ -517,11 +529,13 @@ export function workbookAttemptRequest(input: unknown, mounted?: { paperId: Fact
     }
     given[key] = value;
   }
+  const questionAttachments = parseWorkbookQuestionAttachments(row.questionAttachments);
   return {
     paperId: mounted?.paperId ?? factId(String(row.paperId)),
     requestId: workbookRequestId(row.requestId),
     submittedAt: timestamp(mounted?.submittedAt ?? row.submittedAt, '提交时间'),
     answers: given,
+    ...(questionAttachments === undefined ? {} : { questionAttachments }),
     ...workbookPacingFields(row),
     ...assessmentConsent(row.assessmentConsent),
   };
@@ -638,16 +652,19 @@ export function sameWorkbookJson(left: unknown, right: unknown): boolean {
 export function gradeWorkbook(
   paper: WorkbookPaper,
   input: unknown,
+  questionAttachments?: WorkbookQuestionAttachments,
 ): { answers: Record<string, WorkbookAnswer>; feedback: WorkbookAttemptFeedback[] } {
   const row = record(input);
   const byId = new Map(paper.questions.map((question) => [question.id, question]));
   for (const key of Object.keys(row)) {
     if (!byId.has(key)) throw new Error('作答与这份试卷不匹配。');
   }
+  checkWorkbookQuestionAttachments(new Set(byId.keys()), questionAttachments);
   const answers: Record<string, WorkbookAnswer> = {};
   const feedback: WorkbookAttemptFeedback[] = [];
   paper.questions.forEach((question, index) => {
     const supplied = row[question.id] ?? null;
+    const hasAttachment = (questionAttachments?.[question.id]?.length ?? 0) > 0;
     const item = question.kind === 'bank' ? paper.assessmentRelease?.items.find(item => item.itemId === question.id) : undefined;
     const slot = item?.slots.length === 1 ? item.slots[0] : undefined;
     const plainText = slot?.fields.length === 1 && slot.fields[0]?.kind === 'text' && slot.fields[0].path === '';
@@ -662,7 +679,7 @@ export function gradeWorkbook(
         answer = parsed === 0 ? 0 : parsed;
       }
       const result = answer === null
-        ? 'unanswered'
+        ? (hasAttachment ? 'pending' : 'unanswered')
         : Math.abs(answer - question.answer) <= question.tolerance
           ? 'correct'
           : 'incorrect';
@@ -686,7 +703,7 @@ export function gradeWorkbook(
       answers[question.id] = answer;
       feedback.push({
         questionId: question.id,
-        result: answer === null ? 'unanswered' : 'pending',
+        result: answer === null && !hasAttachment ? 'unanswered' : 'pending',
         answer,
         expected: question.kind === 'bank' ? null : {
           kind: 'rubric',
@@ -699,7 +716,7 @@ export function gradeWorkbook(
     }
     const answer = trimmed;
     const result = answer === null
-      ? 'unanswered'
+      ? (hasAttachment ? (question.selfCheck ? 'self-check' : 'pending') : 'unanswered')
       : question.selfCheck
         ? 'self-check'
         : question.answers.some((expected) => normalizeExact(expected) === normalizeExact(answer))
@@ -807,6 +824,10 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     question.id,
     parsedAnswer(question, storedAnswers[question.id] ?? null, index),
   ])) as Record<string, WorkbookAnswer>;
+  const questionAttachments = parseWorkbookQuestionAttachments(row.questionAttachments);
+  const basis = parseWorkbookAttemptBasis(row.basis);
+  checkWorkbookQuestionAttachments(storedKeys, questionAttachments);
+  checkWorkbookAttachmentsBasis(questionAttachments, basis);
   if (!Array.isArray(row.feedback) || row.feedback.length !== pap.questions.length) {
     throw new Error('归档反馈与题目不匹配。');
   }
@@ -829,26 +850,28 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
       throw new Error('归档反馈结果无效。');
     }
     const answer = parsedAnswer(question, item.answer, index);
+    const hasAttachment = (questionAttachments?.[question.id]?.length ?? 0) > 0;
+    const answered = answer !== null || hasAttachment;
     if (!sameWorkbookJson(answer, answers[question.id])) {
       throw new Error('归档反馈与作答不匹配。');
     }
-    if (answer === null && result !== 'unanswered') {
+    if (!answered && result !== 'unanswered') {
       throw new Error('归档反馈与作答不匹配。');
     }
-    if (answer !== null && result === 'unanswered') {
+    if (answered && result === 'unanswered') {
       throw new Error('归档反馈与作答不匹配。');
     }
-    if (question.kind === 'exact' && question.selfCheck && answer !== null && result !== 'self-check') {
+    if (question.kind === 'exact' && question.selfCheck && answered && result !== 'self-check') {
       throw new Error('归档自评题不应被系统判分。');
     }
-    if ((question.kind === 'rubric' || question.kind === 'bank') && result !== (answer === null ? 'unanswered' : 'pending')) {
+    if ((question.kind === 'rubric' || question.kind === 'bank') && result !== (answered ? 'pending' : 'unanswered')) {
       throw new Error('归档评分标准题应保持待评估。');
     }
     if (
       (question.kind === 'numeric' ||
         (question.kind === 'exact' && !question.selfCheck) ||
         (question.kind === 'exact' && question.selfCheck && result === 'partial')) &&
-      (result === 'self-check' || result === 'partial' || result === 'pending')
+      (result === 'self-check' || result === 'partial' || (result === 'pending' && !(answer === null && hasAttachment)))
     ) {
       throw new Error('归档反馈结果无效。');
     }
@@ -876,6 +899,8 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     gradingVersion: row.gradingVersion,
     paper: pap,
     answers,
+    ...(questionAttachments === undefined ? {} : { questionAttachments }),
+    ...(basis === undefined ? {} : { basis }),
     feedback,
     ...pacing,
     ...assessmentConsent(row.assessmentConsent),

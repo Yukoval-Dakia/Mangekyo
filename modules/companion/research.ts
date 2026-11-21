@@ -1,4 +1,4 @@
-import { derivationId, factId, type ReadContext, type Revision } from '@mangekyo/kernel';
+import { derivationId, factId, parseFactRevisionBasis, type FactRevisionBasis, type ReadContext, type Revision } from '@mangekyo/kernel';
 
 import { isWorksheetProfile, workerConsent, researchScoutBudget } from './worker-consent.ts';
 
@@ -105,12 +105,33 @@ export function worksheetBilling(value: unknown) {
   })};
 }
 
+export function parseWorksheetAttachmentBasis(value: unknown): readonly FactRevisionBasis[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 64) throw new Error('复习单附件依据无效。');
+  const seen = new Set<string>();
+  const entries: FactRevisionBasis[] = [];
+  for (const item of value) {
+    const parsed = parseFactRevisionBasis(item);
+    if (seen.has(parsed.id)) throw new Error('复习单附件依据重复。');
+    seen.add(parsed.id);
+    entries.push(parsed);
+  }
+  return entries.length ? entries : undefined;
+}
+
 export function researchWorksheet(value: unknown) {
-  const { orderId, todoId, source, draft, method, deliveredAt, digest } = object(value);
+  const { orderId, todoId, source, draft, method, deliveredAt, digest, attachmentBasis } = object(value);
   if ((method !== 'deterministic-v1' && method !== 'local-agent' && !isWorksheetProfile(method)) ||
       typeof deliveredAt !== 'string' || !Number.isFinite(Date.parse(deliveredAt)))
     throw new Error('复习单交付记录无效。');
-  const body = { ...worksheetBilling(value), draft: worksheetDraft(draft), method, deliveredAt };
+  const parsedBasis = parseWorksheetAttachmentBasis(attachmentBasis);
+  const body = {
+    ...worksheetBilling(value),
+    draft: worksheetDraft(draft),
+    method,
+    deliveredAt,
+    ...(parsedBasis ? { attachmentBasis: parsedBasis } : {}),
+  };
   return todoId === undefined
     ? { ...body, orderId: factId(String(orderId)) }
     : { ...body, todoId: factId(String(todoId)), source: researchSource(source), digest: text(digest, 160) };

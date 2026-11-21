@@ -7,6 +7,7 @@ import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { cancelWork, failWork, readReadyWork, type WorkRef, type WorkRequest } from '../../kernel/src/work/index.ts';
 import { completeTodo, enqueueWork, readTodo, readLatestTodoUnavailable, rememberTodoUnavailable } from '../../kernel/src/work/todos.ts';
+import type { FactRevisionBasis } from '../../kernel/src/declarations/fact-basis.ts';
 import { researchPurpose, ResearchBasisChanged, publishWorksheet, worksheetDraft } from '../../modules/companion/research.ts';
 import { readWorksheet, reviewAccess, worksheetPublication, whenAvailable } from '../studio/research-sources.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -32,6 +33,11 @@ export async function worksheetView(tx: ReadTransaction, source: FactSnapshot | 
   return {worksheet, ...(reason === 'model_unavailable' && {failure:reason})};
 }
 
+function sameAttachmentBasis(left: readonly FactRevisionBasis[], right: readonly FactRevisionBasis[]): boolean {
+  return left.length === right.length && left.every((entry, index) =>
+    entry.id === right[index]?.id && entry.rev === right[index]?.rev && entry.epoch === right[index]?.epoch);
+}
+
 export async function executeWorksheet(db: Db, companion: LoadedModule, ref: WorkRef, todoId: FactId, settingsId: FactId,
   wake: WorkRequest, tariff: WorkerTariff | undefined, signal: AbortSignal) {
   const scope = {learner:learnerId(ref.learner)};
@@ -47,7 +53,7 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
     const { attemptId, revision, accessEpoch } = basis.source;
     const publication = await worksheetPublication(tx, attemptId, revision, accessEpoch);
     if (!await bindWorkPayload(tx, ref, eligible.sourceIds, publication)) return null;
-    return { todo, publication, basis, evidence, retention, grant: eligible.grant, comparison:eligible.comparison } as const;
+    return { todo, publication, basis, evidence, retention, grant: eligible.grant, comparison: eligible.comparison, attachmentBasis: eligible.attachmentBasis } as const;
   });
   if (!prepared) {
     await cancelWork(db, ref);
@@ -57,8 +63,9 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
   const { factId: id, commandId } = prepared.publication;
   const check = async (tx: ReadTransaction) => {
     const current = await readTodo(tx, todoId);
+    const live = current && await eligibleBasis(tx, current.spec, settingsId, tariff);
     if (current?.revision !== prepared.todo.revision || !await readReadyWork(tx, ref) ||
-        !await eligibleBasis(tx, current.spec, settingsId, tariff)) throw new ResearchBasisChanged('教研授权失效。');
+        !live || !sameAttachmentBasis(live.attachmentBasis, prepared.attachmentBasis)) throw new ResearchBasisChanged('教研授权失效。');
   };
   const { grant, todo, evidence, retention, comparison } = prepared;
   const unavailable = async () => {
@@ -80,8 +87,9 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
     modules: [companion],
     hooks: { async onFactsChanged(tx, tick) {
       const current = await readTodo(tx, todoId);
+      const live = current && await eligibleBasis(tx, current.spec, settingsId, tariff);
       if (current?.revision !== prepared.todo.revision || !(await readReadyWork(tx, ref)) ||
-          !(await eligibleBasis(tx, current.spec, settingsId, tariff)) || !await completeTodo(tx, tick, ref, current, id))
+          !live || !sameAttachmentBasis(live.attachmentBasis, prepared.attachmentBasis) || !await completeTodo(tx, tick, ref, current, id))
         throw new ResearchBasisChanged('工作单已失效。');
       await enqueueWork(tx, tick, wake);
     } },
@@ -90,6 +98,7 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
     ...scope, actor: 'companion', purpose: researchPurpose, type: publishWorksheet,
     id: commandId,
     input: { id, todoId, basis: prepared.basis, draft,
+      ...(prepared.attachmentBasis.length ? { attachmentBasis: prepared.attachmentBasis } : {}),
       actualUsdMicros:runner.actualUsdMicros(), references:todo.spec.refs.map(({id, revision, accessEpoch, anchor}) => ({id,revision,accessEpoch,anchor:anchor!})),
       method:profile, questionNumber:evidence?.questionNumber ?? 1 },
   }));

@@ -119,6 +119,7 @@ async function openWeb() {
   const plan = await loadModuleDirectory(fileURLToPath(new URL('../../modules/plan', import.meta.url)));
   const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
+    capture,
     assessment: workbookAssessment,
     context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
     onResearchFactsChanged: research.workbookChanged,

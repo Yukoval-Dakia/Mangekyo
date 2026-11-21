@@ -24,7 +24,8 @@ import type { openRelationReview } from './workspace-relation.ts';
 import { studioLearner } from './identity.ts';
 import type { openLibrary } from './library.ts';
 import type { openPractice } from './practice.ts';
-import { handleIntakeRequest, type openIntake } from './intake.ts';
+import { handleIntakeRequest, readBody, type openIntake } from './intake.ts';
+import { parseWorkbookAttachmentMultipart, workbookAttachmentErrorStatus, workbookAttachmentFileLimit } from '../../modules/activity/workbook-attachments.ts';
 import type { openCapturePapers } from './capture-papers.ts';
 import type { openWorkbook } from './workbook.ts';
 import { openTakeaway } from './takeaway.ts';
@@ -333,10 +334,18 @@ export function serve(
       const takeawayFeedback = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/takeaways\/([A-Za-z0-9_.-]{1,128})$/.exec(path);
       if (takeawayFeedback?.[1] && takeawayFeedback[2] && method === 'GET')
         return json(res, 200, await student.takeaways.read(takeawayFeedback[1]!, takeawayFeedback[2]!, takeawayFeedback[3]!));
-      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print|presentation|reading-context))?$/.exec(path);
+      const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|attachments|print|presentation|reading-context))?$/.exec(path);
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));
       if (paper?.[1] && method === 'POST' && paper[2] === 'attempts') return await offlineSubmission(200,input => student.workbook.submit(paper[1]!,input));
+      if (paper?.[1] && method === 'POST' && paper[2] === 'attachments') {
+        const rawWatermark = typeof req.headers['x-deletion-watermark'] === 'string' ? req.headers['x-deletion-watermark'] : undefined;
+        const upload = await parseWorkbookAttachmentMultipart(await readBody(req, workbookAttachmentFileLimit + 256 * 1024), req.headers['content-type'], rawWatermark)
+          .catch(error => { const status = workbookAttachmentErrorStatus(error); if (status) throw new RequestError(status, (error as Error).message); throw error; });
+        const { receipt, watermark } = await student.workbook.uploadAttachment(paper[1], { ...upload, bytes: Buffer.from(upload.bytes) });
+        res.setHeader('X-Deletion-Watermark', watermark);
+        return json(res, 201, receipt);
+      }
       if (paper?.[1] && paper[2] === 'reading-context' && (method === 'GET' || method === 'POST')) {
         const controller = new AbortController();
         res.once('close',() => controller.abort());

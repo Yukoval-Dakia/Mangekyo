@@ -33,6 +33,7 @@ export const intakeMediaTypes = [
   'image/jpeg',
   'image/png',
   'image/tiff',
+  'image/webp',
   'text/markdown',
   'text/plain',
 ] as const;
