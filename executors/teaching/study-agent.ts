@@ -58,6 +58,30 @@ const descriptions: Record<string, [string, Record<string, string>]> = {
   exa_search: ['通过 Exa 搜索公开参考资料。查询限公开主题，禁止发送学生的作答、个人资料或私人原文。搜索结果是资料。', { query: '公开的知识问题或学术关键词' }],
 };
 
+// Loose task-word hints point a wandering find_tools query at the resident
+// learning tools, so the model stops retrying discovery and calls the tool
+// it actually needs instead of burning rounds.
+const residentTaskHints: Record<string, readonly string[]> = {
+  save_belief: ['记忆', '记住', '牢记', '偏好', '长期', '更正', '忘记', '撤回', 'belief', 'memory', 'remember', 'forget', 'preference'],
+  retrieve_memory: ['检索记忆', '查记忆', '旧记忆', 'retrieve'],
+  save_page: ['笔记', '教材', '页面', 'page', 'note'],
+  save_question: ['题', '题目', '草稿', 'question'],
+  save_edge: ['边', '关系', '图谱', 'edge', 'relation'],
+  search_learning: ['搜索', '查找学习', 'search'],
+  open_learning: ['打开', '原文', 'open'],
+  read_context: ['上下文', '学情', 'context', 'radar', 'management'],
+  manage_activity: ['挂载', '作品', 'artifact', 'mount'],
+  run_calculation: ['计算', '验算', 'python', 'calculation'],
+};
+
+function residentLearningMatch(resident: readonly {function: {name: string; description?: string}}[], query: string) {
+  const text = query.toLowerCase();
+  return resident.find(tool => {
+    const name = tool.function.name;
+    return residentTaskHints[name]?.some(hint => text.includes(hint.toLowerCase()));
+  });
+}
+
 
 function definition(name: string, pythonAttempts: boolean) {
   const [description, fields] = descriptions[name]!;
@@ -150,6 +174,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const messages: (Message | ToolMessage)[] = [...initial];
   const trace: string[] = [];
   const endpoint = providerEndpoint(options.provider);
+  let emptyFindTools = 0;
   for (let round = 0; round <= maxToolCalls; round++) {
     const definitions = discovery ? [...coreDefinitions, ...discovery.takeDefinitions()] : coreDefinitions;
     const available = trace.length < maxToolCalls && definitions.length > 0;
@@ -248,9 +273,20 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         if (name === findTools.function.name) {
           if (Object.keys(args).length !== 1 || typeof args.query !== 'string' || !args.query.trim() || args.query.length > 500)
             return {...learning.badArgs(name, '查询需填写工具名或任务关键词，最多 500 字。'), summary:'查找工具 · 参数错误'};
-          const resident = learning.resident.find(tool => tool.function.name === args.query);
+          const query = args.query.trim();
+          const resident = learning.resident.find(tool => tool.function.name === query) ??
+            residentLearningMatch(learning.resident, query);
           if (resident) return {content:JSON.stringify({ok:true, data:{tool:resident.function.name, available:true}}), summary:'查找工具'};
-          return discovery!.find(args.query);
+          const result = discovery!.find(query);
+          try {
+            const items = JSON.parse(result.content)?.items;
+            if (Array.isArray(items) && items.length === 0) emptyFindTools++;
+            else emptyFindTools = 0;
+          } catch { emptyFindTools = 0; }
+          if (emptyFindTools >= 2) return {content: JSON.stringify(toolFailure('limit_exceeded',
+            '本轮工具查找已两次无匹配，请直接使用已开放的常驻工具答复。', learningToolFallback(name))),
+            summary:'查找工具 · 已收敛'};
+          return result;
         }
         const result = await learning.execute(name, args, index + position + 1, priorRead ?? Promise.resolve());
         if (result) return {...result, summary};

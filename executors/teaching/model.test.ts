@@ -46,9 +46,21 @@ it('streams only public companion content before the provider completes', async 
   const init = requests.mock.calls[0]?.[1];
   expect(bodyOf(init)).toMatchObject({stream: true, model, reasoning_effort: 'high', messages: [
     {role: 'system', content: expect.stringContaining('学习同伴')},
+    {role: 'system', content: expect.stringContaining('未挂载任何长期记忆或教材写入工具')},
     {role: 'user', content: expect.stringContaining('公开题面。')}, {role: 'user', content: '昨天的问题'},
     {role: 'user', content: '为什么？'},
   ]});
+});
+
+it('forbids claiming memory writes when no write tools are mounted', async () => {
+  const requests = watchFetch().mockImplementation(async (_url, init) => {
+    const system = bodyOf(init).messages.filter((m: {role: string}) => m.role === 'system').map((m: {content: string}) => m.content).join('\n');
+    expect(system).toContain('未挂载任何长期记忆或教材写入工具');
+    expect(system).toContain('绝不能声称');
+    return Response.json({model: providerModel, choices: [{message: {content: '好的。'}}]});
+  });
+  await runCompanionTurn('请记住我偏好先听直觉。', [], undefined, {...deps});
+  expect(requests).toHaveBeenCalledTimes(1);
 });
 
 it.each([

@@ -24,12 +24,22 @@ it('round-trips flat scratch files and replaces content within quota', async () 
   expect(await tools.execute('read_file', {name: 'missing.txt'})).toMatchObject({ok:false, code:'not_found', field:'name'});
 });
 
+it('accepts Unicode scratch names while hiding any host path detail', async () => {
+  const tools = createStudyTools();
+  for (const name of ['抛物线标准方程-焦准距p与p2辨析笔记.md', 'note (draft) final.txt', 'résumé étude.txt', 'a b.md']) {
+    expect(await tools.execute('write_file', {name, content: '要点'})).toBe('wrote ' + name + ' (6 bytes)');
+    expect(await tools.execute('read_file', {name})).toBe('要点');
+  }
+  const seen = JSON.stringify(await tools.execute('write_file', {name: '../evil', content: 'x'}));
+  expect(seen).not.toMatch(/\/tmp|var\/folders|file:\/\/|private\//i);
+});
+
 it('rejects paths, non-text content, oversized files and quota overflow', async () => {
   const tools = createStudyTools();
   const invalid = async (name: string, content?: unknown) => expect(await tools.execute(
     content === undefined ? 'read_file' : 'write_file', content === undefined ? {name} : {name, content},
   )).toMatchObject({ok:false, code:'invalid_args'});
-  for (const name of ['../x', 'a/b', '.', '..', '.hidden', 'a b', 'x'.repeat(65)]) {
+  for (const name of ['../x', 'a/b', 'a\\b', '.', '..', '.hidden', 'x\ty', 'x\ny', 'x'.repeat(121)]) {
     await invalid(name); await invalid(name, 'x');
   }
   await invalid('a.txt', 1); await invalid('a.txt', 'x\0');

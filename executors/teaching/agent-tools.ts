@@ -5,7 +5,7 @@ import type {PythonRead} from './python-sdk.ts';
 
 const MAX_CODE_CHARS = 20_000;
 const MAX_PYTHON_INPUT_BYTES = 256 * 1024;
-const MAX_FILENAME_CHARS = 64;
+const MAX_FILENAME_CHARS = 120;
 const MAX_FILES = 32;
 const MAX_FILE_BYTES = 16 * 1024;
 const MAX_WORKSPACE_BYTES = 64 * 1024;
@@ -22,7 +22,22 @@ const SEARCH_TIMEOUT_MS = 8_000;
 const EXA_ENDPOINT = 'https://api.exa.ai/search';
 
 const baseNames = ['python', 'read_file', 'write_file'] as const;
-const filenamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// A scratch file name is a logical label, never a path. Unicode letters,
+// marks, numbers and common safe punctuation (including Chinese text, spaces
+// and full-width parentheses) are allowed; separators, control characters,
+// traversal and path-like edges stay forbidden. The Python container rewrites
+// files under a fixed workdir by basename, so a wider alphabet cannot escape.
+const unsafeFilenameCharacter = /[\\/\u0000-\u001f\u007f-\u009f\ufffd-\uffff]/u;
+const unsafeFilenameEdge = /^[\s.]+|[\s.]+$/u;
+
+function validFilename(value: unknown): value is string {
+  return typeof value === 'string' && value.isWellFormed() &&
+    value.length > 0 && value.length <= MAX_FILENAME_CHARS &&
+    Buffer.byteLength(value) <= 255 &&
+    !unsafeFilenameCharacter.test(value) &&
+    !unsafeFilenameEdge.test(value) &&
+    value !== '.' && value !== '..';
+}
 
 export {pythonAttemptsLimit} from './python-attempt-selection.ts';
 export type PythonAttemptRow = {
@@ -236,10 +251,6 @@ function fail(code: ToolErrorCode, message: string, field?: string) {
 function record(value: unknown): Record<string, unknown> | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return;
   return value as Record<string, unknown>;
-}
-
-function validFilename(value: unknown): value is string {
-  return typeof value === 'string' && filenamePattern.test(value);
 }
 
 function validText(value: unknown): value is string {
@@ -507,14 +518,14 @@ export function createStudyTools(options: { exaApiKey?: string; allowSearch?: bo
 
   async function readFile(args: unknown): Promise<string | ToolError> {
     const value = record(args);
-    if (!value || !validFilename(value.name)) return fail('invalid_args','请输入不含目录的文件名。','name');
+    if (!value || !validFilename(value.name)) return fail('invalid_args','请输入一个不含路径或控制字符的文件名（可含中文、字母、数字、空格和常见符号，120 字以内）。','name');
     const content = workspace.get(value.name);
     return content === undefined ? fail('not_found',`未找到文件 ${value.name}。`,'name') : content;
   }
 
   async function writeFile(args: unknown): Promise<string | ToolError> {
     const value = record(args);
-    if (!value || !validFilename(value.name)) return fail('invalid_args','请输入不含目录的文件名。','name');
+    if (!value || !validFilename(value.name)) return fail('invalid_args','请输入一个不含路径或控制字符的文件名（可含中文、字母、数字、空格和常见符号，120 字以内）。','name');
     if (!validText(value.content)) return fail('invalid_args','文件内容须为文本。','content');
     const bytes = Buffer.byteLength(value.content);
     if (bytes > MAX_FILE_BYTES) return fail('budget_or_limit',`单个文件限 ${MAX_FILE_BYTES} 字节，请缩短文本。`,'content');
