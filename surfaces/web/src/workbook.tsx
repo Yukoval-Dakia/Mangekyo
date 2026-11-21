@@ -19,6 +19,8 @@ import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
 import { WorkbookCorrection } from './workbook-correction';
+import {clearWorkbookTiming, type ItemPacing} from './workbook-pacing';
+import {confirmsPaperSubmission, forgetSubmission, freezeSubmission, readFrozenSubmission} from './workbook-submission';
 import { observePaperTime } from './workbook-duration';
 import { QuestionContext } from './reading-drawer';
 import type { ReadingContextEntry } from './paper-reading-capsule';
@@ -29,8 +31,9 @@ import './workbook.css';
 
 type WorkbookQuestionView = BaseQuestion & { readingContext?: ReadingContextEntry[] };
 type WorkbookDetail = Omit<BaseDetail, 'questions' | 'attempts'> & {
+  pacingVersion?: 1;
   questions: WorkbookQuestionView[];
-  attempts: (BaseDetail['attempts'][number] & { paperRev?: number; questions?: WorkbookQuestionView[];
+  attempts: (BaseDetail['attempts'][number] & { paperRev?: number; pacing?: ItemPacing; questions?: WorkbookQuestionView[];
     formalAssessment?: {state: string; score: {earned: number; maximum: number} | null; reason?: string} })[];
 };
 
@@ -651,6 +654,8 @@ type AttemptDraft = {
   scratch?: Record<string,string>;
   // Presence means a local bookmark. The value is this tab's effective item time when marked.
   bookmarks?: Record<string, number>;
+  pacingVersion?: 1;
+  frozenSubmission?: true;
   currentItem?: string;
   paperRev?: number;
 };
@@ -692,6 +697,8 @@ function restoreAttemptDraft(paperId: string): AttemptDraft | null {
 // A delayed receipt or stale tab must never clear the next sitting's draft.
 function retireAttemptDraft(paperId: string, requestId: string) {
   const stored = restoreAttemptDraft(paperId);
+  clearWorkbookTiming(paperId, requestId);
+  void forgetSubmission(paperId, requestId).catch(() => { /* A retired sitting's ID is never reused. */ });
   if (stored && stored.requestId !== requestId) return stored;
   remember(attemptDraftKey(paperId), null);
   return null;
@@ -910,7 +917,17 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   useEffect(() => {
     if (!view || !draft) return;
     const submitted = view.attempts.find((attempt) => attempt.requestId === draft.requestId);
-    if (submitted) setDraft(retireAttemptDraft(paperId, draft.requestId));
+    if (!submitted) return;
+    let current = true;
+    void readFrozenSubmission(paperId, draft.requestId).then(body => {
+      if (!current) return;
+      if ((body && !confirmsPaperSubmission(submitted, body)) || (!body && draft.frozenSubmission)) {
+        setError('服务端记录与原交卷请求无法核对。');
+        return;
+      }
+      setDraft(retireAttemptDraft(paperId, draft.requestId));
+    }).catch(() => { if (current) setError('无法核对本机交卷请求。'); });
+    return () => { current = false; };
   }, [view, draft, paperId]);
 
   useEffect(() => {
@@ -918,6 +935,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     const next: AttemptDraft = {
       version: paperId,
       ...(view?.revision !== undefined && {paperRev: view.revision}),
+      ...(view?.pacingVersion === 1 && !view.sealedPractice && {pacingVersion: 1 as const}),
       requestId: submissionId(),
       answers: {},
       focusIds: [],
@@ -954,7 +972,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         .map((feedback) => feedback.questionId)
     : [];
   const showForm = Boolean(draft) || attempts.length === 0;
-  const answerDisabled = busy || !draft || !watermark.ready || !currentGeneration;
+  const submissionDisabled = busy || !draft || !watermark.ready || !currentGeneration;
+  const answerDisabled = submissionDisabled || !!draft?.frozenSubmission;
 
   const revision = view?.id === paperId ? view.revision : undefined;
   const frozenQuestions = activeAttempt?.questions;
@@ -976,26 +995,36 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   const form = useRef<HTMLFormElement>(null);
   const clock = useRef<ReturnType<typeof observePaperTime> | null>(null);
   const draftAvailable = watermark.ready && currentGeneration && draft && (draft.paperRev ?? 1) === revision;
-  const timingId = questions.allowed && draftAvailable && view && !attempts.some((attempt) => attempt.requestId === draft.requestId)
+  const timingId = questions.allowed && draftAvailable && view && (draft.frozenSubmission || !attempts.some((attempt) => attempt.requestId === draft.requestId))
     ? draft.requestId : null;
+  const versioned = view?.pacingVersion === 1 && !view.sealedPractice;
+  const trackItems = versioned && draft?.pacingVersion === 1;
+  const frozen = draft?.frozenSubmission === true;
   useEffect(() => {
-    if (!timingId || !form.current) return;
-    const observation = observePaperTime(form.current, paperId, timingId);
+    if (!timingId || !form.current || frozen) return;
+    const observation = observePaperTime(form.current, paperId, timingId, trackItems ? {
+      current: () => {
+        const stored = restoreAttemptDraft(paperId);
+        return stored?.requestId === timingId && !stored.frozenSubmission &&
+          bindDeletionWatermark(timingId) === observedDeletionWatermark();
+      },
+    } : undefined);
     clock.current = observation;
     return () => {
       observation.stop();
       clock.current = null;
     };
-  }, [paperId, timingId]);
+  }, [paperId, timingId, trackItems, frozen]);
 
-  function currentStoredDraft() {
-    if (!timingId || answerDisabled || revision === undefined) return null;
+  function currentStoredDraft(allowFrozen = false) {
+    if (!timingId || submissionDisabled || revision === undefined) return null;
     try {
       if (bindDeletionWatermark(timingId) !== observedDeletionWatermark()) return null;
     } catch {
       return null;
     }
     const stored = restoreAttemptDraft(paperId);
+    if (stored?.frozenSubmission && !allowFrozen) return null;
     const pending = unsaved.current;
     if (pending?.requestId === timingId && (!stored || stored.requestId === timingId)) return pending;
     return stored?.requestId === timingId && (stored.paperRev ?? 1) === revision ? stored : null;
@@ -1012,7 +1041,11 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     const bookmarks = {...stored.bookmarks};
     const wasMarked = Object.hasOwn(draft?.bookmarks ?? {}, question.id);
     if (wasMarked) delete bookmarks[question.id];
-    else bookmarks[question.id] ??= clock.current.itemElapsed(question.id);
+    else {
+      try { clock.current.skip(question.id); }
+      catch { setError('无法保存跳过记录，请检查本机存储后重试。'); return; }
+      bookmarks[question.id] ??= clock.current.itemElapsed(question.id);
+    }
     const next = {...stored, bookmarks};
     saveDraft(next);
     if (!wasMarked) goToItem(visibleQuestions[index + 1]?.id);
@@ -1038,9 +1071,11 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   }
 
   function startRedo(focus: 'wrong' | 'full') {
+    if (draft) retireAttemptDraft(paperId, draft.requestId);
     const next: AttemptDraft = {
       version: paperId,
       ...(view?.revision !== undefined && {paperRev: view.revision}),
+      ...(view?.pacingVersion === 1 && !view.sealedPractice && {pacingVersion: 1 as const}),
       requestId: submissionId(),
       answers: {},
       focusIds: focus === 'wrong' ? wrongQuestionIds : [],
@@ -1051,60 +1086,67 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     setError('');
   }
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    const submittingDraft = currentStoredDraft();
-    if (!view || !submittingDraft || coveredItem) return;
-    const answers: Record<string, string | null> = {};
-    for (const question of visibleQuestions) {
-      const value = submittingDraft.answers[question.id]?.trim();
-      try {
-        answers[question.id] = question.kind === 'bank' ? bankSubmission(question, value ?? '') : value || null;
-      } catch (failure) {
-        setError(failure instanceof Error ? failure.message : '请核对本题作答。');
-        return;
-      }
-    }
-    if (!Object.values(answers).some((value) => value !== null)) {
-      setError('请至少作答一题再交卷。');
-      return;
-    }
+  function submissionDraft() {
+    if (!frozen) return currentStoredDraft(true);
+    if (submissionDisabled || !draft) return null;
+    const stored = restoreAttemptDraft(paperId);
+    return stored?.requestId === draft.requestId && bindDeletionWatermark(stored.requestId) === observedDeletionWatermark()
+      ? stored : null;
+  }
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    const sitting = submissionDraft();
+    if (!view || !sitting || coveredItem) return;
     setBusy(true);
     setError('');
-    if (!navigator.onLine) {
-      void enqueue({kind:'paper',id:submittingDraft.requestId,paperId,answers,effectiveDurationMs:clock.current?.submit()})
-        .then(() => {
-          setDraft(retireAttemptDraft(paperId, submittingDraft.requestId));
-          setError('已保存，待联机判分。');
-        })
-        .catch(() => {clock.current?.resume(); setError('无法存入待发队列，草稿仍在。');})
-        .finally(() => setBusy(false));
-      return;
-    }
-    api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}/attempts`, {
-      method: 'POST',
-      body: { requestId: submittingDraft.requestId, answers, effectiveDurationMs: clock.current?.submit() },
-    })
-      .then((next) => {
-        setDraft(retireAttemptDraft(paperId, submittingDraft.requestId));
-        setView(next);
-        setSelectedAttemptId(next.attempts[0]?.id ?? null);
-        justSubmitted.current = true;
-      })
-      .catch((error: unknown) => {
-        if (deletedSubmission(error)) {
-          setDraft(retireAttemptDraft(paperId, submittingDraft.requestId));
-          setError('删除状态已变化，旧作答已清除。请重新作答。');
-          return;
+    let bodyFrozen = false;
+    try {
+      const body = await freezeSubmission(paperId, sitting.requestId, () => {
+        const stored = currentStoredDraft(true);
+        if (stored?.requestId !== sitting.requestId || stored.frozenSubmission)
+          throw new Error('原交卷请求无法核对，请重新打开试卷。');
+        const answers: Record<string, string | null> = {};
+        for (const question of visibleQuestions) {
+          const raw = stored.answers[question.id]?.trim();
+          answers[question.id] = question.kind === 'bank' ? bankSubmission(question, raw ?? '') : raw || null;
         }
-        clock.current?.resume();
-        setError(
-          error instanceof ApiError
-            ? '交卷没有完成。内容仍保存在本地，可直接再试。'
-            : error instanceof Error ? error.message : '交卷失败，内容仍保存在本地。',
-        );
-      })
-      .finally(() => setBusy(false));
+        if (!Object.values(answers).some(value => value !== null)) throw new Error('请至少作答一题再交卷。');
+        const timing = clock.current?.submit() ?? {};
+        return {
+          requestId: sitting.requestId, answers, ...timing,
+          ...(trackItems && revision !== undefined && {paperRev: revision}),
+          deletionWatermark: bindDeletionWatermark(sitting.requestId),
+        };
+      });
+      bodyFrozen = true;
+      const current = submissionDraft();
+      if (current?.requestId !== body.requestId || body.deletionWatermark !== bindDeletionWatermark(body.requestId))
+        throw new Error('交卷时草稿或删除水位已变化，请重新打开试卷。');
+      saveDraft({...current, frozenSubmission: true});
+      if (!navigator.onLine) {
+        await enqueue({kind: 'paper', id: body.requestId, paperId, submission: body});
+        setDraft(retireAttemptDraft(paperId, body.requestId));
+        setError('已保存，待联机判分。');
+        return;
+      }
+      const next = await api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}/attempts`, {method: 'POST', body});
+      const received = next?.attempts?.find(attempt => attempt.requestId === body.requestId);
+      if (next?.id !== paperId || !received || !confirmsPaperSubmission(received, body))
+        throw new Error('未收到与原提交相符的交卷回执，可重试原提交。');
+      setDraft(retireAttemptDraft(paperId, body.requestId));
+      setView(next);
+      setSelectedAttemptId(received.id);
+      justSubmitted.current = true;
+    } catch (error) {
+      if (deletedSubmission(error)) {
+        setDraft(retireAttemptDraft(paperId, sitting.requestId));
+        setError('删除状态已变化，旧作答已清除。请重新作答。');
+      } else {
+        if (!bodyFrozen) clock.current?.resume();
+        setError(error instanceof Error ? error.message : '交卷失败，请重试。');
+      }
+    } finally { setBusy(false); }
   }
 
   function assessRubric(questionId: string, publicSearchQuery?: string) {
@@ -1154,6 +1196,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   if (draft && !draftAvailable) {
     return <section>{watermark.notice}{watermark.ready && <>
       <p>草稿对应的试卷版本或删除水位已变化。</p>
+      {frozen && currentGeneration && <button type="button" disabled={busy} onClick={() => void submit()}>重试原交卷请求</button>}
+      {error && <p role="alert">{error}</p>}
       <button type="button" onClick={() => {setDraft(retireAttemptDraft(paperId, draft.requestId)); coverItem(null);}}>清除旧草稿并重新打开</button>
     </>}</section>;
   }
@@ -1283,6 +1327,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                   </ResumeScratch>
                 </article>
               ))}
+              {frozen && <p role="status">本次交卷内容已固定。重试将使用首次交卷的作答和用时。</p>}
               {error && (
                 <p className="error-text" role="alert">{error}</p>
               )}
@@ -1294,24 +1339,25 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </>}
                 <button type="button" className="text-button" disabled={busy || (!watermark.ready && !view.attempts.length)} onClick={() => {
                   coverItem(null);
+                  if (draft) retireAttemptDraft(paperId, draft.requestId);
                   if (view.attempts.length === 0) {
                     const next: AttemptDraft = {
                       version: paperId,
                       ...(view?.revision !== undefined && {paperRev: view.revision}),
+                      ...(view.pacingVersion === 1 && !view.sealedPractice && {pacingVersion: 1 as const}),
                       requestId: submissionId(),
                       answers: {},
                       focusIds: [],
                     };
                     saveDraft(next);
                   } else {
-                    remember(attemptDraftKey(paperId), null);
-                    setDraft(null);
+                    setDraft(restoreAttemptDraft(paperId));
                   }
                 }}>
                   清空草稿
                 </button>
-                <button type="submit" className="primary-button" disabled={busy || !!coveredItem || !visibleQuestions.some((question) => draft?.answers[question.id]?.trim())}>
-                  {busy ? '交卷中…' : markedQuestions.length ? '直接交卷' : '交卷并查看反馈'}
+                <button type="submit" className="primary-button" disabled={submissionDisabled || !!coveredItem || (!frozen && !visibleQuestions.some((question) => draft?.answers[question.id]?.trim()))}>
+                  {busy ? '交卷中…' : frozen ? '重试原交卷请求' : markedQuestions.length ? '直接交卷' : '交卷并查看反馈'}
                 </button>
               </div>
             </form>

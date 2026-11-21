@@ -149,6 +149,8 @@ export async function api<T>(
   if (options.method === 'POST' && guardedPath(path)) {
     if (!body || !('requestId' in body) || typeof body.requestId !== 'string') throw new Error('缺少提交标识。');
     watermark = bindDeletionWatermark(body.requestId);
+    if ('deletionWatermark' in body && body.deletionWatermark !== watermark)
+      throw new Error('提交与原删除水位不符。');
     await synchronizeDeletion();
   }
   const response = await fetch(`/api${path}`, {

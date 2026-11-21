@@ -1,13 +1,17 @@
-const idleMs = 60_000;
-const limitMs = 86_400_000;
+import {limitMs, workbookTimingParts, type PaperTiming} from './workbook-pacing';
 
-export function observePaperTime(form: HTMLFormElement, paperId: string, requestId: string) {
-  const storageKey = `mangekyo:paper-time:${paperId}`;
+const idleMs = 60_000;
+
+export function observePaperTime(form: HTMLFormElement, paperId: string, requestId: string,
+  tracking?: {current: () => boolean}) {
+  const parts = tracking && workbookTimingParts(paperId, requestId);
+  const storageKey = parts?.clockKey ?? `mangekyo:paper-time:${paperId}`;
   let elapsed = 0;
   const itemTimes = new Map<string, number>();
-  const items = new Set(Array.from(form.querySelectorAll<HTMLElement>('[data-item-id]'), node => node.dataset.itemId));
+  const items = new Set(Array.from(form.querySelectorAll<HTMLElement>('[data-item-id]'), node => node.dataset.itemId!));
   try {
-    const saved = JSON.parse(sessionStorage.getItem(storageKey) ?? 'null');
+    const storage = parts ? localStorage : sessionStorage;
+    const saved = JSON.parse(storage.getItem(storageKey) ?? 'null');
     if (saved?.requestId === requestId && Number.isSafeInteger(saved.elapsed) &&
         saved.elapsed > 0 && saved.elapsed <= limitMs) elapsed = saved.elapsed;
     if (saved?.requestId === requestId && saved.items && typeof saved.items === 'object') {
@@ -34,7 +38,7 @@ export function observePaperTime(form: HTMLFormElement, paperId: string, request
   }
 
   function switchItem(next: string | undefined, now: number) {
-    if (activeItem) itemTimes.set(activeItem, Math.min(limitMs, (itemTimes.get(activeItem) ?? 0) + itemDelta(now)));
+    if (activeItem && since !== undefined) itemTimes.set(activeItem, Math.min(limitMs, (itemTimes.get(activeItem) ?? 0) + itemDelta(now)));
     activeItem = next;
     itemSince = now;
   }
@@ -43,21 +47,32 @@ export function observePaperTime(form: HTMLFormElement, paperId: string, request
     if (since !== undefined) elapsed = Math.min(limitMs, elapsed + Math.min(idleMs, Math.max(0, now - since)));
     since = undefined;
   }
-  function pause() {
+  function checkpoint(now: number, requireSave = false) {
+    try {
+      if (tracking && !tracking.current()) return;
+      const storage = parts ? localStorage : sessionStorage;
+      const pending = since === undefined ? 0 : Math.max(0, Math.min(idleMs, now - since));
+      const times = new Map(itemTimes);
+      if (activeItem && since !== undefined) times.set(activeItem, (times.get(activeItem) ?? 0) + itemDelta(now));
+      storage.setItem(storageKey, JSON.stringify({requestId, elapsed: Math.floor(Math.min(limitMs, elapsed + pending)),
+        items: Object.fromEntries(Array.from(times, ([id, ms]) => [id, Math.floor(Math.min(limitMs, ms))]))}));
+    } catch {
+      if (requireSave) throw new Error('无法保存本次卷面计时。');
+      // Keep the in-memory estimate if storage is unavailable.
+    }
+  }
+  function pause(requireSave = false) {
     const now = performance.now();
     switchItem(undefined, now);
     countUntil(now);
-    try {
-      sessionStorage.setItem(storageKey, JSON.stringify({ requestId, elapsed: Math.floor(elapsed),
-        items: Object.fromEntries(Array.from(itemTimes, ([id, ms]) => [id, Math.floor(ms)])) }));
-    } catch {
-      // Keep the in-memory estimate if storage is unavailable.
-    }
+    checkpoint(now, requireSave);
   }
   function activity(event?: Event) {
     if (submitting || document.visibilityState !== 'visible' || !document.hasFocus()) return;
     const now = performance.now();
-    switchItem(itemAt(event?.target instanceof Element ? event.target : document.activeElement), now);
+    const id = itemAt(event?.target instanceof Element ? event.target : document.activeElement);
+    if (id && id !== activeItem && event?.type === 'pointerdown' && tracking?.current()) parts?.revisit(id);
+    switchItem(id, now);
     countUntil(now);
     since = now;
   }
@@ -71,11 +86,16 @@ export function observePaperTime(form: HTMLFormElement, paperId: string, request
     form.addEventListener(event, activity, { signal, passive: true });
   }
   // Moving keyboard focus attributes the rest of the existing interval, without restarting its idle deadline.
-  form.addEventListener('focusin', event => switchItem(itemAt(event.target), performance.now()), { signal });
-  form.addEventListener('focusout', event => switchItem(itemAt(event.relatedTarget), performance.now()), { signal });
+  form.addEventListener('focusin', event => {
+    const id = itemAt(event.target);
+    if (submitting || !document.hasFocus() || document.visibilityState !== 'visible') return;
+    switchItem(id, performance.now());
+    if (parts && id && itemAt(event.relatedTarget) !== id && tracking?.current()) parts.revisit(id);
+  }, { signal });
+  form.addEventListener('focusout', () => switchItem(undefined, performance.now()), { signal });
   window.addEventListener('focus', activity, { signal });
-  window.addEventListener('blur', pause, { signal });
-  window.addEventListener('pagehide', pause, { signal });
+  window.addEventListener('blur', () => pause(), { signal });
+  window.addEventListener('pagehide', () => pause(), { signal });
   window.addEventListener('pageshow', activity, { signal });
   document.addEventListener('visibilitychange', visibilityChanged, { signal });
   activity();
@@ -83,10 +103,18 @@ export function observePaperTime(form: HTMLFormElement, paperId: string, request
     itemElapsed(id: string) {
       return Math.floor(Math.min(limitMs, (itemTimes.get(id) ?? 0) + (activeItem === id ? itemDelta(performance.now()) : 0)));
     },
-    submit() {
+    skip(id: string) {
+      if (parts && items.has(id) && tracking?.current() && document.hasFocus() && document.visibilityState === 'visible') {
+        parts.skip(id);
+        if (!itemTimes.has(id)) itemTimes.set(id, 0);
+        checkpoint(performance.now(), true);
+      }
+    },
+    submit(): PaperTiming {
       submitting = true;
-      pause();
-      return Math.floor(elapsed) || undefined;
+      pause(!!parts);
+      if (parts) return parts.snapshot([...items]);
+      return elapsed >= 1 ? {effectiveDurationMs: Math.floor(elapsed)} : {};
     },
     resume() {
       submitting = false;

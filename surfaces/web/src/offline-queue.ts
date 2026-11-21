@@ -1,8 +1,10 @@
+import {confirmsPaperSubmission, type PaperSubmission} from './workbook-submission';
 import { bindDeletionWatermark, synchronizeDeletion, validWatermark, verifyGenerationReceipt } from './deletion-watermark';
 export type PendingCommand =
   | {kind:'material'; id:string; title:string; text:string}
   | {kind:'file'; id:string; title:string; file:File}
   | {kind:'practice'; id:string; version:string; answers:Record<string,number|null>}
+  | {kind:'paper'; id:string; paperId:string; submission:PaperSubmission}
   | {kind:'paper'; id:string; paperId:string; answers:Record<string,string|null>; effectiveDurationMs?:number|undefined};
 
 export const queueChanged = 'mangekyo-offline-changed';
@@ -32,7 +34,19 @@ async function transact<T>(mode:IDBTransactionMode, operation:(store:IDBObjectSt
 }
 
 export async function enqueue(command:PendingCommand) {
-  await transact('readwrite',store => store.add({...command,deletionWatermark:bindDeletionWatermark(command.id)}));
+  const frozen = command.kind === 'paper' && 'submission' in command ? command.submission : undefined;
+  const deletionWatermark = bindDeletionWatermark(command.id);
+  if (frozen && (frozen.requestId !== command.id || frozen.deletionWatermark !== deletionWatermark))
+    throw new Error('待发交卷与原提交标识或删除水位不符。');
+  try {
+    await transact('readwrite',store => store.add({...command,deletionWatermark}));
+  } catch (error) {
+    if (!frozen || !(error instanceof DOMException) || error.name !== 'ConstraintError') throw error;
+    const existing: Row | undefined = await transact('readonly',store => store.index('id').get(command.id));
+    if (existing?.kind !== 'paper' || command.kind !== 'paper' || existing.paperId !== command.paperId ||
+        existing.deletionWatermark !== deletionWatermark || !('submission' in existing) ||
+        JSON.stringify(existing.submission) !== JSON.stringify(frozen)) throw error;
+  }
   window.dispatchEvent(new Event(queueChanged));
 }
 
@@ -53,7 +67,7 @@ function bodyFor(row:Row) {
   }
   const payload = row.kind === 'material' ? {title:row.title,text:row.text} :
     row.kind === 'practice' ? {version:row.version,answers:row.answers} :
-    {answers:row.answers,effectiveDurationMs:row.effectiveDurationMs};
+    'submission' in row ? row.submission : {answers:row.answers,effectiveDurationMs:row.effectiveDurationMs};
   const path = row.kind === 'material' ? '/api/materials' :
     row.kind === 'practice' ? '/api/practice/riding' : '/api/papers/'+encodeURIComponent(row.paperId)+'/attempts';
   return {path,init:{method:'POST',headers:{'Content-Type':'application/json'},
@@ -113,7 +127,9 @@ export async function synchronizeQueue(allowLegacyPosition?:number):Promise<Sync
       const receipt = await response.json();
       const valid = row.kind === 'material' || row.kind === 'file' ? typeof receipt?.id === 'string' :
         row.kind === 'practice' ? typeof receipt?.submission?.id === 'string' :
-        receipt?.attempts?.some((a:{requestId?:string}) => a.requestId === row.id);
+        'submission' in row ? receipt?.id === row.paperId && Array.isArray(receipt.attempts) &&
+          confirmsPaperSubmission(receipt.attempts.find((a:{requestId?:string}) => a.requestId === row.id), row.submission) :
+          receipt?.attempts?.some((a:{requestId?:string}) => a.requestId === row.id);
       if (!valid) return {...result,reason:'提交结果待核对，待发命令已保留。'};
       await discardQueued(row.position);
       result.sent++;
