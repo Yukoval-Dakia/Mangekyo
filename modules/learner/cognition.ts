@@ -6,5 +6,5 @@ export { projectClassroomRadar, type ClassroomRadarSources } from './classroom-r
 export { playbook, readVerifiedPlaybook, playbookType, understandingStatusType, type PlaybookStatus } from './playbook.ts';
 export * from './correction-check.ts';
 export { liftAssessment, reconciledLiftAssessment } from './intervention-lift-evidence.ts';
-export { flashCheckPriority, type FlashCheckPriority } from './flash-check.ts';
+export { flashCheckPriority, submissionConfidencePriority, type FlashCheckPriority } from './flash-check.ts';
 export { liftPurpose, runSealedWeeklyLift, weeklyLiftWork, type ReopenLiftCohort } from './weekly-lift.ts';
