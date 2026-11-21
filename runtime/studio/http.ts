@@ -27,6 +27,7 @@ import type { openPractice } from './practice.ts';
 import { handleIntakeRequest, type openIntake } from './intake.ts';
 import type { openCapturePapers } from './capture-papers.ts';
 import type { openWorkbook } from './workbook.ts';
+import { openTakeaway } from './takeaway.ts';
 import type { openPracticeAdmission } from './sealed-practice.ts';
 import { readWorkbookDisplayAccess } from './workbook-display-access.ts';
 import type { openOrganizer } from './organizer.ts';
@@ -109,6 +110,7 @@ export function serve(
     textbook: ReturnType<typeof openTextbook>;
     relationReview: ReturnType<typeof openRelationReview>;
     workbook: ReturnType<typeof openWorkbook>;
+    takeaways: ReturnType<typeof openTakeaway>;
     practiceAdmission?: ReturnType<typeof openPracticeAdmission>;
     organizer: ReturnType<typeof openOrganizer>;
     memory: ReturnType<typeof openMemory>;
@@ -314,6 +316,13 @@ export function serve(
           return await offlineSubmission(200, (input, watermark) => student.workbook.correct(assessment[1]!, assessment[2]!, input, watermark));
         return json(res, 200, await student.workbook.assess(assessment[1], assessment[2], await body(req)));
       }
+      const takeaways = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/attempts\/([0-9A-HJKMNP-TV-Z]{26}))?\/takeaways(?:\/(open|display|undo))?$/.exec(path);
+      if (takeaways?.[1] && method === 'POST')
+        return await offlineSubmission(200, input => student.takeaways.mutate(takeaways[1]!, takeaways[2],
+          (takeaways[3] ?? 'save') as 'save'|'open'|'display'|'undo', input));
+      const takeawayFeedback = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/takeaways\/([A-Za-z0-9_.-]{1,128})$/.exec(path);
+      if (takeawayFeedback?.[1] && takeawayFeedback[2] && method === 'GET')
+        return json(res, 200, await student.takeaways.read(takeawayFeedback[1]!, takeawayFeedback[2]!, takeawayFeedback[3]!));
       const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print|presentation|reading-context))?$/.exec(path);
       if (paper?.[1] && method === 'GET' && !paper[2]) return json(res, 200, await student.workbook.get(paper[1]));
       if (paper?.[1] && method === 'GET' && paper[2] === 'print') return json(res, 200, await student.workbook.sheet(paper[1]));

@@ -14,7 +14,7 @@ export type HelpTarget = {
 };
 
 type HelpStep = {
-  readonly kind: 'hint' | 'hint_l1' | 'hint_l2' | 'explanation' | 'worked-example' | 'solution';
+  readonly kind: 'hint' | 'hint_l0' | 'hint_l1' | 'hint_l2' | 'explanation' | 'worked-example' | 'solution';
   readonly order: number;
 };
 
@@ -23,6 +23,8 @@ export type HelpPresentation = {
   readonly alsoAppliesTo: readonly HelpItem[];
   readonly content: HelpRef;
   readonly step: HelpStep;
+  /** True only when the learner deliberately requested L0 self-help; defaults to system help. */
+  readonly learnerRequested?: true;
   readonly controlledBasis?: readonly BusWitness[];
 };
 
@@ -64,6 +66,14 @@ function positiveInteger(value: unknown): number {
   return value;
 }
 
+function stepOrder(value: unknown, kind: unknown): number {
+  if (kind === 'hint_l0') {
+    if (value !== 0 && value !== 1 || typeof value !== 'number') throw new Error('帮助阶次类型无效。');
+    return value;
+  }
+  return positiveInteger(value);
+}
+
 function ref(input: unknown): HelpRef {
   const value = record(input);
   allowFields(value, ['id', 'rev']);
@@ -90,11 +100,11 @@ function step(input: unknown): HelpStep {
   const value = record(input);
   allowFields(value, ['kind', 'order']);
   const { kind, order } = value;
-  if (kind !== 'hint' && kind !== 'hint_l1' && kind !== 'hint_l2' &&
+  if (kind !== 'hint' && kind !== 'hint_l0' && kind !== 'hint_l1' && kind !== 'hint_l2' &&
       kind !== 'explanation' && kind !== 'worked-example' && kind !== 'solution') {
     throw new Error('帮助阶次类型无效。');
   }
-  const position = positiveInteger(order);
+  const position = stepOrder(order, kind);
   if ((kind === 'hint_l1' && position !== 1) || (kind === 'hint_l2' && position !== 2)) {
     throw new Error('分级提示的档次与阶次不一致。');
   }
@@ -142,16 +152,19 @@ export function helpExposure(input: unknown): HelpExposureEvent {
     case 'offered':
     case 'opened':
     case 'displayed':
-      allowFields(value, ['kind', 'mount', 'alsoAppliesTo', 'content', 'step', 'controlledBasis']);
+      allowFields(value, ['kind', 'mount', 'alsoAppliesTo', 'content', 'step', 'learnerRequested', 'controlledBasis']);
       if (!Array.isArray(value.alsoAppliesTo)) throw new Error('帮助作用范围须为题项列表。');
       if (value.controlledBasis !== undefined && kind !== 'opened' && kind !== 'displayed')
         throw new Error('受控帮助只记录实际打开和显示。');
+      if (value.learnerRequested !== undefined && value.learnerRequested !== true)
+        throw new Error('本人触发标记无效。');
       return {
         kind,
         mount: target(value.mount),
         alsoAppliesTo: value.alsoAppliesTo.map(item),
         content: ref(value.content),
         step: step(value.step),
+        ...(value.learnerRequested === undefined ? {} : { learnerRequested: true as const }),
         ...(value.controlledBasis === undefined ? {} : { controlledBasis: controlledBasis(value.controlledBasis) }),
       };
     case 'used':
