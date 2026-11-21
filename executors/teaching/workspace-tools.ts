@@ -74,6 +74,7 @@ const textbookBlockBody = {type:'object', required:['kind'], properties:{
   kind:{type:'string',enum:['text','list','table','formula','image','reference','related']}, text, latex:text, order:text,
   rows:{type:'array',items:strings}, source:{type:'object'}, alt:text, role:text, target:{anyOf:[text,{type:'object'}]}, allOf:{type:'array',items:{type:'object'}},
 }, additionalProperties:false};
+// This order and wire schema are part of the provider request digest for v1 turns.
 export const workspaceDefinitions = [
   tool('read_learner_radar', '读取当前获准的冻结保持预测和对账、目标、未完成任务、先修查询入口及可用卷面。缺证时保留未知。', {
     scope: {type:'object', additionalProperties:false, properties:{subject_id:text, kc_ids:{...strings, maxItems:8}}},
@@ -207,6 +208,7 @@ export function validateWorkspaceToolArgs(name: string, args: Record<string, unk
 }
 
 export type WorkspaceTools = {
+  narrowSaves?: true;
   presentationTool?: (typeof workspaceDefinitions)[number];
   writes: () => readonly WorkspaceWriteReceipt[];
   execute: (name: string, args: Record<string, unknown>, step: number, receiveImage?: ReceiveStudyImage) => Promise<string>;

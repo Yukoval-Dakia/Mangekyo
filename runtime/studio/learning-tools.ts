@@ -14,7 +14,6 @@ import { checkStudioNotionFact, confirmNotionRead } from './notion.ts';
 import { readLearningSdk } from './learning-sdk.ts';
 import { readRetentionBasis, type RetentionBasis } from './learner-radar.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
-import { openWorkspaceQuestion, type DraftWitness } from './workspace-question.ts';
 import { workspaceInput, type openWorkspaceTools, type WorkspaceWitness } from './workspace-agent.ts';
 import { learningPythonReadLabel, questionExposureReceiptVersion } from '../../executors/teaching/question-read-receipts.ts';
 import { questionReceiptsCurrent } from './question-exposure.ts';
@@ -28,12 +27,10 @@ export function openLearningTools(options: {
   trackRetention(basis: RetentionBasis): void;
   readContext(intent: MemoryIntent, step: number, expand?: RegionPage, query?: string): Promise<ContextBundle | undefined>;
   onDelivered: NonNullable<LearningTools['onDelivered']>;
-  draftBasis(): DraftWitness[];
   saveBelief(args: Record<string,unknown>, step: number): Promise<string>;
 }): LearningTools {
   const {db,turn,workspace,maySend,authorize} = options;
   const allowedIntents: readonly MemoryIntent[] = options.manageBeliefs ? [...intents,'management'] : intents;
-  const question = openWorkspaceQuestion(db,turn,maySend,authorize,options.draftBasis);
   const artifact = workspace.presentationTool;
   const pages = new Map<string,RegionPage>();
   const valid = async (facts: readonly WorkspaceWitness[], retention: readonly RetentionBasis[]) => confirmNotionRead(db,studioLearner,async (tx,check) => {
@@ -62,13 +59,14 @@ export function openLearningTools(options: {
       if (name === 'save_page' && (Object.keys(handles).length || 'insert_artifacts' in args))
         return toolFailure('not_found','目前教材只接支持的正文和块，保存计算产物尚未接入。',learningToolFallback(name));
       if (name === 'save_page' || name === 'save_edge')
-        return adaptWorkspaceResult(await workspace.execute(workspaceToolAliases[name],args,step),name);
+        return adaptWorkspaceResult(await workspace.execute(workspace.narrowSaves ? name : workspaceToolAliases[name],args,step),name);
       if (name === 'save_belief') {
         if (options.manageBeliefs && (args.action === 'update' || args.action === 'forget') && args.supersedes === undefined)
           return toolFailure('invalid_args','请先查找要更正或忘记的原条目。',{tool:'read_context',args:{intent:'management'}},'supersedes');
         return adaptWorkspaceResult(await options.saveBelief(args,step),name);
       }
-      if (name === 'save_question') return question(args,step);
+      if (name === 'save_question') return workspace.saveQuestion?.(args,step)
+        ?? toolFailure('not_found','当前回合没有题库写入绑定。',learningToolFallback(name));
       if (name === 'manage_activity' || name === 'mount_artifact') {
         const {action,...work} = args;
         if (!artifact || (name === 'manage_activity' && action !== 'mount_artifact'))

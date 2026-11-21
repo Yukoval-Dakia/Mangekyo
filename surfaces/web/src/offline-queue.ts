@@ -9,6 +9,14 @@ export type PendingCommand =
 
 export const queueChanged = 'mangekyo-offline-changed';
 
+function notifyQueueChanged() {
+  window.dispatchEvent(new Event(queueChanged));
+  if (typeof BroadcastChannel === 'undefined') return;
+  const channel = new BroadcastChannel(queueChanged);
+  channel.postMessage(null);
+  channel.close();
+}
+
 function openQueue(): Promise<IDBDatabase> {
   return new Promise((resolve,reject) => {
     const request = indexedDB.open('mangekyo-pending',1);
@@ -47,7 +55,7 @@ export async function enqueue(command:PendingCommand) {
         existing.deletionWatermark !== deletionWatermark || !('submission' in existing) ||
         JSON.stringify(existing.submission) !== JSON.stringify(frozen)) throw error;
   }
-  window.dispatchEvent(new Event(queueChanged));
+  notifyQueueChanged();
 }
 
 export function pendingCount() { return transact('readonly',store => store.count()); }
@@ -76,7 +84,7 @@ function bodyFor(row:Row) {
 
 export async function discardQueued(position:number) {
   await transact('readwrite',store => store.delete(position));
-  window.dispatchEvent(new Event(queueChanged));
+  notifyQueueChanged();
 }
 
 export type SyncResult = {sent:number;removed:number;reason?:string;blocked?:number;legacy?:boolean};

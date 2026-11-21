@@ -1,0 +1,15 @@
+.error-comparison { margin-block: .4rem; }
+.error-comparison > button {
+  border: 1px solid currentColor;
+  border-radius: 1rem;
+  padding: .2rem .65rem;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.error-comparison ul { margin: .5rem 0; padding-inline-start: 1.4rem; }
+.error-comparison li + li { margin-top: .5rem; }
+.error-comparison time { margin-inline-end: .6rem; }
+.error-comparison p { margin: .15rem 0; }
+.error-comparison [elementtiming] { display: inline-block; }

@@ -1,3 +1,5 @@
+import { Dictation } from './classroom-voice';
+import { ReadReply } from './message';
 import { recordFromQuery, recordFromSession, recordLabel, type CurrentObject } from './current-record';
 import { chatRoute, taskLabels, type Route } from './model-route';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
@@ -196,12 +198,12 @@ function ChatRoom({
             <ol className="turns chat-thread">
               {[
                 ...(session?.turns ?? []).map((turn, i) =>
-                  <TeachingTurn key={turn.turnId ?? i} turn={turn} sessionId={session?.id} materialId={shared?.id}
+                  <ReadReply.Provider key={turn.turnId ?? i} value={true}><TeachingTurn turn={turn} sessionId={session?.id} materialId={shared?.id}
                     mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={chat.applySnapshot} reload={chat.reload}
                     discuss={pending || unavailable ? undefined : (question, answer) => {
                       chat.editDraft('题目：' + question + '\n我的回答：' + answer + '\n请根据我的回答指出下一步。');
                       textarea.current?.focus();
-                    }} />),
+                    }} /></ReadReply.Provider>),
                 pending && <TeachingTurn key={session?.status === 'pending' ? session.currentTurnId : 'sending'}
                   answer={chat.sendingAnswer || session?.pendingAnswer} message={streamingReply}
                   progress={reconnecting ? '正在重连…' : progressLabel || '正在连接同伴…'}
@@ -277,6 +279,8 @@ function ChatRoom({
                 </label>;
               })}
             </fieldset>}
+            {!pending && !unavailable && !chat.retryOperation &&
+              <Dictation key={draftKey} append={spoken => edit((value + spoken).slice(0, 4000))} />}
             <textarea
               ref={textarea}
               aria-label="给同伴的话"

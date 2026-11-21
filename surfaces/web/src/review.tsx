@@ -1,15 +1,38 @@
-import { useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { api, deletedSubmission, submissionId } from './api';
-import { PageTitle, ReadState, useResource } from './workspace';
+import { PageTitle, ReadState } from './workspace';
+import { RecurringErrorStrip, type ErrorCluster } from './recurring-error-strip';
+import { observedDeletionWatermark, subscribeDeletionWatermark } from './deletion-watermark';
+import { useVisibleDocument } from './workbook-presentation';
 import { Message } from './message';
 
 export type ReviewEntry = {
   paperId: string; title: string; questionId: string; prompt: string;
+  recurringErrorCluster?: ErrorCluster;
   answer: string; expected: string; explanation: string | null;
 };
 
+function useReviewEntries() {
+  const visible = useVisibleDocument();
+  const generation = useSyncExternalStore(subscribeDeletionWatermark, observedDeletionWatermark);
+  const [revision, setRevision] = useState(0);
+  const [data, setData] = useState<ReviewEntry[]>();
+  const [error, setError] = useState(false);
+  useLayoutEffect(() => {
+    setData(undefined);
+    setError(false);
+    if (!visible) return;
+    const controller = new AbortController();
+    void api<ReviewEntry[]>('/review', {signal: controller.signal, cache: 'no-store'}).then(entries => {
+      if (!controller.signal.aborted && generation === observedDeletionWatermark()) setData(entries);
+    }).catch(() => { if (!controller.signal.aborted) setError(true); });
+    return () => controller.abort();
+  }, [visible, generation, revision]);
+  return {data, error, reload: () => setRevision(n => n + 1)};
+}
+
 export function Mistakes() {
-  const items = useResource<ReviewEntry[]>('/review');
+  const items = useReviewEntries();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const intent = useRef({text:'', id:''});
@@ -47,10 +70,20 @@ export function Mistakes() {
       {error && <p role="alert">{error}</p>}
     </section>}
     {items.data?.length === 0 && <section className="goal-panel"><h2>还没有待复习的错题</h2><p>练习中答错的题会收在这里。再答正确后，原作答保留在卷子的历史里。</p><a href="/papers">打开练习</a></section>}
-    {items.data?.map(item => <article className="review-item" key={item.paperId + item.questionId}>
-      <small>{item.title}</small><h2>{item.prompt}</h2><p>上次回答　{item.answer}</p>
-      <details><summary>看参考答案</summary><p>{item.expected}</p>{item.explanation && <Message text={item.explanation} />}</details>
-      <a className="text-button" href={item.paperId === 'riding' ? '/practice/riding' : '/papers/'+item.paperId}>回原卷重做</a>
-    </article>)}
+    {items.data?.map(item => <ReviewCard key={item.paperId + ':' + item.questionId} item={item}/>)}
   </>;
+}
+
+function ReviewCard({item}: {item: ReviewEntry}) {
+  const {paperId, questionId} = item;
+  const reopen = useCallback(async (signal: AbortSignal) => {
+    const entries = await api<ReviewEntry[]>('/review', {signal, cache: 'no-store'});
+    return entries.find(row => row.paperId === paperId && row.questionId === questionId)?.recurringErrorCluster;
+  }, [paperId, questionId]);
+  return <article className="review-item">
+    <small>{item.title}</small><h2>{item.prompt}</h2><p>上次回答　{item.answer}</p>
+    <RecurringErrorStrip initial={item.recurringErrorCluster} reopen={reopen}/>
+    <details><summary>看参考答案</summary><p>{item.expected}</p>{item.explanation && <Message text={item.explanation} />}</details>
+    <a className="text-button" href={item.paperId === 'riding' ? '/practice/riding' : '/papers/'+item.paperId}>回原卷重做</a>
+  </article>;
 }

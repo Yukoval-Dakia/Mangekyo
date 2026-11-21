@@ -635,7 +635,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }
       const workspace = (classroom ? classroom.mode !== 'adjust' : submission.workspaceRevision) ? openWorkspaceTools({
         db, turn: job.slotKey, presentationManifest:validInputs, readArtifactAssessmentWitness, prior: [...inherited.values()], currentObject,
-        maySend, beliefTools,
+        maySend, beliefTools, ...(submission.agentVersion === 2 && {narrowSaves: true}),
+        draftBasis:() => [...inputs.values()].flatMap(w => w.kind === 'fact' ? [{id:w.id,rev:w.rev,epoch:w.accessEpoch}] : []),
         ...(jit ? {jitBasis:jit.basis} : {}),
         ...(learningV1 ? {learningBasis: () => [...learningReadBasis.values()]} : {}),
         pageBasis: [
@@ -673,8 +674,6 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           keepLearningBasis(w);
           trackWorkspace(w,true);
         },
-        draftBasis:() => [...inputs.values()].flatMap(w => w.kind === 'fact'
-          ? [{id:w.id,rev:w.rev,epoch:w.accessEpoch}] : []),
         async authorizeRemote() {
           try {
             return await confirmNotionRead(db,learner,async (tx,check) => {
@@ -730,7 +729,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             return expandedMemory.context;
           },
         } : {}),
-        ...(classroom ? {tools:{...(workspace ? {workspace:{...workspace,presentationOnly:true as const}} : {})}} : submission.agentVersion === 1 ? { tools: { exaApiKey: settings.exaApiKey, mcpServers, ...(workspace ? {workspace} : {}),
+        ...(classroom ? {tools:{...(workspace ? {workspace:{...workspace,presentationOnly:true as const}} : {})}} : submission.agentVersion ? { tools: { exaApiKey: settings.exaApiKey, mcpServers, ...(workspace ? {workspace} : {}),
           ...(publicSearchQuery ? {publicSearchQuery} : {}),
           allowSearch: submission.allowSearch === true && settings.allowSearch && (!privateContext || Boolean(publicSearchQuery)) } } : {}),
       }, attachment?.mode === 'prepare' && !submission.parentId, preference);
