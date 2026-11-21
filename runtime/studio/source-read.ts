@@ -29,7 +29,7 @@ export type SourceAccess = {
   readNotionWitness?: (fact: FactSnapshot) => Promise<FactSnapshot>;
 } & (
   | {recipient: 'learner'}
-  | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string}
+  | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string; ownerNotionRead?: true}
 );
 
 export function sourcePurpose(access: SourceAccess): string {
@@ -66,8 +66,9 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   async function visit(sourceId: string, revision?: Revision): Promise<FactSnapshot | undefined> {
     if (path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(sourceId)) return;
     const fact = await reader.fact(factId(sourceId), revision === undefined ? {mode: 'following'} : {mode: 'pinned', rev: revision});
-    await checkStudioNotionFact(tx, fact, sourcePurpose(access), access.recipient === 'learner' ? 'learner' : access.maySend,
-      access.readNotionWitness);
+    if (access.recipient === 'learner' || access.ownerNotionRead)
+      await checkStudioNotionFact(tx, fact, storagePurpose, 'learner', access.readNotionWitness);
+    else await checkStudioNotionFact(tx, fact, sourcePurpose(access), access.maySend, access.readNotionWitness);
     const key = `${sourceId}:${fact.ref.rev}`;
     if (path.has(key)) return;
     const visited = seen.get(key);
@@ -89,7 +90,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         if (!source || source.ref.rev !== witness.rev || source.accessEpoch !== witness.epoch) return;
         if (access.recipient === 'workspace' && (entry.kind === 'observation' || entry.kind === 'annotation') &&
             source.type === workbookAttemptType && !checkedAttempts.has(witness.id)) {
-          const opened = await openWorkbookQuestionSources(tx, source, {maySend: accepts, track: (...proof) => questionSources.push(proof)});
+          const opened = await openWorkbookQuestionSources(tx, source, {...access, purpose: sourcePurpose(access), track: (...proof) => questionSources.push(proof)});
           if (!opened) return;
           checkedAttempts.add(witness.id);
         }

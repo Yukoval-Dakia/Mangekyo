@@ -11,6 +11,7 @@ import goal from '@mangekyo/module-plan/facts/goal';
 import organizerTask from '@mangekyo/module-plan/facts/organizer-task';
 import {materialType} from './library-values.ts';
 import {organizerNoteType} from './organizer-values.ts';
+import {turnResearchPurpose} from './values.ts';
 
 export class WorkspaceInputError extends Error {}
 
@@ -88,6 +89,7 @@ export type SetWorkspaceTeachingInput = {
   readonly id: FactId;
   readonly expectedRev: Revision;
   readonly enabled: boolean;
+  readonly purpose?: typeof turnResearchPurpose;
 };
 
 function record(input: unknown): Record<string, unknown> {
@@ -263,10 +265,13 @@ export function setWorkspaceTeachingInput(input: unknown): SetWorkspaceTeachingI
   const value = record(input);
   if (typeof value.id !== 'string') throw new WorkspaceInputError('工作区条目标识无效。');
   if (typeof value.enabled !== 'boolean') throw new WorkspaceInputError('教学用途开关无效。');
+  if (value.purpose !== undefined && value.purpose !== 'teaching' && value.purpose !== turnResearchPurpose)
+    throw new WorkspaceInputError('记录用途无效。');
   return {
     id: factId(value.id),
     expectedRev: revision(value.expectedRev, '条目版本'),
     enabled: value.enabled,
+    ...(value.purpose === turnResearchPurpose ? {purpose: value.purpose} : {}),
   };
 }
 

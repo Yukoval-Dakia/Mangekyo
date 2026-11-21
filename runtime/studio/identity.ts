@@ -13,6 +13,7 @@ export const sourceId = (studyCase: string, id: string) =>
   factId(stableId('learning-history-v1', studyCase, id));
 export const slotType = 'activity.teachingFeedback';
 export const methodName = 'activity/evidence-tutor';
+export const learningToolsMethod = 'activity/evidence-tutor-learning-tools-v1';
 export const confirmedTeachingMethod = 'activity/evidence-tutor-confirmed-v1';
 export const purpose = 'teaching';
 

@@ -1,3 +1,4 @@
+import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import {
   allowedTypes, categories, encodeCursor, itemOf, purposesOf, workspaceCatalogPage, workspaceCatalogQuery,
   WorkspaceCatalogInputError, type AccessRow, type AccessDisplay,
@@ -499,8 +500,8 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         (row.type === studyRecordType && syntheticStudyRecords.has(row.id))) {
         throw new RequestError(404, '找不到这条学习记录。');
       }
-      if (use === 'background-research' && row.type !== textbookPageType)
-        throw new RequestError(400, '此入口仅支持个人教材的后台用途。');
+      if (use === 'background-research' && ![textbookPageType, workbookPaperType, workspaceEntryType].includes(row.type))
+        throw new RequestError(400, '请选择教材、试卷或来源题。');
       if (row.current_rev !== expectedRev) {
         throw new RequestError(409, '这条记录已在别处更新。请刷新后再试。');
       }
@@ -522,7 +523,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
             ? use === 'teaching' ? 'content.setTextbookTeaching' : 'content.setTextbookResearch'
             : setWorkspaceTeachingCommand,
           id: commandId(stableId('workspace-' + use, itemId, String(expectedRev), String(enabled))),
-          input: { id: itemId, expectedRev, enabled, ...(link ? { intakeId: link.id } : {}) } as Json,
+          input: { id: itemId, expectedRev, enabled, ...(use === 'background-research' && row.type !== textbookPageType ? {use} : {}), ...(link ? { intakeId: link.id } : {}) } as Json,
         });
         const ref = receipt.wrote.find((written) => written.id === row.id);
         const paired = link && receipt.wrote.some(written => written.id === link.id);

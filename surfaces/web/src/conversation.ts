@@ -8,7 +8,7 @@ import { editorDrafts } from "./presentation/editor-draft";
 import { useMountPermissions } from "./presentation/mount-permissions";
 import { authorizeMounts, refreshDraftBases, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 
-type Operation = {currentObject?: CurrentObject | undefined} & (
+type Operation = {allowBackgroundUnderstanding?: boolean | undefined; currentObject?: CurrentObject | undefined} & (
   | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
   | { kind: "answer"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; sessionId: string; parentId: string; answer: string });
 
@@ -338,11 +338,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const result = operation.kind === "create"
         ? await api<Session>("/sessions", {
           method: "POST",
-          body: { currentObject: operation.currentObject, route: operation.route, mcpGrants: operation.mcpGrants, caseId, requestId: operation.requestId, question: operation.question, attachment: operation.attachment },
+          body: { allowBackgroundUnderstanding: operation.allowBackgroundUnderstanding, currentObject: operation.currentObject, route: operation.route, mcpGrants: operation.mcpGrants, caseId, requestId: operation.requestId, question: operation.question, attachment: operation.attachment },
         })
         : await api<Session>(`${sessionPath(operation.sessionId)}/answers`, {
           method: "POST",
-          body: { currentObject: operation.currentObject, route: operation.route, mcpGrants: operation.mcpGrants, answer: operation.answer, parentId: operation.parentId, requestId: operation.requestId },
+          body: { allowBackgroundUnderstanding: operation.allowBackgroundUnderstanding, currentObject: operation.currentObject, route: operation.route, mcpGrants: operation.mcpGrants, answer: operation.answer, parentId: operation.parentId, requestId: operation.requestId },
         });
       if (result.caseId !== caseId || (operation.kind === "answer" && result.id !== operation.sessionId)) {
         throw new Error("Session identity mismatch");
@@ -385,20 +385,20 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     }
   }
 
-  function start(question?: string, attachment?: StudyAttachment, mcpGrants?: McpGrant[], route?: Route, currentObject?: CurrentObject) {
+  function start(question?: string, attachment?: StudyAttachment, mcpGrants?: McpGrant[], route?: Route, currentObject?: CurrentObject, allowBackgroundUnderstanding?: boolean) {
     if (inFlight.current || retryOperation) return;
     setAccountConflict(false);
     const text = question?.trim();
     const id = text ? requestId() : remembered(createKey) ?? requestId();
     if (!text) remember(createKey, id);
-    void perform({ kind: "create", currentObject, route, mcpGrants, requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
+    void perform({ kind: "create", allowBackgroundUnderstanding, currentObject, route, mcpGrants, requestId: id, ...(text ? { question: text } : {}), ...(attachment ? { attachment } : {}) });
   }
 
-  function send(mcpGrants?: McpGrant[], route?: Route, currentObject?: CurrentObject) {
+  function send(mcpGrants?: McpGrant[], route?: Route, currentObject?: CurrentObject, allowBackgroundUnderstanding?: boolean) {
     const answer = draft?.text.trim();
     const parentId = session?.currentTurnId;
     if (!session || session.status !== "ready" || !answer || !parentId || draft?.parentId !== parentId || retryOperation || accountConflict) return;
-    void perform({ kind: "answer", currentObject, route, mcpGrants, requestId: requestId(), sessionId: session.id, parentId, answer });
+    void perform({ kind: "answer", allowBackgroundUnderstanding, currentObject, route, mcpGrants, requestId: requestId(), sessionId: session.id, parentId, answer });
   }
 
   function editDraft(text: string) {
@@ -433,6 +433,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     progressLabel,
     reconnecting,
     retryOperation,
+    reload: () => setRefresh(n => n + 1),
     accountConflict,
     problem,
     start,

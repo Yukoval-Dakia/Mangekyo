@@ -5,6 +5,7 @@ import {
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import { frozenWorkbookRevision, licensedQuestionCopy } from '../../modules/activity/evidence-read.ts';
 import { helpAppliesTo } from '../../modules/activity/help-exposure-values.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { workbookAttemptView } from '../../modules/activity/workbook-assessment-values.ts';
@@ -22,7 +23,7 @@ import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from '
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorkspaceAttemptAssessments, type WorkspaceAssessmentBasis } from './workspace-read.ts';
 
-type Access = { maySend: WorkspaceSourceRecipient; track: SourceTrack; trackAssessment?: (basis: WorkspaceAssessmentBasis) => void };
+type Access = { purpose?: string; ownerNotionRead?: true; maySend: WorkspaceSourceRecipient; track: SourceTrack; trackAssessment?: (basis: WorkspaceAssessmentBasis) => void };
 const unavailable = { state: 'unavailable' } as const;
 const sourceUnavailable = (error: unknown) => error instanceof FactReadDeniedError ||
   error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch;
@@ -31,13 +32,9 @@ async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cu
   const id = factId(attempt.paperId);
   const ref = attempt.paper.assessmentRelease?.releaseRef;
   if (ref && ref.id !== id) return;
-  const { rows: [version] } = await tx.query<{ rev: Revision }>(
-    `SELECT rev FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND tick<$3::bigint AND kind='value'
-       AND ($4::int IS NULL OR rev=$4) ORDER BY rev DESC LIMIT 1`,
-    [tx.learner, id, cutoff, ref?.rev ?? null],
-  );
+  const version = await frozenWorkbookRevision(tx, id, cutoff, ref?.rev ?? null);
   if (!version) return;
-  const read = createAuthorizedFactReader(tx, purpose, access.maySend);
+  const read = createAuthorizedFactReader(tx, access.purpose ?? purpose, access.maySend);
   const matches = (fact: FactSnapshot) => fact.type === workbookPaperType && sameWorkbookJson(workbookPaper(fact.value), attempt.paper);
   try {
     const frozen = await read.fact(id, { mode: 'pinned', rev: version.rev });
@@ -92,24 +89,27 @@ export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference
   return opened && {source, submission, ...opened};
 }
 
-export async function openWorkbookQuestionSources(tx: ReadTransaction, submission: FactSnapshot, access: Access) {
+export async function openWorkbookQuestionSources(tx: ReadTransaction, submission: FactSnapshot, access: Access, itemId?: string) {
   if (submission.type !== workbookAttemptType || submission.ref.learner !== tx.learner) return;
   const attempt = workbookAttempt(submission.value);
   const birth = await readActivitySubmissionBirth(tx, submission.ref, workbookAttemptType);
-  if (!birth || birth.submittedAt !== attempt.submittedAt) return;
+  if (!birth?.unchanged || birth.submittedAt !== attempt.submittedAt) return;
   try {
     const paper = await openFrozenPaper(tx, attempt, birth.tick, access);
     if (!paper) return;
-    const sourceAccess = {recipient: 'workspace' as const, maySend: access.maySend, track: access.track};
+    const sourceAccess = {...access, recipient: 'workspace' as const, purpose: access.purpose ?? purpose};
     if (attempt.paper.materialId !== null) {
       const material = await resolveSource(tx, attempt.paper.materialId, sourceAccess);
       if (material?.sourceRef.fact.type !== materialType) return;
     }
-    await readFrozenWorkbookBank(createAuthorizedFactReader(tx, purpose, access.maySend), attempt.paper, access.track);
-    for (const { kind, sourceQuestionRef, prompt } of attempt.paper.questions) {
+    const questions = itemId === undefined ? attempt.paper.questions : attempt.paper.questions.filter(q => q.id === itemId);
+    await readFrozenWorkbookBank(createAuthorizedFactReader(tx, sourceAccess.purpose, access.maySend),
+      {...attempt.paper, questions}, access.track);
+    for (const { kind, sourceQuestionRef, prompt } of questions) {
       if (kind === 'bank' || !sourceQuestionRef) continue;
+      const readable = itemId ? await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose) : sourceQuestionRef;
       const question = await resolveSource(tx, {
-        v: 1, fact: { ...sourceQuestionRef, type: workspaceEntryType }, anchor: { kind: 'question', itemId: 'question' },
+        v: 1, fact: { ...readable, type: workspaceEntryType }, anchor: { kind: 'question', itemId: 'question' },
       }, sourceAccess);
       if (question?.content !== prompt) return;
     }

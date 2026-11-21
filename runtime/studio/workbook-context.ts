@@ -34,8 +34,8 @@ type CapsuleHandle = {kind: Kind; ref:string};
 export type WorkbookQuestionWithContext = WorkbookQuestionView & {readingContext?: CapsuleHandle[]};
 export type WorkbookContextAuthority = {
   activePosttest?: ReturnType<typeof openRetention>['activePosttest'];
-  backtrace?: (tx: ReadTransaction, target: {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef}, local: Reader, facts: ReturnType<typeof snapshotFactReaders>) =>
-    Promise<readonly WorkbookTraceProof[] | null>;
+  backtrace?: (tx: ReadTransaction, local: Reader, facts: ReturnType<typeof snapshotFactReaders>) =>
+    (target: {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef}) => Promise<readonly WorkbookTraceProof[] | null>;
 };
 const scope = {learner: studioLearner};
 const unavailable = (error: unknown) => error instanceof WorkbookSourceMismatch || error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
@@ -44,25 +44,28 @@ const denied = () => new RequestError(403, '本题帮助的发放、授权或呈
 export const historicalWorkbookMount = (tx: ReadTransaction, id: FactId, fact: FactSnapshot, read: ReadContext) =>
   readHistory(tx,id,fact,read,unavailable);
 
-function capsuleReads(tx: ReadTransaction) {
-  return {
-    facts: snapshotFactReaders(tx),
-    edgesFor: memoWorkbookRead((question: HelpRef,use: string) => workbookCapsuleLinkCandidates(tx,question,knowledgeEdgeType,use)),
-  };
-}
-
 export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: CommandHooks, authority: WorkbookContextAuthority) {
   const key = randomBytes(32);
   const sign = (...scope: unknown[]) => createHmac('sha256', key).update(canonicalJsonString(scope)).digest('base64url');
   const capsuleHandles = workbookCapsuleHandles(sign,timingSafeEqual);
-  async function discover(tx: ReadTransaction, {facts,edgesFor}: ReturnType<typeof capsuleReads>,
+  function capsuleReads(tx: ReadTransaction) {
+    const facts = snapshotFactReaders(tx);
+    const sourceFor = (use: string) => memoWorkbookFacts(facts(use,()=>true).fact);
+    const backtraceFor = memoWorkbookRead(async (use: string) => {
+      const local = memoWorkbookFacts(selectedWorkbookRead(tx,use,sourceFor(use)).fact);
+      return {local,project:authority.backtrace?.(tx,local,facts)};
+    });
+    return {sourceFor,backtraceFor,
+      edgesFor:memoWorkbookRead((question: HelpRef,use: string) => workbookCapsuleLinkCandidates(tx,question,knowledgeEdgeType,use))};
+  }
+  async function discover(tx: ReadTransaction, {sourceFor,backtraceFor,edgesFor}: ReturnType<typeof capsuleReads>,
     mount: BoundMount, item: WorkbookQuestion, check?: CheckNotionRead,
     requested?: string, collectPages?: CheckNotionRead) {
     const category = requested && capsuleHandles.kind(requested,mount,item.id);
     if (!item.sourceQuestionRef || (requested && !category)) return { handles: [] };
     const question = helpRef(item.sourceQuestionRef);
     const use = mount.issuance ? retentionPurpose : purpose;
-    const source = memoWorkbookFacts(facts(use,()=>true).fact);
+    const source = sourceFor(use);
     const edges = category === 'backtrace' ? [] : await edgesFor(question,use);
     // Buffer preflight pages so an unrelated remote category never delays a local opening.
     const pages = new Set<FactSnapshot>();
@@ -79,9 +82,9 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       });
       const read = memoWorkbookFacts(selected.fact);
       if (kind === 'backtrace') {
-        const local = memoWorkbookFacts(selectedWorkbookRead(tx,use,source).fact);
-        const proofs = await authority.backtrace?.(tx,{paper:mount.paper,itemId:item.id,question,
-          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})},local,facts) ?? [];
+        const {local,project} = await backtraceFor(use);
+        const proofs = await project?.({paper:mount.paper,itemId:item.id,question,
+          ...(mount.attemptRef ? {attemptRef:mount.attemptRef} : {})}) ?? [];
         const refFor = (trace: WorkbookTraceProof) => capsuleHandles.seal(kind,mount,item.id,[question,trace.content,trace.witnesses]);
         const trace = await selectWorkbookTrace(proofs,local,isWorkbookNotionSource,async options=>{
           if (check?.choose) return check.choose(options);
