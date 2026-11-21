@@ -165,6 +165,124 @@
   line-height: 1.25;
 }
 
+.tv2-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* 进行中课堂恢复条：带具体课名与进度，仅存在课堂时出现 */
+.tv2-resume {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 14px 8px 16px;
+  border-radius: 14px;
+  background: var(--tv2-panel);
+  font-size: 13.5px;
+  line-height: 1.45;
+  transition: background-color 160ms ease;
+}
+
+.tv2-resume:hover {
+  background: var(--tv2-card);
+}
+
+.tv2-resume-copy {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tv2-resume-copy strong {
+  font-weight: 680;
+  color: var(--tv2-ink-3);
+}
+
+.tv2-resume-sep {
+  margin: 0 6px;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-resume-cue {
+  flex: none;
+  display: inline-flex;
+  color: var(--tv2-primary);
+}
+
+.tv2-resume-cue svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 「现在有空」+「作答方式 ▾」紧凑单行 */
+.tv2-filterline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+  margin-top: -8px;
+}
+
+.tv2-filterline-label {
+  flex: none;
+  font-size: 13px;
+  font-weight: 640;
+  color: var(--tv2-ink-2);
+  white-space: nowrap;
+}
+
+.tv2-filterline .tv2-seg a {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+.tv2-mode-menu {
+  position: relative;
+  flex: none;
+  margin-left: auto;
+}
+
+.tv2-mode-menu-pop {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  min-width: 140px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--tv2-surface);
+  border: 1px solid var(--tv2-line);
+  box-shadow: 0 10px 28px rgba(20, 38, 27, 0.16);
+}
+
+.tv2-mode-menu-pop a {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--tv2-ink-2);
+  white-space: nowrap;
+}
+
+.tv2-mode-menu-pop a:hover {
+  background: var(--tv2-panel);
+  color: var(--tv2-ink);
+}
+
+.tv2-mode-menu-pop a[aria-selected="true"] {
+  color: var(--tv2-primary);
+  font-weight: 680;
+}
+
 /* 夜链·交班条 */
 .tv2-handoff {
   display: flex;

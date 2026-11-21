@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Icon, Mark, type IconName } from "../icons";
 import { remembered, remember, type Settings } from "../api";
 import { OfflineStatus } from "../offline-status";
@@ -31,6 +31,8 @@ export function AppShell({
   onNavigate,
   onOpenSettings,
   onSavedMaterial,
+  aiActivityRequest,
+  companionCitation,
   children,
 }: {
   route: string;
@@ -42,17 +44,30 @@ export function AppShell({
   onNavigate: (href: string, replace?: boolean) => void;
   onOpenSettings: () => void;
   onSavedMaterial: (href: string) => void;
+  aiActivityRequest?: number | undefined;
+  companionCitation?: { title: string; text: string; topic?: string; seq: number } | undefined;
   children: ReactNode;
 }) {
   const [drawer, setDrawer] = useState<"none" | "ai" | "companion">("none");
   const [quickModal, setQuickModal] = useState<QuickModalMode | null>(null);
   const [help, setHelp] = useState(false);
   const [running, setRunning] = useState(false);
+  const lastAiRequest = useRef(0);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const saved = remembered("theme");
     if (saved === "light" || saved === "dark") return saved;
     return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
+
+  useEffect(() => {
+    if (!aiActivityRequest || aiActivityRequest === lastAiRequest.current) return;
+    lastAiRequest.current = aiActivityRequest;
+    setDrawer("ai");
+  }, [aiActivityRequest]);
+
+  useEffect(() => {
+    if (companionCitation) setDrawer("companion");
+  }, [companionCitation]);
 
   useEffect(() => {
     applyThemeToDocument(theme);
@@ -260,6 +275,7 @@ export function AppShell({
           setDrawer("none");
           onOpenSettings();
         }}
+        pendingCitation={companionCitation}
       />
       {quickModal && (
         <QuickCaptureModal

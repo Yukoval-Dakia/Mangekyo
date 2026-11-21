@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError, remember, remembered, requestId } from '../api';
 import { Icon } from '../icons';
+import { roomPath } from '../classroom-contract';
 import { openLink, todayParams, type ActivityRef, type Duration } from '../today-pack';
 import {
   BreathDot,
@@ -181,12 +182,51 @@ const DEFAULT_BUILTIN_PACKS: readonly BuiltinPackEntry[] = [
   },
 ];
 
-const DURATION_OPTIONS: readonly { value: Duration | undefined; label: string }[] = [
-  { value: undefined, label: '全部时长' },
-  { value: '3min', label: '3 分钟' },
-  { value: '15min', label: '15 分钟' },
-  { value: '45min+', label: '45 分钟+' },
+const FREE_TIME_OPTIONS: readonly { value: Duration | undefined; label: string }[] = [
+  { value: undefined, label: '不限' },
+  { value: '3min', label: '3分' },
+  { value: '15min', label: '15分' },
+  { value: '45min+', label: '45分+' },
 ];
+
+const ANSWER_MODE_OPTIONS: readonly { value: TodayMode; label: string }[] = [
+  { value: 'any', label: '常规' },
+  { value: 'one-hand', label: '单手点选' },
+  { value: 'voice', label: '语音作答' },
+];
+
+function answerModeLabel(mode: TodayMode): string {
+  return ANSWER_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? '常规';
+}
+
+type ActiveRoom = { id: string; topic: string; activeStepTitle?: string };
+
+function ResumeRoomStrip({
+  room,
+  onNavigate,
+}: {
+  room: ActiveRoom;
+  onNavigate?: ((href: string) => void) | undefined;
+}) {
+  const href = roomPath(room.id);
+  return (
+    <a
+      className="tv2-resume"
+      href={href}
+      onClick={(event) => handleSpaNavigation(event, href, onNavigate)}
+    >
+      <Dot />
+      <span className="tv2-resume-copy">
+        <strong>继续课堂</strong>
+        <span className="tv2-resume-sep" aria-hidden="true">·</span>
+        <span>{room.topic.trim() || '未命名课堂'}{room.activeStepTitle ? ` · ${room.activeStepTitle}` : ''}</span>
+      </span>
+      <span className="tv2-resume-cue" aria-hidden="true">
+        <Icon name="chevron" />
+      </span>
+    </a>
+  );
+}
 
 const GOAL_LABELS: Record<GoalStatus, string> = {
   active: '进行中',
@@ -418,6 +458,8 @@ export function TodaySurface({
   const [mutationError, setMutationError] = useState('');
   const [dismissedConfirmKeys, setDismissedConfirmKeys] = useState<string[]>([]);
   const [confirmingKey, setConfirmingKey] = useState('');
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [activeRoom, setActiveRoom] = useState<ActiveRoom | null>(null);
   const [basisOpen, toggleBasis] = useToggle();
   const [goalOpen, toggleGoal] = useToggle();
   const [overviewOpen, toggleOverview] = useToggle();
@@ -465,6 +507,40 @@ export function TodaySurface({
       });
     return () => controller.abort();
   }, [reloadTick]);
+
+  useEffect(() => {
+    if (!navigator.onLine) {
+      setActiveRoom(null);
+      return;
+    }
+    const controller = new AbortController();
+    void api<{ items?: ActiveRoom[] }>('/classrooms?status=active', {
+      signal: controller.signal,
+      cache: 'no-store',
+    })
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        const room = Array.isArray(value?.items)
+          ? value.items.find((item) => item && typeof item.id === 'string' && item.id.length > 0)
+          : undefined;
+        setActiveRoom(room ?? null);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setActiveRoom(null);
+      });
+    return () => controller.abort();
+  }, [reloadTick]);
+
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    function dismiss(event: MouseEvent) {
+      if (!(event.target instanceof Element) || !event.target.closest('.tv2-mode-menu')) {
+        setModeMenuOpen(false);
+      }
+    }
+    document.addEventListener('click', dismiss);
+    return () => document.removeEventListener('click', dismiss);
+  }, [modeMenuOpen]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1072,8 +1148,6 @@ export function TodaySurface({
   }
 
   const showBuiltinPacks = Boolean(emptyLibrary || noModel || scheduledCandidates.length === 0);
-  const oneHandHref = '/today?' + todayParams('one-hand', '3min');
-  const standardModeHref = '/today?' + todayParams('any', undefined);
   const undoableRules = plan.rules.filter(
     (rule) =>
       (rule.data.kind === 'defer' && Boolean(rule.data.until) && rule.data.until! > plan.day) ||
@@ -1091,10 +1165,26 @@ export function TodaySurface({
             {formatDayLabel(plan.day)}
             {campaignText && ` · ${campaignText}`}
             {mode === 'one-hand' && ' · 单手模式'}
+            {mode === 'voice' && ' · 语音模式'}
           </span>
         </div>
-        <nav className="tv2-seg" aria-label="可用时间">
-          {DURATION_OPTIONS.map((option) => {
+        <div className="tv2-bar-actions">
+          <a
+            className="tv2-btn tv2-btn--ghost tv2-btn--sm"
+            href="/classroom"
+            onClick={(event) => handleSpaNavigation(event, '/classroom', onNavigate)}
+          >
+            开新课
+          </a>
+        </div>
+      </header>
+
+      {activeRoom && <ResumeRoomStrip room={activeRoom} onNavigate={onNavigate} />}
+
+      <div className="tv2-filterline">
+        <span className="tv2-filterline-label">现在有空：</span>
+        <nav className="tv2-seg tv2-seg--compact" aria-label="可用时间">
+          {FREE_TIME_OPTIONS.map((option) => {
             const href = '/today?' + todayParams(mode, option.value);
             const active = duration === option.value;
             return (
@@ -1109,7 +1199,39 @@ export function TodaySurface({
             );
           })}
         </nav>
-      </header>
+        <div className="tv2-mode-menu">
+          <button
+            type="button"
+            className="tv2-btn tv2-btn--ghost tv2-btn--sm"
+            aria-haspopup="listbox"
+            aria-expanded={modeMenuOpen}
+            onClick={() => setModeMenuOpen((current) => !current)}
+          >
+            作答方式：{answerModeLabel(mode)} ▾
+          </button>
+          {modeMenuOpen && (
+            <div className="tv2-mode-menu-pop" role="listbox" aria-label="作答方式">
+              {ANSWER_MODE_OPTIONS.map((option) => {
+                const href = '/today?' + todayParams(option.value, duration);
+                return (
+                  <a
+                    key={option.value}
+                    role="option"
+                    aria-selected={mode === option.value}
+                    href={href}
+                    onClick={(event) => {
+                      setModeMenuOpen(false);
+                      handleSpaNavigation(event, href, onNavigate);
+                    }}
+                  >
+                    {option.label}
+                  </a>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
 
       {mutationError && (
         <p className="tv2-error" role="alert">
@@ -1250,23 +1372,6 @@ export function TodaySurface({
         </div>
 
         <div className="tv2-exits" role="group" aria-label="快速切换与休息">
-          {mode === 'one-hand' ? (
-            <a
-              className="tv2-btn tv2-btn--tonal"
-              href={standardModeHref}
-              onClick={(event) => handleSpaNavigation(event, standardModeHref, onNavigate)}
-            >
-              恢复标准模式
-            </a>
-          ) : (
-            <a
-              className="tv2-btn tv2-btn--tonal"
-              href={oneHandHref}
-              onClick={(event) => handleSpaNavigation(event, oneHandHref, onNavigate)}
-            >
-              3 分钟单手
-            </a>
-          )}
           {plan.resting ? (
             restRule && (
               <button

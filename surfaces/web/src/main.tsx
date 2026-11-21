@@ -29,6 +29,8 @@ import {
 } from './workspace';
 import { Today } from './today';
 import { AppShell, destinations } from './shell/AppShell';
+import { IntakeSurface, TodaySurface } from './today-v2';
+import type { Duration } from './today-pack';
 import './styles/tokens.css';
 import './styles.css';
 import './shell.css';
@@ -125,6 +127,8 @@ function App() {
   const catalogOnly = path === '/materials' && new URLSearchParams(routeState.search).get('view') === 'iqdb';
   const posttest = path === '/today' ? new URLSearchParams(routeState.search).get('posttest') : null;
   const paperDetail = /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}$/.test(path);
+  const [aiActivityRequest, setAiActivityRequest] = useState(0);
+  const [companionCitation, setCompanionCitation] = useState<{ title: string; text: string; topic?: string; seq: number } | undefined>(undefined);
   const needsOverview = !printPaperMatch && !catalogOnly && posttest === null && !paperDetail;
   const library = useResource<Workspace>(needsOverview ? '/workspace' : null);
   const chats = useResource<ChatLink[]>(needsOverview ? '/conversations' : null);
@@ -165,6 +169,9 @@ function App() {
     setNotice('');
     setDialog(kind);
   }
+  function citeToCompanion(citation: { title: string; text: string; topic?: string }) {
+    setCompanionCitation({ ...citation, seq: Date.now() });
+  }
   function close() {
     if (path === '/textbooks/page' && (dialog === 'textbook-access' || dialog === 'settings')) setTextbookVersion(n => n + 1);
     setDialog(null);
@@ -179,7 +186,29 @@ function App() {
     ) : (
       <p role="status">正在打开对话…</p>
     );
-  else if (path === '/today') content = <Today key={routeKey} />;
+  else if (path === '/today') {
+    if (posttest !== null) content = <Today key={routeKey} />;
+    else {
+      const params = new URLSearchParams(routeState.search);
+      const modeParam = params.get('mode');
+      const mode = modeParam === 'one-hand' || modeParam === 'voice' ? modeParam : 'any';
+      const durationParam = params.get('duration');
+      const duration: Duration | undefined =
+        durationParam === '3min' || durationParam === '15min' || durationParam === '45min+' ? durationParam : undefined;
+      content = (
+        <TodaySurface
+          key={routeKey}
+          mode={mode}
+          {...(duration ? { duration } : {})}
+          emptyLibrary={library.data !== undefined && (library.data.materials ?? []).length === 0}
+          noModel={Boolean(settings.error)}
+          onNavigate={navigate}
+          onOpenAiActivity={() => setAiActivityRequest(Date.now())}
+          onCiteToCompanion={citeToCompanion}
+        />
+      );
+    }
+  }
   else if (catalogOnly) content = <QuestionBank />;
   else if (path === '/materials') content = <Materials library={library} capture={() => open('material')} />;
   else if (path === '/materials/workspace') content = <WorkspaceLibrary key={routeKey} />;
@@ -189,7 +218,7 @@ function App() {
       <StudioTextbooks key={textbookVersion} openAccess={() => open('textbook-access')} editor={path.endsWith('/page')} />
     </Suspense>
   );
-  else if (path === '/intake') content = <Intake />;
+  else if (path === '/intake') content = <IntakeSurface onNavigate={navigate} />;
   else if (path === '/review') content = <Mistakes />;
   else if (path === '/papers/issued') content = <IssuedPapers />;
   else if (path === '/papers' || path.startsWith('/papers/')) {
@@ -233,6 +262,8 @@ function App() {
         materials={library.data?.materials ?? []}
         onNavigate={href => navigate(href)}
         onOpenSettings={() => open('settings')}
+        aiActivityRequest={aiActivityRequest}
+        companionCitation={companionCitation}
         onSavedMaterial={href => {
           library.reload();
           navigate(href);

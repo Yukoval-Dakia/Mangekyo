@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { api, sessionPath, type Session, type Settings, type Turn } from "../api";
 import { useConversation } from "../conversation";
 import { Icon } from "../icons";
@@ -233,6 +233,7 @@ export function CompanionDrawer({
   onClose,
   onOpenCompanion,
   onOpenSettings,
+  pendingCitation,
 }: {
   open: boolean;
   route: string;
@@ -242,6 +243,7 @@ export function CompanionDrawer({
   onClose: () => void;
   onOpenCompanion: (href: string) => void;
   onOpenSettings: () => void;
+  pendingCitation?: { title: string; text: string; topic?: string; seq: number } | undefined;
 }) {
   const [purpose, setPurpose] = useState<Purpose>("daily");
   const [quote, setQuote] = useState("");
@@ -250,6 +252,7 @@ export function CompanionDrawer({
   const [activeSession, setActiveSession] = useState<Session | undefined>(undefined);
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionError, setSessionError] = useState("");
+  const lastCitationSeq = useRef(0);
 
   useEffect(() => {
     if (!open) return;
@@ -258,6 +261,18 @@ export function CompanionDrawer({
     setContextTitle(heading || pageLabel);
     setSelectedText(selection);
   }, [open, route, pageLabel]);
+
+  useEffect(() => {
+    if (!pendingCitation || pendingCitation.seq === lastCitationSeq.current) return;
+    lastCitationSeq.current = pendingCitation.seq;
+    const topic = pendingCitation.topic?.trim();
+    const excerpt = pendingCitation.text.trim() || pendingCitation.title.trim();
+    setQuote(
+      `【引用学习项：${pendingCitation.title.trim()}】` +
+        (topic ? `\n主题：${topic}` : "") +
+        `\n${excerpt.slice(0, 800)}`,
+    );
+  }, [pendingCitation]);
 
   function citeCurrent() {
     const excerpt = selectedText || contextTitle || pageLabel;
