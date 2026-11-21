@@ -5,6 +5,7 @@ import { creation, object } from '../values.ts';
 import { frozenWorkbookSubmission } from '../question-assessment.ts';
 import { readFrozenWorkbookBank } from '../workbook-bank.ts';
 import { practiceCustodyId, readPracticeCustody } from '../sealed-practice.ts';
+import { authorizeWorkbookSubmissionAttachments } from '../workbook-attachments.ts';
 import {
   checkWorkbookPacingItems,
   gradeWorkbook,
@@ -47,8 +48,14 @@ export default defineCommand({
       checkWorkbookPacingItems(paper, data.pacing);
     }
     await readFrozenWorkbookBank(ctx.read, paper);
-    const graded = gradeWorkbook(paper, data.answers);
-    if (paper.assessmentRelease) frozenWorkbookSubmission(paper.assessmentRelease, { id, rev: 1 as Revision }, graded.answers);
+    const graded = gradeWorkbook(paper, data.answers, data.questionAttachments);
+    const requiredPurposes = paper.assessmentRelease
+      ? [storagePurpose, workbookAssessmentPurpose]
+      : [storagePurpose];
+    const basis = await authorizeWorkbookSubmissionAttachments(
+      ctx, fact.ref.id, data.questionAttachments, requiredPurposes,
+    );
+    if (paper.assessmentRelease) frozenWorkbookSubmission(paper.assessmentRelease, { id, rev: 1 as Revision }, graded.answers, data.questionAttachments);
     return [
       {
         kind: 'create',
@@ -63,6 +70,8 @@ export default defineCommand({
             : workbookGradingVersion,
           paper,
           answers: graded.answers,
+          ...(data.questionAttachments === undefined ? {} : { questionAttachments: data.questionAttachments }),
+          ...(basis === undefined ? {} : { basis }),
           feedback: graded.feedback,
           ...(data.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: data.effectiveDurationMs }),
           ...(data.paperRev === undefined ? {} : { paperRev: data.paperRev }),

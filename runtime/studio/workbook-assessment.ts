@@ -28,6 +28,7 @@ import {
   workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
   workbookFormalAssessmentType, workbookPaper, workbookPaperType, WorkbookSourceMismatch, type WorkbookDraft, type WorkbookPaper,
 } from '../../modules/activity/workbook-values.ts';
+import { verifyWorkbookAttachmentManifestInputs, type WorkbookAttachmentEvidence } from '../../modules/activity/workbook-attachments.ts';
 import {
   assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment,
   type AssessmentScope,
@@ -66,6 +67,7 @@ export type WorkbookAssessmentRoute = {
     readonly criterionId: string;
     readonly maximum: number | null;
     readonly answer: string;
+    readonly attachments?: readonly WorkbookAttachmentEvidence[];
     readonly maxOutputTokens: number;
   }): Promise<Json>;
 };
@@ -153,7 +155,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
 
     try {
       const snapshot = await gatherSnapshot(assessmentDb, { learner, purpose: activePolicy.purpose }, async ({ read }) => {
-        return gatherWorkbookAssessment(read, scope);
+        return gatherWorkbookAssessment(read, scope, readFailure);
       });
       const sealed = await sealCandidate(assessmentDb, ref, activePolicy, snapshot);
       if (sealed.kind !== 'sealed') return;
@@ -162,7 +164,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
         return;
       }
       // Only this adapter writes the versioned gather plan. Use the sealed copy on activity retry.
-      const { release, submission, questions, consent, independent } = sealed.plan.data as FrozenWorkbookAssessmentInputs;
+      const { release, submission, questions, questionAttachments, consent, independent } = sealed.plan.data as FrozenWorkbookAssessmentInputs;
       const authorize = async (tx: ReadTransaction) => {
         if (!(await readReadyWork(tx, ref)) || (await revalidateManifest(tx, sealed.manifest)).kind !== 'valid')
           throw new AssessmentInputUnavailable();
@@ -176,8 +178,9 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
             continue;
           }
           const answer = submission.answers.find(entry => entry.itemId === itemId)?.value;
+          const attachments = questionAttachments?.[itemId];
           const key = { itemId, criterionId: criterion.criterionId };
-          if (answer?.kind !== 'text') {
+          if (answer?.kind !== 'text' && !(answer?.kind === 'attachment' && attachments?.length)) {
             evaluated.push({ outcome: { ...key, state: 'unsubmitted', reason: '未交此作答位。' } });
             continue;
           }
@@ -190,7 +193,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
           }
           const { prompt, rubric } = questions[itemId]!;
           const stepKey = JSON.stringify([itemId, criterion.criterionId]);
-          const input = { prompt, rubric, ...key, answer: answer.value, maximum: criterion.maximum, maxOutputTokens };
+          const input = { prompt, rubric, ...key, answer: answer?.kind === 'text' ? answer.value : '', ...(attachments?.length ? { attachments } : {}), maximum: criterion.maximum, maxOutputTokens };
           const effect = await runEffect(db, {
             learner, ownerKind: 'derivation', ownerId: sealed.id, stepKey, label: effectLabel,
             input: { ...input, evaluator: criterion.evaluator, routeId },
@@ -208,7 +211,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
             const result = boundedWorkbookReply(await route.score({ providerEffectId, ...scoringInput }));
             return { providerEffectId, result, denied: false };
           }, authorize, independent ? {manifest: sealed.manifest, work: ref} : undefined);
-          evaluated.push(workbookEvaluation(key, criterion, answer.value, routeId, effect));
+          evaluated.push(workbookEvaluation(key, criterion, input.answer, routeId, effect, Boolean(attachments?.length)));
         }
       }
       const value = workbookAssessmentValue(release, submission, evaluated);
@@ -254,7 +257,7 @@ export async function readSavedWorkbookAssessment(
   const { submissionRef, releaseEpoch, submissionEpoch } = row.scope_keys;
   if (!sameRef(value.result.releaseRef, releaseRef) || !sameRef(value.result.submissionRef, submissionRef)) return;
   const manifest = parseManifest(row.manifest);
-  if (manifest.learner !== tx.learner || manifest.purpose !== selectedPolicy.purpose || manifest.inputs.length !== 2) return;
+  if (manifest.learner !== tx.learner || manifest.purpose !== selectedPolicy.purpose || manifest.inputs.length < 2) return;
   for (const [original, current, epoch, mode] of [
     [releaseRef, paper.ref, releaseEpoch, 'pinned'], [submissionRef, submission.ref, submissionEpoch, 'following'],
   ] as const) {
@@ -262,6 +265,8 @@ export async function readSavedWorkbookAssessment(
       input.rev === original.rev && input.accessEpoch === epoch && input.mode === mode)) return;
     if (!await revisionsOnlyChangeGrants(tx, original.id, original.rev, current.rev)) return;
   }
+  const extra = manifest.inputs.filter(input => !(input.kind === 'fact' && ((input.id === releaseRef.id && input.mode === 'pinned') || (input.id === submissionRef.id && input.mode === 'following'))));
+  if (extra.length !== manifest.inputs.length - 2 || (extra.length && !await verifyWorkbookAttachmentManifestInputs(createCommandReadContext(tx, selectedPolicy.purpose), extra, readFailure))) return;
   return { ...(selectedPolicy === bankPolicy ? publicBankAssessment(value) : value),
     releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
 }

@@ -1,3 +1,4 @@
+import type { FactId, Revision } from '@mangekyo/kernel';
 import {
   matchesSelectionConstraint, selectionConstraintEvaluator, validateSelectionConstraint,
 } from '@mangekyo/module-content/facts/assessment';
@@ -91,16 +92,47 @@ function bankAnswers(item: Item, raw: string) {
   });
 }
 
-export function frozenWorkbookSubmission(release: AssessmentRelease, submissionRef: AssessmentRevisionRef, answers: Record<string, WorkbookAnswer>) {
-  const submission = assessmentSubmission({ releaseRef: release.releaseRef, submissionRef, answers: release.items.flatMap(item => {
-    const answer = answers[item.itemId];
-    if (typeof answer !== 'string') return [];
-    if (answer.length > 16_000) throw new Error('自动评估作答过长。');
-    if (item.criteria.every(isLocalQuestionCriterion)) return bankAnswers(item, answer);
-    const slot = item.slots[0]!;
-    return [{ itemId: item.itemId, slotId: slot.slotId, schemaVersion: slot.schemaVersion,
-      path: '', value: { kind: 'text', value: answer } }];
-  }) }, release);
+export function frozenWorkbookSubmission(
+  release: AssessmentRelease,
+  submissionRef: AssessmentRevisionRef,
+  answers: Record<string, WorkbookAnswer>,
+  questionAttachments?: Record<string, readonly { originalId: FactId; rev: Revision }[]>,
+) {
+  const submission = assessmentSubmission({
+    releaseRef: release.releaseRef,
+    submissionRef,
+    answers: release.items.flatMap(item => {
+      const answer = answers[item.itemId];
+      const attachments = questionAttachments?.[item.itemId];
+      if (item.criteria.every(isLocalQuestionCriterion)) {
+        if (typeof answer !== 'string') return [];
+        if (answer.length > 16_000) throw new Error('自动评估作答过长。');
+        return bankAnswers(item, answer);
+      }
+      const slot = item.slots[0]!;
+      const fieldKind = slot.fields[0]?.kind;
+      if (fieldKind === 'attachment') {
+        const primary = attachments?.[0];
+        if (!primary) return [];
+        return [{
+          itemId: item.itemId,
+          slotId: slot.slotId,
+          schemaVersion: slot.schemaVersion,
+          path: '',
+          value: { kind: 'attachment' as const, ref: { id: primary.originalId, rev: primary.rev } },
+        }];
+      }
+      if (typeof answer !== 'string') return [];
+      if (answer.length > 16_000) throw new Error('自动评估作答过长。');
+      return [{
+        itemId: item.itemId,
+        slotId: slot.slotId,
+        schemaVersion: slot.schemaVersion,
+        path: '',
+        value: { kind: 'text' as const, value: answer },
+      }];
+    }),
+  }, release);
   for (const item of release.items) {
     for (const criterion of item.criteria.filter(selection)) {
       const inputs = criterionAnswers(item, criterion, submission);

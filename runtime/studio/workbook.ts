@@ -1,6 +1,6 @@
 import { storeSettledValue } from '../../kernel/src/derivations/settled-value.ts';
 import { readFactType as factType } from '../../kernel/src/commands/fact-collection.ts';
-import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
+import { assertDeletionWatermark, assertUnburned, deletionWatermark as readDeletionWatermark, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from './deletion-watermark.ts';
 import { projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, type ReviewEntry } from '../../modules/activity/workbook-views.ts';
 import { historicalWorkbookMount, openWorkbookContext, type WorkbookContextAuthority, type WorkbookQuestionWithContext } from './workbook-context.ts';
@@ -14,6 +14,7 @@ import {
   FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
 import { commandId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { newUlid } from '../../kernel/src/work/identity.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
@@ -30,16 +31,18 @@ import { workbookPaperType, workbookQuestionsView, type WorkbookAttemptView, typ
 import { recordWorkbookPresentationCommand } from '../../modules/activity/workbook-presentation.ts';
 import { includesBankReferences } from '../../modules/activity/workbook-bank.ts';
 import { recordWorkbookCorrection } from '../../modules/activity/workbook-correction.ts';
+import { captureSourceCommand } from '../../modules/capture/source.ts';
 import {
-  buildWorkbookRubricEffectInput, buildWorkbookRubricPublication, classifyWorkbookRubricError,
+  buildWorkbookRubricEffectInput, buildWorkbookRubricPublication, classifyWorkbookRubricError, hasWorkbookOnceAttachmentReuse,
   listWorkbookCorrectionIds, listWorkbookPaperIds, loadWorkbookDetail, mapWorkbookReadFailure,
   parseWorkbookAssessmentParams, prepareWorkbookSubmit, readWorkbookAttemptOrNull,
   readWorkbookPaperSnapshot, readWorkbookSourceView, resolveWorkbookRubricResult,
-  runWorkbookBankSave, runWorkbookCorrection, runWorkbookPresentation, runWorkbookSavePaper,
+  runWorkbookAttachmentUpload, runWorkbookBankSave, runWorkbookCorrection, runWorkbookPresentation, runWorkbookSavePaper,
   runWorkbookSubmitTransaction, selectWorkbookRubricAssessment, unwrapWorkbookRubricEffect,
   validateWorkbookRubricPreSend, validateWorkbookRubricRoute, workbookFactIdOf,
   type WorkbookErrorChecks,
 } from '../../modules/activity/workbook-operations.ts';
+import { digest, openIntakeObjects } from './intake-objects.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { isPracticeWorkbook, sealedPracticePaper, submitWithPracticeCustody } from './sealed-practice.ts';
@@ -85,13 +88,13 @@ type WorkbookDetailWithAssessment = WorkbookDetail & {
 };
 
 export function openWorkbook(db: Db, activity: LoadedModule, {
-  assessment = openWorkbookAssessment(db),
-  onResearchFactsChanged, context = {},
+  capture, assessment = openWorkbookAssessment(db), onResearchFactsChanged, context = {},
 }: {
-  context?: WorkbookContextAuthority;
+  capture?: LoadedModule; context?: WorkbookContextAuthority;
   assessment?: ReturnType<typeof openWorkbookAssessment>;
   onResearchFactsChanged?: CommandHooks['onFactsChanged'];
 } = {}) {
+  const objects = openIntakeObjects(db);
   const hooks = createStudioCommandHooks({
     async afterFactsChanged(tx, tick, changes) {
       await assessment.afterFactsChanged(tx, tick, changes);
@@ -230,6 +233,19 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       return get(paperId);
     },
 
+    uploadAttachment(paperValue: string, input: Parameters<typeof runWorkbookAttachmentUpload<Buffer>>[0]['input']) {
+      if (!capture) throw new RequestError(500, '原件存储模块未启用。');
+      let activeTx!: DbTransaction;
+      return runWorkbookAttachmentUpload({
+        paperValue, input, captureCommandType: captureSourceCommand, generatedRequestId: newUlid(), stableId, sha256: digest, parseWatermark: submittedWatermark, checks,
+        withOriginal: (originalId, bytes, original, run) => objects.withOriginal(originalId, bytes, original, (_, install) => run(install)),
+        locked: run => locked(tx => { activeTx = tx; return run(); }),
+        assertUnburned: (kind, ids) => assertUnburned(activeTx, kind, ids), assertDeletionWatermark: wm => assertDeletionWatermark(activeTx, wm), readDeletionWatermark: () => readDeletionWatermark(activeTx),
+        readPaperSnapshot: pid => readPaperSnapshot(activeTx, pid), readRecordedCommand: cid => readRecordedCommand(activeTx, cid), read: () => createCommandReadContext(activeTx, storagePurpose),
+        captureSource: req => createCommandHandler(withinLearnerTransaction(db, activeTx), { modules: [capture], hooks: createStudioCommandHooks() })({ learner: studioLearner, actor: 'learner', purpose: storagePurpose, type: captureSourceCommand, ...req }),
+      });
+    },
+
     async submit(id: string, input: unknown): Promise<WorkbookDetailWithAssessment> {
       const prepared = prepareWorkbookSubmit(id, input, new Date().toISOString(), stableId, checks);
       const deletionWatermark = submittedWatermark(input);
@@ -242,6 +258,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
         readAttemptOrNull: aid => readAttemptOrNull(tx, aid),
         readRecordedCommand: cid => readRecordedCommand(tx, cid),
         read: () => createCommandReadContext(tx, storagePurpose),
+        hasOnceAttachmentReuse: (attemptId, onceIds) => hasWorkbookOnceAttachmentReuse(tx, attemptId, onceIds),
         checkFrozenSubmission: frozenSubmission,
         async submitCommand(pending, request) {
           const local = withinLearnerTransaction(db, tx);
@@ -264,6 +281,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           paperId, attemptId, questionId: request.questionId, stableId, fail: checks.fail,
           readPaper: pid => readPaper(tx, pid), readAttemptOrNull: aid => readAttemptOrNull(tx, aid),
           read: () => createCommandReadContext(tx, storagePurpose),
+          unavailable: factUnavailable,
           allAssessments: (pid, aid) => allAssessments(tx, pid, aid),
         });
         const { rows } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner]);

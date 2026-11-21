@@ -71,6 +71,18 @@ import {
   type WorkbookSourceView,
 } from './workbook-values.ts';
 import { projectWorkbookDetail, type readWorkbookAttempts } from './workbook-views.ts';
+import {
+  buildWorkbookAttachmentSourceEnvelope,
+  parseWorkbookAttachmentSource,
+  prepareWorkbookAttachmentUpload,
+  readWorkbookQuestionAttachments,
+  uniqueWorkbookAttachmentIds,
+  workbookAttachmentErrorStatus,
+  workbookAttachmentRecordedAt,
+  workbookAttachmentUrl,
+  type WorkbookAttachmentUploadReceipt,
+  type WorkbookQuestionAttachments,
+} from './workbook-attachments.ts';
 
 export class UncertainRubricEffect extends Error {}
 
@@ -161,6 +173,19 @@ export async function listWorkbookCorrectionIds(
   return rows.map(({ id }) => id);
 }
 
+export async function hasWorkbookOnceAttachmentReuse(
+  tx: ActivityEvidenceReadScope,
+  attemptId: FactId,
+  onceIds: readonly FactId[],
+): Promise<boolean> {
+  const { rows } = await tx.query<{ found: number }>(
+    `SELECT 1 AS found FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+     WHERE f.learner_id=$1 AND f.type=$2 AND f.id<>$3 AND f.retracted_rev IS NULL
+       AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.data->'basis','[]'::jsonb)) b WHERE b->>'id'=ANY($4::text[])) LIMIT 1`,
+    [tx.learner, workbookAttemptType, attemptId, onceIds],
+  );
+  return rows.length > 0;
+}
 export type WorkbookPaperSnapshot =
   | { paper: WorkbookPaper; revision: Revision; pending: true; epoch?: undefined }
   | { paper: WorkbookPaper; revision: Revision; epoch: string; pending?: undefined };
@@ -480,6 +505,7 @@ export type PreparedWorkbookSubmit = {
   readonly paperId: FactId;
   readonly data: WorkbookAttemptRequest;
   readonly attemptId: FactId;
+  readonly attachmentIds: readonly FactId[];
   readonly paperRev: Revision | undefined;
   readonly versioned: boolean;
   readonly legacyCommand: CommandId;
@@ -501,16 +527,119 @@ export function prepareWorkbookSubmit(
     invalidWorkbookInput(error, '作答格式无效。', checks);
   }
   const attemptId = factId(stableId('workbook-attempt', paperId, data.requestId));
+  const attachmentIds = uniqueWorkbookAttachmentIds(data.questionAttachments);
   const paperRev = data.paperRev;
   return {
     paperId,
     data,
     attemptId,
+    attachmentIds,
     paperRev,
     versioned: paperRev !== undefined,
     legacyCommand: commandId(stableId('submit-workbook-attempt', attemptId)),
     versionedCommand: commandId(stableId('submit-versioned-workbook-attempt', data.requestId)),
   };
+}
+
+export async function runWorkbookAttachmentUpload<TBytes extends Uint8Array>(ports: {
+  paperValue: string;
+  input: {
+    readonly bytes: TBytes;
+    readonly filename?: unknown;
+    readonly declaredType?: unknown;
+    readonly itemId?: unknown;
+    readonly requestId?: unknown;
+    readonly scope?: unknown;
+    readonly deletionWatermark?: unknown;
+  };
+  captureCommandType: string;
+  generatedRequestId: string;
+  stableId: (...parts: string[]) => string;
+  sha256: (bytes: TBytes) => string;
+  parseWatermark: (input: { deletionWatermark: unknown }) => string;
+  checks: Pick<WorkbookErrorChecks, 'fail' | 'isRequestError' | 'isReadDenied'>;
+  withOriginal: <T>(
+    originalId: FactId,
+    bytes: TBytes,
+    original: { name: string; mediaType: string; size: number; sha256: string },
+    run: (install: () => Promise<void>) => Promise<T>,
+  ) => Promise<T>;
+  locked: <T>(run: () => Promise<T>) => Promise<T>;
+  assertUnburned: (kind: 'fact' | 'command', ids: readonly string[]) => Promise<void>;
+  assertDeletionWatermark: (watermark: string) => Promise<void>;
+  readDeletionWatermark: () => Promise<string>;
+  readPaperSnapshot: (paperId: FactId) => Promise<WorkbookPaperSnapshot>;
+  readRecordedCommand: (id: CommandId) => Promise<{ type: string; state: string; input: unknown } | null | undefined>;
+  read: () => ReadContext;
+  captureSource: (request: {
+    id: CommandId;
+    deletionWatermark?: string;
+    input: { id: FactId; envelope: JsonObject; purpose: string[] };
+  }) => Promise<{ state: string }>;
+}): Promise<{ receipt: WorkbookAttachmentUploadReceipt; watermark: string }> {
+  const paperId = workbookFactIdOf(ports.paperValue, '找不到这份试卷。', ports.checks.fail);
+  const explicitWatermark = ports.input.deletionWatermark === undefined
+    ? undefined : ports.parseWatermark({ deletionWatermark: ports.input.deletionWatermark });
+  let prepared;
+  try {
+    prepared = prepareWorkbookAttachmentUpload({ ...ports.input, generatedRequestId: ports.generatedRequestId });
+  } catch (error) {
+    const status = workbookAttachmentErrorStatus(error);
+    if (status) ports.checks.fail(status, (error as Error).message);
+    invalidWorkbookInput(error, '单题图片上传请求无效。', ports.checks);
+  }
+  const originalId = factId(ports.stableId('workbook-attachment', paperId, prepared.requestId));
+  const cmdId = commandId(ports.stableId('capture-workbook-attachment', paperId, prepared.requestId));
+  const sha256 = ports.sha256(ports.input.bytes);
+  const original = { name: prepared.name, mediaType: prepared.mimeType, size: prepared.size, sha256 };
+  try {
+    return await ports.withOriginal(originalId, ports.input.bytes, original, install => ports.locked(async () => {
+      await ports.assertUnburned('fact', [paperId, originalId]);
+      await ports.assertUnburned('command', [cmdId]);
+      if (explicitWatermark !== undefined) await ports.assertDeletionWatermark(explicitWatermark);
+      const watermark = explicitWatermark ?? await ports.readDeletionWatermark();
+      const { paper } = await ports.readPaperSnapshot(paperId);
+      if (prepared.itemId !== undefined && !paper.questions.some(question => question.id === prepared.itemId)) {
+        ports.checks.fail(400, '所选题号不在目标试卷中。');
+      }
+      const prior = await ports.readRecordedCommand(cmdId);
+      if (prior && prior.type !== ports.captureCommandType) {
+        ports.checks.fail(409, '同一个请求标识已用于其他操作。');
+      }
+      const existing = prior ? await ports.read().fact(originalId, { mode: 'following' }) : null;
+      const recordedAt = (existing && workbookAttachmentRecordedAt(existing)) ?? new Date().toISOString();
+      const envelope = buildWorkbookAttachmentSourceEnvelope({
+        originalId, paperId, ...(prepared.itemId === undefined ? {} : { itemId: prepared.itemId }),
+        scope: prepared.scope, name: prepared.name, title: prepared.title,
+        mimeType: prepared.mimeType, size: prepared.size, sha256, recordedAt,
+      });
+      const saved = await ports.captureSource({
+        id: cmdId,
+        ...(explicitWatermark === undefined ? {} : { deletionWatermark: explicitWatermark }),
+        input: { id: originalId, envelope, purpose: [...prepared.purpose] },
+      });
+      if (saved.state !== 'done') ports.checks.fail(409, '附件保存未完成。');
+      if (!prior) await install();
+      return {
+        watermark,
+        receipt: {
+          originalId,
+          rev: (existing?.ref.rev ?? 1) as Revision,
+          url: workbookAttachmentUrl(originalId),
+          mimeType: prepared.mimeType,
+          scope: prepared.scope,
+        },
+      };
+    }));
+  } catch (error) {
+    if (ports.checks.isReadDenied(error) || error instanceof FactNotFoundError) {
+      ports.checks.fail(409, '附件原件状态已变更。');
+    }
+    if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
+      ports.checks.fail(409, '同一个请求标识已经用于不同的附件。');
+    }
+    throw error;
+  }
 }
 
 export async function runWorkbookSubmitTransaction(ports: {
@@ -524,7 +653,13 @@ export async function runWorkbookSubmitTransaction(ports: {
   readAttemptOrNull: (attemptId: FactId) => Promise<WorkbookAttempt | null>;
   readRecordedCommand: (id: CommandId) => Promise<{ type: string; state: string; input: unknown } | null | undefined>;
   read: () => ReadContext;
-  checkFrozenSubmission: (release: NonNullable<WorkbookPaper['assessmentRelease']>, ref: { id: FactId; rev: Revision }, answers: Record<string, WorkbookAnswer>) => void;
+  hasOnceAttachmentReuse: (attemptId: FactId, onceIds: readonly FactId[]) => Promise<boolean>;
+  checkFrozenSubmission: (
+    release: NonNullable<WorkbookPaper['assessmentRelease']>,
+    ref: { id: FactId; rev: Revision },
+    answers: Record<string, WorkbookAnswer>,
+    questionAttachments?: WorkbookQuestionAttachments,
+  ) => void;
   submitCommand: (
     pending: boolean,
     request: {
@@ -537,12 +672,12 @@ export async function runWorkbookSubmitTransaction(ports: {
     },
   ) => Promise<void>;
 }) {
-  const { paperId, data, attemptId, paperRev, versioned, legacyCommand, versionedCommand } = ports.prepared;
+  const { paperId, data, attemptId, attachmentIds, paperRev, versioned, legacyCommand, versionedCommand } = ports.prepared;
   function conflict(): never {
     ports.checks.fail(409, '同一个提交标识已经用于不同的作答。');
   }
   try {
-    await ports.assertUnburned('fact', [attemptId, paperId]);
+    await ports.assertUnburned('fact', [attemptId, paperId, ...attachmentIds]);
     await ports.assertDeletionWatermark(ports.deletionWatermark);
     const snapshot = await ports.readPaperSnapshot(paperId);
     const sealed = Boolean(snapshot.pending) || await ports.isPracticeWorkbook(paperId);
@@ -580,18 +715,31 @@ export async function runWorkbookSubmitTransaction(ports: {
     let graded: ReturnType<typeof gradeWorkbook>;
     try {
       checkWorkbookPacingItems(paper, data.pacing);
-      graded = gradeWorkbook(paper, data.answers);
+      graded = gradeWorkbook(paper, data.answers, data.questionAttachments);
       if (paper.assessmentRelease) {
-        ports.checkFrozenSubmission(paper.assessmentRelease, { id: attemptId, rev: 1 as Revision }, graded.answers);
+        ports.checkFrozenSubmission(paper.assessmentRelease, { id: attemptId, rev: 1 as Revision }, graded.answers, data.questionAttachments);
       }
     } catch (error) {
       invalidWorkbookInput(error, '作答格式无效。', ports.checks);
     }
     if (existing) {
-      if (!sameWorkbookJson(existing.answers, graded.answers) || existing.assessmentConsent !== data.assessmentConsent) {
+      if (!sameWorkbookJson(existing.answers, graded.answers) || existing.assessmentConsent !== data.assessmentConsent ||
+          !sameWorkbookJson(existing.questionAttachments ?? null, data.questionAttachments ?? null)) {
         conflict();
       }
       return;
+    }
+    if (attachmentIds.length) {
+      const read = ports.read();
+      const onceIds: FactId[] = [];
+      for (const attachmentId of attachmentIds) {
+        if (parseWorkbookAttachmentSource(await read.fact(attachmentId, { mode: 'following' }), paperId)?.scope === 'once') {
+          onceIds.push(attachmentId);
+        }
+      }
+      if (onceIds.length && await ports.hasOnceAttachmentReuse(attemptId, onceIds)) {
+        ports.checks.fail(409, '仅本次使用的图片附件已绑定到其他作答，请重新上传。');
+      }
     }
     await ports.submitCommand(Boolean(snapshot.pending), {
       ...envelope,
@@ -600,8 +748,10 @@ export async function runWorkbookSubmitTransaction(ports: {
       id: versioned ? versionedCommand : legacyCommand,
     });
   } catch (error) {
+    const status = workbookAttachmentErrorStatus(error);
+    if (status) ports.checks.fail(status, (error as Error).message);
     if (ports.checks.isReadDenied(error) || error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch) {
-      ports.checks.fail(403, '这份试卷当前不可读取。');
+      ports.checks.fail(403, '这份试卷或所选附件当前不可读取。');
     }
     if (error instanceof WorkbookRevisionMismatch) ports.checks.fail(409, error.message);
     if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
@@ -637,6 +787,7 @@ export async function selectWorkbookRubricAssessment(ports: {
   readPaper: (paperId: FactId) => Promise<WorkbookPaper>;
   readAttemptOrNull: (attemptId: FactId) => Promise<WorkbookAttempt | null>;
   read: () => ReadContext;
+  unavailable: (error: unknown) => boolean;
   allAssessments: (paperId: FactId, assessmentId: FactId) => Promise<Map<string, WorkbookRubricAssessmentView[]>>;
 }) {
   const paper = await ports.readPaper(ports.paperId);
@@ -657,6 +808,22 @@ export async function selectWorkbookRubricAssessment(ports: {
       id: source,
       rev: record.ref.rev,
       accessEpoch: record.accessEpoch,
+      mode: 'following' as const,
+    });
+  }
+  const attached = await readWorkbookQuestionAttachments(
+    attachmentId => reads.fact(attachmentId, { mode: 'following' }).catch(error => {
+      if (ports.unavailable(error)) return null;
+      throw error;
+    }),
+    attempt, question.id,
+  );
+  for (const { basis } of attached) {
+    manifestInputs.push({
+      kind: 'fact' as const,
+      id: basis.id,
+      rev: basis.rev,
+      accessEpoch: basis.epoch,
       mode: 'following' as const,
     });
   }

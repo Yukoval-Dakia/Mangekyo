@@ -1,8 +1,9 @@
-import type { FactId, Json, JsonObject, ReadContext, Revision } from '@mangekyo/kernel';
+import { FactNotFoundError, type FactId, type Json, type JsonObject, type ReadContext, type Revision } from '@mangekyo/kernel';
 import {
   assessmentRelease, assessmentResult, formalAssessmentValue, type FormalAssessmentValue, type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease,
   type AssessmentResult, type AssessmentRevisionRef, type AssessmentSubmission,
 } from './assessment-values.ts';
+import { readWorkbookQuestionAttachments, type WorkbookAttachmentEvidence } from './workbook-attachments.ts';
 import {
   independentlyAuthoredPaper, sameWorkbookJson, workbookAssessmentConsent, workbookAttempt, workbookAttemptType,
   workbookCorrectCount, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookAttemptView, type WorkbookDraft,
@@ -89,8 +90,8 @@ export function prepareWorkbookRelease(value: unknown, paperId: FactId, draft: W
     const slot = item.slots[0];
     if (question?.kind !== 'rubric' || !sameAssessmentRef(item.promptRef, releaseRef) || item.workRef ||
         item.slots.length !== 1 || slot?.fields.length !== 1 ||
-        slot.fields[0]?.kind !== 'text' || slot.fields[0]?.path !== '') {
-      throw new Error('该发放入口仅支持引用本卷题面的单文字作答位评分标准题。');
+        !['text', 'attachment'].includes(slot.fields[0]?.kind ?? '') || slot.fields[0]?.path !== '') {
+      throw new Error('该发放入口仅支持引用本卷题面的单文字或单附件作答位评分标准题。');
     }
     const criteria = item.criteria.map(criterion => {
       const provided = criterion.parameters as JsonObject | null;
@@ -132,6 +133,7 @@ export function workbookEvaluation(
   answer: string,
   routeId: string,
   effect: { kind: 'unknown'; providerEffectId: string | null } | { kind: 'done'; result: Json },
+  hasAttachments = false,
 ): WorkbookEvaluation {
   if (effect.kind === 'unknown') {
     return {
@@ -148,7 +150,7 @@ export function workbookEvaluation(
     if (reply.state === 'insufficient-evidence') {
       return { outcome: { ...key, state: 'insufficient-evidence', reason: '作答无法支持该标准的正式判断。' }, receipt: observed };
     }
-    if (text(reply.feedback, 1500) && text(reply.quote, 500) && answer.includes(reply.quote)) {
+    if (text(reply.feedback, 1500) && text(reply.quote, 500) && (answer.includes(reply.quote) || hasAttachments)) {
       const evidence = criterion.inputs;
       const verified = { ...observed, quote: reply.quote };
       if (reply.state === 'qualitative' && criterion.maximum === null) {
@@ -209,13 +211,17 @@ export type FrozenWorkbookAssessmentInputs = {
   release: AssessmentRelease;
   submission: AssessmentSubmission;
   questions: Record<string, { prompt: string; rubric: string }>;
+  questionAttachments?: Record<string, readonly WorkbookAttachmentEvidence[]>;
   consent: boolean;
   independent?: boolean;
 };
 
+const defaultAttachmentUnavailable = (error: unknown) =>
+  error instanceof FactNotFoundError || (error instanceof Error && error.name === 'FactReadDeniedError');
+
 export async function gatherWorkbookAssessment(read: Pick<ReadContext, 'fact'>, scope: {
   releaseRef: AssessmentRevisionRef; submissionRef: AssessmentRevisionRef; releaseEpoch: string; submissionEpoch: string;
-}) {
+}, unavailable: (error: unknown) => boolean = defaultAttachmentUnavailable) {
   const sameRef = sameAssessmentRef;
   const { releaseRef, submissionRef } = scope;
   const attemptFact = await read.fact(submissionRef.id, { mode: 'following' });
@@ -230,11 +236,28 @@ export async function gatherWorkbookAssessment(read: Pick<ReadContext, 'fact'>, 
       !sameWorkbookJson(release, attempt.paper.assessmentRelease) || attempt.paperId !== releaseRef.id) {
     throw new AssessmentInputUnavailable();
   }
+  const openAttachment = (id: FactId) => read.fact(id, { mode: 'following' }).catch(error => {
+    if (unavailable(error)) return null;
+    throw error;
+  });
+  const attachmentEntries: [string, readonly WorkbookAttachmentEvidence[]][] = [];
+  for (const item of release.items) {
+    const expected = attempt.questionAttachments?.[item.itemId];
+    if (expected?.length) {
+      const verified = await readWorkbookQuestionAttachments(openAttachment, attempt, item.itemId);
+      if (verified.length !== expected.length) throw new AssessmentInputUnavailable();
+      attachmentEntries.push([
+        item.itemId,
+        verified.map(({ originalId, rev, url, mimeType }) => ({ originalId, rev, url, mimeType })),
+      ]);
+    }
+  }
   const input: FrozenWorkbookAssessmentInputs = {
-    release, submission: frozenWorkbookSubmission(release, submissionRef, attempt.answers),
+    release, submission: frozenWorkbookSubmission(release, submissionRef, attempt.answers, attempt.questionAttachments),
     questions: Object.fromEntries(paper.questions.flatMap(question => question.kind === 'rubric' &&
       release.items.some(({ itemId }) => itemId === question.id)
       ? [[question.id, { prompt: question.prompt, rubric: question.rubric }]] : [])),
+    ...(attachmentEntries.length ? { questionAttachments: Object.fromEntries(attachmentEntries) } : {}),
     independent: independentlyAuthoredPaper(paper) && independentlyAuthoredPaper(attempt.paper),
     consent: attempt.assessmentConsent === workbookAssessmentConsent,
   };
