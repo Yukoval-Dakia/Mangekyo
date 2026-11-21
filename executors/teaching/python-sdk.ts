@@ -6,7 +6,7 @@ const sdkMethods = {
   forgetting_risks: ['horizon_hours'],
   kg_prereqs: ['kc_id', 'depth'],
   questions: ['kc_ids', 'answer_exposed', 'limit'],
-  evidence_slice: ['exam_pacing', 'since', 'paper_ids'],
+  evidence_slice: ['exam_pacing', 'since', 'paper_ids', 'exam_pacing_items'],
 } as const;
 
 export type PythonRead = {method: keyof typeof sdkMethods; args: ToolArgs};
@@ -55,6 +55,7 @@ const ids = {type: 'array', items: text, minItems: 1, maxItems: 30} as const;
 const sdkFields = {
   since: {...text, format: 'date-time'}, subject: text, paper_ids: ids,
   exam_pacing: {type: 'boolean', description: 'true 返回整卷时长和已结算的正式全卷分。'},
+  exam_pacing_items: {type: 'boolean', description: 'true 返回整卷时长和已归档的逐题停留、跳过及回访。'},
   horizon_hours: {type: 'integer', minimum: 1, maximum: 168},
   kc_id: text, depth: {type: 'integer', minimum: 1, maximum: 3},
   kc_ids: {...ids, description: '任一指定知识点与题目的直接、当前获准图谱关系。'},

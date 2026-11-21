@@ -1,10 +1,10 @@
-import type { CanonicalEvidenceSliceV1 } from '../../kernel/src/pipeline-contracts.ts';
+import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '../../kernel/src/pipeline-contracts.ts';
 import type { ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import { pythonAttemptsLimit } from '../../executors/teaching/agent-tools.ts';
 import { toolFailure, type LearningError } from '../../executors/teaching/learning-tools.ts';
 import { pythonPrerequisiteKinds, pythonPrerequisites, type PythonRead, type PythonReadValue } from '../../executors/teaching/python-sdk.ts';
-import { activityEvidenceSlice, type ActivityEvidenceObservation, type workbookExamPacingEvent } from '../../modules/activity/evidence-slice.ts';
+import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
 import { posttestIssuanceType, posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
@@ -69,7 +69,8 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
         : absent('paper_ids','请提供当前获准的试卷引用。');
     }
   }
-  const wholePaper = request.method === 'evidence_slice' && request.args.exam_pacing === true;
+  const includeExamItems = request.method === 'evidence_slice' && request.args.exam_pacing_items === true;
+  const wholePaper = includeExamItems || (request.method === 'evidence_slice' && request.args.exam_pacing === true);
   const {rows: refs} = await tx.query<{id: string; rev: number}>(`
     SELECT f.id,f.current_rev AS rev FROM facts f JOIN fact_revs r
       ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
@@ -87,9 +88,9 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
       paperIds, workbookAttemptType, posttestSubmissionType, posttestIssuanceType, pythonAttemptsLimit+1]);
   if (refs.length > pythonAttemptsLimit)
     return toolFailure('limit_exceeded',`本次选择超过 ${pythonAttemptsLimit} 份作答，请缩小时间范围。`,{tool:'read_context',args:{intent:'tutoring'}});
-  const events: ReturnType<typeof workbookExamPacingEvent>[] = [];
+  const events: EvidenceEventV1[] = [];
   const declared = refs.length ? await readPythonAttempts(tx,{refs},
-    wholePaper ? {...access,recordExam:event=>events.push(event)} : access) : undefined;
+    wholePaper ? {...access,includeExamItems,recordExam:event=>events.push(event)} : access) : undefined;
   const rows = declared?.ok ? declared.rows : [];
   if (declared?.issues?.some(item => item.code === 'access_revoked'))
     return toolFailure('access_revoked','先前打开的作答已不可使用。',{tool:'read_context',args:{intent:'tutoring'}});
