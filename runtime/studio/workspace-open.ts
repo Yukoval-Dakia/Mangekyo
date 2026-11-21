@@ -6,6 +6,7 @@ import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
 import {parseLearningReference, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {projectOpenedLearning, type OpenedLearningRecord} from '../../modules/activity/workspace-source-projection.ts';
+import {textbookPageType} from '../../modules/content/textbook-page.ts';
 import {purpose} from './identity.ts';
 import type {SourceTrack, WorkspaceSourceRecipient} from './source-read.ts';
 import {readWorkbookDiagnosis} from './workbook-diagnosis.ts';
@@ -16,9 +17,7 @@ export async function unreadable(tx: ReadTransaction, id: string, known: boolean
   const stale = await readable(async () => {
     const current = await createCommandReadContext(tx,purpose).fact(factId(id),{mode:'following'});
     if (!maySend(current)) return undefined;
-    return learningToolError('basis_stale','refs','所选版本或其依据当前不可用。',{
-      tool:'open_learning',args:{refs:id},why:'打开当前获准版本。',
-    });
+    return learningToolError('basis_stale','refs','所选版本或其依据当前不可用。',openLearningSearchNext);
   });
   return stale ?? learningToolError('access_revoked','refs','此前读到的记录当前不可读。',openLearningSearchNext);
 }
@@ -64,11 +63,10 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
     }
     const root = witnesses.find(([fact]) => fact.ref.id === id && fact.ref.rev === value.sourceRef?.fact.rev)?.[0];
     const result = root ? projectOpenedLearning(value,root,args.part) ?? learningToolError('not_found','part',
-      args.part.kind === 'block' ? '未找到所选教材块。' : '没有找到所选题项。',{
-        tool:'open_learning',args:{refs:JSON.stringify(value.sourceRef)},
-        why:args.part.kind === 'block' ? '先核对当前版本的教材块标识。' : '先读原记录以确认题项。',
-      }) : value;
-    if (result.ok !== false) for (const witness of witnesses) access.track(...witness);
+      args.part.kind === 'block' ? '未找到所选教材块。' : '没有找到所选题项。',openLearningSearchNext) : value;
+    // The returned page names a concrete revision. A local patch separately checks the current head.
+    if (result.ok !== false) for (const [fact, mode] of witnesses)
+      access.track(fact, fact === root && fact.type === textbookPageType ? 'pinned' : mode);
     items.push(result);
   }
   const failures = items.filter(item => item.ok === false);
