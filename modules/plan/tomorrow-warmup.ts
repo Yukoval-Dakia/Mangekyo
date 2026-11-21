@@ -1,6 +1,6 @@
 import { planRule, sameWarmupOpen, todayWarmupRules, warmupTimeZone, TomorrowWarmupConflict, type WarmupOpen } from './rules.ts';
-import { planToday, sessionRule, type TodayInput } from './today.ts';
-import { date, instant } from './validation.ts';
+import { planToday, type TodayInput } from './today.ts';
+import { instant } from './validation.ts';
 
 export { TomorrowWarmupConflict } from './rules.ts';
 
@@ -18,12 +18,17 @@ export type TomorrowWarmup = AvailableWarmup | (WarmupDay & { state: 'empty' | '
 
 export function tomorrowWarmupDay(now: string, timeZone: string) {
   const zone = warmupTimeZone(timeZone);
-  const session = sessionRule(instant(now), zone, 0, 'time');
-  if (session.kind !== 'session') throw new Error('无法确定本地日界。');
-  const next = new Date(session.date);
-  next.setUTCDate(next.getUTCDate() + 1);
-  const day = date(next.toISOString().slice(0, 10));
-  return { day, timeZone: zone, startsAt: session.expiresAt };
+  const clock = new Intl.DateTimeFormat('en-CA', { timeZone: zone, dateStyle: 'short' });
+  let low = Date.parse(instant(now));
+  let high = low + 48 * 60 * 60 * 1000;
+  const today = clock.format(low);
+  // The first instant in the next local day can move with offset changes.
+  while (high - low > 1) {
+    const mid = Math.floor((low + high) / 2);
+    if (clock.format(mid) === today) low = mid;
+    else high = mid;
+  }
+  return { day: clock.format(high), timeZone: zone, startsAt: new Date(high).toISOString() };
 }
 
 export function planTomorrowWarmup(
