@@ -61,7 +61,7 @@ import {
 } from '../../modules/activity/workbook-values.ts';
 import { authorizeWorkbookPresentation, recordWorkbookPresentationCommand, workbookPresentation, WorkbookPresentationError } from '../../modules/activity/workbook-presentation.ts';
 import { includesBankReferences, readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
-import { openWorkbookCorrectionTarget, readWorkbookCorrections, recordWorkbookCorrection, sameWorkbookCorrectionAttempt, workbookCorrectionItems, workbookCorrectionTarget } from '../../modules/activity/workbook-correction.ts';
+import { openWorkbookCorrectionTarget, readWorkbookCorrections, recordWorkbookCorrection, sameWorkbookCorrectionAttempt, workbookCorrectionItems, workbookCorrectionTarget, workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { completedLegacyRubric, legacyRubricInput, rubricAssessmentIdentity, sameWorkbookDraft } from '../../modules/activity/workbook-assessment-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -150,6 +150,12 @@ const workbookUnavailable = (error: unknown) => factUnavailable(error) ||
   (error instanceof RequestError && (error.status === 403 || error.status === 404));
 const readAttempts = (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>, paperId?: FactId) =>
   readWorkbookAttempts(tx, read, factUnavailable, paperId);
+const correctionIds = async (tx: ReadTransaction, paperId: FactId, attemptId?: FactId) =>
+  (await tx.query<{ id: FactId }>(`SELECT f.id FROM facts f JOIN fact_revs r
+    ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'paperId'=$3
+      AND ($4::text IS NULL OR r.data#>>'{attempt,id}'=$4) ORDER BY f.created_tick, f.id`,
+  [tx.learner, workbookCorrectionType, paperId, attemptId ?? null])).rows.map(({ id }) => id);
 
 async function requireSource(db: Db, id: string): Promise<void> {
   const exists = await db.snapshot({learner:studioLearner}, async tx =>
@@ -248,7 +254,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const projectQuestions = capsules.questions(tx);
       return projectWorkbookDetail(paperId, revision, paper, source, await isPracticeWorkbook(tx,paperId), {
         attempts, assessments, read, unavailable: factUnavailable,
-        corrections: attempts.length ? await readWorkbookCorrections(tx, read, factUnavailable, paperId) : new Map(),
+        corrections: attempts.length ? await readWorkbookCorrections(await correctionIds(tx, paperId), read, factUnavailable) : new Map(),
         async frozenAttempt(fact, frozen) {
           try { await readFrozenWorkbookBank(read, frozen); }
           catch (error) {
@@ -280,7 +286,8 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           const grades = (await allAssessments(tx, data.paperId)).get(attemptId) ?? [];
           if (!workbookCorrectionItems(attempt, grades, formal?.result).includes(data.itemId))
             throw new WorkbookSourceMismatch('这道题没有可订正的错题或部分得分结果。');
-          const saved = (await readWorkbookCorrections(tx, read, factUnavailable, data.paperId, original.ref.id)).get(original.ref.id)?.find(
+          const ids = await correctionIds(tx, data.paperId, original.ref.id);
+          const saved = (await readWorkbookCorrections(ids, read, factUnavailable)).get(original.ref.id)?.find(
             record => record.itemId === data.itemId && sameWorkbookCorrectionAttempt(record, original));
           if (saved) return { id: saved.id };
           const id = factId(stableId('workbook-correction', original.ref.id, String(original.ref.rev), original.accessEpoch, data.itemId));

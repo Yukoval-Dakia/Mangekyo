@@ -1,6 +1,5 @@
 import { factId, type FactId, type FactSnapshot, type ReadContext, type Tick } from '@mangekyo/kernel';
 import type { AssessmentResult } from './assessment-values.ts';
-import type { ActivityEvidenceReadScope } from './evidence-read.ts';
 import { helpRef, sameHelpRef } from './help-exposure-values.ts';
 import { materialType } from './library-values.ts';
 import { retentionDeadline } from './retention-posttest.ts';
@@ -31,16 +30,10 @@ export function workbookCorrection(input: unknown) {
 type SavedCorrection = ReturnType<typeof workbookCorrection> & { id: FactId };
 
 export async function readWorkbookCorrections(
-  tx: ActivityEvidenceReadScope, read: ReadContext, unavailable: (error: unknown) => boolean,
-  paperId: FactId, attemptId?: FactId,
+  ids: readonly FactId[], read: ReadContext, unavailable: (error: unknown) => boolean,
 ) {
-  const { rows } = await tx.query<{ id: FactId }>(`SELECT f.id FROM facts f JOIN fact_revs r
-    ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'paperId'=$3
-      AND ($4::text IS NULL OR r.data#>>'{attempt,id}'=$4)
-    ORDER BY f.created_tick, f.id`, [tx.learner, workbookCorrectionType, paperId, attemptId ?? null]);
   const byAttempt = new Map<FactId, SavedCorrection[]>();
-  for (const { id } of rows) {
+  for (const id of ids) {
     try {
       const fact = await read.fact(id, { mode: 'following' });
       const data = workbookCorrection(fact.value);
