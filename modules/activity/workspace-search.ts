@@ -194,3 +194,97 @@ export function fuseWorkspaceCandidates(lexical: readonly LexicalCandidate[], se
   });
   return [...merged.values()].sort((left, right) => right.rank - left.rank);
 }
+
+export type SearchableWorkspaceSource<Ref> = {
+  readonly kind?: string | undefined;
+  readonly title: string;
+  readonly content: string | number | null;
+  readonly tags?: readonly string[] | undefined;
+  readonly links?: readonly string[] | undefined;
+  readonly sourceRef: Ref;
+};
+
+export function projectWorkspaceSearchResult<Ref>(
+  source: SearchableWorkspaceSource<Ref>,
+  fact: FactSnapshot,
+  filters: SearchFilters,
+  excerptOf: (fact: FactSnapshot, content: string | number | null) => string,
+) {
+  const kind = source.kind ?? workspaceRecordKind(fact.type) ?? fact.type;
+  const tags = source.tags ?? [];
+  const time = workspaceOccurredAt(fact);
+  if ((filters.kinds.length && !filters.kinds.includes(kind)) ||
+      !filters.tags.every(tag => tags.includes(tag)) || (filters.since && (!time || time < filters.since))) return;
+  if (filters.exposureFilter && (filters.exposureFilter !== 'unknown' || kind !== 'question')) return;
+  return {
+    id: fact.ref.id, rev: fact.ref.rev, kind, title: source.title, excerpt: excerptOf(fact, source.content),
+    occurredAt: time, tags, sourceRef: source.sourceRef,
+    ...(kind === 'question' ? { exposure: 'unknown' as const } : {}),
+  };
+}
+
+export async function runWorkspaceSearch<Source extends SearchableWorkspaceSource<Source['sourceRef']>, Witness>(
+  tx: ActivityEvidenceReadScope,
+  criteria: SearchQuery,
+  ports: {
+    readonly purpose: string;
+    readonly recipient: string;
+    readonly syntheticIds: readonly string[];
+    readonly resolve: (id: string) => Promise<{ readonly source: Source; readonly fact?: FactSnapshot; readonly opened: readonly Witness[] } | undefined>;
+    readonly track: (witness: Witness) => void;
+    readonly excerpt: (fact: FactSnapshot, content: string | number | null) => string;
+    readonly shortHash: (value: string) => string;
+    readonly pageSize?: number;
+  },
+  semantic?: WorkspaceCandidateChannel,
+) {
+  const pageSize = ports.pageSize ?? 8;
+  const { cursor, ...query } = criteria;
+  const related = criteria.related ? (await ports.resolve(criteria.related))?.source : undefined;
+  if (criteria.related && !related) return;
+  const { rows: [watermark] } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner]);
+  const { rows, trigramUnavailable } = await lexicalCandidates(tx, criteria, ports.purpose, ports.syntheticIds, related?.links ?? []);
+  const candidates = fuseWorkspaceCandidates(rows, semantic);
+  const fingerprint = ports.shortHash(JSON.stringify([
+    tx.learner, ports.purpose, ports.recipient, watermark?.tick, query, trigramUnavailable,
+    semantic?.candidates.slice(0, candidateLimit),
+  ]));
+  const results = [];
+  const returned = new Set<string>();
+  let afterCursor = cursor === undefined;
+  let nextCursor: string | undefined;
+  let lastCursor: string | undefined;
+  for (const { candidate, matched } of candidates) {
+    if (returned.has(candidate.id) || candidate.learner !== tx.learner ||
+        !isSourceFactId(candidate.id) || !workspaceShareableTypes.includes(candidate.type)) continue;
+    const opened = await ports.resolve(candidate.id);
+    const record = opened?.source;
+    const fact = opened?.fact;
+    if (!record || !fact || fact.type !== candidate.type || fact.ref.rev !== candidate.rev ||
+        fact.accessEpoch !== candidate.accessEpoch) continue;
+    if (criteria.related && !related?.links?.includes(candidate.id) && !record.links?.includes(criteria.related)) continue;
+    const result = projectWorkspaceSearchResult<Source['sourceRef']>(record, fact, criteria, ports.excerpt);
+    if (!result) continue;
+    const position = `${fingerprint}:${ports.shortHash(candidateKey(candidate))}`;
+    if (!afterCursor) {
+      afterCursor = position === cursor;
+      if (afterCursor) returned.add(candidate.id);
+      continue;
+    }
+    if (results.length === pageSize) {
+      nextCursor = lastCursor;
+      break;
+    }
+    for (const witness of opened.opened) ports.track(witness);
+    results.push({ ...result, matched: [...matched] });
+    returned.add(candidate.id);
+    lastCursor = position;
+  }
+  if (!afterCursor) throw new WorkspaceSearchError('查询或记录已变化，请去掉 cursor 重查。', 'cursor', 'basis_stale');
+  return {
+    results, ...(nextCursor ? { cursor: nextCursor } : {}),
+    candidateWindow: candidateLimit,
+    unappliedFilters: unappliedWorkspaceFilters(criteria),
+    ...(trigramUnavailable ? { retrievalWarnings: ['pg_trgm_unavailable'] } : {}),
+  };
+}

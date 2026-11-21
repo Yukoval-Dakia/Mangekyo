@@ -159,30 +159,42 @@ function projectRetention({ row, facts, forecast }: SelectionRead) {
     }, href, (fact, itemId) => retentionEvidenceLink(fact, itemId, href));
 }
 
+async function collectRetention(tx: ReadTransaction, type: string, access: Access, options: {
+  limit?: number; horizon?: { from: string; through: string };
+  verifyFact?: (fact: FactSnapshot) => Promise<boolean>; track?: (basis: RetentionBasis) => void;
+} = {}) {
+  const items: { view: NonNullable<ReturnType<typeof projectRetention>>; forecast: RetentionForecast; facts: SelectionRead['facts'] }[] = [];
+  for (const row of await currentSelections(tx, type)) {
+    if (options.limit !== undefined && items.length >= options.limit) break;
+    const selected = await readSelection(tx, row, access);
+    if (!selected) continue;
+    const end = selected.forecast.value.input.window.through;
+    if (options.horizon && (end < options.horizon.from || end > options.horizon.through)) continue;
+    if (options.verifyFact && !(await Promise.all(selected.facts.map(({ fact }) => options.verifyFact!(fact)))).every(Boolean)) continue;
+    const view = projectRetention(selected);
+    if (!view) continue;
+    options.track?.(basisOf(selected));
+    items.push({ view, forecast: selected.forecast.value, facts: selected.facts });
+  }
+  return items;
+}
+
 export async function readRetentionRadar(tx: ReadTransaction, access: Access, options: {
   track?: (basis: RetentionBasis) => void;
   horizon?: { from: string; through: string };
   limitPerKind?: number;
 } = {}) {
-  async function collect(type: string) {
-    const items: NonNullable<ReturnType<typeof projectRetention>>[] = [];
-    for (const row of await currentSelections(tx, type)) {
-      if (items.length >= (options.limitPerKind ?? detailLimit)) break;
-      const selected = await readSelection(tx, row, access);
-      if (!selected) continue;
-      const end = selected.forecast.value.input.window.through;
-      if (options.horizon && (end < options.horizon.from || end > options.horizon.through)) continue;
-      const value = projectRetention(selected);
-      if (!value) continue;
-      options.track?.(basisOf(selected));
-      items.push(value);
-    }
-    return items;
-  }
-  const forecasts = await collect(forecastType);
-  const reconciliations = await collect(reconciliationType);
-  // An empty visible set cannot establish that there are no results outside this purpose.
+  const limit = options.limitPerKind ?? detailLimit;
+  const forecasts = (await collectRetention(tx, forecastType, access, { ...options, limit })).map(item => item.view);
+  const reconciliations = (await collectRetention(tx, reconciliationType, access, { ...options, limit })).map(item => item.view);
   return forecasts.length || reconciliations.length ? { state: 'available' as const, forecasts, reconciliations } : unknown;
+}
+
+export async function readAuthorizedRetention(
+  tx: ReadTransaction, access: Access, verifyFact?: (fact: FactSnapshot) => Promise<boolean>,
+) {
+  const opts = verifyFact ? { verifyFact } : {};
+  return { forecasts: await collectRetention(tx, forecastType, access, opts), reconciliations: await collectRetention(tx, reconciliationType, access, opts) };
 }
 
 // This read covers active frozen workbook-item forecasts, not the learner's

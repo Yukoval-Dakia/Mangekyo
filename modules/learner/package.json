@@ -9,6 +9,7 @@
   "exports": {
     ".": "./module.ts",
     "./facts/understanding": "./understanding.ts",
-    "./facts/cognition": "./cognition.ts"
+    "./facts/cognition": "./cognition.ts",
+    "./facts/knowledge-mastery": "./knowledge-mastery.ts"
   }
 }

@@ -38,6 +38,7 @@ import { correctionRetestDeriver } from './research-correction.ts';
 import { validateResearchScoutHost } from './research-scout.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openIqdb } from './iqdb.ts';
+import { openTransparency } from './transparency.ts';
 import { executeQuestionVerification, openLocalQuestionEffects } from './iqdb-verification.ts';
 import { questionVerificationType } from '../../modules/content/question-verification.ts';
 import { openRecallHttp } from './recall-http.ts';
@@ -126,7 +127,7 @@ async function openWeb() {
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
-    research, recall, retention, retentionComparison, iqdb };
+    research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db) };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }

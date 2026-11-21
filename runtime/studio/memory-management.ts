@@ -8,15 +8,15 @@ import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-va
 import {
   applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
 } from '../../modules/companion/claim.ts';
-import { managedUnderstanding, saveBeliefCommand, undoHypothesisCommand } from '../../modules/companion/belief.ts';
+import { saveBeliefCommand, undoHypothesisCommand } from '../../modules/companion/belief.ts';
+import { listManagedMemory } from '../../modules/companion/memory-overview.ts';
 import { notionReadScope } from './notion.ts';
 import { hypothesisIsHead, openObjectiveCitations } from './belief-evidence.ts';
 import { manageMemoryAssertionCommand, memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
-import { extractedUnderstanding } from '../../modules/companion/understanding.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
-import { areMemoryClaimsCurrent, claimUndoToken, claimWitness, currentMemoryClaims, managedClaimEvidence, openClaimFact, readClaimValue } from './memory-claims.ts';
+import { areMemoryClaimsCurrent, claimUndoToken, managedClaimEvidence, openClaimFact } from './memory-claims.ts';
 import { clientRequest, readOwnStudyTurn, RequestError } from './sessions.ts';
 import { completeTurnStream } from './stream.ts';
 import { isMemoryConflict, memoryWriteReceipt } from './turn-memory.ts';
@@ -51,39 +51,13 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       if (before !== null) {
         try { claimId(before); } catch { throw new RequestError(400, '记忆分页位置无效。'); }
       }
-      return notionReadScope(db, learner, {readOnly:true}).read(async (tx, check) => {
-        const rows = await currentMemoryClaims(tx, {learner: true, ...(before ? {before} : {})});
-        const items = [];
-        for (const {id, tick} of rows.slice(0, 50)) {
-          const fact = await openClaimFact(tx, id, 'storage');
-          if (!fact) continue;
-          const claim = readClaimValue(fact.value);
-          const ref = claimWitness(fact);
-          const evidenceState = await managedClaimEvidence(tx, claim);
-          items.push({ref, recordedTick: tick, state: claim?.version === 1 && claim.action === 'forget' ? 'forgotten' : 'current',
-            claim: evidenceState === 'current' || (evidenceState === 'unknown' && claim?.version === 1 && claim.origin === 'learner') ? claim : null, evidenceState});
-        }
-        const {rows: extracted} = await tx.query<{id: string}>(`SELECT f.id FROM facts f JOIN fact_revs r
-          ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-          WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'version'='2'
-          ORDER BY f.changed_tick DESC,f.id LIMIT 50`, [learner, memoryAssertionType]);
-        const understandings = [];
-        for (const {id} of extracted) {
-          const fact = await openClaimFact(tx, factId(id), 'storage');
-          if (!fact) continue;
-          const data = extractedUnderstanding(fact.value);
-          if (data.belief && !await hypothesisIsHead(tx, id)) continue;
-          let sources;
-          if (data.belief) {
-            const basis = await openHypothesisObject(tx, data, () => true, check);
-            sources = basis ? await openObjectiveCitations(tx, data.evidence_refs, purpose, () => true) : [];
-          } else {
-            sources = await openUnderstandingCitations(tx, data.evidence_refs, 'storage');
-          }
-          understandings.push({ref: claimWitness(fact), ...managedUnderstanding(fact.ref.id, data, sources)});
-        }
-        return {items, understandings, next: rows.length > 50 ? rows[49]!.id : null};
-      });
+      return notionReadScope(db, learner, { readOnly: true }).read((tx, check) => listManagedMemory(tx, before, {
+        openClaim: id => openClaimFact(tx, id, 'storage'),
+        evidenceState: claim => managedClaimEvidence(tx, claim),
+        openHypothesisObject: data => openHypothesisObject(tx, data, () => true, check),
+        openObjectiveCitations: refs => openObjectiveCitations(tx, refs, purpose, () => true),
+        openUnderstandingCitations: refs => openUnderstandingCitations(tx, refs, 'storage'),
+      }));
     },
 
     async manage(id: string, input: Record<string, unknown>) {
