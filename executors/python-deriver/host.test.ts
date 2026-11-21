@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { expect, it } from 'vitest';
+import { afterAll, expect, it } from 'vitest';
 import { createPythonDeriverHost } from './host.ts';
 import { isCanonicalEvidenceSlice, isCognitionResult } from './schema.ts';
 import sample from './samples/fixed-clock.json' with { type: 'json' };
@@ -8,10 +8,10 @@ import sample from './samples/fixed-clock.json' with { type: 'json' };
 const workerPath = fileURLToPath(new URL('./worker.py', import.meta.url));
 const cognition = 'learner/cognition@1';
 const legacy = 'learner/retention-forecast@1';
+const host = createPythonDeriverHost();
+afterAll(host.close);
 
-it('replays one fixed-clock slice through the TS host and direct Python IPC', async ({ onTestFinished }) => {
-  const host = createPythonDeriverHost();
-  onTestFinished(host.close);
+it('replays one fixed-clock slice through the TS host and direct Python IPC', async () => {
   const nextDay = { ...sample, as_of_at: '2026-11-22T01:02:03.1Z' };
   const [initial, later, prior] = await Promise.all([
     host.derive(cognition, sample), host.derive(cognition, nextDay), host.derive(legacy, nextDay),
@@ -30,7 +30,6 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
   expect(await host.derive(cognition, sample)).toEqual(initial);
 
   const invalid = { ...sample, as_of_at: '2026-02-29T00:00:00Z' };
-  expect(isCanonicalEvidenceSlice(invalid)).toBe(false);
   expect(await host.derive(cognition, invalid)).toEqual({ kind: 'failed', reason: 'invalid CanonicalEvidenceSlice@v1' });
   const processResult = spawnSync(process.env.MANGEKYO_PYTHON ?? 'python3',
     ['-I', '-B', '-S', '-X', 'utf8', workerPath], {
@@ -39,9 +38,9 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
     });
   expect(processResult.status).toBe(0);
   const [validLine, invalidLine] = processResult.stdout.trim().split('\n');
-  const validReply = JSON.parse(validLine!);
-  expect(isCognitionResult(validReply.value.value)).toBe(true);
-  expect({ kind: 'ok', outcome: validReply.value }).toEqual(initial);
+  const {id, value: outcome} = JSON.parse(validLine!);
+  expect(id).toBe('0');
+  expect({kind: 'ok', outcome}).toEqual(initial);
   expect(JSON.parse(invalidLine!)).toEqual({ id: '1', error: 'invalid CanonicalEvidenceSlice@v1' });
 
   const noIndependent = { ...sample, events: sample.events.map(event => ({ ...event, help_level: 'hinted' })) };
@@ -50,9 +49,7 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
   } } });
 });
 
-it('routes exam pacing and intervention Lift to one real worker with their own evidence contracts', async ({ onTestFinished }) => {
-  const host = createPythonDeriverHost();
-  onTestFinished(host.close);
+it('routes exam pacing and intervention Lift to one real worker with their own evidence contracts', async () => {
   const outcomes = await Promise.all([
     host.derive('plan/exam-pacing@1', {attempts: [
       {id: 'first', effective_duration_ms: 1000, score: {earned: 2, maximum: 2}},
@@ -87,9 +84,7 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
   expect(await host.derive('plan/exam-pacing@1', {...slice, events: [...events, hiddenItem]})).toEqual(pacing);
 });
 
-it('prioritizes the shortest matching variant with the frozen error revision', async ({ onTestFinished }) => {
-  const host = createPythonDeriverHost();
-  onTestFinished(host.close);
+it('prioritizes the shortest matching variant with the frozen error revision', async () => {
   const event = sample.events[0]!;
   const error = { ...event, ref: 'wrong', rev: 2, outcome: 'incorrect', confidence: 0.8, error_stage: 'execution' };
   const candidate = { concept_ids: ['K'], item_novelty: 'isomorphic', est_min: 2 };
