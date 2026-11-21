@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {api, ApiError} from '../api.ts';
 import {Icon} from '../icons.tsx';
+import {normalizeKnowledgeGraphResponse} from './normalize.ts';
 import {
   basisDescription,
   buildGraphLayout,
@@ -52,10 +53,10 @@ function useGraphData(props: KnowledgeGraphViewProps) {
     if (!fetchOnMount) return;
     let cancelled = false;
     setRemoteLoading(true);
-    api<KnowledgeGraphResponse>('/knowledge/graph')
+    api<unknown>('/knowledge/graph')
       .then(result => {
         if (cancelled) return;
-        setRemote(result);
+        setRemote(normalizeKnowledgeGraphResponse(result));
         setRemoteError(null);
         setNotFound(false);
       })
@@ -78,7 +79,12 @@ function useGraphData(props: KnowledgeGraphViewProps) {
   }, [fetchOnMount]);
 
   if (props.data !== undefined) {
-    return {data: props.data, loading: props.loading === true, error: props.error ?? null, notFound: false};
+    return {
+      data: props.data === null ? null : normalizeKnowledgeGraphResponse(props.data),
+      loading: props.loading === true,
+      error: props.error ?? null,
+      notFound: false,
+    };
   }
   return {data: remote, loading: remoteLoading, error: remoteError, notFound};
 }

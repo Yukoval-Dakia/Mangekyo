@@ -1,4 +1,5 @@
 export {KnowledgeGraphView, KnowledgeGraphPanel} from './KnowledgeGraphView.tsx';
+export {normalizeKnowledgeGraphResponse} from './normalize.ts';
 export type {
   GraphViewMode,
   KnowledgeGraphEdge,

@@ -18,7 +18,6 @@ import { Mistakes } from './review';
 import { QuestionBank } from './iqdb';
 import {
   ReadState,
-  Materials,
   SavedMaterial,
   EditDialog,
   materialPath,
@@ -33,6 +32,7 @@ import { pendingErasures } from './erasure';
 import { Today } from './today';
 import { AppShell, destinations } from './shell/AppShell';
 import { IntakeSurface, TodaySurface } from './today-v2';
+import { MaterialsPage } from './materials-page';
 import type { Duration } from './today-pack';
 import { WorkbookSurface, type CompanionCitation } from './workbook-v2';
 import './styles/tokens.css';
@@ -224,7 +224,14 @@ function App() {
     }
   }
   else if (catalogOnly) content = <QuestionBank />;
-  else if (path === '/materials') content = <Materials library={library} capture={() => open('material')} />;
+  else if (path === '/materials') content = (
+    <MaterialsPage
+      materials={library.data?.materials ?? []}
+      onNavigate={navigate}
+      onCaptureMaterial={() => open('material')}
+      onCiteToCompanion={citeToCompanion}
+    />
+  );
   else if (path === '/materials/workspace') content = <WorkspaceLibrary key={routeKey} />;
   else if (path.startsWith('/materials/records/')) content = <WorkspaceRecord id={path.split('/')[3]!} />;
   else if (path === '/textbooks' || path === '/textbooks/page') content = (
