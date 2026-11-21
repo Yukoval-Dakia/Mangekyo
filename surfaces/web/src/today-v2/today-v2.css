@@ -1,0 +1,1234 @@
+/*
+ * Wave 2 「今天」重构 + 统一「交入」— M3E 森绿 × Option A。
+ * 继承主壳 --paper / --rail / --forest / --soft-green 视觉基因，
+ * 暗色经 [data-theme="dark"] 完整覆写，保持克制、柔和、有呼吸感的 tonal 层级。
+ */
+
+.tv2 {
+  --tv2-paper: var(--paper, #f8faf6);
+  --tv2-rail: var(--rail, #eaf0e7);
+  --tv2-forest: var(--forest, #244b36);
+  --tv2-soft-green: var(--soft-green, #ddebdc);
+
+  --tv2-surface: var(--surface, #fbfcf9);
+  --tv2-surface-low: var(--tonal, var(--tv2-rail));
+  --tv2-panel: color-mix(in srgb, var(--tv2-rail) 70%, var(--tv2-paper));
+  --tv2-card: var(--tv2-rail);
+  --tv2-hero: color-mix(in srgb, var(--tv2-soft-green) 78%, var(--tv2-paper));
+  --tv2-hero-calm: var(--tv2-panel);
+  --tv2-fill: var(--tv2-soft-green);
+  --tv2-fill-strong: color-mix(in srgb, var(--tv2-soft-green) 80%, var(--tv2-forest));
+
+  --tv2-ink: var(--ink, #1d2922);
+  --tv2-ink-2: var(--muted, #4f6056);
+  --tv2-ink-3: #2a4d39;
+  --tv2-line: var(--line, #dce4da);
+  --tv2-focus: var(--focus, var(--tv2-forest));
+
+  --tv2-primary: var(--tv2-forest);
+  --tv2-primary-hover: color-mix(in srgb, var(--tv2-forest) 86%, #ffffff);
+  --tv2-on-primary: #f6fbf1;
+  --tv2-accent: #4c7c5c;
+
+  --tv2-danger: var(--danger, #8d3032);
+  --tv2-danger-bg: #f8e9e8;
+  --tv2-amber-bg: #f3e4c7;
+  --tv2-amber-ink: #6e4f23;
+  --tv2-amber-dot: #b57b2a;
+  --tv2-notice-bg: color-mix(in srgb, var(--tv2-soft-green) 72%, var(--tv2-paper));
+
+  display: grid;
+  gap: 20px;
+  width: 100%;
+  max-width: 780px;
+  min-width: 0;
+  color: var(--tv2-ink);
+}
+
+[data-theme="dark"] .tv2,
+.tv2[data-theme="dark"] {
+  --tv2-paper: #141b17;
+  --tv2-rail: #1c2620;
+  --tv2-forest: #9dc9a3;
+  --tv2-soft-green: #26392c;
+
+  --tv2-surface: #19221d;
+  --tv2-surface-low: #212c26;
+  --tv2-panel: #1f2a24;
+  --tv2-card: #25332b;
+  --tv2-hero: #233429;
+  --tv2-hero-calm: #1d2822;
+  --tv2-fill: #2b3f32;
+  --tv2-fill-strong: #354d3e;
+
+  --tv2-ink: #e7efe6;
+  --tv2-ink-2: #a5b7aa;
+  --tv2-ink-3: #c1dac4;
+  --tv2-line: #334238;
+  --tv2-focus: #9dc9a3;
+
+  --tv2-primary: #9dc9a3;
+  --tv2-primary-hover: #b2d8b7;
+  --tv2-on-primary: #112218;
+  --tv2-accent: #7bb289;
+
+  --tv2-danger: #e8a4a5;
+  --tv2-danger-bg: #392325;
+  --tv2-amber-bg: #3e331f;
+  --tv2-amber-ink: #e8cb92;
+  --tv2-amber-dot: #dfb063;
+  --tv2-notice-bg: #233529;
+}
+
+.tv2,
+.tv2 *,
+.tv2 *::before,
+.tv2 *::after {
+  box-sizing: border-box;
+}
+
+:where(.tv2 button, .tv2 input, .tv2 textarea) {
+  font: inherit;
+  color: inherit;
+}
+
+:where(.tv2 a) {
+  color: inherit;
+  text-decoration: none;
+}
+
+:where(.tv2 p, .tv2 h1, .tv2 h2, .tv2 h3, .tv2 ul) {
+  margin: 0;
+}
+
+.tv2 :focus-visible {
+  outline: 2.5px solid var(--tv2-focus);
+  outline-offset: 2px;
+}
+
+/* 通用文字与状态提示 */
+.tv2-muted {
+  color: var(--tv2-ink-2);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.tv2-error {
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--tv2-danger-bg);
+  color: var(--tv2-danger);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.tv2-notice {
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--tv2-notice-bg);
+  color: var(--tv2-ink-3);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.tv2-loading-shell {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border-radius: 20px;
+  background: var(--tv2-panel);
+  color: var(--tv2-ink-2);
+  font-size: 14px;
+}
+
+/* 顶栏标题与时间分段器 */
+.tv2-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  min-width: 0;
+}
+
+.tv2-bar-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tv2-bar-title h1 {
+  font-size: clamp(24px, 3vw, 28px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.tv2-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* 进行中课堂恢复条：带具体课名与进度，仅存在课堂时出现 */
+.tv2-resume {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 14px 8px 16px;
+  border-radius: 14px;
+  background: var(--tv2-panel);
+  font-size: 13.5px;
+  line-height: 1.45;
+  transition: background-color 160ms ease;
+}
+
+.tv2-resume:hover {
+  background: var(--tv2-card);
+}
+
+.tv2-resume-copy {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tv2-resume-copy strong {
+  font-weight: 680;
+  color: var(--tv2-ink-3);
+}
+
+.tv2-resume-sep {
+  margin: 0 6px;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-resume-cue {
+  flex: none;
+  display: inline-flex;
+  color: var(--tv2-primary);
+}
+
+.tv2-resume-cue svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 「现在有空」+「作答方式 ▾」紧凑单行 */
+.tv2-filterline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+  margin-top: -8px;
+}
+
+.tv2-filterline-label {
+  flex: none;
+  font-size: 13px;
+  font-weight: 640;
+  color: var(--tv2-ink-2);
+  white-space: nowrap;
+}
+
+.tv2-filterline .tv2-seg a {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+.tv2-mode-menu {
+  position: relative;
+  flex: none;
+  margin-left: auto;
+}
+
+.tv2-mode-menu-pop {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  min-width: 140px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--tv2-surface);
+  border: 1px solid var(--tv2-line);
+  box-shadow: 0 10px 28px rgba(20, 38, 27, 0.16);
+}
+
+.tv2-mode-menu-pop a {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--tv2-ink-2);
+  white-space: nowrap;
+}
+
+.tv2-mode-menu-pop a:hover {
+  background: var(--tv2-panel);
+  color: var(--tv2-ink);
+}
+
+.tv2-mode-menu-pop a[aria-selected="true"] {
+  color: var(--tv2-primary);
+  font-weight: 680;
+}
+
+/* 夜链·交班条 */
+.tv2-handoff {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  padding: 9px 14px 9px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--tv2-panel);
+  text-align: left;
+  font-size: 13.5px;
+  line-height: 1.5;
+  transition: background-color 160ms ease;
+}
+
+.tv2-handoff--interactive {
+  cursor: pointer;
+}
+
+.tv2-handoff--interactive:hover {
+  background: var(--tv2-card);
+}
+
+.tv2-handoff-copy {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tv2-handoff-copy strong {
+  font-weight: 680;
+  color: var(--tv2-ink-3);
+}
+
+.tv2-handoff-sep {
+  margin: 0 6px;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-handoff-cue {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--tv2-primary);
+  font-size: 13px;
+  font-weight: 640;
+  white-space: nowrap;
+}
+
+.tv2-handoff-cue svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+/* 通用胶囊、指示点、按钮、分段器 */
+.tv2-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 12px;
+  border-radius: 999px;
+  background: var(--tv2-fill);
+  color: var(--tv2-ink-3);
+  font-size: 12.5px;
+  font-weight: 640;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.tv2-chip--forest {
+  background: color-mix(in srgb, var(--tv2-forest) 14%, var(--tv2-surface));
+  color: var(--tv2-ink-3);
+}
+
+[data-theme="dark"] .tv2-chip--forest,
+.tv2[data-theme="dark"] .tv2-chip--forest {
+  background: #2f4737;
+  color: #cfe6d1;
+}
+
+.tv2-chip--amber {
+  background: var(--tv2-amber-bg);
+  color: var(--tv2-amber-ink);
+}
+
+.tv2-chip--neutral {
+  background: var(--tv2-surface-low);
+  color: var(--tv2-ink-2);
+}
+
+.tv2-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tv2-accent);
+  display: inline-block;
+  flex: none;
+}
+
+.tv2-dot--amber {
+  background: var(--tv2-amber-dot);
+}
+
+.tv2-dot--breath {
+  animation: tv2-breath 2.2s ease-in-out infinite;
+}
+
+@keyframes tv2-breath {
+  0%, 100% { opacity: 0.38; transform: scale(0.84); }
+  50% { opacity: 1; transform: scale(1.16); }
+}
+
+.tv2-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-radius 140ms ease, opacity 140ms ease;
+}
+
+.tv2-btn svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+}
+
+.tv2-btn:active:not(:disabled) {
+  border-radius: 14px;
+}
+
+.tv2 .tv2-btn--primary,
+.tv2-btn--primary {
+  background: var(--tv2-primary);
+  color: var(--tv2-on-primary);
+}
+
+.tv2 .tv2-btn--primary:hover:not(:disabled),
+.tv2-btn--primary:hover:not(:disabled) {
+  background: var(--tv2-primary-hover);
+}
+
+.tv2 .tv2-btn--tonal,
+.tv2-btn--tonal {
+  background: var(--tv2-fill);
+  color: var(--tv2-ink);
+}
+
+.tv2-btn--tonal:hover:not(:disabled) {
+  background: var(--tv2-fill-strong);
+}
+
+.tv2 .tv2-btn--ghost,
+.tv2-btn--ghost {
+  background: transparent;
+  color: var(--tv2-primary);
+}
+
+.tv2-btn--ghost:hover:not(:disabled) {
+  background: var(--tv2-surface-low);
+}
+
+.tv2-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.tv2-btn--sm {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.tv2-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--tv2-surface-low);
+  max-width: 100%;
+}
+
+.tv2-seg a,
+.tv2-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tv2-ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.tv2-seg a:hover,
+.tv2-seg-btn:hover:not(:disabled) {
+  color: var(--tv2-ink);
+}
+
+.tv2-seg a[aria-current="page"],
+.tv2-seg-btn[aria-pressed="true"] {
+  background: var(--tv2-surface);
+  color: var(--tv2-ink);
+  font-weight: 680;
+  box-shadow: 0 1px 2px rgba(20, 38, 27, 0.08);
+}
+
+.tv2-seg--compact {
+  padding: 3px;
+  flex: none;
+}
+
+.tv2-seg--compact .tv2-seg-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+
+/* 主推荐 Hero 卡（24px 表达性圆角、森绿柔和层级） */
+.tv2-hero {
+  display: grid;
+  gap: 14px;
+  padding: clamp(22px, 3.2vw, 32px);
+  border-radius: 24px;
+  background: var(--tv2-hero);
+  border: 1px solid color-mix(in srgb, var(--tv2-forest) 10%, transparent);
+  min-width: 0;
+}
+
+.tv2-hero--calm {
+  background: var(--tv2-hero-calm);
+  border-color: var(--tv2-line);
+}
+
+.tv2-hero-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tv2-hero h2 {
+  font-size: clamp(20px, 2.5vw, 25px);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+}
+
+.tv2-why {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--tv2-ink);
+  max-width: 64ch;
+}
+
+.tv2-basis-wrap {
+  display: grid;
+  gap: 8px;
+}
+
+.tv2-details-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--tv2-primary);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.tv2-details-toggle:hover {
+  text-decoration: underline;
+}
+
+.tv2-chevron {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  transition: transform 160ms ease;
+}
+
+.tv2-chevron--open {
+  transform: rotate(180deg);
+}
+
+.tv2-why-basis {
+  display: grid;
+  gap: 6px;
+  padding: 6px 0 6px 14px;
+  border-left: 2.5px solid var(--tv2-fill-strong);
+}
+
+.tv2-why-basis p {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-impact {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  margin-top: 4px;
+}
+
+.tv2-hero .tv2-btn--primary {
+  min-height: 48px;
+  padding-inline: 24px;
+  font-size: 15px;
+}
+
+.tv2-hero-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 内联待确认条 */
+.tv2-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 10px 12px 10px 16px;
+  border-radius: 18px;
+  background: var(--tv2-panel);
+  font-size: 14px;
+  line-height: 1.5;
+  min-width: 0;
+}
+
+.tv2-confirm--more {
+  background: var(--tv2-surface-low);
+}
+
+.tv2-confirm-copy {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tv2-confirm-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* 分区标题与备选队列 */
+.tv2-section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.tv2-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tv2-section-head h3 {
+  font-size: 15px;
+  font-weight: 680;
+  color: var(--tv2-ink);
+}
+
+.tv2-queue {
+  display: grid;
+  gap: 10px;
+}
+
+.tv2-queue-item {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tv2-queue-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 15px 18px;
+  border-radius: 20px;
+  background: var(--tv2-panel);
+  min-width: 0;
+}
+
+.tv2-queue-copy {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.tv2-queue-copy strong {
+  font-size: 15px;
+  font-weight: 670;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
+}
+
+.tv2-queue-meta {
+  color: var(--tv2-ink-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.tv2-queue-reason {
+  color: var(--tv2-ink-2);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.tv2-queue-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.tv2-swap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 4px;
+}
+
+/* 今日预算卡与平等出口 */
+.tv2-budget-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: 20px;
+  background: var(--tv2-panel);
+  min-width: 0;
+}
+
+.tv2-budget {
+  display: grid;
+  gap: 9px;
+}
+
+.tv2-budget-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.tv2-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--tv2-fill);
+  overflow: hidden;
+}
+
+.tv2-track-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--tv2-accent);
+  transition: width 260ms ease;
+}
+
+.tv2-track-fill--over {
+  background: var(--tv2-amber-dot);
+}
+
+.tv2-exits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.tv2-rule-undos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--tv2-line);
+}
+
+/* 空库 / 无模型内置学习包直达卡 */
+.tv2-pack {
+  display: grid;
+  gap: 14px;
+  padding: 20px 22px;
+  border-radius: 20px;
+  background: var(--tv2-panel);
+  min-width: 0;
+}
+
+.tv2-pack-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.tv2-pack-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tv2-pack-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14.5px;
+  color: var(--tv2-ink-3);
+}
+
+.tv2-pack-copy p {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-pack-list {
+  display: grid;
+  gap: 10px;
+}
+
+.tv2-pack-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--tv2-surface);
+  border: 1px solid var(--tv2-line);
+  transition: background-color 150ms ease, border-color 150ms ease;
+  min-width: 0;
+}
+
+.tv2-pack-item:hover {
+  background: var(--tv2-card);
+  border-color: var(--tv2-fill-strong);
+}
+
+.tv2-pack-item-copy {
+  flex: 1 1 180px;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.tv2-pack-item-copy strong {
+  font-size: 14.5px;
+  font-weight: 670;
+}
+
+.tv2-pack-item-copy small {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-pack-item-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* 辅助折叠区（冲突 / 目标 / 回归概况，绝不使用裸 <details>） */
+.tv2-aux {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.tv2-aux-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--tv2-panel);
+}
+
+/* 统一交入投递区（24px 表达性卡片 + D06 隐私策略条） */
+.tv2-drop {
+  display: grid;
+  gap: 14px;
+  padding: clamp(18px, 3vw, 28px);
+  border: 1.5px dashed color-mix(in srgb, var(--tv2-forest) 34%, var(--tv2-line));
+  border-radius: 24px;
+  background: var(--tv2-surface);
+  transition: border-color 150ms ease, background-color 150ms ease;
+  min-width: 0;
+}
+
+.tv2-drop--over {
+  border-color: var(--tv2-primary);
+  background: var(--tv2-hero);
+}
+
+.tv2-drop textarea {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 15.5px;
+  line-height: 1.7;
+  color: var(--tv2-ink);
+}
+
+.tv2-drop textarea:focus {
+  outline: none;
+}
+
+.tv2-drop textarea::placeholder {
+  color: var(--tv2-ink-2);
+}
+
+.tv2-drop-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.tv2-drop-formats {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-privacy-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--tv2-panel);
+  min-width: 0;
+}
+
+.tv2-privacy-copy {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.tv2-privacy-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--tv2-ink-3);
+}
+
+.tv2-privacy-title svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.tv2-privacy {
+  font-size: 12.5px;
+  color: var(--tv2-ink-2);
+  line-height: 1.55;
+}
+
+/* 交入历史流（缩略图 + 来源 + 整理状态胶囊） */
+.tv2-empty-feed {
+  padding: 22px 20px;
+  border-radius: 20px;
+  background: var(--tv2-panel);
+}
+
+.tv2-feed {
+  display: grid;
+  gap: 10px;
+}
+
+.tv2-feed-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px 12px 12px;
+  border-radius: 18px;
+  background: var(--tv2-panel);
+  transition: background-color 150ms ease;
+}
+
+.tv2-feed-item:hover {
+  background: var(--tv2-card);
+}
+
+.tv2-thumb {
+  width: 54px;
+  height: 54px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: var(--tv2-fill);
+  color: var(--tv2-ink-3);
+  overflow: hidden;
+}
+
+.tv2-thumb--photo {
+  background: var(--tv2-surface-low);
+}
+
+.tv2-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tv2-thumb-glyph {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+}
+
+.tv2-feed-copy {
+  flex: 1 1 160px;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.tv2-feed-copy strong {
+  font-size: 14.5px;
+  font-weight: 670;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
+}
+
+.tv2-feed-meta {
+  color: var(--tv2-ink-2);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.tv2-feed-preview {
+  color: var(--tv2-ink-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tv2-feed-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.tv2-feed-chevron {
+  display: inline-flex;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-feed-chevron svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 移动端响应式（确保 390px 零横向溢出） */
+@media (max-width: 640px) {
+  .tv2 {
+    gap: 16px;
+  }
+
+  .tv2-handoff {
+    border-radius: 20px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    padding: 11px 14px;
+  }
+
+  .tv2-handoff .tv2-dot {
+    margin-top: 6px;
+  }
+
+  .tv2-handoff-cue {
+    margin-left: auto;
+  }
+
+  .tv2-seg {
+    width: 100%;
+    border-radius: 20px;
+  }
+
+  .tv2-seg a,
+  .tv2-seg-btn {
+    flex: 1 1 auto;
+    padding: 0 10px;
+  }
+
+  .tv2-hero {
+    padding: 20px 18px;
+    border-radius: 22px;
+  }
+
+  .tv2-hero-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tv2-hero .tv2-btn--primary {
+    width: 100%;
+  }
+
+  .tv2-hero-secondary {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .tv2-queue-card,
+  .tv2-pack-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .tv2-queue-copy,
+  .tv2-pack-item-copy {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+
+  .tv2-queue-actions,
+  .tv2-pack-item-meta {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .tv2-exits {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .tv2-exits .tv2-btn {
+    width: 100%;
+  }
+
+  .tv2-drop {
+    padding: 18px 16px;
+    border-radius: 22px;
+  }
+
+  .tv2-drop-foot {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tv2-drop-foot .tv2-btn {
+    width: 100%;
+  }
+
+  .tv2-drop-formats {
+    margin-left: 0;
+  }
+
+  .tv2-privacy-bar .tv2-seg--compact {
+    width: 100%;
+  }
+
+  .tv2-feed-item {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 10px 12px;
+  }
+
+  .tv2-feed-end {
+    width: 100%;
+    justify-content: space-between;
+    padding-left: 66px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv2-dot--breath {
+    animation: none;
+  }
+
+  .tv2-btn,
+  .tv2-chevron,
+  .tv2-track-fill,
+  .tv2-handoff,
+  .tv2-feed-item,
+  .tv2-pack-item,
+  .tv2-drop {
+    transition: none;
+  }
+}
