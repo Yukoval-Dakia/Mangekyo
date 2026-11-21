@@ -123,8 +123,9 @@ async function openWeb() {
     context: {backtrace:workbookBacktrace,activePosttest:retention.activePosttest},
     onResearchFactsChanged: research.workbookChanged,
   });
-  const takeaways = openTakeaway(db, activity);
-  const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}),
+  const activityHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
+  const takeaways = openTakeaway(db, activity, activityHooks);
+  const textbook = openTextbook(db, content, activityHooks,
     { python: pythonHost,
       backtrace: (tx, read, facts) => workbookBacktrace(tx, read as never, facts) as never },
     workbook.issueBank);
@@ -132,7 +133,7 @@ async function openWeb() {
   const student = { notion:openStudioNotion(db,capture,research.activityChanged), textbook,
     relationReview:openRelationReview(db,content,research.activityChanged),
     workbook, takeaways, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),
-    organizer: openOrganizer(db, activity, plan, createStudioCommandHooks(), carePause), memory: openMemory(db, companion),
+    organizer: openOrganizer(db, activity, plan, activityHooks, carePause), memory: openMemory(db, companion),
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),

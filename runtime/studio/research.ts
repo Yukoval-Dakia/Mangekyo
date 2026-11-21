@@ -28,6 +28,7 @@ import {
   researchPurpose, researchScoutBudget, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType,
 } from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { createStudioCommandHooks } from './command-hooks.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';
 import {
@@ -77,7 +78,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
     const current = await settings(tx);
     return current?.enabled === true && current.revision === revision;
   };
-  const hooks: CommandHooks = { async onFactsChanged(tx, tick, changes) {
+  const hooks: CommandHooks = createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
     for (const change of changes) {
       if (change.factType === researchSettingsType) {
         await cancelResearchTodos(tx);
@@ -87,7 +88,7 @@ export function openResearch(db: Db, activity: LoadedModule, companion: LoadedMo
         await enqueueWork(tx, tick, wake);
       }
     }
-  } };
+  } });
   const handle = createCommandHandler(db, { modules: [activity, companion], hooks });
 
   const read = () => db.snapshot(scope, async tx => {
