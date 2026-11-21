@@ -49,14 +49,14 @@ export type CorrectionReopen = (ref: BusWitness, purpose: typeof teaching | type
 async function matchesCurrent(reopen: CorrectionReopen, learner: BusWitness['learner'], ref: BusWitness,
   purpose: typeof teaching | typeof research) {
   if (ref.learner !== learner) return false;
-  const opened = await reopen({ ...ref, mode: 'following' }, purpose);
+  const opened = await reopen(ref, purpose);
   return opened?.ref.learner === learner && opened.type === ref.type && allows(opened.purpose, purpose) &&
     sameWitness({ ...opened.ref, accessEpoch: opened.accessEpoch }, ref);
 }
 
 async function current(reopen: CorrectionReopen, correction: RecordedCorrection, basis: readonly BusWitness[]) {
   const { source, originalQuestion } = correction;
-  if (!await matchesCurrent(reopen, source.learner, source, research)) return false;
+  if (!await matchesCurrent(reopen, source.learner, { ...source, mode: 'following' }, research)) return false;
   for (const ref of [originalQuestion, ...basis])
     if (!await matchesCurrent(reopen, source.learner, ref, teaching)) return false;
   return true;
@@ -190,7 +190,7 @@ export async function correctionContradictions(reopen: CorrectionReopen, correct
   if (!attempt?.independent || !attempt.allCorrect) return [];
   const openedBasis = [source, issuance, ...variantBasis(variant), ...basis];
   if (!await current(reopen, correction, openedBasis) ||
-      !await matchesCurrent(reopen, correction.source.learner, authorization, research)) return [];
+      !await matchesCurrent(reopen, correction.source.learner, { ...authorization, mode: 'following' }, research)) return [];
 
   const activity = { ref: source, admittedAt, kind: 'posttest', purpose: [research],
     conceptIds: event.concept_ids, occurredAt: event.occurred_at, origin: 'chronicle' } as const;
@@ -203,7 +203,7 @@ export async function correctionContradictions(reopen: CorrectionReopen, correct
   for (const entry of decision.contradictions) {
     const target = existing.find(row => sameWitness(row.ref, entry.hypothesis))?.ref;
     if (target?.type !== 'companion.memoryAssertion' || links.some(link => link.edge.to_ref.id === target.id) ||
-        !await matchesCurrent(reopen, correction.source.learner, target, research)) continue;
+        !await matchesCurrent(reopen, correction.source.learner, { ...target, mode: 'following' }, research)) continue;
     const [edge] = positiveEvidenceEdges({ ...decision, contradictions: [entry] }, [source, target]);
     if (!edge) continue;
     links.push({

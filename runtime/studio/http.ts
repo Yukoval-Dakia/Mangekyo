@@ -38,7 +38,7 @@ import type { openRetentionComparison } from './retention-comparison.ts';
 import type { openIqdb } from './iqdb.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
-import { ridingReview } from './review.ts';
+import { ridingReview } from '../../modules/activity/workbook-views.ts';
 import { serveSessionEvents } from './stream.ts';
 import { freezeProviderAccount, saveLearnerSettings, publicSettings, loadSettings } from './settings.ts';
 
@@ -302,8 +302,10 @@ export function serve(
           : await student.retention.reconcile(retention[1], input);
         return json(res, result.state === 'pending' ? 202 : 200, result);
       }
-      const assessment = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/assessments$/.exec(path);
+      const assessment = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/attempts\/([0-9A-HJKMNP-TV-Z]{26})\/(assessments|corrections)$/.exec(path);
       if (assessment?.[1] && assessment[2] && method === 'POST') {
+        if (assessment[3] === 'corrections')
+          return await offlineSubmission(200, (input, watermark) => student.workbook.correct(assessment[1]!, assessment[2]!, input, watermark));
         return json(res, 200, await student.workbook.assess(assessment[1], assessment[2], await body(req)));
       }
       const paper = /^\/api\/papers\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(attempts|print|presentation|reading-context))?$/.exec(path);

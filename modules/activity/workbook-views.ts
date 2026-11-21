@@ -4,8 +4,11 @@ import { projectHelpExposure, type AdmittedHelpEvent } from './help-exposure.ts'
 import type { HelpTarget } from './help-exposure-values.ts';
 import type { SourceRefV1 } from './source-values.ts';
 import type { ActivityEvidenceReadScope } from './evidence-read.ts';
+import type { PracticeView } from './practice-values.ts';
+import { withWorkbookWorkspaceBasis } from './workbook-context-read.ts';
+import { openWorkbookCorrectionSource, sameWorkbookCorrectionAttempt, workbookCorrectionItems, type readWorkbookCorrections } from './workbook-correction.ts';
 import {
-  workbookAttempt, workbookAttemptType,
+  workbookAttempt, workbookAttemptType, WorkbookSourceMismatch,
   type WorkbookAttempt, type WorkbookDetail, type WorkbookPaper, type WorkbookQuestionView, type WorkbookRubricAssessmentView,
   type WorkbookSourceView, type WorkbookSummary,
 } from './workbook-values.ts';
@@ -19,6 +22,21 @@ export type ReviewEntry = {
   expected: string;
   explanation: string | null;
 };
+
+export function ridingReview(practice: PracticeView): ReviewEntry[] {
+  const entries = new Map<string, ReviewEntry>();
+  for (const attempt of practice.history) {
+    for (const feedback of attempt.feedback) {
+      const question = attempt.paper.questions.find(q => q.id === feedback.questionId);
+      if (!question || feedback.result === 'unanswered') continue;
+      if (feedback.result === 'correct') entries.delete(question.id);
+      else entries.set(question.id, { paperId: 'riding', title: attempt.paper.title,
+        questionId: question.id, prompt: question.prompt, answer: String(feedback.answer),
+        expected: feedback.expected + ' ' + question.unit, explanation: feedback.explanation });
+    }
+  }
+  return [...entries.values()];
+}
 
 export async function readWorkbookAttempts(
   tx: ActivityEvidenceReadScope,
@@ -74,19 +92,38 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
   reads: {
     attempts: Awaited<ReturnType<typeof readWorkbookAttempts>>;
     assessments: ReadonlyMap<string, WorkbookRubricAssessmentView[]>;
+    read: ReadContext;
+    unavailable(error: unknown): boolean;
+    corrections: Awaited<ReturnType<typeof readWorkbookCorrections>>;
     frozenAttempt(fact: FactSnapshot, paper: WorkbookPaper): Promise<{questions: Question[]; paperRev?: Revision} | undefined>;
     formalAssessment(paper: WorkbookPaper, ref: {id: FactId; rev: Revision}):
       Promise<{view: Formal; result: WorkbookAssessmentResult} | undefined>;
     questions(): Promise<Question[]>;
   },
 ) {
+  const sources = withWorkbookWorkspaceBasis(reads.read);
   const attempts: (WorkbookDetail['attempts'][number] & { rev: Revision; questions: Question[]; paperRev?: Revision; formalAssessment?: Formal })[] = [];
   for (const { id: attemptId, rev, attempt, fact } of reads.attempts) {
     const frozen = await reads.frozenAttempt(fact, attempt.paper);
     if (!frozen) continue;
     const formal = await reads.formalAssessment(attempt.paper, {id:attemptId,rev});
     const view = workbookAttemptView(attemptId, attempt, reads.assessments.get(attemptId) ?? [], formal?.result);
-    attempts.push({ ...view, rev, ...frozen, ...(formal ? {formalAssessment:formal.view} : {}) });
+    const eligible = frozen.paperRev === undefined ? [] : workbookCorrectionItems(attempt, view.assessments, formal?.result);
+    const correctionItemIds: string[] = [];
+    for (const question of attempt.paper.questions) {
+      if (!eligible.includes(question.id)) continue;
+      try {
+        await openWorkbookCorrectionSource(sources, attempt.paper.materialId, question);
+        correctionItemIds.push(question.id);
+      } catch (error) {
+        if (!(reads.unavailable(error) || error instanceof WorkbookSourceMismatch)) throw error;
+      }
+    }
+    const correctedItemIds = correctionItemIds.filter(itemId => reads.corrections.get(attemptId)?.some(
+      saved => saved.itemId === itemId && sameWorkbookCorrectionAttempt(saved, fact)));
+    attempts.push({ ...view, rev, ...frozen, ...(correctionItemIds.length ? { correctionItemIds } : {}),
+      ...(correctedItemIds.length ? { correctedItemIds } : {}),
+      ...(formal ? {formalAssessment:formal.view} : {}) });
   }
   return {
     id, revision, title: paper.title, savedAt: paper.savedAt, source,

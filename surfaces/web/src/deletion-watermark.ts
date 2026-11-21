@@ -4,6 +4,20 @@ const bindingKey = (id:string) => 'mangekyo:command-watermark:'+id;
 export const validWatermark = (value:unknown):value is string => typeof value === 'string' && /^(0|[1-9]\d{0,18})$/.test(value);
 export const watermarkHeader = 'X-Deletion-Watermark';
 
+export function observedDeletionWatermark() {
+  try { return localStorage.getItem(latestKey) ?? '0'; }
+  catch { return '0'; }
+}
+
+export function subscribeDeletionWatermark(change: () => void) {
+  window.addEventListener('storage', change);
+  window.addEventListener(latestKey, change);
+  return () => {
+    window.removeEventListener('storage', change);
+    window.removeEventListener(latestKey, change);
+  };
+}
+
 export async function synchronizeDeletion() {
   const response = await fetch('/api/lifecycle',{cache:'no-store'});
   if (!response.ok) throw new Error('无法同步删除水位。');
@@ -39,7 +53,7 @@ export function recordNewSubmission(id:string) {
 
 export function guardedPath(path:string) {
   return path === '/iqdb/proposals' || path === '/iqdb/papers' || path === '/materials' || path === '/practice/riding' || path === '/papers/sealed-practice' ||
-    /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/attempts$/.test(path);
+    /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/attempts(?:\/[0-9A-HJKMNP-TV-Z]{26}\/corrections)?$/.test(path);
 }
 
 export function verifyGenerationReceipt(response:Response, expected:string) {

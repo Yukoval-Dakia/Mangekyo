@@ -1,9 +1,10 @@
 import { BankAttachment, BankFeedback, BankFields, BankOrigin, bankSubmission } from './bank-question';
 import { fixedLink } from './concept-reading';
 import { useDraftWatermark } from './draft-watermark';
+import { observedDeletionWatermark, subscribeDeletionWatermark } from './deletion-watermark';
 import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import type {
   WorkbookDetail as BaseDetail,
   WorkbookQuestionView as BaseQuestion,
@@ -16,6 +17,7 @@ import { PageTitle, ReadState, useResource, type Material, type Resource } from 
 import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
+import { WorkbookCorrection } from './workbook-correction';
 import { observePaperTime } from './workbook-duration';
 import { QuestionContext } from './reading-drawer';
 import type { ReadingContextEntry } from './paper-reading-capsule';
@@ -725,6 +727,7 @@ function FeedbackItem({
   destination,
   assessing,
   sealedPractice,
+  correction,
 }: {
   paperId: string;
   attemptId: string;
@@ -737,6 +740,7 @@ function FeedbackItem({
   destination: string;
   assessing: string | null;
   sealedPractice: boolean;
+  correction?: { attemptRev: number; recorded: boolean } | undefined;
 }) {
   const [query, setQuery] = useState('');
   const assessment = assessments.at(-1);
@@ -768,6 +772,9 @@ function FeedbackItem({
       )}
       {feedback.expected && <p className="workbook-expected"><ExpectedView expected={feedback.expected} /></p>}
       {feedback.explanation && <p className="workbook-explanation">{feedback.explanation}</p>}
+      {correction &&
+        <WorkbookCorrection key={attemptId + ':' + correction.attemptRev} paperId={paperId} attemptId={attemptId}
+          attemptRev={correction.attemptRev} itemId={question.id} recorded={correction.recorded} />}
       {question.kind === 'rubric' && feedback.answer !== null && (
         <section className="workbook-rubric-assessment">
           {assessment ? (
@@ -825,6 +832,8 @@ function durationLabel(ms: number) {
 
 function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
   const watermark = useDraftWatermark();
+  const deletionGeneration = useSyncExternalStore(subscribeDeletionWatermark, observedDeletionWatermark);
+  const openedGeneration = useRef(deletionGeneration);
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
   const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
@@ -841,15 +850,15 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     const controller = new AbortController();
     setView(null);
     setError('');
-    api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}`, { signal: controller.signal })
+    api<WorkbookDetail>(`/papers/${encodeURIComponent(paperId)}`, { signal: controller.signal, cache: 'no-store' })
       .then((result) => {
-        if (!controller.signal.aborted) setView(result);
+        if (!controller.signal.aborted && observedDeletionWatermark() === deletionGeneration) setView(result);
       })
       .catch(() => {
         if (!controller.signal.aborted) setError('试卷载入失败。请重试。');
       });
     return () => controller.abort();
-  }, [paperId, reload]);
+  }, [paperId, reload, deletionGeneration]);
 
   useEffect(() => {
     if (!view || !draft) return;
@@ -1071,6 +1080,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         title={view.title}
         meta={`个人试卷 · ${dateLabel(view.savedAt)} · ${view.questions.length} 题`}
       />
+      {openedGeneration.current !== deletionGeneration && <p role="alert">删除状态已变化，已重新读取试卷。</p>}
       {view.source && (
         <section className="workbook-source">
           <div>
@@ -1208,7 +1218,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </button>
               </div>
             </div>
-            <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id} />
+            <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id}
+              onSaved={() => setReload(n => n + 1)} />
             {solutions.error && <p role="alert">{solutions.error} <button onClick={solutions.retry}>重试</button></p>}
             {historical.error && <p role="alert">{historical.error} <button onClick={historical.retry}>重试</button></p>}
             {!historical.allowed && !historical.error && <p role="status">正在确认历史题面展示许可…</p>}
@@ -1232,6 +1243,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     onAssess={assessRubric}
                     assessing={assessing}
                     sealedPractice={view.sealedPractice === true}
+                    correction={typeof activeAttempt.rev === 'number' && watermark.ready && activeAttempt.correctionItemIds?.includes(question.id) ? {
+                      attemptRev: activeAttempt.rev, recorded: activeAttempt.correctedItemIds?.includes(question.id) === true,
+                    } : undefined}
                   />
                   {settingsError && question.kind === 'rubric' && !(activeAttempt.assessments ?? []).some(
                     (assessment) => assessment.questionId === feedback.questionId,

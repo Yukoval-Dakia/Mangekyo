@@ -12,6 +12,14 @@ export async function readable<T>(open: () => Promise<T>) {
   }
 }
 
+export async function readFactType(tx: ReadTransaction, id: FactId): Promise<string | null> {
+  const { rows: [fact] } = await tx.query<{ type: string }>(
+    'SELECT type FROM facts WHERE learner_id=$1 AND id=$2',
+    [tx.learner, id],
+  );
+  return fact?.type ?? null;
+}
+
 // Enumerate identities in the caller's snapshot. Every returned value goes through
 // the supplied reader so gather records the actual pinned or following dependency.
 export async function* readFactCollection(
