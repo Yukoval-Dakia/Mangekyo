@@ -104,6 +104,7 @@ export interface Turn {
   rationale: string;
   message: string;
   reads: { id: string; title: string; text: string; workspace?: boolean }[];
+  workspaceBasis?: {id: string; type: string; rev: number; epoch: string; mode?: 'pinned' | 'following'}[];
   evidenceIds: string[];
   model: string;
   reasoningEffort?: string;

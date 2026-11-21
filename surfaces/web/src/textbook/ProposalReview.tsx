@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import { ReadState, useResource } from '../workspace';
+import { UndoPageWrite } from './UndoPageWrite';
 import { BodyView } from './blocks';
 import { link, type Block } from './contract';
 import './proposal-review.css';
@@ -13,7 +14,7 @@ const editLabels = { rewrite: '改写', insert: '新增', move: '移动', insert
 type Item = { edit: { kind: keyof typeof editLabels; blockId: string }; before: Position | null } & (
   { state: 'ready'; after: Position | null } | { state: 'invalid'; reason: string }
 );
-type Proposal = Summary & { items: Item[]; blockIds: string[]; result: Reference | null };
+type Proposal = Summary & { items: Item[]; blockIds: string[]; result: (Reference & {undo_token?: string}) | null };
 
 function proposalsPath(id: string) { return '/textbooks/' + encodeURIComponent(id) + '/proposals'; }
 
@@ -49,7 +50,7 @@ function ProposalReview({ id, rev, proposalId, onDecision }: Props) {
     const abort = new AbortController();
     show(undefined);
     report('');
-    api<Proposal>(path, { signal: abort.signal }).then(check).then(value => {
+    api<Proposal>(path, { signal: abort.signal, cache: 'no-store' }).then(check).then(value => {
       if (!abort.signal.aborted) show(value);
     }).catch(() => { if (!abort.signal.aborted) report('无法读取这份教材建议。'); });
     return () => abort.abort();
@@ -95,6 +96,8 @@ function ProposalReview({ id, rev, proposalId, onDecision }: Props) {
       })}
       {data.status === 'proposed' && <button className="primary-button" disabled={busy} onClick={decide}>
         {busy ? '正在提交…' : selected.length ? '接受选中的 ' + selected.length + ' 项' : '拒绝全部建议'}</button>}
+      {data.status === 'applied' && data.result && typeof data.result.undo_token === 'string' && data.result.undo_token &&
+        <UndoPageWrite id={id} rev={data.result.rev} token={data.result.undo_token} />}
       {data.status === 'applied' && data.result && <a className="tonal-button" href={'/textbooks/page' + link(data.result)}>
         打开已更新的第 {data.result.rev} 版</a>}
     </>}

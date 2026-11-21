@@ -4,6 +4,7 @@ import { ApiError, api, remember, remembered, sessionPath, type Session, type Se
 import { useConversation } from "./conversation";
 import { RelationReceipt } from "./relation-receipt";
 import { PageWriteReceipt } from "./textbook/PageWriteReceipt";
+import { TurnReading } from './turn-reading';
 import { Message } from "./message";
 import { StudyCards } from "./study-tools";
 import { Icon, Mark } from "./icons";
@@ -152,6 +153,8 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
     }
   }, [complete]);
   const rationale = turn?.reads.reduce((text, read) => text.replaceAll(read.id, read.title), turn.rationale);
+  const companion = turn?.action === 'companion_reply' && !!turn.turnId && !!sessionId;
+  const reads = turn?.reads.filter(read => !companion || !read.workspace) ?? [];
   return (
     <li className="turn" ref={item}>
       {answer && <div className="learner-message"><span>{!turn || turn.action === "companion_reply" ? "你" : "你的作答"}</span><p>{answer}</p></div>}
@@ -159,6 +162,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
         {turn ? <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
           : <span className="live-status" role="status"><i />{progress}</span>}
         {message && <Message text={message} />}
+        {companion && <TurnReading sessionId={sessionId} turn={turn} reload={reload} />}
         {applySnapshot && mounts && <TurnArtifacts mounts={mounts} apply={applySnapshot} live={!turn} />}
         {turn && <>
         {!!turn.writes?.length && <ul className="read-list" aria-label="学习工作区回执">{turn.writes.map(item =>
@@ -176,7 +180,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
             <div className="evidence-content">
               {rationale && <p>{rationale}</p>}
               {turn.trace && turn.trace.length > 0 && <ol aria-label="本轮工具记录">{turn.trace.map((step, index) => <li key={index}>{step}</li>)}</ol>}
-              {turn.reads.length > 0 && <ul className="read-list">{turn.reads.map((read) => (
+              {reads.length > 0 && <ul className="read-list">{reads.map((read) => (
                 <li key={read.id}>
                   <div className="read-heading"><strong>{read.title}</strong>{turn.evidenceIds.includes(read.id) && <span>本轮引用</span>}</div>
                   <p>{read.text}</p>

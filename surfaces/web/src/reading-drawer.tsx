@@ -16,8 +16,8 @@ function SourcePreview({ source }: { source: WorkbookSourceQuestionRef }) {
   return <><ReadState resource={data} />{data.data && !data.error && <p>{data.data.content ?? '当前没有可预览的题面。'}</p>}</>;
 }
 
-function DrawerPanel({ item, onClose, unavailable, children }: {
-  item: ReadingItem; onClose: () => void; unavailable: () => void; children: ReactNode;
+function DrawerPanel({ item, onClose, unavailable, closeLabel, children }: {
+  closeLabel: string; item: ReadingItem; onClose: () => void; unavailable: () => void; children: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const title = useId();
@@ -26,7 +26,7 @@ function DrawerPanel({ item, onClose, unavailable, children }: {
     <dialog className="reading-panel" ref={dialog} aria-labelledby={title} onClose={onClose}>
       <header>
         <h2 id={title}>{item.label}</h2>
-        <button type="button" autoFocus className="icon-button" aria-label="返回当前题" onClick={() => dialog.current?.close()}>
+        <button type="button" autoFocus className="icon-button" aria-label={closeLabel} onClick={() => dialog.current?.close()}>
           <Icon name="close" />
         </button>
       </header>
@@ -35,7 +35,7 @@ function DrawerPanel({ item, onClose, unavailable, children }: {
     </dialog>, document.body);
 }
 
-export function ReadingDrawer({ items }: { items: ReadingItem[] }) {
+export function ReadingDrawer({ items, label = '本题参考', closeLabel = '返回当前题' }: { items: ReadingItem[]; label?: string; closeLabel?: string }) {
   const [selected, setSelected] = useState<string | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const [hidden, setHidden] = useState<string[]>([]);
@@ -49,7 +49,7 @@ export function ReadingDrawer({ items }: { items: ReadingItem[] }) {
   const overflow = available.slice(3).filter(entry => entry !== item);
   if (!available.length) return null;
   return <>
-    <div className="reading-capsules" role="group" aria-label="本题参考">
+    <div className="reading-capsules" role="group" aria-label={label}>
       {available.slice(0, 3).map(entry =>
         <button type="button" key={entry.id} aria-haspopup="dialog" onClick={event => {
           trigger.current = event.currentTarget;
@@ -58,11 +58,11 @@ export function ReadingDrawer({ items }: { items: ReadingItem[] }) {
           {entry.label}<Icon name="chevron" />
         </button>)}
     </div>
-    {item && <DrawerPanel key={item.id} item={item} unavailable={unavailable} onClose={() => {
+    {item && <DrawerPanel key={item.id} item={item} closeLabel={closeLabel} unavailable={unavailable} onClose={() => {
       setSelected(null);
       trigger.current?.focus({ preventScroll: true });
     }}>
-      {overflow.length > 0 && <div className="reading-content" role="group" aria-label="其他本题参考">
+      {overflow.length > 0 && <div className="reading-content" role="group" aria-label={'其他' + label}>
         {overflow.map(entry => <button type="button" className="text-button" key={entry.id}
           onClick={() => setSelected(entry.id)}>{entry.label}</button>)}
       </div>}
