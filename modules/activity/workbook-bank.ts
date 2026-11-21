@@ -1,5 +1,5 @@
 import { factId, type FactId, type FactSnapshot, type Json, type ReadContext, type Revision } from '@mangekyo/kernel';
-import { assetType, checkQuestionTeachingSources, questionAsset, type TextbookBasis } from '@mangekyo/module-content/facts/asset-contract';
+import { checkQuestionTeachingSources, frozenBankQuestionBasis, questionAsset, type TextbookBasis } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease, projectQuestionPrompt } from '@mangekyo/module-content/facts/question-release';
 import { assessmentRelease, type AssessmentRelease } from './assessment-values.ts';
 import { validateBankItem } from './question-assessment.ts';
@@ -106,8 +106,9 @@ export async function readFrozenWorkbookBank(
   };
   for (const question of paper.questions) {
     if (question.kind !== 'bank') continue;
-    const source = await open({ id: factId(question.sourceQuestionRef.id), rev: question.sourceQuestionRef.rev, type: assetType, epoch: question.sourceAccessEpoch });
-    for (const witness of question.sourceBasis) await open(witness);
+    const [original, ...basis] = frozenBankQuestionBasis(question);
+    const source = await open(original);
+    for (const witness of basis) await open(witness);
     // Previously issued papers can have an incomplete source list. Reopen the
     // original question's fixed ancestry, including its current authorization.
     await checkQuestionTeachingSources(tracked, questionAsset(source.value)).catch(error => {

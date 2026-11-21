@@ -145,3 +145,32 @@ it('pins the selected workspace entry and follows the version of its evidence', 
   sourceRev = 2 as Revision;
   await expect(checkQuestionTeachingSources(read, asset)).rejects.toThrow('依据已变化');
 });
+
+it('reopens frozen bank question ancestry through an issued paper or submission', async () => {
+  const leaf = { id: materialId, rev, epoch, type: 'capture.source' };
+  const paper = { materialId: null, questions: [{ kind: 'bank', sourceQuestionRef: { id, rev },
+    sourceAccessEpoch: epoch, sourceBasis: [leaf] }] };
+  const original: FactSnapshot = { type: 'content.asset', ref, accessEpoch: epoch, purpose: ['teaching'],
+    value: { kind: 'question', title: '练习', promptBlockId: statement.id, blocks: [statement] } };
+  let leafEpoch = epoch;
+  const read = {
+    async fact(target: typeof id) {
+      if (target === id) return original;
+      if (target === materialId) return { type: leaf.type, ref: { learner, id: target, rev },
+        accessEpoch: leafEpoch, purpose: ['teaching'], value: {} };
+      throw new Error('Unexpected fact');
+    },
+  };
+  const sourceId = factId('01KFS4AAA00000000000000004');
+  for (const [type, value] of [['activity.workbookPaper', paper], ['activity.workbookAttempt', { paper }]] as const) {
+    const basis = { basis: [{ id: sourceId, rev, epoch, type }] };
+    const reader = { async fact(target: typeof id) {
+      return target === sourceId ? { type, ref: { learner, id: target, rev }, accessEpoch: epoch, purpose: ['teaching'], value }
+        : read.fact(target);
+    } };
+    leafEpoch = epoch;
+    await checkQuestionTeachingSources(reader, basis);
+    leafEpoch = '6' as Tick;
+    await expect(checkQuestionTeachingSources(reader, basis)).rejects.toThrow('依据已变化');
+  }
+});

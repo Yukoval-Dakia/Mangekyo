@@ -160,7 +160,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         if (fact.type !== materialType || textReference) return;
         const projection = project(fact, anchor, access.recipient);
         if (!projection) return;
-        access.track?.(fact, reference ? mode : access.exactReadModes ? 'following' : undefined);
+        access.track?.(fact, reference ? mode : 'following');
         return {id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), ...projection};
       }
       if (currentDocument.type !== intakeFactType) return;
@@ -193,14 +193,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       ? {title: question.title, content: questionPrompt(question)}
       : project(body, projectionAnchor, access.recipient);
     if (!projection) return;
-    for (const {fact:witness, pinned} of seen.values()) {
-      const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
-      if (access.exactReadModes) {
-        access.track?.(witness, pinned ? 'pinned' : 'following');
-        continue;
-      }
-      access.track?.(witness, witness.type === textbookPageType || pinned ? 'pinned' : isReferenced ? mode : undefined);
-    }
+    for (const {fact:witness, pinned} of seen.values())
+      access.track?.(witness, pinned ? 'pinned' : 'following');
     for (const proof of questionSources) access.track?.(...proof);
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {
