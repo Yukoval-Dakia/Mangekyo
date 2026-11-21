@@ -1,6 +1,5 @@
 import { teachingTurnAllowed } from './reading.ts';
 import type { ServerResponse } from 'node:http';
-import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { notionReadScope, teachingResultAuthority, type NotionReadScope } from './notion.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
@@ -12,7 +11,7 @@ import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingProgress } from '../../executors/teaching/index.ts';
 import { slotType, studioLearner } from './identity.ts';
-import { readOwnStudyTurn, RequestError, sessionMountPermissions, unconfirmedReplyMessage, unavailableReplyMessage } from './sessions.ts';
+import { requireSessionTurn, RequestError, sessionMountPermissions, unconfirmedReplyMessage, unavailableReplyMessage } from './sessions.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
@@ -136,14 +135,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
       [tx.learner, sessionId, slotType],
     );
     if (!row) throw new RequestError(404, '这次学习会话不存在。');
-    const submission = await readOwnStudyTurn(tx, row.turnId)
-      .then(input => studyTurn(input.value))
-      .catch((error: unknown) => {
-        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) {
-          throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
-        }
-        throw error;
-      });
+    const submission = studyTurn((await requireSessionTurn(tx, row.turnId)).value);
     const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
     const allowed = await teachingTurnAllowed(tx, submission, grantCurrent);
