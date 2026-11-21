@@ -408,12 +408,33 @@ type QuestionSource =
   | ({ readonly mode: 'pinned' } & AssetBasis)
   | ({ readonly mode: 'following' } & FactRevisionBasis);
 
+/** Frozen bank items expose their licensed question and source versions as Asset witnesses. */
+export function frozenBankQuestionBasis(input: unknown) {
+  const { sourceQuestionRef, sourceAccessEpoch, sourceBasis } = record(input);
+  const { id, rev } = record(sourceQuestionRef);
+  const [question] = parseTextbookBasis([{ id, rev, epoch: sourceAccessEpoch, type: assetType }]);
+  return [question!, ...parseTextbookBasis(sourceBasis)] as const;
+}
+
+function frozenWorkbookBasis(value: unknown): AssetBasis[] {
+  const { materialId, questions } = record(value);
+  if (materialId != null) throw new AssetBasisError('来源卷缺少材料的固定授权见证。');
+  return list(questions).flatMap(input => {
+    const item = record(input);
+    if (item.kind === 'bank') return frozenBankQuestionBasis(item);
+    if (item.sourceQuestionRef != null) throw new AssetBasisError('来源卷缺少题目的固定授权见证。');
+    return [];
+  });
+}
+
 function questionSources(fact: FactSnapshot): QuestionSource[] {
   if (fact.type === 'activity.workspaceEntry') {
     return list(record(fact.value).basis).map(input => ({ mode: 'following', ...parseFactRevisionBasis(input) }));
   }
   const basis = fact.type === assetType ? parseAsset(fact.value).basis
-    : fact.type === textbookPageType ? textbookPageFrom(fact).basis : undefined;
+    : fact.type === textbookPageType ? textbookPageFrom(fact).basis
+    : fact.type === 'activity.workbookPaper' ? frozenWorkbookBasis(fact.value)
+    : fact.type === 'activity.workbookAttempt' ? frozenWorkbookBasis(record(fact.value).paper) : undefined;
   return (basis ?? []).map(source => ({ mode: 'pinned', ...source }));
 }
 
