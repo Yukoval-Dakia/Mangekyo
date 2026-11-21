@@ -85,20 +85,29 @@ export type Playbook<Step, Evidence> = {
 
 type Dimensions = { readonly representation?: string; readonly context?: string; readonly method?: string };
 type ItemNovelty = 'same' | 'isomorphic' | 'transfer';
+type ItemHelpLevel = 'independent' | 'hinted' | 'hint_l1' | 'hint_l2' | 'solution_seen';
+type ExamPacingEvidence = {
+  readonly paper_key?: string;
+  readonly scale_key?: string;
+  readonly score?: { readonly earned: number; readonly maximum: number };
+};
 export type EvidenceEventV1 = Dimensions & {
   readonly ref: string;
   readonly rev: number;
   readonly occurred_at: string;
   readonly concept_ids: readonly string[];
   readonly item_novelty: ItemNovelty;
-  readonly help_level: 'independent' | 'hinted' | 'solution_seen';
   readonly outcome: 'correct' | 'incorrect' | 'unknown';
   readonly claim_ids: readonly string[];
   readonly score_norm?: number;
   readonly effective_duration_ms?: number;
   readonly confidence?: number;
   readonly error_stage?: 'reading' | 'modeling' | 'strategy' | 'execution' | 'expression';
-};
+} & (
+  | { readonly help_level: ItemHelpLevel; readonly exam_pacing?: ExamPacingEvidence }
+  | { readonly help_level: 'unknown'; readonly exam_pacing: ExamPacingEvidence;
+      readonly outcome: 'unknown'; readonly concept_ids: readonly [] }
+);
 export type EvidenceCandidateV1 = Dimensions & {
   readonly ref: string;
   readonly concept_ids: readonly string[];

@@ -1,5 +1,7 @@
+import {useVisibleDocument} from './workbook-presentation';
+import {ResumeScratch, ScratchReentry, useCurrentDraft} from './activity-reentry';
 import { useDraftWatermark } from './draft-watermark';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { averageSpeed, ridingLesson } from '../../../modules/activity/starter.ts';
 import type { PracticeAnswers, PracticeView } from '../../../modules/activity/practice-values.ts';
 import { enqueue } from './offline-queue';
@@ -109,6 +111,8 @@ type PracticeDraft = {
   answers: Record<string, string>;
   requestId: string;
   pending: PracticeAnswers | null;
+  scratch?:Record<string,string>;
+  currentItem?: string;
 };
 
 function restoreDraft(): PracticeDraft | null {
@@ -120,6 +124,8 @@ function restoreDraft(): PracticeDraft | null {
         !/^[A-Za-z0-9_-]{8,100}$/.test(draft.requestId) ||
         !draft.answers || typeof draft.answers !== 'object' || Array.isArray(draft.answers) ||
         Object.values(draft.answers).some((value) => typeof value !== 'string')) return null;
+    if (draft.scratch !== undefined && (!draft.scratch || typeof draft.scratch !== 'object' ||
+        Array.isArray(draft.scratch) || Object.values(draft.scratch).some(value => typeof value !== 'string'))) return null;
     if (draft.pending !== null && (!draft.pending || typeof draft.pending !== 'object' ||
         Array.isArray(draft.pending) || Object.values(draft.pending).some(
           (value) => value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value < 0),
@@ -135,9 +141,12 @@ function newDraft(version: string): PracticeDraft {
 }
 
 export function StarterPractice() {
-  const watermark = useDraftWatermark();
+  const foreground = useVisibleDocument();
+  const watermark = useDraftWatermark(foreground);
   const [view, setView] = useState<PracticeView | null>(null);
   const [draft, setDraft] = useState(restoreDraft);
+  const currentGeneration = useCurrentDraft(draft?.requestId);
+  const [coveredItem, coverItem] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -146,7 +155,8 @@ export function StarterPractice() {
   const reviewHeading = useRef<HTMLHeadingElement>(null);
   const justSubmitted = useRef(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!foreground) {setLoading(true); return;}
     const controller = new AbortController();
     setLoading(true);
     setProblem(null);
@@ -158,6 +168,7 @@ export function StarterPractice() {
       })
       .catch(() => {
         if (controller.signal.aborted) return;
+        setView(null);
         if (!navigator.onLine) {
           try {
             const paper = JSON.parse(remembered('starter-built-in-paper') ?? 'null');
@@ -175,13 +186,13 @@ export function StarterPractice() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [reload]);
+  }, [foreground, reload]);
 
   const selectedId = selected === undefined && !draft ? view?.submission?.id : selected;
   const submission = view?.history.find(({ id }) => id === selectedId);
   const paper = submission?.paper ?? view?.paper;
   const answered = view?.paper.questions.filter(({ id }) => Boolean(draft?.answers[id])).length ?? 0;
-  const versionChanged = Boolean(draft && view && draft.version !== view.paper.version);
+  const versionChanged = Boolean(draft && view && (draft.version !== view.paper.version || !currentGeneration));
 
   useEffect(() => {
     if (submission && justSubmitted.current) {
@@ -205,7 +216,7 @@ export function StarterPractice() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!view || !draft || saving || loading || submission || (!draft.pending && (versionChanged || !answered))) return;
+    if (!view || !draft || saving || loading || submission || coveredItem || !watermark.ready || !currentGeneration || (!draft.pending && (versionChanged || !answered))) return;
     const questionIds = draft.pending ? Object.keys(draft.pending) : view.paper.questions.map(({ id }) => id);
     const answers = Object.fromEntries(questionIds.map((id) => [
       id, draft.answers[id] ? Number(draft.answers[id]) : null,
@@ -257,6 +268,11 @@ export function StarterPractice() {
       <div className="starter-practice-grid">
         <div className="starter-paper">
           {watermark.notice}
+          {view && draft?.currentItem && watermark.ready && !loading && !versionChanged && !submission && !draft.pending && !coveredItem &&
+            view.paper.questions.some(q => q.id === draft.currentItem) && <ScratchReentry
+              slot="practice:riding" binding={JSON.stringify([view.paper.version,draft.requestId])} itemId={draft.currentItem}
+              label={`上次停在第 ${view.paper.questions.findIndex(q => q.id === draft.currentItem) + 1} 题`}
+              cover={coverItem} scratch={draft.scratch?.[draft.currentItem]}/>}
           {loading && <p role="status" className="starter-status">正在打开小卷…</p>}
           {problem && <div role="alert" className="starter-status">
             <p>{problem.message}</p>
@@ -272,7 +288,7 @@ export function StarterPractice() {
               </select>
             </div>
           )}
-          {view && paper && !loading && (submission ? <>
+          {view && paper && !loading && (watermark.ready || submission) && (submission ? <>
             <div className="starter-review-header">
               <h2 ref={reviewHeading} tabIndex={-1} className="starter-review-title">已交卷</h2>
               <button type="button" className="text-button" disabled={!draft && !watermark.ready} onClick={openDraft}>{draft ? '继续本轮' : '再做一轮'}</button>
@@ -293,28 +309,39 @@ export function StarterPractice() {
             </ol>
           </> : <form onSubmit={(event) => void submit(event)}>
             {versionChanged && <div className="starter-status">
-              <p>草稿对应旧版小卷。</p>
-              {!draft?.pending && <button type="button" className="text-button"
+              <p>草稿对应的小卷版本或删除水位已变化。</p>
+              {(!draft?.pending || !currentGeneration) && <button type="button" className="text-button"
                 disabled={!watermark.ready} onClick={() => saveDraft(newDraft(view.paper.version))}>清除旧草稿并打开新版</button>}
             </div>}
             {!versionChanged && <ol className="starter-exercises">
               {view.paper.questions.map(({ id, prompt, unit }) => (
-                <li key={id} className="starter-exercise">
+                <li key={id} className="starter-exercise" onFocusCapture={() => {
+                  if (!watermark.ready || saving || coveredItem || draft?.pending || draft?.currentItem === id) return;
+                  const stored = restoreDraft();
+                  if (stored?.requestId !== draft?.requestId) return;
+                  saveDraft({...(stored ?? newDraft(view.paper.version)), currentItem: id});
+                }}>
                   <label className="starter-prompt" htmlFor={`riding-${id}`}>{prompt}</label>
+                  <ResumeScratch itemId={id} value={draft?.scratch?.[id] ?? ''} disabled={saving || (!!coveredItem && coveredItem !== id)}
+                    covered={coveredItem === id} finish={() => coverItem(null)} change={value => {
+                      const current = draft ?? newDraft(view.paper.version);
+                      saveDraft({...current,currentItem:id,scratch:{...current.scratch,[id]:value}});
+                    }}>
                   <div className="starter-answer">
                     <input id={`riding-${id}`} name={id} type="number" min="0" step="any"
-                      aria-describedby={`riding-${id}-unit`} autoComplete="off" disabled={saving || (!draft && !watermark.ready)}
+                      aria-describedby={`riding-${id}-unit`} autoComplete="off" disabled={saving || (!!coveredItem && coveredItem !== id) || (!draft && !watermark.ready)}
                       value={draft?.answers[id] ?? ''} onChange={(event) => {
                         const current = draft ?? newDraft(view.paper.version);
-                        saveDraft({ ...current, answers: { ...current.answers, [id]: event.currentTarget.value } });
+                        saveDraft({ ...current, currentItem:id, answers: { ...current.answers, [id]: event.currentTarget.value } });
                       }} />
                     <span id={`riding-${id}-unit`}>{unit}</span>
                   </div>
+                  </ResumeScratch>
                 </li>
               ))}
             </ol>}
             <div className="starter-submit">
-              <button className="primary-button" type="submit" disabled={saving || (!draft?.pending && (versionChanged || !answered))}>
+              <button className="primary-button" type="submit" disabled={saving || !!coveredItem || (!draft?.pending && (versionChanged || !answered))}>
                 {saving ? '正在交卷…' : draft?.pending ? '核对上次交卷' : '交卷并查看反馈'}
               </button>
               {!versionChanged && <span aria-live="polite">已答 {answered} / {view.paper.questions.length} 题</span>}

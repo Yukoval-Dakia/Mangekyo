@@ -2,7 +2,8 @@ import { learnerId, type FactSnapshot } from '@mangekyo/kernel';
 import { expect, it, vi } from 'vitest';
 import { understandingProjection } from '../companion/understanding.ts';
 import { blocksRefusal, effectiveDirective, evidencePriority, hypothesesAsOf, hypothesisView, projectBelief,
-  refusalBoundary, type HypothesisEvidence } from './belief-view.ts';
+  refusalBoundary, type HypothesisEvidence, type MetacognitiveRead } from './belief-view.ts';
+import { activityEvidenceSlice } from '../activity/evidence-slice.ts';
 import { witness } from './memory-evidence.ts';
 import preferenceTeaching from './commands/preference-teaching.ts';
 
@@ -63,7 +64,7 @@ it('requires structured refusal keys and applies only the recorded reopening con
   expect(effectiveDirective(row.value, asOf(7))).toBeNull();
 });
 
-it('co-projects assertion formats, preserving both conflicting witnesses and temporal visibility', () => {
+it('co-projects assertion formats, preserving both conflicting witnesses and temporal visibility', async () => {
   const extracted = project(fact(20, 'companion.memoryAssertion', {version: 2, kind: 'preference', text: '总是先算',
     scope: {kind: 'general'}, ttl: null, sticky: false, undo_token: ref(9).id,
     evidence_refs: [{...ref(5), anchor: 'message', excerpt: '先算', direction: 'support'}]}));
@@ -73,19 +74,19 @@ it('co-projects assertion formats, preserving both conflicting witnesses and tem
   const edge = {...revisionTime, validTo: null, recordedAt: at(4), from_ref: extracted.ref, to_ref: manual.ref,
     basis: [{...ref(7), learner, type: 'activity.workbookAttempt', mode: 'following' as const}],
     kind: 'contradicts' as const, author: 'companion' as const, confidence: null, sticky: false};
-  expect(hypothesesAsOf(rows, [edge], asOf(3, 3)).hypotheses.map(row => row.value.kind))
+  expect((await hypothesesAsOf(rows, [edge], asOf(3, 3))).hypotheses.map(row => row.value.kind))
     .toEqual(['observation', 'observation']);
   const submission = {...ref(8), learner, type: 'activity.retentionPosttestSubmission', mode: 'following' as const};
   const correction = {...edge, from_ref: submission, basis: [submission, ...edge.basis]};
-  expect(hypothesesAsOf(rows, [correction], asOf(3, 4), correction.basis).relations).toEqual([correction]);
-  expect(hypothesesAsOf(rows, [correction], asOf(3, 4), [submission]).relations).toEqual([]);
+  expect((await hypothesesAsOf(rows, [correction], asOf(3, 4), correction.basis)).relations).toEqual([correction]);
+  expect((await hypothesesAsOf(rows, [correction], asOf(3, 4), [submission])).relations).toEqual([]);
   const pinned = {...submission, mode: 'pinned' as const};
-  expect(hypothesesAsOf(rows, [correction], asOf(3, 4), [pinned, ...edge.basis]).relations).toEqual([]);
-  expect(hypothesesAsOf(rows, [correction], asOf(3, 4), [...correction.basis, pinned]).relations).toEqual([correction]);
-  const disputed = hypothesesAsOf(rows, [edge], asOf(3, 4));
+  expect((await hypothesesAsOf(rows, [correction], asOf(3, 4), [pinned, ...edge.basis])).relations).toEqual([]);
+  expect((await hypothesesAsOf(rows, [correction], asOf(3, 4), [...correction.basis, pinned])).relations).toEqual([correction]);
+  const disputed = await hypothesesAsOf(rows, [edge], asOf(3, 4));
   expect(disputed.hypotheses.map(row => [row.ref.id, row.value.status, row.value.evidence_refs[0].id]))
     .toEqual([[ref(20).id, 'disputed', ref(5).id], [ref(21).id, 'disputed', ref(6).id]]);
-  expect(hypothesesAsOf(rows, [{...edge, from_ref: ref(20, '1')}], asOf(3, 4))
+  expect((await hypothesesAsOf(rows, [{...edge, from_ref: ref(20, '1')}], asOf(3, 4)))
     .relations).toEqual([]);
 });
 
@@ -112,4 +113,34 @@ it('narrows legacy all-purpose preferences when the learner removes teaching', a
   expect(await preferenceTeaching.write(context, input, undefined)).toEqual([
     {kind: 'set_purpose', id: snapshot.ref.id, expectedRev: input.expectedRev, purpose: ['storage']},
   ]);
+});
+
+it('requires two reopened independent submissions in distinct disciplines for a cross-subject habit', async () => {
+  const submissions = [fact(1, 'activity.workbookAttempt', {}), fact(2, 'activity.retentionPosttestSubmission', {}), fact(6, 'activity.workbookAttempt', {})];
+  const subjects = [fact(3, 'content.asset', {kind: 'discipline'}), fact(4, 'content.asset', {kind: 'discipline'})];
+  const proof = (number: number) => ({...ref(number), learner, type: 'content.asset', mode: 'following' as const});
+  let secondSubject = 4, secondHelp: 'independent' | 'hinted' = 'independent';
+  const read: MetacognitiveRead = {learner, purpose: 'teaching',
+    reopen: async ({id}) => [...submissions, ...subjects].find(row => row.ref.id === id),
+    observe: async (source, citation) => ({discipline: proof(citation.anchor === 'first' ? 3 : secondSubject), basis: [proof(3)],
+      slice: activityEvidenceSlice(ref(1).accessEpoch, source.ref.id === ref(6).id ? at(4) : at(3), undefined, [{submission: source.ref, occurredAt: source.ref.id === ref(6).id ? at(4) : at(2),
+        concepts: [], novelty: 'transfer', helpLevel: source.ref.id === ref(1).id ? 'independent' : secondHelp, result: 'incorrect'}])})};
+  const count = async (second = ref(2), reader: MetacognitiveRead | null = read, when = asOf(3), includeLater = false) => (await hypothesesAsOf<unknown, unknown>([{ref: ref(5), value: {
+    ...revisionTime, validTo: null, category: 'hypothesis', kind: 'metacognitive_habit', status: 'tentative', sticky: false,
+    scope: {}, text: '漏读限制词', evidence_refs: [{...ref(1), direction: 'support', anchor: 'first'}, {...second, direction: 'support'},
+      ...(includeLater ? [{...ref(6), direction: 'support', excerpt: 'later evidence'}] : [])],
+  }}], [], when, [], reader ?? undefined)).hypotheses.length;
+  expect(await count()).toBe(1);
+  expect(await count(ref(2), read, asOf(3, 4), true)).toBe(0);
+  expect(await count(ref(2), read, asOf(1, 3))).toBe(0);
+  expect(await count(ref(2), read, asOf(3, 2))).toBe(0);
+  expect(await count(ref(1))).toBe(0);
+  expect(await count(ref(2), null)).toBe(0);
+  expect(await count(ref(2, '1'))).toBe(0);
+  expect(await count(ref(2), {...read, purpose: 'background-research'})).toBe(0);
+  secondSubject = 3;
+  expect(await count()).toBe(0);
+  secondSubject = 4;
+  secondHelp = 'hinted';
+  expect(await count()).toBe(0);
 });

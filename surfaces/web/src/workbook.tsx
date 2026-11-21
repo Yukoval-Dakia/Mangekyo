@@ -1,10 +1,11 @@
 import { BankAttachment, BankFeedback, BankFields, BankOrigin, bankSubmission } from './bank-question';
 import { fixedLink } from './concept-reading';
+import {ResumeScratch, ScratchReentry, useCurrentDraft} from './activity-reentry';
 import { useDraftWatermark } from './draft-watermark';
 import { observedDeletionWatermark, subscribeDeletionWatermark } from './deletion-watermark';
 import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
-import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import type {
   WorkbookDetail as BaseDetail,
   WorkbookQuestionView as BaseQuestion,
@@ -21,7 +22,7 @@ import { WorkbookCorrection } from './workbook-correction';
 import { observePaperTime } from './workbook-duration';
 import { QuestionContext } from './reading-drawer';
 import type { ReadingContextEntry } from './paper-reading-capsule';
-import { QuestionPresentation, useWorkbookPresentation } from './workbook-presentation';
+import { QuestionPresentation, useVisibleDocument, useWorkbookPresentation } from './workbook-presentation';
 import { SealedPracticeAuthor } from './sealed-practice';
 import { WorkbookAccess } from './workbook-access';
 import './workbook.css';
@@ -647,7 +648,9 @@ type AttemptDraft = {
   requestId: string;
   answers: Record<string, string>;
   focusIds: string[];
-  scratch?: Record<string, string>;
+  scratch?: Record<string,string>;
+  currentItem?: string;
+  paperRev?: number;
 };
 
 function attemptDraftKey(paperId: string) {
@@ -831,11 +834,14 @@ function durationLabel(ms: number) {
 }
 
 function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
-  const watermark = useDraftWatermark();
+  const foreground = useVisibleDocument();
+  const watermark = useDraftWatermark(foreground);
   const deletionGeneration = useSyncExternalStore(subscribeDeletionWatermark, observedDeletionWatermark);
   const openedGeneration = useRef(deletionGeneration);
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
+  const currentGeneration = useCurrentDraft(draft?.requestId);
+  const [coveredItem, coverItem] = useState<string | null>(null);
   const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
   const [assessing, setAssessing] = useState<string | null>(null);
   const settings = modelSettings.data && forTask(modelSettings.data, 'assessment');
@@ -846,7 +852,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   const justSubmitted = useRef(false);
   const feedbackHeading = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!foreground) {setView(null); return;}
     const controller = new AbortController();
     setView(null);
     setError('');
@@ -858,7 +865,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         if (!controller.signal.aborted) setError('试卷载入失败。请重试。');
       });
     return () => controller.abort();
-  }, [paperId, reload, deletionGeneration]);
+  }, [foreground, paperId, reload, deletionGeneration]);
 
   useEffect(() => {
     if (!view || !draft) return;
@@ -873,6 +880,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
     if (!watermark.ready || !view || draft || view.attempts.length > 0) return;
     const next: AttemptDraft = {
       version: paperId,
+      ...(view?.revision !== undefined && {paperRev: view.revision}),
       requestId: submissionId(),
       answers: {},
       focusIds: [],
@@ -910,7 +918,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         .map((feedback) => feedback.questionId)
     : [];
   const showForm = Boolean(draft) || attempts.length === 0;
-  const answerDisabled = busy || !draft;
+  const answerDisabled = busy || !draft || !watermark.ready || !currentGeneration;
+
   const revision = view?.id === paperId ? view.revision : undefined;
   const frozenQuestions = activeAttempt?.questions;
   const reviewQuestions = frozenQuestions ?? view?.questions ?? [];
@@ -930,7 +939,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
 
   const form = useRef<HTMLFormElement>(null);
   const clock = useRef<ReturnType<typeof observePaperTime> | null>(null);
-  const timingId = questions.allowed && view && draft && !attempts.some((attempt) => attempt.requestId === draft.requestId)
+  const draftAvailable = watermark.ready && currentGeneration && draft && (draft.paperRev ?? 1) === revision;
+  const timingId = questions.allowed && draftAvailable && view && !attempts.some((attempt) => attempt.requestId === draft.requestId)
     ? draft.requestId : null;
   useEffect(() => {
     if (!timingId || !form.current) return;
@@ -943,8 +953,8 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   }, [paperId, timingId]);
 
   function changeAnswer(questionId: string, value: string, field: 'answers'|'scratch' = 'answers') {
-    if (!draft) return;
-    const next = { ...draft, [field]: { ...draft[field], [questionId]: value } };
+    if (!draft || answerDisabled || revision === undefined || (coveredItem && coveredItem !== questionId)) return;
+    const next = { ...draft, currentItem: questionId, paperRev: revision, [field]: { ...draft[field], [questionId]: value } };
     remember(attemptDraftKey(paperId), JSON.stringify(next));
     setDraft(next);
   }
@@ -960,11 +970,13 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   function startRedo(focus: 'wrong' | 'full') {
     const next: AttemptDraft = {
       version: paperId,
+      ...(view?.revision !== undefined && {paperRev: view.revision}),
       requestId: submissionId(),
       answers: {},
       focusIds: focus === 'wrong' ? wrongQuestionIds : [],
     };
     remember(attemptDraftKey(paperId), JSON.stringify(next));
+    coverItem(null);
     setDraft(next);
     setSelectedAttemptId(null);
     setError('');
@@ -972,7 +984,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!view || !draft || busy) return;
+    if (!view || !draft || answerDisabled || coveredItem) return;
     const answers: Record<string, string | null> = {};
     for (const question of visibleQuestions) {
       const value = draft.answers[question.id]?.trim();
@@ -1072,6 +1084,13 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
   if (!questions.allowed) return <p role="status">{questions.error ?? '正在确认试卷展示许可…'}
     {questions.error && <button onClick={questions.retry}>重试</button>}</p>;
 
+  if (draft && !draftAvailable) {
+    return <section>{watermark.notice}{watermark.ready && <>
+      <p>草稿对应的试卷版本或删除水位已变化。</p>
+      <button type="button" onClick={() => {remember(attemptDraftKey(paperId), null); setDraft(null); coverItem(null);}}>清除旧草稿并重新打开</button>
+    </>}</section>;
+  }
+
   return (
     <>
       {questions.error && <p role="alert">{questions.error} <button onClick={questions.retry}>重试</button></p>}
@@ -1081,6 +1100,11 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         meta={`个人试卷 · ${dateLabel(view.savedAt)} · ${view.questions.length} 题`}
       />
       {openedGeneration.current !== deletionGeneration && <p role="alert">删除状态已变化，已重新读取试卷。</p>}
+      {timingId && draft?.currentItem && draft.paperRev === revision && !coveredItem &&
+        visibleQuestions.some(q => q.id === draft.currentItem) && <ScratchReentry
+          slot={'paper:' + paperId} binding={JSON.stringify([paperId,revision,timingId])} itemId={draft.currentItem}
+          label={`上次停在第 ${view.questions.findIndex(q => q.id === draft.currentItem) + 1} 题`}
+          cover={coverItem} scratch={draft.scratch?.[draft.currentItem]}/>}
       {view.source && (
         <section className="workbook-source">
           <div>
@@ -1107,7 +1131,17 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
             <QuestionPresentation value={questions.questionPermit}>
             <form ref={form} onSubmit={(event) => void submit(event)}>
               {visibleQuestions.map((question, index) => (
-                <article key={question.id} className="workbook-answer-item">
+                <article key={question.id} className="workbook-answer-item"
+                  data-workbook-thought-anchor={timingId && questions.questionPermit ? paperId : undefined}
+                  data-draft-request-id={timingId ?? undefined}
+                  data-paper-rev={revision} data-item-id={question.id} onFocusCapture={() => {
+                  if (!draft || answerDisabled || coveredItem || draft.currentItem === question.id || revision === undefined) return;
+                  const stored = restoreAttemptDraft(paperId);
+                  if (!stored || stored.requestId !== draft.requestId) return;
+                  const next = {...stored, currentItem: question.id, paperRev: revision};
+                  remember(attemptDraftKey(paperId), JSON.stringify(next));
+                  setDraft(next);
+                }}>
                   <header className="workbook-answer-head">
                     <span>
                       第 {view.questions.findIndex((item) => item.id === question.id) + 1} 题 ·{' '}
@@ -1122,10 +1156,10 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                   {question.kind === 'bank' && <BankOrigin source={question.sourceQuestionRef}/>}
                   {view.sealedPractice && question.sourceQuestionRef && <QuestionSource source={question.sourceQuestionRef} sealedPractice />}
                   <p className="workbook-answer-prompt">{question.prompt}</p>
-                  <details><summary>本题草稿</summary><label className="field"><span>演算或思路（仅本机）</span>
-                    <textarea rows={3} maxLength={4000} disabled={answerDisabled} value={draft?.scratch?.[question.id] ?? ''}
-                      onChange={e => changeAnswer(question.id,e.target.value,'scratch')}/></label></details>
                   {question.kind === 'bank' && <BankAttachment question={question} paperId={paperId}/>}
+                  <ResumeScratch itemId={question.id} value={draft?.scratch?.[question.id] ?? ''} disabled={answerDisabled}
+                    covered={coveredItem === question.id} finish={() => coverItem(null)}
+                    change={value => changeAnswer(question.id,value,'scratch')}>
                   {question.kind === 'bank' ? <BankFields question={question} raw={draft?.answers[question.id] ?? ''}
                     disabled={answerDisabled} change={value => changeAnswer(question.id, value)}/> : question.kind === 'numeric' ? (
                     <label className="field">
@@ -1160,6 +1194,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                       />
                     </label>
                   )}
+                  </ResumeScratch>
                 </article>
               ))}
               {error && (
@@ -1167,9 +1202,11 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
               )}
               <div className="workbook-attempt-actions">
                 <button type="button" className="text-button" disabled={busy || (!watermark.ready && !view.attempts.length)} onClick={() => {
+                  coverItem(null);
                   if (view.attempts.length === 0) {
                     const next: AttemptDraft = {
                       version: paperId,
+                      ...(view?.revision !== undefined && {paperRev: view.revision}),
                       requestId: submissionId(),
                       answers: {},
                       focusIds: [],
@@ -1183,7 +1220,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 }}>
                   清空草稿
                 </button>
-                <button type="submit" className="primary-button" disabled={busy || !visibleQuestions.some((question) => draft?.answers[question.id]?.trim())}>
+                <button type="submit" className="primary-button" disabled={busy || !!coveredItem || !visibleQuestions.some((question) => draft?.answers[question.id]?.trim())}>
                   {busy ? '交卷中…' : '交卷并查看反馈'}
                 </button>
               </div>
@@ -1218,6 +1255,9 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                 </button>
               </div>
             </div>
+            {historical.questionPermit && frozenQuestions && reviewItems.length > 0 && activeAttempt.rev && activeAttempt.paperRev &&
+              <div key={activeAttempt.id + ':' + activeAttempt.rev} data-workbook-thought-feedback={activeAttempt.id}
+                data-attempt-rev={activeAttempt.rev} data-paper-id={paperId} data-paper-rev={activeAttempt.paperRev} />}
             <AttemptResearch key={activeAttempt.id} paperId={paperId} attemptId={activeAttempt.id}
               onSaved={() => setReload(n => n + 1)} />
             {solutions.error && <p role="alert">{solutions.error} <button onClick={solutions.retry}>重试</button></p>}

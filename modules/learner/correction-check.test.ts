@@ -64,6 +64,8 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
   });
   expect(await result()).toMatchObject([{ edge: { kind: 'contradicts', to_ref: belief.ref },
     citation: { id: source.id, anchor: 'q', direction: 'contradict' } }]);
+  const seconds = cutoff.at.replace('.000Z', 'Z');
+  expect(await result([], {cutoff: {...cutoff, at: seconds}}, 'isomorphic', [belief], seconds)).toHaveLength(1);
   expect(await result([shown])).toEqual([]);
   expect(await result([opened])).toEqual([]);
   expect(await result([], {}, 'same')).toEqual([]);

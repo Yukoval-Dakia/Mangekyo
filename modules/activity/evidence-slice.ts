@@ -1,6 +1,8 @@
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1, FactId, FactRef, Revision, Tick } from '@mangekyo/kernel';
 import { projectHelpExposure, type AdmittedHelpEvent, type HelpExposureEvidence } from './help-exposure.ts';
 import { helpAppliesTo, type HelpTarget } from './help-exposure-values.ts';
+import type { AssessmentRevisionRef, FormalAssessmentValue } from './assessment-values.ts';
+import type { WorkbookAttempt } from './workbook-values.ts';
 
 export type ActivityEvidenceObservation = {
   submission: { id: FactId; rev: Revision };
@@ -12,6 +14,30 @@ export type ActivityEvidenceObservation = {
   score?: number;
   duration?: number;
 };
+
+/** Project an authorized frozen whole paper and its settled result, if any. */
+export function workbookExamPacingEvent(
+  { id, rev }: FactRef, {submittedAt, effectiveDurationMs, paper}: WorkbookAttempt, frozen: AssessmentRevisionRef,
+  formal?: { state: string; releaseRef: AssessmentRevisionRef; score: FormalAssessmentValue['score'] },
+) {
+  const releaseItems = paper.assessmentRelease?.items;
+  const score = formal?.state === 'complete' && releaseItems?.length === paper.questions.length &&
+    paper.questions.every(question => releaseItems.some(item => item.itemId === question.id)) ? formal.score : null;
+  const scored = score && Number.isFinite(score.maximum) && score.maximum > 0 &&
+    Number.isFinite(score.earned) && score.earned >= 0 && score.earned <= score.maximum;
+  return {
+    ref:id, rev, occurred_at:submittedAt, concept_ids:[], item_novelty:'same', help_level:'unknown',
+    outcome:'unknown', claim_ids:[],
+    ...(effectiveDurationMs === undefined ? {} : {effective_duration_ms:effectiveDurationMs}),
+    exam_pacing: {
+      paper_key:JSON.stringify([frozen.id,frozen.rev]),
+      ...(scored && formal ? {
+        scale_key:JSON.stringify(['workbook-formal-assessment@1',formal.releaseRef.id,formal.releaseRef.rev]),
+        score:{earned:score.earned,maximum:score.maximum},
+      } : {}),
+    },
+  } as const;
+}
 
 export function activityEvidenceSlice(
   watermark: Tick,
@@ -42,21 +68,26 @@ export function activityEvidenceSlice(
   };
 }
 
-export function retentionExposure(observed: HelpExposureEvidence) {
+export function retentionExposure(observed: HelpExposureEvidence, level?: 'hint_l1' | 'hint_l2') {
   if (observed.kind === 'unexposed') return { kind: 'independent' as const };
   if (observed.kind === 'exposed') return {
     kind: 'exposed' as const, refs: observed.evidenceRefs.map(({ id, rev }) => ({ id, rev })),
+    ...(level ? { level } : {}),
   };
   return { kind: 'unknown' as const, reason: observed.reason };
 }
 
 export function activityHelpProcess(observed: HelpExposureEvidence, events: readonly AdmittedHelpEvent[]) {
-  const evidence = events.filter(({ ref }) => observed.evidenceRefs.some(use => use.id === ref.id && use.rev === ref.rev));
-  const helpLevel = observed.kind === 'unexposed' ? 'independent' as const
-    : observed.kind === 'unknown' ? 'unknown' as const
-    : evidence.some(({ value }) => value.kind === 'displayed' && value.step.kind === 'solution')
-      ? 'solution_seen' as const : 'hinted' as const;
-  return { exposure: retentionExposure(observed), helpLevel };
+  const displayed = new Set(events.flatMap(({ ref, value }) => value.kind === 'displayed' &&
+    observed.evidenceRefs.some(use => use.learner === ref.learner && use.id === ref.id && use.rev === ref.rev)
+    ? [value.step.kind] : []));
+  const ungraded = displayed.has('hint') || displayed.has('explanation') || displayed.has('worked-example');
+  const level = ungraded || displayed.has('solution') ? undefined
+    : displayed.has('hint_l2') ? 'hint_l2' : displayed.has('hint_l1') ? 'hint_l1' : undefined;
+  const helpLevel: ActivityEvidenceObservation['helpLevel'] = observed.kind === 'unexposed' ? 'independent'
+    : observed.kind === 'unknown' ? 'unknown'
+    : displayed.has('solution') ? 'solution_seen' : level ?? 'hinted';
+  return { exposure: retentionExposure(observed, level), helpLevel };
 }
 
 export function controlledWorkbookHelp(

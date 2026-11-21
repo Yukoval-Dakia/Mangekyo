@@ -1,6 +1,8 @@
+import {useVisibleDocument} from './workbook-presentation';
+import {ActivityReentry, useCurrentDraft} from './activity-reentry';
 import { answerKey, forgetPackDrafts, recoverDraft, selectDraft, pendingDraft, settleDraft, type Draft } from './today-draft';
 import { useDraftWatermark } from './draft-watermark';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, ApiError, deletedSubmission, remember, remembered, submissionId } from './api';
 import {
   bindDeletionWatermark,
@@ -24,8 +26,21 @@ type Activity = { kind: 'activity'; id: string; rev: number; href: string };
 
 type Result = { id: string; rev: number; result: 'correct' | 'incorrect'; explanation: string };
 
-export function openLink(ref: ActivityRef, mode: string) {
-  return '/today?' + new URLSearchParams({ mode, kind: ref.kind, id: ref.id, rev: String(ref.rev) });
+export type Duration = '3min' | '15min' | '45min+';
+export const durationLabels: Record<Duration, string> = {'3min': '3 分钟', '15min': '15 分钟', '45min+': '45 分钟以上'};
+export function durationLabel(mode: string, duration?: Duration) {
+  if (duration) return durationLabels[duration];
+  return mode === 'one-hand' ? '默认时长（3 分钟）' : '默认时长';
+}
+export function todayParams(mode: string, duration?: Duration) {
+  return new URLSearchParams({mode, ...(duration && {duration})});
+}
+export function openLink(ref: ActivityRef, mode: string, duration?: Duration) {
+  const params = todayParams(mode, duration);
+  params.set('kind', ref.kind);
+  params.set('id', ref.id);
+  params.set('rev', String(ref.rev));
+  return '/today?' + params;
 }
 
 function frozenPack(value: Pack | Activity | null, ref: ActivityRef): value is Pack {
@@ -68,14 +83,19 @@ export function otherCachedPacks(inPlan: ActivityRef[]) {
   return packs;
 }
 
-export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode: string }) {
+export function TodayActivity({ refValue, mode, duration }: { refValue: ActivityRef; mode: string; duration: Duration | undefined }) {
   const { kind, id, rev } = refValue;
-  const watermark = useDraftWatermark();
+  const foreground = useVisibleDocument();
+  const watermark = useDraftWatermark(foreground);
   const key = packKey(refValue);
   const draftKey = answerKey(refValue);
   const requested = new URLSearchParams(location.search).get('answer');
   const [pack, setPack] = useState<Pack | null>(null);
   const [draft, setDraft] = useState<Draft | null>(() => kind === 'pack' ? recoverDraft(refValue, requested) : null);
+  const currentGeneration = useCurrentDraft(draft?.requestId);
+  const [redo, setRedo] = useState<{requestId: string; choice: number | null} | null>(null);
+  const choices = useRef<HTMLFieldSetElement>(null);
+  const covering = !!redo && redo.requestId === draft?.requestId && currentGeneration;
   const selectedId = useRef(draft?.requestId);
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -84,6 +104,7 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
   const [reload, setReload] = useState(0);
   const resetForm = useCallback(() => {
     selectedId.current = undefined;
+    setRedo(null);
     setDraft(null);
     setConsent(false);
     setPack(null);
@@ -95,7 +116,8 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
     forgetPackDrafts(draftKey);
     resetForm();
   }, [kind, key, draftKey, resetForm]);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!foreground) {setPack(null); return;}
     const controller = new AbortController();
     const ref = { kind, id, rev };
     setError('');
@@ -133,7 +155,7 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
     }
     void read();
     return () => controller.abort();
-  }, [kind, id, rev, key, invalidatePack, reload]);
+  }, [foreground, kind, id, rev, key, invalidatePack, reload]);
 
   useEffect(() => {
     const reconfirm = () => setConsent(false);
@@ -195,6 +217,7 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
       }
       selectedId.current = next.requestId;
       setDraft(next);
+      setRedo(null);
       setConsent(false);
       setError('');
     } catch {
@@ -202,7 +225,7 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
     }
   }
   async function submit() {
-    if (!pack || !draft || !consent || busy) return;
+    if (!pack || !draft || !consent || busy || covering || !currentGeneration) return;
     if (!navigator.onLine) {
       setError('选择已留在本机。联网后请核对并提交。');
       return;
@@ -289,7 +312,7 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
   }
   return (
     <section className="day-sheet">
-      <a className="back-link" href={'/today?mode=' + mode}>
+      <a className="back-link" href={'/today?' + todayParams(mode, duration)}>
         ‹ 返回今天
       </a>
       <h1>{pack?.title ?? '打开活动'}</h1>
@@ -308,21 +331,30 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
             {pack.source} · 第 {rev} 版
           </small>
           {watermark.notice}
-          {requested && !draft && !result && <p>这份本机作答已清除。 <a href={openLink(refValue, mode)}>打开题包</a></p>}
-          <fieldset disabled={busy || !!result || draft?.pending || (!!requested && !draft) || !watermark.ready}>
+          {requested && !draft && !result && <p>这份本机作答已清除。 <a href={openLink(refValue, mode, duration)}>打开题包</a></p>}
+          {draft && !result && !draft.pending && watermark.ready && currentGeneration && <ActivityReentry
+            slot={'pack:' + id} binding={JSON.stringify([id,rev,draft.requestId])} itemId={id}
+            label="上次停在这道短练" onContinue={() => choices.current?.querySelector<HTMLInputElement>('input:checked')?.focus()}
+            onCover={() => {setConsent(false); setRedo({requestId:draft.requestId,choice:null});}}/>}
+          <fieldset ref={choices} disabled={busy || !!result || draft?.pending || (!!requested && !draft) || !watermark.ready}>
             <legend>{pack.prompt}</legend>
             {pack.choices.map((label, index) => (
               <label key={index} className="today-choice">
                 <input
                   type="radio"
                   name="answer"
-                  checked={draft?.choice === index}
-                  onChange={() => choose(index)}
+                  checked={(covering ? redo.choice : draft && currentGeneration && watermark.ready ? draft.choice : null) === index}
+                  onChange={() => covering ? setRedo({...redo,choice:index}) : choose(index)}
                 />
                 {label}
               </label>
             ))}
           </fieldset>
+          {covering && <>
+            <button type="button" className="text-button" onClick={() => setRedo(null)}>保留原选择</button>
+            <button type="button" className="tonal-button" disabled={redo.choice === null || !watermark.ready}
+              onClick={() => {if (redo.choice !== null) choose(redo.choice);}}>采用新选择</button>
+          </>}
           {result ? (
             <section aria-live="polite">
               <h2>{result.result === 'correct' ? '答对了' : '一起核对'}</h2>
@@ -335,7 +367,7 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
                 <input
                   type="checkbox"
                   checked={consent}
-                  disabled={busy || !draft}
+                  disabled={busy || !draft || covering || !currentGeneration}
                   onChange={(e) => setConsent(e.target.checked)}
                 />
                 同意将这次作答用于教学
@@ -343,7 +375,7 @@ export function TodayActivity({ refValue, mode }: { refValue: ActivityRef; mode:
               <button
                 type="button"
                 className="primary-button"
-                disabled={!draft || !consent || busy}
+                disabled={!draft || !consent || busy || covering || !currentGeneration}
                 onClick={() => void submit()}
               >
                 {busy ? '正在提交…' : '提交并核对'}

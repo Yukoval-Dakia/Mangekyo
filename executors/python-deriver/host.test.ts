@@ -70,7 +70,49 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
       attempts: [{id: 'first'}, {id: 'second'}, {kind: 'unknown', missing: ['effective_duration_ms', 'score']}],
     }}});
     expect(outcomes[1]).toMatchObject({kind: 'ok', outcome: {kind: 'unknown'}});
-    expect((await host.derive('plan/exam-pacing@1', sample)).kind).toBe('failed');
+    expect(await host.derive('plan/exam-pacing@1', sample)).toMatchObject({kind: 'ok', outcome: {kind: 'value',
+      value: {attempts: [], strategy: {kind: 'unknown'}}}});
+    const exam = (ref: string, duration: number, earned: number) => ({...sample.events[0], ref,
+      concept_ids: [], outcome: 'unknown', help_level: 'unknown', effective_duration_ms: duration, exam_pacing: {paper_key: 'paper@2', scale_key: 'release@4', score: {earned, maximum: 10}}});
+    const events = [exam('recent', 2000, 6), exam('prior', 1000, 8), exam('withheld', 9000, 0)];
+    const slice = {...sample, events, omissions: [{ref: {id: 'withheld', rev: 1}, reason: 'not available'}]};
+    for (const event of [{...events[0], exam_pacing: undefined}, {...events[0], concept_ids: ['K']}, {...events[0], outcome: 'correct'}])
+      expect(isCanonicalEvidenceSlice({...slice, events: [event]})).toBe(false);
+    const pacing = await host.derive('plan/exam-pacing@1', slice);
+    expect(pacing).toMatchObject({kind: 'ok', outcome: {kind: 'value', value: {
+      attempts: expect.arrayContaining([expect.objectContaining({id: 'recent', paper_key: 'paper@2'})]),
+      strategy: {kind: 'observed', comparisons: [{slower_attempt_id: 'recent', faster_attempt_id: 'prior', extra_duration_ms: 1000}]},
+    }}});
+    expect(JSON.stringify(pacing)).not.toContain('withheld');
+  } finally {
+    await host.close();
+  }
+});
+
+it('prioritizes the shortest matching variant with the frozen error revision', async () => {
+  const host = createPythonDeriverHost();
+  const event = sample.events[0]!;
+  const error = { ...event, ref: 'wrong', rev: 2, outcome: 'incorrect', confidence: 0.8, error_stage: 'execution' };
+  const candidate = { concept_ids: ['K'], item_novelty: 'isomorphic', est_min: 2 };
+  const input = { ...sample, events: [event, error, { ...error, ref: 'later', occurred_at: '2026-11-22T00:00:00Z' }],
+    candidate_pool: [{ ...candidate, ref: 'long', est_min: 4 }, { ...candidate, ref: 'short' },
+      { ...candidate, ref: 'different-context', context: 'other', est_min: 1 }] };
+  try {
+    expect(await host.derive(cognition, input)).toMatchObject({kind: 'ok', outcome: {value: {
+      method_version: 'cognition@1', state_vector: [{mastery_prob: 0.5}], anomalies: [{refs: ['wrong']}],
+    }}});
+    const withheld = {...input, omissions: [{ref: {id: 'wrong', rev: 2}, reason: 'withheld'}]};
+    const filtered = await host.derive('learner/cognition@2', withheld);
+    expect(filtered).toMatchObject({kind: 'ok', outcome: {value: {anomalies: [], state_vector: [{mastery_prob: 2 / 3}]}}});
+    expect(JSON.stringify(filtered)).not.toContain('wrong');
+    expect(await host.derive('learner/cognition@2', input)).toMatchObject({ kind: 'ok', outcome: { value: {
+      state_vector: [{ mastery_prob: 2 / 3.5 }],
+      ranked_candidates: [{ ref: 'short', reason_code: 'probe-high-confidence-error', evidence_refs: [{ ref: 'wrong', rev: 2 }] },
+        { ref: 'long' }, { ref: 'different-context', reason_code: 'probe-unknown' }],
+      anomalies: [{ refs: ['wrong'], evidence_refs: [{ ref: 'wrong', rev: 2 }], error_stage: 'execution' }],
+    } } });
+    const helped = { ...input, events: [{ ...event, help_level: 'hint_l1' }, { ...error, help_level: 'hint_l2' }] };
+    expect(await host.derive('learner/cognition@2', helped)).toMatchObject({ kind: 'ok', outcome: { value: { state: 'unknown' } } });
   } finally {
     await host.close();
   }

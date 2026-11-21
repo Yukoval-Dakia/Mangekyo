@@ -18,11 +18,13 @@
 
 现有 Organizer 投影自编卷和内置包。母题边、急救卡、正式评分及冻结预测的生产投影由获准来源的宿主提供。
 
+`/api/today` 的 `duration=3min` 或 `15min` 限制整单预算。`duration=45min%2B` 筛出估时至少 45 分钟的候选，缺少时段与预算信息时暂按 45 分钟。可和 `mode=one-hand`（点选）或 `mode=voice`（口述）组合。旧单手入口未传时长仍用 3 分钟。锁定项、进行中和当天已完成项继续显示，休息、时段及考后减压仍约束建议。
+
 ## 考场用时计算
 
-`plan/exam-pacing@1` 接收最多八条同一冻结卷、同一评分标尺、同一读截止的已授权提交投影。字段是 `id`、可选的 `effective_duration_ms`、可选的 `score: {earned, maximum}`。宿主的读取见证把每行 id 映射回提交版本、冻结卷、正式评估与用途及接收方。Python 只读取这些值。
+`plan/exam-pacing@1` 接收 `CanonicalEvidenceSliceV1`，每次整卷作答用一个 event，标记 `exam_pacing: {paper_key?, scale_key?, score?: {earned, maximum}}`。宿主按 `clock_watermark` 和当前用途、接收方复验提交、冻结卷及正式评分标尺。`score` 取正式全卷原分和满分，`effective_duration_ms` 取已记录的有效用时。切片中的 `score_norm` 不参与。
 
-每行缺字段时列出缺项。策略在可比较的多次整卷作答中列出「用时更久且分数相同或更低」的实际观察。现有有效用时记录在整份提交级别，策略输出保留这一粒度。
+排除 `omissions` 所指版本及晚于 `as_of_at` 或适用截止的作答。截止按提交 `ref` 或 `paper_key` 匹配，取最早值，包含端点。使用最近最多八次符合条件的作答，每行列出缺项。只有冻结卷、标尺和满分都相同才比较，列出「用时更久且原分相同或更低」的实际观察。旧 `{attempts}` 入口继续支持预先限定为同一冻结卷、同一评分标尺和同一读截止的调用。
 
 ## 固定时钟复验
 

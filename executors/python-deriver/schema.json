@@ -4,6 +4,7 @@
   "x-derivers": {
     "learner/intervention-lift@1": "intervention-lift@1",
     "plan/exam-pacing@1": "plan/exam-pacing@1",
+    "learner/cognition@2": "cognition@2",
     "learner/cognition@1": "cognition@1",
     "learner/retention-forecast@1": "dimensioned-retention@1"
   },
@@ -15,12 +16,21 @@
     "probability": { "type": "number", "minimum": 0, "maximum": 1 },
     "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "novelty": { "enum": ["same", "isomorphic", "transfer"] },
+    "errorStage": { "enum": ["reading", "modeling", "strategy", "execution", "expression"] },
     "state": { "enum": ["known", "unknown"] },
-    "methodVersion": { "enum": ["cognition@1", "dimensioned-retention@1"] },
+    "methodVersion": { "enum": ["cognition@1", "cognition@2", "dimensioned-retention@1"] },
     "dimension": { "anyOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] },
     "evidenceRef": {
       "type": "object", "additionalProperties": false, "required": ["ref", "rev"],
       "properties": { "ref": { "$ref": "#/$defs/text" }, "rev": { "$ref": "#/$defs/revision" } }
+    },
+    "evidenceRefs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } },
+    "examScore": {
+      "type": "object", "additionalProperties": false, "required": ["earned", "maximum"],
+      "properties": {
+        "earned": { "$ref": "#/$defs/nonnegative" },
+        "maximum": { "type": "number", "exclusiveMinimum": 0 }
+      }
     },
     "omission": {
       "type": "object", "additionalProperties": false, "required": ["ref", "reason"],
@@ -32,7 +42,15 @@
         "reason": { "$ref": "#/$defs/text" }
       }
     },
+    "itemHelp": { "enum": ["independent", "hinted", "hint_l1", "hint_l2", "solution_seen"] },
     "event": {
+      "anyOf": [
+        { "type": "object", "properties": { "help_level": { "$ref": "#/$defs/itemHelp" } } },
+        { "type": "object", "required": ["exam_pacing"], "properties": {
+          "help_level": { "enum": ["unknown"] }, "outcome": { "enum": ["unknown"] },
+          "concept_ids": { "type": "array", "maxItems": 0 }
+        } }
+      ],
       "type": "object", "additionalProperties": false,
       "required": ["ref", "rev", "occurred_at", "concept_ids", "item_novelty", "help_level", "outcome", "claim_ids"],
       "properties": {
@@ -41,12 +59,20 @@
         "occurred_at": { "$ref": "#/$defs/time" },
         "concept_ids": { "$ref": "#/$defs/refs" },
         "item_novelty": { "$ref": "#/$defs/novelty" },
-        "help_level": { "enum": ["independent", "hinted", "solution_seen"] },
+        "help_level": { "$ref": "#/$defs/text" },
         "outcome": { "enum": ["correct", "incorrect", "unknown"] },
         "score_norm": { "$ref": "#/$defs/probability" },
         "effective_duration_ms": { "$ref": "#/$defs/nonnegative" },
         "confidence": { "$ref": "#/$defs/probability" },
-        "error_stage": { "enum": ["reading", "modeling", "strategy", "execution", "expression"] },
+        "error_stage": { "$ref": "#/$defs/errorStage" },
+        "exam_pacing": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "paper_key": { "$ref": "#/$defs/text" },
+            "scale_key": { "$ref": "#/$defs/text" },
+            "score": { "$ref": "#/$defs/examScore" }
+          }
+        },
         "claim_ids": { "$ref": "#/$defs/refs" },
         "representation": { "$ref": "#/$defs/text" },
         "context": { "$ref": "#/$defs/text" },
@@ -117,7 +143,7 @@
         "item_novelty": { "$ref": "#/$defs/novelty" },
         "state": { "enum": ["unknown"] },
         "uncertainty": { "$ref": "#/$defs/unknownUncertainty" },
-        "evidence_refs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
+        "evidence_refs": { "$ref": "#/$defs/evidenceRefs" }
       }
     },
     "knownDimension": {
@@ -131,7 +157,7 @@
         "item_novelty": { "$ref": "#/$defs/novelty" },
         "state": { "enum": ["known"] },
         "uncertainty": { "$ref": "#/$defs/intervalUncertainty" },
-        "evidence_refs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } },
+        "evidence_refs": { "$ref": "#/$defs/evidenceRefs" },
         "mastery_prob": { "$ref": "#/$defs/probability" },
         "r_now": { "$ref": "#/$defs/probability" },
         "stability_days": { "type": "number", "exclusiveMinimum": 0 },
@@ -148,12 +174,18 @@
         "ref": { "$ref": "#/$defs/text" },
         "info_gain": { "$ref": "#/$defs/nonnegative" },
         "est_min": { "type": "number", "exclusiveMinimum": 0 },
-        "reason_code": { "$ref": "#/$defs/text" }
+        "reason_code": { "$ref": "#/$defs/text" },
+        "evidence_refs": { "$ref": "#/$defs/evidenceRefs" }
       }
     },
     "anomaly": {
       "type": "object", "additionalProperties": false, "required": ["type", "refs"],
-      "properties": { "type": { "$ref": "#/$defs/text" }, "refs": { "$ref": "#/$defs/refs" } }
+      "properties": {
+        "type": { "$ref": "#/$defs/text" },
+        "refs": { "$ref": "#/$defs/refs" },
+        "evidence_refs": { "$ref": "#/$defs/evidenceRefs" },
+        "error_stage": { "$ref": "#/$defs/errorStage" }
+      }
     },
     "output": {
       "type": "object", "additionalProperties": false,

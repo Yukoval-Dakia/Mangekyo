@@ -165,6 +165,18 @@ export type CorrectionContradiction = {
   citation: Witness & { anchor: string; excerpt: string; direction: 'contradict' };
 };
 
+// v1 permits UTC seconds and one to three fractional digits. The Activity
+// window has fixed millisecond precision, so compare instants rather than text.
+function evidenceTime(value: string): number {
+  if (!value.endsWith('Z') || value.startsWith('0000')) return NaN;
+  const time = value.slice(0, -1);
+  const secondsOnly = time.length === 19;
+  if (!secondsOnly && (time[19] !== '.' || time.length < 21 || time.length > 23)) return NaN;
+  const full = (secondsOnly ? time + '.000' : time.padEnd(23, '0')) + 'Z';
+  const ms = Date.parse(full);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === full ? ms : NaN;
+}
+
 export async function correctionContradictions(reopen: CorrectionReopen, correction: RecordedCorrection,
   observation: CorrectionObservation, existing: readonly ActiveMisconception[]): Promise<CorrectionContradiction[]> {
   const { source, authorization, issuance, issuedAt, itemId, basis, admittedAt, startedAt,
@@ -173,13 +185,15 @@ export async function correctionContradictions(reopen: CorrectionReopen, correct
   const correctedMs = Date.parse(instant(correction.correctedAt));
   const startedMs = Date.parse(instant(startedAt));
   const dueMs = correctedMs + dayMs;
+  const occurredMs = event ? evidenceTime(event.occurred_at) : NaN;
+  const cutoffMs = evidenceTime(cutoff.at);
+  const throughMs = Date.parse(instant(through));
   if (!event || slice.events.length !== 1 || slice.omissions?.length || event.item_novelty !== 'isomorphic' ||
-      slice.clock_watermark !== cutoff.tick || slice.as_of_at !== cutoff.at ||
+      slice.clock_watermark !== cutoff.tick || evidenceTime(slice.as_of_at) !== cutoffMs ||
       BigInt(issuedAt) < BigInt(correction.admittedAt) || BigInt(admittedAt) <= BigInt(issuedAt) ||
       BigInt(admittedAt) > BigInt(cutoff.tick) ||
       startedMs < correctedMs || (window === 'scheduled' && (startedMs < dueMs || startedMs >= dueMs + dayMs)) ||
-      instant(through) <= startedAt || instant(event.occurred_at) < startedAt || event.occurred_at > through ||
-      event.occurred_at > instant(cutoff.at) ||
+      !(startedMs < throughMs && startedMs <= occurredMs && occurredMs <= throughMs && occurredMs <= cutoffMs) ||
       source.type !== 'activity.retentionPosttestSubmission' || issuance.type !== 'activity.retentionPosttest' ||
       fragment.anchor !== itemId || !itemId.trim() || itemId.length > 160 ||
       !fragment.excerpt.trim() || fragment.excerpt.length > 360 ||
@@ -187,7 +201,7 @@ export async function correctionContradictions(reopen: CorrectionReopen, correct
 
   const attempt = verifiedAttemptFromSlice(source, [{ ref: source.id, rev: source.rev }], slice,
     { intervention: null, firstUnfamiliarPostLessonTransfer: false, mastery: null });
-  if (!attempt?.independent || !attempt.allCorrect) return [];
+  if (attempt?.independent !== true || !attempt.allCorrect) return [];
   const openedBasis = [source, issuance, ...variantBasis(variant), ...basis];
   if (!await current(reopen, correction, openedBasis) ||
       !await matchesCurrent(reopen, correction.source.learner, { ...authorization, mode: 'following' }, research)) return [];
