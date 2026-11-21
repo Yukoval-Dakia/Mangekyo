@@ -1,4 +1,5 @@
 import { evolveGraphCommand, splitConceptHierarchyEdgeId } from '@mangekyo/module-content/graph-evolution';
+import { textbookDiffProposals } from '@mangekyo/module-content/textbook-diff';
 import { createKnowledgeEdgeCommand, openKnowledgeEdgeRevision, walkKnowledgeEdges } from '@mangekyo/module-content/knowledge-edge';
 import { openKnowledgeEntity, openKnowledgeName } from '@mangekyo/module-content/knowledge-entity';
 import { gather, openQuestionMetaDraft, questionKey, questionMetaDeriver, questionMetaEffectResult, questionMetaType,
@@ -73,6 +74,8 @@ export default async function exerciseContent(fixture, decideProposal) {
       { kind: 'delete_block', blockId: 'intro' },
     ],
   };
+  const items = await textbookDiffProposals(learner, idFor('edition-review'), revision);
+  assert.deepEqual(items.map(item => item.input.edits), revision.edits.map(edit => [edit]));
   const proposal = await sendCompanion('content.reviseTextbookPage', revision, 'teaching');
   assert.equal(proposal.state, 'proposed');
   assert.equal((await current(id)).ref.rev, 4);
