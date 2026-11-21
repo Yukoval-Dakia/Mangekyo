@@ -1,5 +1,5 @@
 import { evolveGraphCommand, splitConceptHierarchyEdgeId } from '@mangekyo/module-content/graph-evolution';
-import { textbookDiffProposals } from '@mangekyo/module-content/textbook-diff';
+import { previewTextbookDiffItem, textbookDiffProposals } from '@mangekyo/module-content/textbook-diff';
 import { createKnowledgeEdgeCommand, openKnowledgeEdgeRevision, walkKnowledgeEdges } from '@mangekyo/module-content/knowledge-edge';
 import { openKnowledgeEntity, openKnowledgeName } from '@mangekyo/module-content/knowledge-entity';
 import { gather, openQuestionMetaDraft, questionKey, questionMetaDeriver, questionMetaEffectResult, questionMetaType,
@@ -37,8 +37,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   await assert.rejects(send('content.splitTextbookPage', { ...split, newId: source }), /Fact already exists/);
   await send('content.splitTextbookPage', { ...split, newId: child });
   const proof = await openBlock('proof', 'following');
-  assert.equal(proof.ref.id, child);
-  assert.deepEqual(proof.block, block('proof', '子块', moved.block.id));
+  assert.deepEqual([proof.ref.id, proof.block], [child, block('proof', '子块', moved.block.id)]);
   assert.deepEqual((await openBlock('intro')).block, block('intro', '来源块'));
   await send('content.archiveTextbookPage', { id: child, expectedRev: 1 });
   await assert.rejects(send('content.reviseTextbookPage', {
@@ -74,8 +73,11 @@ export default async function exerciseContent(fixture, decideProposal) {
       { kind: 'delete_block', blockId: 'intro' },
     ],
   };
-  const items = await textbookDiffProposals(learner, idFor('edition-review'), revision);
-  assert.deepEqual(items.map(item => item.input.edits), revision.edits.map(edit => [edit]));
+  const dependent = { ...insert, blockId: 'followup', afterId: example.id };
+  const groups = await textbookDiffProposals(learner, idFor('edition-review'), { ...revision, edits: [...revision.edits, dependent] });
+  assert.deepEqual(groups.map(item => item.input.edits), revision.edits.map(edit => edit === insert ? [edit, dependent] : [edit]));
+  assert.deepEqual((await read(context => previewTextbookDiffItem({ learner, read: context }, groups[3].input), 'teaching'))
+    .items.map(item => item.state), ['ready', 'ready']);
   const proposal = await sendCompanion('content.reviseTextbookPage', revision, 'teaching');
   assert.equal(proposal.state, 'proposed');
   assert.equal((await current(id)).ref.rev, 4);
@@ -88,8 +90,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   assert.deepEqual(insertDiff.after, { block: example, siblingIndex: 2 });
   assert.deepEqual(deleteDiff.before, { block: savedIntro, siblingIndex: 2 });
   assert.equal(deleteDiff.after, null);
-  assert.deepEqual(selectTextbookEdits(preview, ['formula']), { ...revision, edits: [rewriteFormula] });
-  assert.deepEqual(selectTextbookEdits(preview, ['example']), { ...revision, edits: [insert] });
+  for (const edit of [rewriteFormula, insert]) assert.deepEqual(selectTextbookEdits(preview, [edit.blockId]), { ...revision, edits: [edit] });
   const decide = blockIds => textbook.proposal({ learner, id }, proposal.commandId, { blockIds });
   await assert.rejects(decide(['missing']), /请选择有效/);
   const accepted = await decide(['formula', 'example']);
@@ -118,8 +119,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   await assert.rejects(save(loser, {}, 'delayed-save'), /草稿编辑序号已过时/);
   await assert.rejects(save(loser, { ...nextDraft, base_rev: 7 }, 'wrong-base'), /草稿所属页或基版本不符/);
   const copies = await read(context => openTextbookConflict({ learner, read: context }, draftId));
-  assert.equal(copies.base.rev, 3);
-  assert.equal(copies.saved.ref.rev, 4);
+  assert.deepEqual([copies.base.rev, copies.saved.ref.rev], [3, 4]);
   assert.deepEqual(copies.saved.page.blocks, [formula, note, savedIntro]);
   assert.equal(copies.ref.rev, 2);
   assert.equal(copies.draft.clientEditSeq, 2);

@@ -2,7 +2,10 @@ import {
   commandId, type CommandId, type CommandReceipt, type FactId, type Json, type LearnerId,
 } from '@mangekyo/kernel';
 import { contentStableId } from './knowledge-entity.ts';
-import { applyTextbookRevision, parseTextbookRevision, previewTextbookRevision, selectTextbookEdits } from './textbook-edits.ts';
+import {
+  applyTextbookRevision, groupTextbookEdits, parseTextbookRevision, previewTextbookRevision, selectTextbookEdits,
+  textbookPositionAnchors, type TextbookRevision,
+} from './textbook-edits.ts';
 import {
   checkTextbookBasis, locateTextbookBlock, textbookPageFrom, verifyTextbookBodyReference, type TextbookReadContext,
 } from './textbook-page.ts';
@@ -50,13 +53,14 @@ async function storageProposalId(learner: LearnerId, page: FactId, confirmationI
 export async function textbookDiffProposals(learner: LearnerId, batchId: CommandId, input: unknown) {
   commandId(batchId);
   const revision = parseTextbookRevision(input);
-  return Promise.all(revision.edits.map(async edit => ({
+  return Promise.all(groupTextbookEdits(revision.edits).map(async edits => ({
     learner,
-    id: commandId(await contentStableId('textbook-diff-item', learner, batchId, edit.blockId)),
+    id: commandId(await contentStableId(edits.length === 1 ? 'textbook-diff-item' : 'textbook-diff-group',
+      learner, batchId, ...edits.map(edit => edit.blockId))),
     type: textbookDiffCommand,
     actor: 'companion' as const,
     purpose: 'teaching' as const,
-    input: { ...revision, edits: [edit] },
+    input: { ...revision, edits },
   })));
 }
 
@@ -68,46 +72,49 @@ function proposalPurpose(input: unknown) {
 
 export function readTextbookDiffItem(input: unknown) {
   const revision = parseTextbookRevision(input);
-  const [edit] = revision.edits;
-  if (!edit || revision.edits.length !== 1) throw new Error('教材提议必须恰好包含一项差异。');
-  return { revision, edit };
+  if (groupTextbookEdits(revision.edits).length !== 1) throw new Error('教材提议必须恰好包含一组相关差异。');
+  return { revision, edit: revision.edits[0]! };
 }
 
-async function openDiffItem(ctx: TextbookReadContext, { revision, edit }: ReturnType<typeof readTextbookDiffItem>) {
+async function openDiffItem(ctx: TextbookReadContext, revision: TextbookRevision) {
   const base = textbookPageFrom(await ctx.read.fact(revision.id, { mode: 'pinned', rev: revision.expectedRev }));
   const head = await ctx.read.fact(revision.id, { mode: 'following' });
   const current = textbookPageFrom(head);
   await checkTextbookBasis(ctx.read, [...base.basis ?? [], ...revision.basis ?? []]);
   if (head.ref.rev !== revision.expectedRev) await checkTextbookBasis(ctx.read, current.basis ?? []);
-  const before = locateTextbookBlock(base.blocks, edit.blockId);
-  if (before) await verifyTextbookBodyReference(ctx, before.block.body);
-  if ('body' in edit) await verifyTextbookBodyReference(ctx, edit.body);
-  return { base, head, preview: await previewTextbookRevision(ctx, revision) };
+  for (const edit of revision.edits) {
+    const before = locateTextbookBlock(base.blocks, edit.blockId);
+    if (before) await verifyTextbookBodyReference(ctx, before.block.body);
+    if ('body' in edit) await verifyTextbookBodyReference(ctx, edit.body);
+  }
+  return { base, head, preview: await previewTextbookRevision(ctx, revision, revision.edits.length > 1) };
 }
 
 export async function previewTextbookDiffItem(ctx: TextbookReadContext, input: unknown) {
-  return (await openDiffItem(ctx, readTextbookDiffItem(input))).preview;
+  return (await openDiffItem(ctx, readTextbookDiffItem(input).revision)).preview;
 }
 
 function checkTargets(
   base: ReturnType<typeof textbookPageFrom>, current: ReturnType<typeof textbookPageFrom>,
-  edit: ReturnType<typeof readTextbookDiffItem>['edit'],
+  edits: TextbookRevision['edits'],
 ) {
-  const before = base.blocks.find(block => block.id === edit.blockId);
-  const after = current.blocks.find(block => block.id === edit.blockId);
-  if (JSON.stringify(before) !== JSON.stringify(after) ||
-      (edit.kind === 'move' && !sameTextbookBlockPosition(base, current, edit.blockId))) {
-    throw new Error(`教材差异的目标已变更：${edit.blockId}`);
-  }
-  const anchors = edit.kind === 'insert_after' ? [edit.afterId] :
-    edit.kind === 'insert' || edit.kind === 'move' ? [edit.parentId, edit.beforeId] : [];
-  for (const id of anchors) {
-    if (id === null) continue;
-    const original = base.blocks.find(block => block.id === id);
-    const latest = current.blocks.find(block => block.id === id);
-    if (!original || !latest || original.parentId !== latest.parentId) {
-      throw new Error(`教材差异的位置已变更：${id}`);
+  const inserted = new Set<string>();
+  for (const edit of edits) {
+    const before = base.blocks.find(block => block.id === edit.blockId);
+    const after = current.blocks.find(block => block.id === edit.blockId);
+    if (JSON.stringify(before) !== JSON.stringify(after) ||
+        (edit.kind === 'move' && !sameTextbookBlockPosition(base, current, edit.blockId))) {
+      throw new Error(`教材差异的目标已变更：${edit.blockId}`);
     }
+    for (const id of textbookPositionAnchors(edit)) {
+      if (inserted.has(id)) continue;
+      const original = base.blocks.find(block => block.id === id);
+      const latest = current.blocks.find(block => block.id === id);
+      if (!original || !latest || original.parentId !== latest.parentId) {
+        throw new Error(`教材差异的位置已变更：${id}`);
+      }
+    }
+    if (edit.kind === 'insert' || edit.kind === 'insert_after') inserted.add(edit.blockId);
   }
 }
 
@@ -121,7 +128,7 @@ export function textbookDiffReview<Tx>(ports: TextbookDiffPorts<Tx>) {
       const receipt = await ports.decideProposal({
         learner, id, type: textbookDiffCommand, purpose: 'storage', proposalId, selection: { page, action },
       }, async (tx, input) => {
-        const { revision, edit } = readTextbookDiffItem(input);
+        const { revision } = readTextbookDiffItem(input);
         if (revision.id !== page) throw new Error('教材提议不属于此页。');
         const storage = await ports.read(tx, 'storage');
         const head = await storage.fact(page, { mode: 'following' });
@@ -132,13 +139,13 @@ export function textbookDiffReview<Tx>(ports: TextbookDiffPorts<Tx>) {
         if (journal?.type !== textbookDiffCommand || journal.state !== 'proposed') throw new Error('教材提议记录无效。');
         if (proposalPurpose(journal.input) !== 'teaching') throw new Error('教材提议用途无效。');
         const teaching = await ports.read(tx, 'teaching');
-        const { base, head: authorized, preview } = await openDiffItem({ learner, read: teaching }, { revision, edit });
+        const { base, head: authorized, preview } = await openDiffItem({ learner, read: teaching }, revision);
         if (authorized.ref.rev !== head.ref.rev || authorized.accessEpoch !== head.accessEpoch) {
           throw new Error('教材当前版本已变更。');
         }
         await checkTextbookBasis(storage, [...current.basis ?? [], ...revision.basis ?? []]);
-        if (head.ref.rev !== revision.expectedRev) checkTargets(base, current, edit);
-        return { ...selectTextbookEdits(preview, [edit.blockId]), expectedRev: head.ref.rev };
+        if (head.ref.rev !== revision.expectedRev) checkTargets(base, current, revision.edits);
+        return { ...selectTextbookEdits(preview, revision.edits.map(edit => edit.blockId)), expectedRev: head.ref.rev };
       });
       if (receipt.state === 'rejected') return { status: 'rejected' as const };
       return { status: 'applied' as const, ref: writtenTextbookPage(receipt, learner, page), undo_token: id };

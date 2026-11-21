@@ -1,7 +1,7 @@
 import {
   commandId, isJson, type CommandId, type CommandReceipt, type FactId, type Json, type LearnerId, type ReadContext, type Revision,
 } from '@mangekyo/kernel';
-import { parseTextbookRevision, type TextbookEdit } from './textbook-edits.ts';
+import { changesTextbookPosition, groupTextbookEdits, parseTextbookRevision, type TextbookRevision } from './textbook-edits.ts';
 import { textbookPageFrom, type TextbookReadContext } from './textbook-page.ts';
 import { bindGroupUndoJournal, type UndoJournal } from './textbook-undo-basis.ts';
 
@@ -51,7 +51,7 @@ export async function undoTextbookReceipt(scope: TextbookUndoScope, {
     throw new Error('找不到可撤回的教材变更。');
   }
   const applied = writtenTextbookPage(receipt, learner, page);
-  let edits: readonly TextbookEdit[] | undefined;
+  let revision: TextbookRevision | undefined;
   let confirmedGroup = false;
   if (original.type === 'content.reviseTextbookPage' && envelope?.actor === 'learner' &&
       envelope.purpose === 'storage' && typeof change.proposalId === 'string') {
@@ -65,12 +65,13 @@ export async function undoTextbookReceipt(scope: TextbookUndoScope, {
     if (proposal?.type !== original.type || proposal.state !== 'proposed' || source?.actor !== 'companion') {
       throw new Error('教材采纳记录无效。');
     }
-    const revision = parseTextbookRevision(source.input);
+    revision = parseTextbookRevision(source.input);
     confirmedGroup = typeof selection.confirmationId === 'string' && source.purpose === 'storage' &&
       proposalId === await storageProposalId(learner, page, commandId(selection.confirmationId));
     if (revision.id !== page || (confirmedGroup ? revision.edits.length < 2 :
-      source.purpose !== 'teaching' || revision.edits.length !== 1)) throw new Error('教材采纳记录无效。');
-    edits = revision.edits;
+      source.purpose !== 'teaching' || groupTextbookEdits(revision.edits).length !== 1)) {
+      throw new Error('教材采纳记录无效。');
+    }
   } else if (envelope?.actor !== 'companion' || change.id !== page ||
       !((original.type === 'content.createTextbookPage' && applied.rev === 1) ||
         (original.type === 'content.reviseTextbookDraft' && change.expectedRev === applied.rev - 1))) {
@@ -88,21 +89,25 @@ export async function undoTextbookReceipt(scope: TextbookUndoScope, {
       throw new Error('教材撤回记录无效。');
     }
     input = stored;
-  } else if (edits && priorRev !== null) {
+  } else if (revision && priorRev !== null) {
     const head = await read.fact(page, { mode: 'following' });
     if (head.ref.rev > applied.rev) {
+      const { edits } = revision;
       const blockIds = edits.map(edit => edit.blockId);
-      if (confirmedGroup) {
-        bindRead = bindGroupUndoJournal({ learner, id: page, expectedRev: head.ref.rev, appliedRev: applied.rev, blockIds }, scope);
+      const pruneGroupBasis = confirmedGroup || (edits.length > 1 && !!revision.basis?.length);
+      if (pruneGroupBasis) {
+        bindRead = bindGroupUndoJournal({
+          learner, id: page, expectedRev: head.ref.rev, appliedRev: applied.rev, blockIds,
+          ...(confirmedGroup ? {} : { revision }),
+        }, scope);
       } else {
         const before = textbookPageFrom(await read.fact(page, { mode: 'pinned', rev: priorRev }));
         const saved = textbookPageFrom(await read.fact(page, { mode: 'pinned', rev: applied.rev }));
         if (JSON.stringify(before.basis) !== JSON.stringify(saved.basis)) throw new Error('教材差异的依据已合入后续版本。');
       }
       input = { id: page, expectedRev: head.ref.rev, priorRev, appliedRev: applied.rev,
-        blockIds, ...(confirmedGroup ? { pruneGroupBasis: true } : {}),
-        moveBlockIds: edits.filter(edit => edit.kind === 'move' || edit.kind === 'insert' || edit.kind === 'insert_after')
-          .map(edit => edit.blockId) };
+        blockIds, ...(pruneGroupBasis ? { pruneGroupBasis: true } : {}),
+        moveBlockIds: edits.filter(changesTextbookPosition).map(edit => edit.blockId) };
     }
   }
 

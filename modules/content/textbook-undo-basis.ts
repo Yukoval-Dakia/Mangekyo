@@ -1,8 +1,8 @@
 import { commandId, type CommandId, type CommandReceipt, type FactRef, type FactId, type LearnerId,
   type ReadContext, type Revision } from '@mangekyo/kernel';
 import { assetBodyReference } from './asset.ts';
-import { parseTextbookRevision } from './textbook-edits.ts';
-import type { TextbookBasis, TextbookPage } from './textbook-page.ts';
+import { applyTextbookEdit, parseTextbookRevision, type TextbookRevision } from './textbook-edits.ts';
+import { mergeTextbookBasis, parseTextbookPage, type TextbookBasis, type TextbookPage } from './textbook-page.ts';
 
 const unverifiedDependencies = '无法核对后续教材修订的来源依赖。';
 
@@ -20,6 +20,8 @@ type GroupUndo = {
   readonly expectedRev: Revision;
   readonly appliedRev: Revision;
   readonly blockIds: readonly string[];
+  /** Teaching groups carry their journaled edits for verification against the applied revision. */
+  readonly revision?: TextbookRevision;
 };
 type BoundJournal = { readonly group: GroupUndo; readonly journal: UndoJournal };
 const journals = new WeakMap<ReadContext, BoundJournal>();
@@ -93,16 +95,7 @@ async function exclusiveGroupBasis(scope: UndoJournal, before: TextbookPage, app
   return candidates.map(textbookBasisKey).filter(key => !retained.has(key));
 }
 
-export async function pruneTextbookGroupBasis(read: ReadContext, snapshot: FactRef,
-  previous: TextbookPage, applied: TextbookPage, restored: TextbookPage, appliedRev: Revision, blockIds: readonly string[],
-): Promise<TextbookPage> {
-  const bound = journals.get(read);
-  if (!bound || bound.group.learner !== snapshot.learner || bound.group.id !== snapshot.id ||
-      bound.group.expectedRev !== snapshot.rev || bound.group.appliedRev !== appliedRev ||
-      JSON.stringify(bound.group.blockIds) !== JSON.stringify(blockIds)) {
-    throw new Error(unverifiedDependencies);
-  }
-
+function verifyStorageInsertion(previous: TextbookPage, applied: TextbookPage, blockIds: readonly string[]) {
   const before = new Set(previous.blocks.map(block => block.id));
   const { blocks: previousBlocks, basis: previousBasis, ...previousMeta } = previous;
   const { blocks: appliedBlocks, basis: appliedBasis, ...appliedMeta } = applied;
@@ -113,6 +106,27 @@ export async function pruneTextbookGroupBasis(read: ReadContext, snapshot: FactR
       JSON.stringify(retained) !== JSON.stringify(previousBlocks) || JSON.stringify(appliedMeta) !== JSON.stringify(previousMeta) ||
       previousBasis?.some(entry => JSON.stringify(appliedSources.get(textbookBasisKey(entry))) !== JSON.stringify(entry))) {
     throw new Error('只有完整撤回教材插入组才能移除其来源。');
+  }
+}
+
+export async function pruneTextbookGroupBasis(read: ReadContext, snapshot: FactRef,
+  previous: TextbookPage, applied: TextbookPage, restored: TextbookPage, appliedRev: Revision, blockIds: readonly string[],
+): Promise<TextbookPage> {
+  const bound = journals.get(read);
+  if (!bound || bound.group.learner !== snapshot.learner || bound.group.id !== snapshot.id ||
+      bound.group.expectedRev !== snapshot.rev || bound.group.appliedRev !== appliedRev ||
+      JSON.stringify(bound.group.blockIds) !== JSON.stringify(blockIds)) {
+    throw new Error(unverifiedDependencies);
+  }
+  const { revision } = bound.group;
+  if (revision?.basis) {
+    const expected = revision.edits.reduce(applyTextbookEdit, previous);
+    const basis = mergeTextbookBasis(previous.basis, revision.basis);
+    if (JSON.stringify(parseTextbookPage({ ...expected, basis })) !== JSON.stringify(applied)) {
+      throw new Error(unverifiedDependencies);
+    }
+  } else {
+    verifyStorageInsertion(previous, applied, blockIds);
   }
 
   const remove = new Set(await exclusiveGroupBasis(bound.journal, previous, applied, restored, snapshot, appliedRev));
