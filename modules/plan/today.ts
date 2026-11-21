@@ -1,6 +1,6 @@
 import type { CanonicalEvidenceSliceV1 } from '@mangekyo/kernel';
 import type { GoalStatus } from './goal-values.ts';
-import type { Campaign, PlanRule } from './rules.ts';
+import { todayWarmupRules, type Campaign, type PlanRule } from './rules.ts';
 import { examForecast, reviewExamScore, type ExamScoreObservation, type FrozenExamForecast } from './exam-forecast.ts';
 import { packCandidates } from './offline-pack.ts';
 import { instant, integer, oneOf } from './validation.ts';
@@ -31,6 +31,9 @@ export type PlanCandidate = {
   state?: 'in-progress' | 'completed';
   date?: string;
   draftRef?: string;
+  // Authorized result for this completed probe's frozen item in the current return round.
+  // For a known result, evidence includes the submission/result witness.
+  returnProbeResult?: 'correct' | 'incorrect' | 'unknown';
   // From authorized content/issuance witnesses in the same planning snapshot.
   examPrep?:
     | { kind: 'archetype'; coveredQuestionCount: number }
@@ -63,6 +66,7 @@ export type TodayInput = {
   candidates: readonly PlanCandidate[];
   goal?: { id: string; text: string | null; status: GoalStatus };
   rules?: readonly PlanRule[];
+  // Keep the pre-return visit timestamp stable across refreshes of the return round.
   lastOpenedAt?: string;
   mode?: 'one-hand' | 'voice' | 'any';
   duration?: TodayDuration;
@@ -166,6 +170,21 @@ function sprintPriority(candidate: PlanCandidate, inScope: boolean, scopeKnown: 
   return null;
 }
 
+const returnProbeLimit = 2;
+const isReturnProbe = (c: PlanCandidate) => c.kind === 'probe' || c.kind === 'counterexample';
+
+function witnessedProbeResults(completed: readonly PlanCandidate[]) {
+  const results = new Map<string, PlanCandidate | null>();
+  for (const probe of completed) {
+    const outcome = probe.returnProbeResult;
+    if ((outcome !== 'correct' && outcome !== 'incorrect') || !probe.evidence.length) continue;
+    const previous = results.get(probe.topic);
+    if (previous === undefined) results.set(probe.topic, probe);
+    else if (previous?.returnProbeResult !== outcome) results.set(probe.topic, null);
+  }
+  return results;
+}
+
 type Ranked = { candidate: PlanCandidate; score: number; why: string[] };
 
 // At most three slots. Track the highest value bundle for each occupied time and count.
@@ -219,7 +238,18 @@ function bundle(pool: Ranked[], minutes: number, limit: number, windows: number[
 
 export function planToday(input: TodayInput) {
   const { day, minute } = localClock(input.now, input.timeZone);
-  const rules = input.rules ?? [];
+  const catalog = new Map<string, PlanCandidate>();
+  for (const c of input.candidates) {
+    if (catalog.has(c.id)) throw new Error('活动身份重复。');
+    integer(c.minutes, 1, 1440);
+    for (const probability of [c.retention, c.information])
+      if (probability !== undefined && (!Number.isFinite(probability) || probability < 0 || probability > 1))
+        throw new Error('预测或信息量超出范围。');
+    if (c.examPrep?.kind === 'archetype') integer(c.examPrep.coveredQuestionCount, 1, Number.MAX_SAFE_INTEGER);
+    catalog.set(c.id, c);
+  }
+  for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
+  const { rules, warmup: requestedWarmup } = todayWarmupRules(input.rules ?? [], day, input.timeZone, [...catalog.values()]);
   const { exam, campaign } = examPolicy(rules, day);
   const returning =
     !!input.lastOpenedAt && days(localClock(input.lastOpenedAt, input.timeZone).day, day) >= 21;
@@ -259,7 +289,7 @@ export function planToday(input: TodayInput) {
     preferred = new Set<string>();
   const conflicts: { constraints: string[]; options: string[] }[] = [];
   for (const r of rules) {
-    if (r.kind === 'lock') {
+    if (r.kind === 'lock' && !r.warmup) {
       if (r.date === day) locked.add(r.activityId);
       else otherDayLocks.add(r.activityId);
     }
@@ -274,21 +304,19 @@ export function planToday(input: TodayInput) {
     ...d,
     day: localClock(d.at, input.timeZone).day,
   }));
-  const catalog = new Map<string, PlanCandidate>();
-  for (const c of input.candidates) {
-    if (catalog.has(c.id)) throw new Error('活动身份重复。');
-    integer(c.minutes, 1, 1440);
-    for (const probability of [c.retention, c.information])
-      if (probability !== undefined && (!Number.isFinite(probability) || probability < 0 || probability > 1))
-        throw new Error('预测或信息量超出范围。');
-    if (c.examPrep?.kind === 'archetype') integer(c.examPrep.coveredQuestionCount, 1, Number.MAX_SAFE_INTEGER);
-    catalog.set(c.id, c);
-  }
-  for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
   const protectedItems = [...catalog.values()].filter(
     (c) => locked.has(c.id) || c.state === 'in-progress' || (c.state === 'completed' && c.date === day),
   );
   const protectedIds = new Set(protectedItems.map((c) => c.id));
+  // A refresh with the same return timestamp must still account for submitted probes.
+  const returnPlanning = returning && campaign !== 'recovery';
+  const completedProbes = returnPlanning
+    ? protectedItems.filter((c) => c.state === 'completed' && c.date === day && isReturnProbe(c))
+    : [];
+  const checkedTopics = new Set(completedProbes.map((c) => c.topic));
+  const probesLeft = returnProbeLimit - checkedTopics.size;
+  const probing = returnPlanning && probesLeft > 0;
+  const probeResults = returnPlanning && !probing ? witnessedProbeResults(completedProbes) : null;
   for (const rule of rules) {
     if (rule.kind === 'replace' && rule.date === day && protectedIds.has(rule.activityId))
       preferred.delete(rule.replacementId);
@@ -305,7 +333,7 @@ export function planToday(input: TodayInput) {
         constraints: [id, '推迟或替换与保护状态冲突'],
         options: ['保留现场', '调整未开始的建议'],
       });
-  const reserved = protectedItems
+  let reserved = protectedItems
     .filter((c) => c.state !== 'completed')
     .reduce((sum, c) => sum + c.minutes, 0);
   // Locked work and unfinished drafts need real time blocks too. Reserve the smallest
@@ -326,6 +354,25 @@ export function planToday(input: TodayInput) {
     }
   }
   const unresolvedLock = [...locked].some((id) => !catalog.has(id));
+  const anchor = requestedWarmup ? catalog.get(requestedWarmup) : undefined;
+  let warmup: string | null = null;
+  if (anchor?.open && !anchor.state && !deferred.has(anchor.id) && (!anchor.goalId || anchor.goalId === activeGoal) &&
+      !unresolvedLock && freeWindows.length > 0 && budgetMinutes >= reserved + schoolMinutes && budgetMinutes > 0) {
+    const heldIndex = protectedItems.findIndex(item => item.id === anchor.id);
+    const window = freeWindows.findIndex(minutes => minutes >= anchor.minutes);
+    if (heldIndex >= 0 || (window >= 0 && reserved + schoolMinutes + anchor.minutes <= budgetMinutes)) {
+      if (heldIndex >= 0) protectedItems.splice(heldIndex, 1);
+      else {
+        freeWindows[window] = freeWindows[window]! - anchor.minutes;
+        reserved += anchor.minutes;
+        pendingProtected.push(anchor);
+        protectedIds.add(anchor.id);
+        locked.add(anchor.id);
+      }
+      protectedItems.unshift(anchor);
+      warmup = anchor.id;
+    }
+  }
   const freeMinutes = unresolvedLock ? 0 : Math.max(0, budgetMinutes - reserved - schoolMinutes);
   const remaining = campaign === 'recovery' ? Math.min(10, freeMinutes) : freeMinutes;
   if (reserved + schoolMinutes > budgetMinutes)
@@ -356,7 +403,7 @@ export function planToday(input: TodayInput) {
       continue;
     if (duration === '45min+' && c.minutes < durationMinutes[duration]) continue;
     if ((campaign === 'recovery') !== (c.kind === 'recovery')) continue;
-    if (returning && campaign !== 'recovery' && c.kind !== 'probe' && c.kind !== 'counterexample') continue;
+    if (probing && (!isReturnProbe(c) || checkedTopics.has(c.topic))) continue;
     const info = c.information ?? (c.retention === undefined ? 0 : 4 * c.retention * (1 - c.retention));
     const why = [c.reason];
     let score = 20 + 30 * info + (1 - (c.retention ?? 1)) * 12;
@@ -369,9 +416,17 @@ export function planToday(input: TodayInput) {
       score += 45;
       why.push('高信心错答后先做最小反例。');
     }
-    if (returning && campaign !== 'recovery') {
+    if (probing) {
       score += 70 * info;
       why.push('长假后先摸底，再按结果重排。');
+    }
+    const probe = probeResults?.get(c.topic);
+    if (probe?.returnProbeResult === 'incorrect') {
+      score += 30;
+      why.push('本轮摸底在「' + c.topic + '」答错，优先复查。');
+    } else if (probe?.returnProbeResult === 'correct') {
+      score -= 20;
+      why.push('本轮摸底已独立答对「' + c.topic + '」，可把时间先给其他主题。');
     }
     if (c.open.kind === 'activity') score += 18;
     if (c.goalId) {
@@ -394,12 +449,12 @@ export function planToday(input: TodayInput) {
       score += 8;
       why.push('衔接当前校内进度或本人预习安排。');
     }
-    const inScope = exam?.scope.includes(c.topic) ?? false;
-    if (inScope && campaign === 'sprint') {
-      score += 10 + (exam?.weights.find((w) => w.topic === c.topic)?.weight ?? 0) / 4;
-      why.push('属于考试范围。');
-    }
-    if (campaign === 'sprint') {
+    if (campaign === 'sprint' && !probing) {
+      const inScope = exam?.scope.includes(c.topic) ?? false;
+      if (inScope) {
+        score += 10 + (exam?.weights.find((w) => w.topic === c.topic)?.weight ?? 0) / 4;
+        why.push('属于考试范围。');
+      }
       const priority = sprintPriority(c, inScope, !!exam?.scope.length);
       if (priority) {
         score += priority.boost;
@@ -427,7 +482,8 @@ export function planToday(input: TodayInput) {
     }
     const order = input.contentOrder?.indexOf(c.id) ?? -1;
     if (order >= 0) score += 10 / (order + 1);
-    pool.push({ candidate: c, score, why });
+    const candidate = probe ? { ...c, evidence: [...new Set([...c.evidence, ...probe.evidence])] } : c;
+    pool.push({ candidate, score, why });
   }
   // Starter material fills an empty feasible inventory. It must not displace prepared work.
   const feasible = pool.filter(
@@ -436,10 +492,9 @@ export function planToday(input: TodayInput) {
   const prepared = feasible.filter(
     (p) => p.candidate.open?.kind === 'activity' || preferred.has(p.candidate.id),
   );
-  const limit = Math.max(
-    0,
-    (campaign === 'recovery' ? 1 : returning ? 2 : 3) - pendingProtected.length,
-  );
+  const slots = campaign === 'recovery' ? 1 : probing ? returnProbeLimit : 3;
+  const freeSlots = Math.max(0, slots - pendingProtected.length);
+  const limit = probing ? Math.min(probesLeft, freeSlots) : freeSlots;
   const selected = bundle(prepared.length ? prepared : feasible, remaining, limit, freeWindows);
   for (const id of preferred)
     if (!selected.some((i) => i.candidate.id === id) && !protectedIds.has(id))
@@ -467,6 +522,7 @@ export function planToday(input: TodayInput) {
     scoreReview,
     activeGoal,
     protectedItems,
+    warmup,
     items,
     shortlist,
     tradeoffs,
