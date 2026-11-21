@@ -833,6 +833,7 @@ function durationLabel(ms: number) {
 function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; materials: Material[]; modelSettings: Resource<Settings> }) {
   const watermark = useDraftWatermark();
   const deletionGeneration = useSyncExternalStore(subscribeDeletionWatermark, observedDeletionWatermark);
+  const openedGeneration = useRef(deletionGeneration);
   const [view, setView] = useState<WorkbookDetail | null>(null);
   const [draft, setDraft] = useState<AttemptDraft | null>(() => restoreAttemptDraft(paperId));
   const [selectedAttemptId, setAttemptId] = useState(() => new URLSearchParams(location.search).get('attempt'));
@@ -1079,6 +1080,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
         title={view.title}
         meta={`个人试卷 · ${dateLabel(view.savedAt)} · ${view.questions.length} 题`}
       />
+      {openedGeneration.current !== deletionGeneration && <p role="alert">删除状态已变化，已重新读取试卷。</p>}
       {view.source && (
         <section className="workbook-source">
           <div>
