@@ -13,8 +13,10 @@ import { materialType } from '../../modules/content/text-material.ts';
 import {
   captureIntakeCommand,
   completeCloudIntakeCommand,
+  completeVisionIntakeCommand,
   correctIntakeCommand,
   pendingMineruExtraction,
+  pendingVisionExtraction,
   intakePurpose,
   intakeTextLimit,
   setIntakeResearchCommand,
@@ -27,6 +29,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { cloudIntakeSlot, enqueueCloudIntake, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
+import { completeVisionIntake, enqueueVisionIntake, resolveVisionIntakeConfig, type VisionIntakeInput } from './intake-vision.ts';
 import { captureSourceType } from '../../modules/capture/source.ts';
 import type { paperReturnSelection } from '../../modules/capture/paper.ts';
 import type { openCapturePapers } from './capture-papers.ts';
@@ -44,6 +47,7 @@ export const intakeWriteTargets = {
   [captureIntakeCommand]: { create: [materialType] },
   [correctIntakeCommand]: { correct: [materialType] },
   [completeCloudIntakeCommand]: { correct: [materialType] },
+  [completeVisionIntakeCommand]: { correct: [materialType] },
 } satisfies CrossModuleWrites;
 
 export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedModule,
@@ -114,7 +118,9 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   async function capture(input: CaptureInput) {
     const { requestId, materialId, deletionWatermark, detected, title, original } = prepareCapture(input);
     const intakeId = intakeIdFor(materialId);
-    const { requested, cloud } = intakeOps.resolveCaptureExtraction(input.extraction, detected.mediaType, mineruSupports);
+    const { requested, cloud, asyncVision } = intakeOps.resolveCaptureExtraction(
+      input.extraction, detected.mediaType, mineruSupports, { asyncPhotoDefault: true },
+    );
     const matches = (prior: IntakeMetadata) => intakeOps.matchesCaptureReplay(prior, original, title, detected.mediaType, requested);
     const prior = await metadataOrNull(materialId.toString(), deletionWatermark);
     if (prior) {
@@ -125,11 +131,13 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     let installed = false;
     try {
       await objects.withOriginal(materialId,input.bytes,original,async (staged, install) => {
-        const extraction: IntakeExtraction = cloud ? pendingMineruExtraction() : await extractLocalDocument(detected.kind,staged,input.bytes,intakeTextLimit);
+        const extraction: IntakeExtraction = cloud ? pendingMineruExtraction()
+          : asyncVision ? pendingVisionExtraction('queued')
+          : await extractLocalDocument(detected.kind,staged,input.bytes,intakeTextLimit);
         const commandInput = {
           materialId, intakeId, title, original, extraction,
           savedAt: new Date().toISOString(),
-          ...(cloud ? { requestedExtraction: 'mineru' } : {}),
+          ...(cloud ? { requestedExtraction: 'mineru' } : asyncVision ? { requestedExtraction: 'vision_llm' } : {}),
         };
         const save = createCommandHandler(db, {
           ...runtime,
@@ -138,6 +146,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
               await install();
               installed = true;
               if (cloud) await enqueueCloudIntake(tx, tick, intakeId);
+              else if (asyncVision) await enqueueVisionIntake(tx, tick, intakeId);
               await hooks.onFactsChanged(tx, tick, changes);
             },
           },
@@ -191,6 +200,10 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     });
   }
 
+  async function completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction) {
+    await completeVisionIntake(db, runtime, hooks, ref, input, extraction);
+  }
+
   async function correct(input: IntakeCorrectInput) {
     const { materialId, requestId, data } = intakeOps.prepareIntakeCorrection(input, intakeIdFor);
     try {
@@ -223,6 +236,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     paperReturn,
     cloudOriginal,
     completeCloud,
+    completeVision,
   };
 }
 
@@ -262,6 +276,7 @@ export async function handleIntakeRequest(
     readLifecycleError: (error, includeCode) => error instanceof LifecycleError
       ? { status: error.status, message: error.message, ...(includeCode ? { code: error.code } : {}) } : null,
     mineruEnabled: () => Boolean(mineruToken()),
+    visionOcrEnabled: () => Boolean(resolveVisionIntakeConfig()),
     hasPapers: Boolean(papers),
     lifecycleState: () => intake.lifecycle.state(),
     erase: (id, input) => intake.lifecycle.erase(id, input),

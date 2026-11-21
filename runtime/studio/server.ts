@@ -18,6 +18,7 @@ import { openTextbook } from './textbook.ts';
 import { openIntake } from './intake.ts';
 import { openCapturePapers } from './capture-papers.ts';
 import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } from './intake-cloud.ts';
+import { openVisionIntakeWork, visionIntakeRoute, visionIntakeSlot } from './intake-vision.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import { openWorkbook } from './workbook.ts';
 import { openTakeaway } from './takeaway.ts';
@@ -89,6 +90,7 @@ const research = openResearch(db, activity, companion, scoutHost, understandingT
 const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
 const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
+const visionIntake = openVisionIntakeWork(db, intake);
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
 const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
 const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
@@ -203,6 +205,7 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
     const work = await readWork(db, ref);
     if (!work || [confirmedTeachingMethod,learningToolsMethod].includes(work.deriver)) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
+    else if (work.slotType === visionIntakeSlot) await visionIntake.execute(ref, terminal, workCancellationSignal());
     else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
     else if (work.slotType === questionVerificationType) await executeQuestionVerification(db, ref, iqdbHost, terminal);
     else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
@@ -235,6 +238,8 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
     { queue: capabilityTaskQueue(queue, 'notion-block-v1'), route: notionBlockRoute,
       run: (ref: WorkRef, terminal: boolean, cause?: WorkFailureCause) => executeNotionBlockWork(db, ref, terminal, cause) },
     ...(mineruToken() ? [{ queue: capabilityTaskQueue(queue, 'ocr-v1'), route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
+    { queue: capabilityTaskQueue(queue, 'vision-ocr-v1'), route: visionIntakeRoute,
+      run: (ref: WorkRef, terminal: boolean) => visionIntake.execute(ref, terminal, workCancellationSignal()) },
   ];
 
   async function startRound(): Promise<WorkerRound> {
