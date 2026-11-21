@@ -1,0 +1,44 @@
+# Mangekyō Studio 单容器镜像（Node 26 + pnpm）。
+# 构建上下文为仓库根目录：docker build -f deploy/Dockerfile.studio -t mangekyo-studio .
+# 说明：docs/deploy/self-hosted.md
+
+FROM node:26.10.0-alpine AS base
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+WORKDIR /app
+
+# ---- 依赖层：只复制清单，利用构建缓存 ----
+FROM base AS deps
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY kernel/package.json kernel/package.json
+COPY modules/activity/package.json modules/activity/package.json
+COPY modules/capture/package.json modules/capture/package.json
+COPY modules/companion/package.json modules/companion/package.json
+COPY modules/content/package.json modules/content/package.json
+COPY modules/learner/package.json modules/learner/package.json
+COPY modules/plan/package.json modules/plan/package.json
+COPY executors/document-extraction/package.json executors/document-extraction/package.json
+COPY executors/python-deriver/package.json executors/python-deriver/package.json
+COPY executors/teaching/package.json executors/teaching/package.json
+COPY executors/temporal/package.json executors/temporal/package.json
+COPY runtime/studio/package.json runtime/studio/package.json
+COPY surfaces/web/package.json surfaces/web/package.json
+RUN pnpm install --frozen-lockfile --prefer-offline
+
+# ---- 构建层：内核声明 + Web 前端 ----
+FROM base AS build
+COPY --from=deps /app .
+COPY . .
+RUN pnpm build:kernel && pnpm --filter @mangekyo/web build
+
+# ---- 运行层：源码 + 已构建产物 ----
+FROM base AS runtime
+ENV NODE_ENV=production
+# Python 计算沙箱镜像名由 executors/teaching/agent-tools.ts 固定为 mangekyo-calculation:1。
+# 生产宿主需预先构建该镜像（见 docs/deploy/self-hosted.md），此处仅装 docker CLI 供调用。
+RUN apk add --no-cache docker-cli python3 2>/dev/null || apk add --no-cache docker-cli
+COPY --from=build /app .
+# 数据目录：原件/配置/会话文件，compose 中挂载为持久卷。
+RUN mkdir -p /data/intake /data/config && chmod 700 /data /data/intake /data/config
+VOLUME ["/data"]
+EXPOSE 4317
+CMD ["pnpm", "--filter", "@mangekyo/studio", "exec", "tsx", "server.ts"]
