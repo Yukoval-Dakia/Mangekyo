@@ -179,9 +179,9 @@ export function retentionSlice(input: RetentionInput, methodVersion = defaultRet
   const historical = methodVersion === 'cognition@1' || methodVersion === 'dimensioned-retention@1';
   if (input.canonicalEvidence) {
     const slice = input.canonicalEvidence;
-    if (slice.clock_watermark !== input.observedThrough ||
-        Date.parse(slice.as_of_at) !== Date.parse(input.window.requestedAt) ||
-        slice.events.some(e => Date.parse(e.occurred_at) > Date.parse(slice.as_of_at)))
+    const cutoff = Date.parse(slice.as_of_at);
+    if (slice.clock_watermark !== input.observedThrough || cutoff !== Date.parse(input.window.requestedAt) ||
+        slice.events.some(e => !(Date.parse(e.occurred_at) <= cutoff)))
       throw new Error('Canonical evidence does not match the frozen forecast cutoff');
     if (input.target.dimensions?.kcId || input.target.condition !== 'same-item') return slice;
     // Activity has already matched these frozen submissions to this exact paper
@@ -306,6 +306,10 @@ export function freezeCognition(input: RetentionInput, output: CognitionOutput):
 
 export async function evaluateFrozenRetention(method: RetentionMethod | PythonRetentionMethod, input: RetentionInput,
   derive: (slice: ReturnType<typeof retentionSlice>, version: string) => Promise<CognitionOutput>) {
+  const cutoff = Date.parse(input.window.requestedAt);
+  if (!Number.isFinite(cutoff) || input.observations.some(observation =>
+    BigInt(observation.admittedAt) > BigInt(input.observedThrough) || !(Date.parse(observation.submittedAt) <= cutoff)))
+    throw new Error('Retention observation exceeds the frozen forecast cutoff');
   if ('predict' in method) return evaluateRetention(method, input);
   const version = method.id + '@' + method.version;
   const slice = retentionSlice(input, version);

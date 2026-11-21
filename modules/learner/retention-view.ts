@@ -1,6 +1,7 @@
 import { flashCheckPriority, nearFlashCrossing } from './flash-check.ts';
 import type { FactSnapshot, Outcome, Tick } from '@mangekyo/kernel';
 import { reconcileRetention, type RetentionForecast, type RetentionObservation, type RetentionTarget } from './retention.ts';
+import { compareRetentionObservations, retentionBaseline, summarizeRetentionReplay } from './retention-replay.ts';
 
 export type RetentionReconciliation = ReturnType<typeof reconcileRetention> & { forecastId: string; observedThrough: Tick };
 type RetentionSelection = {
@@ -65,35 +66,32 @@ export function againstFrozenTarget(observation: RetentionObservation, target: R
   };
 }
 
-function metrics(statuses: readonly RetentionReconciliation['status'][]) {
-  const matched = statuses.filter(status => status === 'matched').length;
-  const missed = statuses.filter(status => status === 'missed').length;
-  const eligible = matched + missed + statuses.filter(status => status === 'observed').length;
-  return {
-    eligible, matched, missed,
-    contaminated: statuses.filter(status => status === 'contaminated').length,
-    missingIndependent: statuses.filter(status => status === 'awaiting-independent').length,
-    coverage: eligible ? (matched + missed) / eligible : null,
-    classificationError: matched + missed ? missed / (matched + missed) : null,
-  };
-}
-
-export function retentionComparisonCase<Pair>(pair: Pair, recorded: RetentionForecast, alternate: RetentionForecast,
-  outcome: RetentionReconciliation) {
+export function retentionComparisonCase<Pair extends { forecastId: string }>(pair: Pair, recorded: RetentionForecast,
+  alternate: RetentionForecast, outcome: RetentionReconciliation) {
+  const { observation } = outcome;
   return {
     ...pair, forecastWatermark: recorded.input.observedThrough, observationWatermark: outcome.observedThrough,
-    exposure: outcome.observation.exposure.kind, observed: outcome.observation.result,
+    observation: { admittedAt: observation.admittedAt, submittedAt: observation.submittedAt, submission: { id: observation.submission.id } },
+    exposure: observation.exposure.kind, observed: observation.result,
     recorded: { method: recorded.method, estimate: recorded.estimate, status: outcome.status },
     shadow: { estimate: alternate.estimate, status: reconcileRetention(alternate, outcome.observation).status },
+    baseline: retentionBaseline(recorded),
   };
 }
 
 export function retentionComparisonReport<T extends ReturnType<typeof retentionComparisonCase>>(
   method: RetentionForecast['method'], cases: readonly T[],
 ) {
+  const selected = new Map<string, T>();
+  for (const row of cases) {
+    const prior = selected.get(row.forecastId);
+    if (!prior || compareRetentionObservations({ observation: row.observation, status: row.recorded.status },
+      { observation: prior.observation, status: prior.recorded.status }) < 0) selected.set(row.forecastId, row);
+  }
   return {
-    kind: 'prospective-replay', method: { id: method.id, version: method.version }, cases,
-    recorded: metrics(cases.map(row => row.recorded.status)), shadow: metrics(cases.map(row => row.shadow.status)),
+    kind: 'prospective-replay', method: { id: method.id, version: method.version },
+    cases: cases.map(({ observation: _observation, ...row }) => row),
+    ...summarizeRetentionReplay([...selected.values()]),
   };
 }
 
