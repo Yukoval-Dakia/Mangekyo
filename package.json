@@ -11,8 +11,8 @@
     "test:pg": "node scripts/check-test-budget.mjs && vitest run --config vitest.pg.config.ts",
     "verify:teaching": "node runtime/studio/test/teaching-acceptance.mjs",
     "test:boundary": "node kernel/test/package-boundary/check.mjs",
-    "build:kernel": "tsc -p kernel/tsconfig.build.json",
-    "typecheck": "pnpm build:kernel && tsc --noEmit && pnpm --filter @mangekyo/web typecheck",
+    "build:kernel": "tsrs -p kernel/tsconfig.build.json",
+    "typecheck": "pnpm build:kernel && tsrs --noEmit && pnpm --filter @mangekyo/web typecheck",
     "check:structure": "node scripts/check-structure.mjs",
     "new:module": "node scripts/new-module.mjs",
     "new:deriver": "node scripts/new-deriver.mjs",
@@ -23,6 +23,7 @@
   "devDependencies": {
     "@types/node": "^25.0.0",
     "@types/pg": "^8.16.0",
+    "tsrs": "7.1.0-beta.tsrs4",
     "typescript": "^6.0.0",
     "vitest": "^5.1.0"
   }
