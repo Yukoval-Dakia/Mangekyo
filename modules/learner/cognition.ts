@@ -7,3 +7,4 @@ export { playbook, readVerifiedPlaybook, playbookType, understandingStatusType, 
 export * from './correction-check.ts';
 export { liftAssessment, reconciledLiftAssessment } from './intervention-lift-evidence.ts';
 export { flashCheckPriority, type FlashCheckPriority } from './flash-check.ts';
+export { liftPurpose, runSealedWeeklyLift, weeklyLiftWork, type ReopenLiftCohort } from './weekly-lift.ts';

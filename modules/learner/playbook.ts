@@ -1,6 +1,7 @@
 import { factId, type DerivationSnapshot, type FactId, type ReadContext, type Revision, type Playbook as KernelPlaybook } from '@mangekyo/kernel';
-import { interventionLiftType } from './intervention-lift.ts';
+import { interventionLiftKey, interventionLiftType } from './intervention-lift.ts';
 import { allows, integer, openWitness, record, text, witnessList, type Witness } from './memory-evidence.ts';
+import { weeklyLiftCutoff, weeklyLiftExpiry } from './weekly-lift.ts';
 
 export const playbookType = 'learner.playbook';
 export const understandingStatusType = 'learner.understandingStatus';
@@ -52,12 +53,12 @@ export function proposalInput(value: unknown) {
 
 export type PlaybookStatus = {
   playbookId: string; version: number; strategyId: string; status: 'candidate' | 'verified' | 'demoted';
-  reason: string; liftId: string | null; verificationRefs: Witness[];
+  reason: string; liftId: string | null; verificationRefs: Witness[]; expiresAt?: string;
 };
 
 export function readPlaybookLift(read: ReadContext, learner: DerivationSnapshot<unknown>['slot']['learner'],
   id: FactId, proposal: Playbook) {
-  return read.slot({learner, type: liftType, key: JSON.stringify([id, proposal.version])}, {mode: 'following'});
+  return read.slot({learner, type: liftType, key: interventionLiftKey(id, proposal.version)}, {mode: 'following'});
 }
 
 export function playbookGardeningProposal(id: FactId, expectedRev: Revision, status: PlaybookStatus) {
@@ -69,25 +70,27 @@ export function playbookGardeningProposal(id: FactId, expectedRev: Revision, sta
   };
 }
 export function verifiedStatus(playbookId: string, proposal: Playbook,
-  lift: DerivationSnapshot<unknown>): PlaybookStatus {
+  lift: DerivationSnapshot<unknown>, at = new Date().toISOString()): PlaybookStatus {
   const base = {playbookId, version: proposal.version, strategyId: proposal.strategyId, liftId: lift.id};
   const candidate = (reason: string): PlaybookStatus => ({...base, status: 'candidate', reason, verificationRefs: []});
-  if (lift.slot.type !== liftType || lift.slot.key !== JSON.stringify([playbookId, proposal.version]))
+  if (lift.slot.type !== liftType || lift.slot.key !== interventionLiftKey(playbookId, proposal.version))
     return candidate('策略核验槽不匹配。');
   if (lift.outcome.kind === 'unknown') return candidate(lift.outcome.reason);
   const result = record(lift.outcome.value);
   if (result.playbookId !== playbookId || result.version !== proposal.version || result.strategyId !== proposal.strategyId)
     return candidate('核验针对另一策略或版本。');
+  const asOf = result.asOf;
+  if (asOf !== undefined && asOf !== weeklyLiftCutoff(at)) return candidate('策略的周核验已失效。');
   if (result.verdict === 'inconclusive') return candidate('独立后测尚不足以判断效果。');
   if (result.verdict !== 'positive' && result.verdict !== 'negative') throw new Error('核验结果无效。');
   const verificationRefs = witnessList(result.verificationRefs);
-  return {...base, status: result.verdict === 'positive' ? 'verified' : 'demoted',
+  return {...base, ...(typeof asOf === 'string' ? {expiresAt: weeklyLiftExpiry(asOf)} : {}), status: result.verdict === 'positive' ? 'verified' : 'demoted',
     reason: result.verdict === 'positive' ? '独立后测正 Lift。' : '独立后测负 Lift，停止推荐。', verificationRefs};
 }
 
 // The host binds this reader to one learner, the teaching purpose, the actual
 // recipient and current slot selection, and revalidates the basis before send.
-export async function readVerifiedPlaybook(read: ReadContext, ref: Witness) {
+export async function readVerifiedPlaybook(read: ReadContext, ref: Witness, at?: string) {
   const fact = await openWitness(read, ref, 'teaching');
   if (fact.type !== playbookType) throw new Error('引用未指向策略。');
   const proposal = playbook(fact.value);
@@ -101,7 +104,7 @@ export async function readVerifiedPlaybook(read: ReadContext, ref: Witness) {
   if (checked.status !== 'verified' || checked.playbookId !== ref.id || checked.version !== proposal.version ||
       checked.strategyId !== proposal.strategyId || !checked.liftId) return null;
   const lift = await readPlaybookLift(read, fact.ref.learner, ref.id, proposal);
-  const verified = verifiedStatus(ref.id, proposal, lift);
+  const verified = verifiedStatus(ref.id, proposal, lift, at);
   if (lift.slot.learner !== fact.ref.learner || lift.id !== checked.liftId || verified.status !== 'verified') return null;
   const verificationRefs = verified.verificationRefs;
   for (const verification of verificationRefs) {
