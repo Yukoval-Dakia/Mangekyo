@@ -259,3 +259,128 @@ export function isExamPacingResult(value: unknown, input?: ExamPacingInput): val
       row.score_rate_gap === faster.score_rate - slower.score_rate;
   });
 }
+
+export const examTimeValueMethod = 'plan/exam-pacing@2';
+export type ExamTimeValueInput = { readonly slice: PacingSlice; readonly attempt_ref: Ref };
+type TimeValueState = 'steady' | 'fast-slip' | 'time-sink' | 'recovered-skip' | 'unknown';
+type TimeValueItem = {
+  readonly item_id: string;
+  readonly position: number;
+  readonly effective_duration_ms: number;
+  readonly state: TimeValueState;
+};
+
+export type ExamTimeValueResult = {
+  readonly method_version: typeof examTimeValueMethod;
+  readonly attempt_ref: Ref;
+} & ({ readonly kind: 'unknown' } | {
+  readonly kind: 'observed';
+  readonly items: readonly TimeValueItem[];
+  readonly total_duration_ms: number;
+  readonly summary: string;
+});
+
+export function isExamTimeValueInput(value: unknown): value is ExamTimeValueInput {
+  return record(value, ['slice', 'attempt_ref']) && record(value.attempt_ref, ['id', 'rev']) &&
+    key(value.attempt_ref.id) && typeof value.attempt_ref.rev === 'number' &&
+    Number.isSafeInteger(value.attempt_ref.rev) && value.attempt_ref.rev > 0 && isCanonicalEvidenceSlice(value.slice);
+}
+
+type ItemEvent = PacingEvent & { readonly exam_pacing_item: ItemPacingEvidence };
+type ItemRole = 'process' | 'estimate' | 'formal';
+
+function itemEventRole(event: ItemEvent, submittedAt: number, scaleKey: string | undefined): ItemRole | undefined {
+  const item = event.exam_pacing_item;
+  const at = Date.parse(event.occurred_at);
+  const process = event.effective_duration_ms !== undefined || item.skipped === true;
+  const estimate = item.estimated_duration_ms !== undefined;
+  const formal = item.score !== undefined;
+  if (Number(process) + Number(estimate) + Number(formal) !== 1) return undefined;
+  if (process && at <= submittedAt) return 'process';
+  if (estimate && at <= submittedAt) return 'estimate';
+  if (formal && at >= submittedAt && scaleKey && item.scale_key === scaleKey) return 'formal';
+  return undefined;
+}
+
+function timeValueState(process: ItemEvent, elapsed: number, formal?: ItemEvent | null, estimate?: ItemEvent | null): TimeValueState {
+  const score = formal?.exam_pacing_item.score;
+  if (!score) return 'unknown';
+  const { skipped, returned } = process.exam_pacing_item;
+  if (skipped && returned && score.earned > 0) return 'recovered-skip';
+  if (score.earned === score.maximum) return 'steady';
+  const expected = estimate?.exam_pacing_item.estimated_duration_ms;
+  if (expected === undefined) return 'unknown';
+  if (5 * elapsed > 9 * expected) return 'time-sink';
+  if (elapsed < expected && (formal.error_stage === 'reading' || formal.error_stage === 'execution')) return 'fast-slip';
+  return 'unknown';
+}
+
+function timeValueSummary(items: readonly TimeValueItem[]): string {
+  const count = (state: TimeValueState) => items.filter(item => item.state === state).length;
+  return `本卷有 ${count('steady')} 题拿满分、${count('fast-slip')} 题低耗时失分、${count('time-sink')} 题超估时失分、` +
+    `${count('recovered-skip')} 题回访得分，另有 ${count('unknown')} 题节奏未确认。`;
+}
+
+function expectedTimeValue({slice, attempt_ref}: ExamTimeValueInput): ExamTimeValueResult {
+  const base = { method_version: examTimeValueMethod, attempt_ref } as const;
+  const unknown = { ...base, kind: 'unknown' } as const;
+  const matchesRef = (ref: Ref) => ref.id === attempt_ref.id && ref.rev === attempt_ref.rev;
+  const attempts = eligibleEvents(slice).filter(event => matchesRef({ id: event.ref, rev: event.rev }));
+  const attempt = attempts[0];
+  if (attempts.length !== 1 || !attempt) return unknown;
+  const { paper_key, scale_key } = attempt.exam_pacing;
+  if (!key(paper_key)) return unknown;
+  const eligible = evidenceWindow(slice);
+  const submittedAt = Date.parse(attempt.occurred_at);
+  const rows = new Map<string, { process: ItemEvent; formal?: ItemEvent | null; estimate?: ItemEvent | null }>();
+  const positions = new Set<number>();
+  const counts = new Set<number>();
+  const classifications: { role: 'formal' | 'estimate'; event: ItemEvent }[] = [];
+  for (const event of slice.events) {
+    const item = event.exam_pacing_item;
+    if (!item || !matchesRef(item.attempt_ref) || item.paper_key !== paper_key ||
+      !eligible(event, paper_key, attempt_ref.id)) continue;
+    const typedEvent = { ...event, exam_pacing_item: item };
+    const role = itemEventRole(typedEvent, submittedAt, scale_key);
+    if (!role || !key(event.ref)) continue;
+    if (role !== 'process') {
+      classifications.push({ role, event: typedEvent });
+      continue;
+    }
+    const { item_id, position, item_count } = item;
+    if (!key(item_id) || rows.has(item_id) || positions.has(position)) return unknown;
+    positions.add(position);
+    counts.add(item_count);
+    rows.set(item_id, { process: typedEvent });
+  }
+  if (counts.size !== 1 || !counts.has(positions.size)) return unknown;
+
+  // Process rows projected from the frozen paper define coverage and order.
+  for (const { role, event } of classifications) {
+    const item = event.exam_pacing_item;
+    const row = rows.get(item.item_id);
+    if (!row) continue;
+    const anchor = row.process.exam_pacing_item;
+    if (item.position !== anchor.position || item.item_count !== anchor.item_count || event.ref === row.process.ref) continue;
+    row[role] = role in row ? null : event;
+  }
+  const items: TimeValueItem[] = [];
+  let total_duration_ms = 0;
+  for (const [item_id, {process, formal, estimate}] of rows) {
+    const elapsed = process.effective_duration_ms;
+    if (!itemDuration(elapsed)) return unknown;
+    const { position } = process.exam_pacing_item;
+    const distinctEstimate = estimate?.ref === formal?.ref ? undefined : estimate;
+    items.push({ item_id, position, effective_duration_ms: elapsed, state: timeValueState(process, elapsed, formal, distinctEstimate) });
+    total_duration_ms += elapsed;
+  }
+  const wholeDuration = attempt.effective_duration_ms;
+  if (total_duration_ms === 0 || (wholeDuration !== undefined &&
+    (!itemDuration(wholeDuration) || total_duration_ms > wholeDuration))) return unknown;
+  items.sort((a, b) => a.position - b.position);
+  return { ...base, kind: 'observed', total_duration_ms, items, summary: timeValueSummary(items) };
+}
+
+export function isExamTimeValueResult(value: unknown, input: ExamTimeValueInput): value is ExamTimeValueResult {
+  return isDeepStrictEqual(value, expectedTimeValue(input));
+}

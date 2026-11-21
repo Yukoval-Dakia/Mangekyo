@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { getMethodVersion, isCanonicalEvidenceSlice, isCognitionResult, isInformationGainResult } from './schema.ts';
-import { isExamPacingInput, isExamPacingResult } from './exam-pacing-schema.ts';
+import { examTimeValueMethod, isExamPacingInput, isExamPacingResult, isExamTimeValueInput, isExamTimeValueResult } from './exam-pacing-schema.ts';
 import { isInterventionLiftInput, isInterventionLiftOutcome } from './intervention-lift-schema.ts';
 
 export type DeriveOutcome =
@@ -27,6 +27,8 @@ function acceptsOutcome(request: Pending, outcome: unknown): outcome is DeriveOu
     return false;
   if (request.methodVersion === 'plan/exam-pacing@1')
     return isExamPacingInput(request.frozenInput) && isExamPacingResult(outcome.value, request.frozenInput);
+  if (request.methodVersion === examTimeValueMethod)
+    return isExamTimeValueInput(request.frozenInput) && isExamTimeValueResult(outcome.value, request.frozenInput);
   if (request.methodVersion === 'plan/information-gain@1')
     return isCanonicalEvidenceSlice(request.frozenInput) && isInformationGainResult(outcome.value, request.frozenInput);
   return isCognitionResult(outcome.value) && outcome.value.method_version === request.methodVersion;
@@ -148,11 +150,14 @@ export function createPythonDeriverHost(options: PythonDeriverOptions = {}): Pyt
         if (!isInterventionLiftInput(input)) return { kind: 'failed', reason: 'invalid intervention Lift input' };
       } else if (methodVersion === 'plan/exam-pacing@1') {
         if (!isExamPacingInput(input)) return { kind: 'failed', reason: 'invalid exam pacing input' };
+      } else if (methodVersion === examTimeValueMethod) {
+        if (!isExamTimeValueInput(input)) return { kind: 'failed', reason: 'invalid exam time-value input' };
       } else if (!isCanonicalEvidenceSlice(input)) return { kind: 'failed', reason: 'invalid CanonicalEvidenceSlice@v1' };
       payload = JSON.stringify({ id, deriver, input });
       if (Buffer.byteLength(payload) > maxInputBytes)
         return { kind: 'failed', reason: 'deriver input exceeds the protocol limit' };
-      if (methodVersion === 'intervention-lift@1' || methodVersion === 'plan/exam-pacing@1' || methodVersion === 'plan/information-gain@1')
+      if (methodVersion === 'intervention-lift@1' || methodVersion === 'plan/exam-pacing@1' ||
+        methodVersion === examTimeValueMethod || methodVersion === 'plan/information-gain@1')
         frozenInput = JSON.parse(payload).input;
     } catch {
       return { kind: 'failed', reason: 'deriver input is not JSON serializable' };
