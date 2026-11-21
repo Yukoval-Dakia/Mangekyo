@@ -143,7 +143,7 @@ def _read_items(items):
     return {"kind": "observed", "items": items} if items else {"kind": "unknown"}
 
 
-def _attempt_items(attempt, items, eligible):
+def _attempt_items(attempt, items):
     attempt_ref = {"id": attempt["ref"], "rev": attempt["rev"]}
     pacing = attempt["exam_pacing"]
     paper_key = pacing.get("paper_key")
@@ -154,8 +154,7 @@ def _attempt_items(attempt, items, eligible):
     process_ids = set()
     duplicate_score = False
     for event, item in items:
-        if (item["attempt_ref"] != attempt_ref or item["paper_key"] != paper_key
-                or not eligible(event, paper_key, attempt["ref"])):
+        if item["attempt_ref"] != attempt_ref or item["paper_key"] != paper_key:
             continue
         occurred_at = event["occurred_at"]
         time = _time(occurred_at)
@@ -205,11 +204,12 @@ def _attempt_items(attempt, items, eligible):
 def _within_attempt(evidence):
     if "attempts" in evidence:
         return None
-    items = [(event, event["exam_pacing_item"]) for event in evidence["events"] if "exam_pacing_item" in event]
+    eligible = _evidence_window(evidence)
+    items = [(event, item) for event in evidence["events"] if (item := event.get("exam_pacing_item"))
+             and eligible(event, item["paper_key"], item["attempt_ref"]["id"])]
     if not items:
         return None
-    eligible = _evidence_window(evidence)
-    return [_attempt_items(attempt, items, eligible) for attempt in _recent_attempts(evidence)]
+    return [_attempt_items(attempt, items) for attempt in _recent_attempts(evidence)]
 
 
 def _diagnosis(attempts):

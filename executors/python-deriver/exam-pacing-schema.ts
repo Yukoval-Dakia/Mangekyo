@@ -112,15 +112,18 @@ function observations<Item>(items: Item[]): Observations<Item> {
 
 function withinAttempt(input: ExamPacingInput): WithinAttempt[] | undefined {
   if ('attempts' in input) return undefined;
-  const items = input.events.flatMap(event => event.exam_pacing_item ? [{event, item: event.exam_pacing_item}] : []);
-  if (!items.length) return undefined;
   const eligible = evidenceWindow(input);
+  const items = input.events.flatMap(event => {
+    const item = event.exam_pacing_item;
+    return item && eligible(event, item.paper_key, item.attempt_ref.id) ? [{event, item}] : [];
+  });
+  if (!items.length) return undefined;
   return recentAttempts(input).map(attempt => {
     const { paper_key, scale_key } = attempt.exam_pacing;
     const submittedAt = Date.parse(attempt.occurred_at);
     const matching = items.flatMap(({event, item}) => {
       if (item.attempt_ref.id !== attempt.ref || item.attempt_ref.rev !== attempt.rev ||
-          item.paper_key !== paper_key || !eligible(event, paper_key, attempt.ref)) return [];
+          item.paper_key !== paper_key) return [];
       const time = Date.parse(event.occurred_at);
       // Process precedes submission. A formal score may settle later within the evidence window.
       const process = time <= submittedAt && (item.skipped || item.returned || itemDuration(event.effective_duration_ms));

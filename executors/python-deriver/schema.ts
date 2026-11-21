@@ -130,13 +130,14 @@ export type CognitionResult = {
 export type ItemPacingEvidence = {
   readonly attempt_ref: { readonly id: string; readonly rev: number };
   readonly paper_key: string; readonly item_id: string; readonly position: number; readonly item_count: number;
-  readonly skipped?: true; readonly returned?: true; readonly estimated_duration_ms?: number;
-  readonly scale_key?: string; readonly score?: { readonly earned: number; readonly maximum: number };
-};
+  readonly estimated_duration_ms?: number;
+} & ({ readonly skipped: true; readonly returned?: true } | { readonly skipped?: never; readonly returned?: never })
+  & ({ readonly scale_key: string; readonly score: { readonly earned: number; readonly maximum: number } }
+    | { readonly scale_key?: never; readonly score?: never });
 type WireEvent = (EvidenceEventV1 & { readonly exam_pacing_item?: never }) |
   (Omit<EvidenceEventV1, 'help_level' | 'concept_ids' | 'outcome' | 'exam_pacing'> & {
     readonly help_level: 'unknown'; readonly concept_ids: readonly []; readonly claim_ids: readonly []; readonly outcome: 'unknown';
-    readonly exam_pacing_item: ItemPacingEvidence; readonly exam_pacing?: never;
+    readonly exam_pacing_item: ItemPacingEvidence; readonly exam_pacing?: never; readonly score_norm?: never;
   });
 export type WireSlice = Omit<CanonicalEvidenceSliceV1, 'events'> & { readonly events: readonly WireEvent[] };
 export function isCanonicalEvidenceSlice(value: unknown): value is WireSlice {

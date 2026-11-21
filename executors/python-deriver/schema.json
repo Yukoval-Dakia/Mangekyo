@@ -55,8 +55,8 @@
         "scale_key": { "$ref": "#/$defs/text" }, "score": { "$ref": "#/$defs/examScore" }
       },
       "not": { "type": "object", "required": ["returned"], "not": { "type": "object", "required": ["skipped"] } },
-      "anyOf": [{ "type": "object", "not": { "type": "object", "required": ["score"] } },
-                { "type": "object", "required": ["scale_key"] }]
+      "anyOf": [{ "type": "object", "not": { "anyOf": [{ "type": "object", "required": ["score"] }, { "type": "object", "required": ["scale_key"] }] } },
+                { "type": "object", "required": ["score", "scale_key"] }]
     },
     "itemHelp": { "enum": ["independent", "hinted", "hint_l1", "hint_l2", "solution_seen"] },
     "event": {
@@ -65,7 +65,7 @@
           "not": { "type": "object", "required": ["exam_pacing_item"] } },
         { "type": "object", "anyOf": [
           { "type": "object", "required": ["exam_pacing"] },
-          { "type": "object", "required": ["exam_pacing_item"], "properties": { "claim_ids": { "type": "array", "maxItems": 0 } } }
+          { "type": "object", "required": ["exam_pacing_item"], "not": { "type": "object", "required": ["score_norm"] }, "properties": { "claim_ids": { "type": "array", "maxItems": 0 } } }
         ], "not": { "type": "object", "required": ["exam_pacing", "exam_pacing_item"] }, "properties": {
           "help_level": { "enum": ["unknown"] }, "outcome": { "enum": ["unknown"] },
           "concept_ids": { "type": "array", "maxItems": 0 }

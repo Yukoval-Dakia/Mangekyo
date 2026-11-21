@@ -81,6 +81,10 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
     strategy: {kind: 'observed', comparisons: [{slower_attempt_id: 'recent', faster_attempt_id: 'prior', extra_duration_ms: 1000}]},
   }}});
   expect(JSON.stringify(pacing)).not.toContain('withheld');
+  const {exam_pacing: _, ...neutral} = events[2]!;
+  const hiddenItem = {...neutral, exam_pacing_item: {attempt_ref: {id: 'recent', rev: 1}, paper_key: 'paper@2',
+    item_id: 'q2', position: 2, item_count: 2, skipped: true}};
+  expect(await host.derive('plan/exam-pacing@1', {...slice, events: [...events, hiddenItem]})).toEqual(pacing);
 });
 
 it('prioritizes the shortest matching variant with the frozen error revision', async ({ onTestFinished }) => {

@@ -33,8 +33,10 @@ export function flashCheckPriority(forecast: RetentionForecast, asOf?: string): 
     const time = Date.parse(row.submittedAt), id = key(row.submission.id, row.submission.rev);
     if (!(time <= cutoff) || omitted.has(id)) continue;
     const event = same.get(id);
-    if (slice && !(event?.incorrect && event.time === time)) continue;
-    const confidence = slice ? event?.confidence : row.confidence;
+    // The observation belongs to this frozen target. A submission-level slice
+    // alone cannot identify which question supplied a confidence rating.
+    const confidence = row.confidence;
+    if (slice && !(event?.incorrect && event.time === time && event.confidence === confidence)) continue;
     if (confidence !== undefined && confidence >= 0.8 && confidence <= 1) return 'high-confidence-error';
   }
   if (asOf === undefined || estimate.kind !== 'probabilistic' || !estimate.crossingAt ||
