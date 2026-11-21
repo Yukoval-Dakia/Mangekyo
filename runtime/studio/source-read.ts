@@ -22,7 +22,7 @@ import {openWorkbookQuestionSources} from './workbook-diagnosis.ts';
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = NotionRecipient;
-export type SourceAccess = { track?: SourceTrack } & (
+export type SourceAccess = { track?: SourceTrack; exactReadModes?: true } & (
   | {recipient: 'learner'}
   | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string; ownerNotionRead?: true}
 );
@@ -133,7 +133,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         if (fact.type !== materialType || textReference) return;
         const projection = project(fact, anchor, access.recipient);
         if (!projection) return;
-        access.track?.(fact, reference ? mode : undefined);
+        access.track?.(fact, reference ? mode : access.exactReadModes ? 'following' : undefined);
         return {id: fact.ref.id, rev: fact.ref.rev, sourceRef: sourceReference(fact, anchor), ...projection};
       }
       if (currentDocument.type !== intakeFactType) return;
@@ -154,6 +154,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     if (!projection) return;
     for (const {fact:witness, pinned} of seen.values()) {
       const isReferenced = witness === fact ? reference : witness === body ? textReference : undefined;
+      if (access.exactReadModes) {
+        access.track?.(witness, pinned ? 'pinned' : 'following');
+        continue;
+      }
       access.track?.(witness, witness.type === textbookPageType || pinned ? 'pinned' : isReferenced ? mode : undefined);
     }
     for (const proof of questionSources) access.track?.(...proof);

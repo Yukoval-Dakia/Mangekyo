@@ -476,7 +476,7 @@ export function openWorkspaceTools(options: {
     basis() {
       const ordinary = new Map([...sources, ...overviewBasis]);
       const basis = new Map([...ordinary.values()].map(w => [`${w.id}:${w.rev}`, w]));
-      for (const w of options.learningBasis?.() ?? []) basis.set(`${w.id}:${w.rev}`,w);
+      for (const w of options.learningBasis?.() ?? []) basis.set(`${w.id}:${w.rev}:${workspaceInput(w).mode}`,w);
       for (const [key, witness] of writeBasis) basis.set(key, witness);
       for (const witness of jitBasis) basis.set(`${witness.id}:${witness.rev}`,{...witness,writeBasis:true,jitBasis:true});
       return [...basis.values()];

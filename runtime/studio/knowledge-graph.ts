@@ -119,7 +119,7 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
   }
 }
 
-type EdgeHit = NonNullable<Awaited<ReturnType<typeof openKnowledgeEdge>>>['value'] & {
+export type EdgeHit = NonNullable<Awaited<ReturnType<typeof openKnowledgeEdge>>>['value'] & {
   hop: number;
   traversal: 'forward' | 'reverse';
 };
@@ -129,6 +129,7 @@ type FrontierRecord = { source: WorkspaceSource; path: readonly TraversedEdge[] 
 export async function readKnowledgeGraph<Result>(
   tx: ReadTransaction, query: GraphQuery, access: SourceAccess,
   select: (source: WorkspaceSource, fact: FactSnapshot, hop: number) => Result | undefined,
+  fits?: (edge: EdgeHit, node: Result) => boolean,
 ) {
   const rootWitnesses: Parameters<SourceTrack>[] = [];
   const concept = await resolveSource(tx, query.conceptId, { ...access, track: (...witness) => rootWitnesses.push(witness) });
@@ -173,6 +174,7 @@ export async function readKnowledgeGraph<Result>(
       if (!origin) continue;
       const target = forward ? edge.to : edge.from;
       const { id: targetId, rev } = target.sourceRef.fact;
+      if (query.conceptsOnly && targetId === root.ref.id) continue;
       const fact = edge.opened.find(([item]) => item.ref.id === targetId && item.ref.rev === rev)?.[0];
       if (!fact) continue;
       if (seenEdges.size === graphLimit) return output(true);
@@ -183,6 +185,7 @@ export async function readKnowledgeGraph<Result>(
       const key = versionKey(targetId, rev);
       const match = select(target, fact, hop);
       if (match !== undefined) {
+        if (fits && !fits(path[path.length - 1]!.hit, match)) return output(true);
         for (const step of path) {
           if (edges.has(step.hit.id)) continue;
           edges.set(step.hit.id, step.hit);

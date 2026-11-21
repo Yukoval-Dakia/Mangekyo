@@ -467,7 +467,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           await authorizeWorkspace();
         } };
       const learningReadBasis = new Map<string,WorkspaceWitness>();
-      const keepLearningBasis = (w:WorkspaceWitness) => learningReadBasis.set(w.id + ':' + w.rev,w);
+      const keepLearningBasis = (w:WorkspaceWitness) => learningReadBasis.set(w.id + ':' + w.rev + ':' + workspaceInput(w).mode,w);
       function trackMemory(packet: NonNullable<typeof learningMemory>) {
         memoryPackets.push(packet);
         for (const entry of packet.receipt.basis) {
@@ -629,7 +629,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       const manageBeliefs = learningV1 && await toolContract('management-context','read_context','management') === 'management';
       function trackWorkspace(w: WorkspaceWitness, checkAtDispatch?: true) {
         trackNotion(w);
-        inputs.set('workspace:' + w.id + ':' + w.rev, workspaceInput(w));
+        inputs.set('workspace:' + w.id + ':' + w.rev + ':' + workspaceInput(w).mode, workspaceInput(w));
         if (checkAtDispatch) protectWorkspaceDispatch = true;
       }
       async function authorizeLearning(tx: ReadTransaction) {
@@ -755,7 +755,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           ? createHash('sha256').update(learningMemoryDigest).update(expandedMemory.receipt.digest).digest('hex') : learningMemoryDigest } : {}),
         ...(writes.length ? {writes} : {}),
         ...(turnMemory?.used() ? {memoryManagement: true} : {}),
-        ...(workspace?.basis().length || notionWitnesses.size ? {workspaceBasis:[...new Map([...notionWitnesses.values(), ...(workspace?.basis() ?? [])].map(w => [w.id + ':' + w.rev,w])).values()]} : {}),
+        ...(workspace?.basis().length || notionWitnesses.size ? {workspaceBasis:[...new Map([...notionWitnesses.values(), ...(workspace?.basis() ?? [])].map(w => [w.id + ':' + w.rev + ':' + workspaceInput(w).mode,w])).values()]} : {}),
         evidenceIds: [], reads: [
           ...(workspace?.reads() ?? []),
           ...(anchor ? [{id:anchor.ref,title:'首轮版本锚点',text:anchor.text}] : []),
