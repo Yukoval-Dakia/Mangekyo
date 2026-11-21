@@ -9,7 +9,8 @@
     "./slots/*": "./slots/*.ts",
     "./today": "./today.ts",
     "./offline-pack": "./offline-pack.ts",
-    "./rules": "./rules.ts"
+    "./rules": "./rules.ts",
+    "./tomorrow-warmup": "./tomorrow-warmup.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"

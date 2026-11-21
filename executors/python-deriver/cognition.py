@@ -10,6 +10,8 @@ HELP = {"independent": 1.0, "hinted": 0.3, "solution_seen": 0.2}
 GRADED_HELP = {**HELP, "hint_l1": 0.55, "hint_l2": 0.25}
 # A slip is weaker evidence of a conceptual gap. Unclassified errors retain full weight.
 ERROR_LOSS = {"reading": 0.75, "modeling": 1.0, "strategy": 1.0, "execution": 0.5, "expression": 0.4}
+LOW_CONFIDENCE_MAX = 0.35
+LOW_CONFIDENCE_GAIN = 0.25
 AXES = ("representation", "context", "method")
 
 
@@ -56,7 +58,7 @@ def _interval(alpha, beta):
     return max(0.0, mean - spread), min(1.0, mean + spread)
 
 
-def estimate(dimension, observations, now, dynamic, graded):
+def estimate(dimension, observations, now, dynamic, graded, confidence_weighted):
     """Leaky Beta evidence counts; spaced independent retrieval changes the decay time."""
     ordered = sorted(observations, key=lambda pair: (pair[0], pair[1]["ref"], pair[1]["rev"]))
     row = dict(zip(("concept_id", *AXES, "item_novelty"), dimension))
@@ -81,7 +83,11 @@ def estimate(dimension, observations, now, dynamic, graded):
         score = float(event["outcome"] == "correct")
         if dynamic:
             score = event.get("score_norm", score)
-        a += weight * score
+        gain = weight * score
+        if (confidence_weighted and help_level == "independent" and event["outcome"] == "correct"
+                and event.get("confidence", 1) <= LOW_CONFIDENCE_MAX):
+            gain *= LOW_CONFIDENCE_GAIN
+        a += gain
         loss = 1 - score
         if graded and event["outcome"] == "incorrect":
             loss *= ERROR_LOSS.get(event.get("error_stage"), 1.0)
@@ -89,7 +95,7 @@ def estimate(dimension, observations, now, dynamic, graded):
         if dynamic and help_level == "independent":
             spacing = (at - last_independent).total_seconds() / DAY_SECONDS if last_independent else 0.0
             half_life = min(365.0, max(0.5, half_life * (1 - 0.35 * loss)
-                                      + weight * score * (1 + min(spacing, half_life))))
+                                      + gain * (1 + min(spacing, half_life))))
             last_independent = at
         previous = at
 
@@ -134,11 +140,12 @@ def information(posterior, novelty):
 
 
 def derive(slice, method_version="cognition@1"):
-    if method_version not in ("cognition@1", "cognition@2", "dimensioned-retention@1"):
+    if method_version not in ("cognition@1", "cognition@2", "cognition@3", "dimensioned-retention@1"):
         raise ValueError("unsupported cognition method")
     now = instant(slice["as_of_at"])
     dynamic = method_version != "dimensioned-retention@1"
-    graded = method_version == "cognition@2"
+    graded = method_version in ("cognition@2", "cognition@3")
+    confidence_weighted = method_version == "cognition@3"
     omitted = {(item["ref"]["id"], item["ref"]["rev"]) for item in slice.get("omissions", [])}
     groups = defaultdict(list)
     seen = {}
@@ -165,7 +172,7 @@ def derive(slice, method_version="cognition@1"):
     vector = []
     posteriors = {}
     for key in sorted(groups, key=lambda k: tuple(part or "" for part in k)):
-        row, posterior = estimate(key, groups[key], now, dynamic, graded)
+        row, posterior = estimate(key, groups[key], now, dynamic, graded, confidence_weighted)
         vector.append(row)
         posteriors[key] = posterior
     ranked = []

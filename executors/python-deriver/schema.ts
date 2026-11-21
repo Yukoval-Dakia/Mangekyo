@@ -83,8 +83,8 @@ function matches(schema: Schema, value: unknown): boolean {
   }
 }
 
-export type CognitionMethod = 'cognition@2' | 'cognition@1' | 'dimensioned-retention@1';
-export type CognitionDeriver = 'learner/cognition@2' | 'learner/cognition@1' | 'learner/retention-forecast@1';
+export type CognitionMethod = 'cognition@3' | 'cognition@2' | 'cognition@1' | 'dimensioned-retention@1';
+export type CognitionDeriver = 'learner/cognition@3' | 'learner/cognition@2' | 'learner/cognition@1' | 'learner/retention-forecast@1';
 type Novelty = EvidenceEventV1['item_novelty'];
 type EvidenceRef = Pick<EvidenceEventV1, 'ref' | 'rev'>;
 

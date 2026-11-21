@@ -6,13 +6,14 @@ and closes the host during shutdown.
 
 | Deriver route | Method version |
 | --- | --- |
+| `learner/cognition@3` | `cognition@3` (an independent correct answer with confidence ≤0.35 contributes one quarter of its positive mastery and stability gain) |
 | `learner/cognition@2` | `cognition@2` (graded exposure, error stage and high-confidence probes) |
 | `learner/cognition@1` | `cognition@1` |
 | `learner/retention-forecast@1` | `dimensioned-retention@1` |
 | `learner/intervention-lift@1` | `intervention-lift@1` |
 | `plan/exam-pacing@1` | `plan/exam-pacing@1` |
 
-All three retention routes accept only the v1 slice defined by [schema.json](./schema.json).
+All four retention routes accept only the v1 slice defined by [schema.json](./schema.json).
 `@mangekyo/kernel` exports the input type `CanonicalEvidenceSliceV1`.
 `schema.ts` exports `CognitionResult` and the input and output guards
 for composition callers. Ticks are unsigned decimal strings. Timestamps use UTC

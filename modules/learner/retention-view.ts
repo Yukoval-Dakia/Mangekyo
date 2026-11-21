@@ -1,4 +1,4 @@
-import { flashCheckPriority, nearFlashCrossing } from './flash-check.ts';
+import { flashCheckSignal, nearFlashCrossing } from './flash-check.ts';
 import type { FactSnapshot, Outcome, Tick } from '@mangekyo/kernel';
 import { reconcileRetention, type RetentionForecast, type RetentionObservation, type RetentionTarget } from './retention.ts';
 import { compareRetentionObservations, retentionBaseline, summarizeRetentionReplay } from './retention-replay.ts';
@@ -25,14 +25,17 @@ export function projectRetentionRead<Evidence>(row: RetentionSelection, forecast
   const source = matches(paper, facts.papers);
   if (!source) return;
   const observation = 'observation' in value ? value.observation : undefined;
+  const submissions = facts.submissions.filter(fact => fact.ref.learner === source.ref.learner);
   const refs = [...input.observations.map(item => item.submission), ...(observation ? [observation.submission] : [])];
-  if (refs.some(ref => !matches(ref, facts.submissions))) return;
+  if (refs.some(ref => !matches(ref, submissions))) return;
   // The frozen result and dispatch witness retain the full basis.
   const sources = new Set([source]);
   const forecastBasis = estimate.kind === 'categorical' ? estimate.basis : input.observations.at(-1)?.submission;
-  for (const ref of [forecastBasis, observation?.submission]) {
+  const flash = 'estimate' in value ? flashCheckSignal(forecast.value) : undefined;
+  const flashBasis = flash && 'submission' in flash ? flash.submission : undefined;
+  for (const ref of [forecastBasis, observation?.submission, flashBasis]) {
     if (!ref) continue;
-    const fact = matches(ref, facts.submissions);
+    const fact = matches(ref, submissions);
     if (!fact) return;
     sources.add(fact);
   }
@@ -44,8 +47,7 @@ export function projectRetentionRead<Evidence>(row: RetentionSelection, forecast
     forecastId: forecast.id, status: value.status,
     observation: { result: observation.result, exposure: observation.exposure.kind } };
   if ('estimate' in value) {
-    const priority = flashCheckPriority(forecast.value);
-    const flag = priority ? { flash_check_priority: priority } : {};
+    const flag = flash ? { flash_check_priority: flash.priority } : {};
     if (estimate.kind === 'probabilistic') {
       return { ...common, ...flag, kind: 'forecast' as const,
         estimate: { kind: 'probabilistic' as const, probability: estimate.probability,

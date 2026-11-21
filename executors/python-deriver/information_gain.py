@@ -26,7 +26,7 @@ def derive(evidence):
     # Only observations establish a posterior. The cold-start prior used by
     # information() selects a probe without creating an estimate for it.
     posterior_by_dimension = {
-        key: estimate(key, observations.values(), now, dynamic=True, graded=True)
+        key: estimate(key, observations.values(), now, dynamic=True, graded=True, confidence_weighted=False)
         for key, observations in groups.items()
     }
     ranked = []

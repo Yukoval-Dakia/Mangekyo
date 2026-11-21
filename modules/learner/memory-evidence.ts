@@ -17,6 +17,15 @@ export function instant(value: unknown) {
   return value as string;
 }
 
+// Canonical activity evidence can omit milliseconds or use one to three digits.
+export function evidenceTime(value: string): number {
+  const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,3}))?Z$/.exec(value);
+  if (!match || value.startsWith('0000')) return NaN;
+  const full = `${match[1]}.${(match[2] ?? '').padEnd(3, '0')}Z`;
+  const ms = Date.parse(full);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === full ? ms : NaN;
+}
+
 export function integer(value: unknown, min: number) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) throw new Error('计数或版本无效。');
   return value;
@@ -29,6 +38,10 @@ export function witness(value: unknown) {
   return { id: factId(text(ref.id, 26)), rev: integer(ref.rev, 1) as Revision, accessEpoch: ref.accessEpoch as Tick };
 }
 export type Witness = ReturnType<typeof witness>;
+
+export function isAttemptEvidenceType(type: string) {
+  return type === 'activity.workbookAttempt' || type === 'activity.retentionPosttestSubmission';
+}
 
 export function witnessIdentity({id, rev, accessEpoch}: Witness): string {
   return JSON.stringify([id, rev, accessEpoch]);

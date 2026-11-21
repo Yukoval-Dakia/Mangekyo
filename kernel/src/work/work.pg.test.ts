@@ -2,7 +2,7 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../test/learner-databas
 import { aroundEach, describe, expect, it, vi } from 'vitest';
 import { effectBudgetUsage, EffectBudgetExceeded, EffectIdentityMismatch, recordLocalRead } from './effects.ts';
 import type { Db, DbTransaction } from '../db/types.ts';
-import { commandId, factId, learnerId, type FactId } from '../declarations/ids.ts';
+import { commandId, factId, learnerId, type FactId, type Tick } from '../declarations/ids.ts';
 import type { Json, Outcome } from '../declarations/types.ts';
 import { gatherSnapshot } from '../derivations/gather.ts';
 import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../schema.ts';
@@ -81,6 +81,19 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
       return wakeWaitingWork(tx, tick, slot(key));
     });
   }
+
+  const write = <T>(run: (tx: DbTransaction, tick: Tick) => Promise<T>) =>
+    db.tx({ learner }, tx => tx.withLearnerWrite(tick => run(tx, tick)));
+  const newTodoSource = () => ({ id: newUlid(), revision: 1, accessEpoch: '0' });
+  const todoDefaults = {
+    goal: 'Review', trigger: { kind: 'immediate' }, workerProfile: 'deterministic_compute',
+    refs: [], autonomyTier: 1, budgetCap: 0, settingsRevision: 1, expiresAtMs: 50,
+  } satisfies Omit<TodoInput, 'dedupKey' | 'sourceFactRev'>;
+  const submitTodo = (spec: TodoInput, eligible: Parameters<typeof emitTodo>[4], route?: Parameters<typeof emitTodo>[5]) =>
+    write((tx, tick) => emitTodo(tx, tick, spec, 1, eligible, route));
+  const erase = (root: FactId) => eraseOriginal(db, { learner }, {
+    actor: 'learner', confirmed: true, requestId: commandId(newUlid()), root, expectedRev: 1,
+  }, async () => ({ ids: [root], commandTypes: [] }), async () => {});
 
   async function race(first: (tx: DbTransaction) => Promise<unknown>, second: () => Promise<unknown>) {
     const entered = Promise.withResolvers<number>();
@@ -221,8 +234,7 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
       learner_id: learner, id: root, type: 'test.original', current_rev: 1, created_tick: tick, changed_tick: tick,
     })));
     const effect = await runEffect(db, request, async () => {
-      await eraseOriginal(db, { learner }, { actor: 'learner', confirmed: true, requestId: commandId(newUlid()),
-        root, expectedRev: 1 }, async () => ({ ids: [root], commandTypes: [] }), async () => {});
+      await erase(root);
       return 25;
     }, undefined, undefined, pricing);
     expect(effect.kind).toBe('unknown');
@@ -364,12 +376,11 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
   });
 
   it('dispatches scheduled and enumerated completion Todos through the same deduped outbox', async () => {
-    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
-    const spec: TodoInput = { dedupKey: 'scheduled', goal: 'Prepare review', workerProfile: 'deterministic_compute',
-      trigger: { kind: 'scheduled', fireAtMs: 5 }, refs: [], sourceFactRev: source, autonomyTier: 1,
-      budgetCap: 0, settingsRevision: 1, expiresAtMs: 50 };
+    const source = newTodoSource();
+    const spec: TodoInput = { ...todoDefaults, dedupKey: 'scheduled', goal: 'Prepare review',
+      trigger: { kind: 'scheduled', fireAtMs: 5 }, sourceFactRev: source };
     const eligible = vi.fn(async () => true);
-    const emit = (intent: TodoInput) => db.tx({ learner }, tx => tx.withLearnerWrite(tick => emitTodo(tx, tick, intent, 1, eligible)));
+    const emit = (intent: TodoInput) => submitTodo(intent, eligible);
     const inspect = (id: string) => db.snapshot({ learner }, tx => readTodo(tx, id));
     const sweep = (now: number) => db.tx({ learner }, tx => checkTodoTriggers(tx, now, eligible));
     const root = (await emit(spec))!;
@@ -409,17 +420,14 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
   });
 
   it('isolates and defers routed Todos, fencing a previous dispatch generation', async () => {
-    const write = <T>(fn: (tx: DbTransaction, tick: Parameters<typeof emitTodo>[1]) => Promise<T>) =>
-      db.tx({ learner }, tx => tx.withLearnerWrite(tick => fn(tx, tick)));
-    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const source = newTodoSource();
     const route = { deriver: 'scheduled-v1', erasureBasis: [factId(source.id)], settingsFactId: factId(newUlid()) };
     const deferred = { status: 'not_dispatched', reason: 'unavailable', retryAtMs: 10 } as const;
     const decide = vi.fn(async () => deferred);
     const sweep = (now: number, eligible = async () => true) =>
       db.tx({ learner }, tx => checkTodoTriggers(tx, now, eligible, route.deriver));
-    const root = (await write((tx, tick) => emitTodo(tx, tick, { dedupKey: 'deferred', goal: 'Review',
-      trigger: { kind: 'scheduled', fireAtMs: 5 }, workerProfile: 'deterministic_compute', budgetCap: 0,
-      refs: [], sourceFactRev: source, autonomyTier: 1, settingsRevision: 1, expiresAtMs: 50 }, 1, decide, route)))!;
+    const root = (await submitTodo({ ...todoDefaults, dedupKey: 'deferred', sourceFactRev: source,
+      trigger: { kind: 'scheduled', fireAtMs: 5 } }, decide, route))!;
     expect(await db.tx({ learner }, tx => checkTodoTriggers(tx, 5, async () => false))).toEqual({ advanced: false, nextAt: undefined });
     expect(await db.tx({ learner }, tx => checkTodoTriggers(tx, 5, decide, route.deriver))).toEqual({ advanced: false, nextAt: 10 });
     expect(await sweep(9)).toEqual({ advanced: false, nextAt: 10 });
@@ -439,18 +447,14 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect((await db.query('SELECT generation::text FROM work_outbox ORDER BY generation')).rows)
       .toEqual([{ generation: '1' }, { generation: '2' }]);
     const { rows: [retry] } = await db.query<{ intent_id: string }>("SELECT intent_id FROM work_outbox WHERE generation=2");
-    await eraseOriginal(db, { learner }, { actor: 'learner', confirmed: true, root: factId(source.id),
-      requestId: commandId(newUlid()), expectedRev: 1 }, async () => ({ ids: [factId(source.id)], commandTypes: [] }), async () => {});
+    await erase(factId(source.id));
     expect(await db.snapshot({ learner }, tx => readTodo(tx, root.id))).toMatchObject({ state: 'cancelled' });
     expect(await acknowledgeStartedWork(db, retry!.intent_id, route)).toBeNull();
   });
 
   it('keeps v6 SQL on the same work row while old pinned workers drain', async () => {
     const id = newUlid();
-    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
-    const spec: TodoInput = { dedupKey: 'legacy', goal: 'Review', trigger: { kind: 'immediate' },
-      workerProfile: 'deterministic_compute', budgetCap: 0, refs: [], sourceFactRev: source,
-      autonomyTier: 1, settingsRevision: 1, expiresAtMs: 50 };
+    const spec = { ...todoDefaults, dedupKey: 'legacy', sourceFactRev: newTodoSource() };
     await db.tx({ learner }, tx => tx.withLearnerWrite(async tick => {
       await tx.insert('working_todos', { learner_id: learner, todo_id: id, dedup_key: spec.dedupKey,
         spec: JSON.stringify(spec), state: 'pending', chain_id: id, hop_count: 0, registered_tick: tick });
@@ -474,13 +478,9 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
   });
 
   it('prioritizes admitted todos and fences cancellation after a durable start', async () => {
-    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const source = newTodoSource();
     const emit = (dedupKey: string, priority: 0 | 1, budgetCap: number) =>
-      db.tx({ learner }, tx => tx.withLearnerWrite(tick => emitTodo(tx, tick, {
-        dedupKey, priority, budgetCap, goal: 'Review', trigger: { kind: 'immediate' },
-        workerProfile: 'deterministic_compute', refs: [], sourceFactRev: source, autonomyTier: 1,
-        settingsRevision: 1, expiresAtMs: 50,
-      }, 1, async spec => spec.budgetCap === 0)));
+      submitTodo({ ...todoDefaults, dedupKey, priority, budgetCap, sourceFactRev: source }, async spec => spec.budgetCap === 0);
     const maintenance = (await emit('warm', 1, 0))!;
     const foreground = (await emit('hot', 0, 0))!;
     expect((await emit('over-budget', 1, 5))?.state).toBe('cancelled');
