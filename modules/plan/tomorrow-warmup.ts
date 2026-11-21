@@ -43,17 +43,17 @@ export function planTomorrowWarmup(
     rule.kind === 'lock' && rule.date === day && rule.warmup?.timeZone === timeZone);
   const { rules: admittedRules, warmup } = todayWarmupRules(rules, day, timeZone, input.candidates);
   const candidate = input.candidates.find(item => item.id === warmup);
-  if (activeLock) {
-    if (!candidate?.open) return { ...next, state: 'unavailable' };
-    return { ...next, state: 'locked', activityId: candidate.id, title: candidate.title,
-      minutes: candidate.minutes, open: candidate.open };
-  }
-
   // Use tomorrow's time constraints. The closing device's filters and model ranking
   // do not carry over into the first step.
   const { duration: _duration, contentOrder: _order, ...planning } = input;
   const tomorrow = planToday({ ...planning, now: startsAt, timeZone, mode: 'any', rules: admittedRules });
   if (tomorrow.day !== day) return { ...next, state: 'unavailable' };
+  if (activeLock) {
+    if (!candidate?.open) return { ...next, state: 'unavailable' };
+    if (tomorrow.warmup !== candidate.id) return { ...next, state: 'empty' };
+    return { ...next, state: 'locked', activityId: candidate.id, title: candidate.title,
+      minutes: candidate.minutes, open: candidate.open };
+  }
   if (!tomorrow.items.length) return { ...next, state: 'empty' };
   const eligible = new Map(input.candidates.filter(item => item.minutes <= 3 && item.open)
     .map(item => [item.id, item]));

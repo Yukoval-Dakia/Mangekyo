@@ -207,7 +207,7 @@ export function planToday(input: TodayInput) {
     catalog.set(c.id, c);
   }
   for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
-  const { rules, warmup } = todayWarmupRules(input.rules ?? [], day, input.timeZone, [...catalog.values()]);
+  const { rules, warmup: requestedWarmup } = todayWarmupRules(input.rules ?? [], day, input.timeZone, [...catalog.values()]);
   const { exam, campaign } = examPolicy(rules, day);
   const returning =
     !!input.lastOpenedAt && days(localClock(input.lastOpenedAt, input.timeZone).day, day) >= 21;
@@ -247,7 +247,7 @@ export function planToday(input: TodayInput) {
     preferred = new Set<string>();
   const conflicts: { constraints: string[]; options: string[] }[] = [];
   for (const r of rules) {
-    if (r.kind === 'lock') {
+    if (r.kind === 'lock' && !r.warmup) {
       if (r.date === day) locked.add(r.activityId);
       else otherDayLocks.add(r.activityId);
     }
@@ -265,8 +265,6 @@ export function planToday(input: TodayInput) {
   const protectedItems = [...catalog.values()].filter(
     (c) => locked.has(c.id) || c.state === 'in-progress' || (c.state === 'completed' && c.date === day),
   );
-  const warmupIndex = protectedItems.findIndex((c) => c.id === warmup && c.state !== 'completed');
-  if (warmupIndex > 0) protectedItems.unshift(...protectedItems.splice(warmupIndex, 1));
   const protectedIds = new Set(protectedItems.map((c) => c.id));
   // A refresh with the same return timestamp must still account for submitted probes.
   const checkedTopics = new Set(protectedItems
@@ -290,7 +288,7 @@ export function planToday(input: TodayInput) {
         constraints: [id, '推迟或替换与保护状态冲突'],
         options: ['保留现场', '调整未开始的建议'],
       });
-  const reserved = protectedItems
+  let reserved = protectedItems
     .filter((c) => c.state !== 'completed')
     .reduce((sum, c) => sum + c.minutes, 0);
   // Locked work and unfinished drafts need real time blocks too. Reserve the smallest
@@ -311,6 +309,25 @@ export function planToday(input: TodayInput) {
     }
   }
   const unresolvedLock = [...locked].some((id) => !catalog.has(id));
+  const anchor = requestedWarmup ? catalog.get(requestedWarmup) : undefined;
+  let warmup: string | null = null;
+  if (anchor?.open && !anchor.state && !deferred.has(anchor.id) && (!anchor.goalId || anchor.goalId === activeGoal) &&
+      !unresolvedLock && budgetMinutes >= reserved + schoolMinutes && budgetMinutes > 0) {
+    const heldIndex = protectedItems.findIndex(item => item.id === anchor.id);
+    const window = freeWindows.findIndex(minutes => minutes >= anchor.minutes);
+    if (heldIndex >= 0 || (window >= 0 && reserved + schoolMinutes + anchor.minutes <= budgetMinutes)) {
+      if (heldIndex >= 0) protectedItems.splice(heldIndex, 1);
+      else {
+        freeWindows[window] = freeWindows[window]! - anchor.minutes;
+        reserved += anchor.minutes;
+        pendingProtected.push(anchor);
+        protectedIds.add(anchor.id);
+        locked.add(anchor.id);
+      }
+      protectedItems.unshift(anchor);
+      warmup = anchor.id;
+    }
+  }
   const freeMinutes = unresolvedLock ? 0 : Math.max(0, budgetMinutes - reserved - schoolMinutes);
   const remaining = campaign === 'recovery' ? Math.min(10, freeMinutes) : freeMinutes;
   if (reserved + schoolMinutes > budgetMinutes)
@@ -447,6 +464,7 @@ export function planToday(input: TodayInput) {
     scoreReview,
     activeGoal,
     protectedItems,
+    warmup,
     items,
     shortlist,
     tradeoffs,
