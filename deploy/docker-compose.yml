@@ -1,0 +1,106 @@
+# Mangekyō 私有单机部署 Compose 模板
+#
+# 仅绑定 loopback，守住隐私边界（docs/product-spec.md D06/D07）。
+# 使用前先复制 deploy/.env.example 为 deploy/.env 并填写真实值。
+# 启动：cd deploy && docker compose --env-file .env up -d --build
+# 说明：docs/deploy/self-hosted.md
+
+name: mangekyō
+
+services:
+  postgres:
+    image: postgres:18.7-alpine3.24
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mangekyo}
+      POSTGRES_USER: ${POSTGRES_USER:-mangekyo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/18/docker
+    volumes:
+      - pgdata:/var/lib/postgresql
+    ports:
+      # 仅 loopback；如需远程访问请自行改绑并加固（SSH 隧道优先）。
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  temporal:
+    # Temporal 官方单容器开发/自托管镜像；生产请按 https://docs.temporal.io/production-deployment 评估。
+    image: temporalio/auto-setup:1.32.2
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-mangekyo}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development.yaml
+      ENABLE_ES: "false"
+      SKIP_SCHEMA_SETUP: "false"
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+    volumes:
+      - temporaldata:/var/lib/temporal
+    ports:
+      - "127.0.0.1:${TEMPORAL_PORT:-7423}:7233"
+      - "127.0.0.1:${TEMPORAL_UI_PORT:-8423}:8233"
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+
+  studio:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.studio
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      MANGEKYO_DATABASE_URL: postgresql://${POSTGRES_USER:-mangekyo}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-mangekyo}
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      MANGEKYO_PORT: "4317"
+      MANGEKYO_PROCESS: studio
+      MANGEKYO_INTAKE_DATA_DIR: /data/intake
+      MANGEKYO_SETTINGS_FILE: /data/config/provider.json
+      MANGEKYO_WORKSPACE_ACCESS_FILE: /data/config/workspace-access.json
+      MANGEKYO_TASK_QUEUE: ${MANGEKYO_TASK_QUEUE:-mangekyo-studio}
+      # Python 计算沙箱由宿主机 Docker 提供；挂载 socket 后容器内 docker CLI 可用。
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - intakedata:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:${STUDIO_PORT:-4317}:4317"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4317/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pgdata:
+  temporaldata:
+  intakedata:

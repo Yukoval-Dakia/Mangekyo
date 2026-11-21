@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# Mangekyō PostgreSQL + Blob 一致性备份脚本
+#
+# 产物：带时间戳的归档目录 <backup-root>/<UTC时间戳>/，内含：
+#   - database.dump      pg_dump --format=custom（指定 schema）
+#   - blobs.tar.gz       原件/Blob 目录打包
+#   - manifest.json      schema 版本/迁移水位、文件校验和、备份时间
+#   - SHA256SUMS         全部产物校验和
+#
+# 用法：
+#   scripts/ops/backup.sh --schema mangekyo_studio --blob-dir /data/intake \
+#     --database-url postgresql://user:pass@host:port/db --backup-root /backups
+#
+# 选项：
+#   --schema NAME        PostgreSQL schema（默认 mangekyo_studio）
+#   --database-url URL   PostgreSQL 连接串（必填）
+#   --blob-dir PATH      原件/Blob 根目录（可选；不存在则跳过）
+#   --backup-root PATH   备份根目录（默认 ./backups）
+#   --keep N             保留最近 N 份归档，超出删除最旧（默认 30，0=不清理）
+#   --pg-dump PATH       pg_dump 可执行文件（默认自动探测）
+#
+# 说明：备份包含用户原件与学习记录，受 D06 删除边界约束。
+#       已离线备份的副本在擦除后标为 unverified，需用户自行清理旧离线归档。
+#       备份默认保留 30 天（--keep 30），与 docs/product-spec.md D06 一致。
+
+set -euo pipefail
+
+SCHEMA="mangekyo_studio"
+DATABASE_URL=""
+BLOB_DIR=""
+BACKUP_ROOT="./backups"
+KEEP=30
+PG_DUMP=""
+
+log() { printf '[backup] %s\n' "$*"; }
+err() { printf '[backup] ERROR: %s\n' "$*" >&2; }
+die() { err "$*"; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --schema) SCHEMA="$2"; shift 2 ;;
+    --database-url) DATABASE_URL="$2"; shift 2 ;;
+    --blob-dir) BLOB_DIR="$2"; shift 2 ;;
+    --backup-root) BACKUP_ROOT="$2"; shift 2 ;;
+    --keep) KEEP="$2"; shift 2 ;;
+    --pg-dump) PG_DUMP="$2"; shift 2 ;;
+    -h|--help)
+      sed -n '2,30p' "$0"
+      exit 0
+      ;;
+    *) die "未知参数：$1" ;;
+  esac
+done
+
+[[ -n "${DATABASE_URL}" ]] || die "缺少 --database-url"
+[[ "${SCHEMA}" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die "schema 名无效：${SCHEMA}"
+
+# 选择 pg_dump：优先显式指定，其次 PATH，最后 docker exec mangekyo-dev
+if [[ -z "${PG_DUMP}" ]]; then
+  if command -v pg_dump >/dev/null 2>&1; then
+    PG_DUMP="$(command -v pg_dump)"
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'mangekyo-dev'; then
+    PG_DUMP="docker exec mangekyo-dev pg_dump"
+    log "未找到本机 pg_dump，使用 docker exec mangekyo-dev pg_dump"
+  else
+    die "未找到 pg_dump。请安装 PostgreSQL 客户端或用 --pg-dump 指定。"
+  fi
+fi
+
+TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+ARCHIVE_DIR="${BACKUP_ROOT}/${TIMESTAMP}"
+mkdir -p "${ARCHIVE_DIR}"
+log "备份目录：${ARCHIVE_DIR}"
+
+# 解析 DATABASE_URL 组件（用于 docker exec 与 psql）
+parse_db_url() {
+  python3 -c "
+import urllib.parse, sys
+u = urllib.parse.urlparse('${DATABASE_URL}')
+print(u.username or '')
+print(u.password or '')
+print(u.path.lstrip('/') or '')
+print(u.hostname or '')
+print(u.port or 5432)
+" 2>/dev/null || true
+}
+
+# 1. PostgreSQL 自定义格式 dump（指定 schema）
+DUMP_FILE="${ARCHIVE_DIR}/database.dump"
+log "导出 schema ${SCHEMA} …"
+if [[ "${PG_DUMP}" == docker* ]]; then
+  db_user="$(echo "${DATABASE_URL}" | sed -E 's|.*://([^:]+):.*|\1|')"
+  db_pass="$(echo "${DATABASE_URL}" | sed -E 's|.*://[^:]+:([^@]+)@.*|\1|')"
+  db_name="$(echo "${DATABASE_URL}" | sed -E 's|.*/([^/?]+).*|\1|')"
+  docker exec -e PGPASSWORD="${db_pass}" mangekyo-dev \
+    pg_dump --format=custom --schema="${SCHEMA}" --no-owner --no-privileges \
+    -U "${db_user}" -d "${db_name}" > "${DUMP_FILE}"
+else
+  "${PG_DUMP}" --format=custom --schema="${SCHEMA}" --no-owner --no-privileges \
+    "${DATABASE_URL}" > "${DUMP_FILE}"
+fi
+[[ -s "${DUMP_FILE}" ]] || die "pg_dump 输出为空"
+log "数据库 dump 完成：$(du -h "${DUMP_FILE}" | cut -f1)"
+
+# 2. Blob/原件目录打包
+BLOB_ARCHIVE=""
+if [[ -n "${BLOB_DIR}" && -d "${BLOB_DIR}" ]]; then
+  BLOB_ARCHIVE="${ARCHIVE_DIR}/blobs.tar.gz"
+  log "打包原件目录 ${BLOB_DIR} …"
+  # 打包目录内容而非目录本身，恢复时解压到目标目录。
+  tar -czf "${BLOB_ARCHIVE}" -C "${BLOB_DIR}" .
+  log "Blob 打包完成：$(du -h "${BLOB_ARCHIVE}" | cut -f1)"
+elif [[ -n "${BLOB_DIR}" ]]; then
+  log "警告：blob 目录不存在，跳过：${BLOB_DIR}"
+fi
+
+# 3. 收集 schema 版本/迁移水位
+# 优先本机 psql；否则用 docker exec mangekyo-dev psql（与 pg_dump 探测一致）。
+SCHEMA_VERSION=""
+if command -v psql >/dev/null 2>&1; then
+  SCHEMA_VERSION="$(psql "${DATABASE_URL}" -tAc "SELECT max(version) FROM ${SCHEMA}.kernel_schema_migrations" 2>/dev/null || true)"
+elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'mangekyo-dev'; then
+  db_user="$(echo "${DATABASE_URL}" | sed -E 's|.*://([^:]+):.*|\1|')"
+  db_pass="$(echo "${DATABASE_URL}" | sed -E 's|.*://[^:]+:([^@]+)@.*|\1|')"
+  db_name="$(echo "${DATABASE_URL}" | sed -E 's|.*/([^/?]+).*|\1|')"
+  SCHEMA_VERSION="$(docker exec -e PGPASSWORD="${db_pass}" mangekyo-dev \
+    psql -tAc "SELECT max(version) FROM ${SCHEMA}.kernel_schema_migrations" \
+    -U "${db_user}" -d "${db_name}" 2>/dev/null || true)"
+fi
+MIGRATION_WATERMARK="${SCHEMA_VERSION}"
+
+# 4. 生成 manifest.json
+MANIFEST="${ARCHIVE_DIR}/manifest.json"
+BLOB_JSON=""
+if [[ -n "${BLOB_ARCHIVE}" ]]; then
+  BLOB_JSON=", \"blobs.tar.gz\": {\"sha256\": \"$(shasum -a 256 "${BLOB_ARCHIVE}" | cut -d' ' -f1)\", \"size\": $(stat -f%z "${BLOB_ARCHIVE}" 2>/dev/null || stat -c%s "${BLOB_ARCHIVE}")}"
+fi
+cat > "${MANIFEST}" << MANIFEST_EOF
+{
+  "format": "mangekyo-backup-v1",
+  "createdAt": "${TIMESTAMP}",
+  "schema": "${SCHEMA}",
+  "databaseUrl": "${DATABASE_URL%%@*}@***",
+  "kernelSchemaVersion": ${SCHEMA_VERSION:-null},
+  "migrationWatermark": ${MIGRATION_WATERMARK:-null},
+  "files": {
+    "database.dump": {
+      "sha256": "$(shasum -a 256 "${DUMP_FILE}" | cut -d' ' -f1)",
+      "size": $(stat -f%z "${DUMP_FILE}" 2>/dev/null || stat -c%s "${DUMP_FILE}")
+    }${BLOB_JSON}
+  },
+  "blobDir": "${BLOB_DIR:-}",
+  "retention": {
+    "keep": ${KEEP},
+    "note": "备份含用户原件与学习记录；已离线备份的副本在擦除后标为 unverified，需用户自行清理旧离线归档（D06）"
+  }
+}
+MANIFEST_EOF
+
+# 5. SHA256SUMS
+cd "${ARCHIVE_DIR}"
+shasum -a 256 database.dump $(if [[ -f blobs.tar.gz ]]; then echo blobs.tar.gz; fi) manifest.json > SHA256SUMS
+cd - >/dev/null
+
+log "备份完成：${ARCHIVE_DIR}"
+log "  文件：$(ls -1 "${ARCHIVE_DIR}" | tr '\n' ' ')"
+
+# 6. 保留策略
+if [[ "${KEEP}" -gt 0 ]]; then
+  mapfile -t archives < <(ls -1dt "${BACKUP_ROOT}"/*/ 2>/dev/null | tail -n +$((KEEP + 1)))
+  for old in "${archives[@]:-}"; do
+    [[ -n "${old}" ]] || continue
+    log "清理过期备份：${old}"
+    node -e "import('node:fs').then(fs=>fs.rmSync(process.argv[1],{recursive:true,force:true}))" "${old}"
+  done
+fi
