@@ -8,3 +8,4 @@ export * from './correction-check.ts';
 export { liftAssessment, reconciledLiftAssessment } from './intervention-lift-evidence.ts';
 export { flashCheckPriority, submissionConfidencePriority, type FlashCheckPriority } from './flash-check.ts';
 export { liftPurpose, runSealedWeeklyLift, weeklyLiftWork, type ReopenLiftCohort } from './weekly-lift.ts';
+export { projectSessionClosure, SessionClosureConflict, type SessionClosureEvidence, type SessionClosureScope } from './session-closure.ts';

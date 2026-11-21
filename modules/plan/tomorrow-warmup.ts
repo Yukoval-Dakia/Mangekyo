@@ -49,6 +49,7 @@ export function planTomorrowWarmup(
   const { duration: _duration, contentOrder: _order, ...planning } = input;
   const tomorrow = planToday({ ...planning, now: startsAt, timeZone, mode: 'any', rules: admittedRules });
   if (tomorrow.day !== day) return { ...next, state: 'unavailable' };
+  if (!tomorrow.items.length) return { ...next, state: 'empty' };
   const eligible = new Map(input.candidates.filter(item => item.minutes <= 3 && item.open)
     .map(item => [item.id, item]));
   for (const id of [...tomorrow.items.map(({ candidate }) => candidate.id), ...tomorrow.shortlist]) {
