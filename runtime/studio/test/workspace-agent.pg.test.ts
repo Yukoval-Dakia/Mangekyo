@@ -1,4 +1,5 @@
 import {expect,it} from 'vitest';
+import type {CanonicalEvidenceSliceV1} from '../../../kernel/src/pipeline-contracts.ts';
 import {commandId, learnerId} from '../../../kernel/src/declarations/ids.ts';
 import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
 import {recordLocalRead} from '../../../kernel/src/work/effects.ts';
@@ -431,6 +432,24 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     if (!packet.ok) throw new Error('Missing whole-exam evidence');
     expect(packet.values[0]).not.toHaveProperty('events.0.exam_pacing.score');
     expect(JSON.stringify(packet)).not.toMatch(/内部评分规则标记|路程除以时间/u);
+    const pacingAttempt = firstPaced.attempts[0]!;
+    const pacingGrant = await access.setTeaching(pacingAttempt.id,{enabled:true,expectedRev:1});
+    const processReads = pythonReads([{method:'evidence_slice',args:{exam_pacing_items:true,paper_ids:[privatePaper.id]}}]);
+    if (!processReads) throw new Error('逐题过程 SDK 读取尚不可用。');
+    const process = await sdk.preparePython!(processReads,2);
+    if (!process.ok) throw new Error(JSON.stringify(process));
+    const events = (process.values[0] as CanonicalEvidenceSliceV1).events.filter(event => event.exam_pacing_item);
+    expect(events).toMatchObject([{occurred_at:pacingAttempt.submittedAt,help_level:'unknown',claim_ids:[],
+      effective_duration_ms:0,exam_pacing_item:{attempt_ref:{id:pacingAttempt.id,rev:pacingGrant.rev},
+        paper_key:JSON.stringify([privatePaper.id,privatePaper.revision]),item_id:'q1',position:1,item_count:2,
+        skipped:true,returned:true}}]);
     allowPaper = false;
     expect(await sdk.preparePython!(reads!,1)).toMatchObject({ok:false,code:'access_revoked'});
+    expect(await sdk.preparePython!(processReads,2)).toMatchObject({ok:false,code:'access_revoked'});
+    allowPaper = true;
+    await access.setTeaching(pacingAttempt.id,{enabled:false,expectedRev:pacingGrant.rev});
+    expect(await sdk.preparePython!(processReads,2)).toMatchObject({ok:false,code:'access_revoked'});
+    const fresh = await sdk.preparePython!(processReads,3);
+    if (!fresh.ok) throw new Error(JSON.stringify(fresh));
+    expect((fresh.values[0] as CanonicalEvidenceSliceV1).events.every(event => !event.exam_pacing_item)).toBe(true);
   }));

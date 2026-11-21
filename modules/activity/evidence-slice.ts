@@ -39,6 +39,26 @@ export function workbookExamPacingEvent(
   } as const;
 }
 
+export function workbookExamPacingItems(ref: FactRef, attempt: WorkbookAttempt, frozen: AssessmentRevisionRef): EvidenceEventV1[] {
+  if (!attempt.pacing || attempt.paperRev !== frozen.rev || attempt.paperId !== frozen.id) return [];
+  const paperKey = JSON.stringify([frozen.id, frozen.rev]);
+  const observed = new Map(attempt.pacing.items.map(item => [item.questionId, item]));
+  return attempt.paper.questions.flatMap(({ id }, index) => {
+    const item = observed.get(id);
+    if (!item) return [];
+    const anchor = { attempt_ref: { id: ref.id, rev: ref.rev }, paper_key: paperKey, item_id: id,
+      position: index + 1, item_count: attempt.paper.questions.length };
+    return [{
+      ref: JSON.stringify([ref.id, id]), rev: ref.rev, occurred_at: attempt.submittedAt,
+      concept_ids: [], item_novelty: 'same', help_level: 'unknown', outcome: 'unknown', claim_ids: [],
+      effective_duration_ms: item.effectiveDurationMs,
+      exam_pacing_item: item.skipped ? {
+        ...anchor, skipped: true, ...(item.returned ? { returned: true } : {}),
+      } : anchor,
+    }];
+  });
+}
+
 export function activityEvidenceSlice(
   watermark: Tick,
   asOf: string,
