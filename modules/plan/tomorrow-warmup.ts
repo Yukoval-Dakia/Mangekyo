@@ -31,6 +31,10 @@ export function tomorrowWarmupDay(now: string, timeZone: string) {
   return { day: clock.format(high), timeZone: zone, startsAt: new Date(high).toISOString() };
 }
 
+function warmupOpen(open: { kind: string; id: string; rev: number } | null | undefined): WarmupOpen | null {
+  return open && (open.kind === 'activity' || open.kind === 'pack') ? { kind: open.kind, id: open.id, rev: open.rev } : null;
+}
+
 export function planTomorrowWarmup(
   target: ReturnType<typeof tomorrowWarmupDay>, input: TodayInput | null,
 ): TomorrowWarmup {
@@ -49,18 +53,20 @@ export function planTomorrowWarmup(
   const tomorrow = planToday({ ...planning, now: startsAt, timeZone, mode: 'any', rules: admittedRules });
   if (tomorrow.day !== day) return { ...next, state: 'unavailable' };
   if (activeLock) {
-    if (!candidate?.open) return { ...next, state: 'unavailable' };
+    const open = warmupOpen(candidate?.open);
+    if (!candidate || !open) return { ...next, state: 'unavailable' };
     if (tomorrow.warmup !== candidate.id) return { ...next, state: 'empty' };
     return { ...next, state: 'locked', activityId: candidate.id, title: candidate.title,
-      minutes: candidate.minutes, open: candidate.open };
+      minutes: candidate.minutes, open };
   }
   if (!tomorrow.items.length) return { ...next, state: 'empty' };
-  const eligible = new Map(input.candidates.filter(item => item.minutes <= 3 && item.open)
+  const eligible = new Map(input.candidates.filter(item => item.minutes <= 3 && warmupOpen(item.open))
     .map(item => [item.id, item]));
   for (const id of [...tomorrow.items.map(({ candidate }) => candidate.id), ...tomorrow.shortlist]) {
     const candidate = eligible.get(id);
-    if (candidate?.open) return { ...next, state: 'suggested', activityId: id, title: candidate.title,
-      minutes: candidate.minutes, open: candidate.open };
+    const open = warmupOpen(candidate?.open);
+    if (candidate && open) return { ...next, state: 'suggested', activityId: id, title: candidate.title,
+      minutes: candidate.minutes, open };
   }
   return { ...next, state: 'empty' };
 }

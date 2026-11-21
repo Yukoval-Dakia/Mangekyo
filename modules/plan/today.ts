@@ -1,11 +1,14 @@
 import type { CanonicalEvidenceSliceV1 } from '@mangekyo/kernel';
 import type { GoalStatus } from './goal-values.ts';
+import { freshMaterialSummary, freshMaterialWindowDays, type FreshMaterialSummary } from './fresh-materials.ts';
 import { pendingCorrectionSummary, type PendingCorrectionSummary } from './pending-corrections.ts';
 import { todayWarmupRules, type Campaign, type PlanRule } from './rules.ts';
 import { examForecast, reviewExamScore, type ExamScoreObservation, type FrozenExamForecast } from './exam-forecast.ts';
 import { packCandidates } from './offline-pack.ts';
 import { instant, integer, oneOf } from './validation.ts';
 
+export { freshMaterialWindowDays, projectFreshMaterialCandidates } from './fresh-materials.ts';
+export type { FreshMaterialSource, FreshMaterialSummary } from './fresh-materials.ts';
 export { projectPendingCorrectionCandidates } from './pending-corrections.ts';
 export type { PendingCorrectionItem, PendingCorrectionSource, PendingCorrectionSummary } from './pending-corrections.ts';
 
@@ -21,7 +24,7 @@ export type PlanCandidate = {
   minutes: number;
   durationBasis: string;
   input: 'tap' | 'voice' | 'write';
-  open: { kind: 'activity' | 'pack'; id: string; rev: number } | null;
+  open: { kind: 'activity' | 'pack' | 'material'; id: string; rev: number } | null;
   reason: string;
   evidence: readonly string[];
   delayImpact: string;
@@ -41,6 +44,9 @@ export type PlanCandidate = {
   // Uncorrected wrong or partially-correct items from the latest submitted
   // attempt on this frozen paper; the candidate retires once all are corrected.
   pendingCorrection?: PendingCorrectionSummary;
+  // Newly saved learner material with no derived practice/classroom/companion
+  // session yet; retires automatically once an activity is derived from it.
+  freshMaterial?: FreshMaterialSummary;
   // From authorized content/issuance witnesses in the same planning snapshot.
   examPrep?:
     | { kind: 'archetype'; coveredQuestionCount: number }
@@ -254,6 +260,7 @@ export function planToday(input: TodayInput) {
         throw new Error('预测或信息量超出范围。');
     if (c.examPrep?.kind === 'archetype') integer(c.examPrep.coveredQuestionCount, 1, Number.MAX_SAFE_INTEGER);
     if (c.pendingCorrection !== undefined) pendingCorrectionSummary(c.pendingCorrection);
+    if (c.freshMaterial !== undefined) freshMaterialSummary(c.freshMaterial);
     catalog.set(c.id, c);
   }
   for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
@@ -441,6 +448,15 @@ export function planToday(input: TodayInput) {
       score += 36;
       why.push('已提交的作答还有未订正的错题或部分正确，先补上再学新内容。');
     }
+    if (c.freshMaterial) {
+      const hasRedPen = (c.freshMaterial.redPenErrorCount ?? 0) > 0;
+      const ageDays = Math.max(0, days(c.freshMaterial.savedAt, input.now));
+      const recency = Math.max(0, 1 - ageDays / freshMaterialWindowDays);
+      score += (hasRedPen ? 26 : 20) + recency;
+      why.push(hasRedPen
+        ? '刚交入的原件带有错题标记，优先从这里切入复盘。'
+        : '刚交入的真实材料尚未衍生练习或对话，优先从这里接着学。');
+    }
     if (c.goalId) {
       score += 12;
       why.push('对应当前学习目标。');
@@ -502,7 +518,7 @@ export function planToday(input: TodayInput) {
     (p) => p.candidate.minutes <= remaining && freeWindows.some((w) => p.candidate.minutes <= w),
   );
   const prepared = feasible.filter(
-    (p) => p.candidate.open?.kind === 'activity' || preferred.has(p.candidate.id),
+    (p) => p.candidate.open?.kind === 'activity' || p.candidate.open?.kind === 'material' || preferred.has(p.candidate.id),
   );
   const slots = campaign === 'recovery' ? 1 : probing ? returnProbeLimit : 3;
   const freeSlots = Math.max(0, slots - pendingProtected.length);

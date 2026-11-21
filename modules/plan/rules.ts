@@ -99,13 +99,13 @@ export function warmupTimeZone(value: unknown) {
   return zone;
 }
 
-export function sameWarmupOpen(a: WarmupOpen | null, b: WarmupOpen) {
+export function sameWarmupOpen(a: { kind: string; id: string; rev: number } | null, b: WarmupOpen) {
   return a !== null && a.kind === b.kind && a.id === b.id && a.rev === b.rev;
 }
 
 export function todayWarmupRules(
   rules: readonly PlanRule[], day: string, timeZone: string,
-  candidates: readonly { id: string; open: WarmupOpen | null; refused?: boolean; minutes?: number }[],
+  candidates: readonly { id: string; open: { kind: string; id: string; rev: number } | null; refused?: boolean; minutes?: number }[],
 ): { rules: PlanRule[]; warmup: string | null } {
   const ordinary: PlanRule[] = [];
   let selected: Extract<PlanRule, { kind: 'lock' }> | null = null;

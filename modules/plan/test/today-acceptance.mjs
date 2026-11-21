@@ -7,7 +7,9 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learn
 import { openOrganizer } from '../../../runtime/studio/organizer.ts';
 import { studioLearner } from '../../../runtime/studio/identity.ts';
 import { loadStudioTestModule } from '../../../runtime/studio/test/modules.ts';
-import { applyCandidateInformation, planToday, projectPendingCorrectionCandidates, sessionRule } from '../today.ts';
+import {
+  applyCandidateInformation, planToday, projectFreshMaterialCandidates, projectPendingCorrectionCandidates, sessionRule,
+} from '../today.ts';
 import { checkPack } from '../offline-pack.ts';
 
 const base = {now:'2026-11-18T11:00:00Z', timeZone:'Asia/Tokyo', constraints:{budget_min:20,locks:['fixed'],deadlines:[]}};
@@ -80,6 +82,48 @@ test('已提交试卷的待订正题项自动流向今天并尊重主权与闭�
   assert.throws(()=>planToday({...base,candidates:[make('x',5,0,{pendingCorrection:{incorrectCount:0,partialCount:0,itemIds:['q'],attemptId:'a',attemptRev:1}})]}),/订正汇总为空/);
   assert.throws(()=>planToday({...base,candidates:[make('x',5,0,{pendingCorrection:{incorrectCount:2,partialCount:0,itemIds:['q1','q1'],attemptId:'a',attemptRev:1}})]}),/汇总不一致/);
   assert.throws(()=>planToday({...base,candidates:[make('x',5,0,{pendingCorrection:{incorrectCount:1,partialCount:0,itemIds:['q1','q2'],attemptId:'a',attemptRev:1}})]}),/汇总不一致/);
+});
+
+test('新交入真实材料自动浮现今天、低于待订正高于示例包并尊重退场与主权',()=>{
+  const fresh = projectFreshMaterialCandidates([
+    {id:'mat-plain',rev:1,title:'高二物理电磁感应卷',savedAt:'2026-11-18T10:00:00Z',hasDerivedActivity:false,questionCount:8},
+    {id:'mat-red',rev:2,title:'高二数学期中错题卷',savedAt:'2026-11-18T09:00:00Z',hasDerivedActivity:false,questionCount:10,redPenErrorCount:2},
+    {id:'mat-red',rev:1,title:'旧版',savedAt:'2026-11-18T08:00:00Z',hasDerivedActivity:false},
+    {id:'mat-derived',rev:1,title:'已衍生练习卷',savedAt:'2026-11-18T10:30:00Z',hasDerivedActivity:true},
+    {id:'mat-stale',rev:1,title:'超窗旧材料',savedAt:'2026-11-03T10:59:59Z',hasDerivedActivity:false},
+    {id:'mat-future',rev:1,title:'未来时间材料',savedAt:'2026-11-18T12:00:00Z',hasDerivedActivity:false},
+  ], base.now);
+  assert.deepEqual(fresh.map(c=>c.id),['material:mat-plain@1','material:mat-red@2']);
+  const [plain, red] = fresh;
+  assert.deepEqual([plain.title,plain.open,plain.minutes,plain.evidence],
+    ['梳理刚交入的《高二物理电磁感应卷》',{kind:'material',id:'mat-plain',rev:1},8,['material:mat-plain@1']]);
+  assert.deepEqual([red.title,red.open,red.minutes],
+    ['复盘刚拍《高二数学期中错题卷》里的 2 道错题',{kind:'material',id:'mat-red',rev:2},8]);
+  // 预算未知(默认 15 分钟)下真实新材料取代静态示例包，且带红笔错题优先于普通新材料。
+  const defaultToday = planToday({...base,constraints:{...noLocks,budget_min:null},candidates:fresh});
+  assert.deepEqual(ids(defaultToday),['material:mat-red@2']);
+  assert.ok(defaultToday.items.every(i=>!i.candidate.id.startsWith('pack/')));
+  assert.match(defaultToday.items[0].why.join(' '),/错题标记/);
+  // 优先级严格：pendingCorrection > freshMaterial(红笔) > freshMaterial(普通) > pack/*。
+  const [correction] = projectPendingCorrectionCandidates([pendingSource('paper-c')]);
+  const ranked = planToday({...base,constraints:{...noLocks,budget_min:30},candidates:[correction,...fresh]});
+  assert.deepEqual(ids(ranked),['correction:paper-c@1','material:mat-red@2','material:mat-plain@1']);
+  // 全部衍生后自动退场回落示例包；defer/replace/rest 主权完整生效。
+  const retired = projectFreshMaterialCandidates([
+    {id:'mat-plain',rev:1,title:'高二物理电磁感应卷',savedAt:'2026-11-18T10:00:00Z',hasDerivedActivity:true},
+  ], base.now);
+  assert.equal(retired.length,0);
+  assert.ok(ids(planToday({...base,constraints:noLocks,candidates:retired})).every(id=>id.startsWith('pack/')));
+  assert.ok(!ids(planToday({...base,constraints:noLocks,candidates:fresh,
+    rules:[{kind:'defer',activityId:'material:mat-red@2',until:'2026-11-20'}]})).includes('material:mat-red@2'));
+  assert.deepEqual(ids(planToday({...base,constraints:noLocks,candidates:fresh,
+    rules:[{kind:'replace',activityId:'material:mat-red@2',replacementId:'material:mat-plain@1',date:'2026-11-18'}]})),
+    ['material:mat-plain@1']);
+  assert.equal(ids(planToday({...base,constraints:noLocks,candidates:fresh,rules:[{kind:'rest',date:'2026-11-18'}]})).length,0);
+  // 非法输入与非法摘要被拒绝。
+  assert.throws(()=>projectFreshMaterialCandidates([{id:'m',rev:0,title:'x',savedAt:base.now,hasDerivedActivity:false}],base.now),/超出范围/);
+  assert.throws(()=>projectFreshMaterialCandidates([{id:'m',rev:1,title:'x',savedAt:base.now,hasDerivedActivity:'no'}],base.now),/衍生状态无效/);
+  assert.throws(()=>planToday({...base,candidates:[make('x',5,0,{freshMaterial:{savedAt:'bad'}})]}),/需要带时区的时间/);
 });
 
 test('固定周三晚，明日作业取消时仅重排未开始项；跨日、长假和三战役',()=>{
