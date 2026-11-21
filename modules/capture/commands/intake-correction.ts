@@ -1,4 +1,5 @@
 import { defineCommand } from '@mangekyo/kernel';
+import materialFact from '@mangekyo/module-content/facts/material';
 import { correctIntakeCommand, correctIntakeSchema, materialPreview, intakeDocument } from '../intake-values.ts';
 
 export default defineCommand({
@@ -10,6 +11,7 @@ export default defineCommand({
     const document = await ctx.read.fact(input.intakeId, { mode: 'following' });
     if (document.ref.rev !== input.expectedRev) throw new Error('原文版本已经变更。');
     const archived = intakeDocument(document.value);
+    const saved = materialFact.schema.parse(material.value);
     if (archived.materialId.toString() !== input.materialId.toString()) {
       throw new Error('材料标识与交入记录不匹配。');
     }
@@ -28,7 +30,8 @@ export default defineCommand({
         kind: 'correct' as const,
         id: input.materialId,
         expectedRev: material.ref.rev,
-        data: { title: archived.title, text: materialPreview(input.text).text },
+        data: { title: archived.title, text: materialPreview(input.text).text,
+          ...(saved.savedAt === undefined ? {} : { savedAt: saved.savedAt }) },
       },
       {
         kind: 'correct' as const,

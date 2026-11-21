@@ -412,7 +412,11 @@ export function captureIntakeInput(input: unknown): CaptureIntakeInput {
   const materialId = factId(text(value.materialId, '材料标识', 26));
   const intakeId = factId(text(value.intakeId, '交入记录标识', 26));
   const document = intakeDocument({ ...value, materialId });
-  const material = materialFact.schema.parse({ title: document.title, text: intakePreview(document.extraction) });
+  const material = materialFact.schema.parse({
+    title: document.title,
+    text: intakePreview(document.extraction),
+    ...(value.savedAt === undefined ? {} : { savedAt: value.savedAt }),
+  });
   return { materialId, intakeId, data: { material, document } };
 }
 

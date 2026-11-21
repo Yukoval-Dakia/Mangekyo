@@ -1,5 +1,6 @@
 import type { FactSnapshot } from '@mangekyo/kernel';
-import { studyRecordFact } from './values.ts';
+import { studyRecordFact, studyTurn, studyTurnType } from './values.ts';
+import { materialType, textMaterial } from './library-values.ts';
 import { workbookCorrection, workbookCorrectionType } from './workbook-correction.ts';
 import {
   workbookAttempt,
@@ -136,4 +137,34 @@ export function collectPendingCorrectionSources(facts: readonly FactSnapshot[]):
     });
   }
   return rows;
+}
+
+export type FreshMaterialSource = {
+  readonly id: string;
+  readonly rev: number;
+  readonly title: string;
+  readonly savedAt: string;
+  readonly hasDerivedActivity: boolean;
+};
+
+export function collectFreshMaterialSources(facts: readonly FactSnapshot[]): FreshMaterialSource[] {
+  const sources = new Map<string, Omit<FreshMaterialSource, 'hasDerivedActivity'>>();
+  const derived = new Set<string>();
+  for (const fact of facts) {
+    if (fact.type === materialType) {
+      const material = textMaterial(fact.value);
+      if (material.savedAt !== undefined)
+        sources.set(fact.ref.id, { id: fact.ref.id, rev: fact.ref.rev, title: material.title, savedAt: material.savedAt });
+    } else if (fact.type === workbookPaperType) {
+      const paper = workbookPaper(fact.value);
+      if (paper.materialId !== null) derived.add(paper.materialId);
+      for (const question of paper.questions)
+        if (question.sourceQuestionRef?.id !== undefined) derived.add(question.sourceQuestionRef.id);
+    } else if (fact.type === studyTurnType) {
+      const turn = studyTurn(fact.value);
+      if (turn.attachment !== undefined) derived.add(turn.attachment.id);
+      if (turn.currentObject !== undefined) derived.add(turn.currentObject.id);
+    }
+  }
+  return [...sources].map(([id, source]) => ({ ...source, hasDerivedActivity: derived.has(id) }));
 }

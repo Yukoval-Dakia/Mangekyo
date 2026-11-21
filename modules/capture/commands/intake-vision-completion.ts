@@ -1,4 +1,5 @@
 import { defineCommand, factId, type Revision } from '@mangekyo/kernel';
+import materialFact from '@mangekyo/module-content/facts/material';
 import {
   completeVisionIntakeCommand,
   intakeDocument,
@@ -41,12 +42,14 @@ export default defineCommand({
     if (archived.requestedExtraction !== 'vision_llm' || archived.extraction.status !== 'pending') return [];
     const material = await ctx.read.fact(archived.materialId, { mode: 'following' });
     if (material.type !== materialType || material.ref.rev !== expectedMaterialRev) return [];
+    const saved = materialFact.schema.parse(material.value);
     return [
       {
         kind: 'correct',
         id: material.ref.id,
         expectedRev: material.ref.rev,
-        data: { title: archived.title, text: intakePreview(extraction) },
+        data: { title: archived.title, text: intakePreview(extraction),
+          ...(saved.savedAt === undefined ? {} : { savedAt: saved.savedAt }) },
       },
       {
         kind: 'correct',
