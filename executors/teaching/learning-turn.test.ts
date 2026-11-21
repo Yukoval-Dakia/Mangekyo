@@ -152,6 +152,29 @@ it('golden find_tools discovers and executes the four hosted tools on demand', a
   expect(executed).toEqual(onDemandTools);
 });
 
+it('resolves a loose find_tools hint to the resident write tool and caps empty discovery', async () => {
+  const executed: string[] = [];
+  const host = binding(async name => {
+    executed.push(name);
+    return {ok:true,data:{status:'saved'}};
+  });
+  const replies: unknown[] = [];
+  provider((body, round) => {
+    if (round === 0) return [['find_tools', {query:'把偏好记进长期记忆'}]];
+    if (round === 1) {
+      replies.push(JSON.parse(body.messages.at(-1)!.content));
+      return [['save_belief', {category:'directive', action:'remember', kind:'preference', quote_excerpt:'请核对学习记录。'}]];
+    }
+    if (round === 2) return [['find_tools', {query:'zzzqqq'}], ['find_tools', {query:'zzzwww'}]];
+    replies.push(JSON.parse(body.messages.at(-1)!.content));
+    return undefined;
+  });
+  await turn(host);
+  expect(replies[0]).toMatchObject({ok:true, data:{tool:'save_belief', available:true}});
+  expect(replies.at(-1)).toMatchObject({ok:false, code:'limit_exceeded'});
+  expect(executed).toEqual(['save_belief']);
+});
+
 it('golden run_calculation prepares the declared read and replays the stored calculation', async () => {
   const host = binding(async () => { throw new Error('Expected an executor-owned calculation'); });
   const prepare = vi.spyOn(host,'preparePython');
