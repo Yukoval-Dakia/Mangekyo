@@ -298,7 +298,7 @@ function itemEventRole(event: ItemEvent, submittedAt: number, scaleKey: string |
   if (Number(process) + Number(estimate) + Number(formal) !== 1) return undefined;
   if (process && at <= submittedAt) return 'process';
   if (estimate && at <= submittedAt) return 'estimate';
-  if (formal && at >= submittedAt && scaleKey && item.scale_key === scaleKey) return 'formal';
+  if (formal && at >= submittedAt && key(scaleKey) && item.scale_key === scaleKey) return 'formal';
   return undefined;
 }
 
@@ -316,9 +316,18 @@ function timeValueState(process: ItemEvent, elapsed: number, formal?: ItemEvent 
 }
 
 function timeValueSummary(items: readonly TimeValueItem[]): string {
+  const labels = [
+    ['steady', '拿满分'], ['fast-slip', '低耗时失分'],
+    ['time-sink', '超估时失分'], ['recovered-skip', '回访得分'],
+  ] as const;
   const count = (state: TimeValueState) => items.filter(item => item.state === state).length;
-  return `本卷有 ${count('steady')} 题拿满分、${count('fast-slip')} 题低耗时失分、${count('time-sink')} 题超估时失分、` +
-    `${count('recovered-skip')} 题回访得分，另有 ${count('unknown')} 题节奏未确认。`;
+  const observations = labels.flatMap(([state, label]) => {
+    const n = count(state);
+    return n ? [`${n} 题${label}`] : [];
+  });
+  if (!observations.length) return '本卷各题的节奏证据仍不足。';
+  const unknown = count('unknown');
+  return `本卷有 ${observations.join('、')}${unknown ? `，另有 ${unknown} 题节奏未确认。` : '。'}`;
 }
 
 function expectedTimeValue({slice, attempt_ref}: ExamTimeValueInput): ExamTimeValueResult {

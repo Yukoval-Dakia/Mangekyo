@@ -320,12 +320,18 @@ def _item_state(process, formal, estimate):
 
 
 def _time_value_summary(items):
-    steady, slip, sink, recovered, unknown = (
-        sum(row["state"] == state for row in items)
-        for state in ("steady", "fast-slip", "time-sink", "recovered-skip", "unknown")
-    )
-    return (f"本卷有 {steady} 题拿满分、{slip} 题低耗时失分、{sink} 题超估时失分、"
-            f"{recovered} 题回访得分，另有 {unknown} 题节奏未确认。")
+    labels = (("steady", "拿满分"), ("fast-slip", "低耗时失分"),
+              ("time-sink", "超估时失分"), ("recovered-skip", "回访得分"))
+    observations = []
+    for state, label in labels:
+        count = sum(row["state"] == state for row in items)
+        if count:
+            observations.append(f"{count} 题{label}")
+    if not observations:
+        return "本卷各题的节奏证据仍不足。"
+    unknown = sum(row["state"] == "unknown" for row in items)
+    suffix = f"，另有 {unknown} 题节奏未确认。" if unknown else "。"
+    return "本卷有 " + "、".join(observations) + suffix
 
 
 def _item_role(event, submitted_at, scale_key):
@@ -340,7 +346,7 @@ def _item_role(event, submitted_at, scale_key):
         return "process"
     if has_estimate and time <= submitted_at:
         return "estimate"
-    if has_score and time >= submitted_at and scale_key and item["scale_key"] == scale_key:
+    if has_score and time >= submitted_at and _key(scale_key) and item["scale_key"] == scale_key:
         return "formal"
     return None
 
