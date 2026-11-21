@@ -6,13 +6,17 @@ import { notionId, notionRecord, notionSelectionId, notionSourceId, notionSource
 import { notionRetainedPurposes, notionSelectionWitness, notionRoot, readNotionSelection, selectionAllows,
   type NotionFactReader, type NotionReadOptions, type NotionSelection } from './notion-selection.ts';
 
-export { openCurrentNotionBlock, openPinnedNotionBlock, planNotionBlockWork, notionBlockWitness,
-  type NotionBlockWitness, type NotionBlockPurpose } from './notion-blocks.ts';
+export { openCurrentNotionBlock, openPinnedNotionBlock, planNotionBlockWork, planNotionBlockRetirements,
+  notionBlockPurposes, notionBlockWitness, parseNotionBlockSlotKey, notionBlockRetirementMatchesSlot,
+  reconstructNotionFactPair, type NotionBlockWitness, type NotionBlockPurpose,
+  type PlannedNotionBlockRetirement, type NotionFactTransitionRow } from './notion-blocks.ts';
 export { consumeNotionBlockLink, notionBlockDeriver, notionBlockSlot, notionBlockWorkKey, notionBlockLinkEffect,
   verifyNotionBlockEdges } from './notion-block-work.ts';
-export { notionRetainedPurposes, planNotionSelectionInvalidation, selectionAllows as notionRecipientAllowed } from './notion-selection.ts';
-export type { NotionPreset, NotionRetainedPreset, NotionSelection, NotionSelectionInvalidation,
-  NotionSelectionUseRetraction } from './notion-selection.ts';
+export { buildNotionInvalidationTarget, filterInvalidatedNotionTargets, notionRecordPurpose, notionRetainedPurposes,
+  notionSelectionFromSnapshot, notionSelectionInvalidatesRecipient, notionSelectionInvalidatesSource,
+  planNotionSelectionInvalidation, selectionAllows as notionRecipientAllowed } from './notion-selection.ts';
+export type { NotionInvalidationSourceRow, NotionInvalidationTarget, NotionPreset, NotionRetainedPreset,
+  NotionSelection, NotionSelectionInvalidation, NotionSelectionUseRetraction } from './notion-selection.ts';
 
 export const refreshNotionSourceCommand = 'capture.refreshNotionSource';
 export const revokeNotionSourceCommand = 'capture.revokeNotionSource';

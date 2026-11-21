@@ -95,22 +95,26 @@ export async function notionSelectionFactId(learner: LearnerId, selectionId: str
   return factId(hash.slice(0, 26).toUpperCase());
 }
 
+export function notionSelectionFromSnapshot(snapshot: FactSnapshot): NotionSelection {
+  if (snapshot.type !== notionSelectionType) throw new Error('选源记录不匹配。');
+  const value = selectionValue(snapshot.value);
+  const selectionEpoch = String(snapshot.ref.rev);
+  const continuity = value.continuity ?? nextContinuity(value, snapshot.ref.learner, selectionEpoch);
+  if (continuity.some(use => use.sinceEpoch === '0' || BigInt(use.sinceEpoch) > BigInt(selectionEpoch)))
+    throw new Error('选源连续授权代次无效。');
+  return { ...value, learner: snapshot.ref.learner, selectionEpoch, continuity };
+}
+
 /** Use the learner's storage reader from the same transaction as the source read or write. */
 export async function readNotionSelection(read: NotionFactReader, learner: LearnerId, selectionId: string): Promise<NotionSelection | null> {
   const id = await notionSelectionFactId(learner, selectionId);
   let snapshot: FactSnapshot;
   try { snapshot = await read.fact(id, { mode: 'following' }); }
   catch (error) { if (error instanceof FactNotFoundError) return null; throw error; }
-  if (snapshot.ref.learner !== learner || snapshot.ref.id !== id || snapshot.type !== notionSelectionType)
-    throw new Error('选源记录不匹配。');
-  const value = selectionValue(snapshot.value);
-  if (value.id !== selectionId) throw new Error('选源记录不匹配。');
-  const selectionEpoch = String(snapshot.ref.rev);
-  // Older settings only prove their current revision's grant.
-  const continuity = value.continuity ?? nextContinuity(value, learner, selectionEpoch);
-  if (continuity.some(use => use.sinceEpoch === '0' || BigInt(use.sinceEpoch) > BigInt(selectionEpoch)))
-    throw new Error('选源连续授权代次无效。');
-  return { ...value, learner, selectionEpoch, continuity };
+  if (snapshot.ref.learner !== learner || snapshot.ref.id !== id) throw new Error('选源记录不匹配。');
+  const selection = notionSelectionFromSnapshot(snapshot);
+  if (selection.id !== selectionId) throw new Error('选源记录不匹配。');
+  return selection;
 }
 
 function changeTarget(row: Record<string, unknown>) {
@@ -235,6 +239,123 @@ export function planNotionSelectionInvalidation(
     retractedPageIds,
     retracted,
     continued,
+  };
+}
+
+export type NotionInvalidationSourceRow = {
+  readonly id: string;
+  readonly sourceSelectionId?: string | null | undefined;
+  readonly sourceSelectionEpoch?: string | null | undefined;
+  readonly externalId?: string | null | undefined;
+};
+
+export type NotionInvalidationTarget = {
+  readonly sourceIds: readonly string[];
+  readonly purpose?: string | undefined;
+  readonly recipientId?: string | undefined;
+  readonly blockWork?: boolean | undefined;
+};
+
+export function notionSelectionInvalidatesSource(
+  invalidation: NotionSelectionInvalidation,
+  source: NotionInvalidationSourceRow,
+): readonly NotionSelectionUseRetraction[] {
+  if (!invalidation.retracted.length || source.sourceSelectionId !== invalidation.selectionId || !source.sourceSelectionEpoch) {
+    return [];
+  }
+  if (invalidation.retractedPageIds.length > 0 && (!source.externalId || !invalidation.retractedPageIds.includes(source.externalId))) {
+    return [];
+  }
+  const origin = BigInt(source.sourceSelectionEpoch);
+  return invalidation.retracted.filter(use => origin >= BigInt(use.sinceEpoch) && origin < BigInt(use.untilEpoch));
+}
+
+export function notionSelectionInvalidatesRecipient(
+  invalidation: NotionSelectionInvalidation,
+  retractions: readonly NotionSelectionUseRetraction[],
+  target: Pick<NotionInvalidationTarget, 'purpose' | 'recipientId' | 'blockWork'>,
+): boolean {
+  if (!retractions.length) return false;
+  const { purpose, recipientId, blockWork } = target;
+  if (purpose && recipientId) {
+    return retractions.some(use => use.purpose === purpose && use.recipientId === recipientId);
+  }
+  if (purpose) {
+    return retractions.some(use => use.purpose === purpose);
+  }
+  if (recipientId) {
+    return retractions.some(use => use.recipientId === recipientId);
+  }
+  if (blockWork) {
+    return invalidation.rootChanged || !invalidation.continued.some(use =>
+      use.purpose === 'learning' || use.purpose === 'teaching' || use.purpose === 'background-research');
+  }
+  return invalidation.rootChanged || invalidation.continued.length === 0;
+}
+
+export function filterInvalidatedNotionTargets<Target extends NotionInvalidationTarget>(
+  invalidation: NotionSelectionInvalidation,
+  sources: readonly NotionInvalidationSourceRow[],
+  targets: readonly Target[],
+): Target[] {
+  const retractedBySource = new Map<string, readonly NotionSelectionUseRetraction[]>();
+  for (const source of sources) {
+    const retractions = notionSelectionInvalidatesSource(invalidation, source);
+    if (retractions.length) retractedBySource.set(source.id, retractions);
+  }
+  if (!retractedBySource.size) return [];
+  return targets.filter(target => target.sourceIds.some(sourceId => {
+    const retractions = retractedBySource.get(sourceId);
+    return retractions ? notionSelectionInvalidatesRecipient(invalidation, retractions, target) : false;
+  }));
+}
+
+const jsonObject = (value: unknown): Record<string, unknown> | undefined => {
+  if (typeof value === 'string') {
+    try { return jsonObject(JSON.parse(value)); } catch { return undefined; }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+};
+
+export function notionRecordPurpose(manifest: unknown, ...scopes: unknown[]): string | undefined {
+  for (const raw of [manifest, ...scopes]) {
+    const purpose = jsonObject(raw)?.purpose;
+    if (typeof purpose === 'string' && purpose) return purpose;
+  }
+  return undefined;
+}
+
+export function buildNotionInvalidationTarget<Row extends {
+  readonly id: string;
+  readonly slotType: string;
+  readonly slotKey: string;
+  readonly scopeKeys?: unknown;
+  readonly slotScopeKeys?: unknown;
+  readonly manifest?: unknown;
+}>(
+  row: Row,
+  options: { readonly blockSlotType: string; readonly blockSourceId?: string | undefined; readonly fallbackRecipientId?: string | undefined },
+): Row & NotionInvalidationTarget {
+  const manifest = jsonObject(row.manifest);
+  const scopeKeys = jsonObject(row.scopeKeys);
+  const slotScope = jsonObject(row.slotScopeKeys);
+  const sourceIds = new Set<string>();
+  if (Array.isArray(manifest?.inputs)) {
+    for (const entry of manifest.inputs) {
+      if (entry && typeof entry === 'object' && (entry as { kind?: unknown }).kind === 'fact' &&
+          typeof (entry as { id?: unknown }).id === 'string') sourceIds.add((entry as { id: string }).id);
+    }
+  }
+  if (options.blockSourceId) sourceIds.add(options.blockSourceId);
+  const recipientId = (typeof scopeKeys?.recipientId === 'string' ? scopeKeys.recipientId : undefined)
+    ?? (typeof slotScope?.recipientId === 'string' ? slotScope.recipientId : undefined)
+    ?? options.fallbackRecipientId;
+  return {
+    ...row,
+    sourceIds: [...sourceIds],
+    purpose: notionRecordPurpose(manifest, scopeKeys, slotScope),
+    recipientId,
+    blockWork: row.slotType === options.blockSlotType,
   };
 }
 

@@ -1,4 +1,5 @@
 import {expect,it} from 'vitest';
+import type {CommandHooks, FactChange} from '../../../kernel/src/commands/contracts.ts';
 import type {CanonicalEvidenceSliceV1} from '../../../kernel/src/pipeline-contracts.ts';
 import {commandId, learnerId} from '../../../kernel/src/declarations/ids.ts';
 import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
@@ -17,6 +18,7 @@ import {workbookRubricAssessmentType, workbookRubricAssessmentVersion, workbookR
 import {workspaceQuery} from '../workspace-read.ts';
 import {openTextbook} from '../textbook.ts';
 import {readCurrentLearningObject} from '../current-learning-object.ts';
+import {openResearch} from '../research.ts';
 import {openRelationReview} from '../workspace-relation.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { loadStudioTestModule } from './modules.ts';
@@ -369,7 +371,13 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
       expect(await workspaceQuery(tx,filters,{recipient:'learner'})).toBeUndefined());
 
     const relation = turn('save relation');
-    const review = openRelationReview(db,content);
+    const research = openResearch(db, activity, await loadStudioTestModule('companion'));
+    const relationChanges: FactChange[] = [];
+    const onRelationChange: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
+      relationChanges.push(...changes);
+      await research.activityChanged(tx, tick, changes);
+    };
+    const review = openRelationReview(db,content,onRelationChange);
     const draft = {kind:'contrasts_with',from:concept.id,to:compound.id,scope:'适用条件'};
     const query = new URLSearchParams({conceptId:concept.id,direction:'outbound',edgeKinds:draft.kind});
     await relation('search_workspace',{kind:'concept',query:'分段运动'},1);
@@ -383,9 +391,12 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
     expect(await access.list(query)).toMatchObject({edges:[]});
     const accepted = await review.accept(proposal.proposalId);
     expect(await review.accept(proposal.proposalId)).toEqual(accepted);
+    expect(relationChanges).toMatchObject([{factType:'content.knowledgeEdge',kind:'create',ref:{id:accepted.ref.fact.id,rev:1}}]);
     expect(await access.list(query)).toMatchObject({edges:[{
       id:accepted.ref.fact.id,kind:draft.kind,from,to:endpoints.items[1].sourceRef,
     }]});
+    await review.undo(accepted.ref.fact.id,{undo_token:accepted.undo_token});
+    expect(relationChanges.at(-1)).toMatchObject({factType:'content.knowledgeEdge',kind:'retract',ref:{id:accepted.ref.fact.id,rev:2}});
     await access.setTeaching(compound.id,{enabled:false,expectedRev:1});
     expect(await relation('save_relation',draft,6)).toMatchObject({code:'access_revoked',next:{tool:'search_workspace'}});
 
