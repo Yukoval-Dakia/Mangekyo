@@ -1,6 +1,7 @@
 import { projectClassroomRadar } from './classroom-radar.ts';
 import { expect, it } from 'vitest';
-import type { EvidenceEventV1, FactId, FactSnapshot, LearnerId, Revision, Tick } from '@mangekyo/kernel';
+import { snapshot, use } from './test/facts.ts';
+import type { EvidenceEventV1, FactId, Revision, Tick } from '@mangekyo/kernel';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { evaluateStudioRetention } from '../../runtime/studio/retention.ts';
 import { flashCheckPriority } from './flash-check.ts';
@@ -71,16 +72,14 @@ it('uses one exact low-confidence correct answer for retention discount and the 
   expect(full.estimate).toEqual(prior.estimate);
   expect(full.estimate).toMatchObject({masteryProb: 1.4 / 2.4, stabilityDays: 2.4, effectiveEvidence: expect.closeTo(0.4)});
 
-  const snapshot = (ref: typeof paper): FactSnapshot => ({
-    ref: {learner: 'L' as LearnerId, ...ref}, type: 'example', value: {}, accessEpoch: tick, purpose: ['teaching'],
-  });
-  const facts = {papers: [snapshot(paper)], submissions: [snapshot(submission)]};
+  const source = (ref: typeof paper) => snapshot({...use(1, 'example'), ...ref, accessEpoch: tick});
+  const facts = {papers: [source(paper)], submissions: [source(submission)]};
   const project = (sources = facts) => projectRetentionRead({
     id: 'forecast', key: 'key', effectiveTick: tick, value: {kind: 'value', value: guess},
   }, {id: 'forecast', value: guess}, sources, '/retention', (fact, itemId) => ({ref: fact.ref.id, rev: fact.ref.rev, itemId}));
   expect(project()).toMatchObject({flash_check_priority: 'lucky-guess-check',
     evidence: [{ref: 'p', rev, itemId: 'q'}, {ref: 'a', rev, itemId: 'q'}]});
-  for (const denied of [{...facts, submissions: []}, {...facts, papers: [snapshot({...paper, rev: 1 as Revision})]}])
+  for (const denied of [{...facts, submissions: []}, {...facts, papers: [source({...paper, rev: 1 as Revision})]}])
     expect(project(denied)).toBeUndefined();
   const priority = (input: RetentionInput) => flashCheckPriority({...guess, input});
   expect(flashCheckPriority(prior)).toBeUndefined();

@@ -1,7 +1,7 @@
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { pythonLines } from '../../executors/python-deriver/test/worker.ts';
+import { ref, snapshot, use } from './test/facts.ts';
 import { expect, it } from 'vitest';
-import { commandId, derivationId, factId, learnerId, type FactWrite, type GatherContext, type Json, type Revision, type Tick } from '@mangekyo/kernel';
+import { commandId, derivationId, learnerId, type FactWrite, type GatherContext, type Json, type Revision, type Tick } from '@mangekyo/kernel';
 import { isInterventionLiftInput, isInterventionLiftOutcome } from '../../executors/python-deriver/intervention-lift-schema.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { createCommandHandler, readCommandProposals } from '../../kernel/src/commands/handle.ts';
@@ -20,7 +20,6 @@ import { liftAssessment, reconciledLiftAssessment } from './intervention-lift-ev
 import { interventionLiftKey, interventionLiftMethod, measureInterventionLift, type InterventionPair, type LiftInput } from './intervention-lift.ts';
 import { playbook, readVerifiedPlaybook, verifiedStatus } from './playbook.ts';
 
-const ref = (n: number) => ({ id: factId(String(n).padStart(26, '0')), rev: 1 as Revision, accessEpoch: '0' as Tick });
 const identity = { playbookId: ref(0).id, strategyId: 'inspect-boundary', version: 1 };
 const asOf = '2026-01-16T00:00:00.000Z';
 const target = {item: 'transfer', comparisonKey: 'rubric-1:stratum-2', asOf};
@@ -37,26 +36,20 @@ const replacePosttest = (change: Partial<NonNullable<InterventionPair['posttest'
   positive.map(row => ({...row, posttest: {...row.posttest!, ...change}}));
 const negative = replacePosttest({score: 0}).map(row => ({...row, baseline: {...row.baseline!, score: 1}}));
 const input = (interventions: InterventionPair[], at = asOf): LiftInput => ({ ...identity, interventions, asOf: at });
-const pythonPath = fileURLToPath(new URL('../../executors/python-deriver/', import.meta.url));
-function python(inputs: readonly unknown[]): unknown[] {
-  const result = spawnSync(process.env.MANGEKYO_PYTHON ?? 'python3', ['-I', '-B', '-S', '-X', 'utf8', '-c',
-    'import json,sys; sys.path.insert(0, sys.argv[1]); from intervention_lift import derive,is_lift_input; ' +
-    'print(json.dumps([derive(i, method_version="intervention-lift@1") if is_lift_input(i) else None for i in json.load(sys.stdin)]))',
-    pythonPath], {input: JSON.stringify(inputs), encoding: 'utf8'});
-  expect(result.status, result.stderr).toBe(0);
-  return JSON.parse(result.stdout);
-}
+const python = (inputs: readonly unknown[]) => pythonLines(['-c', [
+  'import json,sys; sys.path.insert(0, ".")',
+  'from intervention_lift import derive,is_lift_input',
+  'for value in map(json.loads, sys.stdin): print(json.dumps(derive(value, method_version="intervention-lift@1") if is_lift_input(value) else None))',
+].join('\n')], inputs);
 
 it('TS 与确定性 Python 在固定截止时间按相同配对和缺失边界计算', () => {
   const cases = [input(positive), input(negative), input(positive.slice(0, 7)),
     input(positive, '2026-01-15T23:59:59.999Z'),
     input(replacePosttest({novelty: 'same'})),
-    input(replacePosttest({independence: 'assisted'})),
-    input(replacePosttest({independence: 'unknown'})),
+    ...(['assisted', 'unknown'] as const).map(independence => input(replacePosttest({independence}))),
     input(positive.map((row, i) => i < 6 ? { ...row, posttest: null } : row)),
-    input(replacePosttest({occurredAt: '2026-01-05T00:00:00.001Z'})),
-    input(replacePosttest({occurredAt: '2026-01-04T23:59:59.999Z'})),
-    input(replacePosttest({occurredAt: '2026-01-16T00:00:00.001Z'})),
+    ...['2026-01-05T00:00:00.001Z', '2026-01-04T23:59:59.999Z', '2026-01-16T00:00:00.001Z']
+      .map(occurredAt => input(replacePosttest({occurredAt}))),
   ];
   const outcomes = python([...cases, cases[0]]);
   expect(outcomes.at(-1)).toEqual(outcomes[0]);
@@ -88,15 +81,13 @@ it('TS 与确定性 Python 在固定截止时间按相同配对和缺失边界�
 });
 
 it('正式后测适配器只计独立分数并检查冻结预测身份及截止水位', async () => {
-  const submission = ref(1);
-  const learner = learnerId(ref(0).id);
+  const submission = use(1, 'activity.retentionPosttestSubmission');
   const forecastId = derivationId(ref(2).id);
   const observation = {submission, admittedAt:'3' as Tick, submittedAt: asOf, result:'correct' as const,
     novelty: 'fresh-context' as const, exposure: {kind: 'independent' as const}};
-  const fact = async () => ({ref: {...submission, learner}, accessEpoch: '0', value: {},
-    purpose: ['background-research'], type: 'activity.retentionPosttestSubmission'});
+  const fact = async () => snapshot(submission, {}, ['background-research']);
   const slot = async () => ({outcome: {kind: 'value', value: {forecastId, status: 'observed', observation}}});
-  const ctx = {learner, read: {fact, slot}, snapshotTick: '3'} as unknown as GatherContext;
+  const ctx = {learner: submission.learner, read: {fact, slot}, snapshotTick: '3'} as unknown as GatherContext;
   const reconcile = (forecastId: ReturnType<typeof derivationId>) =>
     reconciledLiftAssessment(ctx, submission, {...target, key: 'posttest', forecastId});
   await expect(reconcile(forecastId))

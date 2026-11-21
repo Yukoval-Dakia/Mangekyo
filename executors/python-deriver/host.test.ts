@@ -1,13 +1,13 @@
-import { spawn, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import { pythonLines } from './test/worker.ts';
 import { afterAll, expect, it } from 'vitest';
 import { createPythonDeriverHost } from './host.ts';
 import { isCanonicalEvidenceSlice, isCognitionResult } from './schema.ts';
 import sample from './samples/fixed-clock.json' with { type: 'json' };
 
-const workerPath = fileURLToPath(new URL('./worker.py', import.meta.url));
 const cognition = 'learner/cognition@1';
 const legacy = 'learner/retention-forecast@1';
+const success = (value: unknown) => ({kind: 'ok', outcome: {kind: 'value', value}});
 const host = createPythonDeriverHost();
 afterAll(host.close);
 
@@ -20,13 +20,10 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
     state: 'known', method_version: 'cognition@1', r_now: 2 / 3,
     state_vector: [{ r_now: 2 / 3, stability_days: 3, evidence_refs: [{ ref: 'fixture-attempt', rev: 1 }] }],
   } } });
-  expect(later).toMatchObject({ kind: 'ok', outcome: { kind: 'value', value: {
-    method_version: 'cognition@1', r_now: expect.closeTo((2 / 3) * 2 ** (-1 / 3), 14),
-  } } });
   const decay = 2 ** (-1 / 7);
-  expect(prior).toMatchObject({ kind: 'ok', outcome: { kind: 'value', value: {
-    method_version: 'dimensioned-retention@1', r_now: expect.closeTo((1 + decay) / (2 + decay), 14),
-  } } });
+  for (const [result, version, retention] of [
+    [later, 'cognition@1', (2 / 3) * 2 ** (-1 / 3)], [prior, 'dimensioned-retention@1', (1 + decay) / (2 + decay)],
+  ] as const) expect(result).toMatchObject(success({method_version: version, r_now: expect.closeTo(retention, 14)}));
   expect(await host.derive(cognition, sample)).toEqual(initial);
 
   const planning = { ...sample, events: [{ ...sample.events[0], confidence: 0.3 }],
@@ -37,22 +34,15 @@ it('replays one fixed-clock slice through the TS host and direct Python IPC', as
 
   const invalid = { ...sample, as_of_at: '2026-02-29T00:00:00Z' };
   expect(await host.derive(cognition, invalid)).toEqual({ kind: 'failed', reason: 'invalid CanonicalEvidenceSlice@v1' });
-  const processResult = spawnSync(process.env.MANGEKYO_PYTHON ?? 'python3',
-    ['-I', '-B', '-S', '-X', 'utf8', workerPath], {
-      input: [sample, invalid].map((input, index) => JSON.stringify({ id: String(index), deriver: cognition, input })).join('\n') + '\n',
-      encoding: 'utf8', env: {},
-    });
-  expect(processResult.status).toBe(0);
-  const [validLine, invalidLine] = processResult.stdout.trim().split('\n');
-  const {id, value: outcome} = JSON.parse(validLine!);
-  expect(id).toBe('0');
-  expect({kind: 'ok', outcome}).toEqual(initial);
-  expect(JSON.parse(invalidLine!)).toEqual({ id: '1', error: 'invalid CanonicalEvidenceSlice@v1' });
+  const requests = [sample, invalid].map((input, i) => ({id: String(i), deriver: cognition, input}));
+  const [valid, rejected] = pythonLines(['worker.py'], requests);
+  expect(initial.kind).toBe('ok');
+  if (initial.kind === 'ok') expect(valid).toEqual({id: '0', value: initial.outcome});
+  expect(rejected).toEqual({ id: '1', error: 'invalid CanonicalEvidenceSlice@v1' });
 
   const noIndependent = { ...sample, events: sample.events.map(event => ({ ...event, help_level: 'hinted' })) };
-  expect(await host.derive(cognition, noIndependent)).toMatchObject({ kind: 'ok', outcome: { kind: 'value', value: {
-    state: 'unknown', uncertainty: { kind: 'unknown', reason: 'missing-independent-scored-evidence' },
-  } } });
+  const uncertainty = {kind: 'unknown', reason: 'missing-independent-scored-evidence'};
+  expect(await host.derive(cognition, noIndependent)).toMatchObject(success({state: 'unknown', uncertainty}));
 });
 
 it('routes exam pacing and intervention Lift to one real worker with their own evidence contracts', async () => {
@@ -70,8 +60,7 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
     attempts: [{id: 'first'}, {id: 'second'}, {kind: 'unknown', missing: ['effective_duration_ms', 'score']}],
   }}});
   expect(outcomes[1]).toMatchObject({kind: 'ok', outcome: {kind: 'unknown'}});
-  expect(await host.derive('plan/exam-pacing@1', sample)).toMatchObject({kind: 'ok', outcome: {kind: 'value',
-    value: {attempts: [], strategy: {kind: 'unknown'}}}});
+  expect(await host.derive('plan/exam-pacing@1', sample)).toMatchObject(success({attempts: [], strategy: {kind: 'unknown'}}));
   const exam = (ref: string, duration: number, earned: number) => ({...sample.events[0], ref,
     concept_ids: [], outcome: 'unknown', help_level: 'unknown', effective_duration_ms: duration, exam_pacing: {paper_key: 'paper@2', scale_key: 'release@4', score: {earned, maximum: 10}}});
   const events = [exam('recent', 2000, 6), exam('prior', 1000, 8), exam('withheld', 9000, 0)];
@@ -113,10 +102,9 @@ it('prioritizes the shortest matching variant with the frozen error revision', a
   } } });
   if (graded.kind !== 'ok' || graded.outcome.kind !== 'value' || !isCognitionResult(graded.outcome.value))
     throw new Error('Missing graded result');
-  expect(await host.derive('learner/cognition@3', input)).toEqual({kind: 'ok', outcome: {kind: 'value',
-    value: {...graded.outcome.value, method_version: 'cognition@3'}}});
+  expect(await host.derive('learner/cognition@3', input)).toEqual(success({...graded.outcome.value, method_version: 'cognition@3'}));
   const helped = { ...input, events: [{ ...event, help_level: 'hint_l1' }, { ...error, help_level: 'hint_l2' }] };
-  expect(await host.derive('learner/cognition@2', helped)).toMatchObject({ kind: 'ok', outcome: { value: { state: 'unknown' } } });
+  expect(await host.derive('learner/cognition@2', helped)).toMatchObject(success({state: 'unknown'}));
 });
 
 it.for([

@@ -30,12 +30,10 @@ it('keeps real preference and claim values stable and reads remembered, correcte
   expect(shortened.validTo).toBe(at(6));
   const old = project(original, {...revisionTime, supersededAt: shortened.recordedAt}).value;
   const history = (valid: number, known: number) => beliefsAsOf([old, shortened], asOf(valid, known));
-  expect(history(3, 1)).toEqual([]);
-  expect(history(3, 3)).toEqual([{...old, category: 'directive'}]);
-  expect(history(3, 4)).toEqual([shortened]);
-  expect(history(8, 3)).toEqual([]);
-  expect(history(6, 3)).toEqual([old]);
-  expect(history(6, 4)).toEqual([]);
+  for (const [valid, known, expected] of [
+    [3, 1, []], [3, 3, [{...old, category: 'directive'}]], [3, 4, [shortened]],
+    [8, 3, []], [6, 3, [old]], [6, 4, []],
+  ] as const) expect(history(valid, known)).toEqual(expected);
   const corrected = project(fact(14, 'companion.claim', {...claim, action: 'correct', origin: 'learner',
     evidence_refs: [], supersedes: ref(12), text: '今天只做一题'}), {...revisionTime, recordedAt: shortened.recordedAt}).value;
   expect(beliefsAsOf([corrected], asOf(3, 4))).toMatchObject([{category: 'directive', text: '今天只做一题'}]);
@@ -128,12 +126,8 @@ it('requires two reopened independent submissions in distinct disciplines for a 
     }}], [], when, [], opened ?? undefined)).hypotheses.length;
   expect(await count()).toBe(1);
   expect(await count(undefined, read, asOf(3, 4), true)).toBe(0);
-  expect(await count(undefined, read, asOf(1, 3))).toBe(0);
-  expect(await count(undefined, read, asOf(3, 2))).toBe(0);
-  expect(await count(ref(1))).toBe(0);
-  expect(await count(undefined, null)).toBe(0);
-  expect(await count(ref(2, '1'))).toBe(0);
-  expect(await count(undefined, {...read, purpose: 'background-research'})).toBe(0);
-  expect(await count(undefined, reader(physics))).toBe(0);
-  expect(await count(undefined, reader(math, 'hinted'))).toBe(0);
+  for (const cutoff of [asOf(1, 3), asOf(3, 2)]) expect(await count(undefined, read, cutoff)).toBe(0);
+  for (const duplicateOrStale of [ref(1), ref(2, '1')]) expect(await count(duplicateOrStale)).toBe(0);
+  for (const unavailable of [null, {...read, purpose: 'background-research'}, reader(physics), reader(math, 'hinted')] as const)
+    expect(await count(undefined, unavailable)).toBe(0);
 });
