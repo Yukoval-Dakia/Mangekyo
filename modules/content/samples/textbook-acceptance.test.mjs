@@ -1,12 +1,13 @@
 import { evolveGraphCommand, splitConceptHierarchyEdgeId } from '@mangekyo/module-content/graph-evolution';
 import { createKnowledgeEdgeCommand, openKnowledgeEdgeRevision, walkKnowledgeEdges } from '@mangekyo/module-content/knowledge-edge';
 import { openKnowledgeEntity, openKnowledgeName } from '@mangekyo/module-content/knowledge-entity';
-import { gather, openQuestionMetaDraft, questionMetaEffectResult, questionMetaType, settle } from '@mangekyo/module-content/question-meta';
+import { gather, openQuestionMetaDraft, questionKey, questionMetaDeriver, questionMetaEffectResult, questionMetaType,
+  readQuestionHintLevel, settle } from '@mangekyo/module-content/question-meta';
 import { proposeQuestionMetaCommand, saveQuestionCommand } from '../question-writes.ts';
 import graph from './graph-evolution.json' with { type: 'json' };
 
 export default async function exerciseContent(fixture, decideProposal) {
-  const { db, learner, load, send, stableId, assert, read, current, content, hooks } = fixture;
+  const { db, learner, load, send, sendCompanion, stableId, assert, read, current, content, hooks } = fixture;
   const { openTextbookBlock } = await load('modules/content/textbook-page.ts');
   const { openTextbookConflict } = await load('modules/content/textbook-conflict.ts');
   const { previewTextbookRevision, selectTextbookEdits } = await load('modules/content/textbook-edits.ts');
@@ -26,18 +27,18 @@ export default async function exerciseContent(fixture, decideProposal) {
   await send('content.mergeTextbookPages', {
     target: { id, expectedRev: 1 }, sources: [{ id: source, expectedRev: 1 }],
   });
-  const follow = blockId => read(context => openTextbookBlock(context, original, blockId, 'following'));
-  const moved = await follow('intro');
+  const openBlock = (blockId, mode, purpose) => read(context => openTextbookBlock(context, original, blockId, mode), purpose);
+  const moved = await openBlock('intro', 'following');
   assert.equal(moved.ref.id, id);
   assert.notEqual(moved.block.id, 'intro');
   assert.deepEqual(moved.block.body, body('来源块'));
   const split = { source: { id, expectedRev: 2 }, title: '子页', blockIds: [moved.block.id] };
   await assert.rejects(send('content.splitTextbookPage', { ...split, newId: source }), /Fact already exists/);
   await send('content.splitTextbookPage', { ...split, newId: child });
-  const proof = await follow('proof');
+  const proof = await openBlock('proof', 'following');
   assert.equal(proof.ref.id, child);
   assert.deepEqual(proof.block, block('proof', '子块', moved.block.id));
-  assert.deepEqual((await read(context => openTextbookBlock(context, original, 'intro'))).block, block('intro', '来源块'));
+  assert.deepEqual((await openBlock('intro')).block, block('intro', '来源块'));
   await send('content.archiveTextbookPage', { id: child, expectedRev: 1 });
   await assert.rejects(send('content.reviseTextbookPage', {
     id: child, expectedRev: 2, clientEditSeq: 1, edits: [rewrite('proof', '归档后编辑')],
@@ -72,7 +73,7 @@ export default async function exerciseContent(fixture, decideProposal) {
       { kind: 'delete_block', blockId: 'intro' },
     ],
   };
-  const proposal = await send('content.reviseTextbookPage', revision, { actor: 'companion', purpose: 'teaching' });
+  const proposal = await sendCompanion('content.reviseTextbookPage', revision, 'teaching');
   assert.equal(proposal.state, 'proposed');
   assert.equal((await current(id)).ref.rev, 4);
   const preview = await read(context => previewTextbookRevision({ learner, read: context }, revision));
@@ -121,8 +122,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   assert.equal(copies.draft.clientEditSeq, 2);
   assert.deepEqual(copies.draft.page.blocks, [formula, block('note', '续写笔记'), block('intro', text + '续写')]);
   await send('content.setTextbookTeaching', { id, expectedRev: 7, enabled: false });
-  await assert.rejects(read(context => openTextbookBlock(context, original, 'proof', 'following'), 'teaching'),
-    /does not allow read purpose teaching/);
+  await assert.rejects(openBlock('proof', 'following', 'teaching'), /does not allow read purpose teaching/);
 
   const disciplineId = idFor('discipline');
   const discipline_context = {
@@ -140,12 +140,11 @@ export default async function exerciseContent(fixture, decideProposal) {
   await exerciseGraphEvolution(fixture, decideProposal);
 }
 
-async function exerciseGraphEvolution({ learner, send, stableId, assert, read, content }, decideProposal) {
+async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stableId, assert, snapshot, read, content, load, publish }, decideProposal) {
   const question = graph.question.id;
   const parent = graph.split.id;
   const child = graph.split.children[1].id;
   const edgeId = graph.edge.id;
-  const propose = (type, input) => send(type, input, { actor: 'companion' });
   const decide = (type, proposalId, accept = true) => decideProposal({
     learner, purpose: 'storage', type, id: stableId('graph-evolution-decision', proposalId), proposalId,
     selection: accept ? 'accept' : 'reject',
@@ -153,22 +152,24 @@ async function exerciseGraphEvolution({ learner, send, stableId, assert, read, c
   const name = term => read(async context => (await openKnowledgeName(context, 'concept', term))?.snapshot.ref);
   const openEdge = mode => read(read => openKnowledgeEdgeRevision({ learner, read }, edgeId,
     mode === 'pinned' ? { mode, rev: 1 } : { mode }));
-  await send(saveQuestionCommand, graph.question);
+  const questionWithSolution = { ...graph.question.asset, blocks: [...graph.question.asset.blocks,
+    { id: 'private-solution', parentId: null, body: { kind: 'text', text: '仅供解答。' } }] };
+  await send(saveQuestionCommand, { ...graph.question, asset: questionWithSolution });
   for (const concept of graph.concepts) await send('content.createKnowledgeEntity', concept);
   await send(createKnowledgeEdgeCommand, graph.edge);
 
-  const rejected = await propose(evolveGraphCommand, graph.split);
+  const rejected = await sendCompanion(evolveGraphCommand, graph.split);
   assert.equal(rejected.state, 'proposed');
   assert.deepEqual(rejected.wrote, []);
   assert.equal((await decide(evolveGraphCommand, rejected.commandId, false)).state, 'rejected');
   assert.equal(await name('时间加权均速'), undefined);
 
-  const wrongPurpose = await propose(evolveGraphCommand, { ...graph.split, purpose: 'storage' });
+  const wrongPurpose = await sendCompanion(evolveGraphCommand, { ...graph.split, purpose: 'storage' });
   await assert.rejects(decide(evolveGraphCommand, wrongPurpose.commandId), /用途/);
   assert.equal(await name('等时均速'), undefined);
 
-  const accept = await propose(evolveGraphCommand, graph.split);
-  const competing = await propose(evolveGraphCommand, graph.split);
+  const accept = await sendCompanion(evolveGraphCommand, graph.split);
+  const competing = await sendCompanion(evolveGraphCommand, graph.split);
   assert.equal((await openEdge('following')).edge.to.sourceUse.id, parent);
   const results = await Promise.allSettled([accept, competing].map(receipt =>
     decide(evolveGraphCommand, receipt.commandId)));
@@ -183,7 +184,7 @@ async function exerciseGraphEvolution({ learner, send, stableId, assert, read, c
     entity: { ...entry.entity, canonicalName: index === 0 ? '等时段概念' : '变时段概念',
       aliases: index === 0 ? ['等时段'] : ['时间加权均速'] },
   }));
-  const collision = await propose(evolveGraphCommand, {
+  const collision = await sendCompanion(evolveGraphCommand, {
     ...graph.split, children: conflictingChildren, reattachments: [],
   });
   await assert.rejects(decide(evolveGraphCommand, collision.commandId), /已有同名实体/);
@@ -196,7 +197,7 @@ async function exerciseGraphEvolution({ learner, send, stableId, assert, read, c
   }), 'teaching');
   assert.deepEqual(evolved.paths.map(step => step.endpoint.sourceUse.id), [child, parent]);
 
-  const merge = await propose(evolveGraphCommand, graph.merge);
+  const merge = await sendCompanion(evolveGraphCommand, graph.merge);
   assert.equal((await name('均速'))?.id, parent);
   await decide(evolveGraphCommand, merge.commandId);
   assert.equal((await name('均速'))?.id, graph.merge.into);
@@ -206,10 +207,31 @@ async function exerciseGraphEvolution({ learner, send, stableId, assert, read, c
   assert.equal((await openEdge('pinned')).edge.to.sourceUse.id, parent);
 
   assert.equal(content.slots.get(questionMetaType)?.policy, 'lazy');
-  const proposed = await propose(proposeQuestionMetaCommand, graph.questionMeta);
+  const { createAuthorizedFactReader, FactReadDeniedError } = await load('kernel/src/commands/reads.ts');
+  const { readCurrentSlotOutcome } = await load('kernel/src/derivations/revalidate.ts');
+  const anchor = blockId => JSON.stringify({ v: 1, fact: { id: question, rev: 1, type: 'content.asset' }, anchor: { kind: 'block', blockId } });
+  const hint_ladder = { l1: '留意分段用时。', l2: '先写出每段的路程表达式。', l3: '设两段速度为 v₁、v₂，总路程为 v₁×1+v₂×2。用总路程除以总时间 3，得到 (v₁+2v₂)/3。', source_ref: anchor('prompt') };
+  const withLadder = { ...graph.questionMeta, append_metadata: { ...graph.questionMeta.append_metadata, hint_ladder } };
+  const frozen = { learner, id: question, rev: 1, accessEpoch: '0' };
+  const hint = (level, expectedDerivationId, { recipient = learner, permits = true, ref = frozen, reveal, authorizeSolution } = {}) => snapshot(tx =>
+    readQuestionHintLevel({ learner, recipient, purpose: 'teaching', isUnavailable: error => error instanceof FactReadDeniedError,
+      authorizeSolution,
+      read: { ...createAuthorizedFactReader(tx, 'teaching', () => permits && recipient === learner),
+        slot: slot => readCurrentSlotOutcome(tx, slot, questionMetaDeriver, 'teaching') },
+    }, { question: ref, level, reveal, expectedDerivationId }));
+  hint_ladder.worked_example = '例如，先把第一段路程写成 v₁×1。';
+  const proposeMeta = (input = withLadder) => sendCompanion(proposeQuestionMetaCommand, input);
+  const proposeHintOnly = changes => proposeMeta({ ...withLadder, append_metadata: { hint_ladder: { ...hint_ladder, ...changes } } });
+  await assert.rejects(proposeHintOnly({ l1: '字'.repeat(26) }), /25 字/);
+  const proposed = await proposeMeta();
+  for (const blockId of ['NONEXISTENT-AUDIT-BLOCK', 'private-solution']) {
+    const bad = await proposeHintOnly({ source_ref: anchor(blockId) });
+    await assert.rejects(decide(proposeQuestionMetaCommand, bad.commandId), /固定公开锚点/);
+  }
+  assert.equal(await hint(1), undefined);
   const alternative = { ...graph.questionMeta.append_metadata.solutions[0], explanation: '改成另一种说法。' };
   const otherMetadata = { ...graph.questionMeta, append_metadata: { solutions: [alternative] } };
-  const stale = await propose(proposeQuestionMetaCommand, otherMetadata);
+  const stale = await proposeMeta(otherMetadata);
   assert.deepEqual(proposed.wrote, []);
   await decide(proposeQuestionMetaCommand, proposed.commandId);
   await assert.rejects(decide(proposeQuestionMetaCommand, stale.commandId), /Fact revision conflict/);
@@ -218,17 +240,41 @@ async function exerciseGraphEvolution({ learner, send, stableId, assert, read, c
   const draft = await read(context => openQuestionMetaDraft(context, { learner, id: question, rev: 1 }));
   assert.equal(draft.snapshot.ref.rev, 2);
   assert.equal(draft.draft.sticky, true);
-  const plan = await read(read => gather({ learner, read, snapshotTick: '0' }, { id: question, rev: 1 }), 'teaching');
-  const gardening = plan.data.gardening;
-  const sealed = { id: '01KFS4AAA00000000000000010', plan };
-  const outcome = settle(sealed, [{
-    ownerId: sealed.id, request: plan.effects[0], state: 'done',
-    result: questionMetaEffectResult('01KFS4AAA00000000000000011', {
-      solutions: [{ ...alternative, source_ref: gardening.sources[0].ref }],
+  assert.equal(await hint(1), undefined);
+  const { outcome, sealed: { id: derivationId } } = await publish(questionMetaType, questionKey(frozen), questionMetaDeriver, {
+    plan: ctx => gather(ctx, frozen), settle,
+    invoke: ({ input }, invocation) => questionMetaEffectResult(invocation, {
+      solutions: [{ ...alternative, source_ref: input.gardening.sources[0].ref }],
+      hint_ladder: { ...hint_ladder, l1: '由园艺提出。', source_ref: input.gardening.sources[0].ref },
     }),
-  }]);
+  });
+  const started = performance.now();
+  const opened = await Promise.all([hint(1), hint(2), hint(3, derivationId, { reveal: 'solution', authorizeSolution(scope) {
+    assert.deepEqual(scope, { question: frozen, purpose: 'teaching', recipient: learner });
+    return true;
+  } })]);
+  const elapsedMs = performance.now() - started;
+  const witness = { question: frozen, overlay: { slot: { learner, type: questionMetaType, key: questionKey(frozen) }, derivationId },
+    purpose: 'teaching', recipient: learner };
+  assert.deepEqual(opened, [1, 2, 3].map(level => ({ level, text: hint_ladder[`l${level}`],
+    step: { kind: ['hint_l1', 'hint_l2', 'solution'][level - 1], order: level }, witness })));
+  const worked = await hint(3, derivationId, { reveal: 'worked-example', authorizeSolution: assert.fail });
+  assert.deepEqual(worked, { level: 3, text: hint_ladder.worked_example, step: { kind: 'worked-example', order: 3 }, witness });
+  assert.equal(await hint(3, derivationId, { authorizeSolution: assert.fail }), undefined);
+  assert.equal(await hint(3, derivationId, { reveal: 'solution' }), undefined);
+  assert.equal(await hint(3, derivationId, { reveal: 'solution', authorizeSolution: async () => false }), undefined);
+  assert.equal(await hint(2, derivationId, { reveal: 'solution', authorizeSolution: assert.fail }), undefined);
+  console.log(JSON.stringify({ hintRevealAcceptance: { worked, solution: opened[2], implicit: 'denied', missingPermit: 'denied', refusedPermit: 'denied' } }));
+  assert.deepEqual(await hint(1, derivationId), opened[0]);
+  assert.equal(await hint(1, stableId('stale-hint-overlay')), undefined);
+  assert.equal(await hint(1, derivationId, { recipient: 'other-recipient' }), undefined);
+  assert.equal(await hint(1, derivationId, { permits: false }), undefined);
+  assert.equal(await hint(1, undefined, { ref: { ...frozen, rev: 2 } }), undefined);
+  assert.equal(await hint(1, undefined, { ref: { ...frozen, accessEpoch: '1' } }), undefined);
   const solutionEvidence = ({ explanation, verification }) => ({ explanation, verification });
   assert.equal(outcome.value.sticky, true);
+  assert.equal(outcome.value.hint_ladder.l1, hint_ladder.l1);
+  assert.equal(outcome.value.proposals.hint_ladder.verification, 'unverified');
   assert.deepEqual(outcome.value.solutions.map(solutionEvidence), [
     { explanation: '用总路程除以总用时。', verification: 'learner-reviewed' },
   ]);
@@ -237,8 +283,49 @@ async function exerciseGraphEvolution({ learner, send, stableId, assert, read, c
   ]);
   const savedQuestion = await read(context => context.fact(question, { mode: 'pinned', rev: 1 }));
   assert.equal(savedQuestion.ref.rev, 1);
-  assert.deepEqual(savedQuestion.value, graph.question.asset);
+  assert.deepEqual(savedQuestion.value, questionWithSolution);
+  // Simulate an already-published pre-fix draft and matching overlay.
+  const legacyAnchor = anchor('NONEXISTENT-AUDIT-BLOCK');
+  await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
+    [learner, draft.snapshot.ref.id, draft.snapshot.ref.rev, legacyAnchor]);
+  await db.query("UPDATE derivations SET value=jsonb_set(value,'{value,hint_ladder,source_ref}',to_jsonb($3::text)) WHERE learner_id=$1 AND id=$2",
+    [learner, derivationId, legacyAnchor]);
+  await assert.rejects(read(context => openQuestionMetaDraft(context, frozen)), /固定公开锚点/);
+  assert.equal(await hint(1, derivationId), undefined);
+  const repair = await proposeMeta({ ...withLadder, expectedMetaRev: draft.snapshot.ref.rev });
+  await decide(proposeQuestionMetaCommand, repair.commandId);
+  const repaired = await read(context => openQuestionMetaDraft(context, frozen));
+  assert.equal(repaired.draft.append_metadata.hint_ladder.source_ref, hint_ladder.source_ref);
+  assert.equal(await hint(1, derivationId), undefined);
+  console.log(JSON.stringify({ hintAnchorAcceptance: { command: ['missing denied', 'private denied'], legacy: 'denied', repairedDraftRev: repaired.snapshot.ref.rev } }));
+
+  const sourceId = stableId('hint-source-revisions');
+  await send(saveQuestionCommand, { ...graph.question, id: sourceId });
+  const sourceUse = rev => ({ id: sourceId, rev, type: 'content.asset', epoch: '0' });
+  const confirmMeta = async (expectedMetaRev, append_metadata, basis) => {
+    const proposal = await proposeMeta({ ...withLadder, expectedMetaRev, append_metadata, basis });
+    return decide(proposeQuestionMetaCommand, proposal.commandId);
+  };
+  const refOf = ({ id, rev, type }) => ({ v: 1, fact: { id, rev, type }, anchor: { kind: 'block', blockId: 'prompt' } });
+  const before = (await confirmMeta(repaired.snapshot.ref.rev, { hint_ladder: { ...hint_ladder, source_ref: sourceId } }, [sourceUse(1)])).wrote[0];
+  const open = () => read(context => openQuestionMetaDraft(context, frozen));
+  assert.deepEqual(JSON.parse((await open()).draft.append_metadata.hint_ladder.source_ref), refOf(sourceUse(1)));
+  await db.query("UPDATE fact_revs SET data=jsonb_set(data,'{append_metadata,hint_ladder,source_ref}',to_jsonb($4::text)) WHERE learner_id=$1 AND fact_id=$2 AND rev=$3",
+    [learner, before.id, before.rev, sourceId]);
+  await send('content.correctQuestion', { id: sourceId, expectedRev: 1, patch: {
+    prompt: { block_id: 'prompt', anchor: '平均速度', replacement: '全程用时' },
+  } });
+  const appendedSolution = { solutions: [{ ...alternative, method: '新一版解法', source_ref: sourceId }] };
+  await confirmMeta(before.rev, appendedSolution, [sourceUse(2)]);
+  const currentHint = (await open()).draft;
+  assert.deepEqual(currentHint.basis.filter(use => use.id === sourceId), [sourceUse(1), sourceUse(2)]);
+  assert.deepEqual(JSON.parse(currentHint.append_metadata.hint_ladder.source_ref), refOf(sourceUse(1)));
+  const historical = await read(context => context.fact(before.id, { mode: 'pinned', rev: before.rev }));
+  assert.equal(historical.value.append_metadata.hint_ladder.source_ref, sourceId);
+
   await send('content.setQuestionTeaching', { id: question, expectedRev: 1, allowed: false });
+  assert.equal(await hint(1, derivationId), undefined);
+  console.log(JSON.stringify({ questionHintAcceptance: { opened, elapsedMs, afterRevocation: null, coldRevision: savedQuestion.ref.rev } }));
   await assert.rejects(openEdge('pinned'), /访问代次/);
   await assert.rejects(openEdge('following'), /访问代次/);
 }

@@ -9,10 +9,12 @@ import {
 import { projectQuestionPrompt } from './question-verification.ts';
 
 export { openQuestionMetaDraft, questionKey, questionMetaType } from './question-state.ts';
+export { readQuestionHintLevel, type QuestionHintAccess, type QuestionHintInput } from './question-meta-hints.ts';
 export { questionEffectResult as questionMetaEffectResult } from './question-effects.ts';
 export type { QuestionEffectReceipt as QuestionMetaEffectReceipt } from './question-effects.ts';
 
-export const questionMetaMethodVersion = '2';
+export const questionMetaMethodVersion = '3';
+export const questionMetaDeriver = 'content/question-meta';
 const gardeningStep = { stepKey: 'garden', label: 'question-meta-gardening' } as const;
 
 type BoundSource = { readonly ref: string; readonly basis: AssetBasis };
@@ -75,6 +77,7 @@ type Suggested<Value> = Value & { readonly verification: 'unverified'; readonly 
 type SuggestedMetadata = {
   readonly tags: readonly Suggested<ConfirmedMetadata['tags'][number]>[];
   readonly solutions: readonly Suggested<ConfirmedMetadata['solutions'][number]>[];
+  readonly hint_ladder?: Suggested<NonNullable<ConfirmedMetadata['hint_ladder']>>;
 };
 
 function merge<Field extends JsonObject>(approved: readonly Field[], suggested: readonly Suggested<Field>[], key: (value: Field) => string) {
@@ -99,11 +102,14 @@ export function projectQuestionMeta(
   const tags = merge(confirmed.tags, suggested.tags, questionTagKey);
   const solutions = merge(confirmed.solutions, suggested.solutions, questionSolutionKey);
   const verification = draft.sticky ? 'learner-reviewed' : 'unverified';
+  const ladder = draft.append_metadata?.hint_ladder;
   return { kind: 'value' as const, value: {
     sticky: draft.sticky, basis: draft.basis, gardening,
     tags: [...confirmed.tags.map(tag => ({ ...tag, verification })), ...tags.additions],
     solutions: [...confirmed.solutions.map(solution => ({ ...solution, verification })), ...solutions.additions],
-    proposals: { tags: tags.proposals, solutions: solutions.proposals },
+    ...(ladder && draft.sticky ? { hint_ladder: { ...ladder, verification } } : {}),
+    proposals: { tags: tags.proposals, solutions: solutions.proposals,
+      ...(suggested.hint_ladder ? { hint_ladder: suggested.hint_ladder } : {}) },
   } };
 }
 
@@ -118,7 +124,9 @@ function suggestions(result: Json, sources: readonly BoundSource[]): SuggestedMe
       return { ...entry, verification: 'unverified' as const, basis: [evidence] };
     });
   }
-  return { tags: annotate(metadata.tags, questionTagKey), solutions: annotate(metadata.solutions, questionSolutionKey) };
+  const [ladder] = metadata.hint_ladder ? annotate([metadata.hint_ladder], item => item.source_ref) : [];
+  return { tags: annotate(metadata.tags, questionTagKey), solutions: annotate(metadata.solutions, questionSolutionKey),
+    ...(ladder ? { hint_ladder: ladder } : {}) };
 }
 
 /** Apply only suggestions from a ledger receipt bound to the current sealed metadata plan. */

@@ -1,5 +1,6 @@
 import { FactNotFoundError, type FactId, type ReadContext, type Tick } from '@mangekyo/kernel';
 import { readCorrectionMicroVariant } from '@mangekyo/module-content/facts/correction-micro-variant';
+import { readArchetypeCoverage, readFrozenGradeQuestion } from '@mangekyo/module-content/facts/knowledge-reads';
 import { expect, test } from 'vitest';
 import { createAuthorizedFactReader, createCommandReadContext, FactReadDeniedError } from '../../../kernel/src/commands/reads.ts';
 import { readEffectiveSlotVersion } from '../../../kernel/src/derivations/revalidate.ts';
@@ -7,9 +8,43 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learn
 import { readActivityHelpEvents } from '../../activity/evidence-read.ts';
 import { projectHelpExposure } from '../../activity/help-exposure.ts';
 import { correctionMicroVariantFixture as fixture, seedCorrectionMicroVariant } from './fixtures/correction-micro-variant.ts';
+import { freezeQuestionAssessment, questionAsset } from '../asset.ts';
 
 const { learner, input, first, second, display } = fixture;
 const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
+
+test('counts distinct proven paper items and opens only the published grade version', () =>
+  withLearnerDatabase(learner, async db => {
+    await seedCorrectionMicroVariant(db);
+    await db.snapshot({ learner }, async tx => {
+      const accessEpoch = input.source.accessEpoch;
+      const access = (deny?: FactId) => ({ learner, purpose: 'teaching', recipient: 'grader', isUnavailable: unavailable,
+        read: createAuthorizedFactReader(tx, 'teaching', fact => fact.ref.id !== deny) });
+      const membershipIds = input.archetypeEdgeIds;
+      const coverage = (complete = true, deny?: FactId, missing?: FactId, scope = 'average-speed') => readArchetypeCoverage(access(deny), {
+        archetype: { ...fixture.archetype, accessEpoch }, scope,
+        memberships: { complete, edgeIds: [...membershipIds, membershipIds[0]] },
+        variants: { complete: true, edgeIds: input.variantEdgeIds },
+      }, async ({ id }) => id === missing ? undefined : { kind: 'original', key: id === second.id ? 'paper-b:q2' : 'paper-a:q1' });
+      expect(await coverage()).toMatchObject({ coveredQuestionCount: 2, variationDimensions: [
+        { dimension: '第二段时长', evidence: { id: input.variantEdgeIds[1] } },
+      ] });
+      expect(await coverage(true, undefined, undefined, ' average-speed ')).toEqual(await coverage());
+      expect(await coverage(true, undefined, undefined, ' ')).toBeUndefined();
+      expect(await coverage(false)).toBeUndefined();
+      expect(await coverage(true, second.id)).toBeUndefined();
+      expect(await coverage(true, undefined, second.id)).toBeUndefined();
+      const fact = await access().read.fact(first.id, { mode: 'pinned', rev: first.rev });
+      const published = freezeQuestionAssessment(questionAsset(fact.value), first);
+      const grade = (question = first, deny?: FactId) => readFrozenGradeQuestion(access(deny), {
+        question: { ...question, accessEpoch }, release: first, itemId: 'question',
+      }, async () => published);
+      expect(await grade()).toMatchObject({ item: published.items[0], prompt: { prompt: expect.stringContaining('平均速度') } });
+      expect(JSON.stringify(await grade())).not.toContain('PRIVATE SOLUTION');
+      expect(await grade(second)).toBeUndefined();
+      expect(await grade(first, first.id)).toBeUndefined();
+    });
+  }, { postgres: Boolean(testDatabaseUrl) }), 20_000);
 
 test('selects one current unexposed numbers-only variant using a read-only snapshot', () =>
   withLearnerDatabase(learner, async db => {

@@ -1,8 +1,9 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
-import { assetType, checkTextbookBasis, mergeTextbookBasis } from '../asset.ts';
+import { assetType, checkQuestionTeachingSources, checkTextbookBasis, mergeTextbookBasis, type AssetBasis } from '../asset.ts';
 import { sameEffectInput } from '../question-effects.ts';
+import { pinQuestionHintSource } from '../question-meta-source.ts';
 import { parseQuestionMetaProposal, proposeQuestionMetaCommand } from '../question-writes.ts';
-import { openQuestionMetaDraft, questionSolutionKey, questionTagKey, validateQuestionMetaReferences } from '../question-state.ts';
+import { readQuestionMetaForUpdate, questionSolutionKey, questionTagKey, validateQuestionMetaReferences } from '../question-state.ts';
 
 export default defineCommand({
   type: proposeQuestionMetaCommand, destructive: true, schema: { parse: parseQuestionMetaProposal },
@@ -12,7 +13,7 @@ export default defineCommand({
     if (target.type !== assetType) throw new Error('请选择题目资产。');
     await checkTextbookBasis(ctx.read, basis);
     validateQuestionMetaReferences({ id, expectedRev, append_metadata, basis, sticky: true });
-    const { snapshot, draft: previous } = await openQuestionMetaDraft(ctx.read, target.ref);
+    const { snapshot, draft: previous } = await readQuestionMetaForUpdate(ctx.read, target.ref);
     if (expectedMetaRev !== undefined && snapshot.ref.rev !== expectedMetaRev) {
       throw new Error(`Fact revision conflict: ${snapshot.ref.id}`);
     }
@@ -31,10 +32,25 @@ export default defineCommand({
     }
     const tags = apply(previous.append_metadata?.tags ?? [], append_metadata.tags, questionTagKey);
     const solutions = apply(previous.append_metadata?.solutions ?? [], append_metadata.solutions, questionSolutionKey);
+    const proposedLadder = append_metadata.hint_ladder;
+    const previousLadder = previous.sticky ? previous.append_metadata?.hint_ladder : undefined;
+    const pin = async (ladder: NonNullable<typeof proposedLadder>, witnesses: readonly AssetBasis[]) => ({
+      ...ladder, source_ref: await pinQuestionHintSource(ctx, ladder.source_ref, witnesses),
+    });
+    // Resolve retained bare references against their original witnesses before adding new revisions.
+    const retained = previousLadder && (!proposedLadder || expectedMetaRev === undefined)
+      ? await pin(previousLadder, previous.basis) : undefined;
+    let ladder = retained;
+    if (proposedLadder) {
+      if (!target.purpose.includes('teaching') && !target.purpose.includes('all')) throw new Error('题目未授权教学用途。');
+      await checkQuestionTeachingSources(ctx.read, { basis });
+      ladder = await pin(proposedLadder, basis);
+      if (retained && !sameEffectInput(retained, ladder)) throw new Error(`Fact revision conflict: ${snapshot.ref.id}`);
+    }
     return [{
       kind: 'correct', id: snapshot.ref.id, expectedRev: snapshot.ref.rev,
       data: { id, expectedRev, basis: mergeTextbookBasis(previous.basis, basis), sticky: true,
-        append_metadata: { tags, solutions },
+        append_metadata: { tags, solutions, ...(ladder ? { hint_ladder: ladder } : {}) },
       },
     }];
   },

@@ -7,7 +7,8 @@ import { assetType, checkQuestionTeachingSources, checkTextbookBasis, parseTextb
 import { openQuestionForRelease, questionVerificationType } from '@mangekyo/module-content/facts/question-release';
 import { captureObject as object, captureRef, captureText as text, sha256 } from './parse.ts';
 import { captureSourceType, sourceEnvelope, type Block } from './source.ts';
-import { layeredExtractionDeriver, layeredExtractionSlot, mergeLayeredSource, type LayeredExtractionValue } from './extraction.ts';
+import { frozenPaperBlocks, layeredExtractionDeriver, layeredExtractionSlot, type LayeredExtractionValue } from './extraction.ts';
+import { paperInteger as integer, paperMarker } from './paper-anchor.ts';
 
 export const paperIssuanceType = 'capture.paperIssuance';
 export const paperRunType = 'capture.paperRun';
@@ -15,12 +16,6 @@ export const paperRunType = 'capture.paperRun';
 type SourceRef = ReturnType<typeof captureRef>;
 type PrintPiece = { readonly blockId: string; readonly itemId: string | null; readonly text: string };
 type PrintPage = { readonly number: number; readonly pieces: readonly PrintPiece[] };
-
-function integer(value: unknown, min: number, max: number, label: string) {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max)
-    throw new Error(`${label}无效。`);
-  return value;
-}
 
 export function printLayout(input: unknown) {
   const { lines, columns } = object(input);
@@ -40,6 +35,9 @@ export type PaperIssuance = {
   readonly extraction?: ExtractionPin;
 };
 
+const correctedEdition = 'layered-print-crops-v1';
+type StoredIssuance = PaperIssuance & { readonly edition?: typeof correctedEdition };
+
 export function paperIssuance(input: unknown): PaperIssuance {
   const { source: target, epoch, layout, extraction } = object(input);
   if (typeof epoch !== 'string' || !/^(0|[1-9][0-9]*)$/.test(epoch)) throw new Error('发卷授权版本无效。');
@@ -52,6 +50,19 @@ export function paperIssuance(input: unknown): PaperIssuance {
     sourceRev: integer(pin.sourceRev, 1, source.rev, '抽取原件版本'),
     modelMethod: text(pin.modelMethod, '识别方法版本', 200),
   } };
+}
+
+export function newPaperIssuance(input: unknown) {
+  if (object(input).edition !== undefined) throw new Error('发卷版记由服务端确定。');
+  return paperIssuance(input);
+}
+
+export function storedPaperDefinition(input: unknown): StoredIssuance {
+  const data = paperIssuance(input);
+  const { edition } = object(input);
+  if (edition === undefined) return data;
+  if (edition !== correctedEdition || !data.extraction) throw new Error('发卷版记无效。');
+  return { ...data, edition };
 }
 
 type ExtractionRequest = Pick<PaperIssuance, 'source' | 'epoch'> & {
@@ -96,10 +107,12 @@ async function idFromDefinition(data: unknown) {
   return factId([...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('').slice(0, 26).toUpperCase());
 }
 
-export function paperIssuanceId(data: PaperIssuance) {
+function paperIssuanceId(data: StoredIssuance) {
   const base = ['capture.paper', data.source.id, data.source.rev, data.epoch, data.layout.lines, data.layout.columns];
   const pin = data.extraction;
-  return idFromDefinition(pin ? [...base, pin.derivationId, pin.sourceRev, pin.modelMethod] : base);
+  if (pin) base.push(pin.derivationId, pin.sourceRev, pin.modelMethod);
+  if (data.edition) base.push(data.edition);
+  return idFromDefinition(base);
 }
 
 export function defaultPaperRunId(issuanceId: string) {
@@ -372,26 +385,43 @@ async function frozenExtractionParts(fact: FactSnapshot, issuance: PaperIssuance
         return !extracted || original.blobRef !== extracted.blobRef || original.sha256 !== extracted.sha256 ||
           original.size !== extracted.size || original.mediaType !== extracted.mediaType || original.name !== extracted.name;
       })) throw new Error('分层抽取的原件、授权或识别方法不符。');
-  const merged = mergeLayeredSource(fact, snapshot.outcome).source;
-  return { title: merged.unit.title, pieces: cleanBlocks(merged.unit.blocks) };
+  return { title: source.unit.title, ...frozenPaperBlocks(fact, source, snapshot.outcome) };
+}
+
+function samePrintedPages(historical: () => readonly Block[], layout: PaperIssuance['layout'], pages: readonly PrintPage[]) {
+  try {
+    return JSON.stringify(paginate(cleanBlocks(historical()), layout)) === JSON.stringify(pages);
+  } catch {
+    // Some outcomes only became printable after dropping invalid branches.
+    return false;
+  }
 }
 
 async function projectPaper(
-  read: ReadContext, issuance: PaperIssuance, mode: 'current' | 'pinned',
+  read: ReadContext, issuance: StoredIssuance, mode: 'current' | 'pinned', choosingEdition: boolean,
   readExtraction = (read as BoundPaperRead)[paperExtraction],
 ) {
   const fact = await read.fact(issuance.source.id, { mode: 'pinned', rev: issuance.source.rev });
   if (fact.accessEpoch !== issuance.epoch || fact.ref.id !== issuance.source.id || fact.ref.rev !== issuance.source.rev)
     throw new Error('原件发放版本或用途已变更。');
-  const { title, pieces } = issuance.extraction
+  let data = issuance;
+  const parts = issuance.extraction
     ? await frozenExtractionParts(fact, issuance, mode, readExtraction)
+    : null;
+  const blocks = !choosingEdition && !issuance.edition ? parts?.historical ?? parts?.current : parts?.current;
+  const { title, pieces } = parts && blocks
+    ? { title: parts.title, pieces: cleanBlocks(blocks()) }
     : await frozenPrintParts(read, fact, mode === 'current');
-  return { issuanceId: await paperIssuanceId(issuance), title, pages: paginate(pieces, issuance.layout) };
+  const pages = paginate(pieces, data.layout);
+  if (choosingEdition && parts?.historical && !samePrintedPages(parts.historical, data.layout, pages))
+    data = { ...issuance, edition: correctedEdition };
+  const printed = { issuanceId: await paperIssuanceId(data), title, pages, questionAnchors: paperQuestionAnchors(pages) };
+  return { data, printed };
 }
 
-async function checkedPaperIssuance(fact: FactSnapshot, id: ReturnType<typeof factId>) {
-  if (fact.type !== paperIssuanceType || fact.ref.id !== id) throw new Error('发卷标识已被使用。');
-  const data = paperIssuance(fact.value);
+export async function checkedPaperIssuance(fact: FactSnapshot, id: FactId) {
+  if (fact.type !== paperIssuanceType || fact.ref.id !== id || fact.ref.rev !== 1) throw new Error('发卷标识已被使用。');
+  const data = storedPaperDefinition(fact.value);
   if (await paperIssuanceId(data) !== id) throw new Error('发卷标识与冻结卷不符。');
   return data;
 }
@@ -407,25 +437,39 @@ async function storedPaperIssuance(read: ReadContext, id: ReturnType<typeof fact
   return checkedPaperIssuance(fact, id);
 }
 
+export async function openIssuedPaper(read: ReadContext, id: FactId, readExtraction?: PaperExtractionReader) {
+  const issuance = await read.fact(id, { mode: 'following' });
+  return (await projectPaper(read, await checkedPaperIssuance(issuance, id), 'pinned', false, readExtraction)).printed;
+}
+
 /** Evaluate a new release even when the same source and layout were issued before. */
-export function projectNewPaper(read: ReadContext, issuance: PaperIssuance) {
-  return projectPaper(read, issuance, 'current');
+export async function projectNewPaper(read: ReadContext, issuance: PaperIssuance) {
+  return (await projectPaper(read, issuance, 'current', true)).printed;
+}
+
+export async function resolvePaperIssue(read: ReadContext, data: PaperIssuance, readExtraction?: PaperExtractionReader) {
+  const legacyId = await paperIssuanceId(data);
+  const revised = data.extraction && await storedPaperIssuance(read, await paperIssuanceId({ ...data, edition: correctedEdition }));
+  if (revised) return { ...await projectPaper(read, revised, 'pinned', false, readExtraction), existing: true };
+  const stored = await storedPaperIssuance(read, legacyId);
+  if (stored) {
+    const projected = await projectPaper(read, stored, 'pinned', true, readExtraction);
+    if (projected.printed.issuanceId === legacyId) return { ...projected, existing: true };
+  }
+  const current = await read.fact(data.source.id, { mode: 'following' });
+  if (current.ref.rev !== data.source.rev || current.accessEpoch !== data.epoch)
+    throw new Error('原件发放版本或用途已变更。');
+  return { ...await projectPaper(read, data, 'current', true, readExtraction), existing: false };
 }
 
 export async function projectIssuedPaper(read: ReadContext, issuance: PaperIssuance, readExtraction?: PaperExtractionReader) {
-  const stored = await storedPaperIssuance(read, await paperIssuanceId(issuance));
-  return stored ? projectPaper(read, stored, 'pinned', readExtraction) : projectPaper(read, issuance, 'current', readExtraction);
+  return (await resolvePaperIssue(read, issuance, readExtraction)).printed;
 }
 
 export async function issuePaperWrites(read: ReadContext, data: PaperIssuance, readExtraction?: PaperExtractionReader): Promise<readonly FactWrite[]> {
-  const id = await paperIssuanceId(data);
-  const stored = await storedPaperIssuance(read, id);
-  if (stored) {
-    await projectPaper(read, stored, 'pinned', readExtraction);
-    return [];
-  }
-  await projectPaper(read, data, 'current', readExtraction);
-  return [{ kind: 'create', id, factType: paperIssuanceType, data, purpose: ['storage'] }];
+  const resolved = await resolvePaperIssue(read, data, readExtraction);
+  return resolved.existing ? [] : [{ kind: 'create', id: resolved.printed.issuanceId,
+    factType: paperIssuanceType, data: resolved.data, purpose: ['storage'] }];
 }
 
 function paperPage(input: unknown) {
@@ -450,11 +494,13 @@ export function paperRun(input: unknown) {
 
 export function collectPaperInput(input: unknown) {
   const row = object(input);
+  const marker = row.marker === undefined ? undefined : paperMarker(row.marker);
   return {
-    issuanceId: factId(text(row.issuanceId, '发卷标识', 26)),
+    issuanceId: row.issuanceId === undefined && marker ? marker.issuanceId : factId(text(row.issuanceId, '发卷标识', 26)),
     source: captureRef(row.source),
-    page: row.page,
+    page: row.page === undefined ? marker?.page : row.page,
     original: row.original,
+    ...(marker === undefined ? {} : { marker }),
     ...(row.retryId === undefined ? {} : { retryId: factId(text(row.retryId, '再做标识', 26)) }),
   };
 }
@@ -494,17 +540,22 @@ export function readPaperDisplayInput(body: Record<string, unknown>) {
 }
 
 export async function collectPaperWrites(
-  read: ReadContext, { issuanceId, source, page, original, retryId }: ReturnType<typeof collectPaperInput>,
+  read: ReadContext, { issuanceId, source, page, original, retryId, marker }: ReturnType<typeof collectPaperInput>,
   readExtraction?: PaperExtractionReader,
 ): Promise<readonly FactWrite[]> {
-  const issuance = await read.fact(issuanceId, { mode: 'following' });
-  const printed = await projectPaper(read, await checkedPaperIssuance(issuance, issuanceId), 'pinned', readExtraction);
+  if (marker && (marker.issuanceId !== issuanceId || marker.page !== page))
+    throw new Error('照片定位与所选发卷或页码不符。');
+  const printed = await openIssuedPaper(read, issuanceId, readExtraction);
   const fact = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
   if (fact.type !== captureSourceType) throw new Error('回收图片必须来自原件。');
   const captured = sourceEnvelope(fact.value);
   if (captured.kind !== 'paper-return' || !printed.pages.some(p => p.number === page) ||
       typeof original !== 'number' || !Number.isSafeInteger(original) || original < 0 || !captured.originals[original])
     throw new Error('回收图片或页码无效。');
+  const assignment = captured.paperReturn;
+  if (assignment && (assignment.issuanceId !== issuanceId || assignment.page !== page ||
+      assignment.original !== original || assignment.retryId !== retryId))
+    throw new Error('回收与原件确认的发卷、页码或作答不匹配。');
   const hash = captured.originals[original].sha256;
   const entry = { number: page, source, original, hash };
   const defaultId = await defaultPaperRunId(issuanceId);
@@ -526,8 +577,7 @@ export async function collectPaperWrites(
   return [{ kind: 'correct', id, expectedRev: run.ref.rev, data: paperRun({ issuanceId, pages: [...prior.pages, entry] }) }];
 }
 
-export function paperReturnCoverage(pages: readonly PrintPage[], returned: readonly number[]) {
-  const present = new Set(returned);
+function paperQuestionAnchors(pages: readonly PrintPage[]) {
   const required = new Map<string, Set<number>>();
   for (const page of pages) {
     for (const { itemId } of page.pieces) {
@@ -537,9 +587,15 @@ export function paperReturnCoverage(pages: readonly PrintPage[], returned: reado
       required.set(itemId, seen);
     }
   }
-  return [...required].map(([itemId, pageNumbers]) => ({
-    itemId,
-    status: [...pageNumbers].every(page => present.has(page)) ? 'pages-received' as const : 'unsubmitted' as const,
+  return [...required].map(([itemId, pageNumbers], index) => ({
+    itemId, number: index + 1, pages: [...pageNumbers],
+  }));
+}
+
+export function paperReturnCoverage(pages: readonly PrintPage[], returned: readonly number[]) {
+  const present = new Set(returned);
+  return paperQuestionAnchors(pages).map(({ itemId, pages }) => ({
+    itemId, status: pages.every(page => present.has(page)) ? 'pages-received' as const : 'unsubmitted' as const,
   }));
 }
 

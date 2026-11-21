@@ -15,6 +15,7 @@
     "./question-meta": "./question-meta.ts",
     "./question-verification": "./question-verification.ts",
     "./facts/paper-capsules": "./paper-capsules.ts",
+    "./facts/knowledge-reads": "./knowledge-reads.ts",
     "./facts/correction-micro-variant": "./correction-micro-variant.ts",
     "./facts/question-release": "./question-release.ts",
     "./facts/arithmetic-practice": "./arithmetic-practice.ts",

@@ -1,8 +1,8 @@
 import { defineDeriver } from '@mangekyo/kernel';
-import { gather, projectQuestionMeta, questionMetaMethodVersion, questionMetaType } from '../question-meta.ts';
+import { gather, projectQuestionMeta, questionMetaDeriver, questionMetaMethodVersion, questionMetaType } from '../question-meta.ts';
 
 export default defineDeriver({
-  name: 'content/question-meta',
+  name: questionMetaDeriver,
   version: questionMetaMethodVersion,
   slot: questionMetaType,
   gather,

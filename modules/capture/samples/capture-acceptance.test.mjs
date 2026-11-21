@@ -8,9 +8,11 @@ import {
   clarificationRegions, gatherLayeredExtraction, layeredExtractionDeriver, layeredExtractionSlot,
   mergeLayeredSource, settleLayeredExtraction,
 } from '../extraction.ts';
+import { sourceBlocks } from '../source.ts';
 import exerciseLayeredPaper from './layered-paper-assessment.test.mjs';
 import exerciseNotion from './notion-acceptance.test.mjs';
 import exerciseTextbook from '../../content/samples/textbook-acceptance.test.mjs';
+import { numericQuestion } from '../../content/samples/fixtures/question.ts';
 
 const root = new URL('../../../', import.meta.url);
 const load = file => import(new URL(file, root));
@@ -19,6 +21,7 @@ const { createStudioCommandHooks } = await load('runtime/studio/command-hooks.ts
 const { stableId } = await load('runtime/studio/identity.ts');
 const { createCommandReadContext, UnsupportedReadError } = await load('kernel/src/commands/reads.ts');
 const { gatherSnapshot } = await load('kernel/src/derivations/gather.ts');
+const { readEffectiveSlotVersion } = await load('kernel/src/derivations/revalidate.ts');
 const { sealCandidate, submitCandidate } = await load('kernel/src/derivations/candidate.ts');
 const { runEffect } = await load('kernel/src/work/index.ts');
 const { enqueueWork } = await load('kernel/src/work/todos.ts');
@@ -34,19 +37,6 @@ const captureBlock = (id, body, original = 0, parentId = null) => ({
 });
 const jpeg = (name, blobRef, hex) => ({ name, blobRef, mediaType: 'image/jpeg', size: 100, sha256: hex.repeat(64) });
 
-function numericQuestion(title, prompt, criterionId, value, blocks) {
-  const statement = { id: 'statement', parentId: null, body: { kind: 'text', text: prompt } };
-  return {
-    kind: 'question', title, promptBlockId: statement.id, blocks: [statement, ...blocks],
-    response_schema: [{ slotId: 'answer', schemaVersion: '1', fields: [{ kind: 'numeric', path: '' }] }],
-    assessment_contract: [{
-      criterionId, inputs: [{ slotId: 'answer', path: '' }], maximum: 1,
-      missingEvidence: 'insufficient-evidence', evaluator: { id: 'frozen-value-match', version: '1' },
-      parameters: { value },
-    }],
-  };
-}
-
 const connectionString = process.env.MANGEKYO_CAPTURE_ACCEPTANCE_URL ?? testDatabaseUrl;
 await withLearnerDatabase(learner, async db => {
   const gather = (plan, purpose = 'teaching') => gatherSnapshot(db, { learner, purpose }, plan);
@@ -55,11 +45,22 @@ await withLearnerDatabase(learner, async db => {
   }), purpose);
   const modules = await Promise.all(['capture', 'content', 'activity'].map(loadStudioTestModule));
   const hooks = createStudioCommandHooks();
-  const handle = createCommandHandler(db, { modules, hooks });
+  const withExtraction = (tx, purpose, base) => ({ ...base, async slot(ref, options) {
+    if (ref.type !== layeredExtractionSlot || options.mode !== 'following') return base.slot(ref, options);
+    const effective = await readEffectiveSlotVersion(tx, ref, layeredExtractionDeriver, purpose);
+    if (!effective) throw new Error('Expected an effective extraction');
+    return effective.snapshot;
+  } });
+  const handle = createCommandHandler(db, { modules, hooks, bindCommandRead: (tx, request, base) => withExtraction(tx, request.purpose, base) });
   function send(type, input, { actor = 'learner', purpose = 'storage', commandId: id = commandId() } = {}) {
     return handle({ learner, id, type, input, actor, purpose });
   }
-  const read = (action, purpose = 'storage') => db.snapshot({ learner }, tx => action(createCommandReadContext(tx, purpose)));
+  const sendCompanion = (type, input, purpose) => send(type, input, { actor: 'companion', purpose });
+  const snapshot = action => db.snapshot({ learner }, action);
+  const read = (action, purpose = 'storage', layered = false) => snapshot(tx => {
+    const base = createCommandReadContext(tx, purpose);
+    return action(layered ? withExtraction(tx, purpose, base) : base);
+  });
   const current = (id, purpose) => read(context => context.fact(id, { mode: 'following' }), purpose);
   const ingestPhoto = (id, title, originals, options) => send('capture.ingest', {
     id, purpose: ['storage', 'teaching'], envelope: visualEnvelope('photo', title, originals),
@@ -93,7 +94,7 @@ await withLearnerDatabase(learner, async db => {
     return { sealed, outcome };
   }
 
-  const extract = (key, blocks, originals, { inspect, authorize } = {}) =>
+  const extract = (key, blocks, originals, { inspect, authorize, settle = settleLayeredExtraction } = {}) =>
     publish(layeredExtractionSlot, key.target.id, layeredExtractionDeriver, {
       plan: ctx => gatherLayeredExtraction(ctx, key),
       inspect,
@@ -104,9 +105,9 @@ await withLearnerDatabase(learner, async db => {
         return { version: stepKey, blocks };
       },
       authorize,
-      settle: ({ plan }, receipts) => settleLayeredExtraction(plan.data, receipts),
+      settle: ({ plan }, receipts) => settle(plan.data, receipts),
     });
-  const fixture = { db, learner, stableId, load, send, assert, read, current, hooks, gatherValue, publish, extract,
+  const fixture = { db, learner, stableId, load, send, sendCompanion, assert, snapshot, read, current, hooks, gatherValue, publish, extract,
     proposeExtraction, confirmExtraction, captureBlock, ingestPhoto, jpeg, numericQuestion,
     content: modules.find(module => module.definition.name === 'content') };
   await run(fixture);
@@ -115,9 +116,10 @@ await withLearnerDatabase(learner, async db => {
   await exerciseTextbook(fixture, handle.decideProposal);
 }, { postgres: Boolean(connectionString), connectionString });
 
-async function run({ send, read, current, gatherValue, extract, ingestPhoto, proposeExtraction }) {
+async function run({ send, read, current, gatherValue, extract, ingestPhoto, proposeExtraction, confirmExtraction }) {
   const {bindPaperCommandRead, defaultPaperRunId, projectIssuedPaper, projectNewPaper, paperIssuance,
     paperRun, paperReturnCoverage} = await load('modules/capture/paper.ts');
+  const {openPaperRun} = await load('modules/capture/paper-answers.ts');
   const firstPage = hex => jpeg('page.jpg', 'accept:' + hex, hex);
   const originals = [firstPage('f')];
   const base = stableId('capture-pg-fixture');
@@ -156,13 +158,20 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   assert.equal(mergeLayeredSource(await current(learnerId),outcome).source.unit.blocks.length,blocks.length);
   const layeredIssue = paperIssuance({source:targetKey.target,epoch:targetKey.accessEpoch,layout:{lines:10,columns:16},
     extraction:{derivationId:sealed.id,sourceRev:1,modelMethod:targetKey.modelMethod}});
-  const preview = await read(context => projectIssuedPaper(bindPaperCommandRead(context, {readExtraction: async (_request, mode) => {
+  const layeredPreview = outcome => read(context => projectIssuedPaper(bindPaperCommandRead(context, {readExtraction: async (_request, mode) => {
     assert.equal(mode, 'current');
     return {deriver:layeredExtractionDeriver,manifest:sealed.manifest,
       snapshot:{id:sealed.id,slot:{learner,type:layeredExtractionSlot,key:learnerId},outcome}};
   }}), layeredIssue));
+  const preview = await layeredPreview(outcome);
   assert.match(preview.pages.flatMap(page=>page.pieces).map(piece=>piece.text).join(''), /请答第 1 题/);
   assert.doesNotMatch(JSON.stringify(preview), /hidden|blobRef|sha256/);
+  const invalidMaterial = captureBlock('invalid-material', { layer:'material', status:'known', text:'M'.repeat(160),
+    crop_ref:{original:0,page:2,bbox:[0.1,0.2,0.8,0.9]} });
+  const revised = await layeredPreview({ ...outcome, value:{ ...outcome.value, blocks:[invalidMaterial,...outcome.value.blocks] } });
+  assert.notEqual(revised.issuanceId, preview.issuanceId);
+  assert.deepEqual(revised.pages, preview.pages);
+  await assert.rejects(send('capture.issuePaper', { ...layeredIssue, edition:'layered-print-crops-v1' }), /版记由服务端/);
   const [region] = clarificationRegions(savedSource, outcome);
   assert.equal(region.originalSha256, savedSource.value.originals[0].sha256);
   assert.equal(region.id, 'unknown');
@@ -252,22 +261,89 @@ async function run({ send, read, current, gatherValue, extract, ingestPhoto, pro
   const questionPages = projected.pages.filter(page=>page.pieces.some(piece=>piece.itemId==='q2')).map(page=>page.number);
   assert.ok(questionPages.length>1);
   const runId = await defaultPaperRunId(issuanceId);
+  const view = (id = runId) => read(ctx => openPaperRun(ctx,{issuanceId,runId:id}));
+  const item = async id => (await view(id)).items.find(row=>row.itemId==='q2');
+  const retryId=stableId('intentional retry');
+  assert.equal((await read(ctx=>openPaperRun(ctx,{issuanceId}))).items.find(row=>row.itemId==='q2').status,'unsubmitted');
   for (const [i,page] of questionPages.entries()) {
     const source = stableId('return:'+i);
     const hex = (i+1).toString(16);
-    await send('capture.ingest', { id: source, envelope: visualEnvelope('paper-return', '跨页验证', [firstPage(hex)]) });
+    const start = performance.now();
+    await send('capture.ingest', { id: source, purpose:['storage','teaching'], envelope: visualEnvelope('paper-return', '跨页验证', [firstPage(hex)]),
+      ...(i===1 ? {paperReturn:{issuanceId,page,original:0}} : {}) });
+    const ingestMs = performance.now() - start;
     const returned = {issuanceId,source:{id:source,rev:1},page,original:0};
-    const receipts = i===0 ? await Promise.all([send('capture.collectPaper',returned),send('capture.collectPaper',returned)]) : [await send('capture.collectPaper',returned)];
+    if(i===1) await assert.rejects(send('capture.collectPaper',{...returned,page:questionPages[0],retryId}),/与原件确认/);
+    const receipts = i===0 ? await Promise.all([send('capture.collectPaper',returned),
+      send('capture.collectPaper',{source:returned.source,original:0,marker:{issuanceId,page}})]) : [await send('capture.collectPaper',returned)];
     assert.equal(receipts.reduce((total,receipt)=>total+receipt.wrote.length,0),1);
     const run = paperRun((await current(runId)).value);
     const coverage = paperReturnCoverage(projected.pages,run.pages.map(page=>page.number));
     assert.equal(coverage.find(item=>item.itemId==='q2').status,i===questionPages.length-1?'pages-received':'unsubmitted');
     if(i===0) {
-      const retryId=stableId('intentional retry');
       assert.equal((await send('capture.collectPaper',{...returned,retryId})).wrote[0].id,retryId);
+      await assert.rejects(send('capture.collectPaper',{...returned,marker:{issuanceId:stableId('different edition'),page}}),/定位与所选发卷/);
+      const red = captureBlock('red-return',{layer:'correction',status:'known',text:'RED'});
+      const ink = [unknowable, red, captureBlock('red-child',{layer:'handwriting',status:'known',text:'RED',itemId:'q2',slotId:'slot1'},0,red.id)];
+      await confirmExtraction({target:returned.source,blocks:ink});
+      const before = await item();
+      assert.equal(before.status,'unsubmitted');
+      assert.deepEqual([before.number,before.answers.length],[2,1]);
+      const input = {issuanceId,runId,itemId:'q2',slotId:'slot1',witness:before.answers[0].witness};
+      const ask = () => send('capture.clarifyPaperAnswer',input);
+      assert.equal((await Promise.all([ask(),ask()])).reduce((sum,receipt)=>sum+receipt.wrote.length,0),1);
+      await assert.rejects(send('capture.correctPaperAnswer',{...input,text:'0.5'}),/原件版本已变更/);
+      const asked = (await item()).answers[0];
+      assert.equal(asked.value.region.clarification,'asked');
+      assert.equal((await item(retryId)).answers[0].value.region.clarification,'pending');
+      await send('capture.correctPaperAnswer',{...input,witness:asked.witness,text:'0.5'});
+      await confirmExtraction({target:(await current(source)).ref,blocks:[{...unknowable,id:'renamed',body:{...unknowable.body,status:'known',text:'0.8'}},red]});
+      assert.deepEqual((await item()).answers.map(answer=>answer.value),[{status:'known',text:'0.5',sticky:true}]);
+      assert.equal((await item(retryId)).answers[0].value.text,'0.8');
+      console.log(JSON.stringify({checked:'paper-run answers pg',ingestMs,question:before.number,askWrites:1,original:asked.witness.originalSha256}));
     }
   }
   const run = paperRun((await current(runId)).value);
   assert.equal(run.pages.length,questionPages.length);
+  await confirmExtraction({target:issue.source,blocks:blocks.map(block=>block.id==='prompt2' ? {...block,body:{...block.body,text:'新版本题面'}} : block)});
+  const next = await send('capture.issuePaper',{...issue,source:(await current(base)).ref});
+  assert.notEqual(next.wrote[0].id,issuanceId);
+  await assert.rejects(read(ctx=>openPaperRun(ctx,{issuanceId:next.wrote[0].id,runId})),/回收与发卷不匹配/);
+  assert.deepEqual(await read(ctx=>projectIssuedPaper(ctx,issue)),projected);
+  assert.equal((await item()).status,'recognized');
+  const photo = [firstPage('a')], source = stableId('paper witness photo');
+  const captured = await send('capture.ingest', {id:source,purpose:['storage','teaching'],envelope:visualEnvelope('paper-return','手写',photo)});
+  const returned = {issuanceId,source:captured.wrote[0],page:questionPages[0],original:0};
+  const [first,redo] = ['paper witness run','paper witness redo'].map(label=>stableId(label));
+  for (const retryId of [first,redo]) await send('capture.collectPaper',{...returned,retryId});
+  const key = {target:returned.source,accessEpoch:'0',modelMethod:'fixture/vision-v1'};
+  const layerView = async runId => (await read(ctx=>openPaperRun(ctx,{issuanceId,runId,extraction:'layered'}),'storage',true))
+    .items.find(item=>item.itemId==='q2').answers;
+  const reopen = async runId => (await layerView(runId))[0].witness;
+  const input = {issuanceId,runId:first,itemId:'q2',slotId:'slot1'};
+  const wrongPage = {...unknowable.body.crop_ref,page:2};
+  const legacyBlocks = [unknowable, captureBlock('invalid-page',{...unknowable.body,crop_ref:wrongPage}),
+    captureBlock('child-of-invalid',unknowable.body,0,'invalid-page')];
+  const previous = await extract(key,legacyBlocks,photo,{settle(plan,receipts) {
+    assert.equal(settleLayeredExtraction(plan,receipts).kind,'unknown');
+    return {kind:'value',value:{basis:plan.basis,originals:photo,blocks:sourceBlocks(legacyBlocks,'paper-return',photo)}};
+  }});
+  const legacySource = await current(source);
+  assert.deepEqual(clarificationRegions(legacySource,previous.outcome).map(region=>region.id),[unknowable.id]);
+  assert.deepEqual(mergeLayeredSource(legacySource,previous.outcome).source.unit.blocks.map(block=>block.id),[unknowable.id]);
+  assert.deepEqual((await layerView(first)).map(answer=>answer.witness.originalPage),[1]);
+  const old = await reopen(first);
+  const latest = await extract(key,[{...unknowable,body:{...unknowable.body,candidates:['4','9']}}],photo);
+  const fresh = await reopen(first);
+  assert.deepEqual([old.basis.derivationId,fresh.basis.derivationId],[previous.sealed.id,latest.sealed.id]);
+  assert.deepEqual(old.source,fresh.source);
+  await assert.rejects(send('capture.correctPaperAnswer',{...input,witness:old,text:'0.5'}),/抽取版本已变更/);
+  await assert.rejects(send('capture.clarifyPaperAnswer',{...input,witness:fresh,runId:redo}),/作答见证与发卷/);
+  await assert.rejects(send('capture.clarifyPaperAnswer',{...input,witness:fresh,extraction:'saved'}),/见证与抽取方式/);
+  await assert.rejects(send('capture.correctPaperAnswer',{...input,witness:{...fresh,originalPage:2},text:'4'}),/作答位置已变更/);
+  assert.equal((await current(source)).ref.rev,old.source.rev);
+  assert.equal((await send('capture.correctPaperAnswer',{...input,witness:fresh,text:'4'})).wrote.length,1);
+  assert.equal((await send('capture.clarifyPaperAnswer',{...input,runId:redo,witness:await reopen(redo)})).wrote.length,1);
+  console.log(JSON.stringify({checked:'paper witness pg',first,redo,old:old.basis,current:fresh.basis,invalidWrites:0,currentWrites:2}));
   console.log(JSON.stringify({checked:'capture pg',pages:projected.pages.length,returned:run.pages.length,stickyText:'0.5'}));
 }

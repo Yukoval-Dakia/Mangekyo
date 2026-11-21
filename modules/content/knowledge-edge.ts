@@ -147,7 +147,8 @@ function variant(input: unknown): KnowledgeVariant {
 export function parseKnowledgeEdge(input: unknown): KnowledgeEdge {
   const value = record(input);
   fields(value, 'kind', 'from', 'to', 'sourceUses', 'scope', 'variant', 'verification', 'confidence');
-  const kind = knowledgeEdgeKinds.find(candidate => candidate === value.kind);
+  // The relation tool's canonical_archetype name uses the existing question → archetype edge.
+  const kind = value.kind === 'canonical_archetype' ? 'instance_of' : knowledgeEdgeKinds.find(candidate => candidate === value.kind);
   if (!kind) throw new Error('知识边类型无效。');
   const from = endpointInput(value.from);
   const to = endpointInput(value.to);
@@ -227,9 +228,10 @@ export function knowledgeUseKey(use: KnowledgeSourceUse): string {
   return `${use.id}:${use.rev}:${use.accessEpoch}`;
 }
 
-export async function readKnowledgeUse(ctx: AssetReadContext, use: KnowledgeSourceUse): Promise<FactSnapshot> {
-  const fact = await ctx.read.fact(use.id, { mode: 'pinned', rev: use.rev });
-  if (fact.ref.learner !== ctx.learner || fact.accessEpoch !== use.accessEpoch) {
+export async function readKnowledgeUse(ctx: AssetReadContext, use: KnowledgeSourceUse, requirePurpose?: string): Promise<FactSnapshot> {
+  const fact = await ctx.read.fact(use.id, { mode: 'pinned', rev: use.rev,
+    ...(requirePurpose === undefined ? {} : { requirePurpose }) });
+  if (fact.ref.learner !== ctx.learner || fact.ref.id !== use.id || fact.ref.rev !== use.rev || fact.accessEpoch !== use.accessEpoch) {
     throw new KnowledgeEdgeBasisError('来源访问代次已经变化。');
   }
   return fact;
@@ -280,6 +282,8 @@ export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
   readonly hops: 1 | 2;
   readonly direction?: 'inbound' | 'outbound' | 'both';
   readonly acceptEdge?: (edge: KnowledgeEdge) => boolean;
+  /** Match an authorized pinned endpoint to the current root after checking continuity. */
+  readonly reopenFollowingRootAlias?: (endpoint: KnowledgeEndpoint) => Promise<boolean>;
   readonly uniquePaths?: boolean;
   readonly unavailable?: (error: unknown) => boolean;
 }) {
@@ -321,10 +325,12 @@ export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
       const snapshots = new Map(basis.map(source => [knowledgeUseKey({
         id: source.ref.id, rev: source.ref.rev, accessEpoch: source.accessEpoch,
       }), source]));
-      const endpoint = (end: KnowledgeEndpoint) => {
+      const endpoint = async (end: KnowledgeEndpoint) => {
         const snapshot = snapshots.get(knowledgeUseKey(end.sourceUse));
         if (!snapshot) throw new KnowledgeEdgeBasisError('图谱端点依据缺失。');
-        return project(end, snapshot);
+        const projected = await project(end, snapshot);
+        if (input.mode === 'following' && await input.reopenFollowingRootAlias?.(end)) return projectedRoot;
+        return projected;
       };
       return { ref: fact.ref, accessEpoch: fact.accessEpoch, edge, from: await endpoint(edge.from), to: await endpoint(edge.to) };
     } catch (error) {

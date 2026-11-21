@@ -4,9 +4,10 @@ import type { Db } from '../../../../kernel/src/db/types.ts';
 import { loadStudioTestModule } from '../../../../runtime/studio/test/modules.ts';
 import { helpExposureRequest, type HelpTarget } from '../../../activity/help-exposure-values.ts';
 import { createKnowledgeEdgeCommand } from '../../knowledge-edge.ts';
-import { verificationSteps, type QuestionExecution } from '../../question-effects.ts';
+import { verificationSteps } from '../../question-effects.ts';
 import { evaluateQuestionVerification, questionVerificationKey, questionVerificationMethodVersion, questionVerificationType } from '../../question-state.ts';
 import { saveQuestionCommand } from '../../question-writes.ts';
+import { localVerificationExecution, numericQuestion } from './question.ts';
 
 const id = (suffix: string) => factId(suffix.padStart(26, '0'));
 const learner = learnerId(id('100'));
@@ -28,17 +29,10 @@ export const correctionMicroVariantFixture = {
   target: (candidate: typeof first): HelpTarget => ({ activityId: candidate.id, issuance: candidate, item: { itemId: 'question' } }),
 };
 
-const question = (hours: number) => ({
-  kind: 'question', title: '平均速度', promptBlockId: 'statement',
-  blocks: [
-    { id: 'statement', parentId: null, body: { kind: 'text', text: `先以 30 km/h 行驶 1 小时，再以 60 km/h 行驶 ${hours} 小时。平均速度是多少？` } },
-    { id: 'solution', parentId: null, body: { kind: 'text', text: 'PRIVATE SOLUTION' } },
-  ],
-  response_schema: [{ slotId: 'answer', schemaVersion: '1', fields: [{ path: '', kind: 'numeric' }] }],
-  assessment_contract: [{ criterionId: 'average', inputs: [{ slotId: 'answer', path: '' }],
-    evaluator: { id: 'frozen-value-match', version: '1' }, parameters: { value: (30 + 60 * hours) / (1 + hours) },
-    maximum: 1, missingEvidence: 'insufficient-evidence' }],
-});
+const averageSpeed = (hours: number) => (30 + 60 * hours) / (1 + hours);
+const question = (hours: number) => numericQuestion('平均速度',
+  `先以 30 km/h 行驶 1 小时，再以 60 km/h 行驶 ${hours} 小时。平均速度是多少？`, 'average', averageSpeed(hours),
+  [{ id: 'solution', parentId: null, body: { kind: 'text', text: 'PRIVATE SOLUTION' } }]);
 
 export async function seedCorrectionMicroVariant(db: Db) {
   const { display, deriver, target } = correctionMicroVariantFixture;
@@ -51,7 +45,8 @@ export async function seedCorrectionMicroVariant(db: Db) {
     const from = { kind: 'question', sourceUse: use(candidate) };
     const to = kind === 'instance_of' ? { kind: 'archetype', sourceUse: use(archetype) } : { kind: 'question', sourceUse: use(source) };
     return command(createKnowledgeEdgeCommand, { id, purpose: 'teaching', edge: {
-      kind, from, to, sourceUses: [from.sourceUse, to.sourceUse], scope: 'average-speed',
+      kind: kind === 'instance_of' ? 'canonical_archetype' : kind,
+      from, to, sourceUses: [from.sourceUse, to.sourceUse], scope: 'average-speed',
       ...(kind === 'variant_of' ? { variant: { familyId: 'average-speed', relation: 'numbers_only',
         preserved: ['两段速度'], changed: ['第二段时长'], spoilsNext: 'none' } } : {}),
     } });
@@ -75,16 +70,12 @@ export async function seedCorrectionMicroVariant(db: Db) {
       ...use(candidate), recheck: 0, methodVersion: questionVerificationMethodVersion,
     };
     // The fixture supplies synthetic consensus receipts without running the WASM host.
-    const checks = verificationSteps.map(({ stepKey }, step) => {
-      const digest = (step + 1).toString(16).repeat(64);
-      const execution: QuestionExecution = {
-        kind: 'local_wasm', moduleDigest: digest, executableDigest: digest, feeMicroUsd: 0,
-      };
-      return { invocationId: `${candidate.id}:${stepKey}`, execution, result: {
-        answerKey: String((30 + 60 * (index + 1)) / (index + 2)), conditionKey: 'average-speed',
+    const checks = verificationSteps.map(({ stepKey }, step) => ({
+      invocationId: `${candidate.id}:${stepKey}`, execution: localVerificationExecution((step + 1).toString(16)),
+      result: { answerKey: String(averageSpeed(index + 1)), conditionKey: 'average-speed',
         reasoning: 'PRIVATE VERIFICATION REASONING', eligible: true,
-      } };
-    });
+      },
+    }));
     const value = { kind: 'value', value: evaluateQuestionVerification(basis, checks) };
     const manifest = { version: 1, learner, purpose: 'teaching', gatherTick: '4',
       inputs: [{ kind: 'fact', mode: 'following', ...use(candidate) }] };
