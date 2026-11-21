@@ -111,6 +111,16 @@ export async function readOwnStudyTurn(tx: ReadTransaction, id: string) {
   return fact;
 }
 
+export async function requireSessionTurn(tx: ReadTransaction, id: string) {
+  try {
+    return await readOwnStudyTurn(tx, id);
+  } catch (error) {
+    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError)
+      throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
+    throw error;
+  }
+}
+
 async function history(tx: ReadTransaction, session: string, check?: CheckNotionRead): Promise<TurnView[]> {
   const { rows } = await tx.query<{
     id: string;
@@ -132,13 +142,7 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
   const grantCurrent = workspaceGrantChecker(tx);
   let materialAvailable = true;
   for (const row of rows) {
-    const snapshot = await readOwnStudyTurn(tx, row.id)
-      .catch((error: unknown) => {
-        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) {
-          throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
-        }
-        throw error;
-      });
+    const snapshot = await requireSessionTurn(tx, row.id);
     const stored = studyTurn(snapshot.value);
     if (!stored.parentId && stored.attachment)
       materialAvailable = await attachmentCurrent(tx,stored) && await grantCurrent(stored);

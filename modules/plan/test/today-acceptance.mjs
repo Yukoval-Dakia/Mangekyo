@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { createPgliteDb } from '../../../kernel/src/db/pglite.ts';
 import { gatherSnapshot } from '../../../kernel/src/derivations/gather.ts';
 import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
 import { createCommandReadContext } from '../../../kernel/src/commands/reads.ts';
-import { applyKernelSchema } from '../../../kernel/src/schema.ts';
+import { withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
 import { openOrganizer } from '../../../runtime/studio/organizer.ts';
 import { studioLearner } from '../../../runtime/studio/identity.ts';
@@ -89,13 +87,8 @@ test('固定周三晚，明日作业取消时仅重排未开始项；三分钟�
 });
 
 test('空库使用内置包，真实内核回执、本人确认、旧版本冲突及记录重读',async()=>{
-  const require = createRequire(new URL('../../../kernel/package.json',import.meta.url));
-  const {PGlite} = require('@electric-sql/pglite');
-  const db = createPgliteDb(new PGlite());
-  try {
-    await applyKernelSchema(db);
-    const learner = '00000000000000000000000001', goalId = '00000000000000000000000002', ruleId = '00000000000000000000000003';
-    await db.query('INSERT INTO learners(id) VALUES($1)',[learner]);
+  const learner = '00000000000000000000000001', goalId = '00000000000000000000000002', ruleId = '00000000000000000000000003';
+  await withLearnerDatabase(learner, async db => {
     const modules = await Promise.all(['..','../../activity'].map(p=>loadModuleDirectory(fileURLToPath(new URL(p+'/',import.meta.url)))));
     await db.query('INSERT INTO learners(id) VALUES($1)',[studioLearner]);
     const organizer = openOrganizer(db,modules[1],modules[0],{onFactsChanged:async()=>{}});
@@ -156,5 +149,5 @@ test('空库使用内置包，真实内核回执、本人确认、旧版本冲�
     await assert.rejects(()=>handle(req('plan.saveRule',{id:ruleId,expectedRev:1,data:null})),/revision conflict/);
     await handle(req('plan.saveRule',{id:ruleId,expectedRev:2,data:null}));
     await assert.rejects(()=>read(ruleId));
-  } finally {await db.close();}
+  }, {postgres: false});
 });

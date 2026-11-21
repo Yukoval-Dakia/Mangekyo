@@ -1,18 +1,12 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { studioJsonApi } from './acceptance-fixtures.mjs';
 
 const url = new URL(process.argv[2] ?? '');
 if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(url.hostname))
   throw Error('请指定本机测试实例地址。这项验收会创建材料、笔记、计划和两份作答记录。');
 const route = path => new URL('/api/' + path, url);
-async function api(path, data) {
-  const response = await fetch(route(path), data && {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-  });
-  const value = await response.json();
-  assert.ok(response.ok, path + ' ' + response.status + ' ' + JSON.stringify(value));
-  return value;
-}
+const api = studioJsonApi(url);
 const importKey = randomUUID();
 const materialText = '海边观测日记\n' + '晴天天气记录。'.repeat(600) + '\n最末一页：夜间陆地降温较快。';
 const form = new FormData();

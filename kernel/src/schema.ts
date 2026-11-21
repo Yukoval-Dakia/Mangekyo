@@ -2,6 +2,7 @@ import { installErasureFence, migrateLifecycle, requireLifecycleCutover } from '
 import type { Db, DbQuery } from './db/types.ts';
 import { newUlid } from './work/identity.ts';
 import { migrateTodoWork } from './work/migrate-todos.ts';
+import { migrateRoutedTodos } from './work/routed-todos.ts';
 import { migrateWorkingState } from './work/todos.ts';
 
 // Version 1 also describes databases created before migrations were recorded.
@@ -268,6 +269,7 @@ const migrations = [
     // Workers must be able to publish a paid response staged before their predecessor stopped.
     await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=13');
   },
+  migrateRoutedTodos,
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */

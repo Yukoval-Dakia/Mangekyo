@@ -106,7 +106,7 @@ it('正式后测适配器只计独立分数并检查冻结预测身份及截止�
   await expect(liftAssessment(ctx, submission, {...observation, admittedAt: '4' as Tick}, target)).resolves.toBeNull();
 });
 
-it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {timeout: 60_000}, async () => {
+it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {timeout: 60_000}, async ({ onTestFinished }) => {
   const learner = learnerId(ref(90).id);
   const id = identity.playbookId;
   const data = {version: 1, strategyId: identity.strategyId, preconditions: ['分段'], strategy_steps: ['画图'],
@@ -116,53 +116,52 @@ it('经 Python worker 和真实内核采纳 Lift，生成待审黄灯提案', {t
   const scope = {learner, purpose};
   const hooks = createPropagationHooks([]);
   const worker = createPythonDeriverHost();
-  try {
-    await withLearnerDatabase(learner, async db => {
-      const apply = (writes: readonly FactWrite[], n: number) => db.tx(scope, tx => tx.withLearnerWrite(tick =>
-        applyFactWrites(tx, tick, writes, {actor: 'learner', purpose, commandId: commandId(ref(n).id)},
-          type => ({type, schema: {parse: (value: Json) => value}}))));
-      const sources = positive.flatMap(({intervention, baseline, posttest}) => [intervention, baseline!.submission, posttest!.submission]);
-      await apply([{kind: 'create', id, factType: 'learner.playbook', data, purpose: [purpose, 'teaching']},
-        ...[ref(95), ...sources].map(({id}): FactWrite => ({kind: 'create', id, factType: 'activity.workbookAttempt',
-          data: {}, purpose: [purpose, 'teaching']}))], 100);
-      const run = async (slotType: string, slotKey: string, deriver: string,
-        gather: Parameters<typeof gatherSnapshot>[2], derive: (input: unknown) => unknown) => {
-        const policy = {slot: {type: slotType}, deriver, purpose};
-        const work = await db.tx(scope, tx => tx.withLearnerWrite(async tick => {
-          await tx.query("INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys) VALUES ($1,$2,$3,'{}') ON CONFLICT DO NOTHING",
-            [learner, slotType, slotKey]);
-          return requestWork(tx, tick, {slotType, slotKey, deriver});
-        }));
-        const sealed = await sealCandidate(db, work, policy, await gatherSnapshot(db, scope, gather));
-        if (sealed.kind !== 'sealed') throw new Error('未冻结候选');
-        const result = await submitCandidate(db, work, policy, sealed.id, await derive(sealed.plan.data), hooks);
-        expect(result, JSON.stringify(result)).toMatchObject({kind: 'effective'});
-      };
-      for (const [pairs, expected] of [[positive, 'verified'], [negative, 'demoted']] as const) {
-        await run(lift.slot, JSON.stringify([id, 1]), lift.name, ctx => lift.gather(ctx, async () => input(pairs)),
-          async payload => { const result = await worker.derive(interventionLiftMethod, payload); return result.kind === 'ok' ? result.outcome : result; });
-        await run(status.slot, id, status.name, ctx => status.gather(ctx, {playbookId: id}),
-          payload => status.derive(payload as Parameters<typeof status.derive>[0]));
-        const teaching = await gatherSnapshot(db, {...scope, purpose: 'teaching'}, async ctx =>
-          ({kind: 'input', effects: [], data: await readVerifiedPlaybook(ctx.read, ref(0))}));
-        if (expected === 'verified') expect(teaching.plan).toMatchObject({data: {status: {status: expected}}});
-        else expect(teaching.plan).toMatchObject({data: null});
-      }
-      const current = (await gatherSnapshot(db, scope, ctx => status.gather(ctx, {playbookId: id}))).plan;
-      expect(current).toMatchObject({data: {status: 'demoted', gardeningProposal: {light: 'yellow'}}});
-      if (current.kind !== 'input') throw new Error('状态槽等待输入');
-      const proposal = (current.data as Parameters<typeof status.derive>[0]).gardeningProposal!;
-      const handler = createCommandHandler(db, {modules: [await loadModuleDirectory(fileURLToPath(new URL('.', import.meta.url)))], hooks});
-      const proposalId = commandId(ref(101).id);
-      await expect(handler({...scope, ...proposal.command, id: proposalId, actor: 'companion'})).resolves.toMatchObject({state: 'proposed'});
-      await expect(handler.decideProposal({...scope, id: commandId(ref(102).id), type: retire.type,
-        proposalId, selection: 'accept'}, async (_tx, input) => input)).rejects.toThrow('slot reads are not implemented');
-      expect(await db.snapshot(scope, tx => readCommandProposals(tx, retire.type, {}, proposalId))).toMatchObject([{state: 'pending'}]);
-      const source = positive[0]!.posttest!.submission;
-      await apply([{kind: 'set_purpose', id: source.id, expectedRev: source.rev, purpose: ['teaching']}], 103);
-      await apply([{kind: 'set_purpose', id: source.id, expectedRev: 2 as Revision, purpose: [purpose, 'teaching']}], 104);
-      await expect(gatherSnapshot(db, scope, ctx => status.gather(ctx, {playbookId: id})))
-        .rejects.toThrow('Derivation input is invalid or denied');
-    }, {postgres: false});
-  } finally { await worker.close(); }
+  onTestFinished(worker.close);
+  await withLearnerDatabase(learner, async db => {
+    const apply = (writes: readonly FactWrite[], n: number) => db.tx(scope, tx => tx.withLearnerWrite(tick =>
+      applyFactWrites(tx, tick, writes, {actor: 'learner', purpose, commandId: commandId(ref(n).id)},
+        type => ({type, schema: {parse: (value: Json) => value}}))));
+    const sources = positive.flatMap(({intervention, baseline, posttest}) => [intervention, baseline!.submission, posttest!.submission]);
+    await apply([{kind: 'create', id, factType: 'learner.playbook', data, purpose: [purpose, 'teaching']},
+      ...[ref(95), ...sources].map(({id}): FactWrite => ({kind: 'create', id, factType: 'activity.workbookAttempt',
+        data: {}, purpose: [purpose, 'teaching']}))], 100);
+    const run = async (slotType: string, slotKey: string, deriver: string,
+      gather: Parameters<typeof gatherSnapshot>[2], derive: (input: unknown) => unknown) => {
+      const policy = {slot: {type: slotType}, deriver, purpose};
+      const work = await db.tx(scope, tx => tx.withLearnerWrite(async tick => {
+        await tx.query("INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys) VALUES ($1,$2,$3,'{}') ON CONFLICT DO NOTHING",
+          [learner, slotType, slotKey]);
+        return requestWork(tx, tick, {slotType, slotKey, deriver});
+      }));
+      const sealed = await sealCandidate(db, work, policy, await gatherSnapshot(db, scope, gather));
+      if (sealed.kind !== 'sealed') throw new Error('未冻结候选');
+      const result = await submitCandidate(db, work, policy, sealed.id, await derive(sealed.plan.data), hooks);
+      expect(result, JSON.stringify(result)).toMatchObject({kind: 'effective'});
+    };
+    for (const [pairs, expected] of [[positive, 'verified'], [negative, 'demoted']] as const) {
+      await run(lift.slot, JSON.stringify([id, 1]), lift.name, ctx => lift.gather(ctx, async () => input(pairs)),
+        async payload => { const result = await worker.derive(interventionLiftMethod, payload); return result.kind === 'ok' ? result.outcome : result; });
+      await run(status.slot, id, status.name, ctx => status.gather(ctx, {playbookId: id}),
+        payload => status.derive(payload as Parameters<typeof status.derive>[0]));
+      const teaching = await gatherSnapshot(db, {...scope, purpose: 'teaching'}, async ctx =>
+        ({kind: 'input', effects: [], data: await readVerifiedPlaybook(ctx.read, ref(0))}));
+      if (expected === 'verified') expect(teaching.plan).toMatchObject({data: {status: {status: expected}}});
+      else expect(teaching.plan).toMatchObject({data: null});
+    }
+    const current = (await gatherSnapshot(db, scope, ctx => status.gather(ctx, {playbookId: id}))).plan;
+    expect(current).toMatchObject({data: {status: 'demoted', gardeningProposal: {light: 'yellow'}}});
+    if (current.kind !== 'input') throw new Error('状态槽等待输入');
+    const proposal = (current.data as Parameters<typeof status.derive>[0]).gardeningProposal!;
+    const handler = createCommandHandler(db, {modules: [await loadModuleDirectory(fileURLToPath(new URL('.', import.meta.url)))], hooks});
+    const proposalId = commandId(ref(101).id);
+    await expect(handler({...scope, ...proposal.command, id: proposalId, actor: 'companion'})).resolves.toMatchObject({state: 'proposed'});
+    await expect(handler.decideProposal({...scope, id: commandId(ref(102).id), type: retire.type,
+      proposalId, selection: 'accept'}, async (_tx, input) => input)).rejects.toThrow('slot reads are not implemented');
+    expect(await db.snapshot(scope, tx => readCommandProposals(tx, retire.type, {}, proposalId))).toMatchObject([{state: 'pending'}]);
+    const source = positive[0]!.posttest!.submission;
+    await apply([{kind: 'set_purpose', id: source.id, expectedRev: source.rev, purpose: ['teaching']}], 103);
+    await apply([{kind: 'set_purpose', id: source.id, expectedRev: 2 as Revision, purpose: [purpose, 'teaching']}], 104);
+    await expect(gatherSnapshot(db, scope, ctx => status.gather(ctx, {playbookId: id})))
+      .rejects.toThrow('Derivation input is invalid or denied');
+  }, {postgres: false});
 });
