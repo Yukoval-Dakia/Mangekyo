@@ -1,6 +1,7 @@
 import { derivationId, factId, FactNotFoundError, learnerId, type FactId, type FactWrite, type ReadContext } from '@mangekyo/kernel';
 import { clarificationRegion, cropKey, firstAnswerBlocks, layeredExtractionSlot, mayExtract, mergeLayeredSource,
   type LayeredExtractionValue } from './extraction.ts';
+import { reconcileAnswerRegions } from './paper-answer-regions.ts';
 import { paperInteger } from './paper-anchor.ts';
 import { defaultPaperRunId, openIssuedPaper, paperRun, paperRunType } from './paper.ts';
 import { captureObject as object, captureRef, captureText as text, sha256 } from './parse.ts';
@@ -43,7 +44,7 @@ async function openPage(read: ReadContext, page: CollectedPage, runId: FactId,
   if (snapshot && (snapshot.slot.learner !== slot.learner || snapshot.slot.type !== slot.type || snapshot.slot.key !== slot.key))
     throw new Error('分层抽取与回收原件不匹配。');
   const basis = snapshot ? { mode: 'layered' as const, derivationId: snapshot.id } : { mode: 'saved' as const, derivationId: null };
-  if (!mayExtract(fact)) return { fact, source, blocks, basis };
+  if (!mayExtract(fact)) return { fact, source, blocks: [] as readonly Block[], basis };
   const allowed = new Set(questions.filter(question => question.pages.includes(page.number)).map(question => question.itemId));
   function accept(block: Block) {
     const crop = block.body.crop_ref;
@@ -61,15 +62,7 @@ async function openPage(read: ReadContext, page: CollectedPage, runId: FactId,
     if (!prior || prior.body.status === 'known' && block.body.status === 'unknown') blocks.set(key, block);
   }
   const edits = (source.paperAnswerEdits ?? []).filter(edit => edit.runId === runId && accept(edit.block));
-  // A retained edit keeps its region when extraction renames a block or moves
-  // its box under the same block ID on the same original page.
-  const location = (block: Block) => JSON.stringify([block.id, block.body.crop_ref!.page]);
-  const retained = new Set(edits.map(edit => location(edit.block)));
-  for (const [key, block] of blocks) {
-    if (retained.has(location(block))) blocks.delete(key);
-  }
-  for (const { block } of edits) blocks.set(cropKey(block)!, block);
-  return { fact, source, blocks, basis };
+  return { fact, source, blocks: reconcileAnswerRegions([...blocks.values()], edits.map(edit => edit.block)), basis };
 }
 
 /**
@@ -86,12 +79,12 @@ export async function openPaperRun(read: ReadContext, request: PaperRunRequest) 
   }
   const items = printed.questionAnchors.map(question => {
     const answers = opened.flatMap(({ page, opened: { fact, source, blocks, basis } }) =>
-      [...blocks].flatMap(([regionKey, block]) => {
+      blocks.flatMap(block => {
         const { body } = block;
         if (body.itemId !== question.itemId) return [];
         const witness = { issuanceId: run.issuanceId, runId: id, itemId: question.itemId, slotId: body.slotId!, basis,
           page, original: body.crop_ref!.original, originalPage: body.crop_ref!.page, blockId: block.id,
-          source: fact.ref, accessEpoch: fact.accessEpoch, regionKey,
+          source: fact.ref, accessEpoch: fact.accessEpoch, regionKey: cropKey(block)!,
           originalSha256: source.originals[body.crop_ref!.original]!.sha256 };
         return [{ slotId: body.slotId!, witness, value: body.status === 'unknown'
           ? { status: 'waiting' as const, region: clarificationRegion(fact, source, { id: block.id, body }) }
@@ -154,9 +147,10 @@ export async function paperAnswerWrites(read: ReadContext, input: ReturnType<typ
   const { fact, source, blocks, basis } = await openPage(read, page, id, printed.questionAnchors, witness.basis.mode);
   if (basis.mode !== witness.basis.mode || basis.derivationId !== witness.basis.derivationId)
     throw new Error('纸卷抽取版本已变更，请重新打开作答。');
-  const block = blocks.get(witness.regionKey);
-  if (!block || block.id !== witness.blockId || block.body.crop_ref?.page !== witness.originalPage ||
-      block.body.itemId !== itemId || block.body.slotId !== slotId || fact.ref.learner !== witness.source.learner ||
+  const block = blocks.find(entry => entry.id === witness.blockId && entry.body.itemId === itemId &&
+    entry.body.slotId === slotId && cropKey(entry) === witness.regionKey);
+  if (!block || block.body.crop_ref?.page !== witness.originalPage ||
+      fact.ref.learner !== witness.source.learner ||
       fact.accessEpoch !== witness.accessEpoch || witness.source.rev < page.source.rev)
     throw new Error('原件授权或纸卷作答位置已变更。');
   const { body } = block;
@@ -166,7 +160,8 @@ export async function paperAnswerWrites(read: ReadContext, input: ReturnType<typ
     ? { ...body, clarification: 'asked' }
     : { kind: 'capture', layer: 'handwriting', itemId, slotId, crop_ref: body.crop_ref!,
       status: 'known', text: correction!, sticky: true, author: 'learner' } };
-  const prior = (source.paperAnswerEdits ?? []).filter(entry => entry.runId !== id || cropKey(entry.block) !== witness.regionKey);
+  const prior = (source.paperAnswerEdits ?? []).filter(entry => entry.runId !== id || entry.block.body.itemId !== itemId ||
+    entry.block.body.slotId !== slotId || cropKey(entry.block) !== witness.regionKey);
   return [{ kind: 'correct', id: fact.ref.id, expectedRev: fact.ref.rev,
     data: { ...source, paperAnswerEdits: [...prior, { runId: id, block: edit }] } }];
 }
