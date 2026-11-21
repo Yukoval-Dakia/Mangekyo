@@ -1,7 +1,7 @@
 import { runPricedOutput } from '../../kernel/src/work/priced-output.ts';
 import type { WorkRef } from '../../kernel/src/work/index.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { workerOffers, workerAccount, workerCap, workerStage, ResearchDispatchDenied, type WorkerTariff } from '../../executors/teaching/research-worker.ts';
+import { workerOffers, workerAccount, workerPricing, workerStage, totalWorkerCost, ResearchDispatchDenied, type WorkerTariff } from '../../executors/teaching/research-worker.ts';
 import { loadSettings } from '../studio/settings.ts';
 import type { WorkerConsent } from '../../modules/companion/worker-consent.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
@@ -37,17 +37,11 @@ export function workerCall(db: Db, todoId: string, sourceId: string, grant: Work
       const result = await runPricedOutput(db, {learner:studioLearner, ownerKind:'derivation', ownerId:sourceId,
         stepKey:todoId + ':' + stage, label:'research-worker-v1', ...(payloadWork && {payloadWork}),
         input:{grant, instructions, input, reserve:tariff.reserveUsdMicros}}, 'research-worker-output-v1', authorize,
-      {route:grant.route, reserveUsdMicros:tariff.reserveUsdMicros, limitUsdMicros:grant.limitMicros,
-        actualUsdMicros: value => value && typeof value === 'object' && 'actualUsdMicros' in value &&
-          typeof value.actualUsdMicros === 'number' ? value.actualUsdMicros : null},
-      stage === 'author' ? workerCap(grant,tariff) : 0,
+      workerPricing(grant, tariff, todoId, stage),
       (dispatch, save, id) => workerStage(dispatch, save, tariff, id, instructions, input, signal));
       totals.set(stage, result.actualUsdMicros);
       return result.body;
     },
-    actualUsdMicros() {
-      const values = [...totals.values()];
-      return values.some(value => value === null) ? null : values.reduce<number>((sum, cost) => sum + (cost ?? 0), 0);
-    },
+    actualUsdMicros: () => totalWorkerCost(totals.values()),
   };
 }

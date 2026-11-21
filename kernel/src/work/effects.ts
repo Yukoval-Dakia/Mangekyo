@@ -34,6 +34,8 @@ type EffectRow = {
   provider_effect_id: string | null;
   budget_route: string | null;
   reserved_usd_micros: string | null;
+  prepaid_generation: string | null;
+  payload_work_id: string | null;
   state: 'started' | 'done' | 'unknown';
   result: unknown;
 };
@@ -48,6 +50,7 @@ export type EffectBudget = {
   readonly limitUsdMicros: number;
   readonly reserveUsdMicros: number;
   readonly actualUsdMicros: (result: Json) => number | null;
+  readonly workStages?: { readonly followups: readonly string[] } | 'claim';
 };
 
 export async function effectBudgetUsage(tx: ReadTransaction) {
@@ -57,12 +60,57 @@ export async function effectBudgetUsage(tx: ReadTransaction) {
       FROM (
         SELECT reserved_usd_micros,actual_usd_micros FROM effects
         WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL
+          AND (prepaid_generation IS NULL OR EXISTS (
+            SELECT 1 FROM work w WHERE w.learner_id=effects.learner_id AND w.id=effects.payload_work_id
+              AND w.generation=effects.prepaid_generation AND w.state='ready'))
         UNION ALL
         SELECT reserved_usd_micros,actual_usd_micros FROM erased_effect_receipts
         WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL
       ) charges`, [tx.learner],
   );
   return { settled: BigInt(row!.settled), held: BigInt(row!.held) };
+}
+
+async function requireBudget(tx: ReadTransaction, budget: EffectBudget, calls: number) {
+  if (!calls) return;
+  const { settled, held } = await effectBudgetUsage(tx);
+  if (settled + held + BigInt(calls) * BigInt(budget.reserveUsdMicros) > BigInt(budget.limitUsdMicros))
+    throw new EffectBudgetExceeded('Effect budget exhausted');
+}
+
+function samePrice(row: Pick<EffectRow, 'budget_route' | 'reserved_usd_micros'>, budget?: EffectBudget) {
+  return row.budget_route === (budget?.route ?? null) &&
+    row.reserved_usd_micros === (budget ? String(budget.reserveUsdMicros) : null);
+}
+
+/** Funds future steps whose input will only be known after the first response. */
+async function reserveFollowups(tx: DbTransaction, identity: EffectIdentity, work: WorkRef,
+  budget: EffectBudget, followups: readonly string[], firstCall: boolean) {
+  const [learner, ownerKind, ownerId, , label] = identity;
+  const keys = [learner, ownerKind, ownerId, label, followups] as const;
+  const { rows } = await tx.query<Pick<EffectRow, 'budget_route' | 'reserved_usd_micros' |
+    'prepaid_generation' | 'payload_work_id'> & { step_key: string }>(
+    `SELECT step_key, budget_route, reserved_usd_micros::text, prepaid_generation::text, payload_work_id
+     FROM effects WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND label=$4 AND step_key=ANY($5)`, keys);
+  const stale = rows.filter(row => row.payload_work_id === work.workId &&
+    row.prepaid_generation !== null && row.prepaid_generation !== work.generation);
+  const retained = rows.filter(row => !stale.includes(row));
+  if (retained.some(row => !samePrice(row, budget) ||
+      (row.prepaid_generation !== null && row.payload_work_id !== work.workId)))
+    throw new EffectIdentityMismatch('Effect stage already held or used with different terms');
+  const missing = followups.filter(step => !retained.some(row => row.step_key === step));
+  await requireBudget(tx, budget, missing.length + Number(firstCall));
+  if (!missing.length) return;
+  await tx.withLearnerWrite(async tick => {
+    if (stale.length) await tx.query(`DELETE FROM effects WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3
+      AND label=$4 AND step_key=ANY($5) AND prepaid_generation IS NOT NULL`,
+    [learner, ownerKind, ownerId, label, stale.map(row => row.step_key)]);
+    for (const step of missing) await tx.insert('effects', {
+      learner_id: learner, owner_kind: ownerKind, owner_id: ownerId, step_key: step, label,
+      input_digest: '', state: 'started', started_tick: tick, payload_work_id: work.workId,
+      prepaid_generation: work.generation, reserved_usd_micros: budget.reserveUsdMicros, budget_route: budget.route,
+    });
+  });
 }
 
 async function erasedProviderEffect(tx: ReadTransaction, identity: EffectIdentity) {
@@ -110,6 +158,11 @@ export async function runEffect(
   if (budget && (!Number.isSafeInteger(budget.reserveUsdMicros) || budget.reserveUsdMicros <= 0 ||
       !Number.isSafeInteger(budget.limitUsdMicros) || budget.limitUsdMicros <= 0 || !budget.route))
     throw new Error('Invalid effect budget');
+  const stages = budget?.workStages;
+  const work = request.payloadWork;
+  if (stages && (!work || (stages !== 'claim' &&
+      (stages.followups.includes(stepKey) || new Set(stages.followups).size !== stages.followups.length))))
+    throw new Error('Invalid effect stage reservation');
   const reservation = await db.tx({ learner }, async tx => {
     await lockLearner(tx, learner);
     await assertUnburned(tx, 'fact', [request.ownerId]);
@@ -119,15 +172,17 @@ export async function runEffect(
     await authorize?.(tx);
     const { rows: [prior] } = await tx.query<EffectRow>(
       `SELECT input_digest, provider_effect_id, state, result, budget_route, reserved_usd_micros::text,
+              prepaid_generation::text, payload_work_id,
               input_basis IS NULL AS legacy, result IS NOT NULL AS has_result,
               effect_may_settle(learner_id, owner_id, started_tick, input_basis) AS basis_current FROM effects
        WHERE learner_id = $1 AND owner_kind = $2 AND owner_id = $3 AND step_key = $4 AND label = $5`,
       identity,
     );
-    if (prior) {
-      if (prior.input_digest !== digest || prior.budget_route !== (budget?.route ?? null) ||
-          prior.reserved_usd_micros !== (budget ? String(budget.reserveUsdMicros) : null))
+    if (prior && prior.prepaid_generation === null) {
+      if (prior.input_digest !== digest || !samePrice(prior, budget))
         throw new EffectIdentityMismatch('Effect identity already used with different input');
+      if (budget && stages && stages !== 'claim' && prior.has_result && prior.basis_current)
+        await reserveFollowups(tx, identity, work!, budget, stages.followups, false);
       if (budget && prior.state === 'started' && prior.has_result)
         return publishPricedReceipt(tx, identity, prior.provider_effect_id);
       if (prior.state === 'done') {
@@ -140,13 +195,19 @@ export async function runEffect(
         ...(budget && prior.state === 'started' ? { inFlight: true as const } : {}) } as const;
     }
 
-    if (budget) {
-      const { settled, held } = await effectBudgetUsage(tx);
-      if (settled + held + BigInt(budget.reserveUsdMicros) > BigInt(budget.limitUsdMicros))
-        throw new EffectBudgetExceeded('Effect budget exhausted');
-    }
+    if (stages === 'claim') {
+      if (!prior || prior.prepaid_generation !== work!.generation ||
+          prior.payload_work_id !== work!.workId || !samePrice(prior, budget))
+        throw new EffectIdentityMismatch('Effect stage has no matching work reservation');
+    } else if (prior) throw new EffectIdentityMismatch('Effect stage must claim its work reservation');
+    else if (budget && stages) await reserveFollowups(tx, identity, work!, budget, stages.followups, true);
+    else if (budget) await requireBudget(tx, budget, 1);
     const providerEffectId = newUlid();
     return tx.withLearnerWrite(async tick => {
+      // The unsent hold becomes an immutable dispatch claim without releasing budget.
+      if (stages === 'claim') await tx.query(`DELETE FROM effects
+        WHERE learner_id=$1 AND owner_kind=$2 AND owner_id=$3 AND step_key=$4 AND label=$5
+          AND prepaid_generation IS NOT NULL`, identity);
       await tx.insert('effects', {
         learner_id: learner,
         owner_kind: ownerKind,

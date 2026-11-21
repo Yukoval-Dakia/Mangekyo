@@ -274,6 +274,15 @@ const migrations = [
   migrateRoutedTodos,
   migrateWorkPayloads,
   finishWorkPayloadCutover,
+  async (tx: DbQuery) => {
+    await tx.query('LOCK TABLE learners IN EXCLUSIVE MODE');
+    await tx.query(`ALTER TABLE effects ADD COLUMN prepaid_generation bigint,
+      ADD CHECK (prepaid_generation IS NULL OR (
+        prepaid_generation > 0 AND payload_work_id IS NOT NULL AND reserved_usd_micros IS NOT NULL
+        AND provider_effect_id IS NULL AND actual_usd_micros IS NULL AND state='started'
+        AND input_digest='' AND result IS NULL AND ended_tick IS NULL))`);
+    await tx.query('UPDATE kernel_runtime_identity SET minimum_worker_schema=17');
+  },
 ] as const;
 
 /** A compatible older build may resume work while a newer process owns migrations. */
