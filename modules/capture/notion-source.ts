@@ -10,8 +10,9 @@ export { openCurrentNotionBlock, openPinnedNotionBlock, planNotionBlockWork, not
   type NotionBlockWitness, type NotionBlockPurpose } from './notion-blocks.ts';
 export { consumeNotionBlockLink, notionBlockDeriver, notionBlockSlot, notionBlockWorkKey, notionBlockLinkEffect,
   verifyNotionBlockEdges } from './notion-block-work.ts';
-export { notionRetainedPurposes, selectionAllows as notionRecipientAllowed } from './notion-selection.ts';
-export type { NotionPreset, NotionRetainedPreset, NotionSelection } from './notion-selection.ts';
+export { notionRetainedPurposes, planNotionSelectionInvalidation, selectionAllows as notionRecipientAllowed } from './notion-selection.ts';
+export type { NotionPreset, NotionRetainedPreset, NotionSelection, NotionSelectionInvalidation,
+  NotionSelectionUseRetraction } from './notion-selection.ts';
 
 export const refreshNotionSourceCommand = 'capture.refreshNotionSource';
 export const revokeNotionSourceCommand = 'capture.revokeNotionSource';
