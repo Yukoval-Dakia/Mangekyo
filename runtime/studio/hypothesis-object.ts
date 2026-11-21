@@ -1,4 +1,5 @@
-import { createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { readable } from '../../kernel/src/commands/fact-collection.ts';
+import { createAuthorizedFactReader, createCommandReadContext } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { originalHypothesisObject } from '../../modules/companion/belief.ts';
 import { claimRef } from '../../modules/companion/claim.ts';
@@ -11,7 +12,7 @@ export async function openHypothesisObject(tx: ReadTransaction, data: ExtractedU
   maySend: WorkspaceSourceRecipient, checkSelf?: CheckNotionRead) {
   if (data.scope.kind !== 'object') return [];
   const reader = createAuthorizedFactReader(tx, 'teaching', maySend);
-  try {
+  return readable(async () => {
     let basis = data.belief?.objectBasis;
     if (!basis) {
       const original = await originalHypothesisObject(createCommandReadContext(tx, 'teaching'), data);
@@ -29,8 +30,5 @@ export async function openHypothesisObject(tx: ReadTransaction, data: ExtractedU
       } else await checkStudioNotionFact(tx, fact, 'teaching', maySend);
     }
     return basis;
-  } catch (error) {
-    if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
-    return undefined;
-  }
+  });
 }

@@ -1,6 +1,7 @@
 import {openLearningSearchNext, type OpenLearningArgs} from '../../executors/teaching/workspace-tools.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
-import {createCommandReadContext, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {readable} from '../../kernel/src/commands/fact-collection.ts';
+import {createCommandReadContext} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId} from '../../kernel/src/declarations/ids.ts';
 import {parseLearningReference, type SourceRefV1} from '../../modules/activity/source-values.ts';
@@ -12,15 +13,14 @@ import type {WorkspaceAssessmentBasis} from './workspace-read.ts';
 
 export async function unreadable(tx: ReadTransaction, id: string, known: boolean, maySend: WorkspaceSourceRecipient) {
   if (!known) return learningToolError('not_found','refs','未能定位可打开的学习对象。',openLearningSearchNext);
-  try {
+  const stale = await readable(async () => {
     const current = await createCommandReadContext(tx,purpose).fact(factId(id),{mode:'following'});
-    if (maySend(current)) return learningToolError('basis_stale','refs','所选版本或其依据当前不可用。',{
+    if (!maySend(current)) return undefined;
+    return learningToolError('basis_stale','refs','所选版本或其依据当前不可用。',{
       tool:'open_learning',args:{refs:id},why:'打开当前获准版本。',
     });
-  } catch (error) {
-    if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
-  }
-  return learningToolError('access_revoked','refs','此前读到的记录当前不可读。',openLearningSearchNext);
+  });
+  return stale ?? learningToolError('access_revoked','refs','此前读到的记录当前不可读。',openLearningSearchNext);
 }
 
 export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningArgs, access: {

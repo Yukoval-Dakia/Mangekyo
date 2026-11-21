@@ -1,18 +1,12 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { studioJsonApi } from './acceptance-fixtures.mjs';
 
 const studio = new URL(process.argv[2] ?? 'http://127.0.0.1:4317');
 if (studio.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(studio.hostname) || process.argv[3] !== '--live') {
   throw new Error('请指定本机 Studio 地址并加 --live。这项验收会新建一份试卷、提交作答，并调用当前模型。');
 }
-async function api(path, data) {
-  const response = await fetch(new URL('/api/' + path, studio), data && {
-    method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(data),
-  });
-  const result = await response.json();
-  assert.ok(response.ok, path + ' ' + response.status + ' ' + JSON.stringify(result));
-  return result;
-}
+const api = studioJsonApi(studio);
 
 const settings = await api('settings');
 const providerId = settings.routes?.assessment ?? settings.activeProviderId;
