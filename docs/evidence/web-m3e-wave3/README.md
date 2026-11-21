@@ -20,26 +20,33 @@
 
 - **作答期防剧透**：`open` 之前正文/提示不随卷面下发（`GET /api/papers/{id}` 与 `attempts` 响应中不含口诀正文），点击后 `open` 才返回口诀本体，`display` 于真实绘制后回报曝光，链路完整。
 
-## 单题拍照 / 手写过程图上传
+## 单题拍照 / 手写过程图上传（PR #152 已合入 `origin/main`，全真实联调）
 
-- `POST /api/papers/{id}/attachments` 实测返回 `404 {"error":"这个入口不存在。"}`：该后端端点尚未合入 `origin/main`。
-- 前端 `QuestionAttachmentUploader` 走**诚实降级**：`isNotFound` → 状态标 `error`，提示「当前后端暂不支持手写图上传，移除后即可正常交卷」，上传锁（`lock.locked`）阻止交卷直至移除/重试，不伪造成功。
-- 契约走查（`QuestionAttachmentUploader.tsx` / `api.ts`）：multipart `file`+`itemId`+`scope`+`requestId`，XHR 上报真实上传进度，`201/200` 校验 `originalId`/`rev`；`scope` 支持 `inherit`（跟随本卷）/`once`（仅本次）切换并重传；`questionAttachments` 随 `POST attempts` 透传 `{originalId,rev}`，复盘由 `attempt.questionAttachments` 驱动 `ReviewAttachmentWall`（`available=false` 显示「权限已撤回」）。
+| 步骤 | 请求 | 结果 |
+| --- | --- | --- |
+| 上传 | `POST /api/papers/{id}/attachments`（multipart `file`+`itemId`+`requestId`+`scope=inherit`） | `201` `{originalId:"551D9A38…",rev:1,url:"/api/materials/551D9A38…/original",mimeType:"image/png",scope:"inherit"}`，回执 `X-Deletion-Watermark: 0` |
+| 原件 | `GET /api/materials/{originalId}/original` | `200` `image/png` |
+| 绑定交卷 | `POST /api/papers/{id}/attempts` 携带 `questionAttachments:{q1:[{originalId,rev:1}]}` | `200` attempt=`FB8C7CC4…` |
+| 复盘透传 | `attempt.questionAttachments.q1` | `[{originalId,rev:1,url,available:true}]` → `ReviewAttachmentWall` 真图渲染 |
+
+- 浏览器端实测：文件选择 → `wbv2-thumb` 状态 `跟随本卷`（done，非 error）→ 交卷 → 复盘「本题手写过程图」真 `<img>` 上屏。`scope` 可在 `inherit`/`once` 间切换并重传；`available=false` 时渲染「图片权限已撤回或暂不可用」。
+- 真实联调响应与 PR #152 后端契约逐字段一致：`originalId`/`rev`/`url`/`mimeType`/`scope`。
 
 ## 浏览器联调结论
 
-- workbook-v2 挂载成功，3 题导航、「引用到同伴」按钮、「打开打印版」入口均在。
-- 点击「引用到同伴」→ 右侧「学习同伴」抽屉 `data-open=true`，引用筹码 `【引用试题：第 1 题】两点确定一条什么？` 出现在输入框上方，作答值 `直线` 全程保留。
-- 交卷 → 「已交卷：答对 1 / 2」复盘模式，verdict 徽标、作答/参考答案/解析、≤60 字口诀编辑器原位渲染。
+- workbook-v2 挂载成功，题号导航、「引用到同伴」按钮、「打开打印版」入口均在。
+- 真实上传：文件选择 → 上传进度 → done `跟随本卷`；带 `questionAttachments` 交卷 → 复盘「本题手写过程图」真图渲染。
+- 点击「引用到同伴」→ 右侧「学习同伴」抽屉 `data-open=true`，引用筹码 `【引用试题：第 1 题】…` 出现在输入框上方，作答值全程保留。
+- 交卷 → 复盘模式，verdict 徽标、作答/参考答案/解析、≤60 字口诀编辑器原位渲染。
 - 深色主题切换生效（`data-theme="dark"`），390×844 `scrollWidth=390` 零横向溢出。
 
 ## 截图
 
-- [`01-desktop-light-workbook-companion-cite.png`](01-desktop-light-workbook-companion-cite.png) — 浅色 1440×900，引用筹码注入同伴抽屉（作答保留）
-- [`01b-desktop-light-workbook-answering-closed.png`](01b-desktop-light-workbook-answering-closed.png) — 浅色作答中，把握度 chips 与手写图上传区
-- [`02-desktop-light-workbook-review.png`](02-desktop-light-workbook-review.png) — 浅色复盘模式 + 口诀编辑器
-- [`03-desktop-dark-workbook.png`](03-desktop-dark-workbook.png) — 深色复盘模式
-- [`04-mobile-390x844-workbook.png`](04-mobile-390x844-workbook.png) — 390×844 单手视图，零横向溢出
+- [`01-desktop-light-workbook-uploaded.png`](01-desktop-light-workbook-uploaded.png) — 浅色 1440×900，手写过程图上传完成（`跟随本卷`）
+- [`02-desktop-light-workbook-review-attach.png`](02-desktop-light-workbook-review-attach.png) — 浅色复盘：verdict「有偏差」、作答/参考答案、「本题手写过程图」真图、口诀编辑器
+- [`03-desktop-light-workbook-companion-cite.png`](03-desktop-light-workbook-companion-cite.png) — 浅色引用筹码注入右侧同伴抽屉
+- [`04-desktop-dark-workbook-review.png`](04-desktop-dark-workbook-review.png) — 深色复盘模式
+- [`05-mobile-390x844-workbook.png`](05-mobile-390x844-workbook.png) — 390×844 单手视图，把握度 chips 与交卷栏，零横向溢出
 
 ## 备注
 
