@@ -10,7 +10,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   const { db, learner, load, send, sendCompanion, stableId, assert, read, current, content, hooks } = fixture;
   const { openTextbookBlock } = await load('modules/content/textbook-page.ts');
   const { openTextbookConflict } = await load('modules/content/textbook-conflict.ts');
-  const { previewTextbookRevision } = await load('modules/content/textbook-edits.ts');
+  const { previewTextbookRevision, selectTextbookEdits } = await load('modules/content/textbook-edits.ts');
   const idFor = name => stableId('textbook-acceptance', name);
   const [id, source, child] = ['page', 'fragment', 'child'].map(idFor);
   const body = text => ({ kind: 'text', text });
@@ -85,9 +85,12 @@ export default async function exerciseContent(fixture, decideProposal) {
   assert.deepEqual(insertDiff.after, { block: example, siblingIndex: 2 });
   assert.deepEqual(deleteDiff.before, { block: savedIntro, siblingIndex: 2 });
   assert.equal(deleteDiff.after, null);
+  assert.deepEqual(selectTextbookEdits(preview, ['formula']), { ...revision, edits: [rewriteFormula] });
+  assert.deepEqual(selectTextbookEdits(preview, ['example']), { ...revision, edits: [insert] });
   const decide = blockIds => textbook.proposal({ learner, id }, proposal.commandId, { blockIds });
   await assert.rejects(decide(['missing']), /请选择有效/);
   const accepted = await decide(['formula', 'example']);
+  assert.equal(accepted.status, 'applied');
   assert.equal(accepted.result.rev, 5);
   assert.deepEqual((await current(id)).value.blocks, [rewritten, note, example, savedIntro]);
 
@@ -95,12 +98,14 @@ export default async function exerciseContent(fixture, decideProposal) {
     id, expectedRev, appliedRev: 5, priorRev: 4, blockIds: [blockId],
   });
   await undo('formula', 5);
+  assert.deepEqual((await current(id)).value.blocks, [formula, note, example, savedIntro]);
   await assert.rejects(undo('formula', 6), /教材块自采纳后已变更/);
   await undo('example', 6);
   assert.deepEqual((await current(id)).value.blocks, [formula, note, savedIntro]);
   const nextDraft = { clientEditSeq: 2, edits: [rewrite('intro', text + '续写'), rewrite('note', '续写笔记')] };
-  const copiesFor = purpose => read(context => openTextbookConflict({ learner, read: context }, draftId), purpose);
-  await assert.rejects(copiesFor('teaching'), /does not allow read purpose teaching/);
+  await assert.rejects(save(loser, nextDraft, 'teaching-continued', 'teaching'), /requires purpose storage/);
+  await assert.rejects(read(context => openTextbookConflict({ learner, read: context }, draftId), 'teaching'),
+    /does not allow read purpose teaching/);
   const updated = await save(loser, nextDraft, 'newer-save');
   assert.deepEqual(updated.wrote, [{ learner, id: draftId, rev: 2 }]);
   assert.deepEqual(await save(loser, nextDraft, 'newer-save'), updated);
@@ -109,7 +114,7 @@ export default async function exerciseContent(fixture, decideProposal) {
   await assert.rejects(save(loser, nextDraft), /different command identity/);
   await assert.rejects(save(loser, {}, 'delayed-save'), /草稿编辑序号已过时/);
   await assert.rejects(save(loser, { ...nextDraft, base_rev: 7 }, 'wrong-base'), /草稿所属页或基版本不符/);
-  const copies = await copiesFor('storage');
+  const copies = await read(context => openTextbookConflict({ learner, read: context }, draftId));
   assert.equal(copies.base.rev, 3);
   assert.equal(copies.saved.ref.rev, 4);
   assert.deepEqual(copies.saved.page.blocks, [formula, note, savedIntro]);
@@ -168,13 +173,16 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
   assert.equal(await name('等时均速'), undefined);
 
   const proposals = await Promise.all([proposeGraph(graph.split), proposeGraph(graph.split)]);
+  assert.equal((await openEdge(graph.edge.id, follow)).edge.to.sourceUse.id, parent);
   const results = await Promise.allSettled(proposals.map(receipt => decideGraph(receipt)));
   assert.deepEqual(results.map(result => result.status).sort(), ['fulfilled', 'rejected']);
   assert.deepEqual(await name('时间加权均速'), { learner, id: secondChild.id, rev: 1 });
   assert.equal((await openEdge(graph.edge.id, pin)).edge.to.sourceUse.id, parent);
   const newChild = { ...firstChild, id: stableId('split-collision-child'),
     entity: { ...firstChild.entity, canonicalName: '等时段', aliases: [] } };
-  const collision = { ...graph.split, children: [newChild, secondChild], reattachments: [] };
+  const aliasConflict = { ...secondChild, id: stableId('split-alias-collision'),
+    entity: { ...secondChild.entity, canonicalName: '变时段概念', aliases: ['时间加权均速'] } };
+  const collision = { ...graph.split, children: [newChild, aliasConflict], reattachments: [] };
   await assert.rejects(decideGraph(await proposeGraph(collision)), /已有同名实体/);
   assert.equal(await name(newChild.entity.canonicalName), undefined);
 
@@ -279,6 +287,7 @@ async function exerciseGraphEvolution({ db, learner, send, sendCompanion, stable
   assert.equal(await hint(1, undefined, { ref: { ...frozen, accessEpoch: '1' } }), undefined);
   const solutionEvidence = ({ explanation, verification }) => ({ explanation, verification });
   assert.equal(outcome.value.sticky, true);
+  assert.equal(outcome.value.hint_ladder.l1, hint_ladder.l1);
   assert.equal(outcome.value.proposals.hint_ladder.verification, 'unverified');
   assert.deepEqual(outcome.value.solutions.map(solutionEvidence), [
     { explanation: '用总路程除以总用时。', verification: 'learner-reviewed' },
