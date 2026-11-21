@@ -110,7 +110,7 @@ export function FocusedQuestionCard({
   const formattedExpected = formatExpectedValue(feedback?.expected);
 
   return (
-    <article className="wbv2-card" aria-label={`第 ${index + 1} 题，共 ${total} 题`}>
+    <article className="wbv2-card" tabIndex={-1} data-wbv2-question-id={question.id} aria-label={`第 ${index + 1} 题，共 ${total} 题`}>
       <header className="wbv2-qhead">
         <span className="wbv2-qnum">
           <span className="wbv2-pill">第 {index + 1} / {total} 题</span>

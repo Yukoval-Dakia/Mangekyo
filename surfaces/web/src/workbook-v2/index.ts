@@ -3,6 +3,8 @@ import './workbook-v2.css';
 
 export { WorkbookSurface } from './WorkbookSurface.tsx';
 export { FocusedQuestionCard } from './FocusedQuestionCard.tsx';
+export { ExamTimeValueBar } from './ExamTimeValueBar.tsx';
+export { PreSubmitCheckCard } from './PreSubmitCheckCard.tsx';
 export { ConfidenceSelector } from './ConfidenceSelector.tsx';
 export {
   QuestionAttachmentUploader,
@@ -27,6 +29,11 @@ export type {
   OwnWordsOpening,
   Confidence,
   FocusedQuestion,
+  ExamTimeValueState,
+  ExamTimeValueItem,
+  ExamTimeValueView,
+  PreSubmitPitfall,
+  PreSubmitRevisionPayload,
   WorkbookV2Detail,
   WorkbookV2Attempt,
   WorkbookV2Feedback,
@@ -45,6 +52,7 @@ export type {
 
 export {
   loadPaper,
+  loadPreSubmitPitfalls,
   uploadAttachment,
   submitAttempt,
   saveTakeaway,

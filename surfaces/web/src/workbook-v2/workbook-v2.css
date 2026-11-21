@@ -435,6 +435,213 @@
 }
 .wbv2-hit-quiet em { font-style: normal; font-weight: 700; }
 
+/* ---------- 能力 18 · 答题节奏分布 ---------- */
+.wbv2-time-value {
+  margin-top: 14px;
+  background: var(--wbv2-card);
+  border: 1px solid var(--wbv2-card-line);
+  border-radius: var(--wbv2-radius-card);
+  box-shadow: var(--wbv2-shadow);
+  padding: clamp(16px, 2.6vw, 22px);
+}
+.wbv2-time-value-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.wbv2-time-value-head h3 {
+  margin: 0;
+  color: var(--wbv2-ink);
+  font-size: 15px;
+  font-weight: 730;
+  letter-spacing: -0.01em;
+}
+.wbv2-time-value-head p {
+  margin: 0;
+  color: var(--wbv2-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  min-width: 0;
+}
+.wbv2-time-value-total {
+  margin: 8px 0 10px;
+  color: var(--wbv2-primary);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.wbv2-time-value-track {
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+  min-height: 42px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.wbv2-time-segment {
+  flex: 0 1 auto;
+  min-width: 30px;
+  border: 1px solid var(--wbv2-card-line);
+  border-radius: 10px;
+  background: var(--wbv2-soft);
+  color: var(--wbv2-primary);
+  font-size: 12px;
+  font-weight: 720;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 3px;
+  transition: background-color 130ms ease, border-color 130ms ease;
+}
+.wbv2-time-segment:hover { background: var(--wbv2-chip-active); }
+.wbv2-time-segment.is-steady { background: var(--wbv2-soft); color: var(--wbv2-primary); }
+.wbv2-time-segment.is-fast-slip { background: var(--wbv2-warn-bg); border-color: var(--wbv2-warn-border); color: var(--wbv2-warn-ink); }
+.wbv2-time-segment.is-time-sink { background: var(--wbv2-info-bg); border-color: var(--wbv2-card-line); color: var(--wbv2-info-ink); }
+.wbv2-time-segment.is-recovered-skip { background: var(--wbv2-ok-bg); border-color: var(--wbv2-ok-border); color: var(--wbv2-ok-ink); }
+.wbv2-time-segment.is-unknown { background: var(--wbv2-chip); color: var(--wbv2-muted); }
+.wbv2-time-segment.is-focused {
+  border-color: var(--wbv2-focus);
+  box-shadow: inset 0 0 0 1px var(--wbv2-focus);
+}
+.wbv2-time-value-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.wbv2-time-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--wbv2-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.wbv2-time-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: var(--wbv2-soft);
+}
+.wbv2-time-legend.is-fast-slip i { background: var(--wbv2-danger); }
+.wbv2-time-legend.is-time-sink i { background: var(--wbv2-info-ink); }
+.wbv2-time-legend.is-recovered-skip i { background: var(--wbv2-ok-ink); }
+.wbv2-time-legend.is-unknown i { background: var(--wbv2-muted); }
+
+/* ---------- 能力 20 · 交卷前自检 ---------- */
+.wbv2-pre-submit-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border-radius: var(--wbv2-radius-chip);
+  background: var(--wbv2-ok-bg);
+  border: 1px solid var(--wbv2-ok-border);
+  color: var(--wbv2-ok-ink);
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 680;
+  white-space: nowrap;
+}
+.wbv2-pre-submit-card {
+  margin-top: 14px;
+  background: var(--wbv2-card);
+  border: 1px solid var(--wbv2-card-line);
+  border-left: 4px solid var(--wbv2-primary);
+  border-radius: var(--wbv2-radius-card);
+  box-shadow: var(--wbv2-shadow);
+  padding: clamp(16px, 2.6vw, 22px);
+  animation: wbv2-open-card 160ms ease-out;
+}
+.wbv2-pre-submit-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.wbv2-pre-submit-card h3 {
+  margin: 0;
+  color: var(--wbv2-ink);
+  font-size: 15px;
+  font-weight: 730;
+}
+.wbv2-pre-submit-card header p {
+  margin: 0;
+  color: var(--wbv2-muted);
+  font-size: 12.5px;
+}
+.wbv2-pre-submit-card ul {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 11px;
+}
+.wbv2-pre-submit-card li {
+  min-width: 0;
+}
+.wbv2-pre-submit-card li > p {
+  margin: 0 0 7px;
+  color: var(--wbv2-ink);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.wbv2-pre-submit-anchors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.wbv2-pre-submit-anchors button {
+  min-height: 36px;
+  border: 1px solid var(--wbv2-card-line);
+  border-radius: var(--wbv2-radius-chip);
+  background: var(--wbv2-soft);
+  color: var(--wbv2-primary);
+  padding: 0 12px;
+  font-size: 12.5px;
+  font-weight: 680;
+}
+.wbv2-pre-submit-anchors button:hover { background: var(--wbv2-chip-active); }
+.wbv2-pre-submit-card footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.wbv2-pre-submit-secondary {
+  min-height: 46px;
+  border: 1px solid var(--wbv2-card-line);
+  border-radius: var(--wbv2-radius-chip);
+  background: var(--wbv2-card);
+  color: var(--wbv2-ink);
+  padding: 0 17px;
+  font-size: 14px;
+  font-weight: 650;
+}
+.wbv2-pre-submit-primary {
+  min-height: 46px;
+  border: 0;
+  border-radius: var(--wbv2-radius-chip);
+  background: var(--wbv2-primary);
+  color: var(--wbv2-on-primary);
+  padding: 0 20px;
+  font-size: 14px;
+  font-weight: 720;
+}
+.wbv2-pre-submit-secondary:hover,
+.wbv2-pre-submit-primary:hover { filter: brightness(1.07); }
+
+@keyframes wbv2-open-card {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* ---------- 交卷后原位对照（旧口诀 vs 错步分叉） ---------- */
 .wbv2-compare-grid {
   display: grid;

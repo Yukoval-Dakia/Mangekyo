@@ -6,6 +6,8 @@ import type {
   L0Source,
   OwnWordsConceptWitness,
   OwnWordsOpening,
+  PreSubmitPitfall,
+  PreSubmitRevisionPayload,
   QuestionAttachmentsPayload,
   ReviewAttachment,
   ReviewAttachmentsMap,
@@ -98,9 +100,17 @@ export type SubmitAttemptBody = {
   questionAttachments?: QuestionAttachmentsPayload;
   confidence?: Record<string, number>;
   paperRev?: number;
+  preSubmitRevisions?: readonly PreSubmitRevisionPayload[];
 };
 export function submitAttempt(paperId: string, body: SubmitAttemptBody) {
   return api<WorkbookV2Detail>(`/papers/${enc(paperId)}/attempts`, { method: 'POST', body });
+}
+
+export function loadPreSubmitPitfalls(paperId: string, signal?: AbortSignal) {
+  return api<readonly PreSubmitPitfall[]>(`/papers/${enc(paperId)}/pre-submit-pitfalls`, {
+    ...(signal ? { signal } : {}),
+    cache: 'no-store',
+  });
 }
 
 // ---------- 能力 22 · 自留口诀 ----------
