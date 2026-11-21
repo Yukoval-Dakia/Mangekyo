@@ -54,3 +54,16 @@ temporal workflow update-options --workflow-id "$coordinator_id" \
 换绑请求成功后，用一份获准作答唤醒原工作流。待目标 Worker 完成一次 Workflow Task，
 再用 `temporal workflow describe` 核对 run ID 与换绑前一致、`deploymentVersion` 指向目标构建，并核对该作答的交付回执。
 旧试验设置缺少留存或单次价格授权，升级后仍可查账，恢复付费需由本人重新授权。
+
+## 08 §4.3 回归
+
+```sh
+pnpm build:kernel
+pnpm exec vitest run --maxWorkers=2 runtime/studio/test/research-triage.test.ts executors/teaching/learning-turn.test.ts -t golden
+```
+
+15 条用现行前哨菜单和生产回执校验器检查派发、跳过、非法响应与费用边界。
+10 条通过固定教学回合检查常驻目录，其中 8 条直接回放 ToolError 的 `next`，覆盖全部 7 码。
+这些测试使用固定响应及本地工具夹具。真实模型命中率与 Token 变化需要同批次的独立用量证据。
+历史 `dd87e66` 的 15 条使用另一版协议，原始直连 JSON 保存在该提交的
+`executors/temporal/test/fixtures/`。两批均为 10/15，用量回执分别覆盖 11/15、10/15。

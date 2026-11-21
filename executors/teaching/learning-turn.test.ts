@@ -1,10 +1,11 @@
 import {expect, it, vi} from 'vitest';
 import {runCompanionTurn} from './index.ts';
-import {hostedReads, hostedWrites, onDemandTools, toolFailure, type LearningTools, type ToolArgs} from './learning-tools.ts';
+import {adaptWorkspaceResult, learningHostDefinitions, onDemandTools, toolFailure, type LearningTools, type ToolArgs} from './learning-tools.ts';
 import {deps, mockChat, model, toolCall, type ChatRequest} from './test/chat.ts';
 import {hasDockerImage} from './test/docker.ts';
 
-const names = [...hostedReads, 'find_tools', ...hostedWrites, 'run_calculation'];
+const names = ['search_learning','open_learning','read_context','find_tools','save_page',
+  'save_question','save_belief','save_edge','manage_activity','run_calculation'];
 const evidence = {id:'01M7WXCJFCDRQA3J4WW4HKBB2W', rev:1, accessEpoch:'0', anchor:'q1', excerpt:'2/5', direction:'support'};
 const hypothesis = {category:'hypothesis', action:'remember', scope:'general', text:'可能把分母相加', evidence_refs:[evidence]};
 
@@ -14,13 +15,7 @@ function binding(execute: LearningTools['execute']): LearningTools {
   const definition = <N extends string>(name: N) => ({type:'function', function:{name, description:name, parameters:{type:'object'}}});
   return {
     definitions: {
-      search_learning: definition('search_learning'),
-      open_learning: definition('open_learning'),
-      read_context: definition('read_context'),
-      save_page: definition('save_page'),
-      save_question: definition('save_question'),
-      save_edge: definition('save_edge'),
-      manage_activity: definition('manage_activity'),
+      ...learningHostDefinitions(false,['tutoring']),
       ...Object.fromEntries(discoverable.map(name => [name, definition(name)])),
     }, execute, writes: () => [],
     writeKeys: (_, args) => typeof args.ref === 'string' ? [args.ref.replace(/@\d+$/, '')] : [],
@@ -39,18 +34,20 @@ const turn = (learningTools: LearningTools) => runCompanionTurn('请核对学习
 it.each([
   ['search_learning', 'not_found', {query:'分母'}, {query:'分数'}],
   ['open_learning', 'access_revoked', {refs:'old'}, {refs:'current_attempt'}],
-  ['read_context', 'basis_stale', {intent:'tutoring',expand:'stale'}, {intent:'tutoring'}],
+  ['read_context', 'basis_stale', {intent:'tutoring',expand:{region:'recent',start:0,basisDigest:'0'.repeat(64)}}, {intent:'tutoring'}],
   ['save_page', 'version_conflict', {ref:'page',expected_rev:1}, {ref:'page',expected_rev:2}],
-  ['save_question', 'invalid_args', {stem:''}, {stem:'比较两种方法'}],
+  ['save_question', 'invalid_args', {title:'分数',prompt:''}, {title:'分数',prompt:'比较两种方法'}],
   ['save_belief', 'evidence_not_opened', {...hypothesis,evidence_refs:[]}, hypothesis],
   ['save_edge', 'invalid_args', {from:'a',to:'a'}, {from:'a',to:'b'}],
   ['manage_activity', 'limit_exceeded', {items:['a','b','c']}, {items:['a']}],
-] as const)('repairs %s in one model decision', async (name, code, first, retry) => {
+] as const)('golden %s repairs %s in one model decision', async (name, code, first, retry) => {
   let executions = 0;
   const host = binding(async (_, args) => {
     if (executions++ === 0) {
       expect(args).toEqual(first);
-      return toolFailure(code, '请按下一步重试。', {tool:name, args:retry});
+      const failure = toolFailure(code, '请按下一步重试。', {tool:name, args:retry});
+      return name === 'open_learning' ? adaptWorkspaceResult(JSON.stringify({...failure,
+        next:{tool:'read_workspace',args:{id:'current_attempt'}}}),name) : failure;
     }
     expect(args).toEqual(retry);
     return {ok:true,data:{ref:'opened'}};
@@ -62,7 +59,8 @@ it.each([
     if (!round) return [[name, first]];
     const value = JSON.parse(body.messages.at(-1)!.content);
     if (round === 1) {
-      expect(value).toMatchObject({ok:false, code, next:{tool:name,args:retry}});
+      expect(value).toMatchObject({ok:false, code, message:expect.any(String), next:{tool:name,args:retry}});
+      expect([...value.message].length).toBeLessThanOrEqual(60);
       if (code === 'not_found') expect(value.candidates).toEqual([]);
       return [[value.next.tool, value.next.args]];
     }
@@ -129,7 +127,7 @@ it('stops a second recovery after the authorized prerequisite and original retry
   expect(seen).toEqual(['save_page','open_learning','save_page']);
 });
 
-it('discovers and executes the four hosted tools on demand', async () => {
+it('golden find_tools discovers and executes the four hosted tools on demand', async () => {
   expect(onDemandTools).toEqual(discoverable);
   const executed: string[] = [];
   const host = binding(async name => {
@@ -152,6 +150,21 @@ it('discovers and executes the four hosted tools on demand', async () => {
   });
   await turn(host);
   expect(executed).toEqual(onDemandTools);
+});
+
+it('golden run_calculation prepares the declared read and replays the stored calculation', async () => {
+  const host = binding(async () => { throw new Error('Expected an executor-owned calculation'); });
+  const prepare = vi.spyOn(host,'preparePython');
+  const reads = [{method:'attempts',args:{subject:'math'}}];
+  provider((body, round) => {
+    if (!round) return [['run_calculation',{code:'print(1)',reads}]];
+    expect(JSON.parse(body.messages.at(-1)!.content)).toEqual({ok:true,data:{text:'1'}});
+    return undefined;
+  });
+  await runCompanionTurn('请验算。',[],undefined,{...deps,learningTools:host,
+    runEffect: (step, invoke) => step.provider === 'tool:run_calculation'
+      ? Promise.resolve(JSON.stringify({ok:true,text:'1',artifacts:[]})) : deps.runEffect(step,invoke)});
+  expect(prepare).toHaveBeenCalledExactlyOnceWith(reads,1);
 });
 
 it.skipIf(!hasDockerImage('mangekyo-calculation:1'))('calculates with the real read-only SDK and attaches a PNG by handle', async () => {
