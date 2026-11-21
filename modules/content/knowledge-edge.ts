@@ -300,6 +300,35 @@ async function projectKnowledgeEdge(ctx: AssetReadContext, edge: KnowledgeEdge, 
   return { ...edge, from: await project(edge.from), to: await project(edge.to) };
 }
 
+export async function openKnowledgeWalkRoot(ctx: AssetReadContext, endpoint: KnowledgeEndpoint, mode: 'following' | 'pinned') {
+  const root = await readKnowledgeUse(ctx, endpoint.sourceUse);
+  if (knowledgeEndpointKind(root) !== endpoint.kind) throw new KnowledgeEdgeBasisError('图谱起点类型不符。');
+  if (endpoint.blockId) await openAssetReference(ctx.read, {
+    fact: root.ref, type: root.type, anchor: { kind: 'block', blockId: endpoint.blockId },
+  });
+  if (root.type === assetType) await checkTextbookBasis(ctx.read, parseAsset(root.value).basis ?? []);
+  return mode === 'following' ? projectKnowledgeEndpoint(ctx, endpoint, root) : endpoint;
+}
+
+export async function openKnowledgeWalkEdge(ctx: AssetReadContext, id: FactId, input: {
+  readonly mode: 'following' | 'pinned';
+  readonly acceptEdge?: (edge: KnowledgeEdge) => boolean;
+  readonly classifyMalformed?: boolean;
+}) {
+  const fact = await ctx.read.fact(id, { mode: 'following' });
+  if (fact.type !== knowledgeEdgeType) throw new KnowledgeEdgeBasisError('图谱边类型不符。');
+  let edge;
+  try {
+    edge = parseKnowledgeEdge(fact.value);
+  } catch (error) {
+    if (!input.classifyMalformed) throw error;
+    throw new KnowledgeEdgeBasisError('候选知识边不符合关系契约。', { cause: error });
+  }
+  if (input.acceptEdge && !input.acceptEdge(edge)) return undefined;
+  const basis = await verifiedEdgeBasis(ctx, edge);
+  return { fact, original: edge, projected: input.mode === 'following' ? await projectKnowledgeEdge(ctx, edge, basis) : edge };
+}
+
 /** Opens only the edge candidates enumerated by the authorized bus query. */
 export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
   readonly root: KnowledgeEndpoint;
@@ -314,31 +343,19 @@ export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
   readonly unavailable?: (error: unknown) => boolean;
 }) {
   if (input.edgeIds.length > 128 || (input.hops !== 1 && input.hops !== 2)) throw new Error('图谱展开超过上限。');
-  const root = await readKnowledgeUse(ctx, input.root.sourceUse);
-  if (knowledgeEndpointKind(root) !== input.root.kind) throw new KnowledgeEdgeBasisError('图谱起点类型不符。');
-  if (input.root.blockId) await openAssetReference(ctx.read, {
-    fact: root.ref, type: root.type, anchor: { kind: 'block', blockId: input.root.blockId },
-  });
-  if (root.type === assetType) await checkTextbookBasis(ctx.read, parseAsset(root.value).basis ?? []);
+  const projectedRoot = await openKnowledgeWalkRoot(ctx, input.root, input.mode);
   const following = input.mode === 'following';
-  const projectedRoot = following ? await projectKnowledgeEndpoint(ctx, input.root, root) : input.root;
   const nodeKey = (endpoint: KnowledgeEndpoint) => JSON.stringify([endpoint.sourceUse.id, endpoint.sourceUse.rev, endpoint.blockId ?? null]);
   async function openEdge(id: FactId) {
     try {
-      const fact = await ctx.read.fact(id, { mode: 'following' });
-      if (fact.type !== knowledgeEdgeType) throw new KnowledgeEdgeBasisError('图谱边类型不符。');
-      let edge;
-      try {
-        edge = parseKnowledgeEdge(fact.value);
-      } catch (error) {
-        if (!input.unavailable) throw error;
-        throw new KnowledgeEdgeBasisError('候选知识边不符合关系契约。', { cause: error });
-      }
-      if (input.acceptEdge && !input.acceptEdge(edge)) return undefined;
-      const basis = await verifiedEdgeBasis(ctx, edge);
-      const projected = following ? await projectKnowledgeEdge(ctx, edge, basis) : edge;
-      const from = following && await input.reopenFollowingRootAlias?.(edge.from) ? projectedRoot : projected.from;
-      const to = following && await input.reopenFollowingRootAlias?.(edge.to) ? projectedRoot : projected.to;
+      const opened = await openKnowledgeWalkEdge(ctx, id, {
+        mode: input.mode, classifyMalformed: Boolean(input.unavailable),
+        ...(input.acceptEdge ? { acceptEdge: input.acceptEdge } : {}),
+      });
+      if (!opened) return undefined;
+      const { fact, original, projected } = opened;
+      const from = following && await input.reopenFollowingRootAlias?.(original.from) ? projectedRoot : projected.from;
+      const to = following && await input.reopenFollowingRootAlias?.(original.to) ? projectedRoot : projected.to;
       return { ref: fact.ref, accessEpoch: fact.accessEpoch, edge: { ...projected, from, to }, from, to };
     } catch (error) {
       if (input.unavailable?.(error)) return undefined;

@@ -6,7 +6,8 @@ import {
 } from './asset.ts';
 import { readUnexposedArchetypeVariant, type CorrectionMicroVariantAccess } from './correction-micro-variant.ts';
 import {
-  canUseDistinguishingVariant, KnowledgeEdgeBasisError, knowledgeEndpointKind, knowledgeUseKey, readKnowledgeUse,
+  canUseDistinguishingVariant, KnowledgeEdgeBasisError, knowledgeEndpointKind, knowledgeUseKey,
+  openKnowledgeWalkEdge, openKnowledgeWalkRoot, readKnowledgeUse, type KnowledgeEdge, type KnowledgeEndpoint,
   walkKnowledgeEdges, type KnowledgeSourceUse,
 } from './knowledge-edge.ts';
 import type { KnowledgeReadAccess } from './knowledge-reads.ts';
@@ -20,6 +21,11 @@ type PulseProofAccess = {
   readonly dependenciesFor?: (witness: BusWitness) => readonly BusWitness[];
 };
 type BlockAccess = KnowledgeReadAccess & PulseProofAccess;
+type TextbookBlockAccess = BlockAccess & {
+  /** Warm the bound reader's cache in this transaction. Each fact read still authorizes
+   * the individual candidate and reports its own denial, absence or operational error. */
+  readonly preloadFollowingEdges?: (ids: readonly FactId[]) => Promise<void>;
+};
 export type TextbookPulseBlockProof = {
   readonly blockId: string;
   readonly page: BusWitness;
@@ -28,18 +34,20 @@ export type TextbookPulseBlockProof = {
 };
 
 function proofReader(access: BlockAccess) {
-  const cache = new Map<string, Promise<FactSnapshot>>();
+  const cache = new Map<string, Promise<{ fact: FactSnapshot; proofs: readonly BusWitness[] }>>();
   return (witnesses: Map<string, BusWitness>) => ({
     async fact<Value = Json>(id: FactId, options: Parameters<ReadContext['fact']>[1]): Promise<FactSnapshot<Value>> {
       const key = JSON.stringify([id, options.mode, options.mode === 'pinned' ? [options.rev, options.requirePurpose] : null]);
       let pending = cache.get(key);
       if (!pending) {
-        pending = access.read.fact(id, options);
+        pending = access.read.fact(id, options).then(fact => {
+          const witness = { ...fact.ref, type: fact.type, accessEpoch: fact.accessEpoch, mode: options.mode };
+          return { fact, proofs: [witness, ...(access.dependenciesFor?.(witness) ?? [])] };
+        });
         cache.set(key, pending);
       }
-      const fact = await pending;
-      const witness = { ...fact.ref, type: fact.type, accessEpoch: fact.accessEpoch, mode: options.mode };
-      for (const proof of [witness, ...(access.dependenciesFor?.(witness) ?? [])]) {
+      const { fact, proofs } = await pending;
+      for (const proof of proofs) {
         witnesses.set(`${knowledgeUseKey(proof)}:${proof.type}:${proof.mode}`, proof);
       }
       return fact as FactSnapshot<Value>;
@@ -61,7 +69,7 @@ const useOf = ({ ref: { id, rev }, accessEpoch }: FactSnapshot): KnowledgeSource
 /** Pass current selection and transitive source authorization in `access.read`. Enumerate current
  * `explains` and `maps_to_chapter` edges touching this exact block witness in either direction.
  * Refresh the witness and edge set after a block edit, move or authorization change. */
-export async function readTextbookBlockConcepts(access: BlockAccess, input: {
+export async function readTextbookBlockConcepts(access: TextbookBlockAccess, input: {
   readonly block: TextbookPulseBlock;
   readonly edges: TextbookPulseEdgeSet;
 }, onProof?: (proof: TextbookPulseBlockProof) => void) {
@@ -80,34 +88,45 @@ export async function readTextbookBlockConcepts(access: BlockAccess, input: {
     if (!location) return;
     await checkTextbookBasis(read, page.basis ?? []);
     await verifyAssetBlockReference({ ...access, read }, location.block.body);
+    const edgeIds = [...new Set(edges.edgeIds)].sort();
+    if (edgeIds.length > 1) await access.preloadFollowingEdges?.(edgeIds);
+    const root = { kind: 'chapter', sourceUse: block, blockId: block.blockId } as const;
+    function touchesBlock(chapter: KnowledgeEndpoint, concept: KnowledgeEndpoint) {
+      return chapter.kind === 'chapter' && chapter.blockId === block.blockId &&
+        knowledgeUseKey(chapter.sourceUse) === knowledgeUseKey(block) &&
+        concept.kind === 'concept' && concept.blockId === undefined;
+    }
+    const acceptEdge = ({ kind, from, to }: KnowledgeEdge) => (kind === 'explains' || kind === 'maps_to_chapter') &&
+      (touchesBlock(from, to) || touchesBlock(to, from));
     const links: TextbookPulseBlockProof['concepts'][number][] = [];
+    let rootProof: Map<string, BusWitness> | undefined;
     let incomplete = false;
-    for (const id of [...new Set(edges.edgeIds)].sort()) {
+    for (const id of edgeIds) {
       const proof = new Map<string, BusWitness>();
       const read = scopedRead(proof);
-      let edge: BusWitness;
       try {
-        const fact = await read.fact(id, { mode: 'following' });
-        edge = { ...fact.ref, type: fact.type, accessEpoch: fact.accessEpoch, mode: 'following' };
+        await read.fact(id, { mode: 'following' });
       } catch (error) {
         if (!unavailable(access, error)) throw error;
         continue;
       }
-      const { paths } = await walkKnowledgeEdges({ ...access, read }, {
-        root: { kind: 'chapter', sourceUse: block, blockId: block.blockId },
-        edgeIds: [id], mode: 'following', hops: 1, direction: 'both',
-        acceptEdge: ({ kind, from, to }) => (kind === 'explains' || kind === 'maps_to_chapter') &&
-          [[from, to], [to, from]].some(([chapter, concept]) => chapter?.kind === 'chapter' &&
-            chapter.blockId === block.blockId && knowledgeUseKey(chapter.sourceUse) === knowledgeUseKey(block) &&
-            concept?.kind === 'concept' && concept.blockId === undefined),
-        unavailable(error) {
-          if (!unavailable(access, error)) return false;
-          incomplete = true;
-          return true;
-        },
-      });
-      const path = paths[0];
-      if (path) links.push({ conceptId: path.endpoint.sourceUse.id, edge, basis: [...proof.values()] });
+      if (!rootProof) {
+        rootProof = new Map();
+        await openKnowledgeWalkRoot({ ...access, read: scopedRead(rootProof) }, root, 'following');
+      }
+      for (const [key, witness] of rootProof) proof.set(key, witness);
+      try {
+        const opened = await openKnowledgeWalkEdge({ ...access, read }, id,
+          { mode: 'following', acceptEdge, classifyMalformed: true });
+        if (!opened) continue;
+        const { fact, projected: { from, to } } = opened;
+        const concept = from.kind === 'concept' ? from : to;
+        const edge = { ...fact.ref, type: fact.type, accessEpoch: fact.accessEpoch, mode: 'following' as const };
+        links.push({ conceptId: concept.sourceUse.id, edge, basis: [...proof.values()] });
+      } catch (error) {
+        if (!unavailable(access, error)) throw error;
+        incomplete = true;
+      }
     }
     if (incomplete && !links.length) return;
     const pageWitness = { ...current.ref, type: current.type, accessEpoch: current.accessEpoch, mode: 'following' as const };
