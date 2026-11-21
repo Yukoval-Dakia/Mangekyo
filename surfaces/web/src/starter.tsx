@@ -4,18 +4,20 @@ import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { averageSpeed, ridingLesson } from '../../../modules/activity/starter.ts';
 import type { PracticeAnswers, PracticeView } from '../../../modules/activity/practice-values.ts';
+import { builtinCompanionPath, builtinPackPath, type BuiltinPack } from './builtin-packs';
 import { enqueue } from './offline-queue';
 import { deletedSubmission, api, ApiError, remember, remembered, submissionId } from './api';
 import './starter.css';
 
 const practicePath = '/practice/riding';
-const materialPath = '/materials/riding';
-const companionPath = '/companion?context=riding';
 const rateUnit = '公里/小时';
 const displayRate = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 
-export function StarterLesson() {
-  const { title, distanceKm, movingMinutes, stoppedMinutes, comparisonMinutes } = ridingLesson;
+export function StarterLesson({ pack }: { pack?: BuiltinPack | undefined }) {
+  const { distanceKm, movingMinutes, stoppedMinutes, comparisonMinutes } = ridingLesson;
+  const title = pack?.title ?? ridingLesson.title;
+  const materialPath = pack ? builtinPackPath(pack) : '/materials/riding';
+  const companionPath = pack ? builtinCompanionPath(pack) : '/companion?context=riding';
   const [stopped, setStopped] = useState<number>(stoppedMinutes);
   const elapsed = movingMinutes + stopped;
   const originalElapsed = movingMinutes + stoppedMinutes;
@@ -140,9 +142,11 @@ function newDraft(version: string): PracticeDraft {
   return { version, answers: {}, requestId: submissionId(), pending: null };
 }
 
-export function StarterPractice() {
+export function StarterPractice({ pack }: { pack?: BuiltinPack | undefined }) {
   const foreground = useVisibleDocument();
   const watermark = useDraftWatermark(foreground);
+  const materialPath = pack ? builtinPackPath(pack) : '/materials/riding';
+  const companionPath = pack ? builtinCompanionPath(pack) : '/companion?context=riding';
   const [view, setView] = useState<PracticeView | null>(null);
   const [draft, setDraft] = useState(restoreDraft);
   const currentGeneration = useCurrentDraft(draft?.requestId);
@@ -349,7 +353,7 @@ export function StarterPractice() {
           </form>)}
         </div>
         <aside className="starter-practice-links" aria-label="相关内容">
-          <a href={materialPath}><strong>{ridingLesson.title}</strong><span>回看停车比较和计算过程</span></a>
+          <a href={materialPath}><strong>{pack?.title ?? ridingLesson.title}</strong><span>回看停车比较和计算过程</span></a>
           <a href={companionPath}><strong>同伴</strong><span>围绕这份讲义提问</span></a>
         </aside>
       </div>

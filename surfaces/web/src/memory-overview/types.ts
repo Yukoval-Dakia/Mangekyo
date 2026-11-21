@@ -125,6 +125,8 @@ export type MemoryOverviewHandlers = {
 export type MemoryOverviewPanelProps = MemoryOverviewHandlers & {
   fetchJson?: (path: string) => Promise<MemoryOverviewResponse>;
   initialOverview?: MemoryOverviewResponse;
+  /** Hide the panel's own heading when an enclosing surface already renders it. */
+  hideHeading?: boolean;
   /** Optional slot rendered above the item list (e.g. extra controls). */
   renderHeaderExtra?: (() => ReactNode) | undefined;
 };

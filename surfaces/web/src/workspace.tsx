@@ -10,6 +10,7 @@ import { LearningUnderstandings } from './learning-understandings';
 import { LearningMemory } from './study-tools';
 import { NotionSettings } from './notion-settings';
 import { MaterialOriginal } from './intake';
+import { builtinClassroomPath, builtinClassrooms, builtinPacks, builtinPackPath } from './builtin-packs';
 
 export type Material = { id: string; title: string; text: string };
 export type Workspace = { materials: Material[]; goal: string | null };
@@ -127,28 +128,22 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
   const organizer = useResource<OrganizerIndex>('/organizer/index');
   const [filter, setFilter] = useState('全部');
   const [search, setSearch] = useState('');
+  const starterItems = builtinPacks.map(pack => ({
+    title: pack.title,
+    detail: pack.detail,
+    kind: pack.kind === 'practice' ? '题库' : '教材',
+    href: builtinPackPath(pack),
+    icon: pack.kind === 'practice' ? 'practice' as const : 'book' as const,
+  }));
   const items = [
-    {
-      title: '同一趟骑行，两块码表',
-      detail: '起步讲义 · 速度与时间',
-      kind: '教材',
-      href: '/materials/riding',
-      icon: 'book' as const,
-    },
-    {
-      title: '骑行与平均速度',
-      detail: '独立短练 · 可重复作答',
-      kind: '题库',
-      href: '/practice/riding',
-      icon: 'practice' as const,
-    },
-    {
-      title: '同一个 45，两份学习史',
-      detail: '示例课堂 · 两份合成旧作',
-      kind: '示例课堂',
-      href: '/classroom/first45',
+    ...starterItems,
+    ...builtinClassrooms.map(classroom => ({
+      title: classroom.title,
+      detail: classroom.description,
+      kind: '课堂',
+      href: builtinClassroomPath(classroom),
       icon: 'chat' as const,
-    },
+    })),
     ...(papers.data ?? []).map(p => ({ title:p.title, detail:'自编或从材料备课的练习', kind:'题库', href:'/papers/'+p.id, icon:'practice' as const })),
     ...(organizer.data?.notes ?? []).map(n => ({title:n.title, detail:'个人笔记 · 可编辑', kind:'笔记', href:'/notes?id='+n.id, icon:'book' as const})),
     ...(library.data?.materials ?? []).map((m) => ({
@@ -181,7 +176,7 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
           />
         </label>
         <div className="filter-row" aria-label="材料分类">
-          {['全部', '教材', '题库', '笔记', '个人材料', '示例课堂'].map((k) => (
+          {['全部', '教材', '题库', '笔记', '个人材料', '课堂'].map((k) => (
             <button key={k} type="button" aria-pressed={filter === k} onClick={() => setFilter(k)}>
               {k}
             </button>

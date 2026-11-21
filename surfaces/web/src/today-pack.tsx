@@ -12,7 +12,7 @@ import {
   validWatermark,
 } from './deletion-watermark';
 
-export type ActivityRef = { kind: 'activity' | 'pack'; id: string; rev: number };
+export type ActivityRef = { kind: 'activity' | 'pack' | 'material'; id: string; rev: number };
 type Pack = {
   kind: 'pack';
   id: string;
@@ -36,6 +36,7 @@ export function todayParams(mode: string, duration?: Duration) {
   return new URLSearchParams({mode, ...(duration && {duration})});
 }
 export function openLink(ref: ActivityRef, mode: string, duration?: Duration) {
+  if (ref.kind === 'material') return '/materials/saved/' + encodeURIComponent(ref.id);
   const params = todayParams(mode, duration);
   params.set('kind', ref.kind);
   params.set('id', ref.id);

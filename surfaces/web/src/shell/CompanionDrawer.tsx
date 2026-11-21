@@ -298,7 +298,7 @@ export function CompanionDrawer({
       if (loaded.caseId === "companion" || loaded.caseId === "riding") {
         setActiveSession(loaded);
       } else {
-        onOpenCompanion(`/classroom/first45?session=${encodeURIComponent(chatId)}`);
+        onOpenCompanion(`/classroom?session=${encodeURIComponent(chatId)}`);
       }
     } catch {
       setSessionError("暂时无法读取这段历史对话。");

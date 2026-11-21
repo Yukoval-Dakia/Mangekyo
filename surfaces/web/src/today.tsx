@@ -3,6 +3,7 @@ import { api, ApiError, remember, remembered, requestId } from './api';
 import { PageTitle } from './workspace';
 import { RetentionPosttests } from './retention-posttests';
 import { durationLabel, openLink, todayParams, TodayActivity, type ActivityRef, type Duration } from './today-pack';
+import { builtinPackPath, defaultPracticePack } from './builtin-packs';
 import { rememberPlan, SavedTodayAnswers, TodayHistory } from './today-history';
 import { TodayClassrooms } from './today-classrooms';
 import './today.css';
@@ -463,7 +464,7 @@ function TodayPlanPage({ mode, duration }: { mode: Mode; duration: Duration | un
         </section>
       )}
       <div className="study-actions today-links">
-        <a href="/practice/riding">随手开练</a>
+        <a href={defaultPracticePack ? builtinPackPath(defaultPracticePack) : '/practice/riding'}>随手开练</a>
         <a href="/materials">翻材料</a>
         <a href="/plan">学习计划</a>
         <a href="/review">错题回看</a>

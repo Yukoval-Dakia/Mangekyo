@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError, remember, remembered, requestId } from '../api';
+import { builtinPackPath, builtinPacks, defaultPracticePack } from '../builtin-packs';
 import { Icon } from '../icons';
 import { roomPath } from '../classroom-contract';
 import { openLink, todayParams, type ActivityRef, type Duration } from '../today-pack';
@@ -39,6 +40,7 @@ export type TodayCandidate = {
   reason: string;
   evidence: string[];
   delayImpact: string;
+  freshMaterial?: { savedAt: string; questionCount?: number; redPenErrorCount?: number };
   state?: 'in-progress' | 'completed';
 };
 
@@ -116,6 +118,20 @@ export type CompanionCitation = {
   topic?: string;
 };
 
+function freshMaterialChip(candidate: TodayCandidate): string | null {
+  const fresh = candidate.freshMaterial;
+  if (!fresh) return null;
+  const parts = ['刚交入'];
+  if (typeof fresh.questionCount === 'number' && fresh.questionCount > 0) parts.push(`含 ${fresh.questionCount} 题`);
+  if (typeof fresh.redPenErrorCount === 'number' && fresh.redPenErrorCount > 0) parts.push(`${fresh.redPenErrorCount} 处错题`);
+  return parts.join(' · ');
+}
+
+function FreshMaterialChip({ candidate }: { candidate: TodayCandidate }) {
+  const label = freshMaterialChip(candidate);
+  return label === null ? null : <Chip tone="forest">{label}</Chip>;
+}
+
 export type TodaySurfaceProps = {
   mode?: TodayMode;
   duration?: Duration;
@@ -167,20 +183,12 @@ type AiActivitySnapshot = {
   }[];
 };
 
-const DEFAULT_BUILTIN_PACKS: readonly BuiltinPackEntry[] = [
-  {
-    title: '同一趟骑行，两块码表',
-    detail: '起步讲义 · 速度与时间，不依赖模型即可直接阅读',
-    minutes: 5,
-    href: '/materials/riding',
-  },
-  {
-    title: '骑行与平均速度',
-    detail: '独立短练 · 确定性即时反馈，随时反复作答',
-    minutes: 3,
-    href: '/practice/riding',
-  },
-];
+const DEFAULT_BUILTIN_PACKS: readonly BuiltinPackEntry[] = builtinPacks.map(pack => ({
+  title: pack.title,
+  detail: pack.detail,
+  minutes: pack.minutes,
+  href: builtinPackPath(pack),
+}));
 
 const FREE_TIME_OPTIONS: readonly { value: Duration | undefined; label: string }[] = [
   { value: undefined, label: '不限' },
@@ -901,11 +909,11 @@ export function TodaySurface({
             >
               交入第一份材料
             </a>
-            {!allDone && (
+            {!allDone && defaultPracticePack && (
               <a
                 className="tv2-btn tv2-btn--tonal"
-                href="/practice/riding"
-                onClick={(event) => handleSpaNavigation(event, '/practice/riding', onNavigate)}
+                href={builtinPackPath(defaultPracticePack)}
+                onClick={(event) => handleSpaNavigation(event, builtinPackPath(defaultPracticePack!), onNavigate)}
               >
                 随手开练内置包
               </a>
@@ -933,6 +941,9 @@ export function TodaySurface({
         </div>
 
         <h2>{candidate.title}</h2>
+        {freshMaterialChip(candidate) !== null && (
+          <p className="tv2-fresh-material"><FreshMaterialChip candidate={candidate} /></p>
+        )}
 
         {leadWhy && <p className="tv2-why">{leadWhy}</p>}
 
@@ -1077,6 +1088,7 @@ export function TodaySurface({
         <div className="tv2-queue-card">
           <div className="tv2-queue-copy">
             <strong>{candidate.title}</strong>
+            <FreshMaterialChip candidate={candidate} />
             <small className="tv2-queue-meta">{metaSegments.join(' · ')}</small>
             {candidate.reason && !isTechnicalIdentifier(candidate.reason) && (
               <small className="tv2-queue-reason">{candidate.reason}</small>

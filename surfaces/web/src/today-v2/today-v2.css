@@ -561,6 +561,12 @@
   max-width: 64ch;
 }
 
+.tv2-fresh-material {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .tv2-basis-wrap {
   display: grid;
   gap: 8px;

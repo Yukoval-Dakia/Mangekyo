@@ -9,6 +9,7 @@ import { ClassroomRoom } from './classroom';
 import { Companion } from './companion';
 import { SettingsDialog } from './settings';
 import { StarterLesson, StarterPractice } from './starter';
+import { builtinClassroomFromRoute, builtinPackFromRoute } from './builtin-packs';
 import {WorkspaceLibrary, WorkspaceRecord} from './workspace-records';
 import { Workbook } from './workbook';
 import IssuedPapers from './issued-papers';
@@ -66,7 +67,11 @@ function resolveBreadcrumb(path: string, search: string): string[] {
   if (path === '/companion') return ['同伴'];
   if (path === '/me') return ['我'];
   if (path === '/materials') {
-    return new URLSearchParams(search).get('view') === 'iqdb' ? ['材料', '题库'] : ['材料'];
+    const params = new URLSearchParams(search);
+    if (params.get('pack')) {
+      return params.get('kind') === 'practice' ? ['材料', '内置练习'] : ['材料', '内置讲义'];
+    }
+    return params.get('view') === 'iqdb' ? ['材料', '题库'] : ['材料'];
   }
   if (path === '/materials/workspace') return ['材料', '学习记录'];
   if (path.startsWith('/materials/records/')) return ['材料', '记录详情'];
@@ -80,7 +85,6 @@ function resolveBreadcrumb(path: string, search: string): string[] {
   if (path === '/papers/issued') return ['材料', '已发试卷'];
   if (path === '/papers' || path.startsWith('/papers/')) return ['材料', '试卷'];
   if (path.startsWith('/practice/')) return ['材料', '练习'];
-  if (path === '/classroom/first45') return ['材料', '示例课堂'];
   if (path === '/classroom' || path.startsWith('/classroom/')) return ['材料', '课堂'];
   return ['今天'];
 }
@@ -117,6 +121,8 @@ function App() {
 
   const printPaperMatch = /^\/papers\/([0-9A-HJKMNP-TV-Z]{26})\/print$/.exec(routeState.pathname);
   const path = routeState.pathname === '/' || routeState.pathname === '/plan' ? '/today' : routeState.pathname;
+  const builtinPack = builtinPackFromRoute(path, routeState.search);
+  const builtinClassroom = builtinClassroomFromRoute(path, routeState.search);
   const routeKey = path + routeState.search;
   const active =
     ['/materials','/papers','/practice','/classroom','/intake','/notes','/review','/textbooks'].some(group => path === group || path.startsWith(group+'/'))
@@ -148,7 +154,7 @@ function App() {
       .then((s) => {
         if (c.signal.aborted) return;
         navigate(
-          (['riding', 'companion'].includes(s.caseId) ? '/companion' : '/classroom/first45') +
+          (['riding', 'companion'].includes(s.caseId) ? '/companion' : '/classroom') +
             '?session=' +
             encodeURIComponent(s.id),
           true,
@@ -224,6 +230,7 @@ function App() {
     }
   }
   else if (catalogOnly) content = <QuestionBank />;
+  else if (builtinPack) content = builtinPack.kind === 'practice' ? <StarterPractice pack={builtinPack} /> : <StarterLesson pack={builtinPack} />;
   else if (path === '/materials') content = (
     <MaterialsPage
       materials={library.data?.materials ?? []}
@@ -261,20 +268,21 @@ function App() {
     }
   }
   else if (path === '/notes') content = <Organizer key={routeKey} section="notes" materials={library.data?.materials ?? []} />;
-  else if (path === '/materials/riding') content = <StarterLesson />;
   else if (path.startsWith('/materials/saved/'))
     content = <SavedMaterial library={library} id={path.slice('/materials/saved/'.length)} />;
-  else if (path === '/practice/riding') content = <StarterPractice />;
-  else if (path === '/classroom/first45')
+  else if (builtinClassroom)
     content = (
       <DemoClassroom
         key={routeKey}
         settings={settings.data && forTask(settings.data, 'diagnostic')}
         needsSetup={settings.error}
         openSettings={() => open('settings')}
+        title={builtinClassroom.title}
+        description={builtinClassroom.description}
       />
     );
-  else if (path === '/classroom') content = <ClassroomStart key={routeKey} settings={settings.data} />;
+  else if (path === '/classroom' || /^\/classroom\/[a-z][a-z0-9-]*$/.test(path))
+    content = <ClassroomStart key={routeKey} settings={settings.data} />;
   else if (/^\/classroom\/[0-9A-HJKMNP-TV-Z]{26}(?:\/print)?$/.test(path)) {
     const id = path.split('/')[2]!;
     const preview = path.endsWith('/print');
@@ -290,7 +298,7 @@ function App() {
         settings={settings.data && forTask(settings.data, 'companion')}
         onOpenGoalEditor={() => open('goal')}
         onOpenSettings={() => open('settings')}
-        renderMemoryOverview={() => <MemoryOverviewPanel />}
+        renderMemoryOverview={() => <MemoryOverviewPanel hideHeading />}
         renderNotionSettings={() => <NotionSettings />}
         renderErasure={() => (
           <div className="me-v2-stack">
