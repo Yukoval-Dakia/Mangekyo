@@ -1,6 +1,14 @@
 import type { FactSnapshot } from '@mangekyo/kernel';
 import { studyRecordFact } from './values.ts';
-import { workbookAttempt, workbookPaper, workbookAttemptType } from './workbook-values.ts';
+import { workbookCorrection, workbookCorrectionType } from './workbook-correction.ts';
+import {
+  workbookAttempt,
+  workbookPaper,
+  workbookAttemptType,
+  workbookPaperType,
+  workbookRubricAssessment,
+  workbookRubricAssessmentType,
+} from './workbook-values.ts';
 
 function todayMode(mode: string): 'any' | 'one-hand' | 'voice' {
   if (mode !== 'any' && mode !== 'one-hand' && mode !== 'voice') throw new Error('学习模式无效。');
@@ -47,4 +55,85 @@ export function todayPaper(fact: FactSnapshot, completed: ReadonlySet<string | n
     delayImpact: '推迟后，这份练习的本次作答结果仍未知。',
     ...(completed.has(id + '/' + paper.savedAt) ? { state: 'completed' as const, date: day } : {}),
   };
+}
+
+// One host-side projection row for plan/pending-corrections. The structural
+// contract is enforced by `projectPendingCorrectionCandidates` at the call
+// site; modules must not import non-facts/slots exports across packages.
+type PendingCorrectionRow = {
+  paperId: string;
+  paperRev: number;
+  attemptId: string;
+  attemptRev: number;
+  title: string;
+  submittedAt: string;
+  items: readonly {
+    itemId: string;
+    outcome: 'incorrect' | 'partial';
+    source: 'attempt' | 'rubric';
+    corrected: boolean;
+    evidenceRef: string;
+  }[];
+};
+
+// Collects unretired wrong or partially-correct items from every visible
+// submitted attempt on a visible workbook paper. Read authorization already
+// filters revoked or retracted facts, so this only sees permitted snapshots.
+// Corrections are matched per (paper, attempt ref + access epoch, item).
+export function collectPendingCorrectionSources(facts: readonly FactSnapshot[]): PendingCorrectionRow[] {
+  const papers = new Map<string, FactSnapshot>();
+  const attempts: FactSnapshot[] = [];
+  const rubrics: FactSnapshot[] = [];
+  const corrections: ReturnType<typeof workbookCorrection>[] = [];
+  for (const fact of facts) {
+    if (fact.type === workbookPaperType) papers.set(fact.ref.id, fact);
+    else if (fact.type === workbookAttemptType) attempts.push(fact);
+    else if (fact.type === workbookRubricAssessmentType) rubrics.push(fact);
+    else if (fact.type === workbookCorrectionType) corrections.push(workbookCorrection(fact.value));
+  }
+  const rows: PendingCorrectionRow[] = [];
+  for (const attemptFact of attempts) {
+    const attempt = workbookAttempt(attemptFact.value);
+    const paper = papers.get(attempt.paperId);
+    if (!paper) continue;
+    const corrected = (itemId: string) =>
+      corrections.some(record =>
+        record.paperId === attempt.paperId && record.itemId === itemId &&
+        record.attempt.id === attemptFact.ref.id && record.attempt.rev === attemptFact.ref.rev &&
+        record.accessEpoch === attemptFact.accessEpoch);
+    const items: PendingCorrectionRow['items'][number][] = [];
+    for (const feedback of attempt.feedback) {
+      if (feedback.answer === null || (feedback.result !== 'incorrect' && feedback.result !== 'partial')) continue;
+      items.push({
+        itemId: feedback.questionId,
+        outcome: feedback.result,
+        source: 'attempt',
+        corrected: corrected(feedback.questionId),
+        evidenceRef: `${attemptFact.ref.id}@${attemptFact.ref.rev}`,
+      });
+    }
+    for (const rubricFact of rubrics) {
+      const assessment = workbookRubricAssessment(rubricFact.value);
+      if (assessment.attemptId !== attemptFact.ref.id || assessment.paperId !== attempt.paperId) continue;
+      if (assessment.verdict !== 'incorrect' && assessment.verdict !== 'partial') continue;
+      items.push({
+        itemId: assessment.questionId,
+        outcome: assessment.verdict,
+        source: 'rubric',
+        corrected: corrected(assessment.questionId),
+        evidenceRef: `${rubricFact.ref.id}@${rubricFact.ref.rev}`,
+      });
+    }
+    if (!items.length) continue;
+    rows.push({
+      paperId: paper.ref.id,
+      paperRev: paper.ref.rev,
+      attemptId: attemptFact.ref.id,
+      attemptRev: attemptFact.ref.rev,
+      title: workbookPaper(paper.value).title,
+      submittedAt: attempt.submittedAt,
+      items,
+    });
+  }
+  return rows;
 }

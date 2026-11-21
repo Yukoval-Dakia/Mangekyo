@@ -21,12 +21,13 @@ import {
   setOrganizerTaskDone,
 } from '../../modules/plan/organizer-task-values.ts';
 import { studyRecordType, submitOfflinePack } from '../../modules/activity/values.ts';
-import { workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
-import { todayCompletion, todayPaper, todaySettings } from '../../modules/activity/today-values.ts';
+import { workbookAttemptType, workbookPaperType, workbookRubricAssessmentType } from '../../modules/activity/workbook-values.ts';
+import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
+import { collectPendingCorrectionSources, todayCompletion, todayPaper, todaySettings } from '../../modules/activity/today-values.ts';
 import saveRule from '../../modules/plan/commands/save-rule.ts';
 import setGoalStatus from '../../modules/plan/commands/set-goal-status.ts';
 import todayDeriver from '../../modules/plan/derivers/today.ts';
-import { todayDuration } from '../../modules/plan/today.ts';
+import { projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
 import { checkPack, openPack, packCandidates } from '../../modules/plan/offline-pack.ts';
 import type { GoalStatus } from '../../modules/plan/goal-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
@@ -121,14 +122,17 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
           const day = dayOf(settings.now);
           const papers: FactSnapshot[] = [];
           const completed = new Set<string | null>();
-          for await (const fact of readFactCollection(tx, read, [planRuleType, workbookPaperType, workbookAttemptType, studyRecordType], {pinTypes: [workbookPaperType]})) {
+          const pendingFacts: FactSnapshot[] = [];
+          for await (const fact of readFactCollection(tx, read, [planRuleType, workbookPaperType, workbookAttemptType, workbookRubricAssessmentType, workbookCorrectionType, studyRecordType], {pinTypes: [workbookPaperType]})) {
             if (fact.type === planRuleType) rules.push({id: fact.ref.id, rev: fact.ref.rev, data: planRule(fact.value)});
             else if (fact.type === workbookPaperType) papers.push(fact);
-            else completed.add(todayCompletion(fact, day, dayOf));
+            else if (fact.type === workbookAttemptType || fact.type === studyRecordType) completed.add(todayCompletion(fact, day, dayOf));
+            if (fact.type !== planRuleType && fact.type !== studyRecordType) pendingFacts.push(fact);
           }
           const candidates = [
             ...papers.flatMap(fact => todayPaper(fact, completed, day) ?? []),
             ...packCandidates().map(c => completed.has(c.id + '@' + c.open?.rev) ? {...c, state: 'completed' as const, date: day} : c),
+            ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts)),
           ];
           return {
             ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? {goal} : {}), rules: rules.map(r => r.data),
@@ -158,7 +162,10 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
       const ref = {id: validate(factId, id), mode: 'following' as const, rev, type: workbookPaperType};
       const match = await readable(() => bus.resolve([ref], 'organizer'));
       const paper = match?.items[0];
-      if (paper && todayPaper(paper, new Set(), '')) return {kind, id, rev, href: '/papers/' + id};
+      // `resolve` already attests the frozen paper is visible, current, and
+      // authorized; pending-correction candidates may point at issued papers
+      // the ordinary recommendation filter would skip.
+      if (paper) return {kind, id, rev, href: '/papers/' + id};
       throw new RequestError(404, '这份活动的冻结版本当前不可打开。');
     },
 
