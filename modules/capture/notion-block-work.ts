@@ -43,10 +43,9 @@ export function notionBlockRecoveryPages(sources: readonly {id: FactId; pageId: 
 export function planNotionBlockRecovery(access: SelectedNotionAccess, confirmed: ReadonlySet<FactId>, withdrawn: (error: unknown) => boolean) {
   return async (slotKey: string) => {
     const basis = parseNotionBlockWorkKey(slotKey);
-    if (!confirmed.has(basis.id)) return;
     try {
       await openCurrentNotionBlock(access,basis);
-      return 'retry' as const;
+      return confirmed.has(basis.id) ? 'retry' as const : undefined;
     } catch (error) {
       if (withdrawn(error)) return 'cancel' as const;
       throw error;
