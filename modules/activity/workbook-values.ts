@@ -238,6 +238,7 @@ export type WorkbookSummary = {
 export type WorkbookAttemptView = {
   id: string;
   rev?: Revision;
+  correctionItemIds?: string[];
   correctedItemIds?: string[];
   requestId: string;
   submittedAt: string;

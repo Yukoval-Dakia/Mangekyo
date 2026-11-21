@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
-import { api, deletedSubmission, submissionId } from './api';
+import { ApiError, api, deletedSubmission, submissionId } from './api';
+import { bindDeletionWatermark, latestKey } from './deletion-watermark';
 
 export function WorkbookCorrection({ paperId, attemptId, attemptRev, itemId, recorded }: {
   paperId: string; attemptId: string; attemptRev: number; itemId: string; recorded: boolean;
@@ -16,6 +17,8 @@ export function WorkbookCorrection({ paperId, attemptId, attemptRev, itemId, rec
       await api(`/papers/${paperId}/attempts/${attemptId}/corrections`, {
         method: 'POST', body: { requestId: request.current, attemptRev, itemId },
       });
+      if (localStorage.getItem(latestKey) !== bindDeletionWatermark(request.current))
+        throw new ApiError(409, undefined, 'deletion_watermark_stale');
       setState('saved');
     } catch (error) {
       const erased = deletedSubmission(error);

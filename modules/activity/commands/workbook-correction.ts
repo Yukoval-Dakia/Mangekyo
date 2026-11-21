@@ -10,7 +10,7 @@ export default defineCommand({
   destructive: false,
   schema: creation(workbookCorrectionTarget),
   async write(ctx, { id, data }) {
-    const fact = await openWorkbookCorrectionTarget(ctx.read, data);
+    const { fact } = await openWorkbookCorrectionTarget(ctx.read, data);
     return [{ kind: 'create', id, factType: workbookCorrectionType, purpose: [storagePurpose],
       data: { ...data, accessEpoch: fact.accessEpoch, correctedAt: new Date().toISOString() } }];
   },

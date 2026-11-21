@@ -771,7 +771,7 @@ function FeedbackItem({
       )}
       {feedback.expected && <p className="workbook-expected"><ExpectedView expected={feedback.expected} /></p>}
       {feedback.explanation && <p className="workbook-explanation">{feedback.explanation}</p>}
-      {correction && (shownResult === 'incorrect' || shownResult === 'partial') &&
+      {correction &&
         <WorkbookCorrection key={attemptId + ':' + correction.attemptRev} paperId={paperId} attemptId={attemptId}
           attemptRev={correction.attemptRev} itemId={question.id} recorded={correction.recorded} />}
       {question.kind === 'rubric' && feedback.answer !== null && (
@@ -1238,7 +1238,7 @@ function PaperDetail({ paperId, materials, modelSettings }: { paperId: string; m
                     onAssess={assessRubric}
                     assessing={assessing}
                     sealedPractice={view.sealedPractice === true}
-                    correction={typeof activeAttempt.rev === 'number' && watermark.ready ? {
+                    correction={typeof activeAttempt.rev === 'number' && watermark.ready && activeAttempt.correctionItemIds?.includes(question.id) ? {
                       attemptRev: activeAttempt.rev, recorded: activeAttempt.correctedItemIds?.includes(question.id) === true,
                     } : undefined}
                   />
