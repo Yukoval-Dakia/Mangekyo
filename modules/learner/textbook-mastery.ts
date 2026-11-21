@@ -1,0 +1,313 @@
+import type { BusWitness, CanonicalEvidenceSliceV1, EvidenceEventV1, LearnerId, Tick } from '@mangekyo/kernel';
+import { nearFlashCrossing } from './flash-check.ts';
+import {
+  defaultRetentionMethod, readPythonRetentionMethod, type CognitionOutput, type PythonRetentionMethod,
+} from './retention.ts';
+
+export type TextbookMasteryScope = {
+  readonly learner: LearnerId;
+  readonly purpose: string;
+  readonly recipientId: string;
+  readonly asOf: string;
+  readonly clockWatermark: Tick;
+};
+
+export type TextbookMasteryBlock = {
+  readonly blockId: string;
+  readonly page: BusWitness;
+  readonly basis?: readonly BusWitness[];
+  readonly concepts: readonly {
+    readonly conceptId: string;
+    readonly edge: BusWitness;
+    readonly basis: readonly BusWitness[];
+  }[];
+};
+
+export type TextbookMasteryRequest = TextbookMasteryScope & {
+  readonly blocks: readonly TextbookMasteryBlock[];
+};
+
+export type TextbookMasteryEvidenceAnchor = {
+  readonly submission: BusWitness;
+  readonly question: BusWitness;
+  readonly itemId: string;
+  readonly href: string;
+  readonly recordedAt: Tick;
+  readonly expiresAt?: string;
+  readonly basis: readonly BusWitness[];
+  // The host supplies the reopened workbook backtrace proof for this exact
+  // question: two independent correct sittings and the frozen delayed followup.
+  readonly priorStable?: {
+    readonly conceptIds: readonly string[];
+    readonly basis: readonly [BusWitness, ...BusWitness[]];
+  };
+};
+
+export type TextbookMasteryEvidenceBatch = {
+  readonly slice: CanonicalEvidenceSliceV1;
+  readonly anchors: readonly TextbookMasteryEvidenceAnchor[];
+};
+
+export type TextbookMasterySources = {
+  readonly methodVersion?: string;
+  // Gather formal, item-scoped evidence and its complete basis at this watermark.
+  // Open the page, concept edges and sources for this recipient and purpose.
+  // Return null when authorized coverage of the requested concepts is unverified.
+  readEvidence(scope: TextbookMasteryScope, conceptIds: readonly string[]): Promise<TextbookMasteryEvidenceBatch | null>;
+  // The host authorizes the exact witnesses for its actual calculation recipient
+  // at dispatch time. A denied, failed or unavailable calculation returns null.
+  derive(scope: TextbookMasteryScope, method: PythonRetentionMethod, slice: CanonicalEvidenceSliceV1,
+    witnesses: readonly BusWitness[]): Promise<CognitionOutput | null>;
+  // Reopen these exact witnesses together for the actual display recipient,
+  // checking current epochs, revisions, expiry and deletion. Missing means denied.
+  reopen(scope: TextbookMasteryScope, witnesses: readonly BusWitness[]): Promise<readonly BusWitness[]>;
+};
+
+export type TextbookMasteryAnchor = {
+  readonly kind: 'recent-error' | 'prior-stable';
+  readonly submissionId: string;
+  readonly submissionRev: number;
+  readonly itemId: string;
+  readonly occurredAt: string;
+  readonly href: string;
+};
+
+export type TextbookMasteryConcept = { readonly conceptId: string } & (
+  | { readonly state: 'unknown'; readonly reason: 'no-independent-evidence' | 'unavailable' }
+  | { readonly state: 'steady' | 'decaying' | 'fragile'; readonly anchor?: TextbookMasteryAnchor }
+);
+
+export type TextbookMasteryView = {
+  readonly asOf: string;
+  readonly blocks: readonly {
+    readonly page: Pick<BusWitness, 'id' | 'rev' | 'accessEpoch'>;
+    readonly blockId: string;
+    readonly concepts: readonly TextbookMasteryConcept[];
+  }[];
+};
+
+type ScoredEvent = Exclude<EvidenceEventV1, { readonly help_level: 'unknown' }>;
+
+type Attempt = {
+  readonly event: ScoredEvent;
+  readonly anchor: TextbookMasteryEvidenceAnchor;
+};
+
+type Bucket = {
+  readonly dimensions: string;
+  readonly attempts: Map<string, Attempt>;
+};
+
+function witnessKey(ref: BusWitness) {
+  return JSON.stringify([ref.learner, ref.id, ref.rev, ref.accessEpoch, ref.mode, ref.type]);
+}
+
+function eventKey(id: string, rev: number) {
+  return JSON.stringify([id, rev]);
+}
+
+function bucketKey(novelty: string, representation?: string | null, context?: string | null, method?: string | null) {
+  return JSON.stringify([novelty, representation ?? null, context ?? null, method ?? null]);
+}
+
+function blockWitnesses(block: TextbookMasteryBlock) {
+  return [block.page, ...(block.basis ?? [])];
+}
+
+function edgeWitnesses(link: TextbookMasteryBlock['concepts'][number]) {
+  return [link.edge, ...link.basis];
+}
+
+function attemptWitnesses({ anchor }: Attempt) {
+  return [anchor.submission, anchor.question, ...anchor.basis];
+}
+
+function localWitness(ref: BusWitness, scope: TextbookMasteryScope) {
+  return ref.learner === scope.learner && BigInt(ref.accessEpoch) <= BigInt(scope.clockWatermark);
+}
+
+function uniqueWitnesses(refs: Iterable<BusWitness>) {
+  return [...new Map(Array.from(refs, ref => [witnessKey(ref), ref])).values()];
+}
+
+function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMasteryScope, concepts: ReadonlySet<string>) {
+  const buckets = new Map<string, Bucket | null>();
+  const { slice } = batch;
+  const cutoff = Date.parse(scope.asOf);
+  if (slice.as_of_at !== scope.asOf || slice.clock_watermark !== scope.clockWatermark) return null;
+
+  const omitted = new Set(slice.omissions?.map(({ ref }) => eventKey(ref.id, ref.rev)));
+  const anchors = new Map<string, TextbookMasteryEvidenceAnchor | null>();
+  for (const anchor of batch.anchors) {
+    const { submission, question, basis, recordedAt, expiresAt, itemId, href } = anchor;
+    const key = eventKey(submission.id, submission.rev);
+    if (anchors.has(key)) {
+      // Canonical item events have only a submission ref, so two anchors for
+      // that ref cannot establish which item the worker's result describes.
+      anchors.set(key, null);
+      continue;
+    }
+    anchors.set(key, itemId && /^\/(?!\/)[^\\\s]*$/u.test(href)
+      && BigInt(recordedAt) <= BigInt(scope.clockWatermark)
+      && (expiresAt === undefined || cutoff < Date.parse(expiresAt))
+      && [submission, question, ...basis].every(ref => localWitness(ref, scope)) ? anchor : null);
+  }
+
+  const seen = new Map<string, EvidenceEventV1>();
+  for (const event of slice.events) {
+    const key = eventKey(event.ref, event.rev);
+    const prior = seen.get(key);
+    if (prior && JSON.stringify(prior) !== JSON.stringify(event)) anchors.set(key, null);
+    else seen.set(key, event);
+  }
+  for (const event of slice.events) {
+    const key = eventKey(event.ref, event.rev);
+    const anchor = anchors.get(key);
+    if (omitted.has(key) || !(Date.parse(event.occurred_at) <= cutoff) || event.help_level !== 'independent'
+      || event.outcome === 'unknown' || event.exam_pacing || event.exam_pacing_item) continue;
+    const dimension = bucketKey(event.item_novelty, event.representation, event.context, event.method);
+    for (const concept of new Set(event.concept_ids)) {
+      if (!concepts.has(concept)) continue;
+      let bucket = buckets.get(concept);
+      if (bucket === null) continue;
+      if (!anchor) {
+        buckets.set(concept, null);
+        continue;
+      }
+      if (!bucket) {
+        bucket = { dimensions: dimension, attempts: new Map() };
+        buckets.set(concept, bucket);
+      }
+      const prior = bucket.attempts.get(event.ref);
+      if (bucket.dimensions !== dimension || (prior && JSON.stringify(prior.event) !== JSON.stringify(event))) {
+        buckets.set(concept, null);
+        continue;
+      }
+      bucket.attempts.set(event.ref, { event, anchor });
+    }
+  }
+  return buckets;
+}
+
+function verifiedRows(result: CognitionOutput | null, version: string, buckets: ReadonlyMap<string, Bucket | null>) {
+  const rows = new Map<string, CognitionOutput['state_vector'][number] | null>();
+  if (result?.method_version !== version) return rows;
+  for (const row of result.state_vector) {
+    const bucket = buckets.get(row.concept_id);
+    if (!bucket) continue;
+    const dimensions = bucketKey(row.item_novelty, row.representation, row.context, row.method);
+    const refs = new Map(row.evidence_refs.map(ref => [ref.ref, ref.rev]));
+    const matching = row.state === 'known' && row.uncertainty.kind === 'interval' && dimensions === bucket.dimensions
+      && row.evidence_refs.length === bucket.attempts.size && refs.size === bucket.attempts.size
+      && [...bucket.attempts].every(([ref, { event }]) => refs.get(ref) === event.rev);
+    rows.set(row.concept_id, matching && !rows.has(row.concept_id) ? row : null);
+  }
+  return rows;
+}
+
+// The registered Python retention methods report crossings at this boundary.
+// This view assigns labels to a worker result without estimating retention.
+const crossingProbability = 0.60;
+
+function newer(attempt: Attempt, latest: Attempt | undefined) {
+  if (!latest) return true;
+  const elapsed = Date.parse(attempt.event.occurred_at) - Date.parse(latest.event.occurred_at);
+  return elapsed > 0 || (elapsed === 0 && BigInt(attempt.anchor.recordedAt) > BigInt(latest.anchor.recordedAt));
+}
+
+function projectConcept(conceptId: string, bucket: Bucket, row: CognitionOutput['state_vector'][number],
+  scope: TextbookMasteryScope, allowed: (ref: BusWitness) => boolean): TextbookMasteryConcept {
+  const now = Date.parse(scope.asOf);
+  if (row.state !== 'known' || row.r_now === undefined || !(row.r_now >= 0 && row.r_now <= 1)
+    || (row.crossing_at !== undefined && !(Date.parse(row.crossing_at) >= now))) return { conceptId, state: 'unknown', reason: 'unavailable' };
+  let latest: Attempt | undefined;
+  let error: Attempt | undefined;
+  let stable: Attempt | undefined;
+  for (const attempt of bucket.attempts.values()) {
+    if (newer(attempt, latest)) latest = attempt;
+    if (attempt.event.outcome === 'incorrect') {
+      if (newer(attempt, error)) error = attempt;
+      continue;
+    }
+    const { priorStable, question } = attempt.anchor;
+    if (priorStable?.conceptIds.includes(conceptId) && newer(attempt, stable)
+      && priorStable.basis.some(ref => ref.id === question.id && ref.rev === question.rev && ref.accessEpoch === question.accessEpoch)
+      && priorStable.basis.some(ref => ref.id === conceptId)
+      && priorStable.basis.every(ref => localWitness(ref, scope) && allowed(ref))) stable = attempt;
+  }
+  if (!latest) return { conceptId, state: 'unknown', reason: 'unavailable' };
+  const decaying = row.r_now <= crossingProbability || (row.crossing_at !== undefined && nearFlashCrossing(row.crossing_at, now));
+  const state = latest.event.outcome === 'incorrect' ? 'fragile' : decaying ? 'decaying' : 'steady';
+  const selected = state === 'fragile' ? error : stable ?? error;
+  if (!selected) return { conceptId, state };
+  const { event, anchor } = selected;
+  return {
+    conceptId, state,
+    anchor: {
+      kind: event.outcome === 'incorrect' ? 'recent-error' : 'prior-stable',
+      submissionId: event.ref, submissionRev: event.rev, occurredAt: event.occurred_at, itemId: anchor.itemId, href: anchor.href,
+    },
+  };
+}
+
+export async function projectTextbookMastery(request: TextbookMasteryRequest, sources: TextbookMasterySources): Promise<TextbookMasteryView> {
+  const { blocks, ...scope } = request;
+  const local = (ref: BusWitness) => localWitness(ref, scope);
+  const visibleBlocks = blocks.filter(block => blockWitnesses(block).every(local)).map(block => ({
+    ...block, concepts: block.concepts.filter(link =>
+      link.basis.some(ref => ref.id === link.conceptId) && edgeWitnesses(link).every(local)),
+  }));
+  const conceptIds = new Set(visibleBlocks.flatMap(block => block.concepts.map(link => link.conceptId)));
+  const pageAndEdgeWitnesses = visibleBlocks.flatMap(block => [...blockWitnesses(block), ...block.concepts.flatMap(edgeWitnesses)]);
+  const version = sources.methodVersion ?? defaultRetentionMethod;
+  const method = readPythonRetentionMethod(version);
+  const batch = method && conceptIds.size ? await sources.readEvidence(scope, [...conceptIds]) : null;
+  const coveredBuckets = batch ? evidenceBuckets(batch, scope, conceptIds) : null;
+  const buckets = coveredBuckets ?? new Map<string, Bucket | null>();
+  const eventConcepts = new Map<ScoredEvent, string[]>();
+  const usedWitnesses: BusWitness[] = [];
+  const stabilityWitnesses: BusWitness[] = [];
+  for (const [concept, bucket] of buckets) {
+    if (!bucket) continue;
+    for (const attempt of bucket.attempts.values()) {
+      const selected = eventConcepts.get(attempt.event);
+      if (selected) selected.push(concept);
+      else {
+        eventConcepts.set(attempt.event, [concept]);
+        usedWitnesses.push(...attemptWitnesses(attempt));
+        stabilityWitnesses.push(...(attempt.anchor.priorStable?.basis.filter(local) ?? []));
+      }
+    }
+  }
+  const events = [...eventConcepts].map(([event, concept_ids]) => ({ ...event, concept_ids }));
+  // The worker receives only the scoped activity slice. The page and textbook
+  // edge witnesses authorize the learner-facing view and never enter this dispatch.
+  const calculationWitnesses = uniqueWitnesses(usedWitnesses);
+  const result = batch && method && events.length ? await sources.derive(scope, method, {
+    as_of_at: scope.asOf, clock_watermark: scope.clockWatermark, events,
+    constraints: { budget_min: null, locks: [], deadlines: [] }, candidate_pool: [],
+  }, calculationWitnesses) : null;
+  const witnesses = uniqueWitnesses([...pageAndEdgeWitnesses, ...calculationWitnesses, ...stabilityWitnesses]);
+  const reopened = witnesses.length ? await sources.reopen(scope, witnesses) : [];
+  const current = new Set(reopened.map(witnessKey));
+  const allowed = (ref: BusWitness) => current.has(witnessKey(ref));
+  const projections = new Map<string, TextbookMasteryConcept>();
+  for (const [concept, row] of verifiedRows(result, version, buckets)) {
+    const bucket = buckets.get(concept);
+    if (!row || !bucket || ![...bucket.attempts.values()].every(attempt => attemptWitnesses(attempt).every(allowed))) continue;
+    projections.set(concept, projectConcept(concept, bucket, row, scope, allowed));
+  }
+  return { asOf: scope.asOf, blocks: visibleBlocks.flatMap(block => {
+    if (!blockWitnesses(block).every(allowed)) return [];
+    const concepts = new Set(block.concepts.filter(link => edgeWitnesses(link).every(allowed)).map(link => link.conceptId));
+    const { id, rev, accessEpoch } = block.page;
+    return [{
+      page: { id, rev, accessEpoch },
+      blockId: block.blockId,
+      concepts: [...concepts].map(conceptId => projections.get(conceptId) ?? {
+        conceptId, state: 'unknown',
+        reason: coveredBuckets && !coveredBuckets.has(conceptId) ? 'no-independent-evidence' : 'unavailable',
+      }),
+    }];
+  }) };
+}
