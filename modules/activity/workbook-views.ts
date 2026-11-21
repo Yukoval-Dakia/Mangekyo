@@ -1,3 +1,4 @@
+import { formalItemErrorStage, type AssessmentErrorStage, type AssessmentResult } from './assessment-values.ts';
 import { workbookAttemptUsage, workbookAttemptView, workbookSummary, workbookMistakes } from './workbook-assessment-values.ts';
 import { factId, type FactId, type FactRef, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { projectHelpExposure, type AdmittedHelpEvent } from './help-exposure.ts';
@@ -22,6 +23,7 @@ export type ReviewEntry = {
   answer: string;
   expected: string;
   explanation: string | null;
+  errorStage?: AssessmentErrorStage;
 };
 
 export function ridingReview(practice: PracticeView): ReviewEntry[] {
@@ -136,18 +138,32 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
   };
 }
 
-export async function projectWorkbookReview(attempts: readonly {id: FactId; attempt: WorkbookAttempt}[],
+export async function projectWorkbookReview(attempts: readonly {id: FactId; rev?: Revision; attempt: WorkbookAttempt}[],
   assessments: ReadonlyMap<string, WorkbookRubricAssessmentView[]>, paperAvailable: (id: string) => Promise<boolean>,
+  formalAssessment?: (paper: WorkbookPaper, ref: { id: FactId; rev: Revision }) => Promise<AssessmentResult | undefined>,
 ): Promise<ReviewEntry[]> {
   const seen = new Set<string>();
   const available = new Map<string, boolean>();
   const result: ReviewEntry[] = [];
-  for (const { id, attempt } of attempts) {
+  for (const { id, rev, attempt } of attempts) {
     if (!available.has(attempt.paperId)) available.set(attempt.paperId, await paperAvailable(attempt.paperId));
     if (!available.get(attempt.paperId)) continue;
-    result.push(...workbookMistakes(attempt, assessments.get(id) ?? [], seen));
+    const formal = rev !== undefined && attempt.paper.assessmentRelease && formalAssessment
+      ? await formalAssessment(attempt.paper, { id, rev }) : undefined;
+    result.push(...workbookMistakes(attempt, assessments.get(id) ?? [], seen, formal));
   }
   return result;
+}
+
+export function formalDiagnosisSummary<Score>(
+  formal: { state: string; score: Score; result?: AssessmentResult } | undefined,
+  hasRelease: boolean,
+) {
+  if (!formal) return hasRelease ? { state: 'unavailable' as const } : undefined;
+  const errorStages = (formal.result?.outcomes ?? []).flatMap(outcome =>
+    'errorStage' in outcome && outcome.errorStage !== undefined
+      ? [{ itemId: outcome.itemId, errorStage: outcome.errorStage }] : []);
+  return { state: formal.state, score: formal.score, ...(errorStages.length ? { errorStages } : {}) };
 }
 
 type DiagnosisSource = { id: string; rev: number; title: string; sourceRef: SourceRefV1 };
@@ -156,18 +172,28 @@ type DiagnosisHelp = { ref: FactRef; cutoff: Tick; targets: readonly HelpTarget[
 export function workbookDiagnosisView<Formal>(
   source: DiagnosisSource, attempt: WorkbookAttempt, paper: { id: FactId; rev: Revision },
   { ref, cutoff, targets, events }: DiagnosisHelp,
-  assessments: readonly Pick<WorkbookRubricAssessmentView, 'questionId' | 'verdict' | 'score'>[],
+  assessments: readonly Pick<WorkbookRubricAssessmentView, 'questionId' | 'verdict' | 'score' | 'errorStage'>[],
   formalAssessment: Formal | undefined,
   feedback: readonly {result: string}[] = attempt.feedback,
 ) {
   const unavailable = { state: 'unavailable' } as const;
-  const byQuestion = new Map(assessments.map(({ questionId, verdict, score }) => [questionId, { verdict, ...(score ? { score } : {}) }]));
+  const byQuestion = new Map(assessments.map(({ questionId, verdict, score, errorStage }) => [questionId,
+    { verdict, ...(score ? { score } : {}),
+      ...(errorStage && (verdict === 'incorrect' || verdict === 'partial') ? { errorStage } : {}) }]));
+  const formalStages = formalAssessment && typeof formalAssessment === 'object'
+    ? (formalAssessment as { errorStages?: readonly { itemId: string; errorStage: AssessmentErrorStage }[] }).errorStages
+    : undefined;
   const questions = attempt.paper.questions.map((question, index) => {
     const { id, prompt, kind } = question;
     const observed = projectHelpExposure({ submission: { ref, target: targets[index]!, cutoff }, events, coverage: null });
     const { result } = feedback[index]!;
     const assessment = byQuestion.get(id) ?? { verdict: result };
-    return { id, prompt, answer: attempt.answers[id], kind, assessment,
+    const formalStage = formalItemErrorStage(formalStages, id);
+    const stage = 'errorStage' in assessment ? assessment.errorStage
+      : assessment.verdict !== 'correct' && assessment.verdict !== 'unanswered' && assessment.verdict !== 'self-check'
+        ? formalStage : undefined;
+    return { id, prompt, answer: attempt.answers[id], kind,
+      assessment: stage ? { ...assessment, errorStage: stage } : assessment,
       ...(kind === 'numeric' ? { unit: question.unit } : {}),
       independence: observed.kind === 'exposed' ? 'exposed' : 'unknown',
       help_exposure: observed.kind === 'exposed'

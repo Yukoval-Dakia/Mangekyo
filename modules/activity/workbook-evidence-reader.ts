@@ -1,4 +1,6 @@
 import { factId, type DerivationId, type FactId, type FactRef, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
+import type { AssessmentResult, AssessmentRevisionRef } from './assessment-values.ts';
+import { formalItemOutcome } from './workbook-assessment-values.ts';
 import { activityHelpProcess, controlledWorkbookHelp } from './evidence-slice.ts';
 import {
   readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, workbookItemHistory,
@@ -19,7 +21,7 @@ import {
 type FactReader = {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>};
 type Edge = Parameters<typeof workbookVariantItem>[2][number];
 export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
-  trackSource, reopenCapsule, openEdge, readPosttestIssuance, createRead, unavailable, unavailableRelease, reject, edgeType, questionType,
+  trackSource, reopenCapsule, openEdge, readPosttestIssuance, readFormalAssessment, createRead, unavailable, unavailableRelease, reject, edgeType, questionType,
 }: {
   trackSource(tx: Tx, read: FactReader, ref: string | SourceRefV1): Promise<{content: unknown}>;
   reopenCapsule(tx: Tx, read: FactReader, basis: NonNullable<HelpPresentation['controlledBasis']>): Promise<void>;
@@ -28,6 +30,8 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   } | undefined>;
   readPosttestIssuance(tx: Tx, read: FactReader, id: FactId):
     Promise<{fact: FactSnapshot; issuance: ReturnType<typeof posttestIssuance>; tick: Tick}>;
+  readFormalAssessment?(tx: Tx, releaseRef: AssessmentRevisionRef, submission: FactSnapshot,
+    paper: FactSnapshot, cutoff?: Tick): Promise<{ state: string; releaseRef: AssessmentRevisionRef; result?: AssessmentResult } | undefined>;
   createRead(tx: Tx): ReadContext;
   unavailable(error: unknown): boolean;
   unavailableRelease(error: unknown): boolean;
@@ -40,7 +44,9 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     if (source.type !== workbookPaperType && source.type !== retentionPaperType) throw reject(404, '找不到冻结试卷。');
     const paper = workbookPaper(source.value);
     const question = paper.questions.find(question => question.id === itemId);
-    if (!question || question.kind === 'rubric' || (question.kind === 'exact' && question.selfCheck)) {
+    const formalScored = paper.assessmentRelease?.items.some(entry =>
+      entry.itemId === itemId && entry.criteria.some(criterion => criterion.maximum !== null)) ?? false;
+    if (!question || (question.kind === 'rubric' && !formalScored) || (question.kind === 'exact' && question.selfCheck)) {
       throw reject(422, '保持预测需要可确定性正式判分的题项。');
     }
     if (question.sourceQuestionRef) {
@@ -114,7 +120,7 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
 
   async function readWorkbookEvidence(
     tx: Tx, read: FactReader, opened: Awaited<ReturnType<typeof openRetentionTarget>>, id: FactId,
-    expectedForecast?: DerivationId,
+    expectedForecast?: DerivationId, cutoff?: Tick,
   ) {
     const { target, paper } = opened;
     const submission = await read.fact(id, { mode: 'following' });
@@ -142,10 +148,21 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     if (controlled && process.helpLevel === 'independent' && (await workbookItemHistory(tx, target, birth.tick)).cross_help) {
       process = activityHelpProcess({ kind: 'unknown', reason: 'incomplete-observation', evidenceRefs: [] }, []);
     }
-    const result = attempt.feedback.find(item => item.questionId === target.itemId)?.result;
+    let formal: ReturnType<typeof formalItemOutcome>;
+    if (!controlled && paper.assessmentRelease && readFormalAssessment) {
+      const saved = await readFormalAssessment(tx, paper.assessmentRelease.releaseRef, submission, opened.source, cutoff).catch(error => {
+        if (unavailable(error) || unavailableRelease(error)) return undefined;
+        throw error;
+      });
+      formal = formalItemOutcome(paper, target.itemId, saved);
+    }
+    const rawResult = attempt.feedback.find(item => item.questionId === target.itemId)?.result;
+    const result = formal ? formal.result : rawResult === 'correct' || rawResult === 'incorrect' ? rawResult : 'unknown' as const;
     const observation = {
       submission: { id, rev: submission.ref.rev }, admittedAt: birth.tick, submittedAt: attempt.submittedAt,
-      result: result === 'correct' || result === 'incorrect' ? result : 'unknown' as const, exposure: process.exposure,
+      result, exposure: process.exposure,
+      ...(formal?.scoreNorm === undefined ? {} : { scoreNorm: formal.scoreNorm }),
+      ...(result === 'incorrect' && formal?.errorStage !== undefined ? { errorStage: formal.errorStage } : {}),
     };
     return {
       observation, process, issuance: release?.issued, recordedAt: birth.recordedAt, duration: attempt.effectiveDurationMs,
@@ -163,14 +180,14 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
     const paperId = fact.type === posttestSubmissionType
       ? (await readPosttestIssuance(tx, read, factId(attempt.paperId))).issuance.paper.id : factId(attempt.paperId);
     if (paperId === target.target.paper.id) {
-      const evidence = await readWorkbookEvidence(tx, read, target, id);
+      const evidence = await readWorkbookEvidence(tx, read, target, id, undefined, cutoff);
       return { evidence, opened: target, novelty: 'same' as const };
     }
     const candidates = await readItemEdges(tx, read, target.question.sourceQuestionRef, cutoff, ['variant_of']);
     const match = workbookVariantItem(attempt.paper, target.question.sourceQuestionRef, candidates);
     if (!match) throw reject(422, '交卷与预测题项缺少可核对的无剧透变式关系。');
     const opened = await openRetentionTarget(tx, read, paperId, match.id);
-    const evidence = await readWorkbookEvidence(tx, read, opened, id);
+    const evidence = await readWorkbookEvidence(tx, read, opened, id, undefined, cutoff);
     return { evidence, opened, novelty: 'isomorphic' as const };
   }
 

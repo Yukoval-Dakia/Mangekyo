@@ -168,6 +168,9 @@ function outcomeDifference(expected: AssessmentCriterionOutcome, actual: Assessm
   if ('reason' in expected && 'reason' in actual && expected.reason !== actual.reason) {
     return '实际结果原因与可信样例不符。';
   }
+  if ('errorStage' in expected && (!('errorStage' in actual) || expected.errorStage !== actual.errorStage)) {
+    return '实际错步分类与可信样例约定的结论不符。';
+  }
   if ('evidence' in expected && 'evidence' in actual &&
     (expected.evidence.length !== actual.evidence.length ||
       !expected.evidence.every(expectedAddress => actual.evidence.some(actualAddress =>

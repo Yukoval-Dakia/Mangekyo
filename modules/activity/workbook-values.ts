@@ -1,6 +1,6 @@
 import { factId, isJson, type FactId, type FactRevisionBasis, type Json, type JsonObject, type Revision } from '@mangekyo/kernel';
 import { parseTextbookBasis, type TextbookBasis } from '@mangekyo/module-content/facts/asset-contract';
-import { assessmentRelease, type AssessmentRelease } from './assessment-values.ts';
+import { assessmentRelease, isAssessmentErrorStage, type AssessmentErrorStage, type AssessmentRelease } from './assessment-values.ts';
 import {
   checkWorkbookAttachmentsBasis,
   checkWorkbookQuestionAttachments,
@@ -171,7 +171,7 @@ export type WorkbookFeedback = {
   expected: WorkbookExpected;
   explanation: string | null;
 };
-type WorkbookAttemptFeedback = Omit<WorkbookFeedback, 'expected'> & { expected: WorkbookExpected | null };
+type WorkbookAttemptFeedback = Omit<WorkbookFeedback, 'expected'> & { expected: WorkbookExpected | null; errorStage?: WorkbookErrorStage };
 
 export type WorkbookPacingV1 = {
   version: 1;
@@ -279,6 +279,8 @@ export type WorkbookAttemptView = {
 
 export type WorkbookAssessmentVerdict = 'correct' | 'partial' | 'incorrect' | 'pending';
 
+export type WorkbookErrorStage = AssessmentErrorStage;
+
 export type WorkbookRubricAssessment = {
   attemptId: string;
   paperId: string;
@@ -296,6 +298,7 @@ export type WorkbookRubricAssessment = {
   providerProtocol?: string;
   verdict: WorkbookAssessmentVerdict;
   score?: { earned: number; maximum: number };
+  errorStage?: WorkbookErrorStage;
   feedback: string;
   evidence: string[];
   trace: string[];
@@ -950,6 +953,7 @@ function stringList(value: unknown, label: string, limit = 40, length = 4000): s
 export function workbookAssessmentResult(input: unknown): {
   verdict: WorkbookAssessmentVerdict;
   score?: { earned: number; maximum: number };
+  errorStage?: WorkbookErrorStage;
   feedback: string;
   evidence: string[];
   trace: string[];
@@ -962,11 +966,22 @@ export function workbookAssessmentResult(input: unknown): {
       !Number.isFinite(score.earned) || !Number.isFinite(score.maximum) || score.maximum <= 0 || score.earned < 0 || score.earned > score.maximum)) {
     throw new Error('批改得分无效。');
   }
+  const verdict_ = verdict(row.verdict);
+  const evidence = stringList(row.evidence, '批改依据');
+  const errorStage = row.errorStage === undefined ? undefined : row.errorStage;
+  if (errorStage !== undefined &&
+      (!isAssessmentErrorStage(errorStage) ||
+       (verdict_ !== 'incorrect' && verdict_ !== 'partial') ||
+       !evidence.length ||
+       (score !== undefined && Number(score.earned) >= Number(score.maximum)))) {
+    throw new Error('错步分类须有错答判定及合法枚举。');
+  }
   return {
-    verdict: verdict(row.verdict),
+    verdict: verdict_,
     ...(score ? {score: {earned: Number(score.earned), maximum: Number(score.maximum)}} : {}),
+    ...(errorStage === undefined ? {} : { errorStage }),
     feedback: text(row.feedback, '批改说明', 8000),
-    evidence: stringList(row.evidence, '批改依据'),
+    evidence,
     trace: stringList(row.trace, '工具轨迹'),
     ...(reportedModel === null ? {} : { reportedModel }),
   };

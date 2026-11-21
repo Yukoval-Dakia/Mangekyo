@@ -1,7 +1,7 @@
 import {pythonAttemptsLimit, type PythonAttemptRow, type PythonAttemptsRead} from '../../executors/teaching/agent-tools.ts';
 import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
-import {factId} from '../../kernel/src/declarations/ids.ts';
+import {factId, type Tick} from '../../kernel/src/declarations/ids.ts';
 import {posttestSubmissionType, retentionPaperType} from '../../modules/activity/retention-posttest.ts';
 import {parsePythonAttemptSelection} from '../../executors/teaching/python-attempt-selection.ts';
 import type {EvidenceEventV1} from '../../kernel/src/pipeline-contracts.ts';
@@ -17,7 +17,7 @@ import {openWorkbookQuestionSources, readReleasedAssessment} from './workbook-di
 
 export async function readPythonAttempts(tx: ReadTransaction, args: Record<string, unknown>, access: {
   maySend: WorkspaceSourceRecipient; known: (id: string) => boolean; track: SourceTrack;
-  recordExam?: (event: EvidenceEventV1) => void; includeExamItems?: boolean;
+  recordExam?: (event: EvidenceEventV1) => void; includeExamItems?: boolean; cutoff?: Tick;
 }): Promise<PythonAttemptsRead> {
   const scope = parsePythonAttemptSelection(args);
   if (!scope) return {ok:false, code:'invalid_args', field:'attempts', message:
@@ -97,10 +97,10 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
         issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});
         continue;
       }
-      if (!access.includeExamItems) formal = await readReleasedAssessment(tx, attempt, opened.fact, sources);
+      if (attempt.paper.assessmentRelease) formal = await readReleasedAssessment(tx, attempt, opened.fact, sources, access.cutoff);
       access.recordExam?.(workbookExamPacingEvent(opened.fact.ref, attempt, frozen.paper, formal));
       if (access.includeExamItems && access.recordExam) {
-        for (const item of workbookExamPacingItems(opened.fact.ref, attempt, frozen.paper)) access.recordExam(item);
+        for (const item of workbookExamPacingItems(opened.fact.ref, attempt, frozen.paper, formal)) access.recordExam(item);
       }
     }
     for (const fact of collected) access.track(...fact);

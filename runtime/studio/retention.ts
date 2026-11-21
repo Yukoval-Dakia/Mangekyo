@@ -455,8 +455,8 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
             evidenceRows.push({
               submission: observation.submission, occurredAt: observation.submittedAt,
               concepts: dimensions, novelty, helpLevel: process.helpLevel, result: observation.result,
-              ...(observation.result === 'unknown' ? {} : { score: observation.result === 'correct' ? 1 : 0 }),
-              ...(evidence.duration === undefined ? {} : { duration: evidence.duration }),
+              ...(observation.result === 'unknown' ? {} : { score: observation.scoreNorm ?? (observation.result === 'correct' ? 1 : 0) }),
+              ...(observation.errorStage === undefined ? {} : { errorStage: observation.errorStage }), ...(evidence.duration === undefined ? {} : { duration: evidence.duration }),
             });
           }
           observations.sort((a, b) => BigInt(a.admittedAt) < BigInt(b.admittedAt) ? -1 : 1);

@@ -3,6 +3,8 @@ import {
   assessmentRelease, assessmentResult, assessmentSubmission,
   readAssessmentScore,
 } from './assessment-values.ts';
+import { boundedWorkbookReply, workbookEvaluation } from './workbook-assessment-values.ts';
+import { workbookAssessmentResult } from './workbook-values.ts';
 
 const ref = (suffix: number, rev = 1) => ({ id: `01ARZ3NDEKTSV4RRFFQ69G5F${suffix}`, rev });
 const releaseRef = ref(10);
@@ -82,5 +84,22 @@ describe('frozen assessment values', () => {
     }
     const absent = assessmentSubmission({ releaseRef, submissionRef, answers: answers.filter(answer => answer.itemId === 'explain') }, release);
     expect(readAssessmentScore(withOutcome({ state: 'unsubmitted', reason: '该题未交' }), release, absent)).toBeNull();
+  });
+
+  it('enforces witnessed 5-value errorStage across formal and rubric assessment contracts', () => {
+    const release = assessmentRelease(draft);
+    const submission = assessmentSubmission({ releaseRef, submissionRef, answers }, release);
+    const withStage = (extra: object) => ({ ...result, outcomes: [{ ...scored, earned: 1, ...extra }, qualitative] });
+    expect(assessmentResult(withStage({ errorStage: 'execution' }), release, submission).outcomes[0]).toMatchObject({ errorStage: 'execution' });
+    expect(assessmentResult({ ...result, outcomes: [{ ...scored, earned: 1 }, qualitative] }, release, submission).outcomes[0]).not.toHaveProperty('errorStage');
+    for (const bad of [{ errorStage: 'guessing' }, { earned: 2, errorStage: 'execution' }]) expect(() => assessmentResult(withStage(bad), release, submission)).toThrow('错步分类');
+    expect(() => assessmentResult({ ...result, outcomes: [{ itemId: 'titration', criterionId: numeric.criterionId, state: 'pending', reason: '待判', errorStage: 'reading' }, qualitative] }, release, submission)).toThrow();
+    expect(workbookAssessmentResult({ verdict: 'partial', score: { earned: 1, maximum: 2 }, errorStage: 'modeling', feedback: '模型错', evidence: ['x=1'], trace: [] }).errorStage).toBe('modeling');
+    expect(workbookAssessmentResult({ verdict: 'incorrect', feedback: '旧记录', evidence: [], trace: [] })).not.toHaveProperty('errorStage');
+    for (const bad of [{ verdict: 'incorrect', errorStage: 'bad', feedback: 'f', evidence: ['a'], trace: [] }, { verdict: 'correct', errorStage: 'execution', feedback: 'f', evidence: ['a'], trace: [] }, { verdict: 'incorrect', errorStage: 'reading', feedback: 'f', evidence: [], trace: [] }]) expect(() => workbookAssessmentResult(bad)).toThrow('错步分类');
+    expect(boundedWorkbookReply({ state: 'scored', reportedModel: 'm', feedback: '错', quote: '45', earned: 1, error_stage: 'bad' })).toBeNull();
+    const key = { itemId: 'titration', criterionId: numeric.criterionId }, run = (a: string, e: number) => workbookEvaluation(key, release.items[0]!.criteria[0]!, a, 'r1', { kind: 'done', result: { providerEffectId: 'e1', denied: false, result: { state: 'scored', reportedModel: 'm', feedback: 'f', quote: a, earned: e, error_stage: 'execution' } } }).outcome;
+    expect(run('45', 1)).toMatchObject({ errorStage: 'execution' });
+    expect(run('50', 2)).not.toHaveProperty('errorStage');
   });
 });

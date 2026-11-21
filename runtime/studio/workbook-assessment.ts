@@ -4,7 +4,7 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, learnerId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import { factId, learnerId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
@@ -232,7 +232,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
 
 /** A finalized score can be read with fresh witnesses when only the grants changed. */
 export async function readSavedWorkbookAssessment(
-  tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submission: FactSnapshot, paper: FactSnapshot,
+  tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submission: FactSnapshot, paper: FactSnapshot, cutoff?: Tick,
 ) {
   if (paper.ref.id !== releaseRef.id || submission.type !== workbookAttemptType || paper.type !== workbookPaperType) return;
   const selectedPolicy = assessmentPolicy(workbookPaper(paper.value));
@@ -245,12 +245,13 @@ export async function readSavedWorkbookAssessment(
        (s.learner_id,s.slot_type,s.slot_key,COALESCE(s.current_id,s.last_id))
        AND NOT d.is_shadow AND d.deriver=$6 AND d.scope_keys=s.scope_keys
        AND d.effective_tick>=d.gather_tick AND d.selection_ended_tick IS NULL
+       AND ($7::bigint IS NULL OR d.effective_tick<=$7::bigint)
        AND ((d.id=s.current_id AND d.lifecycle='effective' AND d.invalidated_tick IS NULL) OR
          (s.current_id IS NULL AND d.lifecycle='stale' AND d.error->>'reason'='fact-access-changed'))
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.scope_keys->'releaseRef'=$3::jsonb
        AND s.scope_keys->'submissionRef'->>'id'=$4 AND (s.scope_keys->'submissionRef'->>'rev')::int<=$5
      ORDER BY (s.scope_keys->'submissionRef'->>'rev')::int DESC LIMIT 1`,
-    [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, selectedPolicy.deriver],
+    [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, selectedPolicy.deriver, cutoff ?? null],
   );
   if (row?.value?.kind !== 'value') return;
   const { value } = row.value;

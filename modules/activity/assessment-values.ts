@@ -12,6 +12,23 @@ export {
 type AnswerKind = AssessmentAnswerValue['kind'];
 type AssessmentItem = AssessmentRelease['items'][number];
 
+export const assessmentErrorStages = ['reading', 'modeling', 'strategy', 'execution', 'expression'] as const;
+export type AssessmentErrorStage = (typeof assessmentErrorStages)[number];
+
+export function isAssessmentErrorStage(value: unknown): value is AssessmentErrorStage {
+  return typeof value === 'string' && (assessmentErrorStages as readonly string[]).includes(value);
+}
+
+export function formalItemErrorStage(
+  outcomes: readonly { readonly itemId: string; readonly errorStage?: AssessmentErrorStage | undefined }[] | undefined,
+  itemId: string,
+): AssessmentErrorStage | undefined {
+  if (!outcomes) return undefined;
+  const stages = [...new Set(outcomes.flatMap(entry =>
+    entry.itemId === itemId && entry.errorStage !== undefined ? [entry.errorStage] : []))];
+  return stages.length === 1 ? stages[0] : undefined;
+}
+
 export type AssessmentSubmission = {
   readonly releaseRef: AssessmentRevisionRef;
   readonly submissionRef: AssessmentRevisionRef;
@@ -24,9 +41,9 @@ export type AssessmentSubmission = {
 
 const unresolvedStates = ['unsubmitted', 'pending', 'insufficient-evidence', 'blocked', 'failed'] as const;
 export type AssessmentCriterionOutcome = { readonly itemId: string; readonly criterionId: string } & (
-  | { readonly state: 'scored'; readonly earned: number; readonly evidence: readonly AssessmentInputAddress[]; readonly feedback?: string }
-  | { readonly state: 'qualitative'; readonly feedback: string; readonly evidence: readonly AssessmentInputAddress[] }
-  | { readonly state: 'partial'; readonly reason: string; readonly evidence: readonly AssessmentInputAddress[] }
+  | { readonly state: 'scored'; readonly earned: number; readonly evidence: readonly AssessmentInputAddress[]; readonly feedback?: string; readonly errorStage?: AssessmentErrorStage }
+  | { readonly state: 'qualitative'; readonly feedback: string; readonly evidence: readonly AssessmentInputAddress[]; readonly errorStage?: AssessmentErrorStage }
+  | { readonly state: 'partial'; readonly reason: string; readonly evidence: readonly AssessmentInputAddress[]; readonly errorStage?: AssessmentErrorStage }
   | { readonly state: (typeof unresolvedStates)[number]; readonly reason: string }
 );
 export type AssessmentResult = {
@@ -180,8 +197,18 @@ export function assessmentSubmission(value: unknown, release: {
 const outcomeStates = ['scored', 'qualitative', 'partial', ...unresolvedStates] as const;
 const outcomeKeys = ['itemId', 'criterionId', 'state'];
 
+// A stage classification is only admitted when the evaluator cites the real
+// submitted work it judged: a witness must point at the frozen inputs and the
+// result must not be full credit. Correct work and unresolved states carry none.
+function errorStage(row: Record<string, unknown>, witness: readonly AssessmentInputAddress[],
+  fullCredit: boolean): AssessmentErrorStage | undefined {
+  if (row.errorStage === undefined) return undefined;
+  if (fullCredit || !witness.length) throw new Error('错步分类须有错答的作答见证。');
+  return choice(row.errorStage, assessmentErrorStages, '错步分类');
+}
+
 function outcome(value: unknown, release: AssessmentRelease, submission: AssessmentSubmission): AssessmentCriterionOutcome {
-  const row = record(value, '评估结果', [...outcomeKeys, 'earned', 'feedback', 'evidence', 'reason']);
+  const row = record(value, '评估结果', [...outcomeKeys, 'earned', 'feedback', 'evidence', 'reason', 'errorStage']);
   const itemId = token(row.itemId, '题目标识');
   const criterionId = token(row.criterionId, '标准标识');
   const key = { itemId, criterionId };
@@ -201,21 +228,27 @@ function outcome(value: unknown, release: AssessmentRelease, submission: Assessm
   const inputsComplete = available.size === criterion.inputs.length;
   switch (state) {
     case 'scored': {
-      record(row, '评分结果', [...outcomeKeys, 'earned', 'evidence', 'feedback']);
+      record(row, '评分结果', [...outcomeKeys, 'earned', 'evidence', 'feedback', 'errorStage']);
       if (!inputsComplete || criterion.maximum === null) throw new Error('正式计分须有完整标准输入及冻结满分。');
       const earned = finite(row.earned, '得分');
       if (earned < 0 || earned > criterion.maximum) throw new Error('得分超出冻结标准的分界。');
-      return { ...key, state, earned, evidence, ...(row.feedback === undefined ? {} : { feedback: text(row.feedback, '评语') }) };
+      const stage = errorStage(row, evidence, earned === criterion.maximum);
+      return { ...key, state, earned, evidence, ...(row.feedback === undefined ? {} : { feedback: text(row.feedback, '评语') }),
+        ...(stage === undefined ? {} : { errorStage: stage }) };
     }
     case 'qualitative':
-      record(row, '证据质评', [...outcomeKeys, 'feedback', 'evidence']);
+      record(row, '证据质评', [...outcomeKeys, 'feedback', 'evidence', 'errorStage']);
       if ((criterion.maximum !== null || !inputsComplete) && criterion.missingEvidence !== 'allow-qualitative') {
         throw new Error('冻结标准未允许此证据质评。');
       }
-      return { ...key, state, feedback: text(row.feedback, '评语'), evidence };
+      { const stage = errorStage(row, evidence, false);
+        return { ...key, state, feedback: text(row.feedback, '评语'), evidence,
+          ...(stage === undefined ? {} : { errorStage: stage }) }; }
     case 'partial':
-      record(row, '部分结果', [...outcomeKeys, 'reason', 'evidence']);
-      return { ...key, state, reason: text(row.reason, '结果原因'), evidence };
+      record(row, '部分结果', [...outcomeKeys, 'reason', 'evidence', 'errorStage']);
+      { const stage = errorStage(row, evidence, false);
+        return { ...key, state, reason: text(row.reason, '结果原因'), evidence,
+          ...(stage === undefined ? {} : { errorStage: stage }) }; }
   }
 }
 

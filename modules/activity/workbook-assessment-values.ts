@@ -1,6 +1,7 @@
 import { FactNotFoundError, type FactId, type Json, type JsonObject, type ReadContext, type Revision } from '@mangekyo/kernel';
 import {
-  assessmentRelease, assessmentResult, formalAssessmentValue, type FormalAssessmentValue, type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease,
+  assessmentRelease, assessmentResult, formalAssessmentValue, formalItemErrorStage, isAssessmentErrorStage,
+  type AssessmentErrorStage, type FormalAssessmentValue, type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease,
   type AssessmentResult, type AssessmentRevisionRef, type AssessmentSubmission,
 } from './assessment-values.ts';
 import { readWorkbookQuestionAttachments, type WorkbookAttachmentEvidence } from './workbook-attachments.ts';
@@ -53,18 +54,47 @@ export function sameAssessmentRef(actual: AssessmentRevisionRef | undefined, exp
   return actual?.id === expected.id && actual.rev === expected.rev;
 }
 
+export function formalItemOutcome(
+  paper: WorkbookPaper,
+  itemId: string,
+  formal?: { state: string; releaseRef: AssessmentRevisionRef; result?: AssessmentResult },
+): { readonly result: 'correct' | 'incorrect' | 'unknown'; readonly scoreNorm?: number; readonly errorStage?: AssessmentErrorStage } | undefined {
+  const release = paper.assessmentRelease;
+  if (!release || !formal || formal.state !== 'complete' || !formal.result || !sameAssessmentRef(release.releaseRef, formal.releaseRef)) return;
+  const releaseItem = release.items.find(item => item.itemId === itemId);
+  if (!releaseItem) return;
+  const scoredCriteria = releaseItem.criteria.filter(criterion => criterion.maximum !== null);
+  if (!scoredCriteria.length) return { result: 'unknown' };
+  const outcomes = formal.result.outcomes.filter((outcome): outcome is Extract<AssessmentCriterionOutcome, { state: 'scored' }> =>
+    outcome.itemId === itemId && outcome.state === 'scored');
+  if (outcomes.length !== scoredCriteria.length) return { result: 'unknown' };
+  const maximum = scoredCriteria.reduce((sum, criterion) => sum + criterion.maximum!, 0);
+  const earned = outcomes.reduce((sum, outcome) => sum + outcome.earned, 0);
+  if (maximum <= 0) return;
+  if (earned === maximum) return { result: 'correct', scoreNorm: 1 };
+  const stage = formalItemErrorStage(formal.result.outcomes, itemId);
+  return { result: 'incorrect', scoreNorm: earned / maximum, ...(stage ? { errorStage: stage } : {}) };
+}
+
 export function workbookAttemptView(id: string, attempt: WorkbookAttempt, assessments: WorkbookRubricAssessmentView[],
   formal?: AssessmentResult): WorkbookAttemptView {
   const bank = new Set(attempt.paper.questions.filter(question => question.kind === 'bank').map(question => question.id));
   const feedback = attempt.feedback.map(item => {
     if (item.result === 'unanswered') return { ...item, expected: null, explanation: null };
-    if (item.result !== 'pending' || !bank.has(item.questionId) || !formal) return item;
+    const formalStage = formalItemErrorStage(formal?.outcomes, item.questionId);
+    const rubric = assessments.find(value => value.questionId === item.questionId);
+    const rubricStage = rubric && (rubric.verdict === 'incorrect' || rubric.verdict === 'partial') ? rubric.errorStage : undefined;
+    if (item.result !== 'pending' || !bank.has(item.questionId) || !formal) {
+      const stage = item.result === 'correct' ? undefined : formalStage ?? rubricStage;
+      return stage ? { ...item, errorStage: stage } : item;
+    }
     const outcomes = formal.outcomes.filter(outcome => outcome.itemId === item.questionId);
     const criteria = attempt.paper.assessmentRelease?.items.find(({ itemId }) => itemId === item.questionId)?.criteria;
     if (!criteria || outcomes.length !== criteria.length || outcomes.some(outcome => outcome.state !== 'scored')) return item;
     const total = criteria.reduce((sum, criterion) => sum + (criterion.maximum ?? 0), 0);
     const earned = outcomes.reduce((sum, outcome) => sum + (outcome.state === 'scored' ? outcome.earned : 0), 0);
-    return { ...item, result: earned === total ? 'correct' as const : earned > 0 ? 'partial' as const : 'incorrect' as const };
+    const result = earned === total ? 'correct' as const : earned > 0 ? 'partial' as const : 'incorrect' as const;
+    return { ...item, ...(result !== 'correct' && formalStage ? { errorStage: formalStage } : {}), result };
   });
   return {
     id, requestId: attempt.requestId, submittedAt: attempt.submittedAt, gradingVersion: attempt.gradingVersion,
@@ -119,11 +149,13 @@ function text(value: unknown, limit: number): value is string {
 export function boundedWorkbookReply(value: Json): Json {
   const reply = value as JsonObject | null;
   if (!reply || !text(reply.reportedModel, 256)) return null;
-  const { state, reportedModel, feedback, quote, earned } = reply;
+  const { state, reportedModel, feedback, quote, earned, error_stage } = reply;
+  if (error_stage !== undefined && error_stage !== null && !isAssessmentErrorStage(error_stage)) return null;
+  const stage = isAssessmentErrorStage(error_stage) ? { error_stage } : {};
   if (state === 'insufficient-evidence') return { state, reportedModel };
   if (!text(feedback, 1500) || !text(quote, 500)) return null;
-  if (state === 'qualitative') return { state, reportedModel, feedback, quote };
-  if (state === 'scored' && typeof earned === 'number' && Number.isFinite(earned)) return { state, reportedModel, feedback, quote, earned };
+  if (state === 'qualitative') return { state, reportedModel, feedback, quote, ...stage };
+  if (state === 'scored' && typeof earned === 'number' && Number.isFinite(earned)) return { state, reportedModel, feedback, quote, earned, ...stage };
   return null;
 }
 
@@ -144,21 +176,24 @@ export function workbookEvaluation(
   const receipt = effect.result as { providerEffectId: string; denied: boolean; result: unknown };
   const trace = { effectId: receipt.providerEffectId, routeId };
   if (receipt.denied) return { outcome: { ...key, state: 'blocked', reason: '自动评估额度不足。' }, receipt: trace };
-  const reply = receipt.result as { state?: unknown; feedback?: unknown; quote?: unknown; earned?: unknown; reportedModel?: unknown } | null;
+  const reply = receipt.result as { state?: unknown; feedback?: unknown; quote?: unknown; earned?: unknown; reportedModel?: unknown; error_stage?: unknown } | null;
   if (reply && text(reply.reportedModel, 256)) {
     const observed = { ...trace, reportedModel: reply.reportedModel };
     if (reply.state === 'insufficient-evidence') {
       return { outcome: { ...key, state: 'insufficient-evidence', reason: '作答无法支持该标准的正式判断。' }, receipt: observed };
     }
-    if (text(reply.feedback, 1500) && text(reply.quote, 500) && (answer.includes(reply.quote) || hasAttachments)) {
+    if (text(reply.feedback, 1500) && text(reply.quote, 500) && (answer.includes(reply.quote) || hasAttachments) &&
+        (reply.error_stage === undefined || reply.error_stage === null || isAssessmentErrorStage(reply.error_stage))) {
       const evidence = criterion.inputs;
       const verified = { ...observed, quote: reply.quote };
+      const stage = isAssessmentErrorStage(reply.error_stage) ? { errorStage: reply.error_stage } : {};
       if (reply.state === 'qualitative' && criterion.maximum === null) {
-        return { outcome: { ...key, state: 'qualitative', feedback: reply.feedback, evidence }, receipt: verified };
+        return { outcome: { ...key, state: 'qualitative', feedback: reply.feedback, evidence, ...stage }, receipt: verified };
       }
       if (reply.state === 'scored' && criterion.maximum !== null && typeof reply.earned === 'number' &&
           Number.isFinite(reply.earned) && reply.earned >= 0 && reply.earned <= criterion.maximum) {
-        return { outcome: { ...key, state: 'scored', earned: reply.earned, feedback: reply.feedback, evidence }, receipt: verified };
+        const scored = { ...key, state: 'scored' as const, earned: reply.earned, feedback: reply.feedback, evidence };
+        return { outcome: reply.earned < criterion.maximum ? { ...scored, ...stage } : scored, receipt: verified };
       }
     }
   }
@@ -183,12 +218,28 @@ export function workbookSummary(id: FactId, paper: WorkbookPaper, source: Workbo
     attemptCount: usage?.count ?? 0, lastAttemptAt: usage?.last ?? null };
 }
 
-export function workbookMistakes(attempt: WorkbookAttempt, assessments: readonly WorkbookRubricAssessmentView[], seen: Set<string>) {
+export function workbookMistakes(
+  attempt: WorkbookAttempt,
+  assessments: readonly WorkbookRubricAssessmentView[],
+  seen: Set<string>,
+  formal?: AssessmentResult,
+) {
   const result = [];
   for (const f of attempt.feedback) {
     const key = attempt.paperId + '/' + f.questionId;
     const grade = assessments.find(value => value.questionId === f.questionId);
-    const verdict = grade?.verdict ?? f.result;
+    let formalVerdict: 'correct' | 'partial' | 'incorrect' | undefined;
+    if (!grade && f.result === 'pending' && formal) {
+      const criteria = attempt.paper.assessmentRelease?.items.find(item => item.itemId === f.questionId)?.criteria.filter(c => c.maximum !== null) ?? [];
+      const outcomes = formal.outcomes.filter((outcome): outcome is Extract<AssessmentCriterionOutcome, { state: 'scored' }> =>
+        outcome.itemId === f.questionId && outcome.state === 'scored');
+      const maximum = criteria.reduce((sum, criterion) => sum + criterion.maximum!, 0);
+      if (criteria.length && outcomes.length === criteria.length && maximum > 0) {
+        const earned = outcomes.reduce((sum, outcome) => sum + outcome.earned, 0);
+        formalVerdict = earned === maximum ? 'correct' : earned > 0 ? 'partial' : 'incorrect';
+      }
+    }
+    const verdict = grade?.verdict ?? formalVerdict ?? f.result;
     if (verdict === 'pending' || verdict === 'unanswered' || verdict === 'self-check' || seen.has(key)) continue;
     seen.add(key);
     if (verdict !== 'incorrect' && verdict !== 'partial') continue;
@@ -199,8 +250,13 @@ export function workbookMistakes(attempt: WorkbookAttempt, assessments: readonly
       : f.expected.kind === 'rubric'
         ? f.expected.rubric
         : [f.expected.value, f.expected.unit].filter(x => x !== null).join(' ');
+    const errorStage = grade?.errorStage ?? formalItemErrorStage(formal?.outcomes, f.questionId);
+    const formalFeedback = formal?.outcomes.flatMap(outcome =>
+      outcome.itemId === f.questionId && 'feedback' in outcome && outcome.feedback ? [outcome.feedback] : []).join('\n') || null;
     result.push({ paperId: attempt.paperId, title: attempt.paper.title, questionId: q.id,
-      prompt: q.prompt, answer: String(f.answer), expected, explanation: grade?.feedback ?? f.explanation });
+      prompt: q.prompt, answer: String(f.answer), expected,
+      explanation: grade?.feedback ?? formalFeedback ?? f.explanation,
+      ...(errorStage ? { errorStage } : {}) });
   }
   return result;
 }
@@ -279,7 +335,7 @@ export function legacyRubricInput(attempt: WorkbookAttempt, questionId: string) 
 export function completedLegacyRubric(input: {
   attemptId: FactId; paperId: FactId; question: WorkbookRubricQuestion; request: WorkbookAssessmentRequest; assessedAt: string;
   route: Pick<WorkbookRubricAssessment, 'providerBaseUrl' | 'requestedModel' | 'providerProtocol' | 'providerId'>;
-  result: Pick<WorkbookRubricAssessment, 'verdict' | 'feedback' | 'evidence' | 'trace'>;
+  result: Pick<WorkbookRubricAssessment, 'verdict' | 'score' | 'errorStage' | 'feedback' | 'evidence' | 'trace' | 'reportedModel'>;
 }): WorkbookRubricAssessment {
   const { attemptId, paperId, question, request, assessedAt, route, result } = input;
   return { attemptId, paperId, questionId: question.id, requestId: request.requestId, assessedAt, consent: request.consent,

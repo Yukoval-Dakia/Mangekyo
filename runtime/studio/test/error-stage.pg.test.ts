@@ -1,0 +1,68 @@
+import {expect,it} from 'vitest';
+import {createHash} from 'node:crypto';
+import type {CanonicalEvidenceSliceV1} from '../../../kernel/src/pipeline-contracts.ts';
+import {factId,type Revision,type Tick} from '../../../kernel/src/declarations/ids.ts';
+import {createCommandReadContext} from '../../../kernel/src/commands/reads.ts';
+import {relayPending} from '../../../kernel/src/work/index.ts';
+import {createPythonDeriverHost} from '../../../executors/python-deriver/host.ts';
+import {pythonReads} from '../../../executors/teaching/python-sdk.ts';
+import {activityEvidenceSlice} from '../../../modules/activity/evidence-slice.ts';
+import {workbookAssessmentConsent} from '../../../modules/activity/workbook-values.ts';
+import {recurringErrorCluster} from '../../../modules/learner/recurring-error-cluster.ts';
+import {testDatabaseUrl,withLearnerDatabase} from '../../../kernel/test/learner-database.ts';
+import {studioLearner,stableId} from '../identity.ts';
+import {openLearningTools} from '../learning-tools.ts';
+import {studioWorkbookEvidence} from '../retention-workbook.ts';
+import {openWorkbook} from '../workbook.ts';
+import {openWorkbookAssessment} from '../workbook-assessment.ts';
+import {openWorkspaceAccess} from '../workspace-access.ts';
+import {openWorkspaceTools} from '../workspace-agent.ts';
+import {loadStudioTestModule} from './modules.ts';
+
+const sha = (text:string) => createHash('sha256').update(text).digest('hex');
+it.skipIf(!testDatabaseUrl)('flows witnessed formal error_stage through PG, views, Python derivers, and recurring clusters', () =>
+  withLearnerDatabase(studioLearner, async db => {
+    const activity = await loadStudioTestModule('activity'), access = openWorkspaceAccess(db, activity, await loadStudioTestModule('content'), await loadStudioTestModule('capture'), await loadStudioTestModule('plan'));
+    const prompt = '一辆车 3 小时行驶 150 公里，求平均速度。', rubric = '速度=路程/时间，满分 2 分。', paperId = factId(stableId('workbook-paper','stage-paper')), witnessRef = {id:factId(stableId('stage-witness')),rev:1 as Revision};
+    const sampleRefs = [1,2,3].map(n => ({id:factId(stableId('stage-sample',String(n))),rev:1 as Revision}));
+    const itemSpec = {itemId:'q1',promptRef:{id:paperId,rev:1},slots:[{slotId:'answer',schemaVersion:'v1',fields:[{path:'',kind:'text'}]}],criteria:[{criterionId:'c1',inputs:[{slotId:'answer',path:''}],maximum:2,missingEvidence:'insufficient-evidence',evaluator:{id:'workbook-text-rubric',version:'1'},source:{kind:'product-rubric',ref:{id:paperId,rev:1},path:'/questions/0/rubric'},parameters:{routeId:'fixture-route',promptSha256:sha(prompt),rubricSha256:sha(rubric)}}]} as const;
+    const gold = (n:number, answer:string, earned:number) => ({sample:{sampleRef:sampleRefs[n]!,submission:{releaseRef:{id:paperId,rev:1},submissionRef:{id:sampleRefs[n]!.id,rev:2},answers:[{itemId:'q1',slotId:'answer',schemaVersion:'v1',path:'',value:{kind:'text',value:answer}}]},expected:{releaseRef:{id:paperId,rev:1},submissionRef:{id:sampleRefs[n]!.id,rev:2},outcomes:[{itemId:'q1',criterionId:'c1',evidence:[{slotId:'answer',path:''}],state:'scored',earned}]}},run:{state:'completed' as const,witnessRef,sampleRef:sampleRefs[n]!,receiptRef:{id:sampleRefs[n]!.id,rev:3},evaluators:[{criterionId:'c1',evaluator:{id:'workbook-text-rubric',version:'1'}}],actual:{releaseRef:{id:paperId,rev:1},submissionRef:{id:sampleRefs[n]!.id,rev:2},outcomes:[{itemId:'q1',criterionId:'c1',evidence:[{slotId:'answer',path:''}],state:'scored',earned}]}}});
+    const verified = {witness:{ref:witnessRef,origin:'trusted-gold' as const,releaseRef:{id:paperId,rev:1},frozenItem:itemSpec,requiredSampleRefs:sampleRefs,requiredCoverage:[{kind:'normal',criterionId:'c1',sampleRef:sampleRefs[0]!},{kind:'negative',criterionId:'c1',sampleRef:sampleRefs[1]!},{kind:'partial',criterionId:'c1',sampleRef:sampleRefs[2]!}]},samples:[gold(0,'50',2),gold(1,'500',0),gold(2,'150',1)]};
+    const assessment = openWorkbookAssessment(db, {readVerifiedEvidence:() => verified as never, resolveAssessmentRoute:async id => ({id, reserve:async()=>true, score:async ({answer}) => answer.endsWith('50') ? {state:'scored',reportedModel:'fixture',feedback:'满分',quote:'50',earned:2,error_stage:'execution'} : answer.endsWith('45') ? {state:'scored',reportedModel:'fixture',feedback:'计算笔误',quote:'150÷3=45',earned:1,error_stage:'execution'} : {state:'scored',reportedModel:'fixture',feedback:'未写步骤',quote:answer,earned:0}})});
+    const workbook = openWorkbook(db, activity, {assessment}), paper = await workbook.save({requestId:'stage-paper',title:'速度卷',questions:[{kind:'rubric',prompt,rubric}],assessmentRelease:{items:[itemSpec]}});
+    const pace = {paperRev:paper.revision,effectiveDurationMs:20_000,pacing:{version:1,items:[{questionId:'q1',effectiveDurationMs:20_000,skipped:false,returned:false}]},assessmentConsent:workbookAssessmentConsent};
+    const full = (await workbook.submit(paper.id,{requestId:'stage-ok',answers:{q1:'150÷3=50'},...pace})).attempts[0]!, plain = (await workbook.submit(paper.id,{requestId:'stage-plain',answers:{q1:'错了'},...pace})).attempts[0]!, wrong = (await workbook.submit(paper.id,{requestId:'stage-wrong',answers:{q1:'150÷3=45'},...pace})).attempts[0]!;
+    await relayPending(db, ref => assessment.execute(ref));
+    const detail = await workbook.get(paper.id);
+    expect(detail.attempts.find(a => a.id === wrong.id)?.feedback[0]?.errorStage).toBe('execution');
+    expect(detail.attempts.find(a => a.id === full.id)?.feedback[0]).not.toHaveProperty('errorStage');
+    expect(detail.attempts.find(a => a.id === plain.id)?.feedback[0]).not.toHaveProperty('errorStage');
+    expect(await workbook.review()).toMatchObject([{paperId:paper.id,questionId:'q1',errorStage:'execution'}]);
+    await access.setTeaching(wrong.id,{enabled:true,expectedRev:1});
+    const paperGrant = await access.setTeaching(paper.id,{enabled:true,expectedRev:1});
+    const diagnose = openWorkspaceTools({db,turn:stableId('stage-diag'),prior:[],authorize:async()=>{},track(){},maySend:()=>true,trackAssessment:()=>{}});
+    expect(JSON.parse(await diagnose.execute('open_learning',{refs:wrong.id,lens:'diagnose'},1)).items?.[0]?.questions?.[0]?.assessment).toMatchObject({errorStage:'execution'});
+    const sdk = openLearningTools({db,turn:stableId('stage-sdk'),workspace:diagnose,authorize:async()=>{},track(){},maySend:()=>true,manageBeliefs:false,trackRetention(){},authorizeRemote:async()=>true,readContext:async()=>undefined,saveBelief:async()=>'',onDelivered:async()=>{}});
+    const packet = await sdk.preparePython!(pythonReads([{method:'evidence_slice',args:{exam_pacing:true,exam_pacing_items:true,paper_ids:[paper.id]}}])!,1);
+    if (!packet.ok) throw new Error(JSON.stringify(packet));
+    const slice = packet.values[0] as CanonicalEvidenceSliceV1, formalEv = slice.events.find(e => e.exam_pacing_item && 'scale_key' in (e.exam_pacing_item as object));
+    expect(formalEv).toMatchObject({error_stage:'execution',exam_pacing_item:{item_id:'q1',score:{earned:1,maximum:2}}});
+    const readEv = await db.snapshot({learner:studioLearner}, async tx => { const reader = studioWorkbookEvidence('teaching', () => true), read = createCommandReadContext(tx,'teaching'); return reader.readWorkbookEvidence(tx, read, await reader.openRetentionTarget(tx, read, factId(paper.id), 'q1'), factId(wrong.id)); });
+    expect(readEv.observation).toMatchObject({result:'incorrect',scoreNorm:0.5,errorStage:'execution'});
+    const conceptId = factId(stableId('stage-concept')), t0 = new Date(Date.parse(wrong.submittedAt) - 86_400_000).toISOString();
+    const cogSlice = activityEvidenceSlice('100' as Tick, new Date(Date.parse(wrong.submittedAt) + 1000).toISOString(), undefined, [{submission:{id:factId(stableId('base')),rev:1 as Revision},occurredAt:t0,concepts:[conceptId],novelty:'same',helpLevel:'independent',result:'correct',score:1},{submission:readEv.observation.submission,occurredAt:readEv.observation.submittedAt,concepts:[conceptId],novelty:'same',helpLevel:'independent',result:readEv.observation.result,...(readEv.observation.scoreNorm === undefined ? {} : {score:readEv.observation.scoreNorm}),...(readEv.observation.errorStage === undefined ? {} : {errorStage:readEv.observation.errorStage})}]);
+    const deriver = createPythonDeriverHost();
+    try {
+      const item = formalEv!.exam_pacing_item as {attempt_ref:{id:string;rev:number};paper_key:string};
+      const estSlice: CanonicalEvidenceSliceV1 = {...slice,events:[...slice.events,{ref:JSON.stringify([wrong.id,'q1','est']),rev:1,occurred_at:wrong.submittedAt,concept_ids:[],item_novelty:'same',help_level:'unknown',outcome:'unknown',claim_ids:[],exam_pacing_item:{attempt_ref:item.attempt_ref,paper_key:item.paper_key,item_id:'q1',position:1,item_count:1,estimated_duration_ms:60_000}}]};
+      expect(await deriver.derive('plan/exam-pacing@2',{slice:estSlice,attempt_ref:item.attempt_ref})).toMatchObject({kind:'ok',outcome:{kind:'value',value:{kind:'observed',items:[{item_id:'q1',state:'fast-slip'}]}}});
+      const withStage = await deriver.derive('learner/cognition@3', cogSlice), noStage = await deriver.derive('learner/cognition@3', {...cogSlice,events:cogSlice.events.map(({error_stage:_,...rest}) => rest)});
+      expect((withStage as {outcome:{value:{state_vector:{mastery_prob:number}[]}}}).outcome.value.state_vector[0]!.mastery_prob).toBeGreaterThan((noStage as {outcome:{value:{state_vector:{mastery_prob:number}[]}}}).outcome.value.state_vector[0]!.mastery_prob);
+    } finally { await deriver.close(); }
+    const w = (id:string, type:string, rev = 1) => ({learner:studioLearner,id:factId(stableId(id)),rev:rev as Revision,accessEpoch:'1' as Tick,type,mode:'following' as const});
+    const ev1 = cogSlice.events[1]!, curSub = w('cur-sub','activity.workbookAttempt'), curEv = {...ev1,ref:curSub.id,rev:curSub.rev,occurred_at:new Date(Date.parse(ev1.occurred_at)+500).toISOString()}, prevSub = {learner:studioLearner,id:factId(ev1.ref),rev:ev1.rev as Revision,accessEpoch:'1' as Tick,type:'activity.workbookAttempt',mode:'following' as const}, conceptW = {learner:studioLearner,id:conceptId,rev:1 as Revision,accessEpoch:'1' as Tick,type:'content.asset',mode:'following' as const};
+    expect(await recurringErrorCluster({scope:{learner:studioLearner,purpose:'teaching',recipient:'workspace'}, openItem:async (_,{submission}) => submission.id === curSub.id ? {submission:curSub,itemId:'q1',activity:w('act2','activity.workbookPaper'),source:{ref:w('q2','content.asset'),itemId:'q1'},grade:w('g2','activity.workbookFormalAssessment'),admittedAt:'20' as Tick,event:curEv,basis:[curSub],evaluation:{ref:w('g2','activity.workbookFormalAssessment'),concept:conceptW,basis:[curSub]}} : {submission:prevSub,itemId:'q1',activity:w('act1','activity.workbookPaper'),source:{ref:w('q1','content.asset'),itemId:'q1'},grade:w('g1','activity.workbookFormalAssessment'),admittedAt:'10' as Tick,event:ev1,basis:[prevSub],evaluation:{ref:w('g1','activity.workbookFormalAssessment'),concept:conceptW,basis:[prevSub]}}, reopen:async (_,ref) => ({ref:{learner:ref.learner,id:ref.id,rev:ref.rev},type:ref.type,purpose:['teaching'],retracted:false,accessEpoch:ref.accessEpoch,value:ref.id === conceptId ? {kind:'concept'} : {}} as never)}, {asOfAt:new Date(Date.parse(curEv.occurred_at)+1000).toISOString(),observedThrough:'100' as Tick,current:{submission:curSub,itemId:'q1'},history:[{submission:prevSub,itemId:'q1'}]})).toMatchObject({count:2,anchors:[{itemId:'q1',errorStage:'execution'}]});
+    await access.setTeaching(paper.id,{enabled:false,expectedRev:paperGrant.rev});
+    expect(await diagnose.execute('open_learning',{refs:wrong.id,lens:'diagnose'},2)).not.toContain('execution');
+    expect(await sdk.preparePython!(pythonReads([{method:'evidence_slice',args:{exam_pacing:true,exam_pacing_items:true,paper_ids:[paper.id]}}])!,1)).toMatchObject({ok:false,code:'access_revoked'});
+  }));

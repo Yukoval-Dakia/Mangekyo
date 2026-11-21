@@ -12,6 +12,7 @@ import { readPosttestIssuance, type PosttestFactReader } from './retention-postt
 import { RequestError } from './sessions.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
 import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
+import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 
 export const retentionPurpose = retentionTeachingPurpose;
 
@@ -60,6 +61,7 @@ export const studioWorkbookEvidence = (as: string, maySend: WorkspaceSourceRecip
   },
   openEdge: (tx,id) => openKnowledgeEdge(tx,id,{recipient:'workspace',purpose:as,maySend}),
   readPosttestIssuance: readIssuance,
+  readFormalAssessment: readSavedWorkbookAssessment,
   createRead: tx => createCommandReadContext(tx,as),
   unavailable: error => error instanceof FactNotFoundError || error instanceof FactReadDeniedError,
   unavailableRelease: error => error instanceof RequestError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError,

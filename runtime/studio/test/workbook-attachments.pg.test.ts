@@ -81,6 +81,7 @@ describe.skipIf(!testDatabaseUrl)('workbook question photo attachments (PG + Stu
       notion: {} as never, textbook: {} as never, relationReview: {} as never, workbook, takeaways: {} as never,
       organizer: {} as never, memory: {} as never, memoryManagement: {} as never, intake, capturePapers: {} as never,
       workspace: {} as never, research, recall: {} as never, retention: {} as never, retentionComparison: {} as never, iqdb: {} as never,
+      carePause: {} as never,
     }, port);
     await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve));
     origin = `http://127.0.0.1:${port}`;
