@@ -1,6 +1,7 @@
 import { planReview, readEligibleReview, reviewDedupKey } from '../../modules/companion/worksheet-policy.ts';
 import { generateResearchDraft, ResearchDispatchDenied, type WorkerTariff } from '../../executors/teaching/research-worker.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { learnerId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -83,9 +84,11 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
     if (error instanceof EffectBudgetExceeded || error instanceof ResearchDispatchDenied) return unavailable();
     throw error;
   }
+  const propagation = createPropagationHooks([]);
   const publish = createCommandHandler(db, {
     modules: [companion],
-    hooks: { async onFactsChanged(tx, tick) {
+    hooks: { async onFactsChanged(tx, tick, changes) {
+      await propagation.onFactsChanged(tx, tick, changes);
       const current = await readTodo(tx, todoId);
       const live = current && await eligibleBasis(tx, current.spec, settingsId, tariff);
       if (current?.revision !== prepared.todo.revision || !(await readReadyWork(tx, ref)) ||
