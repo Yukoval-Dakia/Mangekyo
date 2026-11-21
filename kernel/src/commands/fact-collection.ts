@@ -18,9 +18,11 @@ export async function* readFactCollection(
   tx: ReadTransaction,
   read: Pick<ReadContext, 'fact'>,
   types: readonly string[],
-  options: { newestFirst?: boolean; pinTypes?: readonly string[] } = {},
+  options: { newestFirst?: boolean; idAscending?: boolean; pinTypes?: readonly string[] } = {},
 ) {
-  const order = options.newestFirst ? 'created_tick DESC, id DESC' : 'created_tick, id';
+  const order = options.newestFirst
+    ? options.idAscending ? 'created_tick DESC, id' : 'created_tick DESC, id DESC'
+    : 'created_tick, id';
   const { rows } = await tx.query<{ id: string; type: string; current_rev: Revision }>(
     `SELECT id,type,current_rev FROM facts
      WHERE learner_id=$1 AND type=ANY($2::text[]) AND retracted_rev IS NULL ORDER BY ${order}`,
@@ -46,4 +48,17 @@ export async function readValueRevisions(tx: ReadTransaction, read: Pick<ReadCon
     if (value) versions.push(value);
   }
   return versions;
+}
+
+export async function revisionsOnlyChangeGrants(tx: ReadTransaction, id: FactId, before: Revision, after: Revision) {
+  // Each adjacent revision must be a grant change, including an edit later restored to the same value.
+  const { rows: [proof] } = await tx.query<{ unchanged: boolean }>(
+    `SELECT count(*) FILTER (WHERE r.kind='value' AND r.data=base.data AND r.corrects_rev=p.rev
+        AND r.purpose IS DISTINCT FROM p.purpose)=($4::int-$3::int) AS unchanged
+     FROM fact_revs base JOIN fact_revs r ON (r.learner_id,r.fact_id)=(base.learner_id,base.fact_id)
+     JOIN fact_revs p ON (p.learner_id,p.fact_id,p.rev)=(r.learner_id,r.fact_id,r.rev-1)
+     WHERE base.learner_id=$1 AND base.fact_id=$2 AND base.rev=$3 AND base.kind='value' AND r.rev>$3 AND r.rev<=$4`,
+    [tx.learner, id, before, after],
+  );
+  return proof?.unchanged === true;
 }

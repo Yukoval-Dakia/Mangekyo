@@ -1,7 +1,9 @@
-import { defineCommand, factId } from '@mangekyo/kernel';
+import { defineCommand, factId, type Revision } from '@mangekyo/kernel';
 import { storagePurpose } from '../library-values.ts';
 import { closedPosttest, issuedPosttestPaper, posttestIssuance, posttestIssuanceType, posttestSubmissionType, retentionTeachingPurpose } from '../retention-posttest.ts';
 import { creation, object } from '../values.ts';
+import { frozenWorkbookSubmission } from '../question-assessment.ts';
+import { readFrozenWorkbookBank } from '../workbook-bank.ts';
 import {
   gradeWorkbook,
   submitWorkbookAttemptCommand,
@@ -31,7 +33,9 @@ export default defineCommand({
     const paper = release
       ? workbookPaper((await ctx.read.fact(release.id, { mode: 'pinned', rev: release.rev })).value)
       : current;
+    await readFrozenWorkbookBank(ctx.read, paper);
     const graded = gradeWorkbook(paper, data.answers);
+    if (paper.assessmentRelease) frozenWorkbookSubmission(paper.assessmentRelease, { id, rev: 1 as Revision }, graded.answers);
     return [
       {
         kind: 'create',

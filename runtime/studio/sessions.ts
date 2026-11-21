@@ -1,7 +1,7 @@
 import { openClassrooms } from './classroom.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
-import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
+import { revokedReplyWriteReceipts, type WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import { projectArtifactMountTrace } from '../../executors/teaching/artifact-trace.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -11,7 +11,8 @@ import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { factId, commandId } from '../../kernel/src/declarations/ids.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { first45Answer, first45Histories, first45Question } from '../../executors/teaching/examples.ts';
+import { first45Histories, introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
+export { introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
@@ -55,22 +56,6 @@ const confirmAccount = () => new RequestError(409, '请重新选择材料或开�
 const requestedAccount = (route:unknown) => route && typeof route === 'object' && 'accountRevision' in route
   ? route.accountRevision : undefined;
 
-export const cases = [
-  {
-    id: 'independent',
-    title: '学习史一',
-    description: '第一次见到分段行程题时，留下过自己的完整草稿。',
-    question: first45Question,
-    initialAnswer: first45Answer,
-  },
-  {
-    id: 'workedExample',
-    title: '学习史二',
-    description: '过去做过同一道分段行程题，当时看过完整例题。',
-    question: first45Question,
-    initialAnswer: first45Answer,
-  },
-] as const;
 export type CaseId = (typeof cases)[number]['id'] | 'companion' | 'riding';
 export function caseId(value: unknown): CaseId {
   if (value !== 'independent' && value !== 'workedExample' && value !== 'companion' && value !== 'riding')
@@ -245,17 +230,7 @@ async function recoverRevokedReceipts(tx: ReadTransaction, turnIds: string[]) {
        AND jsonb_typeof(d.value->'writes')='array'`,
     [tx.learner, slotType, turnIds],
   );
-  return new Map(rows.map(({ id, writes }) => [id, writes.flatMap<WorkspaceWriteReceipt>(write => {
-    if (write.memory) return [{id: write.id, rev: write.rev, title: '记忆回执', memory: write.memory}];
-    const relation = write.relation?.status === 'proposed'
-      ? { status: 'proposed' as const, proposalId: write.relation.proposalId }
-      : write.relation?.status === 'saved'
-        ? { status: 'saved' as const, undo_token: write.relation.undo_token }
-        : undefined;
-    if (!relation) return [];
-    // A revoked reply may still have a learner decision or undo to manage.
-    return [{ id: write.id, rev: write.rev, title: '知识关系回执', relation }];
-  })]));
+  return new Map(rows.map(({ id, writes }) => [id, revokedReplyWriteReceipts(writes)]));
 }
 
 async function readableTurnMounts(tx: ReadTransaction, session: string, timeline: readonly TurnView[], check: CheckNotionRead) {

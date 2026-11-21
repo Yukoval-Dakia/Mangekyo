@@ -1,9 +1,10 @@
+import { revisionsOnlyChangeGrants } from '../../kernel/src/commands/fact-collection.ts';
 import { createHash } from 'node:crypto';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, learnerId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { factId, learnerId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
@@ -11,20 +12,21 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { failWork, readReadyWork, readWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
-import { checkAssessmentPublication, type ReadVerifiedAssessmentPublicationEvidence } from '../../modules/activity/assessment-publication.ts';
+import type { ReadVerifiedAssessmentPublicationEvidence } from '../../modules/activity/assessment-publication.ts';
 import {
-  assessmentSubmission, settledAssessmentState, type FormalAssessmentValue,
-  type AssessmentRelease, type AssessmentRevisionRef, type AssessmentSubmission,
+  settledAssessmentState, type FormalAssessmentValue, type AssessmentRelease,
+  type AssessmentRevisionRef,
 } from '../../modules/activity/assessment-values.ts';
-import {
-  boundedWorkbookReply, prepareWorkbookRelease as freezeRelease, sameAssessmentRef as sameRef,
-  workbookAssessmentValue, workbookEvaluation, type WorkbookEvaluation,
-} from '../../modules/activity/workbook-assessment-values.ts';
+import { evaluateBankCriterion, frozenWorkbookSubmission, isLocalQuestionCriterion } from '../../modules/activity/question-assessment.ts';
+import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
+import { boundedWorkbookReply, checkWorkbookPublication, publicBankAssessment, workbookAssessmentValue, prepareWorkbookRelease as prepareRelease, sameAssessmentRef as sameRef,
+  AssessmentInputUnavailable, gatherWorkbookAssessment, workbookEvaluation, workbookTextEvaluator,
+  type FrozenWorkbookAssessmentInputs, type WorkbookEvaluation } from '../../modules/activity/workbook-assessment-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import formalAssessmentSlot from '../../modules/activity/slots/workbook-formal-assessment.ts';
 import {
-  independentlyAuthoredPaper, sameWorkbookJson, workbookAssessmentConsent, workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
-  workbookFormalAssessmentType, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookDraft,
+  workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
+  workbookFormalAssessmentType, workbookPaper, workbookPaperType, WorkbookSourceMismatch, type WorkbookDraft, type WorkbookPaper,
 } from '../../modules/activity/workbook-values.ts';
 import {
   assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment,
@@ -33,15 +35,16 @@ import {
 import { RequestError } from './sessions.ts';
 
 export const workbookAssessmentSlot = workbookFormalAssessmentType;
-export const workbookTextEvaluator = { id: 'workbook-text-rubric', version: '1' } as const;
+export { workbookTextEvaluator };
 const policy: CandidatePolicy = {
   slot: formalAssessmentSlot,
   deriver: 'activity/workbook-formal-assessment-v1',
   purpose: workbookAssessmentPurpose,
 };
+const bankPolicy: CandidatePolicy = { ...policy, deriver: 'activity/workbook-bank-assessment-v1' };
+const assessmentPolicy = (paper: WorkbookPaper) => paper.questions.some(question => question.kind === 'bank') ? bankPolicy : policy;
 const propagation = createPropagationHooks([]);
 const maxOutputTokens = 512;
-const maxAnswerLength = 16_000;
 
 type RouteCharge = {
   readonly learner: string;
@@ -73,40 +76,40 @@ export type WorkbookAssessmentHost = {
   readonly resolveAssessmentRoute?: (routeId: string) => Promise<WorkbookAssessmentRoute | null>;
 };
 
-type FrozenInputs = {
-  release: AssessmentRelease;
-  submission: AssessmentSubmission;
-  questions: Record<string, { prompt: string; rubric: string }>;
-  consent: boolean;
-  independent?: boolean;
-};
 function digest(text: string) {
   return createHash('sha256').update(text).digest('hex');
 }
 
-export function prepareWorkbookRelease(value: unknown, paperId: FactId, draft: WorkbookDraft): AssessmentRelease {
-  return freezeRelease(value, paperId, draft, digest);
+export function prepareWorkbookRelease(value: unknown, paperId: FactId, draft: WorkbookDraft) {
+  return prepareRelease(value, paperId, draft, digest);
 }
 
-export function frozenSubmission(release: AssessmentRelease, submissionRef: AssessmentRevisionRef, answers: WorkbookAttempt['answers']) {
-  return assessmentSubmission({
-    releaseRef: release.releaseRef, submissionRef,
-    answers: release.items.flatMap(item => {
-      const answer = answers[item.itemId];
-      const slot = item.slots[0]!;
-      if (typeof answer === 'string' && answer.length > maxAnswerLength) throw new Error('自动评估作答过长。');
-      return typeof answer !== 'string' ? [] : [{
-        itemId: item.itemId, slotId: slot.slotId, schemaVersion: slot.schemaVersion,
-        path: '', value: { kind: 'text', value: answer },
-      }];
+export const frozenSubmission = frozenWorkbookSubmission;
+
+async function authorizeBankBasis(tx: ReadTransaction, release: AssessmentRevisionRef) {
+  const read = createCommandReadContext(tx, storagePurpose);
+  const paper = await read.fact(release.id, { mode: 'pinned', rev: release.rev });
+  if (paper.type !== workbookPaperType) throw new AssessmentInputUnavailable();
+  await readFrozenWorkbookBank(read, workbookPaper(paper.value));
+}
+
+function withBankBasis(db: Db, release: AssessmentRevisionRef): Db {
+  return { ...db,
+    snapshot: (scope, run) => db.snapshot(scope, async tx => {
+      await authorizeBankBasis(tx, release);
+      return run(tx);
     }),
-  }, release);
+    tx: (scope, run) => db.tx(scope, async tx => {
+      await lockLearner(tx, tx.learner);
+      await authorizeBankBasis(tx, release);
+      return run(tx);
+    }),
+  };
 }
-
-class AssessmentInputUnavailable extends Error {}
 
 function readFailure(error: unknown) {
-  return error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof AssessmentInputUnavailable;
+  return error instanceof FactNotFoundError || error instanceof FactReadDeniedError ||
+    error instanceof WorkbookSourceMismatch || error instanceof AssessmentInputUnavailable;
 }
 
 const effectLabel = 'workbook-assessment';
@@ -116,10 +119,9 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
     const read = createCommandReadContext(tx, storagePurpose);
     for (const { ref, kind, factType } of changes) {
       if (factType === workbookPaperType && kind === 'create') {
-        const release = workbookPaper((await read.fact(ref.id, { mode: 'following' })).value).assessmentRelease;
-        if (!release) continue;
-        const review = checkAssessmentPublication(release, [workbookTextEvaluator], host.readVerifiedEvidence ?? (() => null));
-        if (review.state === 'needs-review') {
+        const paper = workbookPaper((await read.fact(ref.id, { mode: 'following' })).value);
+        const review = checkWorkbookPublication(paper, host.readVerifiedEvidence);
+        if (review?.state === 'needs-review') {
           throw new RequestError(409, '发放需要独立核验。' + review.issues.map(issue => issue.reason).join(' '));
         }
       }
@@ -129,61 +131,50 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
       const release = attempt.paper.assessmentRelease;
       if (!release) continue;
       const paper = await read.fact(release.releaseRef.id, { mode: 'pinned', rev: release.releaseRef.rev });
-      await registerFormalAssessment(tx, tick, policy, paper, fact);
+      await registerFormalAssessment(tx, tick, assessmentPolicy(attempt.paper), paper, fact);
     }
   };
 
   async function execute(ref: WorkRef, terminalFailure = false) {
     const learner = learnerId(ref.learner);
     const work = await readWork(db, ref);
-    if (work?.slotType !== workbookAssessmentSlot || work.deriver !== policy.deriver) return;
+    if (work?.slotType !== workbookAssessmentSlot) return;
+    const activePolicy = work.deriver === bankPolicy.deriver ? bankPolicy : policy;
+    if (work.deriver !== activePolicy.deriver) return;
     const { rows: [row] } = await db.query<{ scope_keys: AssessmentScope }>(
       'SELECT scope_keys FROM slot_state WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
       [learner, workbookAssessmentSlot, work.slotKey],
     );
     if (!row) throw new Error('Assessment work is missing its frozen scope');
     const scope = row.scope_keys;
+    // The paper and attempt grant assessment use. Original question sources
+    // grant storage and teaching use, and are reopened under their own grant.
+    const assessmentDb = activePolicy === bankPolicy ? withBankBasis(db, scope.releaseRef) : db;
 
     try {
-      const snapshot = await gatherSnapshot(db, { learner, purpose: policy.purpose }, async ({ read }) => {
-        const { releaseRef, submissionRef } = scope;
-        const attemptFact = await read.fact(submissionRef.id, { mode: 'following' });
-        const paperFact = await read.fact(releaseRef.id, { mode: 'pinned', rev: releaseRef.rev });
-        if (attemptFact.type !== workbookAttemptType || paperFact.type !== workbookPaperType ||
-            !sameRef(attemptFact.ref, submissionRef) || attemptFact.accessEpoch !== scope.submissionEpoch ||
-            paperFact.accessEpoch !== scope.releaseEpoch) throw new AssessmentInputUnavailable();
-        const attempt = workbookAttempt(attemptFact.value);
-        const paper = workbookPaper(paperFact.value);
-        const release = paper.assessmentRelease;
-        if (!release || !sameRef(release.releaseRef, releaseRef) ||
-            !sameWorkbookJson(release, attempt.paper.assessmentRelease) || attempt.paperId !== releaseRef.id) {
-          throw new AssessmentInputUnavailable();
-        }
-        const input: FrozenInputs = {
-          release, submission: frozenSubmission(release, submissionRef, attempt.answers),
-          questions: Object.fromEntries(paper.questions.flatMap(question => question.kind === 'rubric' &&
-            release.items.some(({ itemId }) => itemId === question.id)
-            ? [[question.id, { prompt: question.prompt, rubric: question.rubric }]] : [])),
-          independent: independentlyAuthoredPaper(paper) && independentlyAuthoredPaper(attempt.paper),
-          consent: attempt.assessmentConsent === workbookAssessmentConsent,
-        };
-        return { kind: 'input', data: input, effects: [] };
+      const snapshot = await gatherSnapshot(assessmentDb, { learner, purpose: activePolicy.purpose }, async ({ read }) => {
+        return gatherWorkbookAssessment(read, scope);
       });
-      const sealed = await sealCandidate(db, ref, policy, snapshot);
+      const sealed = await sealCandidate(assessmentDb, ref, activePolicy, snapshot);
       if (sealed.kind !== 'sealed') return;
       if (terminalFailure) {
-        await submitCandidate(db, ref, policy, sealed.id, { kind: 'failed', reason: assessmentExecutionFailed }, propagation);
+        await submitCandidate(assessmentDb, ref, activePolicy, sealed.id, { kind: 'failed', reason: assessmentExecutionFailed }, propagation);
         return;
       }
       // Only this adapter writes the versioned gather plan. Use the sealed copy on activity retry.
-      const { release, submission, questions, consent, independent } = sealed.plan.data as FrozenInputs;
+      const { release, submission, questions, consent, independent } = sealed.plan.data as FrozenWorkbookAssessmentInputs;
       const authorize = async (tx: ReadTransaction) => {
         if (!(await readReadyWork(tx, ref)) || (await revalidateManifest(tx, sealed.manifest)).kind !== 'valid')
           throw new AssessmentInputUnavailable();
       };
       const evaluated: WorkbookEvaluation[] = [];
-      for (const { itemId, criteria } of release.items) {
-        for (const criterion of criteria) {
+      for (const item of release.items) {
+        const { itemId } = item;
+        for (const criterion of item.criteria) {
+          if (activePolicy === bankPolicy) {
+            evaluated.push({ outcome: evaluateBankCriterion(item, criterion, submission) });
+            continue;
+          }
           const answer = submission.answers.find(entry => entry.itemId === itemId)?.value;
           const key = { itemId, criterionId: criterion.criterionId };
           if (answer?.kind !== 'text') {
@@ -221,7 +212,7 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
         }
       }
       const value = workbookAssessmentValue(release, submission, evaluated);
-      await submitCandidate(db, ref, policy, sealed.id, { kind: 'value', value }, propagation);
+      await submitCandidate(assessmentDb, ref, activePolicy, sealed.id, { kind: 'value', value }, propagation);
     } catch (error) {
       if (!readFailure(error)) throw error;
       await failWork(db, ref, async tx => {
@@ -240,6 +231,9 @@ export function openWorkbookAssessment(db: Db, host: WorkbookAssessmentHost = {}
 export async function readSavedWorkbookAssessment(
   tx: ReadTransaction, releaseRef: AssessmentRevisionRef, submission: FactSnapshot, paper: FactSnapshot,
 ) {
+  if (paper.ref.id !== releaseRef.id || submission.type !== workbookAttemptType || paper.type !== workbookPaperType) return;
+  const selectedPolicy = assessmentPolicy(workbookPaper(paper.value));
+  if (selectedPolicy === bankPolicy) await authorizeBankBasis(tx, releaseRef);
   const { rows: [row] } = await tx.query<{
     id: string; scope_keys: AssessmentScope; manifest: unknown; value: { kind: 'value'; value: FormalAssessmentValue } | null;
   }>(
@@ -253,36 +247,37 @@ export async function readSavedWorkbookAssessment(
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.scope_keys->'releaseRef'=$3::jsonb
        AND s.scope_keys->'submissionRef'->>'id'=$4 AND (s.scope_keys->'submissionRef'->>'rev')::int<=$5
      ORDER BY (s.scope_keys->'submissionRef'->>'rev')::int DESC LIMIT 1`,
-    [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, policy.deriver],
+    [tx.learner, workbookAssessmentSlot, JSON.stringify(releaseRef), submission.ref.id, submission.ref.rev, selectedPolicy.deriver],
   );
   if (row?.value?.kind !== 'value') return;
   const { value } = row.value;
   const { submissionRef, releaseEpoch, submissionEpoch } = row.scope_keys;
-  if (!sameRef(value.result.releaseRef, releaseRef) || !sameRef(value.result.submissionRef, submissionRef) ||
-      paper.ref.id !== releaseRef.id || submission.type !== workbookAttemptType || paper.type !== workbookPaperType) return;
+  if (!sameRef(value.result.releaseRef, releaseRef) || !sameRef(value.result.submissionRef, submissionRef)) return;
   const manifest = parseManifest(row.manifest);
-  if (manifest.learner !== tx.learner || manifest.purpose !== policy.purpose || manifest.inputs.length !== 2) return;
+  if (manifest.learner !== tx.learner || manifest.purpose !== selectedPolicy.purpose || manifest.inputs.length !== 2) return;
   for (const [original, current, epoch, mode] of [
     [releaseRef, paper.ref, releaseEpoch, 'pinned'], [submissionRef, submission.ref, submissionEpoch, 'following'],
   ] as const) {
     if (!manifest.inputs.some(input => input.kind === 'fact' && input.id === original.id &&
       input.rev === original.rev && input.accessEpoch === epoch && input.mode === mode)) return;
-    // Each adjacent revision must be a grant change, including an edit later restored to the same value.
-    const { rows: [proof] } = await tx.query<{ unchanged: boolean }>(
-      `SELECT count(*) FILTER (WHERE r.kind='value' AND r.data=base.data AND r.corrects_rev=p.rev
-          AND r.purpose IS DISTINCT FROM p.purpose)=($4::int-$3::int) AS unchanged
-       FROM fact_revs base JOIN fact_revs r ON (r.learner_id,r.fact_id)=(base.learner_id,base.fact_id)
-       JOIN fact_revs p ON (p.learner_id,p.fact_id,p.rev)=(r.learner_id,r.fact_id,r.rev-1)
-       WHERE base.learner_id=$1 AND base.fact_id=$2 AND base.rev=$3 AND base.kind='value' AND r.rev>$3 AND r.rev<=$4`,
-      [tx.learner, original.id, original.rev, current.rev],
-    );
-    if (!proof?.unchanged) return;
+    if (!await revisionsOnlyChangeGrants(tx, original.id, original.rev, current.rev)) return;
   }
-  return { ...value, releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
+  return { ...(selectedPolicy === bankPolicy ? publicBankAssessment(value) : value),
+    releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
 }
 
 export async function readWorkbookAssessment(tx: ReadTransaction, release: AssessmentRelease, submissionRef: AssessmentRevisionRef) {
+  const bank = release.items.some(item => item.criteria.some(isLocalQuestionCriterion));
+  if (bank) {
+    try { await authorizeBankBasis(tx, release.releaseRef); }
+    catch (error) {
+      if (!readFailure(error)) throw error;
+      return { releaseRef: release.releaseRef, submissionRef, state: 'blocked' as const, reason: assessmentInputsBlocked, score: null };
+    }
+  }
   const result = await readFormalAssessment(tx, workbookAssessmentSlot, release.releaseRef, submissionRef, storagePurpose);
+  if (bank && 'criteria' in result && result.criteria)
+    return { ...result, ...publicBankAssessment(result) };
   if (result.state !== 'blocked' || 'derivationId' in result) return result;
   try {
     const read = createCommandReadContext(tx, storagePurpose);

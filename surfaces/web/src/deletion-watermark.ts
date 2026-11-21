@@ -38,7 +38,7 @@ export function recordNewSubmission(id:string) {
 }
 
 export function guardedPath(path:string) {
-  return path === '/materials' || path === '/practice/riding' || path === '/papers/sealed-practice' ||
+  return path === '/iqdb/proposals' || path === '/iqdb/papers' || path === '/materials' || path === '/practice/riding' || path === '/papers/sealed-practice' ||
     /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/attempts$/.test(path);
 }
 

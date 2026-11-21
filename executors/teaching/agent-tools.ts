@@ -24,7 +24,7 @@ const EXA_ENDPOINT = 'https://api.exa.ai/search';
 const baseNames = ['python', 'read_file', 'write_file'] as const;
 const filenamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-export const pythonAttemptsLimit = 8;
+export {pythonAttemptsLimit} from './python-attempt-selection.ts';
 export type PythonAttemptRow = {
   id: string;
   paper_id?: string;

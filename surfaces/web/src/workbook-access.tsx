@@ -50,11 +50,13 @@ export function WorkbookAccess({paperId, attemptId, displayId}: {
       : api<Page>(displayPath + (after ? '?after=' + encodeURIComponent(after) : ''),options);
     setReading(true);
     setReadError(false);
-    setPage(undefined);
     request.then(result => {
       if (!controller.signal.aborted) setPage(result);
     }).catch(() => {
-      if (!controller.signal.aborted) setReadError(true);
+      if (!controller.signal.aborted) {
+        setPage(undefined);
+        setReadError(true);
+      }
     }).finally(() => {
       if (!controller.signal.aborted) setReading(false);
     });
@@ -95,9 +97,9 @@ export function WorkbookAccess({paperId, attemptId, displayId}: {
     {notice && <p role="alert">{notice}</p>}
     {busy && <p role="status">{writing ? '正在更新权限…' : '正在读取权限…'}</p>}
     {readError && <p role="alert">暂时无法读取权限。请刷新后再试。</p>}
-    {page && <ul>{page.items.map(grant => <GrantControl key={grant.id+':'+grant.rev}
+    {page && <ul hidden={reading}>{page.items.map(grant => <GrantControl key={grant.id+':'+grant.rev}
       grant={grant} disabled={busy} isQuestion={isQuestion} change={item => void change(item)} />)}</ul>}
-    {page?.items.length === 0 && <p>本次作答暂无已确认的答案展示见证。</p>}
+    {!reading && page?.items.length === 0 && <p>本次作答暂无已确认的答案展示见证。</p>}
     {after && <button type="button" className="text-button" disabled={busy}
       onClick={() => { setReading(true); setAfter(null); }}>回到第一页</button>}
     {page?.next && <button type="button" className="text-button" disabled={busy}

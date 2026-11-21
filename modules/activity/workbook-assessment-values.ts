@@ -1,15 +1,39 @@
-import type { FactId, Json, JsonObject, Revision } from '@mangekyo/kernel';
+import type { FactId, Json, JsonObject, ReadContext, Revision } from '@mangekyo/kernel';
 import {
-  assessmentRelease, assessmentResult, formalAssessmentValue,
-  type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease,
-  type AssessmentRevisionRef, type AssessmentSubmission,
+  assessmentRelease, assessmentResult, formalAssessmentValue, type FormalAssessmentValue, type AssessmentCriterion, type AssessmentCriterionOutcome, type AssessmentRelease,
+  type AssessmentResult, type AssessmentRevisionRef, type AssessmentSubmission,
 } from './assessment-values.ts';
-import { sameWorkbookJson, type WorkbookDraft } from './workbook-values.ts';
+import {
+  independentlyAuthoredPaper, sameWorkbookJson, workbookAssessmentConsent, workbookAttempt, workbookAttemptType,
+  workbookCorrectCount, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookAttemptView, type WorkbookDraft,
+  workbookRubricAssessmentVersion, type WorkbookAssessmentRequest, type WorkbookRubricAssessment,
+  type WorkbookRubricQuestion, type WorkbookRubricAssessmentView, type WorkbookPaper, type WorkbookSummary, type WorkbookSourceView,
+} from './workbook-values.ts';
+
+import { checkAssessmentPublication, type ReadVerifiedAssessmentPublicationEvidence } from './assessment-publication.ts';
+import { frozenWorkbookSubmission } from './question-assessment.ts';
+
+export const workbookTextEvaluator = { id: 'workbook-text-rubric', version: '1' } as const;
+
+export function checkWorkbookPublication(paper: WorkbookPaper, evidence?: ReadVerifiedAssessmentPublicationEvidence) {
+  const release = paper.assessmentRelease;
+  if (!release) return;
+  // Bank questions already carry their own verified publication at issuance.
+  const items = release.items.filter(item =>
+    !paper.questions.some(question => question.id === item.itemId && question.kind === 'bank'));
+  if (!items.length) return;
+  return checkAssessmentPublication({ ...release, items }, [workbookTextEvaluator], evidence ?? (() => null));
+}
 
 export type WorkbookEvaluation = {
   outcome: AssessmentCriterionOutcome;
   receipt?: { effectId: string; routeId: string; reportedModel?: string; quote?: string };
 };
+
+export const publicBankAssessment = (value: FormalAssessmentValue) => ({ ...value,
+  criteria: value.criteria.map(({ source, ...criterion }) =>
+    ({ ...criterion, source: { kind: source.kind, ref: source.ref } })),
+});
 
 export function workbookAssessmentValue(
   release: AssessmentRelease, submission: AssessmentSubmission, evaluations: readonly WorkbookEvaluation[],
@@ -26,6 +50,29 @@ export function workbookAssessmentValue(
 
 export function sameAssessmentRef(actual: AssessmentRevisionRef | undefined, expected: AssessmentRevisionRef) {
   return actual?.id === expected.id && actual.rev === expected.rev;
+}
+
+export function workbookAttemptView(id: string, attempt: WorkbookAttempt, assessments: WorkbookRubricAssessmentView[],
+  formal?: AssessmentResult): WorkbookAttemptView {
+  const bank = new Set(attempt.paper.questions.filter(question => question.kind === 'bank').map(question => question.id));
+  const feedback = attempt.feedback.map(item => {
+    if (item.result === 'unanswered') return { ...item, expected: null, explanation: null };
+    if (item.result !== 'pending' || !bank.has(item.questionId) || !formal) return item;
+    const outcomes = formal.outcomes.filter(outcome => outcome.itemId === item.questionId);
+    const criteria = attempt.paper.assessmentRelease?.items.find(({ itemId }) => itemId === item.questionId)?.criteria;
+    if (!criteria || outcomes.length !== criteria.length || outcomes.some(outcome => outcome.state !== 'scored')) return item;
+    const total = criteria.reduce((sum, criterion) => sum + (criterion.maximum ?? 0), 0);
+    const earned = outcomes.reduce((sum, outcome) => sum + (outcome.state === 'scored' ? outcome.earned : 0), 0);
+    return { ...item, result: earned === total ? 'correct' as const : earned > 0 ? 'partial' as const : 'incorrect' as const };
+  });
+  return {
+    id, requestId: attempt.requestId, submittedAt: attempt.submittedAt, gradingVersion: attempt.gradingVersion,
+    ...(attempt.effectiveDurationMs === undefined ? {} : { effectiveDurationMs: attempt.effectiveDurationMs }),
+    answers: attempt.answers, feedback, assessments, correctCount: workbookCorrectCount(feedback),
+    total: attempt.paper.questions.filter(question => question.kind === 'bank'
+      ? feedback.some(item => item.questionId === question.id && ['correct','partial','incorrect'].includes(item.result))
+      : question.kind !== 'rubric' && (question.kind !== 'exact' || !question.selfCheck)).length,
+  };
 }
 
 export function prepareWorkbookRelease(value: unknown, paperId: FactId, draft: WorkbookDraft,
@@ -112,4 +159,116 @@ export function workbookEvaluation(
     }
   }
   return { outcome: { ...key, state: 'failed', reason: '评估结论、分值或引文无法与冻结标准和作答核对。' }, receipt: trace };
+}
+
+
+export function workbookAttemptUsage(attempts: readonly { attempt: WorkbookAttempt }[]) {
+  const grouped = new Map<string, { count: number; last: string }>();
+  for (const { attempt } of attempts) {
+    const prior = grouped.get(attempt.paperId);
+    grouped.set(attempt.paperId, { count: (prior?.count ?? 0) + 1,
+      last: !prior || attempt.submittedAt > prior.last ? attempt.submittedAt : prior.last });
+  }
+  return grouped;
+}
+
+export function workbookSummary(id: FactId, paper: WorkbookPaper, source: WorkbookSourceView | null,
+  usage?: { count: number; last: string }): WorkbookSummary {
+  return { id, title: paper.title, questionCount: paper.questions.length, savedAt: paper.savedAt,
+    sourceId: paper.materialId, sourceTitle: source?.title ?? null,
+    attemptCount: usage?.count ?? 0, lastAttemptAt: usage?.last ?? null };
+}
+
+export function workbookMistakes(attempt: WorkbookAttempt, assessments: readonly WorkbookRubricAssessmentView[], seen: Set<string>) {
+  const result = [];
+  for (const f of attempt.feedback) {
+    const key = attempt.paperId + '/' + f.questionId;
+    const grade = assessments.find(value => value.questionId === f.questionId);
+    const verdict = grade?.verdict ?? f.result;
+    if (verdict === 'pending' || verdict === 'unanswered' || verdict === 'self-check' || seen.has(key)) continue;
+    seen.add(key);
+    if (verdict !== 'incorrect' && verdict !== 'partial') continue;
+    const q = attempt.paper.questions.find(q => q.id === f.questionId);
+    if (!q || !f.expected) continue;
+    const expected = f.expected.kind === 'exact'
+      ? f.expected.values.join(' / ')
+      : f.expected.kind === 'rubric'
+        ? f.expected.rubric
+        : [f.expected.value, f.expected.unit].filter(x => x !== null).join(' ');
+    result.push({ paperId: attempt.paperId, title: attempt.paper.title, questionId: q.id,
+      prompt: q.prompt, answer: String(f.answer), expected, explanation: grade?.feedback ?? f.explanation });
+  }
+  return result;
+}
+
+export class AssessmentInputUnavailable extends Error {}
+
+export type FrozenWorkbookAssessmentInputs = {
+  release: AssessmentRelease;
+  submission: AssessmentSubmission;
+  questions: Record<string, { prompt: string; rubric: string }>;
+  consent: boolean;
+  independent?: boolean;
+};
+
+export async function gatherWorkbookAssessment(read: Pick<ReadContext, 'fact'>, scope: {
+  releaseRef: AssessmentRevisionRef; submissionRef: AssessmentRevisionRef; releaseEpoch: string; submissionEpoch: string;
+}) {
+  const sameRef = sameAssessmentRef;
+  const { releaseRef, submissionRef } = scope;
+  const attemptFact = await read.fact(submissionRef.id, { mode: 'following' });
+  const paperFact = await read.fact(releaseRef.id, { mode: 'pinned', rev: releaseRef.rev });
+  if (attemptFact.type !== workbookAttemptType || paperFact.type !== workbookPaperType ||
+      !sameRef(attemptFact.ref, submissionRef) || attemptFact.accessEpoch !== scope.submissionEpoch ||
+      paperFact.accessEpoch !== scope.releaseEpoch) throw new AssessmentInputUnavailable();
+  const attempt = workbookAttempt(attemptFact.value);
+  const paper = workbookPaper(paperFact.value);
+  const release = paper.assessmentRelease;
+  if (!release || !sameRef(release.releaseRef, releaseRef) ||
+      !sameWorkbookJson(release, attempt.paper.assessmentRelease) || attempt.paperId !== releaseRef.id) {
+    throw new AssessmentInputUnavailable();
+  }
+  const input: FrozenWorkbookAssessmentInputs = {
+    release, submission: frozenWorkbookSubmission(release, submissionRef, attempt.answers),
+    questions: Object.fromEntries(paper.questions.flatMap(question => question.kind === 'rubric' &&
+      release.items.some(({ itemId }) => itemId === question.id)
+      ? [[question.id, { prompt: question.prompt, rubric: question.rubric }]] : [])),
+    independent: independentlyAuthoredPaper(paper) && independentlyAuthoredPaper(attempt.paper),
+    consent: attempt.assessmentConsent === workbookAssessmentConsent,
+  };
+  return { kind: 'input' as const, data: input, effects: [] };
+}
+
+
+export function legacyRubricInput(attempt: WorkbookAttempt, questionId: string) {
+  const missing = (status: number, reason: string) => ({ state: 'unavailable' as const, status, reason });
+  if (attempt.paper.assessmentRelease?.items.some(item => item.itemId === questionId))
+    return missing(409, '此题已经随交卷登记自动评估，请刷新作答查看状态。');
+  const question = attempt.paper.questions.find(({ id }) => id === questionId);
+  if (!question || question.kind !== 'rubric') return missing(400, '这道题没有可用的评分标准。');
+  const answer = attempt.answers[question.id];
+  if (typeof answer !== 'string' || !answer.trim()) return missing(400, '这次作答没有可供批改的文字。');
+  return { state: 'ready' as const, question, answer };
+}
+
+export function completedLegacyRubric(input: {
+  attemptId: FactId; paperId: FactId; question: WorkbookRubricQuestion; request: WorkbookAssessmentRequest; assessedAt: string;
+  route: Pick<WorkbookRubricAssessment, 'providerBaseUrl' | 'requestedModel' | 'providerProtocol' | 'providerId'>;
+  result: Pick<WorkbookRubricAssessment, 'verdict' | 'feedback' | 'evidence' | 'trace'>;
+}): WorkbookRubricAssessment {
+  const { attemptId, paperId, question, request, assessedAt, route, result } = input;
+  return { attemptId, paperId, questionId: question.id, requestId: request.requestId, assessedAt, consent: request.consent,
+    ...(request.publicSearchQuery ? {publicSearchQuery: request.publicSearchQuery} : {}),
+    assessmentVersion: workbookRubricAssessmentVersion, rubricVersion: question.rubricVersion, rubric: question.rubric,
+    ...route, ...result };
+}
+
+export function sameWorkbookDraft(paper: WorkbookPaper, draft: Omit<WorkbookPaper, 'savedAt'>): boolean {
+  const { savedAt: _, ...savedDraft } = paper;
+  return sameWorkbookJson(savedDraft, draft);
+}
+
+
+export function rubricAssessmentIdentity(attemptId: FactId, question: WorkbookRubricQuestion) {
+  return ['workbook-rubric-assessment', attemptId, question.id, question.rubricVersion, question.rubric] as const;
 }

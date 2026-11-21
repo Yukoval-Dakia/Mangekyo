@@ -15,6 +15,7 @@ type Derivation = {
   is_shadow: boolean;
   manifest: unknown;
 };
+type FactInput = Extract<ManifestInput,{kind:'fact'}>;
 const invalid = (reason: string): ManifestVerdict => ({ kind: 'invalid', reason });
 const valid = (behind = false): ManifestVerdict => ({ kind: 'valid', freshness: behind ? 'behind' : 'current' });
 
@@ -28,6 +29,8 @@ export async function revalidateManifest(
   if (manifest.learner !== tx.learner) return invalid('Manifest learner does not match transaction');
   const clock = await tx.query<{clock:string}>('SELECT clock::text FROM learners WHERE id=$1', [tx.learner]);
   if (!clock.rows[0] || BigInt(manifest.gatherTick) > BigInt(clock.rows[0].clock)) return invalid('Gather tick is ahead of the learner clock');
+  if (manifest.inputs.length > 1 && manifest.inputs.every(input=>input.kind==='fact'))
+    return checkFactManifest(tx,manifest.inputs,manifest.gatherTick,purpose);
   let behind = false;
   for (const input of manifest.inputs) {
     const verdict = await checkInput(tx, input, manifest.gatherTick, purpose, visiting);
@@ -85,6 +88,22 @@ async function checkDerivation(
   return nested.kind === 'valid' ? row : null;
 }
 
+async function checkFactManifest(tx: ReadTransaction, inputs: readonly FactInput[], at: Tick, purpose: string) {
+  const matches = followingWitnessMatches('f', followingRevisionFloor('f', '$3::text'), 'q.rev', 'q.epoch');
+  const result = await tx.query<{count:number}>(
+    `SELECT COUNT(*)::integer AS count
+       FROM jsonb_to_recordset($2::jsonb) AS q(id text, rev integer, mode text, epoch text)
+       JOIN facts f ON f.learner_id=$1 AND f.id=q.id
+       JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,q.rev)
+      WHERE r.kind='value' AND f.retracted_rev IS NULL AND r.tick <= $4::bigint
+        AND ($3=ANY(f.purpose) OR 'all'=ANY(f.purpose))
+        AND ($3=ANY(r.purpose) OR 'all'=ANY(r.purpose))
+        AND CASE WHEN q.mode='following' THEN ${matches} ELSE f.access_epoch::text=q.epoch END`,
+    [tx.learner, JSON.stringify(inputs.map(({id,rev,mode,accessEpoch}) => ({id,rev,mode,epoch:accessEpoch}))), purpose, at],
+  );
+  return result.rows[0]?.count === inputs.length ? valid() : invalid('Fact input changed or is denied');
+}
+
 async function checkInput(
   tx: ReadTransaction,
   input: ManifestInput,
@@ -92,23 +111,7 @@ async function checkInput(
   purpose: string,
   visiting: ReadonlySet<string>,
 ): Promise<ManifestVerdict> {
-  if (input.kind === 'fact') {
-    const result = await tx.query<{ matches: boolean; retracted_rev: number | null; tick: string; allowed: boolean }>(
-      `SELECT f.retracted_rev, r.tick::text,
-              ($4=ANY(f.purpose) OR 'all'=ANY(f.purpose))
-              AND ($4=ANY(r.purpose) OR 'all'=ANY(r.purpose)) AS allowed,
-              ${input.mode === 'following'
-                ? followingWitnessMatches('f', followingRevisionFloor('f', '$4::text'), 'r.rev', '$5')
-                : 'f.access_epoch::text = $5'} AS matches
-       FROM facts f JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id
-       WHERE f.learner_id=$1 AND f.id=$2 AND r.rev=$3 AND r.kind='value'`,
-      [tx.learner, input.id, input.rev, purpose, input.accessEpoch],
-    );
-    const row = result.rows[0];
-    if (!row || row.retracted_rev !== null || !row.allowed || !row.matches || BigInt(row.tick) > BigInt(at))
-      return invalid('Fact input changed or is denied');
-    return valid();
-  }
+  if (input.kind === 'fact') return checkFactManifest(tx, [input], at, purpose);
   if (input.kind === 'slot') {
     const row = await checkDerivation(tx, input.derivationId, input.slotType, input.slotKey, at, purpose, visiting);
     if (!row) return invalid('Derivation input is invalid or denied');
@@ -147,18 +150,33 @@ async function checkInput(
   return valid(behind);
 }
 
-export async function readEffectiveSlotVersion<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string, pinnedId?: string) {
+async function effectiveSlotRow<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, pinnedId?: string, rejectSlotError = false) {
   if (slot.learner !== tx.learner) return undefined;
   const { rows: [row] } = await tx.query<{ id: string; value: Outcome<Value>; manifest: unknown; gather_tick: string }>(
     `SELECT d.id,d.value,d.manifest,d.gather_tick::text
        FROM slot_state s JOIN derivations d USING (learner_id,slot_type,slot_key)
       WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3 AND d.deriver=$4
-        AND d.effective_tick>=d.gather_tick AND NOT d.is_shadow AND d.invalidated_tick IS NULL
+        AND (NOT $6 OR s.last_error IS NULL) AND d.effective_tick>=d.gather_tick AND NOT d.is_shadow AND d.invalidated_tick IS NULL
         AND (($5::text IS NULL AND d.id=s.current_id AND d.lifecycle='effective'
               AND d.freshness='current' AND d.selection_ended_tick IS NULL)
           OR ($5 IS NOT NULL AND d.id=$5 AND d.lifecycle IN ('effective','superseded')))`,
-    [slot.learner, slot.type, slot.key, deriver, pinnedId ?? null],
+    [slot.learner, slot.type, slot.key, deriver, pinnedId ?? null, rejectSlotError],
   );
+  return row;
+}
+
+/** Read the settled outcome of exactly this current, error-free slot and purpose. */
+export async function readCurrentSlotOutcome<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string) {
+  const row = await effectiveSlotRow<Value>(tx, slot, deriver, undefined, true);
+  if (!row) return undefined;
+  const manifest = parseManifest(row.manifest);
+  if (manifest.purpose !== use || manifest.gatherTick !== row.gather_tick ||
+      (await revalidateManifest(tx,manifest)).kind !== 'valid') return undefined;
+  return {id:derivationId(row.id),slot,outcome:row.value};
+}
+
+export async function readEffectiveSlotVersion<Value>(tx: ReadTransaction, slot: SlotRef, deriver: string, use: string, pinnedId?: string) {
+  const row = await effectiveSlotRow<Value>(tx, slot, deriver, pinnedId);
   if (!row || row.value?.kind !== 'value') return undefined;
   const manifest = parseManifest(row.manifest);
   if (manifest.gatherTick !== row.gather_tick) return undefined;

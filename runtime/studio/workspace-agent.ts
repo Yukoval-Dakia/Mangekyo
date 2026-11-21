@@ -19,7 +19,8 @@ import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import {readLearnerRadar, readRetentionBasis, type RetentionBasis} from './learner-radar.ts';
 import {parseLearningReference, sourceReference, sourceRefV1, type SourceRefV1} from '../../modules/activity/source-values.ts';
 import {posttestSubmissionType} from '../../modules/activity/retention-posttest.ts';
-import {workbookAttemptType, workbookPaperType} from '../../modules/activity/workbook-values.ts';
+import {readFrozenWorkbookRecord} from '../../modules/activity/workbook-bank.ts';
+import {workbookAttemptType, workbookPaperType, WorkbookSourceMismatch} from '../../modules/activity/workbook-values.ts';
 import {goalType} from '../../modules/plan/goal-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
 import {organizerTaskType} from '../../modules/plan/organizer-task-values.ts';
@@ -196,16 +197,22 @@ export function openWorkspaceTools(options: {
     const current = await db.snapshot({learner: studioLearner}, async tx => {
       if (legacyWorkbookRead || (pythonAttempts && pythonAttemptsProjection !== 1)) return false;
       const reader = createAuthorizedFactReader(tx, purpose, options.maySend);
+      const bankWitnesses: WorkspaceWitness[] = [];
       let derivedSource = false;
       try {
         for (const witness of witnesses) {
           const fact = await reader.reopen({...workspaceInput(witness), type: witness.type});
-          await checkStudioNotionFact(tx,fact,purpose,options.maySend);
+          const sources = [fact];
+          await readFrozenWorkbookRecord(reader, fact, (source, mode) => {
+            sources.push(source);
+            bankWitnesses.push({id:source.ref.id, rev:source.ref.rev, epoch:source.accessEpoch, type:source.type, mode});
+          });
+          for (const source of sources) await checkStudioNotionFact(tx,source,purpose,options.maySend);
           if (fact.type === workspaceEntryType && ['observation','annotation'].includes(workspaceEntry(fact.value).kind))
             derivedSource = true;
         }
       } catch (error) {
-        if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return false;
+        if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch) return false;
         throw error;
       }
       if (derivedSource && sourceProjection !== 1)
@@ -222,6 +229,7 @@ export function openWorkspaceTools(options: {
       }
       const directOpen = name === 'open_learning' || (name === 'read_workspace' && value.sourceRef);
       for (const witness of witnesses) options.track(witness, pythonAttempts || derivedSource || intakeImage || directOpen ? true : undefined);
+      for (const witness of bankWitnesses) options.track(witness, true);
       for (const basis of trackedBasis) options.trackAssessment?.(basis);
       for (const basis of retentionBasis) options.trackRetention?.(basis);
       await options.authorize(tx);

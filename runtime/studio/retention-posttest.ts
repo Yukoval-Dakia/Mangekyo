@@ -32,11 +32,12 @@ async function optionalFact(read: ReadContext, id: FactId) {
   }
 }
 
-export async function readPosttestIssuance(tx: ReadTransaction, read: PosttestFactReader, id: FactId) {
+export async function readPosttestIssuance(tx: ReadTransaction, read: PosttestFactReader, id: FactId,
+  readBirth = readPosttestIssuanceBirth) {
   const fact = await read.fact(id, { mode: 'following' });
   if (fact.type !== posttestIssuanceType || fact.ref.rev !== 1) throw new RequestError(422, '需要原始后测发放记录。');
   const issuance = posttestIssuance(fact.value);
-  const birth = await readPosttestIssuanceBirth(tx, id);
+  const birth = await readBirth(tx, id);
   if (!birth || BigInt(birth.tick) <= BigInt(issuance.effectiveTick)) throw new RequestError(422, '后测缺少预测生效后的发放回执。');
   return { fact, issuance, tick: birth.tick };
 }

@@ -11,6 +11,7 @@ import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts'
 import { assertDeletionWatermark, deletionWatermark, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
+import { notionReadPlan, type CheckNotionRead } from '../../modules/capture/notion-read-plan.ts';
 import { notionReadPage, notionReadRows, notionConfirmPageAccess, NotionSourceUnavailable } from '../../modules/capture/notion-api.ts';
 import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, notionSelectionWitness, selectionChange, selectionGrant,
   readNotionSelection, type NotionSelection, type NotionReadOptions } from '../../modules/capture/notion-selection.ts';
@@ -60,8 +61,9 @@ export async function readStudioNotionSource(tx: ReadTransaction, sourceId: Fact
 
 export type NotionRecipient = ((fact: FactSnapshot) => boolean) & {notionRecipientId?: string};
 
-export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnapshot, purpose: string, recipient: NotionRecipient | 'learner') {
+export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnapshot, purpose: string, recipient: NotionRecipient | 'learner', reopen?: (fact: FactSnapshot) => Promise<FactSnapshot>) {
   if (fact.type !== captureSourceType || sourceEnvelope(fact.value).kind !== 'notion') return;
+  if (reopen) return reopen(fact);
   try {
     return await readStudioNotionSource(tx, fact.ref.id, {mode:'pinned', rev:fact.ref.rev},
       recipient === 'learner' ? {purpose,recipientId:tx.learner,maySend:() => true} : {purpose,recipientId:recipient.notionRecipientId ?? '',maySend:recipient});
@@ -102,11 +104,13 @@ function notionHost(db: Db, scope = learnerScope) {
     return selection;
   }
 
-  async function provider<T>(selection: NotionSelection, watermark: string, stream: Parameters<typeof connection.read<T>>[0], page?: string, rememberDenial = true) {
+  async function provider<T>(selection: NotionSelection, watermark: string, stream: Parameters<typeof connection.read<T>>[0],
+    page?: string, signal?: AbortSignal, rememberDenial = true) {
     const {id, selectionEpoch: epoch} = selection;
     try {
-      return await connection.read(stream, () => snapshot(tx => live(tx, id, epoch, watermark, page)));
+      return await connection.read(stream, () => snapshot(tx => live(tx, id, epoch, watermark, page)), signal);
     } catch (error) {
+      signal?.throwIfAborted();
       if (error instanceof NotionSourceUnavailable && error.invalidated) {
         if (!rememberDenial) throw error;
         const key = error.invalidated.kind === 'selection' ? 'root' : error.invalidated.pageId;
@@ -189,18 +193,15 @@ export class NotionReadUnconfirmed extends FactReadDeniedError {
   constructor() { super('recipient', '暂时无法确认 Notion 来源。'); }
 }
 
-export type CheckNotionRead = (fact: FactSnapshot) => Promise<void>;
+export class NotionReadUnchecked extends NotionReadUnconfirmed {}
+
+export type { CheckNotionRead } from '../../modules/capture/notion-read-plan.ts';
 type Projection<T, Tx = ReadTransaction> = (tx: Tx, check: CheckNotionRead) => Promise<T>;
 
 // A scope lasts for one projection (including any recall it mounts). No remote
 // authority carries over to a later HTTP request, stream refresh, or model send.
-export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false}: {readOnly?: boolean} = {}) {
+export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false, signal}: {readOnly?: boolean; signal?: AbortSignal} = {}) {
   const {snapshot, locked, provider} = notionHost(db, {learner});
-  type Authority = 'authorized' | 'withdrawn' | 'unconfirmed';
-  const pages = new Map<string, Authority>();
-  const witnesses = new Map<string, Authority>();
-  const withdrawnSelections = new Set<string>();
-
   async function pageFor(tx: ReadTransaction, fact: FactSnapshot) {
     if (fact.type !== captureSourceType) return;
     const source = sourceEnvelope(fact.value);
@@ -210,44 +211,32 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false}: 
     const selectionKey = JSON.stringify([page.selection.id, page.selection.selectionEpoch]);
     return {...page, key, selectionKey, witness: JSON.stringify([key, fact.ref.id, fact.ref.rev, fact.accessEpoch])};
   }
-
-  const check = (tx: ReadTransaction): CheckNotionRead => async fact => {
-    const page = await pageFor(tx, fact);
-    if (!page) return;
-    // A later page can invalidate earlier successful probes of the same selection.
-    const authority = withdrawnSelections.has(page.selectionKey) ? 'withdrawn' : witnesses.get(page.witness);
-    if (authority === 'withdrawn') throw new FactReadDeniedError('recipient', '未能确认 Notion 来源。');
-    if (authority !== 'authorized') throw new NotionReadUnconfirmed();
-  };
-
+  const planner = notionReadPlan<NonNullable<Awaited<ReturnType<typeof pageFor>>>>(async ({selection,pageId,watermark},abort) => {
+    try {
+      await provider(selection,watermark,notionConfirmPageAccess(selection.root,pageId),pageId,abort,!readOnly);
+      return 'authorized';
+    } catch (error) {
+      abort.throwIfAborted();
+      if (error instanceof NotionSourceUnavailable && error.invalidated)
+        return error.invalidated.kind === 'selection' ? 'selection-withdrawn' : 'withdrawn';
+      if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
+      return error instanceof RequestError && error.status===403 ? 'withdrawn' : 'unconfirmed';
+    }
+  }, status => status === undefined ? new NotionReadUnchecked() : status === 'withdrawn'
+    ? new FactReadDeniedError('recipient','未能确认 Notion 来源。') : new NotionReadUnconfirmed(),signal);
+  const check = (tx: ReadTransaction) => planner.reader(fact=>pageFor(tx,fact));
   async function read<T>(project: Projection<T>): Promise<T>;
   async function read<P, T>(project: Projection<P>, publish: Projection<T, DbTransaction>): Promise<T>;
   async function read<P, T>(project: Projection<P>, publish?: Projection<T, DbTransaction>): Promise<P | T> {
     if (readOnly && publish) throw new Error('A read-only Notion scope cannot publish');
-    const requested = new Map<string, NonNullable<Awaited<ReturnType<typeof pageFor>>>>();
-    const initial = await snapshot(tx => project(tx, async fact => {
-      const page = await pageFor(tx, fact);
-      if (page) requested.set(page.witness, page);
-    }));
-    if (!requested.size && !publish) return initial;
-    for (const {key, witness, selection, selectionKey, pageId, watermark} of requested.values()) {
-      if (withdrawnSelections.has(selectionKey)) continue;
-      if (!pages.has(key)) {
-        try {
-          await provider(selection, watermark, notionConfirmPageAccess(selection.root, pageId), pageId, !readOnly);
-          pages.set(key, 'authorized');
-        } catch (error) {
-          if (error instanceof NotionSourceUnavailable && error.invalidated) {
-            if (error.invalidated.kind === 'selection') withdrawnSelections.add(selectionKey);
-            pages.set(key, 'withdrawn');
-          } else {
-            if (!(error instanceof RequestError || error instanceof LifecycleError)) throw error;
-            pages.set(key, error instanceof RequestError && error.status === 403 ? 'withdrawn' : 'unconfirmed');
-          }
-        }
-      }
-      witnesses.set(witness, pages.get(key)!);
-    }
+    signal?.throwIfAborted();
+    const {initial,prepared} = await snapshot(async tx=>{
+      const prepared = planner.prepare(fact=>pageFor(tx,fact));
+      return {initial:await project(tx,prepared.collect),prepared};
+    });
+    signal?.throwIfAborted();
+    if (prepared.empty() && !publish) return initial;
+    await prepared.resolve();
     if (readOnly) {
       try {
         return await db.snapshot({learner},tx => project(tx,check(tx)),{lockLearner:true});
@@ -257,10 +246,36 @@ export function notionReadScope(db: Db, learner: LearnerId, {readOnly = false}: 
         throw error;
       }
     }
-    return locked<P | T>(tx => publish ? publish(tx, check(tx)) : project(tx, check(tx)));
+    return locked<P | T>(tx => {
+      signal?.throwIfAborted();
+      return publish ? publish(tx,check(tx)) : project(tx,check(tx));
+    });
   }
 
-  return {read, check};
+  async function publishAfterChecks<P,T>(
+    project: (tx: DbTransaction, check: CheckNotionRead, collect: boolean) => Promise<P>,
+    publish: (tx: DbTransaction, prepared: P) => Promise<T>,
+  ): Promise<T> {
+    if (readOnly) throw new Error('A read-only Notion scope cannot publish');
+    signal?.throwIfAborted();
+    const first = await locked(async tx => {
+      signal?.throwIfAborted();
+      const plan = planner.prepare(fact=>pageFor(tx,fact));
+      const prepared = await project(tx,plan.collect,true);
+      if (!plan.empty()) return {plan};
+      return {response:await publish(tx,prepared)};
+    });
+    if (!first.plan) return first.response;
+    // A remote check runs with no learner transaction or pool connection held.
+    signal?.throwIfAborted();
+    await first.plan.resolve();
+    return locked(async tx => {
+      signal?.throwIfAborted();
+      return publish(tx,await project(tx,check(tx),false));
+    });
+  }
+
+  return {read,check,publishAfterChecks};
 }
 
 export type NotionReadScope = ReturnType<typeof notionReadScope>;

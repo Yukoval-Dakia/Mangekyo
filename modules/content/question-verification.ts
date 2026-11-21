@@ -9,7 +9,7 @@ import {
 import { pageId, record, revision } from './parse.ts';
 import type { AnswerSlot } from './assessment-values.ts';
 import { publicAnswerControls } from './question-controls.ts';
-import { jsonObject, readQuestionEffect, sameEffectInput, type QuestionEffectReceipt, type SealedQuestionEffects } from './question-effects.ts';
+import { jsonObject, readQuestionVerificationEffect, sameEffectInput, verificationSteps, type QuestionEffectReceipt, type SealedQuestionEffects } from './question-effects.ts';
 import {
   evaluateQuestionVerification, questionVerificationMethodVersion, questionVerificationReview,
   type QuestionVerification, type QuestionVerificationBasis, type VerificationReceipt,
@@ -17,15 +17,8 @@ import {
 
 export { openQuestionForRelease, questionVerificationKey, questionVerificationMethodVersion, questionVerificationType } from './question-state.ts';
 export type { QuestionVerification, QuestionVerificationBasis } from './question-state.ts';
-export { questionEffectResult as questionVerificationEffectResult } from './question-effects.ts';
+export { questionVerificationEffectResult } from './question-effects.ts';
 export type { QuestionEffectReceipt as QuestionVerificationEffectReceipt } from './question-effects.ts';
-
-const steps = [
-  { stepKey: 'solve-1', label: 'question-independent-solve' },
-  { stepKey: 'solve-2', label: 'question-independent-solve' },
-  { stepKey: 'solve-3', label: 'question-independent-solve' },
-  { stepKey: 'contract', label: 'question-contract-validation' },
-] as const;
 
 type QuestionVerificationPlanData = QuestionVerificationBasis & { readonly blockedReason?: string };
 
@@ -52,7 +45,7 @@ export async function gather(
   // These inputs remain local until the host reapplies purpose, recipient and
   // spoiler checks to the current witnesses before dispatch or ledger replay.
   const publicInput = { ...projection.content, response_schema: slots, ref: { id, rev }, verification: data };
-  const effects: EffectRequest[] = steps.map(step => ({
+  const effects: EffectRequest[] = verificationSteps.map(step => ({
     ...step, input: step.stepKey === 'contract' ? { ...publicInput, contract } : publicInput,
   }));
   return { kind: 'input', data, effects };
@@ -154,23 +147,23 @@ export function settle(
 ): Outcome<QuestionVerification> {
   const basis = readBasis(sealed.plan.data);
   const review = (reason: string) => ({ kind: 'value' as const, value: questionVerificationReview(basis, reason) });
-  if (basis.methodVersion !== questionVerificationMethodVersion || sealed.plan.effects.length !== steps.length) {
+  if (basis.methodVersion !== questionVerificationMethodVersion || sealed.plan.effects.length !== verificationSteps.length) {
     const reason = jsonObject(sealed.plan.data) ? sealed.plan.data.blockedReason : undefined;
     return review(typeof reason === 'string' ? reason : '封存计划缺少当前方法的完整验题请求。');
   }
-  if (receipts.length !== steps.length) return review('验题效果回执缺失或重复。');
+  if (receipts.length !== verificationSteps.length) return review('验题效果回执缺失或重复。');
 
   const checks: VerificationReceipt[] = [];
-  for (const step of steps) {
+  for (const step of verificationSteps) {
     const request = sealed.plan.effects.find(effect => effect.stepKey === step.stepKey);
     if (!request || request.label !== step.label || !jsonObject(request.input) ||
         !request.input.verification || !sameEffectInput(request.input.verification, basis)) {
       return review('封存请求与题版或复验代次不一致。');
     }
     const receipt = receipts.find(entry => entry.request.stepKey === step.stepKey);
-    const checked = readQuestionEffect(sealed.id, request, receipt);
+    const checked = readQuestionVerificationEffect(sealed.id, request, receipt);
     if (checked.kind !== 'done') return review(checked.reason);
-    checks.push({ invocationId: checked.invocationId, result: checked.result });
+    checks.push({ invocationId: checked.invocationId, result: checked.result, execution: checked.execution });
   }
   return { kind: 'value', value: evaluateQuestionVerification(basis, checks) };
 }

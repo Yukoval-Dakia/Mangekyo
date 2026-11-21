@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
+import { intakeTextOf, materialTextOf } from '../../modules/activity/workspace-source-projection.ts';
 export { intakeTextOf, materialTextOf, textSlice } from '../../modules/activity/workspace-source-projection.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
-import { materialType, storagePurpose, textMaterial } from '../../modules/activity/library-values.ts';
+import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { intakeDocument, intakeFactType } from '../../modules/capture/intake-values.ts';
 import { isSourceFactId, sourceReference, type SourceAnchorV1 } from '../../modules/activity/source-values.ts';
 import { studyTurn, type studyAttachment } from '../../modules/activity/values.ts';
@@ -18,17 +19,17 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
     if (snapshot.type !== materialType) return null;
     const link = await materialIntakeLink(tx, snapshot.ref.id);
     if (!link) {
-      const material = textMaterial(snapshot.value);
+      const material = materialTextOf(snapshot);
       return {id, title: material.title, text: material.text, sourceRef: sourceReference(snapshot, {kind:'whole'})};
     }
     if (!link.matches) return null;
     const source = await read.fact(link.id, {mode: 'following'});
     if (!isMaterialIntakePair(snapshot.ref.id, source)) return null;
-    const document = intakeDocument(source.value);
+    const document = intakeTextOf(source);
     return {
       id,
       title: document.title,
-      text: document.extraction.text,
+      text: document.text,
       sourceRef: materialIntakeReference(snapshot, source, {kind:'whole'}),
     };
   } catch (error) {

@@ -1,4 +1,4 @@
-import { isJson, type Asset as KernelAsset, learnerId, type FactRef, type FactSnapshot, type JsonObject, type ReadContext } from '@mangekyo/kernel';
+import { isJson, type Asset as KernelAsset, learnerId, parseFactRevisionBasis, type FactRevisionBasis, type FactRef, type FactSnapshot, type JsonObject, type ReadContext } from '@mangekyo/kernel';
 import { bindQuestionAssessment } from './assessment-values.ts';
 import { parseKnowledgeEntity, type KnowledgeEntityKind } from './knowledge-entity.ts';
 import { fields, key, list, optionalKey, pageId, record, revision, text } from './parse.ts';
@@ -79,6 +79,7 @@ export type TextbookPage = TextbookPageState & {
 
 export type AssetBasis = { readonly id: FactRef['id']; readonly rev: FactRef['rev']; readonly epoch: string; readonly type: string };
 export type TextbookBasis = AssetBasis;
+const assetBasisLimit = 128;
 
 export function parseTextbookBasis(input: unknown): readonly TextbookBasis[] {
   const basis = list(input).map(item => {
@@ -88,7 +89,7 @@ export function parseTextbookBasis(input: unknown): readonly TextbookBasis[] {
     if (!/^(0|[1-9][0-9]*)$/.test(epoch)) throw new Error('依据授权版本无效。');
     return { id: pageId(value.id), rev: revision(value.rev), epoch, type: key(value.type) };
   });
-  if (basis.length > 128 || new Set(basis.map(item => `${item.id}:${item.rev}`)).size !== basis.length)
+  if (basis.length > assetBasisLimit || new Set(basis.map(item => `${item.id}:${item.rev}`)).size !== basis.length)
     throw new Error('教材依据重复或超过上限。');
   return basis;
 }
@@ -403,14 +404,61 @@ export function freezeQuestionAssessment(asset: QuestionAsset, { id, rev }: Pick
   }] };
 }
 
+type QuestionSource =
+  | ({ readonly mode: 'pinned' } & AssetBasis)
+  | ({ readonly mode: 'following' } & FactRevisionBasis);
+
+/** Frozen bank items expose their licensed question and source versions as Asset witnesses. */
+export function frozenBankQuestionBasis(input: unknown) {
+  const { sourceQuestionRef, sourceAccessEpoch, sourceBasis } = record(input);
+  const { id, rev } = record(sourceQuestionRef);
+  const [question] = parseTextbookBasis([{ id, rev, epoch: sourceAccessEpoch, type: assetType }]);
+  return [question!, ...parseTextbookBasis(sourceBasis)] as const;
+}
+
+function frozenWorkbookBasis(value: unknown): AssetBasis[] {
+  const { materialId, questions } = record(value);
+  if (materialId != null) throw new AssetBasisError('来源卷缺少材料的固定授权见证。');
+  return list(questions).flatMap(input => {
+    const item = record(input);
+    if (item.kind === 'bank') return frozenBankQuestionBasis(item);
+    if (item.sourceQuestionRef != null) throw new AssetBasisError('来源卷缺少题目的固定授权见证。');
+    return [];
+  });
+}
+
+function questionSources(fact: FactSnapshot): QuestionSource[] {
+  if (fact.type === 'activity.workspaceEntry') {
+    return list(record(fact.value).basis).map(input => ({ mode: 'following', ...parseFactRevisionBasis(input) }));
+  }
+  const basis = fact.type === assetType ? parseAsset(fact.value).basis
+    : fact.type === textbookPageType ? textbookPageFrom(fact).basis
+    : fact.type === 'activity.workbookPaper' ? frozenWorkbookBasis(fact.value)
+    : fact.type === 'activity.workbookAttempt' ? frozenWorkbookBasis(record(fact.value).paper) : undefined;
+  return (basis ?? []).map(source => ({ mode: 'pinned', ...source }));
+}
+
 export async function checkQuestionTeachingSources(read: AssetReader, asset: Pick<QuestionAsset, 'basis'>) {
-  for (const source of asset.basis ?? []) {
-    const pinned = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
-    const current = await read.fact(source.id, { mode: 'following' });
-    if (pinned.type !== source.type || pinned.accessEpoch !== source.epoch ||
-        ![pinned, current].every(opened => opened.purpose.includes('teaching') || opened.purpose.includes('all'))) {
-      throw new Error('题目来源未授权教学用途或依据已变化。');
-    }
+  const pending: QuestionSource[] = (asset.basis ?? []).map(source => ({ mode: 'pinned', ...source }));
+  const checked = new Map<string, FactSnapshot>();
+  const unavailable = () => new AssetBasisError('题目来源未授权教学用途或依据已变化。');
+
+  while (pending.length) {
+    const source = pending.pop()!;
+    const key = `${source.mode}:${source.id}:${source.rev}`;
+    const previous = checked.get(key);
+    if (!previous && checked.size >= assetBasisLimit) throw unavailable();
+    const fact = previous ?? await read.fact(source.id, source.mode === 'pinned'
+      ? { mode: 'pinned', rev: source.rev, requirePurpose: 'teaching' }
+      : { mode: 'following' });
+    if (fact.ref.id !== source.id || fact.ref.rev !== source.rev || fact.accessEpoch !== source.epoch ||
+        (source.mode === 'pinned' && fact.type !== source.type) ||
+        (!fact.purpose.includes('teaching') && !fact.purpose.includes('all'))) throw unavailable();
+    if (previous) continue;
+
+    checked.set(key, fact);
+    try { pending.push(...questionSources(fact)); }
+    catch { throw unavailable(); }
   }
 }
 
