@@ -51,5 +51,6 @@ temporal workflow update-options --workflow-id "$coordinator_id" \
   --versioning-override-build-id "$new_build_id"
 ```
 
-以 `temporal workflow describe` 核对原 run 已绑定目标构建，并用获准作答核对下一次唤醒。
+换绑请求成功后，用一份获准作答唤醒原工作流。待目标 Worker 完成一次 Workflow Task，
+再用 `temporal workflow describe` 核对 run ID 与换绑前一致、`deploymentVersion` 指向目标构建，并核对该作答的交付回执。
 旧试验设置缺少留存或单次价格授权，升级后仍可查账，恢复付费需由本人重新授权。
