@@ -7,7 +7,7 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learn
 import { openOrganizer } from '../../../runtime/studio/organizer.ts';
 import { studioLearner } from '../../../runtime/studio/identity.ts';
 import { loadStudioTestModule } from '../../../runtime/studio/test/modules.ts';
-import { applyCandidateInformation, planToday, sessionRule } from '../today.ts';
+import { applyCandidateInformation, planToday, projectPendingCorrectionCandidates, sessionRule } from '../today.ts';
 import { checkPack } from '../offline-pack.ts';
 
 const base = {now:'2026-11-18T11:00:00Z', timeZone:'Asia/Tokyo', constraints:{budget_min:20,locks:['fixed'],deadlines:[]}};
@@ -18,6 +18,69 @@ const fixed = make('fixed',4,0);
 const candidates = [fixed,make('convert',8,1),make('graph',8,.9),make('units',8,.4)];
 const school = {kind:'schoolwork',topic:'convert',date:'2026-11-19',minutes:12};
 const ids = plan=>plan.items.map(i=>i.candidate.id);
+
+const pendingSource = (paperId, overrides={}) => ({
+  paperId, paperRev:1, attemptId:paperId+'-attempt', attemptRev:1, title:'函数小测',
+  submittedAt:'2026-11-18T09:00:00Z',
+  items:[{itemId:'q1',outcome:'incorrect',source:'attempt',corrected:false,evidenceRef:'ev/q1'}],
+  ...overrides,
+});
+
+test('已提交试卷的待订正题项自动流向今天并尊重主权与闭环退场',()=>{
+  const source = pendingSource('paper-1',{items:[
+    {itemId:'q1',outcome:'incorrect',source:'attempt',corrected:false,evidenceRef:'ev/q1'},
+    {itemId:'q2',outcome:'partial',source:'rubric',corrected:false,evidenceRef:'ev/q2r'},
+    {itemId:'q3',outcome:'incorrect',source:'attempt',corrected:true,evidenceRef:'ev/q3'},
+  ]});
+  const [correction] = projectPendingCorrectionCandidates([source]);
+  assert.equal(correction.id,'correction:paper-1@1');
+  assert.equal(correction.title,'函数小测 · 错题订正');
+  assert.deepEqual([correction.kind,correction.minutes,correction.open],['review',6,{kind:'activity',id:'paper-1',rev:1}]);
+  assert.equal(correction.reason,'上次作答有 1 道错题与 1 道部分正确待订正。');
+  assert.deepEqual(correction.pendingCorrection,{incorrectCount:1,partialCount:1,itemIds:['q1','q2'],attemptId:'paper-1-attempt',attemptRev:1});
+  assert.ok(correction.evidence.includes('paper-1-attempt@1') && correction.evidence.includes('ev/q2r'));
+  // 同一 itemId 多来源合并：attempt 的 incorrect 不被 rubric 的 partial 软化。
+  const merged = projectPendingCorrectionCandidates([pendingSource('paper-m',{items:[
+    {itemId:'q1',outcome:'partial',source:'rubric',corrected:false,evidenceRef:'ev/q1r'},
+    {itemId:'q1',outcome:'incorrect',source:'attempt',corrected:false,evidenceRef:'ev/q1a'},
+  ]})])[0];
+  assert.deepEqual([merged.pendingCorrection.incorrectCount,merged.pendingCorrection.partialCount],[1,0]);
+  assert.ok(merged.evidence.includes('ev/q1a') && merged.evidence.includes('ev/q1r'));
+  // 同卷多次提交按最新 submittedAt 去重，不触发重复身份；旧 attempt 不另出候选。
+  const dup = projectPendingCorrectionCandidates([
+    pendingSource('paper-d',{attemptId:'old-attempt',submittedAt:'2026-11-17T09:00:00Z'}),
+    pendingSource('paper-d',{attemptId:'new-attempt',attemptRev:2,submittedAt:'2026-11-18T09:00:00Z'}),
+  ]);
+  assert.equal(dup.length,1);
+  assert.equal(dup[0].pendingCorrection.attemptId,'new-attempt');
+  const plan = planToday({...base,constraints:noLocks,candidates:[...dup,make('stale-paper',8,1)]});
+  assert.equal(ids(plan)[0],'correction:paper-d@1');
+  assert.match(plan.items[0].why.join(' '),/未订正/);
+  // 订正加权稳居静态示例包之上；全部订正后自动退场并诚实降级。
+  const withPack = planToday({...base,constraints:noLocks,candidates:projectPendingCorrectionCandidates([source])});
+  assert.equal(ids(withPack)[0],'correction:paper-1@1');
+  const cleared = projectPendingCorrectionCandidates([pendingSource('paper-1',{
+    items:[{itemId:'q1',outcome:'incorrect',source:'attempt',corrected:true,evidenceRef:'ev/q1'}]})]);
+  assert.equal(cleared.length,0);
+  const fallback = planToday({...base,constraints:noLocks,candidates:cleared});
+  assert.ok(ids(fallback).every(id=>id.startsWith('pack/')));
+  // 主权：defer/rest 生效，订正候选不越权。
+  const deferred = planToday({...base,constraints:noLocks,candidates:dup,
+    rules:[{kind:'defer',activityId:'correction:paper-d@1',until:'2026-11-20'}]});
+  assert.ok(!ids(deferred).includes('correction:paper-d@1'));
+  const rested = planToday({...base,constraints:noLocks,candidates:dup,rules:[{kind:'rest',date:'2026-11-18'}]});
+  assert.equal(ids(rested).length,0);
+  // 6 题以上大错题集估时封顶 15 分钟，适配默认预算未知(15 分钟)而不回落示例包。
+  const big = projectPendingCorrectionCandidates([pendingSource('paper-6',{items:Array.from({length:6},(_,i)=>({
+    itemId:'q'+(i+1),outcome:'incorrect',source:'attempt',corrected:false,evidenceRef:'ev/q'+(i+1)}))})]);
+  assert.deepEqual([big[0].minutes,ids(planToday({...base,constraints:{...noLocks,budget_min:null},candidates:big}))[0]],[15,'correction:paper-6@1']);
+  // 非法输入与非法摘要被拒绝。
+  assert.throws(()=>projectPendingCorrectionCandidates([pendingSource('bad',{paperRev:0})]),/超出范围/);
+  assert.throws(()=>projectPendingCorrectionCandidates([pendingSource('bad',{items:[{itemId:'q',outcome:'correct',source:'attempt',corrected:false,evidenceRef:'e'}]})]),/结果无效/);
+  assert.throws(()=>planToday({...base,candidates:[make('x',5,0,{pendingCorrection:{incorrectCount:0,partialCount:0,itemIds:['q'],attemptId:'a',attemptRev:1}})]}),/订正汇总为空/);
+  assert.throws(()=>planToday({...base,candidates:[make('x',5,0,{pendingCorrection:{incorrectCount:2,partialCount:0,itemIds:['q1','q1'],attemptId:'a',attemptRev:1}})]}),/汇总不一致/);
+  assert.throws(()=>planToday({...base,candidates:[make('x',5,0,{pendingCorrection:{incorrectCount:1,partialCount:0,itemIds:['q1','q2'],attemptId:'a',attemptRev:1}})]}),/汇总不一致/);
+});
 
 test('固定周三晚，明日作业取消时仅重排未开始项；跨日、长假和三战役',()=>{
   assert.equal(planToday({...base,constraints:{...noLocks,budget_min:0},candidates:[]}).items.length,0);
@@ -208,5 +271,33 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
     await assert.rejects(()=>handle(req('plan.saveRule',{id:exam.id,expectedRev:exam.rev,data:null})),/revision conflict/);
     await save('clear-exam',null,correctedExam);
     await assert.rejects(()=>read(exam.id));
+    // 改进包 C 实库验收：已提交微卷的未订正错题/部分正确自动流向今天。
+    const correctionPaper = await handle(req('activity.saveWorkbookPaper',
+      {id:String(30).padStart(26,'0'),data:{title:'实库订正卷',materialId:null,savedAt:new Date().toISOString(),
+        questions:[{id:'q1',kind:'numeric',prompt:'1 + 1 = ?',answer:2,tolerance:0,unit:null,explanation:null}]}}))
+      .then(receipt => receipt.wrote[0].id+'@1');
+    const attemptReceipt = await handle(req('activity.submitWorkbookAttempt',
+      {id:String(31).padStart(26,'0'),data:{paperId:correctionPaper.split('@')[0],requestId:'pg-attempt-1',
+        submittedAt:new Date().toISOString(),answers:{q1:'9'}}}));
+    const attempt = attemptReceipt.wrote[0];
+    const pendingView = projectPendingCorrectionCandidates([{
+      paperId:correctionPaper.split('@')[0],paperRev:1,attemptId:attempt.id,attemptRev:attempt.rev,
+      title:'实库订正卷',submittedAt:new Date().toISOString(),
+      items:[{itemId:'q1',outcome:'incorrect',source:'attempt',corrected:false,evidenceRef:attempt.id+'@'+attempt.rev}],
+    }]);
+    assert.equal(pendingView.length,1);
+    const pendingToday = planToday({...base,now:new Date().toISOString(),constraints:noLocks,candidates:pendingView});
+    assert.equal(ids(pendingToday)[0],'correction:'+correctionPaper);
+    assert.match(pendingToday.items[0].why.join(' '),/未订正/);
+    // 订正闭环事实写入后，投影退场并诚实降级。
+    await handle(req('activity.recordWorkbookCorrection',
+      {id:String(32).padStart(26,'0'),data:{paperId:correctionPaper.split('@')[0],
+        attempt:{id:attempt.id,rev:attempt.rev},itemId:'q1'}}));
+    const clearedView = projectPendingCorrectionCandidates([{
+      paperId:correctionPaper.split('@')[0],paperRev:1,attemptId:attempt.id,attemptRev:attempt.rev,
+      title:'实库订正卷',submittedAt:new Date().toISOString(),
+      items:[{itemId:'q1',outcome:'incorrect',source:'attempt',corrected:true,evidenceRef:attempt.id+'@'+attempt.rev}],
+    }]);
+    assert.equal(clearedView.length,0);
   }, {postgres: Boolean(testDatabaseUrl)});
 });

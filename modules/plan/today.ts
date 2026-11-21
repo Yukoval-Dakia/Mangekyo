@@ -1,9 +1,13 @@
 import type { CanonicalEvidenceSliceV1 } from '@mangekyo/kernel';
 import type { GoalStatus } from './goal-values.ts';
+import { pendingCorrectionSummary, type PendingCorrectionSummary } from './pending-corrections.ts';
 import { todayWarmupRules, type Campaign, type PlanRule } from './rules.ts';
 import { examForecast, reviewExamScore, type ExamScoreObservation, type FrozenExamForecast } from './exam-forecast.ts';
 import { packCandidates } from './offline-pack.ts';
 import { instant, integer, oneOf } from './validation.ts';
+
+export { projectPendingCorrectionCandidates } from './pending-corrections.ts';
+export type { PendingCorrectionItem, PendingCorrectionSource, PendingCorrectionSummary } from './pending-corrections.ts';
 
 type CandidateUncertainty =
   | { readonly kind: 'interval'; readonly low: number; readonly high: number }
@@ -34,6 +38,9 @@ export type PlanCandidate = {
   // Authorized result for this completed probe's frozen item in the current return round.
   // For a known result, evidence includes the submission/result witness.
   returnProbeResult?: 'correct' | 'incorrect' | 'unknown';
+  // Uncorrected wrong or partially-correct items from the latest submitted
+  // attempt on this frozen paper; the candidate retires once all are corrected.
+  pendingCorrection?: PendingCorrectionSummary;
   // From authorized content/issuance witnesses in the same planning snapshot.
   examPrep?:
     | { kind: 'archetype'; coveredQuestionCount: number }
@@ -246,6 +253,7 @@ export function planToday(input: TodayInput) {
       if (probability !== undefined && (!Number.isFinite(probability) || probability < 0 || probability > 1))
         throw new Error('预测或信息量超出范围。');
     if (c.examPrep?.kind === 'archetype') integer(c.examPrep.coveredQuestionCount, 1, Number.MAX_SAFE_INTEGER);
+    if (c.pendingCorrection !== undefined) pendingCorrectionSummary(c.pendingCorrection);
     catalog.set(c.id, c);
   }
   for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
@@ -429,6 +437,10 @@ export function planToday(input: TodayInput) {
       why.push('本轮摸底已独立答对「' + c.topic + '」，可把时间先给其他主题。');
     }
     if (c.open.kind === 'activity') score += 18;
+    if (c.pendingCorrection) {
+      score += 36;
+      why.push('已提交的作答还有未订正的错题或部分正确，先补上再学新内容。');
+    }
     if (c.goalId) {
       score += 12;
       why.push('对应当前学习目标。');
