@@ -1,9 +1,10 @@
-import { factId, isJson, type Asset as KernelAsset, type FactSnapshot, type JsonObject } from '@mangekyo/kernel';
+import { factId, isJson, type Asset as KernelAsset, type FactId, type FactSnapshot, type JsonObject } from '@mangekyo/kernel';
 import { parseAssetBlocks, type Block as AssetBlock, type ContentUnit } from '@mangekyo/module-content/facts/asset-contract';
 import { captureObject as object, captureText as text, sha256 } from './parse.ts';
 
 import { notionEpoch, notionRoot } from './notion-selection.ts';
 import type { NotionRoot } from './notion-api.ts';
+import { paperAssignment } from './paper-anchor.ts';
 
 export const captureSourceType = 'capture.source';
 export const captureSourceCommand = 'capture.ingest';
@@ -55,6 +56,8 @@ export type SourceEnvelope = {
   readonly transcriptConfirmed?: true;
   readonly retainAudio?: true;
   readonly urlReadConfirmed?: true;
+  readonly paperReturn?: ReturnType<typeof paperAssignment>;
+  readonly paperAnswerEdits?: readonly { readonly runId: FactId; readonly block: Block }[];
 };
 
 function timestamp(value: unknown): string {
@@ -138,6 +141,16 @@ export function sourceBlocks(input: unknown, kind: SourceKind, originals: readon
   return blocks;
 }
 
+export function validSourceCropPage(crop: Crop, originals: readonly Original[]) {
+  const mediaType = originals[crop.original]?.mediaType.split(';', 1)[0]?.trim().toLowerCase();
+  // Image frames are not document pages. TIFF may carry a multi-page scan.
+  return mediaType !== undefined && (crop.page === 1 || !mediaType.startsWith('image/') || mediaType === 'image/tiff');
+}
+
+export function requireSourceCropPage(crop: Crop | undefined, originals: readonly Original[]) {
+  if (crop && !validSourceCropPage(crop, originals)) throw new Error('单幅图片只支持原图第 1 页。');
+}
+
 export function sourceEnvelope(input: unknown): SourceEnvelope {
   const row = object(input);
   const kind = row.kind as SourceKind;
@@ -147,6 +160,9 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
   const asset = object(row.unit);
   if (asset.kind !== 'capture') throw new Error('原件内容单元无效。');
   const unit = { kind: 'capture' as const, title: text(asset.title, '内容标题', 240), blocks: sourceBlocks(asset.blocks, kind, originals) };
+  const paperReturn = row.paperReturn === undefined ? undefined : paperAssignment(row.paperReturn);
+  if (paperReturn && (kind !== 'paper-return' || !originals[paperReturn.original])) throw new Error('回收归属缺少原图。');
+  const paperAnswerEdits = row.paperAnswerEdits === undefined ? undefined : parsePaperAnswerEdits(row.paperAnswerEdits, kind, originals);
   const externalId = row.externalId === undefined ? undefined : text(row.externalId, '外部来源标识', 200);
   const sourceSelectionId = row.sourceSelectionId === undefined ? undefined : text(row.sourceSelectionId, '选源标识', 200);
   const sourceSelectionEpoch = row.sourceSelectionEpoch === undefined ? undefined : notionEpoch(row.sourceSelectionEpoch);
@@ -182,14 +198,31 @@ export function sourceEnvelope(input: unknown): SourceEnvelope {
     ...(sourceSelectionId === undefined ? {} : { sourceSelectionId }),
     ...(notionBlockRevisions === undefined ? {} : { notionBlockRevisions: notionBlockRevisions as Record<string, number> }),
     ...(url === undefined ? {} : { url }),
+    ...(paperReturn === undefined ? {} : { paperReturn }),
+    ...(paperAnswerEdits === undefined ? {} : { paperAnswerEdits }),
     ...(kind === 'voice' ? { transcriptConfirmed: true } : {}),
     ...(kind === 'voice' && row.retainAudio === true ? { retainAudio: true } : {}),
     ...(kind === 'url' && row.urlReadConfirmed === true ? { urlReadConfirmed: true } : {}),
   };
 }
 
+function parsePaperAnswerEdits(input: unknown, kind: SourceKind, originals: readonly Original[]) {
+  if (kind !== 'paper-return' || !Array.isArray(input)) throw new Error('纸卷作答更正无效。');
+  return input.map(entry => {
+    const { runId, block: raw } = object(entry);
+    const [block] = sourceBlocks([raw], kind, originals);
+    const body = block?.body;
+    if (!block || !body || body.layer !== 'handwriting' || !body.itemId || !body.slotId ||
+        (body.status === 'known' ? !body.sticky : body.clarification !== 'asked'))
+      throw new Error('纸卷作答更正缺少本人修订或题位。');
+    return { runId: factId(text(runId, '作答标识', 26)), block };
+  });
+}
+
 export function createSourceWrite(id: string, envelope: unknown, purpose: readonly string[] = ['storage']) {
   const data = sourceEnvelope(envelope);
+  if (data.paperAnswerEdits !== undefined) throw new Error('初次交入不能指定作答更正。');
+  for (const { body } of data.unit.blocks) requireSourceCropPage(body.crop_ref, data.originals);
   if (data.notionBlockRevisions !== undefined) throw new Error('初次交入不能指定 Notion 块版本。');
   if (!purpose.includes('storage') || purpose.includes('all')) throw new Error('原件用途须显式指定。');
   if (data.kind === 'url' && data.urlReadConfirmed && !purpose.includes('learning') && !purpose.includes('teaching'))
@@ -203,7 +236,8 @@ export function sourceInputWrite(input: unknown, confirmed: boolean) {
   const row = object(input);
   const purpose = row.purpose;
   if (purpose !== undefined && !Array.isArray(purpose)) throw new Error('原件用途无效。');
-  const write = createSourceWrite(text(row.id, '原件标识', 26), row.envelope,
+  const envelope = row.paperReturn === undefined ? row.envelope : { ...object(row.envelope), paperReturn: row.paperReturn };
+  const write = createSourceWrite(text(row.id, '原件标识', 26), envelope,
     purpose?.map(value => text(value, '原件用途', 100)));
   const needsConfirmation = write.data.kind === 'voice' || (write.data.kind === 'url' && write.data.urlReadConfirmed === true);
   if (needsConfirmation !== confirmed) {

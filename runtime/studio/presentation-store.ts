@@ -38,7 +38,7 @@ import { registerFormalAssessment } from './formal-assessment.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner, purpose, slotType } from './identity.ts';
-import { clientRequest, RequestError } from './sessions.ts';
+import { clientRequest, readTeachingTurn, RequestError } from './sessions.ts';
 import { notifySession } from './stream.ts';
 
 const load = (name: string) =>
@@ -73,8 +73,7 @@ export async function mountArtifact(
   }
   const data = await db.snapshot(scope, async (tx) => {
     const manifest = await authorize(tx);
-    const reader = createCommandReadContext(tx, purpose);
-    const turn = studyTurn((await reader.fact(factId(turnId), { mode: 'following' })).value);
+    const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
     // A replay keeps the original gather tick. The command compares all other inputs.
     const existing = await tx.query<{ tick: string }>(
       "SELECT data->'manifest'->>'gatherTick' AS tick FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1",
@@ -134,7 +133,7 @@ async function projectMount(
   if (source.type !== 'content.mountedArtifact' || source.ref.rev !== 1) throw new MountUnavailable('作品不可用。');
   const data = artifactMount(source.value);
   if (data.sessionId !== sessionId) throw new MountUnavailable('作品不属于本次对话。');
-  const turn = await reader.fact(data.turnId, { mode: 'following' });
+  const turn = await readTeachingTurn(tx, data.turnId);
   const submission = studyTurn(turn.value);
   if (submission.sessionId !== sessionId) throw new MountUnavailable('作品不属于本次对话。');
   const {

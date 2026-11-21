@@ -147,7 +147,8 @@ function variant(input: unknown): KnowledgeVariant {
 export function parseKnowledgeEdge(input: unknown): KnowledgeEdge {
   const value = record(input);
   fields(value, 'kind', 'from', 'to', 'sourceUses', 'scope', 'variant', 'verification', 'confidence');
-  const kind = knowledgeEdgeKinds.find(candidate => candidate === value.kind);
+  // The relation tool's canonical_archetype name uses the existing question → archetype edge.
+  const kind = value.kind === 'canonical_archetype' ? 'instance_of' : knowledgeEdgeKinds.find(candidate => candidate === value.kind);
   if (!kind) throw new Error('知识边类型无效。');
   const from = endpointInput(value.from);
   const to = endpointInput(value.to);
@@ -227,9 +228,10 @@ export function knowledgeUseKey(use: KnowledgeSourceUse): string {
   return `${use.id}:${use.rev}:${use.accessEpoch}`;
 }
 
-export async function readKnowledgeUse(ctx: AssetReadContext, use: KnowledgeSourceUse): Promise<FactSnapshot> {
-  const fact = await ctx.read.fact(use.id, { mode: 'pinned', rev: use.rev });
-  if (fact.ref.learner !== ctx.learner || fact.accessEpoch !== use.accessEpoch) {
+export async function readKnowledgeUse(ctx: AssetReadContext, use: KnowledgeSourceUse, requirePurpose?: string): Promise<FactSnapshot> {
+  const fact = await ctx.read.fact(use.id, { mode: 'pinned', rev: use.rev,
+    ...(requirePurpose === undefined ? {} : { requirePurpose }) });
+  if (fact.ref.learner !== ctx.learner || fact.ref.id !== use.id || fact.ref.rev !== use.rev || fact.accessEpoch !== use.accessEpoch) {
     throw new KnowledgeEdgeBasisError('来源访问代次已经变化。');
   }
   return fact;
@@ -272,6 +274,32 @@ export function edgePurposes(purpose: 'storage' | 'teaching', sources: readonly 
   return ['storage', 'teaching'];
 }
 
+async function verifiedEdgeBasis(ctx: AssetReadContext, edge: KnowledgeEdge) {
+  const facts = await verifyKnowledgeEdge(ctx, edge);
+  if (!edge.verification) return facts;
+  const { verification, ...claim } = edge;
+  const proof = await readKnowledgeUse(ctx, verification);
+  if (!matchingKnowledgeEdgeEvidence(proof, claim)) throw new KnowledgeEdgeBasisError('图谱核验证据失效。');
+  return [...facts, proof];
+}
+
+async function projectKnowledgeEndpoint(ctx: AssetReadContext, endpoint: KnowledgeEndpoint, fact: FactSnapshot) {
+  if (fact.type !== assetType ||
+      (endpoint.kind !== 'concept' && endpoint.kind !== 'method' && endpoint.kind !== 'archetype')) return endpoint;
+  const { snapshot, entity } = await openKnowledgeEntity(ctx.read, fact.ref.id);
+  if (entity.kind !== endpoint.kind || snapshot.ref.learner !== ctx.learner ||
+      (endpoint.blockId !== undefined && (snapshot.ref.id !== fact.ref.id || snapshot.ref.rev !== fact.ref.rev))) {
+    throw new KnowledgeEdgeBasisError('图谱端点重定向后类型或锚点不再有效。');
+  }
+  return { ...endpoint, sourceUse: { id: snapshot.ref.id, rev: snapshot.ref.rev, accessEpoch: snapshot.accessEpoch } };
+}
+
+async function projectKnowledgeEdge(ctx: AssetReadContext, edge: KnowledgeEdge, basis: readonly FactSnapshot[]) {
+  const project = (endpoint: KnowledgeEndpoint) => projectKnowledgeEndpoint(ctx, endpoint,
+    basis.find(fact => fact.ref.id === endpoint.sourceUse.id && fact.ref.rev === endpoint.sourceUse.rev)!);
+  return { ...edge, from: await project(edge.from), to: await project(edge.to) };
+}
+
 /** Opens only the edge candidates enumerated by the authorized bus query. */
 export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
   readonly root: KnowledgeEndpoint;
@@ -280,25 +308,20 @@ export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
   readonly hops: 1 | 2;
   readonly direction?: 'inbound' | 'outbound' | 'both';
   readonly acceptEdge?: (edge: KnowledgeEdge) => boolean;
+  /** Match an authorized pinned endpoint to the current root after checking continuity. */
+  readonly reopenFollowingRootAlias?: (endpoint: KnowledgeEndpoint) => Promise<boolean>;
   readonly uniquePaths?: boolean;
   readonly unavailable?: (error: unknown) => boolean;
 }) {
   if (input.edgeIds.length > 128 || (input.hops !== 1 && input.hops !== 2)) throw new Error('图谱展开超过上限。');
   const root = await readKnowledgeUse(ctx, input.root.sourceUse);
   if (knowledgeEndpointKind(root) !== input.root.kind) throw new KnowledgeEdgeBasisError('图谱起点类型不符。');
-  async function project(endpoint: KnowledgeEndpoint, fact: FactSnapshot) {
-    if (endpoint.blockId) await openAssetReference(ctx.read, {
-      fact: fact.ref, type: fact.type, anchor: { kind: 'block', blockId: endpoint.blockId },
-    });
-    if (fact.type === assetType) await checkTextbookBasis(ctx.read, parseAsset(fact.value).basis ?? []);
-    if (input.mode !== 'following' || fact.type !== assetType ||
-        (endpoint.kind !== 'concept' && endpoint.kind !== 'method' && endpoint.kind !== 'archetype')) return endpoint;
-    const canonical = await openKnowledgeEntity(ctx.read, fact.ref.id);
-    return { ...endpoint, sourceUse: {
-      id: canonical.snapshot.ref.id, rev: canonical.snapshot.ref.rev, accessEpoch: canonical.snapshot.accessEpoch,
-    } };
-  }
-  const projectedRoot = await project(input.root, root);
+  if (input.root.blockId) await openAssetReference(ctx.read, {
+    fact: root.ref, type: root.type, anchor: { kind: 'block', blockId: input.root.blockId },
+  });
+  if (root.type === assetType) await checkTextbookBasis(ctx.read, parseAsset(root.value).basis ?? []);
+  const following = input.mode === 'following';
+  const projectedRoot = following ? await projectKnowledgeEndpoint(ctx, input.root, root) : input.root;
   const nodeKey = (endpoint: KnowledgeEndpoint) => JSON.stringify([endpoint.sourceUse.id, endpoint.sourceUse.rev, endpoint.blockId ?? null]);
   async function openEdge(id: FactId) {
     try {
@@ -312,21 +335,11 @@ export async function walkKnowledgeEdges(ctx: AssetReadContext, input: {
         throw new KnowledgeEdgeBasisError('候选知识边不符合关系契约。', { cause: error });
       }
       if (input.acceptEdge && !input.acceptEdge(edge)) return undefined;
-      const basis = await verifyKnowledgeEdge(ctx, edge);
-      if (edge.verification) {
-        const { verification, ...claim } = edge;
-        const proof = await readKnowledgeUse(ctx, verification);
-        if (!matchingKnowledgeEdgeEvidence(proof, claim)) throw new KnowledgeEdgeBasisError('图谱核验证据失效。');
-      }
-      const snapshots = new Map(basis.map(source => [knowledgeUseKey({
-        id: source.ref.id, rev: source.ref.rev, accessEpoch: source.accessEpoch,
-      }), source]));
-      const endpoint = (end: KnowledgeEndpoint) => {
-        const snapshot = snapshots.get(knowledgeUseKey(end.sourceUse));
-        if (!snapshot) throw new KnowledgeEdgeBasisError('图谱端点依据缺失。');
-        return project(end, snapshot);
-      };
-      return { ref: fact.ref, accessEpoch: fact.accessEpoch, edge, from: await endpoint(edge.from), to: await endpoint(edge.to) };
+      const basis = await verifiedEdgeBasis(ctx, edge);
+      const projected = following ? await projectKnowledgeEdge(ctx, edge, basis) : edge;
+      const from = following && await input.reopenFollowingRootAlias?.(edge.from) ? projectedRoot : projected.from;
+      const to = following && await input.reopenFollowingRootAlias?.(edge.to) ? projectedRoot : projected.to;
+      return { ref: fact.ref, accessEpoch: fact.accessEpoch, edge: { ...projected, from, to }, from, to };
     } catch (error) {
       if (input.unavailable?.(error)) return undefined;
       throw error;
@@ -383,31 +396,24 @@ export async function openBusKnowledgeEdge(
   ctx: AssetReadContext, edge: KnowledgeEdge,
   revision: Pick<Edge<KnowledgeEndpoint, KnowledgeEdgeKind>, 'author' | 'sticky'>,
 ): Promise<Edge<KnowledgeEndpoint, KnowledgeEdgeKind>> {
-  const facts = await verifyKnowledgeEdge(ctx, edge);
+  const facts = await verifiedEdgeBasis(ctx, edge);
   const basis = facts.map(({ ref, type, accessEpoch }) => ({ ...ref, type, accessEpoch, mode: 'pinned' as const }));
-  if (edge.verification) {
-    const { verification, ...claim } = edge;
-    const proof = await readKnowledgeUse(ctx, verification);
-    if (!matchingKnowledgeEdgeEvidence(proof, claim)) throw new KnowledgeEdgeBasisError('图谱核验证据失效。');
-    basis.push({ ...proof.ref, type: proof.type, accessEpoch: proof.accessEpoch, mode: 'pinned' });
-  }
   return { ...revision, from_ref: edge.from, to_ref: edge.to, kind: edge.kind, basis, confidence: edge.confidence ?? null };
 }
 
-/** Reopen the relation itself at a fixed or current revision, together with its authorized evidence. */
+/** Following projects canonical endpoints. The snapshot and evidence keep their recorded identities. */
 export async function openKnowledgeEdgeRevision(
   ctx: AssetReadContext, id: FactId, options: Parameters<AssetReadContext['read']['fact']>[1],
 ) {
   const snapshot = await ctx.read.fact(id, options);
   if (snapshot.type !== knowledgeEdgeType) throw new KnowledgeEdgeBasisError('图谱边类型不符。');
   const edge = parseKnowledgeEdge(snapshot.value);
-  await verifyKnowledgeEdge(ctx, edge);
-  if (edge.verification) {
-    const { verification, ...claim } = edge;
-    const proof = await readKnowledgeUse(ctx, verification);
-    if (!matchingKnowledgeEdgeEvidence(proof, claim)) throw new KnowledgeEdgeBasisError('图谱核验证据失效。');
+  const basis = await verifiedEdgeBasis(ctx, edge);
+  const projected = options.mode === 'following' ? await projectKnowledgeEdge(ctx, edge, basis) : edge;
+  if (projected.from.sourceUse.id === projected.to.sourceUse.id && projected.from.blockId === projected.to.blockId) {
+    throw new KnowledgeEdgeBasisError('图谱边的两端已合并为同一实体。');
   }
-  return { snapshot, edge };
+  return { snapshot, edge: projected };
 }
 
 /** Direction names refer to the original from/to endpoints. Unknown exposure is ineligible. */

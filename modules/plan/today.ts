@@ -5,6 +5,10 @@ import { examForecast, reviewExamScore, type ExamScoreObservation, type FrozenEx
 import { packCandidates } from './offline-pack.ts';
 import { instant, integer, oneOf } from './validation.ts';
 
+type CandidateUncertainty =
+  | { readonly kind: 'interval'; readonly low: number; readonly high: number }
+  | { readonly kind: 'unknown'; readonly reason: string; readonly needed: string };
+
 export type PlanCandidate = {
   id: string;
   title: string;
@@ -20,6 +24,8 @@ export type PlanCandidate = {
   goalId?: string;
   retention?: number;
   information?: number;
+  uncertainty?: CandidateUncertainty;
+  excludedFromProbePool?: boolean;
   highConfidenceWrong?: boolean;
   refused?: boolean;
   state?: 'in-progress' | 'completed';
@@ -33,6 +39,26 @@ export type PlanCandidate = {
     | { kind: 'archetype'; coveredQuestionCount: number }
     | { kind: 'first-aid' | 'timed' };
 };
+
+// Call with the admitted pool from the same snapshot as these plan candidates.
+export function applyCandidateInformation(
+  candidates: readonly PlanCandidate[],
+  rankedCandidates: readonly { readonly ref: string; readonly info_gain: number; readonly uncertainty: CandidateUncertainty }[],
+  pool: CanonicalEvidenceSliceV1['candidate_pool'],
+): PlanCandidate[] {
+  const screened = new Set(pool.map(candidate => candidate.ref));
+  const information = new Map(rankedCandidates.map(row => [row.ref, row]));
+  const explicitIds = new Set(candidates.map(candidate => candidate.id));
+  const screenedPacks = packCandidates().filter(pack => screened.has(pack.id) && !explicitIds.has(pack.id));
+  return [...candidates, ...screenedPacks].map(candidate => {
+    if (!screened.has(candidate.id)) return candidate;
+    const row = information.get(candidate.id);
+    if (!row) return { ...candidate, excludedFromProbePool: true };
+    if (!candidate.open || candidate.refused || candidate.state || !candidate.evidence.length) return candidate;
+    return { ...candidate, excludedFromProbePool: false, information: row.info_gain, uncertainty: row.uncertainty };
+  });
+}
+
 export type TodayInput = {
   now: string;
   timeZone: string;
@@ -364,7 +390,7 @@ export function planToday(input: TodayInput) {
   for (const c of [...catalog.values()].sort((a, b) => a.id.localeCompare(b.id))) {
     if (
       !c.open ||
-      c.refused ||
+      c.refused || c.excludedFromProbePool ||
       !c.evidence.length ||
       c.state ||
       locked.has(c.id) ||
@@ -381,7 +407,11 @@ export function planToday(input: TodayInput) {
     const info = c.information ?? (c.retention === undefined ? 0 : 4 * c.retention * (1 - c.retention));
     const why = [c.reason];
     let score = 20 + 30 * info + (1 - (c.retention ?? 1)) * 12;
-    if (info > 0) why.push('本次辨别可补充对「' + c.topic + '」的判断。');
+    if (info > 0) {
+      why.push(c.uncertainty?.kind === 'unknown' && c.uncertainty.reason === 'missing-independent-scored-evidence'
+        ? '「' + c.topic + '」在这类题上的表现仍未知，可以先摸底。'
+        : '本次辨别可补充对「' + c.topic + '」的判断。');
+    }
     if (c.highConfidenceWrong && c.kind === 'counterexample') {
       score += 45;
       why.push('高信心错答后先做最小反例。');

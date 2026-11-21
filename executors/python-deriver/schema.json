@@ -5,6 +5,7 @@
     "learner/intervention-lift@1": "intervention-lift@1",
     "plan/exam-pacing@1": "plan/exam-pacing@1",
     "learner/cognition@3": "cognition@3",
+    "plan/information-gain@1": "plan/information-gain@1",
     "learner/cognition@2": "cognition@2",
     "learner/cognition@1": "cognition@1",
     "learner/retention-forecast@1": "dimensioned-retention@1"
@@ -198,6 +199,28 @@
         "est_min": { "type": "number", "exclusiveMinimum": 0 },
         "reason_code": { "$ref": "#/$defs/text" },
         "evidence_refs": { "$ref": "#/$defs/evidenceRefs" }
+      }
+    },
+    "informationGainResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method_version", "ranked_candidates"],
+      "properties": {
+        "method_version": { "enum": ["plan/information-gain@1"] },
+        "ranked_candidates": {
+          "type": "array", "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["ref", "est_min", "info_gain", "reason_code", "uncertainty"],
+            "properties": {
+              "ref": { "$ref": "#/$defs/text" },
+              "est_min": { "type": "number", "exclusiveMinimum": 0 },
+              "info_gain": { "$ref": "#/$defs/probability" },
+              "reason_code": { "enum": ["probe-unknown", "reduce-uncertainty"] },
+              "uncertainty": {
+                "anyOf": [{ "$ref": "#/$defs/intervalUncertainty" }, { "$ref": "#/$defs/unknownUncertainty" }]
+              }
+            }
+          }
+        }
       }
     },
     "anomaly": {

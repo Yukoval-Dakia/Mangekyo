@@ -7,7 +7,7 @@ import { withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { openOrganizer } from '../../../runtime/studio/organizer.ts';
 import { studioLearner } from '../../../runtime/studio/identity.ts';
 import { loadStudioTestModule } from '../../../runtime/studio/test/modules.ts';
-import { planToday, sessionRule } from '../today.ts';
+import { applyCandidateInformation, planToday, sessionRule } from '../today.ts';
 import { checkPack } from '../offline-pack.ts';
 
 const base = {now:'2026-11-18T11:00:00Z', timeZone:'Asia/Tokyo', constraints:{budget_min:20,locks:['fixed'],deadlines:[]}};
@@ -25,6 +25,8 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
   const after = planToday({...base,candidates});
   assert.deepEqual(ids(before),['graph','units']);
   assert.deepEqual(ids(after),['convert','graph']);
+  const screened = applyCandidateInformation(candidates, [], [{ref:'convert'}, {ref:'fixed'}]);
+  assert.deepEqual(ids(planToday({...base,candidates:screened})),['graph','units']);
   assert.deepEqual(before.protectedItems,after.protectedItems);
   assert.equal(before.totalMinutes,20);
   assert.equal(before.tradeoffs[0].activityId,'convert');
@@ -32,6 +34,8 @@ test('固定周三晚，明日作业取消时仅重排未开始项；跨日、�
   const next = {...base,now:'2026-11-18T15:01:00Z',constraints:noLocks};
   const session = sessionRule(base.now,base.timeZone,3,'tired');
   assert.equal(session.expiresAt,'2026-11-18T15:00:00.000Z');
+  const one = planToday({...next,candidates:applyCandidateInformation(candidates, [], [{ref:'pack/reading'}]),mode:'one-hand'});
+  assert.ok(!one.shortlist.includes('pack/reading'));
   const long = {...next,candidates:[make('forty-four',44,1),make('forty-five',45,1),make('hour',60,1,{input:'voice'})],
     constraints:{budget_min:60,locks:[],deadlines:[]},duration:'45min+'};
   for (const [mode,expected] of [['any',['forty-five','hour']],['voice',['hour']],['one-hand',[]]])

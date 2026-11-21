@@ -41,9 +41,23 @@ function references(value: unknown, field: string) {
   return parsed;
 }
 
+function parseHintLadder(input: unknown) {
+  const value = record(input);
+  fields(value, 'l1', 'l2', 'l3', 'worked_example', 'source_ref');
+  const l1 = bounded(value.l1, 'L1 方向轻推', 25);
+  if (/[\r\n\u2028\u2029]/u.test(l1)) throw new Error('L1 方向轻推须为单行。');
+  const workedExample = value.worked_example === undefined ? undefined : bounded(value.worked_example, 'L3 局部示范', 1600);
+  return {
+    l1, l2: bounded(value.l2, 'L2 关键第一步', 1600), l3: bounded(value.l3, 'L3 完整思路与参考解', 4000),
+    ...(workedExample === undefined ? {} : { worked_example: workedExample }),
+    source_ref: source(value.source_ref),
+  };
+}
+
 export function parseQuestionMetadata(input: unknown, allowEmpty = false) {
   const value = record(input);
-  fields(value, 'solutions', 'tags');
+  fields(value, 'solutions', 'tags', 'hint_ladder');
+  const ladder = value.hint_ladder === undefined ? undefined : parseHintLadder(value.hint_ladder);
   const solutions = array(value.solutions ?? [], 'solutions', 8).map(entry => {
     const solution = record(entry);
     fields(solution, 'method', 'explanation', 'source_ref', 'steps', 'hints', 'discriminator');
@@ -78,8 +92,9 @@ export function parseQuestionMetadata(input: unknown, allowEmpty = false) {
       ...(discriminator ? { contrast: discriminator } : {}),
     };
   });
-  if (!allowEmpty && !solutions.length && !tags.length) throw new QuestionAuthoringError('invalid_args', 'append_metadata', '请填写解法或术语标签。');
-  return { solutions, tags };
+  if (!allowEmpty && !solutions.length && !tags.length && !ladder)
+    throw new QuestionAuthoringError('invalid_args', 'append_metadata', '请填写解法、术语标签或三阶微提示。');
+  return { solutions, tags, ...(ladder === undefined ? {} : { hint_ladder: ladder }) };
 }
 
 function promptPatch(input: unknown) {

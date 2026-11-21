@@ -1,5 +1,7 @@
 import { FactNotFoundError, type FactId, type ReadContext, type Tick } from '@mangekyo/kernel';
 import { readCorrectionMicroVariant } from '@mangekyo/module-content/facts/correction-micro-variant';
+import { readArchetypeCoverage, readFrozenGradeQuestion } from '@mangekyo/module-content/facts/knowledge-reads';
+import { readTextbookBlockConcepts, readTextbookPulseQuestion, type TextbookPulseBlockProof, type TextbookPulseQuestionAccess } from '@mangekyo/module-content/facts/textbook-mastery-pulse';
 import { expect, test } from 'vitest';
 import { createAuthorizedFactReader, createCommandReadContext, FactReadDeniedError } from '../../../kernel/src/commands/reads.ts';
 import { readEffectiveSlotVersion } from '../../../kernel/src/derivations/revalidate.ts';
@@ -7,9 +9,61 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learn
 import { readActivityHelpEvents } from '../../activity/evidence-read.ts';
 import { projectHelpExposure } from '../../activity/help-exposure.ts';
 import { correctionMicroVariantFixture as fixture, seedCorrectionMicroVariant } from './fixtures/correction-micro-variant.ts';
+import { freezeQuestionAssessment, questionAsset } from '../asset.ts';
 
 const { learner, input, first, second, display } = fixture;
 const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
+
+test('counts distinct proven paper items and opens only the published grade version', () =>
+  withLearnerDatabase(learner, async db => {
+    await seedCorrectionMicroVariant(db);
+    await db.snapshot({ learner }, async tx => {
+      const accessEpoch = input.source.accessEpoch;
+      const access = (deny?: FactId) => ({ learner, purpose: 'teaching', recipient: 'grader', isUnavailable: unavailable,
+        read: createAuthorizedFactReader(tx, 'teaching', fact => fact.ref.id !== deny) });
+      const membershipIds = input.archetypeEdgeIds;
+      for (const edgeId of fixture.blockEdges.edgeIds) {
+        const started = performance.now();
+        expect(await readTextbookBlockConcepts(access(), { block: fixture.block, edges: { complete: true, edgeIds: [edgeId] } }))
+          .toEqual({ block: fixture.block, conceptIds: [fixture.concept] });
+        expect(performance.now() - started).toBeLessThan(150);
+      }
+      expect(await readTextbookBlockConcepts(access(fixture.block.id), { block: fixture.block, edges: fixture.blockEdges })).toBeUndefined();
+      const proof: TextbookPulseBlockProof[] = [];
+      const project = (deny?: FactId, edges = fixture.blockEdges) => readTextbookBlockConcepts(access(deny), {
+        block: fixture.block, edges,
+      }, entry => proof.push(entry));
+      expect(await project()).toMatchObject({ conceptIds: [fixture.concept] });
+      expect(proof[0]?.concepts.map(link => link.edge.id)).toEqual(fixture.blockEdges.edgeIds);
+      expect(proof[0]?.concepts.every(link => link.basis.some(ref => ref.id === fixture.concept))).toBe(true);
+      expect(await project(fixture.blockEdges.edgeIds[0])).toMatchObject({ conceptIds: [fixture.concept] });
+      expect(proof[1]?.concepts.map(link => link.edge.id)).toEqual(fixture.blockEdges.edgeIds.slice(1));
+      expect(await project(undefined, { complete: true, edgeIds: [] })).toMatchObject({ conceptIds: [] });
+      expect(await project(undefined, { ...fixture.blockEdges, complete: false })).toBeUndefined();
+      const coverage = (complete = true, deny?: FactId, missing?: FactId, scope = 'average-speed') => readArchetypeCoverage(access(deny), {
+        archetype: { ...fixture.archetype, accessEpoch }, scope,
+        memberships: { complete, edgeIds: [...membershipIds, membershipIds[0]] },
+        variants: { complete: true, edgeIds: input.variantEdgeIds },
+      }, async ({ id }) => id === missing ? undefined : { kind: 'original', key: id === second.id ? 'paper-b:q2' : 'paper-a:q1' });
+      expect(await coverage()).toMatchObject({ coveredQuestionCount: 2, variationDimensions: [
+        { dimension: '第二段时长', evidence: { id: input.variantEdgeIds[1] } },
+      ] });
+      expect(await coverage(true, undefined, undefined, ' average-speed ')).toEqual(await coverage());
+      expect(await coverage(true, undefined, undefined, ' ')).toBeUndefined();
+      expect(await coverage(false)).toBeUndefined();
+      expect(await coverage(true, second.id)).toBeUndefined();
+      expect(await coverage(true, undefined, second.id)).toBeUndefined();
+      const fact = await access().read.fact(first.id, { mode: 'pinned', rev: first.rev });
+      const published = freezeQuestionAssessment(questionAsset(fact.value), first);
+      const grade = (question = first, deny?: FactId) => readFrozenGradeQuestion(access(deny), {
+        question: { ...question, accessEpoch }, release: first, itemId: 'question',
+      }, async () => published);
+      expect(await grade()).toMatchObject({ item: published.items[0], prompt: { prompt: expect.stringContaining('平均速度') } });
+      expect(JSON.stringify(await grade())).not.toContain('PRIVATE SOLUTION');
+      expect(await grade(second)).toBeUndefined();
+      expect(await grade(first, first.id)).toBeUndefined();
+    });
+  }, { postgres: Boolean(testDatabaseUrl) }), 20_000);
 
 test('selects one current unexposed numbers-only variant using a read-only snapshot', () =>
   withLearnerDatabase(learner, async db => {
@@ -21,12 +75,13 @@ test('selects one current unexposed numbers-only variant using a read-only snaps
       coverage?: boolean;
       cutoff?: Tick;
       failSlots?: boolean;
+      pulse?: number | 'absent' | 'stale';
     } = {}, patch: Partial<Parameters<typeof readCorrectionMicroVariant>[1]> = {}) => db.snapshot({ learner }, async tx => {
       expect((await tx.query('SHOW transaction_read_only')).rows).toEqual([{ transaction_read_only: 'on' }]);
       const cutoff = options.cutoff ?? String(BigInt(displayTick) + 1n) as Tick;
       const readFact = (purpose: string) =>
         createAuthorizedFactReader(tx, purpose, fact => fact.ref.id !== options.deny).fact as ReadContext['fact'];
-      return readCorrectionMicroVariant({
+      const access: TextbookPulseQuestionAccess = {
         learner, purpose: 'teaching', recipient: learner, releaseUses: ['diagnose'], isUnavailable: unavailable,
         read: { fact: readFact('teaching'), async slot<Value>(ref: Parameters<ReadContext['slot']>[0]) {
           if (options.failSlots) throw new Error('verification read offline');
@@ -45,7 +100,15 @@ test('selects one current unexposed numbers-only variant using a read-only snaps
           return projectHelpExposure({ submission: { ref: candidate, target, cutoff }, events,
             coverage: options.coverage !== false && !omitted ? { submission: candidate, target, through: cutoff } : null });
         },
-      }, { ...input, ...patch });
+        async readDuration(question) {
+          if (options.pulse === 'absent') return undefined;
+          if (options.pulse === 'stale') return { question: { ...question, accessEpoch: '1' as Tick }, upperMs: 1000 };
+          return { question, upperMs: question.id === first.id ? options.pulse ?? 1000 : 120_000 };
+        },
+      };
+      const { source, ...edges } = { ...input, ...patch };
+      return options.pulse === undefined ? readCorrectionMicroVariant(access, { source, ...edges })
+        : readTextbookPulseQuestion(access, { ...edges, complete: true, conceptId: fixture.concept, targetEdges: fixture.targetEdges });
     });
 
     const [firstEdge, secondEdge] = input.variantEdgeIds;
@@ -53,6 +116,11 @@ test('selects one current unexposed numbers-only variant using a read-only snaps
     expect(await open({ cutoff: displayTick })).toEqual(first);
     expect(await open({ cutoff: displayTick }, { variantEdgeIds: [secondEdge, firstEdge] })).toEqual(first);
     expect(await open()).toEqual(second);
+    const started = performance.now();
+    expect(await open({ cutoff: displayTick, pulse: 120_001 })).toEqual(second);
+    expect(performance.now() - started).toBeLessThan(150);
+    for (const pulse of ['absent', 'stale'] as const) expect(await open({ pulse })).toBeUndefined();
+    expect(await open({ pulse: 1000, coverage: false })).toBeUndefined();
     expect(await open({}, onlyFirst)).toBeUndefined();
     expect(await open({ deny: second.id })).toBeUndefined();
     expect(await open({ deny: input.archetypeEdgeIds[2] })).toBeUndefined();
@@ -73,6 +141,7 @@ test('selects one current unexposed numbers-only variant using a read-only snaps
       await db.query("UPDATE fact_revs SET data=jsonb_set(data,ARRAY['variant',$2],to_jsonb($3::text)) WHERE fact_id=$1",
         [secondEdge, field, value]);
       expect(await open(), value).toEqual(expected);
+      if (value === 'former') expect(await open({ pulse: 1000 })).toBeUndefined();
     }
 
     await command('content.disposeQuestion', { id: first.id, expectedRev: first.rev, stateRev: 1,
@@ -84,5 +153,5 @@ test('selects one current unexposed numbers-only variant using a read-only snaps
     await db.query("UPDATE facts SET purpose='{storage}' WHERE id=$1", [second.id]);
     expect(await open()).toBeUndefined();
     await db.query("UPDATE facts SET purpose='{storage,teaching}', access_epoch=1 WHERE id=$1", [second.id]);
-    expect(await open()).toBeUndefined();
+    expect(await open({ pulse: 1000 })).toBeUndefined();
   }, { postgres: Boolean(testDatabaseUrl) }), 20_000);

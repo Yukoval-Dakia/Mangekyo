@@ -14,9 +14,10 @@ import { printedWorkbookPresentation, recordWorkbookPresentationCommand, Workboo
 import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { layeredExtractionDeriver, layeredExtractionSlot, type LayeredExtractionValue } from '../../modules/capture/extraction.ts';
 import {
-  bindPaperCommandRead, collectPaperInput, collectPaperWrites, defaultPaperRunId, paperCollectionReceipt, paperIssuance, paperIssuanceId,
-  paperIssuanceType, paperReturnSelection, paperReturnView, paperRun, paperRunType, projectIssuedPaper, projectNewPaper,
-  readPaperDisplayInput, readPaperReprintInput, validPaperReturnIndices, type PaperExtractionReader, type PaperIssuance,
+  bindPaperCommandRead, checkedPaperIssuance, collectPaperInput, collectPaperWrites, defaultPaperRunId, newPaperIssuance,
+  openIssuedPaper, paperCollectionReceipt, paperIssuanceType, paperReturnSelection, paperReturnView, paperRun, paperRunType,
+  projectNewPaper, readPaperDisplayInput, readPaperReprintInput, resolvePaperIssue, validPaperReturnIndices,
+  type PaperExtractionReader, type PaperIssuance,
 } from '../../modules/capture/paper.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { AssetBasisError, assetType, textbookPageType } from '../../modules/content/asset.ts';
@@ -77,9 +78,8 @@ async function readIssuance(tx: ReadTransaction, read: ReadContext, id: FactId,
   fact?: FactSnapshot) {
   const stored = fact ?? await read.fact(id, { mode: 'following' });
   if (stored.type !== paperIssuanceType || stored.ref.rev !== 1) throw new RequestError(404, '找不到已发行纸卷。');
-  const issue = paperIssuance(stored.value);
-  if (await paperIssuanceId(issue) !== id) throw new RequestError(409, conflict);
-  return { issue, source: await admitSource(tx, read, issue) };
+  const issue = await checkedPaperIssuance(stored, id);
+  return { id, issue, source: await admitSource(tx, read, issue) };
 }
 
 function input<T>(parse: () => T): T {
@@ -144,8 +144,8 @@ async function listPapers(tx: ReadTransaction) {
     if (!fact) continue;
     if (fact.type === paperIssuanceType) {
       const paper = await ifAvailable(async () => {
-        const { issue } = await readIssuance(tx, read, id, fact);
-        return projectIssuedPaper(read, issue);
+        await readIssuance(tx, read, id, fact);
+        return openIssuedPaper(read, id);
       });
       if (paper) issued.push({ issuanceId: paper.issuanceId, title: paper.title, pageCount: paper.pages.length });
     } else {
@@ -177,18 +177,18 @@ async function collect(read: ReadContext, command: PaperCommand, data: Collect) 
   return {run,receipt:paperCollectionReceipt(data, runId, run.ref.rev)};
 }
 
-async function present(read: ReadContext, command: PaperCommand, { issue, source }: Awaited<ReturnType<typeof readIssuance>>,
+async function present(read: ReadContext, command: PaperCommand, { id, issue, source }: Awaited<ReturnType<typeof readIssuance>>,
   permit?: FactId) {
-  const printed = await projectIssuedPaper(read, issue);
+  const printed = await openIssuedPaper(read, id);
   if (source.type !== workbookPaperType) {
     if (permit) throw new RequestError(409, conflict);
     return { ...printed, presentation: null };
   }
   // The learner lock commits the #65 permit before the HTTP response can carry these prompts.
   const data = printedWorkbookPresentation(issue.source, printed, permit);
-  const id = commandId(stableId(recordWorkbookPresentationCommand, canonicalJsonString(data)));
-  await command(recordWorkbookPresentationCommand, { id, data }, id);
-  return { ...printed, presentation: { paper: data.paper, items: data.items, permit: id } };
+  const presentationId = commandId(stableId(recordWorkbookPresentationCommand, canonicalJsonString(data)));
+  await command(recordWorkbookPresentationCommand, { id: presentationId, data }, presentationId);
+  return { ...printed, presentation: { paper: data.paper, items: data.items, permit: presentationId } };
 }
 
 export function openCapturePapers(db: Db, capture: LoadedModule, activity: LoadedModule, hooks: CommandHooks) {
@@ -209,17 +209,11 @@ export function openCapturePapers(db: Db, capture: LoadedModule, activity: Loade
   return {
     list: () => db.snapshot(scope, listPapers),
     async issue(body: Record<string, unknown>) {
-      const issue = input(() => paperIssuance(body));
-      const id = await paperIssuanceId(issue);
+      const issue = input(() => newPaperIssuance(body));
       return write(async (read, command, tx) => {
-        let existing: FactSnapshot | undefined;
-        try { existing = await read.fact(id, { mode: 'following' }); }
-        catch (error) { if (!(error instanceof FactNotFoundError)) throw error; }
-        if (existing) return present(read, command, await readIssuance(tx, read, id, existing));
-        const current = await read.fact(issue.source.id, { mode: 'following' });
-        if (current.ref.rev !== issue.source.rev || current.accessEpoch !== issue.epoch) throw new RequestError(409, conflict);
         await admitSource(tx, read, issue);
-        await command('capture.issuePaper', issue);
+        const { printed: { issuanceId: id }, existing } = await resolvePaperIssue(read, issue);
+        if (!existing) await command('capture.issuePaper', issue, commandId(stableId('capture.issuePaper', id)));
         return present(read, command, await readIssuance(tx, read, id));
       });
     },
