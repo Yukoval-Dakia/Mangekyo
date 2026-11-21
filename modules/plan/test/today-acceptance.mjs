@@ -154,6 +154,24 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
       assert.deepEqual(ids(view).sort(),expected.sort());
       if (campaign==='recovery') assert.equal(view.scoreReview.kind,'unknown');
     }
+    const date = '2026-11-29', timeZone = 'Asia/Tokyo';
+    const open = (await today()).items.find(i=>i.candidate.id===paper).candidate.open;
+    const warmup = {kind:'lock',date,activityId:paper,warmup:{timeZone,open}};
+    await save('next-ordinary-lock',{kind:'lock',date,activityId:pinned});
+    const anchor = await save('next-warmup',warmup);
+    const isPinned = async params => (await today(params)).protectedItems.map(c=>c.id);
+    assert.deepEqual(await isPinned(),[]);
+    t.mock.timers.setTime(Date.parse(date+'T05:00:00Z'));
+    assert.deepEqual(await isPinned({timeZone:'UTC'}),[pinned]);
+    const tomorrow = await today();
+    assert.deepEqual(tomorrow.protectedItems.map(c=>c.id),[paper,pinned]);
+    assert.ok(!tomorrow.shortlist.includes(paper));
+    await save('next-rest',{kind:'rest',date});
+    assert.deepEqual(await isPinned(),[paper,pinned]);
+    const stale = await save('warmup-stale',{...warmup,warmup:{timeZone,open:{...open,rev:2}}},anchor);
+    assert.deepEqual(await isPinned(),[pinned]);
+    await save('warmup-clear',null,await save('warmup-restore',warmup,stale));
+    assert.deepEqual(await isPinned(),[pinned]);
     const deriver = modules[0].derivers.get('plan/today');
     const input = {...base,constraints:noLocks,candidates:[]};
     const gathered = await gatherSnapshot(db,{learner,purpose:'storage'},ctx=>deriver.gather(ctx,async()=>input));

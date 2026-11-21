@@ -1,6 +1,6 @@
 import type { CanonicalEvidenceSliceV1 } from '@mangekyo/kernel';
 import type { GoalStatus } from './goal-values.ts';
-import type { Campaign, PlanRule } from './rules.ts';
+import { todayWarmupRules, type Campaign, type PlanRule } from './rules.ts';
 import { examForecast, reviewExamScore, type ExamScoreObservation, type FrozenExamForecast } from './exam-forecast.ts';
 import { packCandidates } from './offline-pack.ts';
 import { instant, integer, oneOf } from './validation.ts';
@@ -196,7 +196,18 @@ function bundle(pool: Ranked[], minutes: number, limit: number, windows: number[
 
 export function planToday(input: TodayInput) {
   const { day, minute } = localClock(input.now, input.timeZone);
-  const rules = input.rules ?? [];
+  const catalog = new Map<string, PlanCandidate>();
+  for (const c of input.candidates) {
+    if (catalog.has(c.id)) throw new Error('活动身份重复。');
+    integer(c.minutes, 1, 1440);
+    for (const probability of [c.retention, c.information])
+      if (probability !== undefined && (!Number.isFinite(probability) || probability < 0 || probability > 1))
+        throw new Error('预测或信息量超出范围。');
+    if (c.examPrep?.kind === 'archetype') integer(c.examPrep.coveredQuestionCount, 1, Number.MAX_SAFE_INTEGER);
+    catalog.set(c.id, c);
+  }
+  for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
+  const { rules, warmup } = todayWarmupRules(input.rules ?? [], day, input.timeZone, [...catalog.values()]);
   const { exam, campaign } = examPolicy(rules, day);
   const returning =
     !!input.lastOpenedAt && days(localClock(input.lastOpenedAt, input.timeZone).day, day) >= 21;
@@ -251,20 +262,11 @@ export function planToday(input: TodayInput) {
     ...d,
     day: localClock(d.at, input.timeZone).day,
   }));
-  const catalog = new Map<string, PlanCandidate>();
-  for (const c of input.candidates) {
-    if (catalog.has(c.id)) throw new Error('活动身份重复。');
-    integer(c.minutes, 1, 1440);
-    for (const probability of [c.retention, c.information])
-      if (probability !== undefined && (!Number.isFinite(probability) || probability < 0 || probability > 1))
-        throw new Error('预测或信息量超出范围。');
-    if (c.examPrep?.kind === 'archetype') integer(c.examPrep.coveredQuestionCount, 1, Number.MAX_SAFE_INTEGER);
-    catalog.set(c.id, c);
-  }
-  for (const c of packCandidates()) if (!catalog.has(c.id)) catalog.set(c.id, c);
   const protectedItems = [...catalog.values()].filter(
     (c) => locked.has(c.id) || c.state === 'in-progress' || (c.state === 'completed' && c.date === day),
   );
+  const warmupIndex = protectedItems.findIndex((c) => c.id === warmup && c.state !== 'completed');
+  if (warmupIndex > 0) protectedItems.unshift(...protectedItems.splice(warmupIndex, 1));
   const protectedIds = new Set(protectedItems.map((c) => c.id));
   // A refresh with the same return timestamp must still account for submitted probes.
   const checkedTopics = new Set(protectedItems
