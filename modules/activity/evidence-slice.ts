@@ -42,21 +42,26 @@ export function activityEvidenceSlice(
   };
 }
 
-export function retentionExposure(observed: HelpExposureEvidence) {
+export function retentionExposure(observed: HelpExposureEvidence, level?: 'hint_l1' | 'hint_l2') {
   if (observed.kind === 'unexposed') return { kind: 'independent' as const };
   if (observed.kind === 'exposed') return {
     kind: 'exposed' as const, refs: observed.evidenceRefs.map(({ id, rev }) => ({ id, rev })),
+    ...(level ? { level } : {}),
   };
   return { kind: 'unknown' as const, reason: observed.reason };
 }
 
 export function activityHelpProcess(observed: HelpExposureEvidence, events: readonly AdmittedHelpEvent[]) {
-  const evidence = events.filter(({ ref }) => observed.evidenceRefs.some(use => use.id === ref.id && use.rev === ref.rev));
-  const helpLevel = observed.kind === 'unexposed' ? 'independent' as const
-    : observed.kind === 'unknown' ? 'unknown' as const
-    : evidence.some(({ value }) => value.kind === 'displayed' && value.step.kind === 'solution')
-      ? 'solution_seen' as const : 'hinted' as const;
-  return { exposure: retentionExposure(observed), helpLevel };
+  const displayed = new Set(events.flatMap(({ ref, value }) => value.kind === 'displayed' &&
+    observed.evidenceRefs.some(use => use.learner === ref.learner && use.id === ref.id && use.rev === ref.rev)
+    ? [value.step.kind] : []));
+  const ungraded = displayed.has('hint') || displayed.has('explanation') || displayed.has('worked-example');
+  const level = ungraded || displayed.has('solution') ? undefined
+    : displayed.has('hint_l2') ? 'hint_l2' : displayed.has('hint_l1') ? 'hint_l1' : undefined;
+  const helpLevel: ActivityEvidenceObservation['helpLevel'] = observed.kind === 'unexposed' ? 'independent'
+    : observed.kind === 'unknown' ? 'unknown'
+    : displayed.has('solution') ? 'solution_seen' : level ?? 'hinted';
+  return { exposure: retentionExposure(observed, level), helpLevel };
 }
 
 export function controlledWorkbookHelp(

@@ -1,6 +1,8 @@
 import { factId, learnerId, type Revision, type Tick } from '@mangekyo/kernel';
 import { expect, test } from 'vitest';
+import { activityEvidenceSlice, activityHelpProcess } from './evidence-slice.ts';
 import { projectHelpExposure } from './help-exposure.ts';
+import { helpExposure } from './help-exposure-values.ts';
 
 const ref = (id: string) => ({ id: factId(id.padStart(26, '0')), rev: 1 as Revision });
 const learner = learnerId(ref('1').id);
@@ -18,4 +20,25 @@ test('按实际展示的范围、录入顺序和观测覆盖投影证据', () =>
     .toEqual({ kind: 'exposed', evidenceRefs: [shown.ref] });
   expect(projectHelpExposure({ submission, coverage, events: [prepared, late] }).kind).toBe('unexposed');
   expect(projectHelpExposure({ submission, coverage: null, events: [] }).kind).toBe('unknown');
+});
+
+test('分级切片只使用交卷之前实际绘制的提示档次', () => {
+  const first = { ...shown, value: helpExposure({ ...example, kind: 'displayed', step: { kind: 'hint_l1', order: 1 } }) };
+  const second = { ...shown, ref: late.ref,
+    value: helpExposure({ ...example, kind: 'displayed', step: { kind: 'hint_l2', order: 2 } }) };
+  const project = (events: typeof first[]) => activityHelpProcess(projectHelpExposure({ submission, coverage, events }), events);
+  expect(project([first]).helpLevel).toBe('hint_l1');
+  expect(project([first, { ...second, admittedAt: late.admittedAt }]).helpLevel).toBe('hint_l1');
+  expect(project([first, { ...second, value: helpExposure({ ...example, kind: 'opened', step: { kind: 'hint_l2', order: 2 } }) }]).helpLevel)
+    .toBe('hint_l1');
+  const process = project([first, second]);
+  expect(process.exposure).toMatchObject({ kind: 'exposed', level: 'hint_l2' });
+  const occurredAt = '2026-11-21T00:00:00.000Z';
+  expect(activityEvidenceSlice(submission.cutoff, occurredAt, undefined, [{
+    submission: submission.ref, occurredAt, concepts: [], novelty: 'same', helpLevel: process.helpLevel, result: 'correct',
+  }]).events[0]?.help_level).toBe('hint_l2');
+  expect(project([shown]).helpLevel).toBe('hinted');
+  const answer = { ...shown, ref: prepared.ref, value: helpExposure({ ...example, kind: 'displayed', step: { kind: 'solution', order: 3 } }) };
+  expect(project([first, second, answer]).helpLevel).toBe('solution_seen');
+  expect(() => helpExposure({ ...example, kind: 'displayed', step: { kind: 'hint_l1', order: 2 } })).toThrow('档次与阶次');
 });

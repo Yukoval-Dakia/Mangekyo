@@ -91,7 +91,7 @@ export type EvidenceEventV1 = Dimensions & {
   readonly occurred_at: string;
   readonly concept_ids: readonly string[];
   readonly item_novelty: ItemNovelty;
-  readonly help_level: 'independent' | 'hinted' | 'solution_seen';
+  readonly help_level: 'independent' | 'hinted' | 'hint_l1' | 'hint_l2' | 'solution_seen';
   readonly outcome: 'correct' | 'incorrect' | 'unknown';
   readonly claim_ids: readonly string[];
   readonly score_norm?: number;

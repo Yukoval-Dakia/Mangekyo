@@ -1,11 +1,11 @@
-import type { BusWitness, FactRef, Tick } from '@mangekyo/kernel';
+import type { BusWitness, EvidenceEventV1, FactRef, Tick } from '@mangekyo/kernel';
 
 export type TraceAttempt = {
   submission: FactRef; item: { paper: FactRef; itemId: string };
   images: readonly FactRef[]; help: readonly FactRef[];
   occurredAt: string; admittedAt: Tick;
   conceptIds: readonly string[]; mechanismIds: readonly string[]; methodIds: readonly string[];
-  outcome: 'correct' | 'incorrect' | 'unknown'; helpLevel: 'independent' | 'hinted' | 'solution_seen' | 'unknown';
+  outcome: 'correct' | 'incorrect' | 'unknown'; helpLevel: EvidenceEventV1['help_level'] | 'unknown';
   explanation?: { origin: 'learner-quote' | 'inference'; text: string; source: FactRef };
 };
 
