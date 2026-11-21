@@ -28,7 +28,7 @@ export type RetentionObservation = {
   dimensions?: RetentionDimensions;
   exposure:
     | { kind: 'independent' }
-    | { kind: 'exposed'; level?: Exclude<EvidenceEventV1['help_level'], 'independent'>; refs: readonly { id: FactId; rev: Revision }[] }
+    | { kind: 'exposed'; level?: Exclude<EvidenceEventV1['help_level'], 'independent' | 'unknown'>; refs: readonly { id: FactId; rev: Revision }[] }
     | { kind: 'unknown'; reason: string };
 };
 
