@@ -163,6 +163,81 @@ export function selectionAllows(selection: NotionSelection | null, purpose: stri
   return selection.recipients.some(use => use.id === recipientId && use.purpose === purpose);
 }
 
+export type NotionSelectionUseRetraction = {
+  readonly recipientId: string;
+  readonly purpose: string;
+  /** Grants valid from `sinceEpoch` (inclusive) stop at `untilEpoch` (exclusive, the new selection revision). */
+  readonly sinceEpoch: string;
+  readonly untilEpoch: string;
+};
+
+export type NotionSelectionInvalidation = {
+  readonly learner: LearnerId;
+  readonly selectionId: string;
+  readonly previousEpoch: string;
+  readonly selectionEpoch: string;
+  readonly previousRoot: NotionRoot;
+  readonly root: NotionRoot;
+  readonly rootChanged: boolean;
+  /** Concrete prior page ID affected when the prior root was a single page; empty for data-source roots
+   * because child page membership is resolved by Studio against sources bound to this selectionId. */
+  readonly retractedPageIds: readonly string[];
+  readonly retracted: readonly NotionSelectionUseRetraction[];
+  readonly continued: readonly NotionRecipientUse[];
+};
+
+/** Recipient-level invalidation for a selection-only revision: compare two
+ * committed selection snapshots and compute exactly which (purpose, recipientId)
+ * grants were revoked, narrowed, or invalidated by a root replacement or epoch reset.
+ * Lets Studio retire that recipient's work without touching other continuously
+ * authorized recipients or requiring a new source revision.
+ * Throws unless both snapshots describe consecutive revisions of one grant. */
+export function planNotionSelectionInvalidation(
+  previous: NotionSelection, current: NotionSelection,
+): NotionSelectionInvalidation {
+  const prevEpoch = notionEpoch(previous.selectionEpoch);
+  const currEpoch = notionEpoch(current.selectionEpoch);
+  if (prevEpoch === '0' || previous.id !== current.id || previous.learner !== current.learner ||
+      currEpoch !== String(BigInt(prevEpoch) + 1n)) {
+    throw new Error('选源失效计划需要同一授权的连续修订。');
+  }
+  const sameRoot = previous.root.kind === current.root.kind && previous.root.id === current.root.id;
+  const before = new Map(previous.continuity.map(use => [JSON.stringify([use.id, use.purpose]), use]));
+  const after = current.active && sameRoot
+    ? new Map(current.continuity.map(use => [JSON.stringify([use.id, use.purpose]), use]))
+    : new Map<string, ContinuousUse>();
+  const continued: NotionRecipientUse[] = [];
+  const retracted: NotionSelectionUseRetraction[] = [];
+  for (const [key, prevUse] of before.entries()) {
+    const nextUse = after.get(key);
+    if (nextUse && nextUse.sinceEpoch === prevUse.sinceEpoch) {
+      continued.push({ id: nextUse.id, purpose: nextUse.purpose });
+    } else {
+      retracted.push({
+        recipientId: prevUse.id,
+        purpose: prevUse.purpose,
+        sinceEpoch: prevUse.sinceEpoch,
+        untilEpoch: currEpoch,
+      });
+    }
+  }
+  const retractedPageIds = previous.root.kind === 'page' && (!sameRoot || retracted.length > 0)
+    ? [previous.root.id]
+    : [];
+  return {
+    learner: current.learner,
+    selectionId: current.id,
+    previousEpoch: prevEpoch,
+    selectionEpoch: currEpoch,
+    previousRoot: previous.root,
+    root: current.root,
+    rootChanged: !sameRoot,
+    retractedPageIds,
+    retracted,
+    continued,
+  };
+}
+
 export type NotionSelectionCursor = NotionSelectionWitness & { readonly position: NotionCursor };
 
 /** Copy this scope before dispatch, and keep it with pages, cursors and bounded handles. */

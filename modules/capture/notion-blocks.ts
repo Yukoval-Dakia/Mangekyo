@@ -28,6 +28,10 @@ function notionSource(fact: FactSnapshot | null) {
   return source.kind === 'notion' ? source : null;
 }
 
+function isRetractedSource(fact: FactSnapshot | null): boolean {
+  return Boolean(fact && fact.type === captureSourceType && fact.value == null);
+}
+
 /** Project one committed source change, within the source command transaction.
  * Selection/recipient access is checked separately by the host for its actual recipient.
  * Retire by source ID and block ID. The prior snapshot may be newer than a live edge's original pin.
@@ -36,7 +40,19 @@ export function planNotionBlockWork(
   previous: FactSnapshot | null, current: FactSnapshot | null, purpose: NotionBlockPurpose,
 ): { readonly rebuild: readonly NotionBlockWitness[]; readonly retire: readonly NotionBlockWitness[] } {
   if (!isNotionBlockPurpose(purpose)) throw new Error('Notion 块处理用途无效。');
+  if (isRetractedSource(previous)) throw new Error('Notion 块计划需要同一原件的连续修订。');
   const before = notionSource(previous);
+  // A retracted head revision stores no envelope: validate continuity with `previous`,
+  // then clear the current block set so every previously eligible block retires.
+  if (isRetractedSource(current)) {
+    if (previous && (previous.ref.learner !== current!.ref.learner ||
+        previous.ref.id !== current!.ref.id || current!.ref.rev !== previous.ref.rev + 1)) {
+      throw new Error('Notion 块计划需要同一原件的连续修订。');
+    }
+    const oldEligible = Boolean(before && previous?.purpose.includes(purpose));
+    return { rebuild: [], retire: (oldEligible ? before!.unit.blocks : [])
+      .map(({ id }) => witness(previous!, id)) };
+  }
   const after = notionSource(current);
   if (!before && !after) return { rebuild: [], retire: [] };
   if (previous && current && (previous.ref.learner !== current.ref.learner ||

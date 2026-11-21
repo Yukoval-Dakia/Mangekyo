@@ -119,12 +119,21 @@ export async function readQuestionNotionLinks(
   const { root, mode, edgeIds } = input;
   if (!bound(access) || edgeIds.length > 128) return [];
   async function reopenFollowingRootAlias(endpoint: KnowledgeEndpoint) {
-    if (root.kind !== 'note' || endpoint.kind !== 'note' || endpoint.blockId !== root.blockId) return false;
     const use = endpoint.sourceUse;
     if (use.id !== root.sourceUse.id || use.accessEpoch !== root.sourceUse.accessEpoch || use.rev >= root.sourceUse.rev) return false;
-    // Reopen the edge's original pin against current selection and block history.
-    const block = await reopenNotionBlock({ ...use, blockId: root.blockId }, 'following');
-    return Boolean(block?.text.trim());
+    if (endpoint.kind !== root.kind) return false;
+    if (root.kind === 'note') {
+      if (endpoint.blockId !== root.blockId) return false;
+      // Reopen the edge's original pin against current selection and block history.
+      const block = await reopenNotionBlock({ ...use, blockId: root.blockId }, 'following');
+      return Boolean(block?.text.trim());
+    }
+    if (root.kind === 'question' && endpoint.blockId === undefined) {
+      // A question revision (rev 1 -> 2) leaves edges pinned on the old rev; reverify
+      // that revision under the same authorization snapshot instead of dropping the link.
+      return await openQuestion(access, use) !== undefined;
+    }
+    return false;
   }
   try {
     if (root.kind === 'question') {
