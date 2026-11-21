@@ -43,13 +43,8 @@ import {
 
 import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
 
-export class RequestError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string, readonly responseCode?: string) {
-    super(message);
-    this.status = status;
-  }
-}
+export { RequestError } from '../../surfaces/shared/request-error.ts';
+import { RequestError } from '../../surfaces/shared/request-error.ts';
 const confirmAccount = () => new RequestError(409, '请重新选择材料或开始新对话，并确认当前模型账户。',
   'provider_account_confirmation_required');
 const requestedAccount = (route:unknown) => route && typeof route === 'object' && 'accountRevision' in route
@@ -106,6 +101,7 @@ const unavailableReply = (model: string, unconfirmed = false): DisplayTurn => ({
 type TurnView = {
   id: string;
   submission: ReturnType<typeof studyTurn>;
+  canPreviewTextbook?: true;
   backgroundUnderstanding?: ReturnType<typeof turnResearchAccess>;
   feedback: DisplayTurn | null;
   derivationId: string | null;
@@ -159,6 +155,8 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     result.push({
       id: row.id,
       submission,
+      ...(submission.caseId === 'companion' && submission.currentObject?.kind === 'page' && submission.answer &&
+        snapshot.purpose.some(p => p === 'storage' || p === 'all') && {canPreviewTextbook:true as const}),
       ...(submission.caseId === 'companion' ? {backgroundUnderstanding: turnResearchAccess(snapshot)} : {}),
       feedback,
       derivationId: row.derivationId,
@@ -294,6 +292,7 @@ async function formatSession({turns,...view}: Awaited<ReturnType<typeof sessionP
       ? await recall?.(row.id,row.derivationId,studyKit)
       : undefined;
     projected.push({
+      ...(row.canPreviewTextbook && {canPreviewTextbook:true}),
       ...feedback, ...(writes && {writes}), turnId: row.id, artifacts,
       ...(row.backgroundUnderstanding ? {backgroundUnderstanding: row.backgroundUnderstanding} : {}),
       ...(trace && { trace: trace.map(projectArtifactMountTrace) }),

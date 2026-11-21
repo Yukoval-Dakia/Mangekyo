@@ -110,3 +110,39 @@ export function textbookWriteReceipt(receipt: CommandReceipt, requestId: string,
   return { ...receipt, requestId, clientEditSeq: edit.clientEditSeq, id: edit.id,
     expectedRev: edit.expectedRev, rev: written.rev };
 }
+
+/** Classify domain write failures for learner-facing textbook hosts. */
+export function textbookWriteProblem(error: unknown) {
+  const problem = (status: number, message: string) => ({status, message});
+  if (error instanceof Error) {
+    if (error.message === 'Command ID already used with a different command identity') {
+      return problem(409, '同一个请求标识已经用于不同编辑。');
+    }
+    if (error.message.startsWith('Fact already exists: ')) return problem(409, '教材标识已经存在。');
+    if (error.message.startsWith('Fact does not exist: ')) return problem(404, '找不到要编辑的教材。');
+    if (error.message.startsWith('Fact is retracted: ')) return problem(409, '这份教材已经撤回。');
+    if (error.message.startsWith('Fact purpose does not allow this write: ')) {
+      return problem(403, '当前用途不能编辑这份教材。');
+    }
+    if (error.message === '教材依据已变更。') return problem(403, '教材来源已变更。');
+    if (error.message === 'Proposal not found') return problem(404, '找不到教材提议。');
+    if (error.message === 'Proposal already decided' || error.message.startsWith('Fact revision conflict: ') ||
+        error.message === 'Only an unedited companion draft can be revised')
+      return problem(409, '教材或提议已变更，请刷新。');
+    if (/^(教材|引用|插入位置|来源)/.test(error.message)) return problem(400, error.message);
+  }
+  return undefined;
+}
+
+type EditPreview = Awaited<ReturnType<typeof import('./textbook-edits.ts').previewTextbookRevision>>;
+export function textbookProposalView(proposal: {id:string; state:string}, base: EditPreview['base'], items: EditPreview['items'],
+  currentRev: number, decision: CommandReceipt | undefined, token: string) {
+  const output = decision?.output;
+  const blockIds = output && typeof output === 'object' && 'selection' in output && Array.isArray(output.selection)
+    ? output.selection as readonly string[] : [];
+  const written = decision?.wrote[0];
+  const status = proposal.state === 'confirmed' ? 'applied' : proposal.state === 'rejected' ? 'rejected' :
+    proposal.state === 'conflict' || currentRev !== base.rev ? 'conflict' : 'proposed';
+  return {proposalId:proposal.id,status,base,items,blockIds,
+    result:written ? {id:written.id,rev:written.rev,undo_token:token} : null};
+}

@@ -1,3 +1,4 @@
+import { TurnToTextbook } from './textbook/TurnToTextbook';
 import { selectedRoute } from './model-route';
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { ApiError, api, remember, remembered, sessionPath, type Session, type Settings, type TeachingCase, type Turn } from "./api";
@@ -158,6 +159,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
   return (
     <li className="turn" ref={item}>
       {answer && <div className="learner-message"><span>{!turn || turn.action === "companion_reply" ? "你" : "你的作答"}</span><p>{answer}</p></div>}
+      {turn?.turnId && turn.canPreviewTextbook && <TurnToTextbook key={turn.turnId} id={turn.turnId} />}
       <article className="companion-turn">
         {turn ? <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
           : <span className="live-status" role="status"><i />{progress}</span>}

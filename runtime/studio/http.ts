@@ -218,6 +218,8 @@ export function serve(
         const { requestId, clientEditSeq, page } = await body(req);
         return json(res, 201, await student.textbook.create({ learner: studioLearner, requestId, clientEditSeq, page }));
       }
+      const turnToPage = /^\/api\/study-turns\/([0-9A-HJKMNP-TV-Z]{26})\/textbook$/.exec(path)?.[1];
+      if (turnToPage && method === 'POST') return json(res,200,await student.textbook.distill(turnToPage,await body(req)));
       const textbookAction = /^\/api\/textbooks\/([0-9A-HJKMNP-TV-Z]{26})\/(proposals(?:\/([0-9A-HJKMNP-TV-Z]{26}))?|undo)$/.exec(path);
       if (textbookAction?.[1]) {
         const [,id,action,proposalId] = textbookAction;

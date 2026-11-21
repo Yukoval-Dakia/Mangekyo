@@ -90,6 +90,7 @@ export type RelationWrite =
   | {status: 'withdrawn' | 'changed'};
 
 export interface Turn {
+  canPreviewTextbook?: true;
   backgroundUnderstanding?: {allowed: boolean; rev: number; accessEpoch: string};
   turnId?: string;
   artifacts?: unknown;

@@ -1,0 +1,506 @@
+{
+  "browser": "157.0.8103.52",
+  "baseline": "3e986431",
+  "domain": "df1d3e19",
+  "metric": "Element Timing renderTime minus click capture time (ms)",
+  "trials": [
+    {
+      "samples": [
+        {
+          "name": "本轮读过 · 1",
+          "delta": 70.7000002861023,
+          "paint": 368,
+          "start": 297.2999997138977,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 35.700000286102295,
+          "paint": 552,
+          "start": 516.2999997138977,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 31.700000286102295,
+          "paint": 800,
+          "start": 768.2999997138977,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 32.40000009536743,
+          "paint": 1032,
+          "start": 999.5999999046326,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 35.90000009536743,
+          "paint": 1268,
+          "start": 1232.0999999046326,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 35.30000019073486,
+          "paint": 1500,
+          "start": 1464.6999998092651,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 35.80000019073486,
+          "paint": 1736,
+          "start": 1700.1999998092651,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 35.90000009536743,
+          "paint": 1884,
+          "start": 1848.0999999046326,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 32.5,
+          "paint": 2032,
+          "start": 1999.5,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 36,
+          "paint": 2184,
+          "start": 2148,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 37.59999990463257,
+          "paint": 2336,
+          "start": 2298.4000000953674,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 35.40000009536743,
+          "paint": 2484,
+          "start": 2448.5999999046326,
+          "implementation": "element"
+        },
+        {
+          "name": "确认写入教材",
+          "delta": 32.59999990463257,
+          "paint": 2616,
+          "start": 2583.4000000953674,
+          "implementation": "element"
+        },
+        {
+          "name": "撤回教材写入",
+          "missing": true
+        }
+      ],
+      "confirmationReplay": 409
+    },
+    {
+      "samples": [
+        {
+          "name": "本轮读过 · 1",
+          "delta": 67.5,
+          "paint": 372,
+          "start": 304.5,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 34.5,
+          "paint": 556,
+          "start": 521.5,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 33.5,
+          "paint": 788,
+          "start": 754.5,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 33.59999990463257,
+          "paint": 988,
+          "start": 954.4000000953674,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 34.19999980926514,
+          "paint": 1220,
+          "start": 1185.8000001907349,
+          "implementation": "element"
+        },
+        {
+          "name": "本轮读过 · 1",
+          "delta": 34.30000019073486,
+          "paint": 1456,
+          "start": 1421.6999998092651,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 37.80000019073486,
+          "paint": 1692,
+          "start": 1654.1999998092651,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 32.5,
+          "paint": 1836,
+          "start": 1803.5,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 36.09999990463257,
+          "paint": 1988,
+          "start": 1951.9000000953674,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 36.09999990463257,
+          "paint": 2140,
+          "start": 2103.9000000953674,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 35.59999990463257,
+          "paint": 2288,
+          "start": 2252.4000000953674,
+          "implementation": "element"
+        },
+        {
+          "name": "预览写入教材",
+          "delta": 34.69999980926514,
+          "paint": 2456,
+          "start": 2421.300000190735,
+          "implementation": "element"
+        },
+        {
+          "name": "确认写入教材",
+          "delta": 34.59999990463257,
+          "paint": 2588,
+          "start": 2553.4000000953674,
+          "implementation": "element"
+        },
+        {
+          "name": "撤回教材写入",
+          "delta": 33.5,
+          "paint": 2724,
+          "start": 2690.5,
+          "implementation": "element"
+        }
+      ],
+      "confirmationReplay": 200
+    }
+  ],
+  "session": "8405D745B6C3241F8F0243D75B",
+  "finalSteps": [
+    {
+      "before": {
+        "kind": "textbook",
+        "learner": "691F38927C0F0C8A7DE5FFF70C",
+        "id": "BE3B977B2011AC8B28CCA18202",
+        "rev": 2,
+        "accessEpoch": "1",
+        "purpose": [
+          "storage",
+          "teaching"
+        ],
+        "title": "分式的定义域",
+        "blocks": [
+          {
+            "id": "boundary",
+            "parentId": null,
+            "body": {
+              "kind": "text",
+              "text": "原文标记：分母为零时原式没有意义。"
+            }
+          }
+        ],
+        "references": []
+      },
+      "preview": {
+        "page": "BE3B977B2011AC8B28CCA18202",
+        "rev": 2,
+        "title": "分式的定义域",
+        "answer": "我发现必须先检查分母是否为零。",
+        "confirmationId": "3CY14TARVG7FAATK3Q7DKJB2Y1"
+      },
+      "receipt": {
+        "status": "applied",
+        "ref": {
+          "learner": "691F38927C0F0C8A7DE5FFF70C",
+          "id": "BE3B977B2011AC8B28CCA18202",
+          "rev": 3
+        },
+        "undo_token": "3KX22NWKD7DRNHKS4HDNP7Z7WN"
+      },
+      "saved": {
+        "kind": "textbook",
+        "learner": "691F38927C0F0C8A7DE5FFF70C",
+        "id": "BE3B977B2011AC8B28CCA18202",
+        "rev": 3,
+        "accessEpoch": "1",
+        "purpose": [
+          "storage",
+          "teaching"
+        ],
+        "title": "分式的定义域",
+        "basis": [
+          {
+            "id": "8405D745B6C3241F8F0243D75B",
+            "rev": 1,
+            "epoch": "0",
+            "type": "activity.studyTurn"
+          },
+          {
+            "id": "BE3B977B2011AC8B28CCA18202",
+            "rev": 2,
+            "epoch": "1",
+            "type": "content.textbookPage"
+          }
+        ],
+        "blocks": [
+          {
+            "id": "boundary",
+            "parentId": null,
+            "body": {
+              "kind": "text",
+              "text": "原文标记：分母为零时原式没有意义。"
+            }
+          },
+          {
+            "id": "1X9NM8MD5TVKREYD7W55V74PE7",
+            "parentId": null,
+            "body": {
+              "kind": "text",
+              "text": "我发现必须先检查分母是否为零。"
+            }
+          },
+          {
+            "id": "1S5RAPQWYFNF2QTGGT4FKEXHBT",
+            "parentId": null,
+            "body": {
+              "kind": "reference",
+              "role": "citation",
+              "target": {
+                "fact": {
+                  "learner": "691F38927C0F0C8A7DE5FFF70C",
+                  "id": "8405D745B6C3241F8F0243D75B",
+                  "rev": 1
+                },
+                "type": "activity.studyTurn",
+                "anchor": {
+                  "kind": "path",
+                  "path": [
+                    "answer"
+                  ]
+                }
+              }
+            }
+          }
+        ],
+        "references": [
+          {
+            "blockId": "1S5RAPQWYFNF2QTGGT4FKEXHBT",
+            "ref": {
+              "learner": "691F38927C0F0C8A7DE5FFF70C",
+              "id": "8405D745B6C3241F8F0243D75B",
+              "rev": 1
+            },
+            "type": "activity.studyTurn",
+            "anchor": {
+              "kind": "path",
+              "path": [
+                "answer"
+              ]
+            },
+            "accessEpoch": "0"
+          }
+        ]
+      }
+    },
+    {
+      "retry": {
+        "status": 200,
+        "data": {
+          "status": "applied",
+          "ref": {
+            "id": "BE3B977B2011AC8B28CCA18202",
+            "rev": 3,
+            "learner": "691F38927C0F0C8A7DE5FFF70C"
+          },
+          "undo_token": "3KX22NWKD7DRNHKS4HDNP7Z7WN"
+        }
+      }
+    },
+    {
+      "undone": {
+        "kind": "textbook",
+        "learner": "691F38927C0F0C8A7DE5FFF70C",
+        "id": "BE3B977B2011AC8B28CCA18202",
+        "rev": 5,
+        "accessEpoch": "1",
+        "purpose": [
+          "storage",
+          "teaching"
+        ],
+        "title": "分式的定义域",
+        "blocks": [
+          {
+            "id": "boundary",
+            "parentId": null,
+            "body": {
+              "kind": "text",
+              "text": "后来独立补充的教材内容。"
+            }
+          }
+        ],
+        "retiredBlockIds": [
+          "1X9NM8MD5TVKREYD7W55V74PE7",
+          "1S5RAPQWYFNF2QTGGT4FKEXHBT"
+        ],
+        "references": []
+      }
+    },
+    {
+      "revoked": {
+        "status": 200,
+        "data": {
+          "id": "BE3B977B2011AC8B28CCA18202",
+          "rev": 6,
+          "teaching": false,
+          "changed": true
+        }
+      },
+      "denied": {
+        "status": 409,
+        "data": {
+          "error": "本轮或所选教材的存储依据已变更，请重新预览。"
+        }
+      }
+    },
+    {
+      "onlyTeaching": "36E68D52A37C3B8635191C3EE8",
+      "denyStorage": {
+        "status": 409,
+        "data": {
+          "error": "本轮或所选教材的存储依据已变更，请重新预览。"
+        }
+      },
+      "revokedBetweenPreviewAndConfirm": {
+        "status": 409,
+        "data": {
+          "error": "本轮或所选教材的存储依据已变更，请重新预览。"
+        }
+      },
+      "final": {
+        "kind": "textbook",
+        "learner": "691F38927C0F0C8A7DE5FFF70C",
+        "id": "BE3B977B2011AC8B28CCA18202",
+        "rev": 8,
+        "accessEpoch": "4",
+        "purpose": [
+          "storage"
+        ],
+        "title": "分式的定义域",
+        "blocks": [
+          {
+            "id": "boundary",
+            "parentId": null,
+            "body": {
+              "kind": "text",
+              "text": "后来独立补充的教材内容。"
+            }
+          }
+        ],
+        "retiredBlockIds": [
+          "1X9NM8MD5TVKREYD7W55V74PE7",
+          "1S5RAPQWYFNF2QTGGT4FKEXHBT"
+        ],
+        "references": []
+      }
+    }
+  ],
+  "journal": [
+    {
+      "rev": 1,
+      "author": "learner",
+      "type": "content.createTextbookPage",
+      "id": "075CD980C94B4FF92FA78E3915",
+      "state": "done",
+      "purpose": "storage"
+    },
+    {
+      "rev": 2,
+      "author": "learner",
+      "type": "content.setTextbookTeaching",
+      "id": "6EF87CA89E735D507D02600B12",
+      "state": "done",
+      "purpose": "storage"
+    },
+    {
+      "rev": 3,
+      "author": "learner",
+      "type": "content.reviseTextbookPage",
+      "id": "3KX22NWKD7DRNHKS4HDNP7Z7WN",
+      "state": "done",
+      "purpose": "storage"
+    },
+    {
+      "rev": 4,
+      "author": "learner",
+      "type": "content.reviseTextbookPage",
+      "id": "992AC613EC1BB7E8F660926CD4",
+      "state": "done",
+      "purpose": "storage"
+    },
+    {
+      "rev": 5,
+      "author": "learner",
+      "type": "content.undoTextbookWrite",
+      "id": "066F42DA480B6E992E1953DFD3",
+      "state": "done",
+      "purpose": "storage"
+    },
+    {
+      "rev": 6,
+      "author": "learner",
+      "type": "content.setTextbookTeaching",
+      "id": "978EF51C137D707B408AF481CE",
+      "state": "done",
+      "purpose": "storage"
+    },
+    {
+      "rev": 7,
+      "author": "learner",
+      "type": "content.setTextbookTeaching",
+      "id": "539C8D7A0582E498F7CF7D1EC8",
+      "state": "done",
+      "purpose": "storage"
+    },
+    {
+      "rev": 8,
+      "author": "learner",
+      "type": "content.setTextbookTeaching",
+      "id": "7B196073BBC0270CA562B6045C",
+      "state": "done",
+      "purpose": "storage"
+    }
+  ]
+}
