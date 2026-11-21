@@ -1,19 +1,15 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { studioJsonApi } from './acceptance-fixtures.mjs';
 
 const studio = new URL(process.argv[2]);
 assert.match(studio.origin, /^http:\/\/127\.0\.0\.1(?::\d+)?$/);
 assert.equal(process.argv[3], '--isolated');
 
-async function api(path, data, method = data ? 'POST' : 'GET', status = 200) {
-  const response = await fetch(new URL('/api/' + path, studio), {
-    method, ...(data ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) } : {}),
-  });
-  const result = await response.json();
+const api = studioJsonApi(studio, (response, path, result, status = 200) => {
   assert.equal(response.status, status, path + ' ' + JSON.stringify(result));
-  return result;
-}
+});
 
 async function current(key) {
   for (let i = 0; i < 80; i++) {
