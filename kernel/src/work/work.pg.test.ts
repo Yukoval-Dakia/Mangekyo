@@ -9,7 +9,7 @@ import { applyKernelSchema, kernelSchemaStatements, workerStorage } from '../sch
 import { eraseOriginal } from '../lifecycle.ts';
 import { newUlid } from './identity.ts';
 import {
-  checkTodoTriggers, completeTodo, emitTodo, maxTodoHops, newFactWatermark, readTodo, updateOrCancelTodo, type TodoInput,
+  checkTodoTriggers, completeTodo, deferDispatchedTodo, emitTodo, maxTodoHops, newFactWatermark, readTodo, updateOrCancelTodo, type TodoInput,
 } from './todos.ts';
 import {
   acknowledgeStartedWork, cancelWork, failWork, finishWork, registerWorkWait, relayPending, requestWork, runEffect, wakeWaitingWork,
@@ -315,6 +315,43 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
     expect((await inspect(tail.id))?.state).toBe('cancelled');
   });
 
+  it('isolates and defers routed Todos, fencing a previous dispatch generation', async () => {
+    const write = <T>(fn: (tx: DbTransaction, tick: Parameters<typeof emitTodo>[1]) => Promise<T>) =>
+      db.tx({ learner }, tx => tx.withLearnerWrite(tick => fn(tx, tick)));
+    const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
+    const route = { deriver: 'scheduled-v1', erasureBasis: [factId(source.id)], settingsFactId: factId(newUlid()) };
+    const deferred = { status: 'not_dispatched', reason: 'unavailable', retryAtMs: 10 } as const;
+    const decide = vi.fn(async () => deferred);
+    const sweep = (now: number, eligible = async () => true) =>
+      db.tx({ learner }, tx => checkTodoTriggers(tx, now, eligible, route.deriver));
+    const root = (await write((tx, tick) => emitTodo(tx, tick, { dedupKey: 'deferred', goal: 'Review',
+      trigger: { kind: 'scheduled', fireAtMs: 5 }, workerProfile: 'deterministic_compute', budgetCap: 0,
+      refs: [], sourceFactRev: source, autonomyTier: 1, settingsRevision: 1, expiresAtMs: 50 }, 1, decide, route)))!;
+    expect(await db.tx({ learner }, tx => checkTodoTriggers(tx, 5, async () => false))).toEqual({ advanced: false, nextAt: undefined });
+    expect(await db.tx({ learner }, tx => checkTodoTriggers(tx, 5, decide, route.deriver))).toEqual({ advanced: false, nextAt: 10 });
+    expect(await sweep(9)).toEqual({ advanced: false, nextAt: 10 });
+    expect((await db.query('SELECT intent_id FROM work_outbox')).rowCount).toBe(0);
+    expect(await sweep(10)).toMatchObject({ advanced: true });
+    const ref = { learner, workId: root.id, generation: '1' };
+    const { rows: [firstDelivery] } = await db.query<{ intent_id: string }>('SELECT intent_id FROM work_outbox');
+    expect(await relayPending(db, async () => {})).toBe(0);
+    expect(await acknowledgeStartedWork(db, firstDelivery!.intent_id)).toBeNull();
+    expect(await acknowledgeStartedWork(db, firstDelivery!.intent_id, route)).toEqual(ref);
+    await write(async (tx, tick) => {
+      const dispatched = (await readTodo(tx, root.id))!;
+      expect(await deferDispatchedTodo(tx, ref, dispatched, { ...deferred, retryAtMs: 20 }, 11)).toBe(true);
+      expect(await completeTodo(tx, tick, ref, dispatched, source.id)).toBe(false);
+    });
+    expect(await sweep(20)).toMatchObject({ advanced: true });
+    expect((await db.query('SELECT generation::text FROM work_outbox ORDER BY generation')).rows)
+      .toEqual([{ generation: '1' }, { generation: '2' }]);
+    const { rows: [retry] } = await db.query<{ intent_id: string }>("SELECT intent_id FROM work_outbox WHERE generation=2");
+    await eraseOriginal(db, { learner }, { actor: 'learner', confirmed: true, root: factId(source.id),
+      requestId: commandId(newUlid()), expectedRev: 1 }, async () => ({ ids: [factId(source.id)], commandTypes: [] }), async () => {});
+    expect(await db.snapshot({ learner }, tx => readTodo(tx, root.id))).toMatchObject({ state: 'cancelled' });
+    expect(await acknowledgeStartedWork(db, retry!.intent_id, route)).toBeNull();
+  });
+
   it('keeps v6 SQL on the same work row while old pinned workers drain', async () => {
     const id = newUlid();
     const source = { id: newUlid(), revision: 1, accessEpoch: '0' };
@@ -449,6 +486,54 @@ describe.skipIf(!testDatabaseUrl)('Durable work in PostgreSQL', () => {
   });
 });
 
+it.skipIf(!testDatabaseUrl).each(['valid', 'erased', 'revoked'])('backfills %s v13 correction Work without reissuing it', authority =>
+  withLearnerDatabase(learner, async db => {
+    const settings = newUlid(), original = newUlid(), source = newUlid();
+    const correction = newUlid(), grant = newUlid(), paper = newUlid(), execution = newUlid(), ordinary = newUlid();
+    const spec = {
+      goal: 'Review', workerProfile: 'deterministic_compute', trigger: { kind: 'scheduled', fireAtMs: 10 },
+      sourceFactRev: { id: correction, revision: 1, accessEpoch: '0' },
+      refs: [original, grant, paper].map(id => ({ id, revision: 1, accessEpoch: '0' })),
+      autonomyTier: 1, budgetCap: 0, settingsRevision: 1, expiresAtMs: 50,
+    };
+    // Insert the draft rows with the actual v13 constraints, before applying v14.
+    const schemaTransaction: Db['schemaTransaction'] = run => db.schemaTransaction(tx => run({
+      async query<Row>(...args: Parameters<Db['query']>) {
+        const result = await tx.query<Row>(...args);
+        if (args[0] !== 'INSERT INTO kernel_schema_migrations (version) VALUES ($1)' || args[1]?.[0] !== 13) return result;
+        await tx.query(`INSERT INTO facts (learner_id,id,type,current_rev,created_tick,changed_tick,purpose)
+          SELECT $1,id,type,1,1,1,'{storage,teaching,background-research}' FROM unnest($2::text[],$3::text[]) AS f(id,type)`,
+        [learner, [original, grant, paper, settings, correction],
+          ['content.asset','activity.workbookAttempt','activity.workbookPaper','companion.researchSettings','activity.workbookCorrection']]);
+        await tx.query(`INSERT INTO fact_revs (learner_id,fact_id,rev,data,purpose,sticky,kind,author,command_id,tick)
+          SELECT learner_id,id,1,CASE id WHEN $2 THEN $3::jsonb WHEN $4 THEN '{"enabled":true}' ELSE '{}' END,
+            purpose,false,'value','learner',id,1 FROM facts WHERE learner_id=$1`,
+        [learner, original, JSON.stringify({ basis: [{ id: source, rev: 1 }] }), settings]);
+        await tx.query(`INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys) VALUES
+          ($1,'companion.researchWake',$2,'{}'),($1,'working.todo',$3,'{}'),($1,'working.todo',$4,'{}')`,
+        [learner, settings, correction, ordinary]);
+        await tx.query(`INSERT INTO work (learner_id,id,slot_type,slot_key,deriver,state,execution_ref) VALUES
+          ($1,$2,'companion.researchWake',$2,'studio/research-wake-v1','satisfied',NULL)`, [learner, settings]);
+        await tx.query(`INSERT INTO work (learner_id,id,slot_type,slot_key,deriver,state,execution_ref,family,spec,chain_id,hop_count,registered_tick) VALUES
+          ($1,$2,'working.todo',$2,'deterministic_compute','ready',$3,'todo',$4,$2,0,1),
+          ($1,$5,'working.todo',$5,'deterministic_compute','pending',NULL,'todo',$6,$5,0,1)`,
+        [learner, correction, execution, JSON.stringify({ ...spec, dedupKey: `correction-retest:${correction}:1` }), ordinary,
+          JSON.stringify({ ...spec, dedupKey: `review-attempt:${correction}:1:0` })]);
+        await tx.query("INSERT INTO work_outbox VALUES ($1,$2,$3,1,'pending')", [learner, execution, correction]);
+        if (authority === 'erased') await tx.query("INSERT INTO tombstones VALUES ($1,$2,'fact',1)", [learner, source]);
+        if (authority === 'revoked') await tx.query('UPDATE facts SET access_epoch=1 WHERE learner_id=$1 AND id=$2', [learner, grant]);
+        return result;
+      },
+    }));
+    await applyKernelSchema({ ...db, schemaTransaction });
+    const valid = authority === 'valid';
+    expect(await db.snapshot({ learner }, tx => readTodo(tx, correction))).toMatchObject({
+      id: correction, spec, state: valid ? 'dispatched' : 'cancelled', revision: valid ? 1 : 2, route: 'studio/correction-retest-v1',
+    });
+    expect(await db.snapshot({ learner }, tx => readTodo(tx, ordinary))).toMatchObject({ state: 'pending', route: null });
+    expect(await relayPending(db, async (_ref, id) => { expect(id).toBe(execution); })).toBe(valid ? 1 : 0);
+  }, { initialize: legacyWorkSchema }));
+
 it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concurrent migration of legacy work', () =>
   withLearnerDatabase(learner, async db => {
     await db.query(`INSERT INTO slot_state (learner_id, slot_type, slot_key, pending, scope_keys)
@@ -462,7 +547,8 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     await db.query('DROP TABLE work_outbox');
 
     await Promise.all([applyKernelSchema(db), applyKernelSchema(db), applyKernelSchema(db)]);
-    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }]);
+    expect((await db.query('SELECT version FROM kernel_schema_migrations ORDER BY version')).rows)
+      .toEqual(Array.from({ length: 14 }, (_, i) => ({ version: i + 1 })));
     expect((await db.query('SELECT id, state, gather FROM work ORDER BY id')).rows).toEqual([
       { id: 'a', state: 'ready', gather: null }, { id: 'b', state: 'waiting', gather: null },
     ]);
@@ -474,8 +560,8 @@ it.skipIf(!testDatabaseUrl)('rolls back a failed migration and serializes concur
     expect((await db.query('SELECT work_id FROM work_waits')).rows).toEqual([]);
     expect((await db.query("SELECT pending FROM slot_state WHERE slot_key = 'b'")).rows).toEqual([{ pending: 'none' }]);
     const store = await workerStorage(db);
-    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (14)');
+    await db.query('INSERT INTO kernel_schema_migrations (version) VALUES (15)');
     expect(await workerStorage(db)).toBe(store);
-    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 14');
+    await db.query('UPDATE kernel_runtime_identity SET minimum_worker_schema = 15');
     await expect(workerStorage(db)).rejects.toThrow('incompatible');
   }, { initialize: legacyWorkSchema }));

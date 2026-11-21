@@ -34,6 +34,7 @@ import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
 import { openRelationReview } from './workspace-relation.ts';
 import { openResearch } from './research.ts';
+import { correctionRetestDeriver } from './research-correction.ts';
 import { validateResearchScoutHost } from './research-scout.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openIqdb } from './iqdb.ts';
@@ -173,6 +174,7 @@ async function runWorker(storeId: string) {
   ];
   const lanes = [
     { queue, route: undefined, run: executeDefault },
+    { queue: capabilityTaskQueue(queue, 'correction-retest-v1'), route: { deriver: correctionRetestDeriver }, run: research.execute },
     ...protectedMethods.map(({deriver,lane}) => ({queue:capabilityTaskQueue(queue,lane),route:{deriver},
       async run(ref: WorkRef, terminal: boolean) {
         if ((await readWork(db,ref))?.deriver !== deriver) return;

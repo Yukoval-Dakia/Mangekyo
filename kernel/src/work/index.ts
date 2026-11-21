@@ -129,7 +129,7 @@ async function closeWork(
     if (!work || (work.slotType === todoSlot && state === 'satisfied')) return false;
     return tx.withLearnerWrite(async tick => {
       await tx.query(
-        `UPDATE work SET state = $4, revision = revision + CASE WHEN family='todo' THEN 1 ELSE 0 END, gather = NULL, gather_manifest = NULL
+        `UPDATE work SET state = $4, revision = revision + CASE WHEN slot_type='working.todo' THEN 1 ELSE 0 END, gather = NULL, gather_manifest = NULL
          WHERE learner_id = $1 AND id = $2 AND generation = $3`,
         [learner, ref.workId, ref.generation, state],
       );
