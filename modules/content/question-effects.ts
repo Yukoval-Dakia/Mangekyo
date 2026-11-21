@@ -5,9 +5,48 @@ export type SealedQuestionEffects = { readonly id: DerivationId; readonly plan: 
 /** The host takes the owner from the effect ledger. The sealed candidate is the ledger owner. */
 export type QuestionEffectReceipt = EffectReceipt & { readonly ownerId: DerivationId };
 
-/** Wrap the provider result inside the ledger callback with its actual invocation ID. */
-export function questionEffectResult(invocationId: string, result: Json): JsonObject {
-  return { invocationId, result };
+export const verificationSteps = [
+  { stepKey: 'solve-1', label: 'question-independent-solve' },
+  { stepKey: 'solve-2', label: 'question-independent-solve' },
+  { stepKey: 'solve-3', label: 'question-independent-solve' },
+  { stepKey: 'contract', label: 'question-contract-validation' },
+] as const;
+
+export type QuestionExecution = {
+  readonly kind: 'local_wasm';
+  readonly moduleDigest: string;
+  readonly executableDigest: string;
+  readonly feeMicroUsd: 0;
+};
+
+export function readQuestionExecution(value: Json | undefined): QuestionExecution | undefined {
+  if (!jsonObject(value)) return undefined;
+  const {kind, moduleDigest, executableDigest, feeMicroUsd} = value;
+  const digest = (input: Json | undefined): input is string => typeof input === 'string' && /^[0-9a-f]{64}$/.test(input);
+  if (Object.keys(value).length !== 4 || kind !== 'local_wasm' || feeMicroUsd !== 0 ||
+      !digest(moduleDigest) || !digest(executableDigest)) return undefined;
+  return {kind, moduleDigest, executableDigest, feeMicroUsd};
+}
+
+export function independentQuestionExecutions(values: readonly Json[] | undefined) {
+  if (!Array.isArray(values) || values.length !== verificationSteps.length) return false;
+  const parsed = values.map(readQuestionExecution);
+  return parsed.every(Boolean) && new Set(parsed.map(value => value?.executableDigest)).size === values.length;
+}
+
+export function bindQuestionExecution(request: EffectRequest, execution: QuestionExecution): EffectRequest {
+  if (!jsonObject(request.input)) throw new Error('验题请求格式无效。');
+  return {...request, input: {...request.input, execution}};
+}
+
+export function matchesQuestionExecution(request: EffectRequest, execution: QuestionExecution) {
+  return jsonObject(request.input) && request.input.execution !== undefined &&
+    sameEffectInput(request.input.execution, execution);
+}
+
+/** The host records the module actually invoked, apart from untrusted solver output. */
+export function questionEffectResult(invocationId: string, result: Json, execution: QuestionExecution): JsonObject {
+  return { invocationId, result, execution };
 }
 
 export function jsonObject(value: Json | undefined): value is JsonObject {
@@ -35,5 +74,8 @@ export function readQuestionEffect(ownerId: DerivationId, expected: EffectReques
   if (typeof invocationId !== 'string' || !invocationId || invocationId.trim() !== invocationId || result === undefined) {
     return { kind: 'invalid' as const, reason: '效果缺少服务端调用身份或结果。' };
   }
-  return { kind: 'done' as const, invocationId, result };
+  const execution = readQuestionExecution(receipt.result.execution);
+  if (!execution || !matchesQuestionExecution(expected, execution))
+    return { kind: 'invalid' as const, reason: '效果回执未绑定封存的实际核验方。' };
+  return { kind: 'done' as const, invocationId, result, execution };
 }

@@ -3,15 +3,16 @@ import { assetType, checkQuestionTeachingSources, freezeQuestionAssessment, pars
 import { contentStableId, normalizeKnowledgeName } from './knowledge-entity.ts';
 import { fields, list, pageId, record, revision, text } from './parse.ts';
 import { parseQuestionMetadata } from './question-authoring.ts';
+import { independentQuestionExecutions, type QuestionExecution } from './question-effects.ts';
 
 export const questionStateType = 'content.questionState';
 export const questionMetaType = 'overlay.question_meta';
 export const questionVerificationType = 'content.questionVerification';
-export const questionVerificationMethodVersion = '3';
+export const questionVerificationMethodVersion = '4';
 export const questionMetaDraftType = 'content.questionMetaDraft';
 export const questionKey = ({ id, rev }: { id: string; rev: number }) => `${id}:${rev}`;
 export const questionVerificationKey = (input: { id: string; rev: number; recheck?: number }) =>
-  `${questionKey(input)}:${input.recheck ?? 0}`;
+  `${questionKey(input)}:${input.recheck ?? 0}:${questionVerificationMethodVersion}`;
 export function parseQuestionVerificationKey(key: string) {
   const [rawId, rawRev, rawRecheck] = key.split(':');
   try {
@@ -83,7 +84,7 @@ export type QuestionVerificationBasis = {
   readonly recheck: number;
   readonly methodVersion: string;
 };
-export type VerificationReceipt = { readonly invocationId: string; readonly result: Json };
+export type VerificationReceipt = { readonly invocationId: string; readonly result: Json; readonly execution: QuestionExecution };
 export type QuestionVerification = ReturnType<typeof evaluateQuestionVerification>;
 
 export function questionVerificationReview(basis: QuestionVerificationBasis, reason: string) {
@@ -96,7 +97,8 @@ export function evaluateQuestionVerification(
 ) {
   const review = (reason: string) => questionVerificationReview(basis, reason);
   if (checks.length !== 4 || checks.some(check => !check.invocationId) ||
-      new Set(checks.map(check => check.invocationId)).size !== checks.length) {
+      new Set(checks.map(check => check.invocationId)).size !== checks.length ||
+      !independentQuestionExecutions(checks.map(check => check.execution))) {
     return review('需要三次独立求解和一次独立契约验收回执。');
   }
   const [first, second, third, validation] = checks;
@@ -116,7 +118,7 @@ export function evaluateQuestionVerification(
     return review('冻结评估契约未通过独立样例验证，或其结论与独立求解冲突。');
   }
   return { status: 'ready' as const, basis, invocations: checks.map(check => check.invocationId),
-    solutions: solutions.map(solution => String(solution.reasoning)),
+    executions: checks.map(check => check.execution), solutions: solutions.map(solution => String(solution.reasoning)),
   };
 }
 
@@ -145,7 +147,8 @@ export async function openQuestionForRelease(
   if (result.kind !== 'value' || result.value.status !== 'ready' ||
       result.value.basis.id !== id || result.value.basis.rev !== question.ref.rev ||
       result.value.basis.accessEpoch !== question.accessEpoch || result.value.basis.recheck !== state.recheck ||
-      result.value.basis.methodVersion !== questionVerificationMethodVersion) {
+      result.value.basis.methodVersion !== questionVerificationMethodVersion ||
+      !independentQuestionExecutions(result.value.executions)) {
     throw new Error('这版题目需要当前有效的独立验收。');
   }
   return { ref: question.ref, asset, contract: freezeQuestionAssessment(asset, question.ref) };

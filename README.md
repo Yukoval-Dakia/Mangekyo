@@ -48,7 +48,9 @@ node runtime/studio/test/mcp-acceptance.mjs http://127.0.0.1:4317 服务ID 工�
 
 `pnpm studio:serve` 可启动已构建的前后端。设置 `MANGEKYO_PROCESS=web` 可单独接收命令，`MANGEKYO_PROCESS=worker` 可单独运行交接和 Worker。开发构建按源码指纹固定版本；发行环境应使用唯一构建 ID、显式管理版本流量，并保留仍有在途任务的旧 Worker。保存模型设置后，新会话使用对应配置。续聊时会核对原会话绑定的模型和端点，切回原配置即可继续。[Temporal 适配器](executors/temporal/README.md)
 
-Studio 的题库独立核验支持零费用本机执行。`MANGEKYO_IQDB_LOCAL_WASM` 指向经教研审定的本机 `.wasm` 绝对路径，分离启动时 Web 和 Worker 使用同一份文件。宿主拒绝带导入的模块，已退役的 `MANGEKYO_IQDB_EFFECT_MODULE` 配置须迁移。付费核验等待共享费用预留与结算。
+Studio 支持本机零费用题库核验。将 `MANGEKYO_IQDB_LOCAL_WASM` 设置为包含 `solve-1`、`solve-2`、`solve-3`、`contract` 四键的 JSON 对象，值为各自审定的本机 `.wasm` 绝对路径。三个求解模块须独立编写，第四个模块验收评分契约。宿主拒绝可执行内容相同的配置和带导入的模块。Web 和 Worker 应使用同一套文件。
+
+旧核验回执和历史发放记录照原账保存。当前题版要创建新的发放，须通过绑定四个模块的新核验。已发卷仍按原题版及当前来源授权读取。付费核验待接共享费用预留与结算。
 
 模块须导出 `memory`、`buffer() → offset` 和 `verify(inputLength) → outputLength`。宿主从 `offset` 写入 UTF-8 JSON `{stepKey,label,input,invocationId}`，模块在同一位置存入 UTF-8 JSON 结果。输入和结果各限 256 KiB，每步限时 10 秒。结果经领域核验后才可供发卷。第一次收到不确定回执时停止后续调用，原效果标识保留供核对。
 

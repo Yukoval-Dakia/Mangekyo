@@ -1,5 +1,5 @@
 import { factId, type FactId, type FactSnapshot, type Json, type ReadContext, type Revision } from '@mangekyo/kernel';
-import { assetType, checkQuestionTeachingSources, type TextbookBasis } from '@mangekyo/module-content/facts/asset-contract';
+import { assetType, checkQuestionTeachingSources, questionAsset, type TextbookBasis } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease, projectQuestionPrompt } from '@mangekyo/module-content/facts/question-release';
 import { assessmentRelease, type AssessmentRelease } from './assessment-values.ts';
 import { validateBankItem } from './question-assessment.ts';
@@ -83,16 +83,37 @@ type FrozenBankRead = { fact(id: FactId, options: Parameters<ReadContext['fact']
 export async function readFrozenWorkbookBank(
   read: FrozenBankRead, paper: WorkbookPaper, track?: (fact: FactSnapshot, mode: 'pinned') => void,
 ) {
+  const opened = new Map<string, Promise<FactSnapshot>>();
+  const tracked: FrozenBankRead = {
+    fact(id, options) {
+      const key = JSON.stringify([id,options.mode,options.mode === 'pinned' ? options.rev : null]);
+      const cached = opened.get(key);
+      if (cached) return cached;
+      const pending = read.fact(id,options).then(fact => {
+        if (options.mode === 'pinned') track?.(fact,'pinned');
+        return fact;
+      });
+      opened.set(key,pending);
+      return pending;
+    },
+  };
+  const open = async (witness: TextbookBasis) => {
+    const fact = await tracked.fact(factId(witness.id), { mode: 'pinned', rev: witness.rev });
+    if (fact.type !== witness.type || fact.accessEpoch !== witness.epoch ||
+        (!fact.purpose.includes('teaching') && !fact.purpose.includes('all')))
+      throw new WorkbookSourceMismatch('题目或来源当前不可读取。');
+    return fact;
+  };
   for (const question of paper.questions) {
     if (question.kind !== 'bank') continue;
-    const ref = question.sourceQuestionRef;
-    for (const witness of [{ ...ref, type: assetType, epoch: question.sourceAccessEpoch }, ...question.sourceBasis]) {
-      const fact = await read.fact(factId(witness.id), { mode: 'pinned', rev: witness.rev });
-      if (fact.type !== witness.type || fact.accessEpoch !== witness.epoch ||
-          (!fact.purpose.includes('teaching') && !fact.purpose.includes('all')))
-        throw new WorkbookSourceMismatch('题目或来源当前不可读取。');
-      track?.(fact, 'pinned');
-    }
+    const source = await open({ id: factId(question.sourceQuestionRef.id), rev: question.sourceQuestionRef.rev, type: assetType, epoch: question.sourceAccessEpoch });
+    for (const witness of question.sourceBasis) await open(witness);
+    // Previously issued papers can have an incomplete source list. Reopen the
+    // original question's fixed ancestry, including its current authorization.
+    await checkQuestionTeachingSources(tracked, questionAsset(source.value)).catch(error => {
+      if (error instanceof Error && !('code' in error)) throw new WorkbookSourceMismatch('题目或来源当前不可读取。');
+      throw error;
+    });
   }
 }
 

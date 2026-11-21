@@ -79,6 +79,7 @@ export type TextbookPage = TextbookPageState & {
 
 export type AssetBasis = { readonly id: FactRef['id']; readonly rev: FactRef['rev']; readonly epoch: string; readonly type: string };
 export type TextbookBasis = AssetBasis;
+const assetBasisLimit = 128;
 
 export function parseTextbookBasis(input: unknown): readonly TextbookBasis[] {
   const basis = list(input).map(item => {
@@ -88,7 +89,7 @@ export function parseTextbookBasis(input: unknown): readonly TextbookBasis[] {
     if (!/^(0|[1-9][0-9]*)$/.test(epoch)) throw new Error('依据授权版本无效。');
     return { id: pageId(value.id), rev: revision(value.rev), epoch, type: key(value.type) };
   });
-  if (basis.length > 128 || new Set(basis.map(item => `${item.id}:${item.rev}`)).size !== basis.length)
+  if (basis.length > assetBasisLimit || new Set(basis.map(item => `${item.id}:${item.rev}`)).size !== basis.length)
     throw new Error('教材依据重复或超过上限。');
   return basis;
 }
@@ -404,13 +405,30 @@ export function freezeQuestionAssessment(asset: QuestionAsset, { id, rev }: Pick
 }
 
 export async function checkQuestionTeachingSources(read: AssetReader, asset: Pick<QuestionAsset, 'basis'>) {
-  for (const source of asset.basis ?? []) {
-    const pinned = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
-    const current = await read.fact(source.id, { mode: 'following' });
-    if (pinned.type !== source.type || pinned.accessEpoch !== source.epoch ||
-        ![pinned, current].every(opened => opened.purpose.includes('teaching') || opened.purpose.includes('all'))) {
-      throw new Error('题目来源未授权教学用途或依据已变化。');
+  const pending = [...(asset.basis ?? [])];
+  const checked = new Map<string, AssetBasis>();
+  const following = new Map<FactRef['id'], FactSnapshot>();
+  const authorized = (fact: FactSnapshot) => fact.purpose.includes('teaching') || fact.purpose.includes('all');
+  const unavailable = () => new AssetBasisError('题目来源未授权教学用途或依据已变化。');
+
+  while (pending.length) {
+    const source = pending.pop()!;
+    const key = `${source.id}:${source.rev}`;
+    const prior = checked.get(key);
+    if (prior) {
+      if (prior.type !== source.type || prior.epoch !== source.epoch) throw unavailable();
+      continue;
     }
+    if (checked.size >= assetBasisLimit) throw unavailable();
+    const pinned = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
+    const current = following.get(source.id) ?? await read.fact(source.id, { mode: 'following' });
+    if (pinned.ref.id !== source.id || pinned.ref.rev !== source.rev || pinned.type !== source.type ||
+        pinned.accessEpoch !== source.epoch || !authorized(pinned) || !authorized(current)) throw unavailable();
+    following.set(source.id, current);
+    checked.set(key, source);
+    const nested = pinned.type === assetType ? parseAsset(pinned.value).basis
+      : pinned.type === textbookPageType ? textbookPageFrom(pinned).basis : undefined;
+    if (nested) pending.push(...nested);
   }
 }
 

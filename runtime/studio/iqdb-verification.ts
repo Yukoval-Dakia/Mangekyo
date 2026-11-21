@@ -16,11 +16,30 @@ import {
 } from '../../modules/content/question-verification.ts';
 import deriver from '../../modules/content/derivers/question-verification.ts';
 import { purpose } from './identity.ts';
-import type { openLocalQuestionEffect } from './iqdb-local-effect.ts';
+import { openLocalQuestionVerifier } from '../../executors/teaching/iqdb-local-effect.ts';
+import { bindQuestionExecution, independentQuestionExecutions, matchesQuestionExecution, verificationSteps } from '../../modules/content/question-effects.ts';
 
 const policy: CandidatePolicy = { slot: { type: questionVerificationType }, deriver: deriver.name, purpose };
 const propagation = createPropagationHooks([]);
 type QuestionVersion = NonNullable<ReturnType<typeof parseQuestionVerificationKey>>;
+
+export async function openLocalQuestionEffects(setting?: string) {
+  if (!setting) return undefined;
+  try {
+    const paths: unknown = JSON.parse(setting);
+    if (!paths || typeof paths !== 'object' || Array.isArray(paths) || Object.keys(paths).length !== verificationSteps.length)
+      throw new Error('核验需要四个独立模块。');
+    const entries = await Promise.all(verificationSteps.map(async ({stepKey}) =>
+      [stepKey, await openLocalQuestionVerifier(Reflect.get(paths, stepKey))] as const));
+    if (!independentQuestionExecutions(entries.map(([, target]) => target.execution)))
+      throw new Error('多个核验步骤使用了同一可执行模块。');
+    const targets: ReadonlyMap<string, Awaited<ReturnType<typeof openLocalQuestionVerifier>>> = new Map(entries);
+    return targets;
+  } catch {
+    console.error('题库独立核验不可用。请为三次求解和契约验收分别配置本机核验模块。');
+    return undefined;
+  }
+}
 
 export function readCurrentQuestionVerification(tx: ReadTransaction): ReadContext['slot'] {
   return async <Value>(slot: Parameters<ReadContext['slot']>[0], { mode }: Parameters<ReadContext['slot']>[1]) => {
@@ -58,7 +77,7 @@ export async function enqueueQuestionVerification(tx: DbTransaction, version: Qu
 }
 
 export async function executeQuestionVerification(
-  db: Db, ref: WorkRef, host: Awaited<ReturnType<typeof openLocalQuestionEffect>>, terminal = false,
+  db: Db, ref: WorkRef, host: Awaited<ReturnType<typeof openLocalQuestionEffects>>, terminal = false,
 ) {
   if (!host || terminal) { await failWork(db, ref); return; }
   const scope = { learner: learnerId(ref.learner), purpose };
@@ -69,12 +88,19 @@ export async function executeQuestionVerification(
   const snapshot = await gatherSnapshot(db, scope, async ctx => {
     const { state } = await readQuestionState(ctx.read, version.id);
     if (state.recheck !== version.recheck) throw new FactNotFoundError('题目复验代次已变。');
-    return gather(ctx, version);
+    const plan = await gather(ctx, version);
+    return { ...plan, effects: plan.effects.map(request => bindQuestionExecution(request, host.get(request.stepKey)!.execution)) };
   });
   const sealed = await sealCandidate(db, ref, policy, snapshot);
   if (sealed.kind !== 'sealed') return;
+  const targets = sealed.plan.effects.map(request => ({request, target: host.get(request.stepKey)}));
+  if (targets.some(({request, target}) => !target || !matchesQuestionExecution(request, target.execution))) {
+    await submitCandidate(db, ref, policy, sealed.id, {kind:'failed', reason:'已封存的核验模块已变更，请重新核验。'}, propagation);
+    return;
+  }
   const receipts: QuestionVerificationEffectReceipt[] = [];
-  for (const request of sealed.plan.effects) {
+  for (const { request, target } of targets) {
+    if (!target) throw new Error('缺少已封存的核验模块。');
     const authorize = async (tx: ReadTransaction) => {
       if (!await readReadyWork(tx, ref) || (await revalidateManifest(tx, sealed.manifest)).kind !== 'valid')
         throw new FactNotFoundError('核验依据已变化。');
@@ -87,11 +113,11 @@ export async function executeQuestionVerification(
       const { result } = await db.tx(scope, async tx => {
         await lockLearner(tx, tx.learner);
         await authorize(tx);
-        return { result: host.invoke(request, invocationId).then(value => ({ value }), () => null) };
+        return { result: target.invoke(request, invocationId).then(value => ({ value }), () => null) };
       });
       const reply = await result;
       if (!reply) throw new Error('核验接收方未给出确定回执。');
-      return { ...questionVerificationEffectResult(invocationId, reply.value), execution: host.execution };
+      return questionVerificationEffectResult(invocationId, reply.value, target.execution);
     }, authorize, { manifest: sealed.manifest, work: ref });
     if (receipt.kind === 'unknown') {
       await submitCandidate(db, ref, policy, sealed.id, { kind: 'failed', reason: '独立核验回执待核对。' }, propagation);
