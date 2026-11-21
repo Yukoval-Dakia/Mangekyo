@@ -5,7 +5,7 @@ import { useDraftWatermark } from './draft-watermark';
 import { bindDeletionWatermark, observedDeletionWatermark, subscribeDeletionWatermark } from './deletion-watermark';
 import { enqueue } from './offline-queue';
 import { forTask, selectedRoute } from './model-route';
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import type {
   WorkbookDetail as BaseDetail,
   WorkbookQuestionView as BaseQuestion,
@@ -18,13 +18,14 @@ import { PageTitle, ReadState, useResource, type Material, type Resource } from 
 import { ExpectedView } from './expected-view';
 import { RecordQuestionLink } from './current-record';
 import { AttemptResearch } from './research';
+import { RecurringErrorStrip, type ErrorCluster } from './recurring-error-strip';
 import { WorkbookCorrection } from './workbook-correction';
 import {clearWorkbookTiming, type ItemPacing} from './workbook-pacing';
 import {confirmsPaperSubmission, forgetSubmission, freezeSubmission, readFrozenSubmission} from './workbook-submission';
 import { observePaperTime } from './workbook-duration';
 import { QuestionContext } from './reading-drawer';
 import type { ReadingContextEntry } from './paper-reading-capsule';
-import { QuestionPresentation, useVisibleDocument, useWorkbookPresentation } from './workbook-presentation';
+import { QuestionPresentation, useQuestionPresentation, useVisibleDocument, useWorkbookPresentation } from './workbook-presentation';
 import { SealedPracticeAuthor } from './sealed-practice';
 import { WorkbookAccess } from './workbook-access';
 import './workbook.css';
@@ -739,6 +740,9 @@ function SelfCheckMarks({
   );
 }
 
+type ClusterFeedback = WorkbookDetail['attempts'][number]['feedback'][number] & {recurringErrorCluster?: ErrorCluster};
+type ClusterPaper = Pick<WorkbookDetail, 'id'> & {attempts: {id: string; rev?: number; paperRev?: number; feedback: ClusterFeedback[]}[]};
+
 function FeedbackItem({
   paperId,
   attemptId,
@@ -757,7 +761,7 @@ function FeedbackItem({
   attemptId: string;
   question: WorkbookQuestionView;
   showFeedback: boolean;
-  feedback: WorkbookDetail['attempts'][number]['feedback'][number];
+  feedback: ClusterFeedback;
   assessments: WorkbookRubricAssessmentView[];
   onAssess: (questionId: string, query?: string) => void;
   allowSearch: boolean;
@@ -767,6 +771,15 @@ function FeedbackItem({
   correction?: { attemptRev: number; recorded: boolean } | undefined;
 }) {
   const [query, setQuery] = useState('');
+  const presentation = useQuestionPresentation(question.id);
+  const attemptRev = presentation?.attempt?.id === attemptId ? presentation.attempt.rev : undefined;
+  const paperRev = presentation?.paper.id === paperId ? presentation.paper.rev : undefined;
+  const reopen = useCallback(async (signal: AbortSignal) => {
+    const paper = await api<ClusterPaper>('/papers/' + encodeURIComponent(paperId), {signal, cache: 'no-store'});
+    if (paper.id !== paperId || !paperRev || !attemptRev) return;
+    const attempt = paper.attempts.find(row => row.id === attemptId && row.rev === attemptRev && row.paperRev === paperRev);
+    return attempt?.feedback.find(row => row.questionId === question.id)?.recurringErrorCluster;
+  }, [paperId, attemptId, attemptRev, paperRev, question.id]);
   const assessment = assessments.at(-1);
   const shownResult = showFeedback ? assessment?.verdict ?? feedback.result : undefined;
   const className = shownResult === 'correct'
@@ -780,6 +793,8 @@ function FeedbackItem({
         {showFeedback && <span>{assessment ? assessmentLabels[assessment.verdict] : resultLabels[feedback.result]}</span>}
         <span className="workbook-feedback-question">{question.prompt}</span>
       </header>
+      {attemptRev && paperRev && (shownResult === 'incorrect' || shownResult === 'partial') &&
+        <RecurringErrorStrip initial={feedback.recurringErrorCluster} reopen={reopen}/>}
       <QuestionContext itemId={question.id} historical readingContext={question.readingContext} source={sealedPractice || question.kind === 'bank' ? undefined : question.sourceQuestionRef}
         referencesAllowed={showFeedback} previous={feedback.answer !== null && <p>我的作答 · {String(feedback.answer)}</p>} />
       {question.kind === 'bank' && <BankOrigin source={question.sourceQuestionRef}/>}
