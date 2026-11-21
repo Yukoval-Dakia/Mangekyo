@@ -19,7 +19,8 @@ export type SentinelAccess = {
 export type SentinelFact = { fact: FactSnapshot; witness: BusWitness };
 
 function admitted(access: SentinelAccess, {fact, witness}: SentinelFact) {
-  return access.purpose === researchPurpose && fact.ref.learner === access.learner && witness.learner === access.learner &&
+  return access.purpose === researchPurpose && access.recipient.trim().length > 0 &&
+    fact.ref.learner === access.learner && witness.learner === access.learner &&
     fact.ref.id === witness.id && fact.ref.rev === witness.rev && fact.type === witness.type &&
     fact.accessEpoch === witness.accessEpoch && fact.purpose.includes(researchPurpose) && access.maySend(fact) === true;
 }
@@ -121,9 +122,10 @@ type Coverage = 'complete' | 'partial' | 'unknown' | 'unavailable';
 // Coverage is the owner's attestation for the authorized view. Candidate totals
 // before permission checks cannot establish either completeness or missing history.
 export function sentinelReadRegion<T>(items: readonly T[], coverage: Coverage) {
+  if (coverage === 'unavailable') return { state: 'unavailable' as const, reason: 'authorization_or_coverage' as const, items: [] };
+  if (coverage === 'unknown') return { state: 'unknown' as const, reason: 'missing_evidence' as const, items: [] };
   if (items.length) return { state: coverage === 'complete' ? 'available' as const : 'partial' as const, items };
   if (coverage === 'complete') return { state: 'empty' as const, items };
-  if (coverage === 'unknown') return { state: 'unknown' as const, reason: 'missing_evidence' as const, items };
   return { state: 'unavailable' as const, reason: 'authorization_or_coverage' as const, items };
 }
 
@@ -141,7 +143,7 @@ export type SentinelReadBasis = {
 // TTL, current forecast selection) or builds a fresh projection under the lock.
 export async function sentinelBasisCurrent(access: SentinelAccess, prepared: SentinelReadBasis, deletionWatermark: string,
   reopen: (witness: BusWitness) => Promise<FactSnapshot | undefined>) {
-  if (access.purpose !== researchPurpose || prepared.scope.learner !== access.learner ||
+  if (!access.recipient.trim() || access.purpose !== researchPurpose || prepared.scope.learner !== access.learner ||
       prepared.scope.purpose !== access.purpose || prepared.scope.recipient !== access.recipient ||
       prepared.deletionWatermark !== deletionWatermark) return false;
   for (const witness of prepared.facts) {
