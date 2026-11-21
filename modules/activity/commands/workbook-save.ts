@@ -49,7 +49,7 @@ export default defineCommand({
   write: async (ctx, input) => {
     if ('practice' in input && input.practice) {
       const {id, practice} = input;
-      const question = await openArithmeticPractice(ctx.read,practice.question);
+      const question = await openArithmeticPractice(ctx.read,practice.question,undefined,storagePurpose);
       if (!question || id !== await arithmeticPracticePaperId(practice.question))
         throw new WorkbookSourceMismatch('来源题没有可发行的封闭练习版本。');
       const {id:sourceId,rev} = question.source.ref;

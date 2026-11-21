@@ -19,9 +19,11 @@ export function parseQuestionWrite(input: unknown) {
   const value = record(input);
   const id = pageId(value.id);
   if (value.arithmeticPractice !== undefined) {
-    fields(value, 'id', 'arithmeticPractice');
+    fields(value, 'id', 'arithmeticPractice', 'purpose');
+    if (value.purpose !== undefined && value.purpose !== 'storage' && value.purpose !== 'teaching')
+      throw new Error('题目用途无效。');
     const practice = arithmeticPractice(value.arithmeticPractice);
-    return {id, asset: arithmeticQuestion(practice).asset, teaching: true, arithmeticPractice: practice};
+    return {id, asset: arithmeticQuestion(practice).asset, teaching: value.purpose !== 'storage', arithmeticPractice: practice};
   }
   if (value.expectedRev === undefined) {
     fields(value, 'id', 'asset', 'purpose');
@@ -107,7 +109,7 @@ export async function writeQuestion(ctx: CommandContext, input: ReturnType<typeo
       if (!(error instanceof FactNotFoundError)) throw error;
     });
     if (current) {
-      if (!await openArithmeticPractice(ctx.read,id,current)) throw new Error('当前版本不可用于整数练习。');
+      if (!await openArithmeticPractice(ctx.read,id,current,'storage')) throw new Error('当前版本不可用于整数练习。');
       return [];
     }
   }

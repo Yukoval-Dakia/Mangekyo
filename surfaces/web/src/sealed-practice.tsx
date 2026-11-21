@@ -36,7 +36,8 @@ export function SealedPracticeAuthor() {
           </select></label>
           <label className="field"><span>第二个整数</span><input required type="number" name="right" min={1} max={999} disabled={busy} /></label>
         </div>
-        <label><input type="checkbox" name="allowTeaching" required disabled={busy} /> 允许伴学使用这道题的题面</label>
+        <label><input type="checkbox" name="allowTeaching" disabled={busy} /> 允许伴学使用新题的题面</label>
+        <p className="field-help">已有练习会沿用原权限，可在试卷内修改。</p>
         <div><button className="tonal-button" disabled={busy}>{busy ? '正在打开…' : '保存并开练'}</button></div>
         {error && <p role="alert">{error}</p>}
       </form>

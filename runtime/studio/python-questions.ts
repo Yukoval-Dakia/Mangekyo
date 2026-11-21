@@ -2,7 +2,7 @@ import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } fr
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import type { WorkbookSourceQuestionRef } from '../../modules/activity/workbook-values.ts';
-import { workbookAnswerDisplayCandidates } from '../../modules/activity/evidence-read.ts';
+import { licensedQuestionCopy, workbookAnswerDisplayCandidates } from '../../modules/activity/evidence-read.ts';
 import { arithmeticPracticePaperId, practiceCustodyId, practiceCustodyType, readPracticeCustody } from '../../modules/activity/sealed-practice.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { workbookPaper } from '../../modules/activity/workbook-values.ts';
@@ -30,7 +30,8 @@ async function practiceExposure(tx: ReadTransaction, ref: Parameters<typeof arit
   const record = await readPracticeCustody(read,await practiceCustodyId(id));
   if (!record || record.value.question.id !== ref || record.value.paper.id !== id) return;
   if (record.value.kind === 'sealed' && record.value.question.rev !== version) {
-    const fact = await read.fact(ref,{mode:'pinned',rev:record.value.question.rev});
+    const licensed = await licensedQuestionCopy(tx,record.value.question,purpose);
+    const fact = await read.fact(ref,{mode:'pinned',rev:licensed.rev});
     if (!await openArithmeticPractice(read,ref,fact)) return;
     track(fact,'pinned');
   }
