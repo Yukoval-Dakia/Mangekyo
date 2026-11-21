@@ -80,6 +80,7 @@ function excerpt(text: string) {
 
 /** Read inside one authorized snapshot. The host enumerates complete relation candidates
  * for this exact root and binds all reads to the real learner, purpose and recipient.
+ * Include edges still pinned to pre-merge concepts that follow to the current endpoints.
  * Re-enumerate and rerun before display or issue. Keep the result and witnesses server-side.
  * Count weakness across all returned relations; absence of summary or quickCheck grants
  * no remediation. The learner domain can supply a separately authorized past-stable item. */
@@ -143,7 +144,6 @@ Promise<readonly PrerequisiteRadarRow[] | undefined> {
   }
 
   async function summaryFor(concept: KnowledgeSourceUse): Promise<Summary | undefined> {
-    const matches = (endpoint: KnowledgeEndpoint) => wholeConcept(endpoint) && endpoint.sourceUse.id === concept.id;
     const isBlock = (endpoint: KnowledgeEndpoint) => endpoint.blockId !== undefined &&
       (endpoint.kind === 'chapter' || endpoint.kind === 'note');
     for (const id of sortedIds(summaryEdges.edgeIds)) {
@@ -151,13 +151,12 @@ Promise<readonly PrerequisiteRadarRow[] | undefined> {
       const scope = scoped(proof);
       const summary = await available(async () => {
         const opened = await openEdge(scope, id, ({ kind, from, to }) =>
-          (kind === 'explains' && ((isBlock(from) && matches(to)) || (matches(from) && to.kind === 'chapter' && isBlock(to)))) ||
-          (kind === 'maps_to_chapter' && matches(from) && to.kind === 'chapter' && isBlock(to)));
+          (kind === 'explains' && ((isBlock(from) && wholeConcept(to)) || (wholeConcept(from) && to.kind === 'chapter' && isBlock(to)))) ||
+          (kind === 'maps_to_chapter' && wholeConcept(from) && to.kind === 'chapter' && isBlock(to)));
         if (!opened) return;
         const { from, to } = opened.projected;
-        const linked = matches(from) ? from : to;
+        const [linked, endpoint] = wholeConcept(from) ? [from, to] : [to, from];
         if (knowledgeUseKey(linked.sourceUse) !== knowledgeUseKey(concept)) return;
-        const endpoint = matches(from) ? to : from;
         if (!endpoint.blockId) return;
         const pin = { ...endpoint.sourceUse, blockId: endpoint.blockId };
         if (endpoint.kind === 'chapter') {
@@ -203,7 +202,7 @@ Promise<readonly PrerequisiteRadarRow[] | undefined> {
         const proof: Proof = new Map();
         const scope = scoped(proof);
         const opened = await openEdge(scope, id, ({ kind, from, to }) =>
-          kind === 'prereq_of' && wholeConcept(from) && wholeConcept(to) && roots.has(to.sourceUse.id));
+          kind === 'prereq_of' && wholeConcept(from) && wholeConcept(to));
         if (!opened) return;
         const { from, to } = opened.projected;
         const rootBasis = roots.get(to.sourceUse.id);
