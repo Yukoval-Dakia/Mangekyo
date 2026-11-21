@@ -40,6 +40,7 @@ const RESTART_DELAY_MS = 250;
 
 export type PythonDeriverHost = {
   readonly derive: (deriver: string, input: unknown) => Promise<DeriveResult>;
+  readonly warmup: () => void;
   readonly close: () => Promise<void>;
 };
 
@@ -138,6 +139,16 @@ export function createPythonDeriverHost(options: PythonDeriverOptions = {}): Pyt
     return spawned;
   }
 
+  function warmup() {
+    if (!closed && !restartTimer) {
+      try {
+        ensureChild();
+      } catch {
+        // The real derive path reports process startup failures after validation.
+      }
+    }
+  }
+
   async function derive(deriver: string, input: unknown): Promise<DeriveResult> {
     if (closed) return { kind: 'failed', reason: 'python deriver host is closed' };
     const methodVersion = getMethodVersion(deriver);
@@ -201,5 +212,5 @@ export function createPythonDeriverHost(options: PythonDeriverOptions = {}): Pyt
     }
   }
 
-  return { derive, close };
+  return { derive, warmup, close };
 }

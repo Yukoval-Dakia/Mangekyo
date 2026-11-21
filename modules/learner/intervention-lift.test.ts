@@ -28,31 +28,22 @@ function pair(i: number): InterventionPair {
   return { ...identity, intervention: ref(3*i+1), deliveredAt: '2026-01-02T00:00:00.000Z',
     plannedBaselineItem: 'pre', plannedPosttestItem: target.item, comparisonKey: assessment.comparisonKey,
     baseline: { ...assessment, submission: ref(3*i+2), item: 'pre', occurredAt: '2026-01-01T00:00:00.000Z', score: 0 },
-    posttest: { ...assessment, submission: ref(3*i+3), item: target.item,
-      occurredAt: i === 0 ? asOf : '2026-01-05T00:00:00.000Z', score: 1 } };
+    posttest: { ...assessment, submission: ref(3*i+3), item: target.item, occurredAt: i === 0 ? asOf : '2026-01-05T00:00:00.000Z', score: 1 } };
 }
 const positive = Array.from({ length: 14 }, (_, i) => pair(i));
 const replacePosttest = (change: Partial<NonNullable<InterventionPair['posttest']>>) =>
   positive.map(row => ({...row, posttest: {...row.posttest!, ...change}}));
 const negative = replacePosttest({score: 0}).map(row => ({...row, baseline: {...row.baseline!, score: 1}}));
 const input = (interventions: InterventionPair[], at = asOf): LiftInput => ({ ...identity, interventions, asOf: at });
-const python = (inputs: readonly unknown[]) => pythonLines(['-c', [
-  'import json,sys; sys.path.insert(0, ".")',
-  'from intervention_lift import derive,is_lift_input',
-  'for value in map(json.loads, sys.stdin): print(json.dumps(derive(value, method_version="intervention-lift@1") if is_lift_input(value) else None))',
-].join('\n')], inputs);
+const python = (inputs: readonly unknown[]) => pythonLines(['-c',
+  'import json,sys; sys.path.insert(0, ".")\nfrom intervention_lift import derive,is_lift_input\nfor value in map(json.loads, sys.stdin): print(json.dumps(derive(value, method_version="intervention-lift@1") if is_lift_input(value) else None))'], inputs);
 
 it('TS 与确定性 Python 在固定截止时间按相同配对和缺失边界计算', () => {
-  const cases = [input(positive), input(negative), input(positive.slice(0, 7)),
-    input(positive, '2026-01-15T23:59:59.999Z'),
-    input(replacePosttest({novelty: 'same'})),
-    ...(['assisted', 'unknown'] as const).map(independence => input(replacePosttest({independence}))),
+  const cases = [input(positive), input(negative), input(positive.slice(0, 7)), input(positive, '2026-01-15T23:59:59.999Z'),
+    input(replacePosttest({novelty: 'same'})), ...(['assisted', 'unknown'] as const).map(independence => input(replacePosttest({independence}))),
     input(positive.map((row, i) => i < 6 ? { ...row, posttest: null } : row)),
-    ...['2026-01-05T00:00:00.001Z', '2026-01-04T23:59:59.999Z', '2026-01-16T00:00:00.001Z']
-      .map(occurredAt => input(replacePosttest({occurredAt}))),
-  ];
-  const invalids = [{...cases[0], asOf: '2026-02-29T00:00:00.000Z'},
-    {...cases[0], version: true}, {...cases[0], strategyId: ' '},
+    ...['2026-01-05T00:00:00.001Z', '2026-01-04T23:59:59.999Z', '2026-01-16T00:00:00.001Z'].map(occurredAt => input(replacePosttest({occurredAt})))];
+  const invalids = [{...cases[0], asOf: '2026-02-29T00:00:00.000Z'}, {...cases[0], version: true}, {...cases[0], strategyId: ' '},
     {...cases[0], interventions: [{...positive[0]!, intervention: {...positive[0]!.intervention, accessEpoch: '01'}}]}];
   const expected = cases.map(measureInterventionLift);
   expect(expected.map(row => row.kind === 'value' ? row.value.verdict : 'unknown')).toEqual([
@@ -84,10 +75,8 @@ it('正式后测适配器只计独立分数并检查冻结预测身份及截止�
     novelty: 'fresh-context' as const, exposure: {kind: 'independent' as const}};
   const ctx = {learner: submission.learner, snapshotTick: observation.admittedAt, read: {
     fact: async () => snapshot(submission, {}, [purpose]),
-    slot: async () => ({outcome: {kind: 'value', value: {forecastId, status: 'observed', observation}}}),
-  }} as unknown as GatherContext;
-  const reconcile = (id: number) => reconciledLiftAssessment(ctx, submission,
-    {...target, key: 'posttest', forecastId: derivationId(ref(id).id)});
+    slot: async () => ({outcome: {kind: 'value', value: {forecastId, status: 'observed', observation}}}) }} as unknown as GatherContext;
+  const reconcile = (id: number) => reconciledLiftAssessment(ctx, submission, {...target, key: 'posttest', forecastId: derivationId(ref(id).id)});
   await expect(reconcile(2)).resolves.toMatchObject({independence: 'independent', score: 1, novelty: 'transfer'});
   await expect(reconcile(3)).resolves.toBeNull();
   const assess = (change: Partial<Parameters<typeof liftAssessment>[2]>) =>

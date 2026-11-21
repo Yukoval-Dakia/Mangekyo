@@ -20,24 +20,20 @@ const correction = { source: ref(2, 'test.recordedCorrection'), originalQuestion
   admittedAt: '10' as Tick, correctedAt: at(0) };
 const proof = ref(6, 'content.knowledgeEdgeEvidence');
 const question = ref(4, 'activity.workspaceEntry');
-const variant: CorrectionVariant = {
-  question, edge: ref(5, 'content.knowledgeEdge'), kind: 'variant_of',
-  from: correction.originalQuestion, to: question, verification: proof,
-  basis: [proof], variant: { relation: 'numbers_only', spoilsNext: 'none' }, history: 'unseen',
-};
+const variant: CorrectionVariant = { question, edge: ref(5, 'content.knowledgeEdge'), kind: 'variant_of',
+  from: correction.originalQuestion, to: question, verification: proof, basis: [proof],
+  variant: { relation: 'numbers_only', spoilsNext: 'none' }, history: 'unseen' };
 
 it('uses a controlled frozen item and the actual displayed/opened help classification at submission', async () => {
   const source = ref(7, 'activity.retentionPosttestSubmission');
   const issuance = ref(8, 'activity.retentionPosttest');
   const authorization = ref(9, 'test.memoryEvidenceConsent');
-  const belief: ActiveMisconception = {
-    ref: ref(10, 'companion.memoryAssertion'), kind: 'misconception', conceptIds: ['fraction'],
-    stage: 'supported', sticky: false, evidenceSourceIds: [],
-  };
+  const belief: ActiveMisconception = { ref: ref(10, 'companion.memoryAssertion'), kind: 'misconception',
+    conceptIds: ['fraction'], stage: 'supported', sticky: false, evidenceSourceIds: [] };
   const cutoff = { tick: '13' as Tick, at: at(30_000) };
   const mount = { activityId: issuance.id, issuance, item: { itemId: 'q' } };
-  const shown = { ref: ref(11, 'activity.helpExposure'), admittedAt: '12' as Tick,
-    value: { kind: 'displayed', mount, content: proof, alsoAppliesTo: [], step: { kind: 'solution', order: 1 } } } satisfies AdmittedHelpEvent;
+  const shown = { ref: ref(11, 'activity.helpExposure'), admittedAt: '12' as Tick, value: { kind: 'displayed',
+    mount, content: proof, alsoAppliesTo: [], step: { kind: 'solution', order: 1 } } } satisfies AdmittedHelpEvent;
   let revoked: BusWitness | undefined;
   const reopen: CorrectionReopen = async (ref, purpose) => ref.id !== revoked?.id ? snapshot(ref, {}, [purpose]) : undefined;
   const evidence = (at = cutoff.at, events: readonly AdmittedHelpEvent[] = [], novelty: 'isomorphic' | 'same' = 'isomorphic', confidence?: number) => {
@@ -45,14 +41,11 @@ it('uses a controlled frozen item and the actual displayed/opened help classific
     const slice = activityEvidenceSlice(cutoff.tick, at, undefined,
       [{ submission: source, occurredAt: at, concepts: belief.conceptIds, novelty, helpLevel, result: 'correct', score: 1 }]);
     return { ...slice, events: slice.events.map(event => event.help_level === 'unknown' ? event : {
-      ...event, claim_ids: [belief.ref.id], ...(confidence === undefined ? {} : {confidence}),
-    }) };
+      ...event, claim_ids: [belief.ref.id], ...(confidence === undefined ? {} : {confidence}) }) };
   };
-  const observation: CorrectionObservation = {
-    source, issuance, issuedAt: '11' as Tick, itemId: mount.item.itemId, authorization, basis: [],
-    admittedAt: cutoff.tick, startedAt: correction.correctedAt, through: at(60_000), window: 'immediate', variant,
-    cutoff, slice: evidence(), fragment: { anchor: 'q', excerpt: '12' },
-  };
+  const observation: CorrectionObservation = { source, issuance, issuedAt: '11' as Tick, itemId: mount.item.itemId,
+    authorization, basis: [], admittedAt: cutoff.tick, startedAt: correction.correctedAt, through: at(60_000),
+    window: 'immediate', variant, cutoff, slice: evidence(), fragment: { anchor: 'q', excerpt: '12' } };
   const result = (changes: Partial<CorrectionObservation> = {}, selected = belief) =>
     correctionContradictions(reopen, correction, { ...observation, ...changes }, [selected]);
 
@@ -92,10 +85,7 @@ it('rechecks the 24h reservation against the pinned question and current authori
   withLearnerDatabase(learner, async db => {
     const { source, originalQuestion } = correction;
     const apply = factWriter(db, {learner, purpose: 'storage'});
-    await apply([
-      seed(source, ['storage', 'background-research']),
-      seed(originalQuestion, ['storage', 'teaching']),
-    ], 20);
+    await apply([seed(source, ['storage', 'background-research']), seed(originalQuestion, ['storage', 'teaching'])], 20);
     const reopen = (tx: ReadTransaction): CorrectionReopen => (ref, purpose) =>
       readable(() => createAuthorizedFactReader(tx, purpose, () => true).reopen(ref));
     const recorded = { ...correction, originalQuestion: { ...originalQuestion, mode: 'pinned' as const } };
