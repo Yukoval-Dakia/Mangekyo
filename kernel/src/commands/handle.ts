@@ -37,6 +37,7 @@ type StoredCommand = {
 type CommandDeclaration = {
   readonly schema: ValueSchema<unknown>;
   readonly destructive: boolean;
+  readonly requiredPurpose?: string;
   readonly read: ((ctx: CommandContext) => unknown) | undefined;
   readonly write: (ctx: CommandContext, input: unknown, read: unknown) => unknown;
 };
@@ -49,11 +50,12 @@ type CommandModule = {
 const terminalStates = new Set(['done', 'undone', 'rejected']);
 
 function declarationFromRecord(value: Record<string, unknown>): CommandDeclaration {
-  const { schema, destructive, read, write } = value;
+  const { schema, destructive, requiredPurpose, read, write } = value;
   if (
     typeof schema !== 'object' || schema === null ||
     !('parse' in schema) || typeof schema.parse !== 'function' ||
     typeof destructive !== 'boolean' ||
+    (requiredPurpose !== undefined && (typeof requiredPurpose !== 'string' || !requiredPurpose.trim())) ||
     (read !== undefined && typeof read !== 'function') ||
     typeof write !== 'function'
   ) {
@@ -62,6 +64,7 @@ function declarationFromRecord(value: Record<string, unknown>): CommandDeclarati
   return {
     schema: schema as ValueSchema<unknown>,
     destructive,
+    ...(requiredPurpose !== undefined ? { requiredPurpose } : {}),
     read: read as CommandDeclaration['read'],
     write: write as CommandDeclaration['write'],
   };
@@ -135,6 +138,17 @@ async function findStoredCommand(
   return result.rows[0];
 }
 
+async function beginCommand(tx: DbTransaction, request: CommandRequest, declaration: CommandDeclaration) {
+  await lockLearner(tx, request.learner);
+  await checkLifetime(tx, request);
+  const existing = await findStoredCommand(tx, request.learner, request.id);
+  if (existing) return checkReplay(existing, request);
+  if (declaration.requiredPurpose !== undefined && request.purpose !== declaration.requiredPurpose) {
+    throw new Error(`Command ${request.type} requires purpose ${declaration.requiredPurpose}`);
+  }
+  return null;
+}
+
 async function insertCommand(
   tx: DbTransaction,
   request: CommandRequest,
@@ -164,10 +178,8 @@ async function saveProposal(
   hooks: CommandRuntimeOptions['hooks'],
 ): Promise<CommandReceipt> {
   return db.tx({ learner: request.learner }, async (tx) => {
-    await lockLearner(tx, request.learner);
-    await checkLifetime(tx, request);
-    const existing = await findStoredCommand(tx, request.learner, request.id);
-    if (existing) return checkReplay(existing, request);
+    const replay = await beginCommand(tx, request, declaration);
+    if (replay) return replay;
 
     const input = request.input;
     if (input && typeof input === 'object' && !Array.isArray(input)) {
@@ -271,10 +283,8 @@ async function executeCommand(
   writeTarget: FactWriteTarget,
 ): Promise<CommandReceipt> {
   return db.tx({ learner: request.learner }, async (tx) => {
-    await lockLearner(tx, request.learner);
-    await checkLifetime(tx, request);
-    const existing = await findStoredCommand(tx, request.learner, request.id);
-    if (existing) return checkReplay(existing, request);
+    const replay = await beginCommand(tx, request, command.declaration);
+    if (replay) return replay;
 
     const writes = await declaredWrites(tx, request, command, request.input, options.bindCommandRead);
     return commitCommand(tx, request, options, writes, writeTarget);
@@ -318,10 +328,8 @@ export function createCommandHandler(
       const command = commands.get(request.type);
       if (!command?.declaration.destructive) throw new Error('Command does not support proposals');
       return db.tx({learner:request.learner}, async tx => {
-        await lockLearner(tx, tx.learner);
-        await checkLifetime(tx, request);
-        const existing = await findStoredCommand(tx, tx.learner, request.id);
-        if (existing) return checkReplay(existing, request);
+        const replay = await beginCommand(tx, request, command.declaration);
+        if (replay) return replay;
         const [proposal] = await readCommandProposals(tx, request.type, {}, proposalId);
         if (!proposal) throw new Error('Proposal not found');
         if (proposal.state !== 'pending') throw new Error('Proposal already decided');
