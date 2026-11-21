@@ -89,6 +89,7 @@ export type VisionPaperLlmCallResult = {
   readonly model: string;
   readonly normalized: NormalizedVisionImage;
   readonly elapsedMs: number;
+  readonly finishReason?: string | null | undefined;
   readonly usage?:
     | {
         readonly promptTokens?: number;
@@ -98,37 +99,21 @@ export type VisionPaperLlmCallResult = {
     | undefined;
 };
 
-const defaultTimeoutMs = 180_000;
+const defaultTimeoutMs = 90_000;
+const defaultMaxTokens = 16_384;
+const maxRetryTokens = 32_768;
+const minRetryBudgetMs = 20_000;
 
 const defaultVisionSystemPrompt =
-  '你是一位严谨的试卷图像结构化识别引擎。你的任务是逐题还原试卷照片里的全部内容，仅输出一个严格的 JSON 对象，不要输出任何 JSON 以外的文字或 Markdown 围栏。';
+  '你是严谨的试卷结构化OCR引擎。只输出单个合法JSON对象，禁止Markdown围栏与多余文字；直接忠实转写，不要冗长思考。';
 
-const defaultVisionUserPrompt = `请把这张试卷照片结构化识别为严格 JSON。要求：
-1. 输出单个 JSON 对象，禁止 Markdown 代码块围栏、禁止任何解释性文字。
-2. JSON 结构：
-{
-  "version": "vision-paper-ocr-v1",
-  "paperTitle": string | null,
-  "subject": string | null,
-  "pageNote": string | null,
-  "questions": [
-    {
-      "number": string,
-      "questionType": "single_choice" | "multiple_choice" | "fill_blank" | "short_answer" | "calculation" | "proof" | "code" | "other",
-      "stem": string,
-      "options": [{ "label": string, "text": string }],
-      "studentAnswer": { "status": "present" | "unclear" | "absent", "text": string | null, "note"?: string },
-      "redInk": { "verdict": "correct" | "wrong" | "partial" | "none" | "unclear", "marks": string[], "correction": string | null, "score": string | null },
-      "unclearSegments": string[]
-    }
-  ],
-  "freeformText": string | null,
-  "warnings": string[]
-}
-3. 所有数学、物理、化学公式一律用精确 LaTeX（行内 $...$，独立公式 $$...$$），Python/代码与流程图逻辑逐字保留（代码块用三重反引号）。
-4. 黑色/蓝色手写作答（studentAnswer）与红色批改/订正/分数/对错符号（redInk）必须严格分离，不得混写。
-5. 看不清、反光或被遮挡的内容严禁编造，学生作答看不清必须如实标 {"status":"unclear","text":null} 并写入 unclearSegments；红笔看不清把 redInk.verdict 标为 "unclear"。
-6. 若为纯讲义/非题目材料，正文放 freeformText，questions 放空数组；两者至少其一非空。`;
+const defaultVisionUserPrompt = `请按双栏顺序完整识别这张试卷照片，直接输出严格 JSON：
+1. 仔细扫描整张图片（注意双栏排版：先左栏从上到下，再右栏从上到下；左栏末题的选项可能跨到右栏顶部），完整输出所有可见题目，不遗漏也不编造被裁切的题。
+2. 印刷题干与选项中的公式用精确 LaTeX（行内 $...$，独立公式 $$...$$）；代码与流程图逻辑用三重反引号逐字保留。
+3. 严格分离学生黑笔/铅笔作答（studentAnswer）与红笔批改/订正（redInk），不得混写。
+4. 反光、遮挡或潦草看不清处严禁猜测，学生作答标 {"status":"unclear","text":null} 并写入 unclearSegments；红笔看不清把 redInk.verdict 标为 "unclear"。
+5. 若为纯讲义/非题目材料，正文放 freeformText，questions 放空数组；两者至少其一非空。
+JSON 结构：{"version":"vision-paper-ocr-v1","paperTitle":string|null,"subject":string|null,"pageNote":string|null,"questions":[{"number":string,"questionType":"single_choice"|"multiple_choice"|"fill_blank"|"short_answer"|"calculation"|"proof"|"code"|"other","stem":string,"options":[{"label":string,"text":string}],"studentAnswer":{"status":"present"|"unclear"|"absent","text":string|null,"note"?:string},"redInk":{"verdict":"correct"|"wrong"|"partial"|"none"|"unclear","marks":string[],"correction":string|null,"score":string|null},"unclearSegments":string[]}],"freeformText":string|null,"warnings":string[]}`;
 
 function clampNumber(value: number | undefined, fallback: number, min: number, max: number) {
   if (value === undefined) return fallback;
@@ -244,7 +229,7 @@ export async function callVisionPaperOcr(input: VisionPaperLlmCallInput): Promis
     const body: JsonRecord = {
       model,
       messages: buildMessages(input, normalized.dataUrl),
-      max_tokens: clampNumber(config.maxTokens, 8192, 256, 128_000),
+      max_tokens: clampNumber(config.maxTokens, defaultMaxTokens, 256, 128_000),
       temperature: clampNumber(config.temperature, 0, 0, 2),
       stream: false,
     };
@@ -297,11 +282,13 @@ export async function callVisionPaperOcr(input: VisionPaperLlmCallInput): Promis
     throw new VisionOcrError('invalid_response', '强视觉模型返回了空的识别内容。');
   }
   const responseModel = typeof payload.model === 'string' && payload.model ? payload.model : model;
+  const finishReason = typeof first?.finish_reason === 'string' ? first.finish_reason : null;
   return {
     rawText,
     model: responseModel,
     normalized,
     elapsedMs,
+    finishReason,
     usage: parseUsage(payload.usage),
   };
 }
@@ -381,6 +368,167 @@ function fallbackReasonOf(error: unknown): string {
   return `强视觉识别失败：${message}`;
 }
 
+function stripLeadingFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = /^```(?:json|JSON)?\s*\r?\n?([\s\S]*?)(?:\r?\n?```)?$/.exec(trimmed);
+  return fenced?.[1] ?? trimmed;
+}
+
+/**
+ * When a vision model hits `finish_reason === 'length'` mid-JSON inside `"questions": [...]`,
+ * recover all fully closed question objects emitted before truncation so we keep crisp LaTeX
+ * output with an honest warning instead of throwing everything away into garbled fallback.
+ */
+export function repairTruncatedQuestionsJson(rawText: string): string | null {
+  const source = stripLeadingFence(rawText);
+  let searchFrom = 0;
+
+  while (searchFrom < source.length) {
+    const objStart = source.indexOf('{', searchFrom);
+    if (objStart < 0) return null;
+
+    let inString = false;
+    let escaped = false;
+    let depth = 0;
+    let questionsKeyStart = -1;
+    let questionsArrayStart = -1;
+    let expectingColon = false;
+    let expectingArray = false;
+    let stringStart = -1;
+    let scanEnd = source.length;
+
+    for (let i = objStart; i < source.length; i += 1) {
+      const ch = source[i]!;
+      if (inString) {
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') {
+          inString = false;
+          if (depth === 1 && stringStart >= 0) {
+            const key = source.slice(stringStart + 1, i);
+            if (key === 'questions') {
+              questionsKeyStart = stringStart;
+              expectingColon = true;
+            }
+          }
+          stringStart = -1;
+        }
+        continue;
+      }
+      if (expectingColon) {
+        if (ch === ':') { expectingColon = false; expectingArray = true; continue; }
+        if (/\s/.test(ch)) continue;
+        expectingColon = false;
+        questionsKeyStart = -1;
+      }
+      if (expectingArray) {
+        if (ch === '[') { questionsArrayStart = i; depth += 1; break; }
+        if (/\s/.test(ch)) continue;
+        expectingArray = false;
+        questionsKeyStart = -1;
+      }
+      if (ch === '"') {
+        inString = true;
+        stringStart = i;
+        continue;
+      }
+      if (ch === '{' || ch === '[') depth += 1;
+      else if (ch === '}' || ch === ']') {
+        depth -= 1;
+        if (depth <= 0) { scanEnd = i + 1; break; }
+      }
+    }
+
+    if (questionsArrayStart < 0 || questionsKeyStart < 0) {
+      searchFrom = Math.max(scanEnd, objStart + 1);
+      continue;
+    }
+
+    const recoveredQuestions: unknown[] = [];
+    inString = false;
+    escaped = false;
+    let itemDepth = 0;
+    let itemStart = -1;
+
+    for (let i = questionsArrayStart + 1; i < source.length; i += 1) {
+      const ch = source[i]!;
+      if (inString) {
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') {
+        if (itemDepth === 0) itemStart = i;
+        itemDepth += 1;
+        continue;
+      }
+      if (ch === '}') {
+        if (itemDepth === 0) break;
+        itemDepth -= 1;
+        if (itemDepth === 0 && itemStart >= 0) {
+          try {
+            const parsedItem: unknown = JSON.parse(source.slice(itemStart, i + 1));
+            if (parsedItem && typeof parsedItem === 'object' && !Array.isArray(parsedItem)) {
+              recoveredQuestions.push(parsedItem);
+            }
+          } catch {
+            // Ignore malformed element.
+          }
+          itemStart = -1;
+        }
+        continue;
+      }
+      if (ch === ']' && itemDepth === 0) break;
+    }
+
+    if (recoveredQuestions.length === 0) {
+      searchFrom = Math.max(scanEnd, objStart + 1);
+      continue;
+    }
+
+    let prefix: JsonRecord = {};
+    const rawPrefix = source.slice(objStart, questionsKeyStart).replace(/,\s*$/, '').trim();
+    if (rawPrefix.startsWith('{')) {
+      try {
+        const parsedPrefix: unknown = JSON.parse(`${rawPrefix}}`);
+        if (parsedPrefix && typeof parsedPrefix === 'object' && !Array.isArray(parsedPrefix)) {
+          prefix = parsedPrefix as JsonRecord;
+        }
+      } catch {
+        prefix = {};
+      }
+    }
+
+    return JSON.stringify({
+      version: typeof prefix.version === 'string' ? prefix.version : 'vision-paper-ocr-v1',
+      paperTitle: typeof prefix.paperTitle === 'string' ? prefix.paperTitle : null,
+      subject: typeof prefix.subject === 'string' ? prefix.subject : null,
+      pageNote: typeof prefix.pageNote === 'string' ? prefix.pageNote : null,
+      questions: recoveredQuestions,
+      freeformText: null,
+      warnings: [`视觉模型输出达到长度上限，已保留前 ${recoveredQuestions.length} 道完整识别的题目，尾部内容请核对原件。`],
+    });
+  }
+
+  return null;
+}
+
+function parseVisionOutput<TParsed>(
+  rawText: string,
+  parseStructuredOutput: ((rawText: string) => TParsed) | undefined,
+): TParsed {
+  if (parseStructuredOutput) {
+    return parseStructuredOutput(rawText);
+  }
+  const value = extractJsonObject(rawText);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new VisionOcrError('invalid_response', '强视觉模型响应不是 JSON 对象。');
+  }
+  return value as TParsed;
+}
+
 export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
   input: PhotoVisionExtractionInput<TParsed>,
 ): Promise<PhotoVisionExtractionResult<TParsed>> {
@@ -402,25 +550,74 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
 
   let normalized: NormalizedVisionImage | null = null;
   try {
-    const result = await callVisionPaperOcr({
+    const budgetMs = clampNumber(input.visionConfig.timeoutMs, defaultTimeoutMs, 1000, 600_000);
+    const initialMaxTokens = clampNumber(input.visionConfig.maxTokens, defaultMaxTokens, 256, 128_000);
+    const invoke = (config: VisionLlmConfig) => callVisionPaperOcr({
       bytes: input.bytes,
-      config: input.visionConfig,
+      config,
       ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
       ...(input.userPrompt !== undefined ? { userPrompt: input.userPrompt } : {}),
       ...(input.imageOptions !== undefined ? { imageOptions: input.imageOptions } : {}),
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
       ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
     });
-    normalized = result.normalized;
-    let parsed: TParsed;
-    if (input.parseStructuredOutput) {
-      parsed = input.parseStructuredOutput(result.rawText);
-    } else {
-      const value = extractJsonObject(result.rawText);
-      if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        throw new VisionOcrError('invalid_response', '强视觉模型响应不是 JSON 对象。');
+
+    const firstResult = await invoke({ ...input.visionConfig, maxTokens: initialMaxTokens, timeoutMs: budgetMs });
+    let result = firstResult;
+    normalized = firstResult.normalized;
+    let totalElapsedMs = firstResult.elapsedMs;
+
+    const trySalvage = (candidate: VisionPaperLlmCallResult): TParsed | null => {
+      if (candidate.finishReason !== 'length') return null;
+      const repaired = repairTruncatedQuestionsJson(candidate.rawText);
+      if (repaired === null) return null;
+      try {
+        return parseVisionOutput(repaired, input.parseStructuredOutput);
+      } catch {
+        return null;
       }
-      parsed = value as TParsed;
+    };
+
+    let parsed: TParsed;
+    try {
+      parsed = parseVisionOutput(firstResult.rawText, input.parseStructuredOutput);
+    } catch (firstParseError) {
+      if (input.signal?.aborted) throw input.signal.reason ?? firstParseError;
+      const truncatedByLength = firstResult.finishReason === 'length';
+      const remainingMs = budgetMs - totalElapsedMs;
+      if (truncatedByLength && initialMaxTokens < maxRetryTokens && remainingMs >= minRetryBudgetMs) {
+        const retryMaxTokens = Math.min(maxRetryTokens, initialMaxTokens * 2);
+        let retryResult: VisionPaperLlmCallResult | null = null;
+        try {
+          retryResult = await invoke({
+            ...input.visionConfig,
+            maxTokens: retryMaxTokens,
+            timeoutMs: remainingMs,
+          });
+          totalElapsedMs += retryResult.elapsedMs;
+          parsed = parseVisionOutput(retryResult.rawText, input.parseStructuredOutput);
+          result = retryResult;
+          normalized = retryResult.normalized;
+        } catch (retryError) {
+          if (input.signal?.aborted) throw input.signal.reason ?? retryError;
+          const retrySalvaged = retryResult ? trySalvage(retryResult) : null;
+          if (retrySalvaged !== null && retryResult) {
+            parsed = retrySalvaged;
+            result = retryResult;
+            normalized = retryResult.normalized;
+          } else {
+            const firstSalvaged = trySalvage(firstResult);
+            if (firstSalvaged === null) throw retryError;
+            parsed = firstSalvaged;
+          }
+        }
+      } else if (truncatedByLength) {
+        const firstSalvaged = trySalvage(firstResult);
+        if (firstSalvaged === null) throw firstParseError;
+        parsed = firstSalvaged;
+      } else {
+        throw firstParseError;
+      }
     }
     return {
       kind: 'vision_llm',
@@ -428,7 +625,7 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
       parsed,
       model: result.model,
       normalized: result.normalized,
-      elapsedMs: result.elapsedMs,
+      elapsedMs: totalElapsedMs,
       usage: result.usage,
     };
   } catch (error) {
