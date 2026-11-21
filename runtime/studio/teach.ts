@@ -3,7 +3,8 @@ import { readClassroomMountEvidence } from './presentation-store.ts';
 import { openLearningTools } from './learning-tools.ts';
 import { attachmentCurrent } from './reading.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
-import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
+import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAuthority,
+  type CheckNotionRead, type NotionRecipient, type openStudioNotion } from './notion.ts';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
 import { currentMemory, memoryId } from './memory.ts';
 import { memoryScopeForObject, readMemoryGateway } from './memory-gateway.ts';
@@ -51,7 +52,8 @@ const hasTeachingModelEffect = async (tx: ReadTransaction, learner: ReturnType<t
 export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness,
   jitCounters: readonly StudioJitCounter[] = [],
   onTurnCompleted?: (tx: DbTransaction, tick: Tick, id: string) => Promise<void>,
-  carePause?: { pause: (key: string) => Promise<unknown> }) {
+  carePause?: { pause: (key: string) => Promise<unknown> },
+  notion?: Pick<ReturnType<typeof openStudioNotion>, 'readTool'>) {
   if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
   const job = await readWork(db, ref);
   if (!job) return;
@@ -347,6 +349,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           },
           openLearningTools: ({ workspace, turnMemory, manageBeliefs }) => openLearningTools({
             db, turn: slotKey, workspace, maySend, manageBeliefs, authorize: authorizeLearning, trackRetention,
+            ...(notion ? { notion } : {}),
             track(w) { keepLearningBasis(w); trackWorkspace(w, true); },
             async authorizeRemote() {
               try {

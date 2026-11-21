@@ -161,6 +161,7 @@ async function runWorker(storeId: string) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
   const executeResearch = (ref: WorkRef, terminal: boolean) => research.execute(ref, terminal, workCancellationSignal());
+  const notion = openStudioNotion(db, capture, research.activityChanged);
   async function executeDefault(ref: WorkRef, terminal: boolean) {
     if (await executeResearch(ref, terminal)) return;
     const work = await readWork(db, ref);
@@ -172,7 +173,8 @@ async function runWorker(storeId: string) {
     else if (work.slotType === retentionComparisonWork) await retentionComparison.execute(ref, work.slotKey, terminal);
     else if (isRetentionSlot(work.slotType)) await retention.execute(ref, terminal);
     else if (terminal) await recordTerminalFailure(db, ref);
-    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters, research.turnCompleted, carePause);
+    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters, research.turnCompleted, carePause,
+      notion);
   }
   const workerConfig = {
     address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
@@ -192,7 +194,8 @@ async function runWorker(storeId: string) {
       async run(ref: WorkRef, terminal: boolean) {
         if ((await readWork(db,ref))?.deriver !== deriver) return;
         if (terminal) await recordTerminalFailure(db,ref);
-        else await teach(db,ref,readArtifactAssessmentWitness,jitCounters,research.turnCompleted,carePause);
+        else await teach(db,ref,readArtifactAssessmentWitness,jitCounters,research.turnCompleted,carePause,
+          notion);
       },
     })),
     { queue: capabilityTaskQueue(queue, 'notion-block-v1'), route: notionBlockRoute,

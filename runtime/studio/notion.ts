@@ -19,14 +19,15 @@ import { readRoutedWorkForRecovery, reconcileRoutedWork } from '../../kernel/src
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { sealCandidate, submitCandidate } from '../../kernel/src/derivations/candidate.ts';
 import { notionPageKey, notionPageReadFence, type CheckNotionRead } from '../../modules/capture/notion-read-plan.ts';
-import { notionConfirmPageAccess, NotionSourceChanged, NotionSourceUnavailable, NotionTemporaryFailure } from '../../modules/capture/notion-api.ts';
+import { notionConfirmPageAccess, notionReadPage, NotionSourceChanged, NotionSourceUnavailable, NotionTemporaryFailure } from '../../modules/capture/notion-api.ts';
 import { grantNotionSelectionCommand, revokeNotionSelectionCommand, notionSelectionType, selectionChange, selectionGrant,
-  readNotionSelection, type NotionSelection, type NotionReadOptions } from '../../modules/capture/notion-selection.ts';
+  notionSelectionWitness, readNotionSelection, type NotionSelection, type NotionReadOptions } from '../../modules/capture/notion-selection.ts';
 import { buildNotionInvalidationTarget, filterInvalidatedNotionTargets, notionBlockRetirementMatchesSlot,
   notionPageObservationType, notionRecordPurpose, notionSelectionFromSnapshot, NotionSelectionUnavailable,
   notionSourceTarget, openSelectedNotionSource, parseNotionBlockSlotKey, planNotionBlockRetirements,
-  planNotionSelectionInvalidation, prepareNotionRefreshInput, prepareSelectedNotionPages, reconstructNotionFactPair,
-  refreshNotionSourceCommand, revokeNotionSourceCommand, setNotionPurposeCommand,
+  planNotionSelectionInvalidation, prepareNotionRefreshInput, prepareNotionRevision, prepareSelectedNotionPages,
+  reconstructNotionFactPair, refreshNotionSourceCommand, revokeNotionSourceCommand, setNotionPurposeCommand,
+  notionRefreshHasChanges, notionRevisionDiff, UnchangedNotionSourceError,
   type NotionFactTransitionRow, type NotionInvalidationSourceRow } from '../../modules/capture/notion-source.ts';
 import { NotionBlockUnavailable, openCurrentNotionBlock } from '../../modules/capture/notion-blocks.ts';
 import { changedNotionBlockWork, gatherNotionBlock, notionBlockDeriver, notionBlockRecoveryPages, NotionBlockResolverUnavailable,
@@ -40,6 +41,7 @@ import { submittedWatermark } from './deletion-watermark.ts';
 import { notionTeachingRecipients } from './workspace-access.ts';
 import { notionConnection } from './notion-transport.ts';
 import { questionReceiptsCurrent } from './question-exposure.ts';
+import type { NotionReadDiff, NotionReadHostOutcome, NotionReadInput } from '../../executors/teaching/notion-read-tool.ts';
 
 const learnerScope = {learner: studioLearner};
 const learningReader = {id: 'studio:learning-reader', purpose: 'learning', label: '本机学习阅读器'} as const;
@@ -624,5 +626,70 @@ export function openStudioNotion(db: Db, capture: LoadedModule, afterFactsChange
       send({id, rev:fact.ref.rev, accessEpoch:fact.accessEpoch, purpose:fact.purpose, title:unit.title, blocks:unit.blocks.map(b => ({id:b.id,parentId:b.parentId,text:b.body.status === 'known' ? b.body.text : null}))});
     });
   }
-  return {settings, mutate, read};
+
+  async function readTool(input: NotionReadInput, step: number, access: Access,
+    authorize: (tx: ReadTransaction) => Promise<void>): Promise<NotionReadHostOutcome> {
+    const id = factId(input.sourceId);
+    const wanted = input.blockIds && new Set(input.blockIds);
+    const emit = (fact: FactSnapshot, status: 'refreshed' | 'unchanged',
+      diff: NotionReadDiff = {added: [], removed: [], edited: [], moved: []}) => ({
+      sourceId: input.sourceId, rev: fact.ref.rev, accessEpoch: fact.accessEpoch, title: sourceEnvelope(fact.value).unit.title,
+      status, diff, blocks: sourceEnvelope(fact.value).unit.blocks
+        .filter(block => !wanted || wanted.has(block.id))
+        .map(block => ({id: block.id, parentId: block.parentId, text: block.body.status === 'known' ? block.body.text : ''})),
+    });
+    const open = (tx: ReadTransaction) => readStudioNotionSource(tx, id, {mode: 'following'}, access);
+    const notion = notionReadScope(db, studioLearner);
+    const project = async (tx: ReadTransaction, check: CheckNotionRead) => {
+      await authorize(tx);
+      const fact = await open(tx);
+      await check(fact);
+      return {fact, page: await notionPageAuthority(tx, sourceEnvelope(fact.value))};
+    };
+    let lastFact: FactSnapshot | undefined;
+    try {
+      const {fact, page} = await notion.read(async (tx, check) => {
+        const found = await project(tx, check);
+        lastFact = found.fact;
+        return found;
+      });
+      if (!input.refresh) return {ok: true, data: emit(fact, 'refreshed')};
+      const previous = sourceEnvelope(fact.value);
+      const fetched = await provider(page.selection, page.watermark,
+        notionReadPage(page.selection.root, page.pageId, notionSelectionWitness(page.selection)), page.pageId);
+      const received = await prepareNotionRevision(page.selection, fetched, new Date().toISOString());
+      if (!notionRefreshHasChanges(previous, received)) return {ok: false, kind: 'unchanged', snapshot: emit(fact, 'unchanged')};
+      const refresh = await prepareNotionRefreshInput(
+        {id: input.sourceId, expectedRev: fact.ref.rev, accessEpoch: fact.accessEpoch, selectionId: page.selection.id},
+        previous, received);
+      const data = await notion.read(async (tx, check) => {
+        const {fact: current} = await project(tx, check);
+        lastFact = current;
+        if (current.ref.rev !== fact.ref.rev || current.accessEpoch !== fact.accessEpoch) throw stale();
+        return current;
+      }, async (tx, check) => {
+        const current = await project(tx, check).then(found => found.fact);
+        lastFact = current;
+        if (current.ref.rev !== fact.ref.rev || current.accessEpoch !== fact.accessEpoch) throw stale();
+        await handle(tx)({learner: tx.learner, actor: 'companion', purpose: 'storage', deletionWatermark: page.watermark,
+          type: refreshNotionSourceCommand, id: commandId(stableId('notion-read-refresh', input.sourceId, String(step), String(fact.ref.rev))),
+          input: refresh as Json});
+        const saved = await open(tx);
+        lastFact = saved;
+        return emit(saved, 'refreshed', notionRevisionDiff(previous, sourceEnvelope(saved.value)));
+      });
+      return {ok: true, data};
+    } catch (error) {
+      const message = error instanceof Error ? {message: error.message} : {};
+      if (error instanceof UnchangedNotionSourceError && lastFact)
+        return {ok: false, kind: 'unchanged', snapshot: emit(lastFact, 'unchanged')};
+      if (error instanceof RequestError) return {ok: false, kind: error.status === 403 ? 'withdrawn' : 'unconfirmed', ...message};
+      if (error instanceof FactNotFoundError) return {ok: false, kind: 'not_found', ...message};
+      if (error instanceof FactReadDeniedError || error instanceof NotionSelectionUnavailable) return {ok: false, kind: 'denied', ...message};
+      if (error instanceof NotionSourceChanged || error instanceof NotionSourceUnavailable) return {ok: false, kind: 'stale', ...message};
+      if (error instanceof LifecycleError) return {ok: false, kind: 'stale_watermark', ...message};
+      return {ok: false, kind: 'unconfirmed', ...message};
+    }
+  }
+  return {settings, mutate, read, readTool};
 }

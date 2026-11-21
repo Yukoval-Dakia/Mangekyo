@@ -1,6 +1,7 @@
 import { memoryRetrieveQuery } from '../../modules/companion/belief.ts';
 import { ClaimInputError } from '../../modules/companion/claim.ts';
 import { adaptWorkspaceResult, learningHostDefinitions, learningToolFallback, toolFailure, workspaceToolAliases, type LearningTools } from '../../executors/teaching/learning-tools.ts';
+import { executeNotionRead, notionReadDefinition, notionReadWriteKeys, type NotionReadHostPort, type NotionReadOutput } from '../../executors/teaching/notion-read-tool.ts';
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -9,8 +10,9 @@ import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { recallRegions, type ContextBundle, type MemoryIntent, type RegionPage } from '../../modules/companion/recall-packet.ts';
+import { captureSourceType } from '../../modules/capture/source.ts';
 import { purpose, studioLearner } from './identity.ts';
-import { checkStudioNotionFact, confirmNotionRead } from './notion.ts';
+import { checkStudioNotionFact, confirmNotionRead, type openStudioNotion } from './notion.ts';
 import { readLearningSdk } from './learning-sdk.ts';
 import { readRetentionBasis, type RetentionBasis } from './learner-radar.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
@@ -28,11 +30,16 @@ export function openLearningTools(options: {
   readContext(intent: MemoryIntent, step: number, expand?: RegionPage, query?: string): Promise<ContextBundle | undefined>;
   onDelivered: NonNullable<LearningTools['onDelivered']>;
   saveBelief(args: Record<string,unknown>, step: number): Promise<string>;
+  notion?: Pick<ReturnType<typeof openStudioNotion>, 'readTool'>;
 }): LearningTools {
   const {db,turn,workspace,maySend,authorize} = options;
   const allowedIntents: readonly MemoryIntent[] = options.manageBeliefs ? [...intents,'management'] : intents;
   const artifact = workspace.presentationTool;
   const pages = new Map<string,RegionPage>();
+  const notionReadHost: NotionReadHostPort | undefined = options.notion && {
+    read: (input, {step}) => options.notion!.readTool(input, step,
+      {purpose, recipientId: maySend.notionRecipientId ?? '', maySend}, authorize),
+  };
   const valid = async (facts: readonly WorkspaceWitness[], retention: readonly RetentionBasis[]) => confirmNotionRead(db,studioLearner,async (tx,check) => {
     await authorize(tx);
     const {rows:[clock]} = await tx.query<{tick:string}>('SELECT clock::text AS tick FROM learners WHERE id=$1',[tx.learner]);
@@ -52,10 +59,20 @@ export function openLearningTools(options: {
   });
   return {
     onDelivered: options.onDelivered,
-    definitions:learningHostDefinitions(options.manageBeliefs,allowedIntents,artifact),
+    definitions:learningHostDefinitions(options.manageBeliefs,allowedIntents,artifact,notionReadHost && notionReadDefinition),
     async execute(name,args,{step,handles,receiveImage,priorRead}) {
       if (name === 'search_learning' || name === 'open_learning')
         return adaptWorkspaceResult(await workspace.executeRead(workspaceToolAliases[name],args,step,priorRead,receiveImage),name);
+      if (name === 'notion_read') {
+        if (!notionReadHost) return toolFailure('not_found','本轮没有此按需工具。',learningToolFallback(name));
+        await priorRead;
+        const result = await executeNotionRead(args, notionReadHost, {step});
+        if (result.ok) {
+          const read = result.data as NotionReadOutput;
+          options.track({id:read.sourceId, rev:read.rev, type:captureSourceType, epoch:read.accessEpoch, mode:'pinned'});
+        }
+        return result;
+      }
       if (name === 'save_page' && (Object.keys(handles).length || 'insert_artifacts' in args))
         return toolFailure('not_found','目前教材只接支持的正文和块，保存计算产物尚未接入。',learningToolFallback(name));
       if (name === 'save_page' || name === 'save_edge')
@@ -109,7 +126,7 @@ export function openLearningTools(options: {
       }
       return toolFailure('not_found','本轮没有此按需工具。',learningToolFallback(name));
     },
-    writeKeys:() => [],
+    writeKeys:(name) => name === 'notion_read' ? notionReadWriteKeys() : [],
     async preparePython(reads,step) {
       if (!reads.length) return {ok:true,values:[]};
       // Question reads cannot replay across receipt formats. Other SDK effects keep their identity.
