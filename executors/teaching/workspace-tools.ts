@@ -118,6 +118,8 @@ export const workspaceDefinitions = [
     variant:{type:'object',required:['familyId','preserved','changed','spoilsNext'],additionalProperties:false,
       properties:{familyId:text,preserved:strings,changed:strings,spoilsNext:{type:'string',enum:['unknown','none','former','latter']}}},
   }, ['kind','from','to','scope']),
+  // Retired six-in-one entry kept only for versioned agentVersion 1 replay. New turns use
+  // narrowWorkspaceDefinitions (save_page / save_question / save_edge), never this name.
   tool('save_workspace', '兼容旧工作区条目。个人教材使用 save_page，有向图谱使用 save_relation。新建旧条目给 kind、title、body；修改给 id 和变动字段。出题时 body 只写题面，解答放 answer，评分放 rubric。links 填来源 id，旧关系条目按起点、终点排列。', {
     kind: {type: 'string', enum: workspaceKinds}, title: text, body: text, tags: strings, links: strings,
     answer: text, rubric: text, id: {type:'string', pattern:'^[0-9A-HJKMNP-TV-Z]{26}$', description:'仅更新时用已有 id；创建时省略。'}, rev: integer,
