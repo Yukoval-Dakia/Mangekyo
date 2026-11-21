@@ -2,7 +2,9 @@
 export * from './belief-view.ts';
 export * from './extraction.ts';
 export * from './experience.ts';
-export * from './textbook-mastery.ts';
+export type * from './textbook-mastery.ts';
+export { projectTextbookMastery } from './textbook-mastery.ts';
+export { projectPrerequisiteRadar, type PrerequisiteRadarRequest, type PrerequisiteRadarSources, type PrerequisiteRadarChip } from './prerequisite-radar.ts';
 export * from './recurring-error-cluster.ts';
 export * from './sentinel-evidence.ts';
 export { projectClassroomRadar, type ClassroomRadarSources } from './classroom-radar.ts';
