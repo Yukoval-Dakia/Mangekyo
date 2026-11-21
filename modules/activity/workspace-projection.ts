@@ -3,6 +3,7 @@ import { materialType, textMaterial } from './library-values.ts';
 import { organizerNote, organizerNoteType } from './organizer-values.ts';
 import { practiceSubmission, ridingPracticeType } from './practice-values.ts';
 import { studyRecord, studyRecordType } from './values.ts';
+import { isOwnWordsClaim, ownWordsClaimType } from './takeaway-values.ts';
 import { workspaceEntry, workspaceEntryType, type WorkspaceEntryKind } from './workspace-values.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookExpected } from './workbook-values.ts';
 
@@ -155,6 +156,11 @@ export function activityWorkspaceDisplay(type: string, value: unknown): Workspac
     case materialType: {
       const record = type === materialType ? textMaterial(value) : studyRecord(value);
       return {title: record.title, excerpt: summary(record.text), text: cleanText(record.title + '\n\n' + record.text)};
+    }
+    case ownWordsClaimType: {
+      if (!isOwnWordsClaim(value)) return undefined;
+      const text = (value as { text: string }).text;
+      return {title: '自留口诀', excerpt: summary(text), text: cleanText('自留口诀\n\n' + text)};
     }
   }
   return undefined;

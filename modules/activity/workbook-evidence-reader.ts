@@ -239,8 +239,12 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
       activities: [target.paper.id], cutoff, mode: 'following',
     }, async (fact, value) => {
       if (!helpAppliesTo(value, mount)) return false;
-      const { id, rev } = value.content;
-      const content = await read.fact(id, { mode: 'pinned', rev });
+      const { id } = value.content;
+      // Re-open the displayed content at its current revision: a purpose grant
+      // may postdate the recorded reference, and the honest question is whether
+      // this content is authorized for the recipient now, not whether the exact
+      // recorded revision already carried the grant.
+      const content = await read.fact(id, { mode: 'following' });
       await trackSource(tx, read, sourceReference(content, { kind: 'whole' }));
       await read.fact(fact.ref.id, { mode: 'following' });
       return true;
