@@ -76,6 +76,12 @@ it('routes exam pacing and intervention Lift to one real worker with their own e
   const hiddenItem = {...neutral, exam_pacing_item: {attempt_ref: {id: 'recent', rev: 1}, paper_key: 'paper@2',
     item_id: 'q2', position: 2, item_count: 2, skipped: true}};
   expect(await host.derive('plan/exam-pacing@1', {...slice, events: [...events, hiddenItem]})).toEqual(pacing);
+  const process = {...hiddenItem, ref: 'timer', effective_duration_ms: 500};
+  const first = {...process, exam_pacing_item: {...process.exam_pacing_item, item_id: 'q1', position: 1}};
+  const timeValue = (ref: string) => host.derive('plan/exam-pacing@2', {attempt_ref: first.exam_pacing_item.attempt_ref,
+    slice: {...slice, events: [...events, first, {...process, ref}]}});
+  expect(await timeValue('second-timer')).toMatchObject(success({kind: 'observed', total_duration_ms: 1000}));
+  expect(await timeValue('timer')).toEqual(success({method_version: 'plan/exam-pacing@2', attempt_ref: first.exam_pacing_item.attempt_ref, kind: 'unknown'}));
 });
 
 it('prioritizes the shortest matching variant with the frozen error revision', async () => {

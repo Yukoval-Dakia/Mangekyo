@@ -342,6 +342,7 @@ function expectedTimeValue({slice, attempt_ref}: ExamTimeValueInput): ExamTimeVa
   const eligible = evidenceWindow(slice);
   const submittedAt = Date.parse(attempt.occurred_at);
   const rows = new Map<string, { process: ItemEvent; formal?: ItemEvent | null; estimate?: ItemEvent | null }>();
+  const processWitnesses = new Set<string>();
   const positions = new Set<number>();
   const counts = new Set<number>();
   const classifications: { role: 'formal' | 'estimate'; event: ItemEvent }[] = [];
@@ -358,6 +359,9 @@ function expectedTimeValue({slice, attempt_ref}: ExamTimeValueInput): ExamTimeVa
     }
     const { item_id, position, item_count } = item;
     if (!key(item_id) || rows.has(item_id) || positions.has(position)) return unknown;
+    const witness = JSON.stringify([event.ref, event.rev]);
+    if (processWitnesses.has(witness)) return unknown;
+    processWitnesses.add(witness);
     positions.add(position);
     counts.add(item_count);
     rows.set(item_id, { process: typedEvent });

@@ -367,6 +367,7 @@ def derive_time_value(value):
     submitted_at = _time(attempt["occurred_at"])
     scale_key = attempt["exam_pacing"].get("scale_key")
     items, positions = {}, {}
+    process_witnesses = set()
     counts = set()
     classifications = []
     for event in evidence["events"]:
@@ -384,6 +385,10 @@ def derive_time_value(value):
         item_id, position = item["item_id"], item["position"]
         if not _key(item_id) or item_id in items or position in positions:
             return unknown
+        witness = (event["ref"], event["rev"])
+        if witness in process_witnesses:
+            return unknown
+        process_witnesses.add(witness)
         positions[position] = item_id
         counts.add(item["item_count"])
         items[item_id] = {"process": event}
