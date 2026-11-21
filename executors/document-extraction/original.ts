@@ -1,5 +1,5 @@
 import { constants, type BigIntStats } from 'node:fs';
-import { lstat, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -9,12 +9,14 @@ export type OriginalWitness = {sha256: string; size?: number; name?: string; med
 export const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const noEntry = (error: unknown) => (error as NodeJS.ErrnoException)?.code === 'ENOENT';
 
-export function openOriginalFiles({decode, maximumSize, unavailable, conflict}: {
+type OriginalFileOptions = {
   decode: (value: unknown) => OriginalMetadata;
   maximumSize: number;
   unavailable: () => Error;
   conflict: () => Error;
-}) {
+};
+
+export function openOriginalFiles({decode, maximumSize, unavailable, conflict}: OriginalFileOptions) {
   async function ownerAt(directory: string) {
     const stat = await lstat(directory).catch(error => { if (!noEntry(error)) throw error; });
     if (!stat) return undefined;
@@ -78,4 +80,81 @@ export async function stageOriginal<T>(root: string, bytes: Buffer, original: Or
   } finally {
     await rm(temporary,{recursive:true,force:true});
   }
+}
+
+type OriginalLocations = { owner: string; scoped: string; legacy: string };
+
+export function openOwnedOriginalFiles(root: string, options: OriginalFileOptions & {
+  locations(id: string): Promise<OriginalLocations>;
+  unavailableOwner(error: unknown): boolean;
+  whenUncommitted(id: string, undo: () => Promise<void>): Promise<void>;
+}) {
+  const { unavailable, conflict, locations, unavailableOwner, whenUncommitted } = options;
+  const { ownerAt, eraseContents, verifiedBytes } = openOriginalFiles(options);
+
+  // Only a positive legacy marker permits adoption or disposal of a second, old copy.
+  async function hasLegacyOwner(directory: string, owner: string) {
+    try { return await ownerAt(directory) === owner; }
+    catch (error) {
+      if (unavailableOwner(error) || (error as NodeJS.ErrnoException).code === 'ELOOP') return false;
+      throw error;
+    }
+  }
+
+  async function read(id: string, expected: OriginalWitness) {
+    const {owner,scoped,legacy} = await locations(id);
+    const marked = await ownerAt(scoped);
+    if (marked === owner) return verifiedBytes(scoped,expected);
+    if (marked !== undefined) throw conflict();
+    const old = await ownerAt(legacy);
+    // Pre-marker originals remain readable only against the authorized database digest.
+    if (old === undefined || (old !== null && old !== owner)) throw unavailable();
+    return verifiedBytes(legacy,expected);
+  }
+
+  async function erase(id: string) {
+    const {owner,scoped,legacy} = await locations(id);
+    const marked = await ownerAt(scoped);
+    if (marked === undefined) {
+      if (await ownerAt(legacy) !== owner) throw conflict();
+      return eraseContents(legacy);
+    }
+    if (marked !== owner) throw conflict();
+    await eraseContents(scoped);
+    if (await hasLegacyOwner(legacy,owner)) await eraseContents(legacy);
+  }
+
+  async function withOriginal<T>(id: string, bytes: Buffer, original: OriginalMetadata,
+    save: (staged: string, install: () => Promise<void>) => Promise<T>) {
+    const {owner,scoped,legacy} = await locations(id);
+    return stageOriginal(root, bytes, original, owner, async ({staged, path, identity}) => {
+      let installed: BigIntStats | undefined;
+      try {
+        return await save(path,async () => {
+          // Every publisher of this store-qualified name holds this database's learner lock.
+          const marked = await ownerAt(scoped);
+          if (marked === undefined) {
+            if (await hasLegacyOwner(legacy,owner)) {
+              await verifiedBytes(legacy,original);
+              return;
+            }
+            await rename(staged,scoped);
+            installed = identity;
+          } else {
+            if (marked !== owner) throw conflict();
+            await verifiedBytes(scoped,original);
+          }
+        });
+      } catch (error) {
+        const published = installed;
+        if (published) await whenUncommitted(id,async () => {
+          if (await ownerAt(scoped) !== owner) return;
+          const current = await lstat(scoped,{bigint:true});
+          if (current.dev === published.dev && current.ino === published.ino) await rename(scoped,staged);
+        }).catch(() => undefined);
+        throw error;
+      }
+    });
+  }
+  return {read,erase,withOriginal};
 }
