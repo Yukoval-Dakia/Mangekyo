@@ -17,7 +17,7 @@ import { posttestIssuanceType } from '../../modules/activity/retention-posttest.
 import { workbookReadingContext, workbookReadingMount } from '../../modules/activity/workbook-presentation.ts';
 import { sameWorkbookJson, WorkbookSourceMismatch, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, workbookQuestionView, type WorkbookQuestion, type WorkbookPaper, type WorkbookQuestionView } from '../../modules/activity/workbook-values.ts';
 import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
-import { WorkspaceInputError, workspaceEntryType } from '../../modules/activity/workspace-values.ts';
+import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { workbookCapsuleHandles } from '../../modules/activity/workbook-context-handles.ts';
 import type { WorkbookTraceProof } from '../../modules/activity/workbook-backtrace-values.ts';
 import { notionReadScope, NotionReadUnchecked, type CheckNotionRead } from './notion.ts';
@@ -66,7 +66,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
       edges: question => edgesFor(question,use),
       backtrace: () => backtraceFor(use),
       isRemote: isWorkbookNotionSource,
-      unavailable: error => unavailable(error) || error instanceof WorkspaceInputError,
+      unavailable,
       unchecked: error => error instanceof NotionReadUnchecked,
       async reopenQuestion(reader, ref) {
         const sources: [FactSnapshot, 'pinned' | 'following' | undefined][] = [];

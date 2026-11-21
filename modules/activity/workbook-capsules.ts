@@ -5,15 +5,16 @@ import { selectWorkbookTrace, workbookWitnessReader, type WorkbookTraceProof } f
 import { localWorkbookCapsuleKinds as localKinds, workbookCapsuleKinds as allKinds, withWorkbookWorkspaceBasis, type BoundWorkbookMount } from './workbook-context-read.ts';
 import type { workbookCapsuleHandles, WorkbookCapsuleKind } from './workbook-context-handles.ts';
 import type { WorkbookQuestion } from './workbook-values.ts';
+import { WorkspaceInputError } from './workspace-values.ts';
 
-type CheckNotionRead = ((fact: FactSnapshot) => Promise<void>) & {
+type ConfirmCapsuleFact = ((fact: FactSnapshot) => Promise<void>) & {
   choose?(proofs: readonly (readonly FactSnapshot[])[]): Promise<number | undefined>;
 };
 type Reader = Pick<ReadContext, 'fact'>;
 export type CapsuleHandle = { kind: WorkbookCapsuleKind; ref: string };
 type TraceTarget = {paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef};
 type CapsuleReader = {
-  read(check: CheckNotionRead): Reader;
+  read(check: ConfirmCapsuleFact): Reader;
   edges(ref: HelpRef): Promise<readonly FactId[]>;
   backtrace(): Promise<{local: Reader; project?: ((target: TraceTarget) => Promise<readonly WorkbookTraceProof[] | null>) | undefined}>;
   reopenQuestion(read: Reader, ref: HelpRef): Promise<(HelpRef & {accessEpoch: FactSnapshot['accessEpoch']}) | undefined>;
@@ -25,7 +26,7 @@ type CapsuleReader = {
 /** Match the requested capsule and retain the proofs needed to confirm it. */
 export async function discoverWorkbookCapsules(
   learner: LearnerId, purpose: string, handlesFor: ReturnType<typeof workbookCapsuleHandles>, host: CapsuleReader,
-  mount: BoundWorkbookMount, item: WorkbookQuestion, check?: CheckNotionRead, requested?: string, collectPages?: CheckNotionRead,
+  mount: BoundWorkbookMount, item: WorkbookQuestion, check?: ConfirmCapsuleFact, requested?: string, collectPages?: ConfirmCapsuleFact,
 ) {
   const category = requested && handlesFor.kind(requested,mount,item.id);
   if (!item.sourceQuestionRef || (requested && !category)) return { handles: [] };
@@ -68,7 +69,7 @@ export async function discoverWorkbookCapsules(
     const bindings = new Map<string, PaperCapsuleBinding>();
     const access = {
       learner, purpose, recipient:learner, read:withWorkbookWorkspaceBasis(read),
-      isUnavailable: host.unavailable,
+      isUnavailable: error => host.unavailable(error) || error instanceof WorkspaceInputError,
       async reopenLegacyQuestion(this: {read: Reader}, ref: HelpRef) {
         return host.reopenQuestion(this.read, ref);
       },
