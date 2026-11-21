@@ -8,7 +8,7 @@ import { withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
 import { openOrganizer } from '../../../runtime/studio/organizer.ts';
 import { studioLearner } from '../../../runtime/studio/identity.ts';
-import { planToday, sessionRule } from '../today.ts';
+import { applyCandidateInformation, planToday, sessionRule } from '../today.ts';
 import { openPack, checkPack } from '../offline-pack.ts';
 import { studyGoal } from '../goal-values.ts';
 
@@ -28,6 +28,8 @@ test('固定周三晚，明日作业取消时仅重排未开始项；三分钟�
   const after = planToday({...base,candidates});
   assert.deepEqual(ids(before),['graph','units']);
   assert.deepEqual(ids(after),['convert','graph']);
+  const screened = applyCandidateInformation(candidates, [], [{ref:'convert'}, {ref:'fixed'}]);
+  assert.deepEqual(ids(planToday({...base,candidates:screened})),['graph','units']);
   assert.deepEqual(before.protectedItems,after.protectedItems);
   assert.equal(before.totalMinutes,20);
   assert.equal(before.tradeoffs[0].activityId,'convert');

@@ -25,6 +25,7 @@ export type PlanCandidate = {
   retention?: number;
   information?: number;
   uncertainty?: CandidateUncertainty;
+  excludedFromProbePool?: boolean;
   highConfidenceWrong?: boolean;
   refused?: boolean;
   state?: 'in-progress' | 'completed';
@@ -40,12 +41,16 @@ export type PlanCandidate = {
 export function applyCandidateInformation(
   candidates: readonly PlanCandidate[],
   rankedCandidates: readonly { readonly ref: string; readonly info_gain: number; readonly uncertainty: CandidateUncertainty }[],
+  pool: CanonicalEvidenceSliceV1['candidate_pool'],
 ): PlanCandidate[] {
+  const screened = new Set(pool.map(candidate => candidate.ref));
   const information = new Map(rankedCandidates.map(row => [row.ref, row]));
   return candidates.map(candidate => {
-    if (!candidate.open || candidate.refused || candidate.state || !candidate.evidence.length) return candidate;
+    if (!screened.has(candidate.id)) return candidate;
     const row = information.get(candidate.id);
-    return row ? { ...candidate, information: row.info_gain, uncertainty: row.uncertainty } : candidate;
+    if (!row) return { ...candidate, excludedFromProbePool: true };
+    if (!candidate.open || candidate.refused || candidate.state || !candidate.evidence.length) return candidate;
+    return { ...candidate, excludedFromProbePool: false, information: row.info_gain, uncertainty: row.uncertainty };
   });
 }
 
@@ -336,7 +341,7 @@ export function planToday(input: TodayInput) {
   for (const c of [...catalog.values()].sort((a, b) => a.id.localeCompare(b.id))) {
     if (
       !c.open ||
-      c.refused ||
+      c.refused || c.excludedFromProbePool ||
       !c.evidence.length ||
       c.state ||
       locked.has(c.id) ||

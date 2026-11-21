@@ -46,6 +46,9 @@ export type TextbookMasteryEvidenceAnchor = {
 export type TextbookMasteryEvidenceBatch = {
   readonly slice: CanonicalEvidenceSliceV1;
   readonly anchors: readonly TextbookMasteryEvidenceAnchor[];
+  // Exact concepts whose authorized evidence inventory is complete, when the
+  // gather encounters omissions it cannot attribute on the public slice.
+  readonly completeConceptIds?: readonly string[];
 };
 
 export type TextbookMasterySources = {
@@ -160,11 +163,20 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
     if (prior && JSON.stringify(prior) !== JSON.stringify(event)) anchors.set(key, null);
     else seen.set(key, event);
   }
+  const unassignedOmission = [...omitted].some(key => !seen.get(key)?.concept_ids.length);
+  const complete = batch.completeConceptIds && new Set(batch.completeConceptIds);
+  for (const concept of concepts) {
+    if (complete ? !complete.has(concept) : unassignedOmission) buckets.set(concept, null);
+  }
   for (const event of slice.events) {
     const key = eventKey(event.ref, event.rev);
     const anchor = anchors.get(key);
-    if (omitted.has(key) || !(Date.parse(event.occurred_at) <= cutoff) || event.help_level !== 'independent'
-      || event.outcome === 'unknown' || event.exam_pacing || event.exam_pacing_item) continue;
+    if (!(Date.parse(event.occurred_at) <= cutoff)) continue;
+    if (omitted.has(key) || (event.help_level === 'independent' && event.outcome === 'unknown')) {
+      for (const concept of event.concept_ids) if (concepts.has(concept)) buckets.set(concept, null);
+      continue;
+    }
+    if (event.help_level !== 'independent' || event.exam_pacing || event.exam_pacing_item) continue;
     const dimension = bucketKey(event.item_novelty, event.representation, event.context, event.method);
     for (const concept of new Set(event.concept_ids)) {
       if (!concepts.has(concept)) continue;
@@ -292,6 +304,8 @@ export async function projectTextbookMastery(request: TextbookMasteryRequest, so
   const current = new Set(reopened.map(witnessKey));
   const allowed = (ref: BusWitness) => current.has(witnessKey(ref));
   const projections = new Map<string, TextbookMasteryConcept>();
+  const provenEmpty = (id: string) => coveredBuckets && !coveredBuckets.has(id)
+    && (!batch?.slice.omissions?.length || batch.completeConceptIds?.includes(id));
   for (const [concept, row] of verifiedRows(result, version, buckets)) {
     const bucket = buckets.get(concept);
     if (!row || !bucket || ![...bucket.attempts.values()].every(attempt => attemptWitnesses(attempt).every(allowed))) continue;
@@ -306,7 +320,7 @@ export async function projectTextbookMastery(request: TextbookMasteryRequest, so
       blockId: block.blockId,
       concepts: [...concepts].map(conceptId => projections.get(conceptId) ?? {
         conceptId, state: 'unknown',
-        reason: coveredBuckets && !coveredBuckets.has(conceptId) ? 'no-independent-evidence' : 'unavailable',
+        reason: provenEmpty(conceptId) ? 'no-independent-evidence' : 'unavailable',
       }),
     }];
   }) };
