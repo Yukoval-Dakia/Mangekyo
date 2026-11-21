@@ -56,7 +56,7 @@ import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { checkProviderAccount, loadSettings } from './settings.ts';
 import { completeTurnStream, publishTurnProgress } from './stream.ts';
-import { companionReplyStartedLabel, companionReplyTrackingLabel, questionReceiptsCurrent } from './question-exposure.ts';
+import { arithmeticFreeProse, companionReplyStartedLabel, companionReplyTrackingLabel, questionReceiptsCurrent } from './question-exposure.ts';
 import { confirmedTeachingMethod, learningToolsMethod, notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
 class UncertainEffect extends Error {
@@ -310,9 +310,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           model: step.model, workspaceRevision: submission.workspaceRevision! },
         requestDigest: step.requestDigest, fragments: memoryPackets.flatMap(packet => packet.receipt.sent),
       } : undefined;
-      const authorize = async (tx: ReadTransaction, current?: typeof settings) => {
+      // The receipt can settle after its own public draft. Only a fresh send
+      // must also prove that this turn has not already published a draft.
+      const authorize = async (tx: ReadTransaction, current?: typeof settings, use: 'publish' | 'dispatch' = 'publish') => {
         if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
-        await validInputs(tx,'dispatch');
+        await validInputs(tx,use);
         const localCalculation = learningV1 && step.provider === 'tool:run_calculation';
         if (retention.size && (step.model !== settings.model ||
             (!step.provider.startsWith('tool:') && step.provider !== providerEndpoint(settings)))) throw new ChangedEvidence();
@@ -362,7 +364,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
                   providerId:submission.providerId ?? 'default',accountRevision:submission.accountRevision,
                 },task) : undefined;
                 if (submission.accountRevision && !current) throw new ChangedEvidence();
-                await authorize(tx,current);
+                await authorize(tx,current,'dispatch');
                 const response = send();
                 void response.catch(() => {});
                 return { response };
@@ -720,6 +722,9 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }) : undefined;
       const result = await runCompanionTurn(answer, publicHistory, material, {
         provider: settings, runEffect: runModelEffect,
+        ...(learningV1 && !classroom ? {arithmeticFreeProse} : {}),
+        ...(learningMemory && !Object.keys(learningMemory.bundle.data).length &&
+          learningMemory.bundle.omitted.every(item => item.reason === 'unknown') ? {metadataOnlyLearningMemory:true} : {}),
         ...(toolsV1 ? {learningTools:toolsV1} : {}),
         async onProgress(progress) {
           // The generated tool call included private answers. The host owns the public

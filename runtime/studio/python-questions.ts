@@ -67,7 +67,7 @@ async function confirmedAnswerDisplay(tx: ReadTransaction, source: WorkbookSourc
 }
 
 export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead['args'], through: Tick, access: {
-  maySend: WorkspaceSourceRecipient; track: SourceTrack; known(id: string): boolean; turn: string;
+  maySend: WorkspaceSourceRecipient; track: SourceTrack; known(id: string): boolean; turn: string; trackNegative(id: string): void;
 }) {
   const sourceAccess = { recipient: 'workspace', maySend: access.maySend, exactReadModes: true } as const;
   const concepts: WorkspaceSource['sourceRef']['fact'][] = [];
@@ -158,6 +158,7 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
       await questionNegativeCurrent(tx,root.ref.id,access.turn,true) ? false : null);
     if (answerExposed === null) unknown++;
     else known++;
+    if (answerExposed === false) access.trackNegative(id);
     // A row excluded by the answer filter may still determine the coverage status.
     for (const witness of witnesses) access.track(...witness);
     if (args.answer_exposed !== undefined && args.answer_exposed !== answerExposed) continue;

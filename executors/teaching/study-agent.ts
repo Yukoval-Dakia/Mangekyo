@@ -33,6 +33,8 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   /** Persisted opt-in replacing first-turn memory, preference and current-object projections. */
   jitContext?: FirstTurnJitContext;
   historyNotice?: string;
+  arithmeticFreeProse?: (text: string) => boolean;
+  metadataOnlyLearningMemory?: true;
   classroomEvidence?: string;
   currentLearningObject?: string;
   learningMemory?: string;
@@ -42,7 +44,7 @@ export type StudyAgentOptions = Omit<TeachingDependencies, 'readEvidence'> & {
   maxCompletionTokens?: 4096 | 8192;
   tools?: { allowSearch?: boolean; exaApiKey?: string; publicSearchQuery?: string; mcpServers?: McpServer[]; workspace?: StudyWorkspaceTools };
 };
-type StudyRunOptions = StudyAgentOptions & { discoverTools?: boolean };
+type StudyRunOptions = StudyAgentOptions & { discoverTools?: boolean; metadataOnlyMessage?: Message };
 type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 type ToolMessage = { role: 'assistant'; tool_calls: FunctionCall[]; providerTurn?: ProviderTurn; content: null } | ToolResultMessage;
 
@@ -183,7 +185,14 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const reply = await (options.jitContext && dispatch ? dispatch(send) : send());
       if ('rejectedHttpStatus' in reply || 'truncated' in reply) return JSON.stringify(reply);
       const message = publicAssistantContent(reply.content ?? '').trim();
-      return JSON.stringify({ reportedModel, ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
+      // Record only a conservative negative scope, never duplicate the prompt.
+      // Tool messages/arguments, native blocks and JIT inputs remain opaque.
+      const prose = options.arithmeticFreeProse;
+      const arithmeticFree = prose && reportedModel && !options.jitContext && !remotes.size && !reply.toolCalls &&
+        message && prose(reply.content ?? '') && context.every(entry => entry.role === 'system' || entry === options.metadataOnlyMessage ||
+          ((entry.role === 'user' || entry.role === 'assistant') &&
+            typeof entry.content === 'string' && prose(entry.content)));
+      return JSON.stringify({ reportedModel, ...(arithmeticFree ? {arithmeticFree: true} : {}), ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
     });
     const reply: ModelReply = JSON.parse(raw);
     checkProviderOutcome(reply);

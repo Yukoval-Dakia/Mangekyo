@@ -27,7 +27,7 @@ const absent = (method: string, message: string) =>
   toolFailure('not_found',message,{tool:'read_context',args:{intent:'tutoring'}},method);
 
 export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, access: {
-  maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean; turn: string;
+  maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean; turn: string; trackNegative(id: string): void;
 }, asOf: string, watermark: Tick): Promise<Value | LearningError> {
   if (request.method === 'questions') return readPythonQuestions(tx,request.args,watermark,access);
   if (request.method === 'kg_prereqs') {

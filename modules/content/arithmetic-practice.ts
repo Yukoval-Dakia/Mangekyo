@@ -54,11 +54,12 @@ export async function openArithmeticPractice(read: {fact(...args: Parameters<Rea
   const {state, snapshot} = await readQuestionState(read,id);
   if (!state.arithmeticPractice || state.recheck !== 0 ||
       state.restrictions.some(item => ['all','practice',use].includes(item.scope))) return;
-  const {asset, expected, prompt} = arithmeticQuestion(arithmeticPractice(state.arithmeticPractice));
+  const practice = arithmeticPractice(state.arithmeticPractice);
+  const {asset, expected, prompt} = arithmeticQuestion(practice);
   // Every admitted question has exactly one generated prompt and exactly one local scoring contract.
   const actual = questionAsset(source.value);
   if (questionPrompt(actual) !== prompt || actual.title !== asset.title || actual.blocks.length !== 1 ||
       actual.basis?.length || JSON.stringify(freezeQuestionAssessment(actual,source.ref)) !==
       JSON.stringify(freezeQuestionAssessment(asset,source.ref))) return;
-  return {source, state: snapshot, title: asset.title, prompt, expected};
+  return {source, state: snapshot, title: asset.title, prompt, expected, practice};
 }
