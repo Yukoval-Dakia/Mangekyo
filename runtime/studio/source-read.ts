@@ -18,7 +18,7 @@ import {
 } from '../../modules/activity/workspace-values.ts';
 import {syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
-import {textSlice, intakeTextOf, isMaterialIntakePair, materialIntakeReference, relatedIntakeId, relatedMaterialId} from './reading.ts';
+import {textSlice, intakeTextOf, isMaterialIntakePair, materialIntakeReference, relatedIntakeId, relatedMaterialId, readOwnStudyTurn} from './reading.ts';
 import {openWorkbookQuestionSources} from './workbook-diagnosis.ts';
 
 export type SourceReadMode = 'pinned' | 'following';
@@ -65,9 +65,10 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     (fact.type === assetType || workspaceShareableTypes.includes(fact.type) || fact.type === intakeFactType ||
       fact.type === textbookPageType);
 
-  async function visit(sourceId: string, revision?: Revision): Promise<FactSnapshot | undefined> {
+  async function visit(sourceId: string, revision?: Revision, ownerTurnWitness = false): Promise<FactSnapshot | undefined> {
     if (path.size >= 32 || seen.size >= 1024 || syntheticStudyRecords.has(sourceId)) return;
-    const fact = await reader.fact(factId(sourceId), revision === undefined ? {mode: 'following'} : {mode: 'pinned', rev: revision});
+    const options = revision === undefined ? {mode:'following'} as const : {mode:'pinned', rev:revision} as const;
+    const fact = ownerTurnWitness ? await readOwnStudyTurn(tx, sourceId, options) : await reader.fact(factId(sourceId), options);
     if (access.recipient === 'learner' || access.ownerNotionRead)
       await checkStudioNotionFact(tx, fact, storagePurpose, 'learner', access.readNotionWitness);
     else await checkStudioNotionFact(tx, fact, sourcePurpose(access), access.maySend, access.readNotionWitness);
@@ -102,7 +103,9 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     } else if (fact.type === textbookPageType || fact.type === assetType) {
       const page = fact.type === textbookPageType ? textbookPageFrom(fact) : parseAsset(fact.value);
       for (const source of page.basis ?? []) {
-        const opened = await visit(source.id, source.rev);
+        // The learner can reopen their own turn as a page witness. Direct references still use the requested purpose.
+        const ownerTurnWitness = access.recipient === 'learner' && fact.type === textbookPageType && source.type === 'activity.studyTurn';
+        const opened = await visit(source.id, source.rev, ownerTurnWitness);
         if (!opened || opened.type !== source.type || opened.accessEpoch !== source.epoch) return;
       }
       for (const block of page.blocks) {

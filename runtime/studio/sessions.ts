@@ -16,8 +16,8 @@ import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from './model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
 import { studyAttachment, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchAccess, type StudyCurrentObjectSelection } from '../../modules/activity/values.ts';
-import { attachmentCurrent, attachmentSources } from './reading.ts';
-import { storagePurpose } from '../../modules/activity/library-values.ts';
+import { attachmentCurrent, attachmentSources, readOwnStudyTurn } from './reading.ts';
+export { readOwnStudyTurn, readTeachingTurn } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { checkProviderAccount, loadSettings, providerAccount } from './settings.ts';
@@ -112,23 +112,6 @@ type TurnView = {
   status: Status;
   error?: string;
 };
-async function readStudyTurn(tx: ReadTransaction, id: string, use: string) {
-  const fact = await createCommandReadContext(tx, use).fact(factId(id), {mode: 'following'});
-  if (fact.type !== 'activity.studyTurn') throw new FactNotFoundError('学习回合不存在。');
-  return fact;
-}
-
-export const readTeachingTurn = (tx: ReadTransaction, id: string) => readStudyTurn(tx, id, purpose);
-
-export async function readOwnStudyTurn(tx: ReadTransaction, id: string) {
-  try {
-    return await readStudyTurn(tx, id, storagePurpose);
-  } catch (error) {
-    if (error instanceof FactReadDeniedError && error.reason === 'purpose') return readTeachingTurn(tx, id);
-    throw error;
-  }
-}
-
 export async function requireSessionTurn(tx: ReadTransaction, id: string) {
   try {
     return await readOwnStudyTurn(tx, id);
