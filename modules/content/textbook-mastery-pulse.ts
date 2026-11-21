@@ -33,7 +33,7 @@ export type TextbookPulseBlockProof = {
   readonly concepts: readonly { readonly conceptId: FactId; readonly edge: BusWitness; readonly basis: readonly BusWitness[] }[];
 };
 
-function proofReader(access: BlockAccess) {
+export function proofReader(access: BlockAccess) {
   const cache = new Map<string, Promise<{ fact: FactSnapshot; proofs: readonly BusWitness[] }>>();
   return (witnesses: Map<string, BusWitness>) => ({
     async fact<Value = Json>(id: FactId, options: Parameters<ReadContext['fact']>[1]): Promise<FactSnapshot<Value>> {
@@ -66,6 +66,19 @@ function usable(access: KnowledgeReadAccess, edges: TextbookPulseEdgeSet) {
 
 const useOf = ({ ref: { id, rev }, accessEpoch }: FactSnapshot): KnowledgeSourceUse => ({ id, rev, accessEpoch });
 
+export async function openCurrentTextbookBlock(access: KnowledgeReadAccess, block: TextbookPulseBlock) {
+  const current = await access.read.fact(block.id, { mode: 'following' });
+  if (current.ref.learner !== access.learner || knowledgeUseKey(useOf(current)) !== knowledgeUseKey(block)) return;
+  const page = current.type === textbookPageType ? textbookPageFrom(current)
+    : current.type === assetType ? parseAsset(current.value) : undefined;
+  if (!page || knowledgeEndpointKind(current) !== 'chapter' || ('archived' in page && page.archived)) return;
+  const location = locateTextbookBlock(page.blocks, block.blockId);
+  if (!location) return;
+  await checkTextbookBasis(access.read, page.basis ?? []);
+  await verifyAssetBlockReference(access, location.block.body);
+  return { current, body: location.block.body };
+}
+
 /** Pass current selection and transitive source authorization in `access.read`. Enumerate current
  * `explains` and `maps_to_chapter` edges touching this exact block witness in either direction.
  * Refresh the witness and edge set after a block edit, move or authorization change. */
@@ -79,15 +92,9 @@ export async function readTextbookBlockConcepts(access: TextbookBlockAccess, inp
     const scopedRead = proofReader(access);
     const blockProof = new Map<string, BusWitness>();
     const read = scopedRead(blockProof);
-    const current = await read.fact(block.id, { mode: 'following' });
-    if (current.ref.learner !== access.learner || knowledgeUseKey(useOf(current)) !== knowledgeUseKey(block)) return;
-    const page = current.type === textbookPageType ? textbookPageFrom(current)
-      : current.type === assetType ? parseAsset(current.value) : undefined;
-    if (!page || knowledgeEndpointKind(current) !== 'chapter' || ('archived' in page && page.archived)) return;
-    const location = locateTextbookBlock(page.blocks, block.blockId);
-    if (!location) return;
-    await checkTextbookBasis(read, page.basis ?? []);
-    await verifyAssetBlockReference({ ...access, read }, location.block.body);
+    const opened = await openCurrentTextbookBlock({ ...access, read }, block);
+    if (!opened) return;
+    const { current } = opened;
     const edgeIds = [...new Set(edges.edgeIds)].sort();
     if (edgeIds.length > 1) await access.preloadFollowingEdges?.(edgeIds);
     const root = { kind: 'chapter', sourceUse: block, blockId: block.blockId } as const;
@@ -274,6 +281,7 @@ export type TextbookPulseQuestionAccess = CorrectionMicroVariantAccess & PulsePr
  * `onProof` captures facts. Slot, duration and exposure readers also track their own evidence. */
 export async function readTextbookPulseQuestion(access: TextbookPulseQuestionAccess, input: ConceptQuestions & {
   readonly source?: QuestionWitness;
+  readonly excludeQuestionId?: FactId;
   readonly complete: boolean;
   readonly variantEdgeIds: readonly FactId[];
   readonly archetypeEdgeIds: readonly FactId[];
@@ -298,6 +306,7 @@ export async function readTextbookPulseQuestion(access: TextbookPulseQuestionAcc
           return (relation === 'same_source' || relation === 'translation' || relation === 'representation_transfer') &&
             edge.variant?.spoilsNext === 'none';
         }, async witness => {
+          if (witness.id === input.excludeQuestionId) return false;
           const duration = await access.readDuration(witness);
           return Boolean(duration && duration.question.learner === access.learner &&
             knowledgeUseKey(duration.question) === knowledgeUseKey(witness) && Number.isSafeInteger(duration.upperMs) &&
