@@ -1,6 +1,6 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
+import { withLearnerLock } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, factId, learnerId, type DerivationId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { GatherContext, GatherInput, Json, JsonObject, ReadContext, Waiting } from '../../kernel/src/declarations/types.ts';
@@ -193,10 +193,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   const posttest = posttestWriter(db, activity);
 
   function write<T>(run: (tx: DbTransaction) => Promise<T>) {
-    return authorized(() => db.tx(scope, async tx => {
-      await lockLearner(tx, tx.learner);
-      return run(tx);
-    }));
+    return authorized(() => withLearnerLock(db, scope, run));
   }
 
   async function enqueueForecast(

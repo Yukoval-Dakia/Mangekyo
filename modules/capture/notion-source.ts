@@ -1,8 +1,8 @@
 import { factId, type CommandContext, type FactId, type FactSnapshot, type LearnerId, type Revision } from '@mangekyo/kernel';
 import { captureSourceType, sourceEnvelope, type SourceEnvelope } from './source.ts';
-import { notionConfirmPageAccess, NotionSourceUnavailable, type NotionReadRequest, type NotionReadResponse, type NotionRoot, type NotionSelectionWitness } from './notion-api.ts';
+import { notionConfirmPageAccess, notionReadPage, notionReadRows, NotionSourceChanged, NotionSourceUnavailable, NotionTemporaryFailure, type NotionReadRequest, type NotionReadResponse, type NotionRoot, type NotionSelectionWitness } from './notion-api.ts';
 import { notionRevisionDiff } from './notion-diff.ts';
-import { notionId, notionRecord, notionSelectionId, notionSourceId, notionSourceProjection, notionTimestamp } from './notion-values.ts';
+import { notionId, notionRecord, notionSelectionId, notionSourceId, notionSourceProjection, notionTimestamp, type NotionCursor } from './notion-values.ts';
 import { notionRetainedPurposes, notionSelectionWitness, notionRoot, readNotionSelection, selectionAllows,
   type NotionFactReader, type NotionReadOptions, type NotionSelection } from './notion-selection.ts';
 
@@ -183,7 +183,12 @@ export type SelectedNotionAccess = {
   readonly learner: LearnerId;
   readonly purpose: string;
   readonly recipientId: string;
+  readonly checkSelection?: (selection: NotionSelection, source: SourceEnvelope) => Promise<void>;
 };
+
+export class NotionSelectionUnavailable extends Error {
+  constructor() { super('Notion 选源不可用。'); }
+}
 
 /** Both readers belong to the same snapshot. sourceRead also applies current and pinned fact purposes. */
 export async function openSelectedNotionSource(access: SelectedNotionAccess, id: FactId, options: NotionReadOptions) {
@@ -196,14 +201,15 @@ async function authorizeNotionRead(
 ) {
   const current = options.mode === 'following' ? requested : await access.sourceRead.fact(id, { mode: 'following' });
   if (current.type !== captureSourceType || current.ref.learner !== access.learner || current.ref.id !== id)
-    throw new Error('Notion 选源不可用。');
+    throw new NotionSelectionUnavailable();
   const source = sourceEnvelope(current.value);
-  if (source.kind !== 'notion' || !source.sourceSelectionId) throw new Error('Notion 选源不可用。');
+  if (source.kind !== 'notion' || !source.sourceSelectionId) throw new NotionSelectionUnavailable();
   const selection = await readNotionSelection(access.selectionRead, access.learner, source.sourceSelectionId);
   const allowed = notionSourceRecipient(selection, access.purpose, access.recipientId);
   const check = (fact: FactSnapshot) => fact.ref.id === id && fact.purpose.includes(access.purpose) && allowed(fact);
-  if (!check(current) || (options.mode === 'pinned' && (requested.ref.rev !== options.rev || !check(requested))))
-    throw new Error('Notion 选源不可用。');
+  if (!selection || !check(current) || (options.mode === 'pinned' && (requested.ref.rev !== options.rev || !check(requested))))
+    throw new NotionSelectionUnavailable();
+  await access.checkSelection?.(selection, source);
   return requested;
 }
 
@@ -238,6 +244,42 @@ export async function prepareNotionIngest(selection: NotionSelection, page: unkn
   const envelope = await prepareNotionRevision(selection, page, recordedAt);
   const id = await notionSourceId(selection.learner, selection.id, envelope.externalId, selection.selectionEpoch);
   return { id, envelope, purpose };
+}
+
+export async function prepareSelectedNotionPages(selection: NotionSelection, cursor: NotionCursor | undefined,
+  deniedPages: ReadonlySet<string>, now: () => string, read: <T>(
+    stream: Generator<NotionReadRequest, T, NotionReadResponse> | AsyncGenerator<NotionReadRequest, T, NotionReadResponse>,
+    pageId?: string, supplemental?: boolean,
+  ) => Promise<T>, recovery: {
+    pages: readonly string[];
+    defer: (reason: {status: number} | {reason: 'ahead-of-cursor'}) => void;
+  },
+) {
+  const { root } = selection;
+  const dispatch = notionSelectionWitness(selection);
+  const rows: {pageId: string; lastEditedTime: string | null; supplemental?: true}[] = root.kind === 'page'
+    ? [{ pageId: root.id, lastEditedTime: null }] : [...await read(notionReadRows(root, cursor))];
+  const listed = new Set(rows.map(({ pageId }) => pageId));
+  // A blocked page may predate the data source's incremental query cursor.
+  for (const pageId of new Set(recovery.pages)) if (!listed.has(pageId)) rows.push({ pageId, lastEditedTime: null, supplemental:true });
+  const prepared = [];
+  for (const { pageId, lastEditedTime, supplemental } of rows) {
+    if (deniedPages.has(pageId)) continue;
+    const page = await read(notionReadPage(root, pageId, dispatch), pageId, supplemental).catch(error => {
+      if (!supplemental || !(error instanceof NotionTemporaryFailure)) throw error;
+      recovery.defer({status:error.status});
+      return null;
+    });
+    if (!page) continue;
+    if (lastEditedTime && page.lastEditedTime !== lastEditedTime) throw new NotionSourceChanged('Notion 页面观测已过时。');
+    // A direct probe has not established that intervening incremental rows were listed.
+    if (supplemental && (!cursor || page.lastEditedTime > cursor.lastEditedTime)) {
+      recovery.defer({reason:'ahead-of-cursor'});
+      continue;
+    }
+    prepared.push(await prepareNotionIngest(selection, page, now()));
+  }
+  return prepared;
 }
 
 export async function prepareNotionRevision(selection: NotionSelection, page: unknown, recordedAt: string) {

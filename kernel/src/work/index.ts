@@ -113,7 +113,7 @@ export function readWork(db: Db, ref: WorkRef): Promise<WorkRequest | null> {
   return db.snapshot({ learner: learnerId(ref.learner) }, tx => readReadyWork(tx, ref));
 }
 
-export type WorkAcceptance = (tx: DbTransaction, tick: Tick) => Promise<void> | void;
+export type WorkAcceptance = (tx: DbTransaction, tick: Tick, work: WorkRequest) => Promise<void> | void;
 
 async function closeWork(
   db: Db,
@@ -135,7 +135,7 @@ async function closeWork(
       );
       await clearWaits(tx, ref.workId);
       await setPending(tx, work, 'none', state === 'blocked' ? tick : null);
-      await accept?.(tx, tick);
+      await accept?.(tx, tick, work);
       return true;
     });
   });
@@ -148,6 +148,15 @@ export function finishWork(db: Db, ref: WorkRef, accept?: WorkAcceptance): Promi
 
 export function failWork(db: Db, ref: WorkRef, recordFailure?: WorkAcceptance): Promise<boolean> {
   return closeWork(db, ref, 'blocked', recordFailure);
+}
+
+export function blockRoutedWork(db: Db, ref: WorkRef, code: string, reason: string): Promise<boolean> {
+  return failWork(db,ref,async (tx, _tick, work) => {
+    await tx.query(
+      'UPDATE slot_state SET last_error=$4 WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
+      [tx.learner,work.slotType,work.slotKey,JSON.stringify({status:'blocked',code,reason})],
+    );
+  });
 }
 
 export function cancelWork(db: Db, ref: WorkRef, accept?: WorkAcceptance): Promise<boolean> {

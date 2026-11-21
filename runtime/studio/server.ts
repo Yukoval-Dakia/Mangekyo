@@ -7,9 +7,9 @@ import { applyKernelSchema, workerStorage } from '../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { acknowledgeStartedWork, readWork, relayPending, type WorkRef } from '../../kernel/src/work/index.ts';
 import { capabilityTaskQueue, startWork } from '../../executors/temporal/src/index.ts';
-import { activateLocalDeployment, createWorkWorker, workCancellationSignal } from '../../executors/temporal/src/worker.ts';
+import { activateLocalDeployment, createWorkWorker, workCancellationSignal, type WorkFailureCause } from '../../executors/temporal/src/worker.ts';
 import { createPythonDeriverHost } from '../../executors/python-deriver/host.ts';
-import { openStudioNotion } from './notion.ts';
+import { executeNotionBlockWork, notionBlockRoute, NotionReadTemporaryFailure, openStudioNotion } from './notion.ts';
 import { openStudio } from './sessions.ts';
 import { recordTerminalFailure, teach } from './teach.ts';
 import { sourceBuildId } from './build.ts';
@@ -153,8 +153,9 @@ if (mode === 'web') {
 async function runWorker(storeId: string) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
+  const executeResearch = (ref: WorkRef, terminal: boolean) => research.execute(ref, terminal, workCancellationSignal());
   async function executeDefault(ref: WorkRef, terminal: boolean) {
-    if (await research.execute(ref, terminal, workCancellationSignal())) return;
+    if (await executeResearch(ref, terminal)) return;
     const work = await readWork(db, ref);
     if (!work || [confirmedTeachingMethod,learningToolsMethod].includes(work.deriver)) return;
     if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
@@ -179,7 +180,7 @@ async function runWorker(storeId: string) {
   ];
   const lanes = [
     { queue, route: undefined, run: executeDefault },
-    { queue: capabilityTaskQueue(queue, 'correction-retest-v1'), route: { deriver: correctionRetestDeriver }, run: research.execute },
+    { queue: capabilityTaskQueue(queue, 'correction-retest-v1'), route: { deriver: correctionRetestDeriver }, run: executeResearch },
     ...protectedMethods.map(({deriver,lane}) => ({queue:capabilityTaskQueue(queue,lane),route:{deriver},
       async run(ref: WorkRef, terminal: boolean) {
         if ((await readWork(db,ref))?.deriver !== deriver) return;
@@ -187,17 +188,20 @@ async function runWorker(storeId: string) {
         else await teach(db,ref,readArtifactAssessmentWitness,jitCounters,research.turnCompleted);
       },
     })),
+    { queue: capabilityTaskQueue(queue, 'notion-block-v1'), route: notionBlockRoute,
+      run: (ref: WorkRef, terminal: boolean, cause?: WorkFailureCause) => executeNotionBlockWork(db, ref, terminal, cause) },
     ...(mineruToken() ? [{ queue: capabilityTaskQueue(queue, 'ocr-v1'), route: cloudIntakeRoute, run: cloudIntake.execute }] : []),
   ];
   const workers = await Promise.all(lanes.map(lane => {
-    async function execute(id: string, terminal = false) {
+    async function execute(id: string, terminal = false, cause?: WorkFailureCause) {
       const ref = await acknowledgeStartedWork(db, id, lane.route);
-      if (ref) await lane.run(ref, terminal);
+      if (ref) await lane.run(ref, terminal, cause);
     }
     return createWorkWorker(execute, {
       ...workerConfig, taskQueue: lane.queue, deploymentName: lane.queue,
       ...(lane.route ? {} : {advanceCoordinator: research.advance}),
-      onTerminalFailure: id => execute(id, true),
+      onTerminalFailure: (id, cause) => execute(id, true, cause),
+      ...(lane.route === notionBlockRoute ? {isRemoteUnavailable: (error: unknown) => error instanceof NotionReadTemporaryFailure} : {}),
     });
   }));
   let stopping = false;
