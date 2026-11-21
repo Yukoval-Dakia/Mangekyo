@@ -31,7 +31,10 @@ export function workbookExamPacingEvent(
     ...(effectiveDurationMs === undefined ? {} : {effective_duration_ms:effectiveDurationMs}),
     exam_pacing: {
       paper_key:JSON.stringify([frozen.id,frozen.rev]),
-      ...(scored && formal ? {scale_key:JSON.stringify(['workbook-formal-assessment@1',formal.releaseRef.id,formal.releaseRef.rev]),score} : {}),
+      ...(scored && formal ? {
+        scale_key:JSON.stringify(['workbook-formal-assessment@1',formal.releaseRef.id,formal.releaseRef.rev]),
+        score:{earned:score.earned,maximum:score.maximum},
+      } : {}),
     },
   } as const;
 }
