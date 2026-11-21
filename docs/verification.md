@@ -1,5 +1,12 @@
 # 验证记录
 
+## 本机验收服务复用
+
+- 常规 PG 回归复用只监听 `127.0.0.1:55432` 的本机 `mangekyo-dev`。把本机连接传给 `MANGEKYO_TEST_DATABASE_URL` 后运行 `pnpm test:pg`，现有测试夹具为每组新建 schema，并在结束后删除自己的 schema。
+- Studio 验收在同一开发 PG 中指定本轮唯一的 `MANGEKYO_DATABASE_SCHEMA=test_<id>`。Studio 启动时会创建该 schema。原件目录、账户夹具和 HTTP 端口也各自分配。先导出所需原件，再停进程并删除本轮 schema。
+- Temporal 常规验收连接本机原生开发服务，使用各轮自己的 namespace 和队列。`TEMPORAL_ADDRESS=127.0.0.1:7423 pnpm --filter @mangekyo/temporal verify:runtime` 会新建探针 namespace 和队列，并在结束时停本轮 Worker。默认开发地址和启动方式见 [Temporal 开发说明](../executors/temporal/README.md)。
+- 需要控制服务故障、版本切换或数据恢复的验收使用独占环境。脚本在启动资源前设 `trap`，跟踪自己启动的 Studio、Worker、Chrome 及临时容器，退出和收到中断时回收。临时容器使用 `--rm`。共享 PG、原生 Temporal 服务和其他任务的 schema 由各自所有者管理。
+
 ## 2026-11-16 单元 0
 
 - 已核对 K01–K08 的规格位置、两种完整设计和 20 个共同场景。
