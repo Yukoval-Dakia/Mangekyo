@@ -137,25 +137,27 @@ function caseCounts(cases: readonly MemoryRetentionCase[]) {
 
 function calibration(request: MemoryOverviewProjectionRequest): MemoryOverviewView['calibration'] {
   const source = request.calibration ?? [];
-  const summary: MemoryCalibrationSummary | undefined = source instanceof Array ? undefined : source;
-  const raw: MemoryCalibrationCounts & { readonly cases?: readonly MemoryRetentionCase[] } = summary
-    ? { ...summary, ...summary.recorded } : {};
-  const fromCases = raw.cases ? caseCounts(raw.cases)
-    : { eligible: 0, classified: 0, matched: 0, contaminated: 0, missingIndependent: 0 };
-  const eligible = count(raw.eligible, '可核对数') + fromCases.eligible;
-  const sampleCount = count(raw.classified, '核对样本数') + fromCases.classified;
-  const matchedCount = count(raw.matched, '命中数') + fromCases.matched;
-  const contaminated = count(raw.contaminated, '受污染样本数') + fromCases.contaminated;
-  const missingIndependent = count(raw.missingIndependent, '缺独立样本数') + fromCases.missingIndependent;
+  const summary: MemoryCalibrationSummary | undefined = Array.isArray(source) ? undefined : source as MemoryCalibrationSummary;
+  const hasSummaryCounts = summary !== undefined && (summary.recorded !== undefined ||
+    summary.classified !== undefined || summary.matched !== undefined || summary.eligible !== undefined ||
+    summary.contaminated !== undefined || summary.missingIndependent !== undefined);
+  const raw: MemoryCalibrationCounts = hasSummaryCounts ? { ...summary, ...summary.recorded }
+    : caseCounts(Array.isArray(source) ? source : (summary?.cases ?? []));
+  const eligible = count(raw.eligible, '可核对数');
+  const sampleCount = count(raw.classified, '核对样本数');
+  const matchedCount = count(raw.matched, '命中数');
+  const contaminated = count(raw.contaminated, '受污染样本数');
+  const missingIndependent = count(raw.missingIndependent, '缺独立样本数');
   const awaitingIndependentCount = contaminated + missingIndependent;
   if (matchedCount > sampleCount) throw new Error('记忆概况命中数超过核对样本数。');
-  const nonempty = sampleCount + eligible + awaitingIndependentCount > 0 || (summary?.forecasts ?? 0) > 0;
+  const pendingCount = awaitingIndependentCount || eligible || count(summary?.forecasts, '预测数');
+  const nonempty = sampleCount + pendingCount > 0;
   const state = sampleCount > 0 ? 'ready' as const : nonempty ? 'awaiting-evidence' as const : 'empty' as const;
   const percent = sampleCount ? Math.round((matchedCount / sampleCount) * 1000) / 10 : null;
   const headline = state === 'ready'
     ? `最近核对：${sampleCount} 次学习判断中，${matchedCount} 次与独立作答一致，命中率 ${percent}%。`
     : state === 'awaiting-evidence'
-      ? `已有 ${awaitingIndependentCount || eligible} 项记录，尚待更多独立作答后核对。`
+      ? `已有 ${pendingCount} 项记录，尚待更多独立作答后核对。`
       : '还没有可核对的学习判断。';
   return { state, hitRatePercent: percent, matchedCount, sampleCount, awaitingIndependentCount, headline };
 }
@@ -218,8 +220,12 @@ export function projectMemoryOverview(request: MemoryOverviewProjectionRequest):
     ...(examOutlook === undefined ? {} : { examOutlook }) };
 }
 
+const decimalTick = /^(0|[1-9][0-9]*)$/;
+
 function local(ref: BusWitness, scope: MemoryOverviewScope) {
-  return ref.learner === scope.learner && BigInt(ref.accessEpoch) <= BigInt(scope.clockWatermark);
+  return ref.learner === scope.learner && (ref.mode === 'following' || ref.mode === 'pinned') &&
+    decimalTick.test(ref.accessEpoch) && decimalTick.test(scope.clockWatermark) &&
+    BigInt(ref.accessEpoch) <= BigInt(scope.clockWatermark);
 }
 
 async function reopenChange(scope: MemoryOverviewScope, change: MemoryRecentChange, sources: MemoryOverviewSources):
@@ -241,6 +247,8 @@ async function reopenChange(scope: MemoryOverviewScope, change: MemoryRecentChan
 
 export async function readMemoryOverview(request: MemoryOverviewRequest, sources: MemoryOverviewSources):
   Promise<MemoryOverviewView> {
+  instant(request.asOf);
+  if (!decimalTick.test(request.clockWatermark)) throw new Error('记忆概况水位无效。');
   const { recentChanges, ...projection } = request;
   const opened = await Promise.all((recentChanges ?? []).map(change => reopenChange(request, change, sources)));
   const authorized = opened.filter((change): change is MemoryAuthorizedRecentChange => change !== undefined);

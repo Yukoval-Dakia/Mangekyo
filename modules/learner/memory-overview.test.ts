@@ -30,6 +30,9 @@ it('projects learner-facing calibration, cognition, authorized changes, and outl
 it('reports missing independent evidence without inventing a score', () => {
   const view = projectMemoryOverview({ ...scope, calibration: { recorded: { classified: 0, eligible: 1 } } });
   expect(view.calibration).toMatchObject({ state: 'awaiting-evidence', hitRatePercent: null, sampleCount: 0 });
+  const row = { exposure: 'independent' as const, observed: 'correct' as const, recorded: { status: 'matched', estimate: { kind: 'probabilistic', probability: 0.8 } } };
+  expect(projectMemoryOverview({ ...scope, calibration: { recorded: { classified: 1, matched: 1, eligible: 1 }, cases: [row] } }).calibration.sampleCount).toBe(1);
+  expect(projectMemoryOverview({ ...scope, calibration: [row] }).calibration).toMatchObject({ state: 'ready', hitRatePercent: 100, sampleCount: 1 });
 });
 
 it('keeps engineering measurements out of the public JSON', () => {

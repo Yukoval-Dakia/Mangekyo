@@ -22,3 +22,10 @@ export { liftAssessment, reconciledLiftAssessment } from './intervention-lift-ev
 export { flashCheckPriority, submissionConfidencePriority, type FlashCheckPriority } from './flash-check.ts';
 export { liftPurpose, runSealedWeeklyLift, weeklyLiftWork, type ReopenLiftCohort } from './weekly-lift.ts';
 export { projectSessionClosure, SessionClosureConflict, type SessionClosureEvidence, type SessionClosureScope } from './session-closure.ts';
+export {
+  projectMemoryOverview, readMemoryOverview,
+  type MemoryAuthorizedRecentChange, type MemoryCalibrationSource, type MemoryCognitionStatus,
+  type MemoryExamForecast, type MemoryOverviewProjectionRequest, type MemoryOverviewRequest,
+  type MemoryOverviewScope, type MemoryOverviewSources, type MemoryOverviewView,
+  type MemoryRecentChange, type MemoryRecentChangeKind, type MemoryRetentionCase,
+} from './memory-overview.ts';
