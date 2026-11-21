@@ -56,6 +56,7 @@ export function recordNewSubmission(id:string) {
 
 export function guardedPath(path:string) {
   return path === '/iqdb/proposals' || path === '/iqdb/papers' || path === '/materials' || path === '/practice/riding' || path === '/papers/sealed-practice' ||
+    /^\/textbooks\/[0-9A-HJKMNP-TV-Z]{26}\/pulse\/questions$/.test(path) ||
     /^\/papers\/[0-9A-HJKMNP-TV-Z]{26}\/attempts(?:\/[0-9A-HJKMNP-TV-Z]{26}\/corrections)?$/.test(path);
 }
 

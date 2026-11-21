@@ -117,7 +117,6 @@ async function openWeb() {
   const studio = await openStudio(db, activity, {projectRecall:recall.project,jitCounters,
     enableJit:process.env.MANGEKYO_STUDIO_ENABLE_JIT === '1'});
   const plan = await loadModuleDirectory(fileURLToPath(new URL('../../modules/plan', import.meta.url)));
-  const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}));
   const workbook = openWorkbook(db, activity, {
     capture,
     assessment: workbookAssessment,
@@ -125,6 +124,10 @@ async function openWeb() {
     onResearchFactsChanged: research.workbookChanged,
   });
   const takeaways = openTakeaway(db, activity);
+  const textbook = openTextbook(db, content, createStudioCommandHooks({afterFactsChanged: research.activityChanged}),
+    { python: pythonHost,
+      backtrace: (tx, read, facts) => workbookBacktrace(tx, read as never, facts) as never },
+    workbook.issueBank);
   const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank);
   const student = { notion:openStudioNotion(db,capture), textbook, relationReview:openRelationReview(db,content),
     workbook, takeaways, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),

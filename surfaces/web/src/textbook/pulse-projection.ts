@@ -1,4 +1,5 @@
 import { sourceRefV1 } from '../../../../modules/activity/source-values';
+import { api } from '../api';
 import type { Page } from './contract';
 
 export const pulseLabels = {steady: '稳住', decaying: '临近遗忘', fragile: '近错待固', unknown: '暂无独立记录'};
@@ -46,7 +47,11 @@ export function pulseRows(page: Page, batch: unknown): PulseRows {
       if (!row || typeof row.conceptId !== 'string' || !row.conceptId || typeof row.state !== 'string' ||
           !Object.hasOwn(pulseLabels, row.state) || (row.state === 'unknown' && row.reason !== 'no-independent-evidence')) continue;
       const history = row.state === 'unknown' ? undefined : fixedHistory(row.anchor);
-      concepts.push({conceptId:row.conceptId, state:row.state as PulseConcept['state'], ...(history && {history})});
+      const candidate = row.state === 'unknown' ? undefined : object(row.candidate);
+      const key = candidate && typeof candidate.key === 'string' ? candidate.key : undefined;
+      concepts.push({conceptId:row.conceptId, state:row.state as PulseConcept['state'], ...(history && {history}),
+        ...(key && page.id ? {candidate: {key, issue: requestId =>
+          api(`/textbooks/${encodeURIComponent(page.id)}/pulse/questions`, {method: 'POST', body: {requestId, key}})}} : {})});
     }
     result.set(block.blockId, concepts);
   }

@@ -64,6 +64,30 @@ export type TextbookWriteReceipt = CommandReceipt & {
   readonly rev: number;
 };
 
+export class TextbookConflictError extends Error {
+  constructor(
+    readonly code: 'REVISION_CONFLICT' | 'REQUEST_ID_CONFLICT' | 'CLIENT_EDIT_SEQ_CONFLICT',
+    readonly current: TextbookPageView,
+    readonly originalEdit: import('./textbook-edits.ts').TextbookRevision,
+    readonly requestId: string,
+    readonly previousReceipt?: CommandReceipt,
+  ) {
+    super('教材已在别处更新，原编辑已保留，请核对当前版本。');
+    this.name = 'TextbookConflictError';
+  }
+
+  toJSON() {
+    return {
+      error: this.message,
+      code: this.code,
+      current: this.current,
+      originalEdit: this.originalEdit,
+      requestId: this.requestId,
+      ...(this.previousReceipt ? { previousReceipt: this.previousReceipt } : {}),
+    };
+  }
+}
+
 export function accessPurpose(value: unknown): string {
   if (value === undefined) return 'storage';
   if (typeof value !== 'string' || !value.trim()) throw new Error('读取用途无效。');

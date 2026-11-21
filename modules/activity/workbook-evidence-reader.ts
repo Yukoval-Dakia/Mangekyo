@@ -37,7 +37,7 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
   unavailableRelease(error: unknown): boolean;
   reject(status: number, message: string): Error;
   edgeType: string;
-  questionType: string;
+  questionType: string | readonly string[];
 }) {
   async function openRetentionTarget(tx: Tx, read: FactReader, paperId: FactId, itemId: string) {
     const source = await read.fact(paperId, { mode: 'following' });
@@ -50,8 +50,12 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
       throw reject(422, '保持预测需要可确定性正式判分的题项。');
     }
     if (question.sourceQuestionRef) {
+      const allowed = Array.isArray(questionType) ? questionType : [questionType];
+      const sourceType = allowed.length === 1 ? allowed[0]!
+        : (await read.fact(factId(question.sourceQuestionRef.id), { mode: 'pinned', rev: question.sourceQuestionRef.rev })).type;
+      if (!allowed.includes(sourceType)) throw reject(422, '来源题面与冻结题项不匹配。');
       const resolved = await trackSource(tx, read, {
-        v: 1, fact: { ...question.sourceQuestionRef, type: questionType },
+        v: 1, fact: { ...question.sourceQuestionRef, type: sourceType },
         anchor: { kind: 'question', itemId: 'question' },
       });
       if (resolved.content !== question.prompt) throw reject(422, '来源题面与冻结题项不匹配。');
