@@ -101,12 +101,14 @@ function EdgePath({
   active,
   fontScale,
   edgeIndex,
+  showLabel,
 }: {
   edge: LayoutEdge;
   nodes: Map<string, LayoutNode>;
   active: boolean;
   fontScale: number;
   edgeIndex: number;
+  showLabel: boolean;
 }) {
   const from = nodes.get(edge.fromId);
   const to = nodes.get(edge.toId);
@@ -157,10 +159,12 @@ function EdgePath({
       >
         <title>{edge.pending && edge.summary ? `${edge.summary}（待核对）` : label}</title>
       </path>
-      <g className="kg-edge-label" pointerEvents="none">
-        <rect x={labelX - labelWidth / 2} y={labelY - labelHeight / 2} width={labelWidth} height={labelHeight} rx={labelHeight / 2} />
-        <text x={labelX} y={labelY} textAnchor="middle" style={{fontSize: `${labelFontSize}px`}}>{label}</text>
-      </g>
+      {showLabel ? (
+        <g className="kg-edge-label" pointerEvents="none">
+          <rect x={labelX - labelWidth / 2} y={labelY - labelHeight / 2} width={labelWidth} height={labelHeight} rx={labelHeight / 2} />
+          <text x={labelX} y={labelY} textAnchor="middle" style={{fontSize: `${labelFontSize}px`}}>{label}</text>
+        </g>
+      ) : null}
     </g>
   );
 }
@@ -187,6 +191,7 @@ function GraphCanvas({
   const titleFontSize = Math.round(14 * fontScale);
   const metaFontSize = Math.round(12 * fontScale);
   const activeId = hoveredId ?? selectedId;
+  const dense = layout.edges.length > 10;
   const activeNodeIds = useMemo(() => {
     const active = new Set<string>();
     if (activeId) {
@@ -297,6 +302,7 @@ function GraphCanvas({
               active={Boolean(activeId) && (edge.fromId === activeId || edge.toId === activeId)}
               fontScale={fontScale}
               edgeIndex={edgeIndex}
+              showLabel={!dense || Boolean(activeId) && (edge.fromId === activeId || edge.toId === activeId)}
             />
           ))}
           {layout.nodes.map(item => {

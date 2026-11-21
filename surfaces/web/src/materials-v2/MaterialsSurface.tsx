@@ -171,7 +171,7 @@ function DefaultTextbooksPlaceholder({ onNavigate }: { readonly onNavigate?: (hr
         badge="示例"
         title="起步材料阅读"
         detail="查看内置示例材料的结构化讲解与随堂练习。"
-        href={defaultLessonPack ? builtinPackPath(defaultLessonPack) : '/materials/riding'}
+        href={defaultLessonPack ? builtinPackPath(defaultLessonPack) : '/materials'}
         {...(onNavigate ? { onNavigate } : {})}
       />
     </div>

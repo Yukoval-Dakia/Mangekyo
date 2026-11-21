@@ -4,7 +4,7 @@ import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { averageSpeed, ridingLesson } from '../../../modules/activity/starter.ts';
 import type { PracticeAnswers, PracticeView } from '../../../modules/activity/practice-values.ts';
-import { builtinCompanionPath, builtinPackPath, type BuiltinPack } from './builtin-packs';
+import { builtinCompanionPath, builtinPackPath, defaultLessonPack, defaultPracticePack, type BuiltinPack } from './builtin-packs';
 import { enqueue } from './offline-queue';
 import { deletedSubmission, api, ApiError, remember, remembered, submissionId } from './api';
 import './starter.css';
@@ -16,8 +16,8 @@ const displayRate = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 })
 export function StarterLesson({ pack }: { pack?: BuiltinPack | undefined }) {
   const { distanceKm, movingMinutes, stoppedMinutes, comparisonMinutes } = ridingLesson;
   const title = pack?.title ?? ridingLesson.title;
-  const materialPath = pack ? builtinPackPath(pack) : '/materials/riding';
-  const companionPath = pack ? builtinCompanionPath(pack) : '/companion?context=riding';
+  const materialPath = pack ? builtinPackPath(pack) : (defaultLessonPack ? builtinPackPath(defaultLessonPack) : '/materials');
+  const companionPath = pack ? builtinCompanionPath(pack) : (defaultLessonPack ? builtinCompanionPath(defaultLessonPack) : '/companion');
   const [stopped, setStopped] = useState<number>(stoppedMinutes);
   const elapsed = movingMinutes + stopped;
   const originalElapsed = movingMinutes + stoppedMinutes;
@@ -145,8 +145,8 @@ function newDraft(version: string): PracticeDraft {
 export function StarterPractice({ pack }: { pack?: BuiltinPack | undefined }) {
   const foreground = useVisibleDocument();
   const watermark = useDraftWatermark(foreground);
-  const materialPath = pack ? builtinPackPath(pack) : '/materials/riding';
-  const companionPath = pack ? builtinCompanionPath(pack) : '/companion?context=riding';
+  const materialPath = pack ? builtinPackPath(pack) : (defaultPracticePack ? builtinPackPath(defaultPracticePack) : '/materials');
+  const companionPath = pack ? builtinCompanionPath(pack) : (defaultPracticePack ? builtinCompanionPath(defaultPracticePack) : '/companion');
   const [view, setView] = useState<PracticeView | null>(null);
   const [draft, setDraft] = useState(restoreDraft);
   const currentGeneration = useCurrentDraft(draft?.requestId);

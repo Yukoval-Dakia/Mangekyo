@@ -219,7 +219,12 @@ export async function readProviderCompletion(response: Response, hooks: Provider
       model = chunk.model;
     }
     id ??= chunk.id;
-    if (chunk.usage !== undefined) usage = completionUsage(chunk.usage);
+    if (chunk.usage !== undefined) {
+      // Some gateways emit a final usage:null frame after a valid usage chunk;
+      // keep the captured value instead of overwriting it with undefined.
+      const nextUsage = completionUsage(chunk.usage);
+      if (nextUsage) usage = nextUsage;
+    }
     if (!Array.isArray(chunk.choices)) return;
     const choice = chunk.choices.find((item) => item && (item.index === undefined || item.index === 0));
     if (!choice) return;

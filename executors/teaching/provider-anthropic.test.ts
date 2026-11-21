@@ -35,6 +35,15 @@ it('reads validated usage from OpenAI-compatible stream and non-stream completio
   }) + '\n\n'), {})).rejects.toThrow('Invalid completion usage');
 });
 
+it('keeps captured usage when a later frame reports usage: null', async () => {
+  const usage = {prompt_tokens: 7, completion_tokens: 5, total_tokens: 12};
+  const stream = sseResponse(responseFrame({content: 'ok'}, undefined, 'stop') +
+    'data: ' + JSON.stringify({model: providerModel, choices: [], usage}) + '\r\n\r\n' +
+    'data: ' + JSON.stringify({model: providerModel, choices: [], usage: null}) + '\r\n\r\n' +
+    'data: [DONE]\r\n\r\n');
+  expect(await readProviderCompletion(stream, {})).toMatchObject({content: 'ok', usage});
+});
+
 function completionBody(...history: Record<string, unknown>[]) {
   return JSON.stringify({model: anthropicProvider.model, max_completion_tokens: 2048,
     messages: [{role: 'system', content: '系统'}, {role: 'user', content: '算一下'}, ...history],
