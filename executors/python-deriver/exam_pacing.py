@@ -1,12 +1,17 @@
 """Descriptive pacing review over authorized attempts of the same frozen exam."""
 
 import sys
+from datetime import datetime
 from itertools import combinations
+
+from schema_validation import is_evidence_slice
 
 
 METHOD_VERSION = "plan/exam-pacing@1"
 MAX_ATTEMPTS = 8
 FIELDS = ("effective_duration_ms", "score")
+BASIS = ("paper_key", "scale_key")
+CANONICAL_FIELDS = (*FIELDS, *BASIS)
 
 
 def _record(value, required, optional=()):
@@ -30,13 +35,38 @@ def _score(value):
     )
 
 
+def _key(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _attempts(value, validate):
     return (
         isinstance(value, list)
         and len(value) <= MAX_ATTEMPTS
-        and all(validate(row) and isinstance(row["id"], str) and row["id"].strip() for row in value)
+        and all(validate(row) and _key(row["id"]) for row in value)
         and len({row["id"] for row in value}) == len(value)
     )
+
+
+def _time(value):
+    instant, _, fraction = value[:-1].partition(".")
+    return datetime.fromisoformat(instant + "." + fraction.ljust(3, "0") + "+00:00")
+
+
+def _eligible_events(value):
+    cutoff = _time(value["as_of_at"])
+    deadlines = {}
+    for deadline in value["constraints"]["deadlines"]:
+        ref = deadline["ref"]
+        deadlines[ref] = min(deadlines.get(ref, cutoff), _time(deadline["at"]))
+    omitted = {(entry["ref"]["id"], entry["ref"]["rev"]) for entry in value.get("omissions", [])}
+    return [
+        event for event in value["events"]
+        if "exam_pacing" in event and (event["ref"], event["rev"]) not in omitted
+        and _time(event["occurred_at"]) <= min(
+            deadlines.get(event["ref"], cutoff), deadlines.get(event["exam_pacing"].get("paper_key"), cutoff)
+        )
+    ]
 
 
 def is_pacing_input(value):
@@ -47,15 +77,44 @@ def is_pacing_input(value):
             and (row.get("score") is None or _score(row["score"]))
         )
 
-    return _record(value, ("attempts",)) and _attempts(value["attempts"], valid)
+    if _record(value, ("attempts",)):
+        return _attempts(value["attempts"], valid)
+    if not is_evidence_slice(value):
+        return False
+    for event in value["events"]:
+        if "exam_pacing" not in event:
+            continue
+        details = event["exam_pacing"]
+        if not (
+            _key(event["ref"]) and _record(details, (), (*BASIS, "score"))
+            and all(field not in details or _key(details[field]) for field in BASIS)
+            and ("score" not in details or _score(details["score"]))
+        ):
+            return False
+    refs = [event["ref"] for event in _eligible_events(value)]
+    return len(set(refs)) == len(refs)
 
 
-def _observe(row):
-    missing = [field for field in FIELDS if row.get(field) is None]
+def _observe(row, required):
+    missing = [field for field in required if row.get(field) is None]
     if missing:
         return {"id": row["id"], "kind": "unknown", "missing": missing}
     score = row["score"]
     return {**row, "kind": "observed", "score_rate": score["earned"] / score["maximum"]}
+
+
+def _observations(evidence):
+    if "attempts" in evidence:
+        return [_observe(row, FIELDS) for row in evidence["attempts"]]
+    events = sorted(_eligible_events(evidence), key=lambda event: _time(event["occurred_at"]), reverse=True)
+    attempts = []
+    for event in events[:MAX_ATTEMPTS]:
+        row = {"id": event["ref"], **event["exam_pacing"]}
+        duration = event.get("effective_duration_ms")
+        if _duration(duration):
+            row["effective_duration_ms"] = duration
+        attempts.append(_observe(row, CANONICAL_FIELDS))
+    return attempts
 
 
 def _diagnosis(attempts):
@@ -63,7 +122,9 @@ def _diagnosis(attempts):
     comparisons = []
     comparable = False
     for first, second in combinations(observed, 2):
-        if first["score"]["maximum"] != second["score"]["maximum"]:
+        if first["score"]["maximum"] != second["score"]["maximum"] or any(
+            first.get(field) != second.get(field) for field in BASIS
+        ):
             continue
         comparable = True
         faster, slower = sorted((first, second), key=lambda row: row["effective_duration_ms"])
@@ -80,13 +141,14 @@ def _diagnosis(attempts):
     return {"kind": "observed", "comparisons": comparisons}
 
 
-def is_pacing_result(value):
+def is_pacing_result(value, evidence=None):
     def valid(row):
         if _record(row, ("id", "kind", "missing")) and row["kind"] == "unknown":
             missing = row["missing"]
-            return isinstance(missing, list) and bool(missing) and missing == [key for key in FIELDS if key in missing]
+            return isinstance(missing, list) and bool(missing) and missing == [key for key in CANONICAL_FIELDS if key in missing]
         return (
-            _record(row, ("id", "kind", *FIELDS, "score_rate"))
+            _record(row, ("id", "kind", *FIELDS, "score_rate"), BASIS)
+            and (all(_key(row.get(field)) for field in BASIS) or all(field not in row for field in BASIS))
             and row["kind"] == "observed"
             and _duration(row["effective_duration_ms"])
             and _score(row["score"])
@@ -99,6 +161,8 @@ def is_pacing_result(value):
         and value["method_version"] == METHOD_VERSION
         and _attempts(value["attempts"], valid)
     ):
+        return False
+    if evidence is not None and (not is_pacing_input(evidence) or value["attempts"] != _observations(evidence)):
         return False
     strategy = value["strategy"]
     expected = _diagnosis(value["attempts"])
@@ -114,5 +178,5 @@ def is_pacing_result(value):
 def derive(evidence, *, method_version=METHOD_VERSION):
     if method_version != METHOD_VERSION or not is_pacing_input(evidence):
         raise ValueError("invalid exam pacing input or method")
-    attempts = [_observe(row) for row in evidence["attempts"]]
+    attempts = _observations(evidence)
     return {"method_version": method_version, "attempts": attempts, "strategy": _diagnosis(attempts)}

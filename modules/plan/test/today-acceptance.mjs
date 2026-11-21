@@ -8,6 +8,8 @@ import { createCommandHandler } from '../../../kernel/src/commands/handle.ts';
 import { createCommandReadContext } from '../../../kernel/src/commands/reads.ts';
 import { applyKernelSchema } from '../../../kernel/src/schema.ts';
 import { loadModuleDirectory } from '../../../kernel/src/loader.ts';
+import { openOrganizer } from '../../../runtime/studio/organizer.ts';
+import { studioLearner } from '../../../runtime/studio/identity.ts';
 import { planToday, sessionRule } from '../today.ts';
 import { openPack, checkPack } from '../offline-pack.ts';
 import { studyGoal } from '../goal-values.ts';
@@ -39,6 +41,11 @@ test('固定周三晚，明日作业取消时仅重排未开始项；三分钟�
   assert.equal(planToday({...next,candidates:[],rules:[session]}).budgetMinutes,20);
   const one = planToday({...next,candidates,mode:'one-hand'});
   assert.equal(one.totalMinutes,3); assert.equal(one.items[0].candidate.input,'tap');
+  const long = {...next,candidates:[make('forty-four',44,1),make('forty-five',45,1),make('hour',60,1,{input:'voice'})],
+    constraints:{budget_min:60,locks:[],deadlines:[]},duration:'45min+'};
+  assert.deepEqual(planToday(long).shortlist,['forty-five','hour']);
+  assert.deepEqual(planToday({...long,mode:'voice'}).shortlist,['hour']);
+  assert.deepEqual(planToday({...long,mode:'one-hand'}).shortlist,[]);
   const exam = {kind:'exam',date:'2026-11-25',scope:['graph'],weights:[{topic:'graph',weight:80}]};
   for (const [day,campaign] of [['17','steady'],['18','sprint'],['26','recovery']]) {
     const p = planToday({...next,now:'2026-11-'+day+'T11:00:00Z',rules:[exam],candidates});
@@ -90,6 +97,20 @@ test('空库使用内置包，真实内核回执、本人确认、旧版本冲�
     const learner = '00000000000000000000000001', goalId = '00000000000000000000000002', ruleId = '00000000000000000000000003';
     await db.query('INSERT INTO learners(id) VALUES($1)',[learner]);
     const modules = await Promise.all(['..','../../activity'].map(p=>loadModuleDirectory(fileURLToPath(new URL(p+'/',import.meta.url)))));
+    await db.query('INSERT INTO learners(id) VALUES($1)',[studioLearner]);
+    const organizer = openOrganizer(db,modules[1],modules[0],{onFactsChanged:async()=>{}});
+    const today = params => organizer.today(new URLSearchParams(params));
+    const oneHand = await today({mode:'one-hand'});
+    const fixedPack = oneHand.items[0].candidate;
+    assert.equal(oneHand.budgetMinutes,3);
+    assert.equal(fixedPack.input,'tap');
+    await organizer.rule({requestId:'filter-lock',expectedRev:null,data:{kind:'lock',date:oneHand.day,activityId:fixedPack.id}});
+    const fifteen = await today({mode:'one-hand',duration:'15min'});
+    const longer = await today({duration:'45min+'});
+    assert.equal(fifteen.budgetMinutes,15); assert.ok(fifteen.items.every(i=>i.candidate.input==='tap'));
+    assert.equal(longer.assumedMinutes,45); assert.deepEqual(longer.items,[]);
+    assert.deepEqual(longer.protectedItems,[fixedPack]);
+    await assert.rejects(()=>today({duration:'bad'}),{status:400});
     const handle = createCommandHandler(db,{modules,hooks:{onFactsChanged:async()=>{}}});
     let n = 10;
     const req = (type,input,actor='learner',purpose='storage')=>({learner,type,input,actor,purpose,id:String(++n).padStart(26,'0')});

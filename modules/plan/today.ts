@@ -3,7 +3,7 @@ import type { GoalStatus } from './goal-values.ts';
 import type { Campaign, PlanRule } from './rules.ts';
 import { examForecast, reviewExamScore, type ExamScoreObservation, type FrozenExamForecast } from './exam-forecast.ts';
 import { packCandidates } from './offline-pack.ts';
-import { instant, integer } from './validation.ts';
+import { instant, integer, oneOf } from './validation.ts';
 
 export type PlanCandidate = {
   id: string;
@@ -39,11 +39,19 @@ export type TodayInput = {
   rules?: readonly PlanRule[];
   lastOpenedAt?: string;
   mode?: 'one-hand' | 'voice' | 'any';
+  duration?: TodayDuration;
   // Agent may rank authorized real content. Apply only after hard admission.
   contentOrder?: readonly string[];
   frozenExamForecast?: FrozenExamForecast;
   examScore?: ExamScoreObservation;
 };
+const durationMinutes = { '3min': 3, '15min': 15, '45min+': 45 } as const;
+export type TodayDuration = keyof typeof durationMinutes;
+
+export function todayDuration(value: string | null): { duration?: TodayDuration } {
+  return value === null ? {} : {duration: oneOf(value, ['3min', '15min', '45min+'])};
+}
+
 const dayMs = 86400000;
 const days = (first: string, last: string) => (Date.parse(last) - Date.parse(first)) / dayMs;
 
@@ -194,20 +202,24 @@ export function planToday(input: TodayInput) {
     .filter((r) => r.kind === 'session')
     .filter((r) => r.date === day && Date.parse(r.expiresAt) > Date.parse(input.now));
   const resting = rules.some((r) => (r.kind === 'rest' || r.kind === 'exception') && r.date === day);
+  const duration = input.duration ?? (input.mode === 'one-hand' ? '3min' : undefined);
+  const presetMinutes = duration === undefined ? null : durationMinutes[duration];
+  const presetCap = duration === '45min+' ? null : presetMinutes;
   const hasTimeRule =
-    sessions.length > 0 || rules.some((r) => r.kind === 'window') || resting || input.mode === 'one-hand';
-  const assumedMinutes = input.constraints.budget_min === null && !hasTimeRule ? 15 : null;
+    sessions.length > 0 || rules.some((r) => r.kind === 'window') || resting;
+  const assumedMinutes = input.constraints.budget_min === null && !hasTimeRule && presetCap === null
+    ? presetMinutes ?? 15 : null;
   const budgetBasis =
     input.constraints.budget_min !== null
       ? '本人时间预算'
       : assumedMinutes !== null
-        ? '可用时间未知，暂按 15 分钟列出可调整的建议。'
+        ? '可用时间未知，暂按 ' + assumedMinutes + ' 分钟列出可调整的建议。'
         : '可用时间取本次模式、时段和本人约束。';
   const budgetMinutes = Math.min(
     integer(input.constraints.budget_min ?? assumedMinutes ?? 1440, 0, 1440),
     ...sessions.map((s) => s.minutes),
     windows.reduce((a, b) => a + b, 0),
-    input.mode === 'one-hand' ? 3 : 1440,
+    presetCap ?? 1440,
     resting ? 0 : 1440,
   );
   const upcomingSchoolwork = rules
@@ -316,6 +328,7 @@ export function planToday(input: TodayInput) {
       continue;
     if ((input.mode === 'one-hand' && c.input !== 'tap') || (input.mode === 'voice' && c.input !== 'voice'))
       continue;
+    if (duration === '45min+' && c.minutes < durationMinutes[duration]) continue;
     if ((campaign === 'recovery') !== (c.kind === 'recovery')) continue;
     if (returning && campaign !== 'recovery' && c.kind !== 'probe' && c.kind !== 'counterexample') continue;
     const info = c.information ?? (c.retention === undefined ? 0 : 4 * c.retention * (1 - c.retention));
@@ -352,7 +365,7 @@ export function planToday(input: TodayInput) {
       why.push('衔接当前校内进度或本人预习安排。');
     }
     const inScope = exam?.scope.includes(c.topic) ?? false;
-    if (inScope && campaign !== 'recovery') {
+    if (inScope && campaign === 'sprint') {
       score += 10 + (exam?.weights.find((w) => w.topic === c.topic)?.weight ?? 0) / 4;
       why.push('属于考试范围。');
     }
