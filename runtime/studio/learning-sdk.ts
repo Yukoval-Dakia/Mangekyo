@@ -17,6 +17,7 @@ import { studioWorkbookEvidence } from './retention-workbook.ts';
 import { readActivitySubmissionBirth } from './learning-attempt-read.ts';
 import { checkStudioNotionFact } from './notion.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
+import { readForgettingRisks, type RetentionBasis } from './learner-radar.ts';
 import { RequestError } from './sessions.ts';
 
 type Value = {value:PythonReadValue};
@@ -24,8 +25,13 @@ const absent = (method: string, message: string) =>
   toolFailure('not_found',message,{tool:'read_context',args:{intent:'tutoring'}},method);
 
 export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, access: {
-  maySend: WorkspaceSourceRecipient; track: SourceTrack; known(id:string): boolean;
+  maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean;
 }, asOf: string, watermark: Tick): Promise<Value | LearningError> {
+  if (request.method === 'forgetting_risks') {
+    return {value:await readForgettingRisks(tx,access.maySend,{asOf,watermark,
+      horizonHours:typeof request.args.horizon_hours === 'number' ? request.args.horizon_hours : 48,
+      track:access.track,trackRetention:access.trackRetention})};
+  }
   if (request.method !== 'attempts' && request.method !== 'evidence_slice')
     return absent(request.method, '该 SDK 查询尚无已授权的生产读取。');
   if (request.args.subject !== undefined) return absent('subject','作答没有可核对的学科归属。');
