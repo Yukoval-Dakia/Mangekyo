@@ -23,7 +23,7 @@ export class VisionOcrError extends Error {
   }
 }
 
-const weakVisionModelPattern = /(^|[/_.-])(flash|mini|nano|lite|haiku|small|tiny|fast|quick|cheap|turbo|instant)(?=$|[/_.-])/i;
+const weakVisionModelPattern = /(^|[/:_.-])(flash|mini|nano|lite|haiku|small|tiny|fast|quick|cheap|turbo|instant)(?=$|[/:_.-])/i;
 
 export function isWeakVisionModel(model: string): boolean {
   return weakVisionModelPattern.test(model);
@@ -98,7 +98,7 @@ export type VisionPaperLlmCallResult = {
     | undefined;
 };
 
-const defaultTimeoutMs = 120_000;
+const defaultTimeoutMs = 180_000;
 
 const defaultVisionSystemPrompt =
   '你是一位严谨的试卷图像结构化识别引擎。你的任务是逐题还原试卷照片里的全部内容，仅输出一个严格的 JSON 对象，不要输出任何 JSON 以外的文字或 Markdown 围栏。';
@@ -239,6 +239,7 @@ export async function callVisionPaperOcr(input: VisionPaperLlmCallInput): Promis
 
   const startedAt = Date.now();
   let response: Response;
+  let payload: JsonRecord;
   try {
     const body: JsonRecord = {
       model,
@@ -257,11 +258,29 @@ export async function callVisionPaperOcr(input: VisionPaperLlmCallInput): Promis
       signal: controller.signal,
       redirect: 'error',
     });
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => '')).slice(0, 500);
+      throw new VisionOcrError(
+        'http_error',
+        `强视觉模型返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`,
+      );
+    }
+    try {
+      payload = (await response.json()) as JsonRecord;
+    } catch (jsonError) {
+      if (externalSignal?.aborted) throw externalSignal.reason ?? jsonError;
+      if (controller.signal.aborted) {
+        const reason = controller.signal.reason;
+        throw reason instanceof VisionOcrError ? reason : new VisionOcrError('timeout', timeoutMessage(timeoutMs));
+      }
+      throw new VisionOcrError('invalid_response', '强视觉模型返回的不是合法 JSON。');
+    }
   } catch (error) {
     if (externalSignal?.aborted) throw externalSignal.reason ?? error;
     if (error instanceof VisionOcrError) throw error;
-    if (isAbortLike(error)) {
-      throw new VisionOcrError('timeout', timeoutMessage(timeoutMs));
+    if (isAbortLike(error) || controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      throw reason instanceof VisionOcrError ? reason : new VisionOcrError('timeout', timeoutMessage(timeoutMs));
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new VisionOcrError('network_error', `强视觉模型请求失败：${message}`);
@@ -270,21 +289,6 @@ export async function callVisionPaperOcr(input: VisionPaperLlmCallInput): Promis
     externalSignal?.removeEventListener('abort', onExternalAbort);
   }
   const elapsedMs = Date.now() - startedAt;
-
-  if (!response.ok) {
-    const detail = (await response.text().catch(() => '')).slice(0, 500);
-    throw new VisionOcrError(
-      'http_error',
-      `强视觉模型返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`,
-    );
-  }
-
-  let payload: JsonRecord;
-  try {
-    payload = (await response.json()) as JsonRecord;
-  } catch {
-    throw new VisionOcrError('invalid_response', '强视觉模型返回的不是合法 JSON。');
-  }
   const choices = payload.choices;
   const first = Array.isArray(choices) && choices.length > 0 ? (choices[0] as JsonRecord) : null;
   const message = first && typeof first === 'object' ? (first.message as JsonRecord | undefined) : undefined;
@@ -382,6 +386,10 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
 ): Promise<PhotoVisionExtractionResult<TParsed>> {
   const localExtract = input.fallbackExtractLocal ?? extractLocalDocument;
   const runLocal = () => localExtract('image', input.storedPath, input.bytes, input.textLimit);
+
+  if (input.signal?.aborted) {
+    throw input.signal.reason ?? new DOMException('Aborted', 'AbortError');
+  }
 
   if (input.visionConfig == null) {
     return {

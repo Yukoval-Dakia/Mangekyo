@@ -377,11 +377,12 @@ export function fallbackVisionExtraction(
   const reason = fallbackReason.replaceAll(String.fromCharCode(0), '').trim().slice(0, 500).toWellFormed();
   const notice = reason || '视觉识别不可用，已改用本地识别。';
   if (local.status === 'failed' || !local.text.trim()) {
-    const detail = local.error?.trim();
+    const detail = local.error?.replaceAll(String.fromCharCode(0), '').trim().slice(0, 400).toWellFormed();
+    const errorMessage = detail ? `${notice}；本地识别也失败：${detail}` : `${notice}，本地识别也没有可用结果。`;
     return {
       status: 'failed',
       method: 'vision_fallback',
-      error: detail ? `${notice}；本地识别也失败：${detail.slice(0, 400)}` : `${notice}，本地识别也没有可用结果。`,
+      error: errorMessage.slice(0, 1_000).toWellFormed(),
       text: '',
       characterCount: 0,
       pages: null,
@@ -390,7 +391,9 @@ export function fallbackVisionExtraction(
       stage: 'failed',
     };
   }
-  const warnings = [notice, ...local.warnings].slice(0, 8).map(item => item.slice(0, 500));
+  const warnings = [notice, ...local.warnings]
+    .slice(0, 8)
+    .map(item => item.replaceAll(String.fromCharCode(0), '').slice(0, 500).toWellFormed());
   return {
     status: local.status,
     method: 'vision_fallback',

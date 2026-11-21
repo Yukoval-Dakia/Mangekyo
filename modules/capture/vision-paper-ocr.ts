@@ -131,7 +131,7 @@ function cleanList(value: unknown, label: string, limit: number, max = maxWarnin
 /** Marker phrases a vision model writes when handwriting is illegible.
  * Models occasionally label such answers `present` with text like "看不清";
  * the parser normalizes them to honest `unclear` instead of trusting the tag. */
-const unclearMarkers = /^(?:看不清|无法辨认|无法识别|看不清楚|无法看清|模糊不清|辨认不清|难以辨认|无法确认|无法判断|unclear|illegible|unreadable|unrecognizable|\?+)$/i;
+const unclearMarkers = /^[\[\(（【\s]*(?:看不清|无法辨认|无法识别|看不清楚|无法看清|模糊不清|辨认不清|难以辨认|无法确认|无法判断|unclear|illegible|unreadable|unrecognizable|\?+)(?:[\s:：,，;；\-—]*(?:[（(][^()（）]{0,40}[)）]|[\[\【][^\[\]【】]{0,40}[\]\】]))?[\]\)）】\s]*$/i;
 
 function normalizeStudentAnswer(value: unknown): StructuredPaperStudentAnswer {
   if (value === undefined || value === null) {

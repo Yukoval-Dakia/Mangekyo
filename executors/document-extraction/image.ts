@@ -68,17 +68,17 @@ function clampInteger(value: number | undefined, fallback: number, min: number, 
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
-function runSips(args: string[]): Promise<void> {
+function runSips(args: string[]): Promise<string> {
   return new Promise((resolvePromise, rejectPromise) => {
     execFile(
       '/usr/bin/sips',
       args,
       { timeout: sipsTimeoutMs, maxBuffer: 4 * 1024 * 1024, killSignal: 'SIGKILL' },
-      (error, _stdout, stderr) => {
+      (error, stdout, stderr) => {
         if (error) {
           const detail = typeof stderr === 'string' && stderr.trim() ? `：${stderr.trim().slice(0, 200)}` : '';
           rejectPromise(new Error(`macOS sips 转码失败${detail}`));
-        } else resolvePromise();
+        } else resolvePromise(typeof stdout === 'string' ? stdout : '');
       },
     );
   });
@@ -86,7 +86,7 @@ function runSips(args: string[]): Promise<void> {
 
 // sharp 对本机 HEIC/HEIF 等编码支持不全时，在 macOS 上用自带 sips 先转成 JPEG 再进 sharp。
 // 临时文件一律放 os.tmpdir() 并用 fs.rm 清理，不走 shell rm。
-async function transcodeToJpegWithSips(bytes: Buffer): Promise<Buffer | null> {
+async function transcodeToJpegWithSips(bytes: Buffer, maxInputPixels: number): Promise<Buffer | null> {
   if (process.platform !== 'darwin') return null;
   let dir: string | null = null;
   try {
@@ -94,10 +94,17 @@ async function transcodeToJpegWithSips(bytes: Buffer): Promise<Buffer | null> {
     const input = path.join(dir, 'input.bin');
     const output = path.join(dir, 'output.jpg');
     await writeFile(input, bytes);
+    const props = await runSips(['-g', 'pixelWidth', '-g', 'pixelHeight', input]);
+    const pw = Number(/pixelWidth:\s*(\d+)/.exec(props)?.[1]);
+    const ph = Number(/pixelHeight:\s*(\d+)/.exec(props)?.[1]);
+    if (Number.isFinite(pw) && Number.isFinite(ph) && pw > 0 && ph > 0 && pw * ph > maxInputPixels) {
+      throw new Error('Input image exceeds pixel limit');
+    }
     await runSips(['-s', 'format', 'jpeg', input, '--out', output]);
     const converted = await readFile(output);
     return converted.length > 0 ? converted : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && /pixel limit/i.test(error.message)) throw error;
     return null;
   } finally {
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
@@ -129,7 +136,7 @@ export async function normalizeImageForVisionOcr(
       throw new Error(`${stageLabel}：${message}`);
     }
     usedSips = true;
-    const converted = await transcodeToJpegWithSips(source);
+    const converted = await transcodeToJpegWithSips(source, maxInputPixels);
     if (!converted) {
       const message = originalError instanceof Error ? originalError.message : String(originalError);
       throw new Error(`${stageLabel}（可能是不支持的编码或文件损坏）：${message}`);
