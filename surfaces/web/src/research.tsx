@@ -186,7 +186,7 @@ function Worksheet({ path, refresh }: { path: string; refresh: () => void }) {
   </div>;
 }
 
-export function AttemptResearch({ paperId, attemptId, onSaved }: { paperId: string; attemptId: string; onSaved?: () => void }) {
+export function AttemptResearch({ paperId, attemptId, onSaved }: { paperId: string; attemptId: string; onSaved: () => void }) {
   const path = '/papers/' + encodeURIComponent(paperId) + '/attempts/' + encodeURIComponent(attemptId) + '/research';
   return <ResearchChoice path={path + '-permission'} field="allowed" label="向后台教研开放本次作答" onSaved={onSaved}
     help="开放后，后台教研可读取这份原答。如已另行授权付费前哨，该服务可收到卷名、提交时间与错题摘要。收回后，这次作答的复习单及其来源将不再可读。">
