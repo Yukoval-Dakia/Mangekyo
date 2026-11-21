@@ -9,6 +9,7 @@
     "./facts/asset-contract": "./asset.ts",
     "./facts/textbook-page": "./textbook-page.ts",
     "./textbook-conflict": "./textbook-conflict.ts",
+    "./textbook-diff": "./textbook-diff.ts",
     "./knowledge-entity": "./knowledge-entity.ts",
     "./knowledge-edge": "./knowledge-edge.ts",
     "./graph-evolution": "./graph-evolution.ts",
