@@ -10,13 +10,15 @@ import { independentlyAuthoredPaper, workbookAttempt, workbookAttemptType } from
 import {
   researchPurpose, researchSettingsType, researchWorksheetType, retentionReviewPermissionType,
 } from '../../modules/companion/research.ts';
+import { isWorksheetProfile, type WorkerConsent } from '../../modules/companion/worker-consent.ts';
+import { completedWorksheetEvent, reviewDedupKey, summarizeReviewAttempt, worksheetInventoryItem } from '../../modules/companion/worksheet-policy.ts';
 import { readLearningOverview } from './learning-overview.ts';
 import { readRetentionRadar } from './learner-radar.ts';
 import { textSlice } from './reading.ts';
 import { readResearchForeground } from './research-foreground.ts';
-import { activeRetentionReview, independentScoutSource, reviewMaterialAvailable, readWorksheetById, researchReader, retentionReviewAnchor, whenAvailable, worksheetId } from './research-sources.ts';
+import { activeRetentionReview, independentScoutSource, reviewMaterialAvailable, readWorksheetById, researchReader, retentionReviewAnchor, whenAvailable, worksheetPublication } from './research-sources.ts';
 import type { TriageSnapshot } from './research-triage/snapshot.ts';
-import { coverage, noop, researchTriageRequest, response, reviewAction, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
+import { coverage, noop, projectResearchOverview, projectReviewTodo, researchTriageRequest, response, reviewAction, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
 
 export { researchDecision, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
 
@@ -26,10 +28,6 @@ export function scoutEffectIdentity(settingsId: FactId, dedupKey: string) {
 const retrySheetLifetimeMs = 24 * 60 * 60 * 1000;
 const recentWindow = 8;
 const detailLimit = 4;
-
-export function reviewDedupKey({ id, revision, accessEpoch }: TodoSpec['sourceFactRev']) {
-  return 'review-attempt:' + id + ':' + revision + ':' + accessEpoch;
-}
 
 async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
   const { rows } = await tx.query<{ id: string; type: string; rank: number }>(
@@ -54,10 +52,7 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
       const { worksheet, fact } = opened;
       const todo = await readTodo(tx, worksheet.todoId);
       if (todo?.state !== 'completed' || todo.resultId !== worksheet.id) continue;
-      events[row.id] = { event_id: row.id, kind: 'work_completed', fact_ref: row.id, fact_rev: fact.ref.rev,
-        payload: { todo_id: todo.id, chain_id: todo.chainId, hop_count: todo.hopCount, digest: worksheet.digest,
-          source_fact_id: worksheet.source.attemptId, source_fact_rev: worksheet.source.revision,
-          source_access_epoch: worksheet.source.accessEpoch } };
+      events[row.id] = completedWorksheetEvent(fact, worksheet, worksheet.digest, todo);
       completed++;
       continue;
     }
@@ -90,35 +85,14 @@ async function readResearchInventory(tx: ReadTransaction) {
   for (const { id } of rows.slice(0, detailLimit)) {
     const opened = await readWorksheetById(tx, factId(id));
     if (!opened) continue;
-    const { worksheet, fact } = opened;
-    const source = worksheet.source;
+    const { worksheet } = opened;
     if ('todoId' in worksheet) {
       const todo = await readTodo(tx, worksheet.todoId);
       if (todo?.state !== 'completed' || todo.resultId !== id) continue;
     }
-    items[id] = { inventory_id: id, kind: 'research_worksheet', status: 'ready', usage: 'unknown',
-      revision: fact.ref.rev, access_epoch: fact.accessEpoch, title: textSlice(worksheet.title, 0, 80).content,
-      source_fact_id: source.attemptId, source_fact_rev: String(source.revision), source_access_epoch: source.accessEpoch,
-      href: opened.source ? `/api/papers/${opened.source.paperId}/attempts/${source.attemptId}/research` : source.href };
+    items[id] = worksheetInventoryItem(opened, textSlice(worksheet.title, 0, 80).content);
   }
   return { items, coverage: coverage(Object.keys(items).length, rows.length, detailLimit) };
-}
-
-async function readResearchOverview(tx: ReadTransaction) {
-  const { goal, tasks } = await readLearningOverview(tx, {
-    callerPurpose: researchPurpose,
-    maySend: (_projection, fact) => fact.purpose.includes(researchPurpose),
-  });
-  const goalText = goal.state === 'set' && goal.text !== null ? textSlice(goal.text, 0, 240) : null;
-  return {
-    goal: goalText ? { ...goal, text: goalText.content, truncated: goalText.nextOffset !== null } : goal,
-    tasks: 'items' in tasks ? {
-      state: tasks.items.length > detailLimit ? 'partial' : tasks.state,
-      items: tasks.items.slice(0, detailLimit).map((task, index) => ({
-        ...task, title: textSlice(task.title, 0, 80).content, witness: tasks.witnesses[index],
-      })),
-    } : { state: tasks.state === 'empty' ? 'unknown' : tasks.state },
-  };
 }
 
 async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, settingsRevision: number,
@@ -161,7 +135,7 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
         `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
          UNION ALL SELECT 1 FROM work WHERE family='todo' AND learner_id = $1 AND dedup_key = $3
           AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5 LIMIT 1`,
-        [tx.learner, worksheetId(id, fact.ref.rev, fact.accessEpoch), dedupKey,
+        [tx.learner, (await worksheetPublication(tx, id, fact.ref.rev, fact.accessEpoch)).factId, dedupKey,
           JSON.stringify(sourceFactRev), String(settingsRevision)],
       );
       if (!known.rowCount && (!settingsId || await canProcessPricedEffect(tx, scoutEffectIdentity(settingsId, dedupKey)))) intent = {
@@ -170,13 +144,8 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
         expiresAtMs: now + retrySheetLifetimeMs,
       };
     }
-    const summary = {
-      id, rev: fact.ref.rev, fact_type: fact.type, access_epoch: fact.accessEpoch, retracted_rev: 0,
-      purpose: researchPurpose, data: attempt
-        ? { submitted_at: attempt.submittedAt, title: textSlice(attempt.paper.title, 0, 100).content,
-          first_incorrect_question: anchor ? attempt.paper.questions.findIndex(item => item.id === anchor) + 1 : null }
-        : { status: 'missed', observation: 'independent' },
-    };
+    const summary = summarizeReviewAttempt(fact, attempt, anchor,
+      attempt && textSlice(attempt.paper.title, 0, 100).content);
     if (mode === 'paid' && intent?.sourceFactRev.id === id) {
       paidCandidate = summary.data;
       facts[id] = summary;
@@ -204,16 +173,11 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   for (const { todo_id } of rows.slice(0, recentWindow)) {
     const todo = await readTodo(tx, todo_id);
     if (!todo || !await eligible(todo.spec)) continue;
-    const { spec } = todo;
-    todos[todo.id] = { todo_id: todo.id, dedup_key: spec.dedupKey,
-      status: spec.trigger.kind === 'scheduled' && todo.state === 'pending' ? 'scheduled' : 'pending',
-      dispatch_state: todo.state, trigger: spec.trigger.kind, source_fact_id: spec.sourceFactRev.id,
-      source_fact_rev: String(spec.sourceFactRev.revision), autonomy_tier: spec.autonomyTier,
-      ...(spec.trigger.kind === 'scheduled' ? { fire_at_ms: spec.trigger.fireAtMs } : {}),
-      ...(spec.trigger.kind === 'event' ? { event_type: spec.trigger.event.type } : {}),
-      worker_profile: spec.workerProfile, goal: spec.goal };
+    todos[todo.id] = projectReviewTodo(todo);
   }
-  const overview = await readResearchOverview(tx);
+  const overview = projectResearchOverview(await readLearningOverview(tx, {
+    callerPurpose: researchPurpose, maySend: (_projection, fact) => fact.purpose.includes(researchPurpose),
+  }), detailLimit, textSlice);
   const inventory = await readResearchInventory(tx);
   const retention = await readRetentionRadar(tx, {
     callerPurpose: researchPurpose, maySend: fact => fact.purpose.includes(researchPurpose),
@@ -230,10 +194,10 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   return { snapshot, request, intent, action };
 }
 
-export async function preparePaidResearchTriage(tx: ReadTransaction, settingsId: FactId, settingsRevision: number, now: number) {
+export async function preparePaidResearchTriage(tx: ReadTransaction, settingsId: FactId, settingsRevision: number, now: number, grant: WorkerConsent | null) {
   const { facts, intent, paidCandidate } = await readReviewAttempts(tx, true, settingsRevision, now, 'paid', settingsId);
   if (!intent || !paidCandidate) return null;
-  const action = reviewAction(intent.sourceFactRev.id);
+  const action = reviewAction(intent.sourceFactRev.id, grant && isWorksheetProfile(grant.profile) ? grant.profile : undefined);
   const snapshot: TriageSnapshot = { facts, todos: {}, inventory: {}, forecasts: {}, memos: {}, work: {},
     signals: {}, events: {}, chain: null, budget: { remaining: 0 } };
   const { id, revision: rev, accessEpoch } = intent.sourceFactRev;

@@ -1,3 +1,7 @@
+import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
+import type { WorkerConsent } from '../../modules/companion/worker-consent.ts';
+import { workerCall, workerCap } from '../research/worker-dispatch.ts';
+import { independentScoutSource, researchReader } from './research-sources.ts';
 import { createHash } from 'node:crypto';
 import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
@@ -41,6 +45,10 @@ export type UnderstandingTransport = {
 const windowMs = 86_400_000;
 const mayResearch: WorkspaceSourceRecipient = fact =>
   fact.type === turnEvidenceType ? turnAllowsBackgroundUnderstanding(fact) : fact.purpose.includes(researchPurpose) || fact.purpose.includes('all');
+
+// The priced route sends only an explicitly granted learner utterance or independently authored attempt.
+export const paidExtractionRecipient: WorkspaceSourceRecipient = fact => fact.purpose.includes(researchPurpose) &&
+  (fact.type === workbookAttemptType || fact.type === turnEvidenceType && turnAllowsBackgroundUnderstanding(fact));
 
 async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpose = researchPurpose,
   recipient?: WorkspaceSourceRecipient, item?: string) {
@@ -121,7 +129,7 @@ export async function openUnderstandingCitations(tx: ReadTransaction, refs: read
   });
 }
 
-export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: Tick, settingsRevision: number, now: number, recipient?: WorkspaceSourceRecipient) {
+export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: Tick, settingsRevision: number, now: number, recipient?: WorkspaceSourceRecipient, budgetCap = 0) {
   const {rows} = await tx.query<{ id: string; anchor: string | null }>(`
     SELECT f.id, item.anchor FROM facts f
     JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
@@ -142,20 +150,25 @@ export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: 
   const todos: TodoInput[] = [];
   for (const row of rows) {
     const source = await openUnderstandingActivity(tx, row.id, researchPurpose, recipient, row.anchor ?? undefined);
-    if (!source) continue;
+    if (!source || budgetCap && !await paidSource(tx, row.id)) continue;
     todos.push({dedupKey: extractionKey(source.ref.id, source.quoteOnly ? 1 : source.ref.rev, row.anchor ?? undefined), trigger: {kind: 'immediate'},
       workerProfile: extractorProfile, goal: extractionGoal, refs: [],
       sourceFactRev: {id: source.ref.id, revision: source.ref.rev, accessEpoch: source.ref.accessEpoch, ...(row.anchor ? {anchor: row.anchor} : {})},
-      autonomyTier: 2, budgetCap: 0, settingsRevision, expiresAtMs: now + windowMs});
+      autonomyTier: 2, budgetCap, settingsRevision, expiresAtMs: now + windowMs});
     if (todos.length === 12) break;
   }
   return todos;
 }
 
-export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec, recipient?: WorkspaceSourceRecipient) {
+async function paidSource(tx: ReadTransaction, id: string) {
+  const fact = await whenAvailable(() => researchReader(tx).fact(factId(id), {mode:'following'}));
+  return fact && paidExtractionRecipient(fact) && (fact.type !== workbookAttemptType || await independentScoutSource(tx, fact));
+}
+
+export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec, recipient?: WorkspaceSourceRecipient, budgetCap = 0) {
   const {id, revision, accessEpoch} = spec.sourceFactRev;
   const item = spec.sourceFactRev.anchor;
-  if (spec.workerProfile !== extractorProfile || spec.goal !== extractionGoal || spec.budgetCap !== 0 ||
+  if (spec.workerProfile !== extractorProfile || spec.goal !== extractionGoal || spec.budgetCap !== budgetCap || budgetCap && !await paidSource(tx, id) ||
       spec.autonomyTier !== 2 || spec.expiresAtMs <= Date.now()) return null;
   const source = await openUnderstandingActivity(tx, id, researchPurpose, recipient, item);
   if (source?.ref.rev !== revision || source.ref.accessEpoch !== accessEpoch || spec.dedupKey !== extractionKey(id, source.quoteOnly ? 1 : revision, item)) return null;
@@ -200,9 +213,14 @@ async function learnerGovernedSince(tx: ReadTransaction, tick: string, sourceId:
   return Boolean(rowCount);
 }
 
-export function openUnderstandingExtraction(db: Db, companion: LoadedModule, transport: UnderstandingTransport | undefined) {
-  if (!transport) return;
-  if (!transport.route.trim() || transport.cost !== 0 || typeof transport.sample !== 'function')
+export function openUnderstandingExtraction(db: Db, companion: LoadedModule, transport: UnderstandingTransport | undefined,
+  paid?: {grant: WorkerConsent; tariff: WorkerTariff; signal: AbortSignal}) {
+  if (!transport && !paid) return;
+  const maySend = paid ? paidExtractionRecipient : transport?.maySend;
+  const budgetCap = paid ? workerCap(paid.grant, paid.tariff) : 0;
+  const route = paid?.grant.route ?? transport!.route;
+  if (paid && (!budgetCap || paid.grant.profile !== extractorProfile)) return;
+  if (transport && (!transport.route.trim() || transport.cost !== 0 || typeof transport.sample !== 'function'))
     throw new Error('个性化抽取只接受已授权的零成本模型传输。');
   return async function execute(ref: WorkRef, todoId: string, settingsCurrent: (tx: ReadTransaction, rev: number) => Promise<boolean>) {
     const scope = {learner: studioLearner};
@@ -210,9 +228,9 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
       const todo = await readTodo(tx, todoId);
       if (todo?.state !== 'dispatched' || !await readReadyWork(tx, ref) ||
           !await settingsCurrent(tx, todo.spec.settingsRevision)) return null;
-      const source = await eligibleExtraction(tx, todo.spec, transport.maySend);
+      const source = await eligibleExtraction(tx, todo.spec, maySend, budgetCap);
       if (!source || await learnerGovernedSince(tx, source.born, source.ref.id)) return null;
-      const prior = source.quoteOnly ? [] : await existingUnderstandings(tx, source.ref.id, transport.maySend);
+      const prior = paid || source.quoteOnly ? [] : await existingUnderstandings(tx, source.ref.id, maySend);
       const target = prior.map(({ref, data: {kind, text, scope, ttl}, directions}) => ({id: ref.id, kind, text, scope, ttl, directions}));
       const input = JSON.stringify({source: {ref: source.ref, kind: source.kind, fragments: source.fragments},
         considered_at: new Date(todo.spec.expiresAtMs - windowMs).toISOString(), ...(!source.quoteOnly ? {existing: target} : {})});
@@ -237,15 +255,16 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
       const {todo, source, prior, input} = prepared;
       const readOutput = (raw: string) => extractUnderstandings(raw, source, todo.spec.expiresAtMs - windowMs, prior);
       const instructions = source.quoteOnly ? conversationExtractionInstructions : extractionInstructions;
-      const effect = await runEffect(db, {...scope, ownerKind: 'derivation', ownerId: todoId, stepKey: 'extraction-v1',
-        label: 'model:' + transport.route, input: {instructions, input,
+      const effect = paid ? {kind:'done' as const, result:readOutput(await workerCall(db, todoId, source.ref.id, paid.grant,
+        paid.tariff, matches, paid.signal).call('extract', instructions, input))} : await runEffect(db, {...scope, ownerKind: 'derivation', ownerId: todoId, stepKey: 'extraction-v1',
+        label: 'model:' + route, input: {instructions, input,
           ...(source.basisDigest ? {basis: source.basisDigest} : {})}}, async (providerEffectId, checkDispatch) => {
         // Protect admission and starting the send, then release the learner lock while the host awaits the reply.
         const {response} = await db.tx(scope, async tx => {
           await lockLearner(tx, tx.learner);
           await checkDispatch(tx);
           await matches(tx);
-          const response = transport.sample({instructions, input, providerEffectId});
+          const response = transport!.sample({instructions, input, providerEffectId});
           void response.catch(() => {});
           return {response};
         });
@@ -264,22 +283,22 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
         return {id, prior: previous ? previous.ref : null, data: {...data, version: 2 as const, sticky: false,
           evidence_refs: [...(previous ? previous.data.evidence_refs : []), ...data.evidence_refs.map(ref =>
             source.basisDigest ? {...ref, basis_digest: source.basisDigest,
-              ...questionOrigin(source, ref.anchor, transport.route)} : ref)],
+              ...questionOrigin(source, ref.anchor, route)} : ref)],
           undo_token: previous ? previous.data.undo_token : factId(claimUndoToken(command, id))}};
       });
 
       const handle = createCommandHandler(db, {modules: [companion],
         bindCommandRead: (tx, _, base) => bindLinkedCitationRead(base, async citation => {
-          if (citation.question_evidence && citation.question_evidence.recipient !== transport.route) return;
-          if (!(await openUnderstandingCitations(tx, [citation], researchPurpose, transport.maySend)).length) return;
-          return {teaching: !!(await openUnderstandingCitations(tx, [citation], 'teaching', transport.maySend)).length};
+          if (citation.question_evidence && citation.question_evidence.recipient !== route) return;
+          if (!(await openUnderstandingCitations(tx, [citation], researchPurpose, maySend)).length) return;
+          return {teaching: !!(await openUnderstandingCitations(tx, [citation], 'teaching', maySend)).length};
         }), hooks: {async onFactsChanged(tx, tick) {
         // The command has already written its revisions. Revalidate source/consent without rereading revised targets.
         const current = await readTodo(tx, todoId);
         const citations = entries.flatMap(entry => entry.data.evidence_refs);
         if (current?.revision !== todo.revision || !await readReadyWork(tx, ref) ||
-            !await settingsCurrent(tx, todo.spec.settingsRevision) || !await eligibleExtraction(tx, todo.spec, transport.maySend) ||
-            (await openUnderstandingCitations(tx, citations, researchPurpose, transport.maySend)).length !== citations.length ||
+            !await settingsCurrent(tx, todo.spec.settingsRevision) || !await eligibleExtraction(tx, todo.spec, maySend, budgetCap) ||
+            (await openUnderstandingCitations(tx, citations, researchPurpose, maySend)).length !== citations.length ||
             await learnerGovernedSince(tx, source.born, source.ref.id) ||
             !await completeTodo(tx, tick, ref, current, entries[0]!.id)) throw new ClaimInputError('抽取工作已失效。');
       }}});

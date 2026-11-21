@@ -8,7 +8,7 @@ export const parseTriageResponse = (raw: string, snapshot: TriageSnapshot) => pa
 export const reviewGoal = '为一份正式错题作答准备复习单';
 const reviewTemplate = 'review_submitted_attempt';
 export const noop = { kind: 'noop' } as const;
-export const reviewAction = (source: string) => ({ kind: 'emit_todo', template_id: reviewTemplate, source_fact_id: source });
+export const reviewAction = (source: string, template = reviewTemplate) => ({ kind: 'emit_todo', template_id: template, source_fact_id: source });
 type ReviewAction = ReturnType<typeof reviewAction>;
 
 export function response(action: ReviewAction | typeof noop) {
@@ -77,4 +77,40 @@ export function researchDecision({ snapshot, action }: { snapshot: TriageSnapsho
     if (!(error instanceof SyntaxError || error instanceof TriageResponseError)) throw error;
   }
   return 'invalid_reply';
+}
+
+export function projectResearchOverview({ goal, tasks }: {
+  goal: {state: 'set'; text: string | null} | {state:'empty'|'unavailable'};
+  tasks: {state: string; items: readonly {title: string}[]; witnesses: readonly unknown[]} |
+    {state:'empty'|'unavailable'};
+}, detailLimit: number, textSlice: (text: string, offset: number, limit: number) =>
+  {content: string; nextOffset: number | null}) {
+  const goalText = goal.state === 'set' && goal.text !== null ? textSlice(goal.text, 0, 240) : null;
+  return {
+    goal: goalText ? { ...goal, text: goalText.content, truncated: goalText.nextOffset !== null } : goal,
+    tasks: 'items' in tasks ? {
+      state: tasks.items.length > detailLimit ? 'partial' : tasks.state,
+      items: tasks.items.slice(0, detailLimit).map((task, index) => ({
+        ...task, title: textSlice(task.title, 0, 80).content, witness: tasks.witnesses[index],
+      })),
+    } : { state: tasks.state === 'empty' ? 'unknown' : tasks.state },
+  };
+}
+
+type ReviewTodo = {
+  id: string; state: string;
+  spec: { dedupKey: string; sourceFactRev: {id: string; revision: number};
+    autonomyTier: number; workerProfile: string; goal: string;
+    trigger: {kind:'immediate'} | {kind:'scheduled'; fireAtMs:number} | {kind:'event'; event:{type:string}} };
+};
+
+export function projectReviewTodo(todo: ReviewTodo) {
+  const { spec } = todo;
+  return { todo_id: todo.id, dedup_key: spec.dedupKey,
+    status: spec.trigger.kind === 'scheduled' && todo.state === 'pending' ? 'scheduled' : 'pending',
+    dispatch_state: todo.state, trigger: spec.trigger.kind, source_fact_id: spec.sourceFactRev.id,
+    source_fact_rev: String(spec.sourceFactRev.revision), autonomy_tier: spec.autonomyTier,
+    ...(spec.trigger.kind === 'scheduled' ? { fire_at_ms: spec.trigger.fireAtMs } : {}),
+    ...(spec.trigger.kind === 'event' ? { event_type: spec.trigger.event.type } : {}),
+    worker_profile: spec.workerProfile, goal: spec.goal };
 }
