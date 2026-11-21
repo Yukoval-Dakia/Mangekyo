@@ -192,6 +192,19 @@ test('Organizer 实库验收：空库、T-7 跨时区、考后切换、长假重
       const plan = deriver.derive(fromFacts.plan.data).value;
       assert.deepEqual([plan.activeGoal,plan.shortlist.includes('graph')],[status==='active' ? goalId : null,status==='active']);
     }
+    // 目标状态机：exited 是终态，不能复活后重新驱动自动备课；同状态幂等。
+    assert.equal((await read(goalId)).value.status, 'exited');
+    for (const status of ['active', 'paused', 'completed'])
+      await assert.rejects(() => handle(req('plan.setGoalStatus', { id: goalId, expectedRev: 5, status })), /状态不支持/);
+    await handle(req('plan.setGoalStatus', { id: goalId, expectedRev: 5, status: 'exited' }));
+    const goalId2 = '00000000000000000000000003';
+    await assert.rejects(() => handle(req('activity.setStudyGoal', { id: goalId2, data: { text: '绕过', status: 'paused' } })), /进行中/);
+    await handle(req('activity.setStudyGoal', { id: goalId2, data: { text: '读写' } }));
+    await handle(req('plan.setGoalStatus', { id: goalId2, expectedRev: 1, status: 'paused' }));
+    await handle(req('plan.setGoalStatus', { id: goalId2, expectedRev: 2, status: 'completed' }));
+    await assert.rejects(() => handle(req('plan.setGoalStatus', { id: goalId2, expectedRev: 3, status: 'active' })), /状态不支持/);
+    await handle(req('plan.setGoalStatus', { id: goalId2, expectedRev: 3, status: 'exited' }));
+    assert.equal((await read(goalId2)).value.status, 'exited');
     await assert.rejects(()=>handle(req('plan.saveRule',{id:exam.id,expectedRev:exam.rev,data:null})),/revision conflict/);
     await save('clear-exam',null,correctedExam);
     await assert.rejects(()=>read(exam.id));
