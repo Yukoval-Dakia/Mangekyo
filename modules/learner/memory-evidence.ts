@@ -1,4 +1,4 @@
-import { factId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
+import { factId, type BusWitness, type FactSnapshot, type LearnerId, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('记忆字段需要对象。');
@@ -56,6 +56,35 @@ export function witnessList(value: unknown) {
 
 export function allows(purposes: readonly string[], required: string) {
   return purposes.includes(required) || purposes.includes('all');
+}
+
+export type EvidenceReadScope = { readonly learner: LearnerId; readonly purpose: string; readonly recipient: string };
+
+export function busWitnessKey({learner, id, rev, accessEpoch, type, mode}: BusWitness) {
+  return JSON.stringify([learner, id, rev, accessEpoch, type, mode]);
+}
+
+// Reuse reads within one snapshot only. Each caller opens under the actual recipient.
+export function scopedWitnessReader(read: {
+  scope: EvidenceReadScope;
+  reopen(scope: EvidenceReadScope, ref: BusWitness): Promise<FactSnapshot | undefined>;
+}) {
+  const {scope} = read;
+  const reads = new Map<string, Promise<FactSnapshot | undefined>>();
+  function open(ref: BusWitness) {
+    if (ref.learner !== scope.learner || (ref.mode !== 'pinned' && ref.mode !== 'following'))
+      return Promise.resolve(undefined);
+    const key = busWitnessKey(ref);
+    let opened = reads.get(key);
+    if (!opened) {
+      opened = read.reopen(scope, ref).then(fact => fact?.ref.learner === scope.learner &&
+        fact.ref.id === ref.id && fact.ref.rev === ref.rev && fact.type === ref.type &&
+        fact.accessEpoch === ref.accessEpoch && allows(fact.purpose, scope.purpose) ? fact : undefined);
+      reads.set(key, opened);
+    }
+    return opened;
+  }
+  return {open, canOpen: async (refs: readonly BusWitness[]) => (await Promise.all(refs.map(open))).every(Boolean)};
 }
 
 export async function openWitness(read: ReadContext, ref: Witness, purpose: string): Promise<FactSnapshot> {

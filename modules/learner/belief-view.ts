@@ -2,6 +2,7 @@ import type { BeliefTime, BusWitness, CanonicalEvidenceSliceV1, Directive, FactR
   Hypothesis, LearnerId, RefusalBoundary } from '@mangekyo/kernel';
 export type { RefusalBoundary } from '@mangekyo/kernel';
 import { allows, instant, isAttemptEvidenceType, record, text, witness, witnessIdentity, type Witness } from './memory-evidence.ts';
+import { preSubmitRevisionWitness } from './pre-submit-process.ts';
 
 export function refusalBoundary(value: unknown): RefusalBoundary {
   const fields = record(value);
@@ -60,7 +61,10 @@ export type HypothesisEvidence = {
 };
 export type HypothesisStage = Hypothesis<unknown, unknown>['status'];
 
-export function hypothesisView(history: readonly HypothesisEvidence[], when: AsOf) {
+export function hypothesisView(history: readonly HypothesisEvidence[], when: AsOf, process?: {
+  // Already opened in the same current authorization snapshot and recipient.
+  learner: LearnerId; purpose: string; submissions: readonly FactSnapshot[];
+}) {
   const valid = instant(when.validAt);
   const known = instant(when.knownAt);
   const events = history.filter(e => e.origin === 'chronicle'
@@ -93,7 +97,16 @@ export function hypothesisView(history: readonly HypothesisEvidence[], when: AsO
     }
     if (previous !== stage) trajectory.push({at: event.occurredAt, stage});
   }
-  return {stage, trajectory, evidence: events, confidence: {
+  const preSubmitRevised: Witness[] = [];
+  if (process?.purpose.trim()) {
+    const evidence = new Set(events.map(event => witnessIdentity(event.ref)));
+    for (const fact of process.submissions) {
+      if (fact.ref.learner !== process.learner) continue;
+      const ref = preSubmitRevisionWitness(fact, process.purpose);
+      if (ref && evidence.delete(witnessIdentity(ref))) preSubmitRevised.push(ref);
+    }
+  }
+  return {stage, trajectory, evidence: events, ...(preSubmitRevised.length ? {process: {preSubmitRevised}} : {}), confidence: {
     statement: events.some(event => event.source === 'learner-quote') ? 'directly-attested' : 'unconfirmed',
     fact: stage, outcome: outcomeEvidence ? 'independently-observed' : 'unknown',
   }};

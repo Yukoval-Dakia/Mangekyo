@@ -1,6 +1,6 @@
-import type { BusWitness, EvidenceEventV1, FactId, FactSnapshot, LearnerId, Tick } from '@mangekyo/kernel';
+import type { BusWitness, EvidenceEventV1, FactId, FactSnapshot, Tick } from '@mangekyo/kernel';
 import type { HypothesisStage } from './belief-view.ts';
-import { allows } from './memory-evidence.ts';
+import { busWitnessKey as witnessKey, evidenceTime, scopedWitnessReader, type EvidenceReadScope } from './memory-evidence.ts';
 
 type ErrorStage = NonNullable<EvidenceEventV1['error_stage']>;
 const errorStages: ReadonlySet<ErrorStage> = new Set(['reading', 'modeling', 'strategy', 'execution', 'expression']);
@@ -27,7 +27,7 @@ export type RecurringErrorEvidence = RecurringErrorItemRef & {
   readonly divergence?: { readonly text: string; readonly basis: readonly BusWitness[] };
 };
 
-type ReadScope = { readonly learner: LearnerId; readonly purpose: string; readonly recipient: string };
+type ReadScope = EvidenceReadScope;
 type Cutoff = { readonly asOfAt: string; readonly observedThrough: Tick };
 
 export type RecurringErrorRead = {
@@ -62,20 +62,8 @@ export type RecurringErrorCluster = {
   readonly anchors: readonly RecurringErrorAnchor[];
 };
 
-function witnessKey({ learner, id, rev, accessEpoch, type, mode }: BusWitness) {
-  return JSON.stringify([learner, id, rev, accessEpoch, type, mode]);
-}
-
 function questionKey({ ref, itemId }: QuestionSource) {
   return JSON.stringify([ref.id, itemId]);
-}
-
-function asInstant(at: string) {
-  if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(at) || at.startsWith('0000')) return NaN;
-  const [seconds, fraction] = at.slice(0, -1).split('.');
-  const normalized = seconds + '.' + (fraction ?? '').padEnd(3, '0') + 'Z';
-  const time = Date.parse(normalized);
-  return Number.isFinite(time) && new Date(time).toISOString() === normalized ? time : NaN;
 }
 
 function kindIs(fact: FactSnapshot | undefined, kind: string) {
@@ -142,25 +130,11 @@ export async function recurringErrorCluster(read: RecurringErrorRead, input: Rec
 Promise<RecurringErrorCluster | null> {
   const { scope } = read;
   const cutoff = { asOfAt: input.asOfAt, observedThrough: input.observedThrough };
-  const asOf = asInstant(cutoff.asOfAt);
+  const asOf = evidenceTime(cutoff.asOfAt);
   if (!Number.isFinite(asOf) || !scope.purpose.trim() || !scope.recipient.trim()) return null;
   const through = BigInt(cutoff.observedThrough);
 
-  const reads = new Map<string, Promise<FactSnapshot | undefined>>();
-  function reopen(ref: BusWitness) {
-    if (ref.learner !== scope.learner || (ref.mode !== 'pinned' && ref.mode !== 'following'))
-      return Promise.resolve(undefined);
-    const key = witnessKey(ref);
-    let opened = reads.get(key);
-    if (!opened) {
-      opened = read.reopen(scope, ref).then(fact => fact?.ref.learner === scope.learner &&
-        fact.ref.id === ref.id && fact.ref.rev === ref.rev && fact.type === ref.type &&
-        fact.accessEpoch === ref.accessEpoch && allows(fact.purpose, scope.purpose) ? fact : undefined);
-      reads.set(key, opened);
-    }
-    return opened;
-  }
-  const canOpen = async (refs: readonly BusWitness[]) => (await Promise.all(refs.map(reopen))).every(Boolean);
+  const {open: reopen, canOpen} = scopedWitnessReader(read);
 
   async function formalStage(row: RecurringErrorEvidence) {
     const { evaluation, event } = row;
@@ -188,7 +162,7 @@ Promise<RecurringErrorCluster | null> {
     if (!row || witnessKey(row.submission) !== witnessKey(item.submission) || row.itemId !== item.itemId ||
         !row.source.itemId.trim() || !row.basis.length) return;
     const { event } = row;
-    const time = asInstant(event.occurred_at);
+    const time = evidenceTime(event.occurred_at);
     const admittedAt = BigInt(row.admittedAt);
     if (!(time <= asOf) || admittedAt > through || event.ref !== row.submission.id || event.rev !== row.submission.rev ||
         event.outcome !== 'incorrect' || event.help_level !== 'independent') return;
