@@ -78,12 +78,6 @@ function OriginalsOverview({
           <h2>原件与笔记</h2>
           <p>先看已交入原件，再切换到笔记或外部来源。</p>
         </div>
-        <div className="mv2-originals-actions">
-          <button type="button" className="mv2-btn mv2-btn-tonal mv2-btn-sm" onClick={() => onNavigate('/intake')}>
-            <Icon name="plus" />
-            <span>交入材料</span>
-          </button>
-        </div>
       </div>
 
       <section className="mv2-originals-list" aria-label="已交入原件">
