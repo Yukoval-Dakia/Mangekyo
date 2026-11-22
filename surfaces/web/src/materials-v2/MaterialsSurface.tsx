@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Icon } from '../icons';
-import { builtinPackPath, defaultLessonPack } from '../builtin-packs';
 import { QuestionBankTab } from './QuestionBankTab';
 import type { MaterialsSurfaceProps, MaterialsTabId, MaterialsTabMeta } from './types';
 import './materials-v2.css';
@@ -110,39 +109,6 @@ function SectionIntro({
   );
 }
 
-function EntryTile({
-  title,
-  detail,
-  href,
-  badge,
-  onNavigate,
-}: {
-  readonly title: string;
-  readonly detail: string;
-  readonly href: string;
-  readonly badge: string;
-  readonly onNavigate?: (href: string) => void;
-}) {
-  return (
-    <a
-      className="mv2-entry-tile"
-      href={href}
-      onClick={event => {
-        if (!onNavigate) return;
-        event.preventDefault();
-        onNavigate(href);
-      }}
-    >
-      <span className="mv2-entry-badge">{badge}</span>
-      <strong className="mv2-entry-title">{title}</strong>
-      <span className="mv2-entry-detail">{detail}</span>
-      <span className="mv2-entry-arrow" aria-hidden="true">
-        <Icon name="chevron" />
-      </span>
-    </a>
-  );
-}
-
 function DefaultGraphPlaceholder() {
   return (
     <div className="mv2-placeholder-card">
@@ -153,100 +119,6 @@ function DefaultGraphPlaceholder() {
       <p>
         此处将呈现按学科概念聚合的掌握度图谱、薄弱前置提醒以及题目与笔记之间的跨源连边。
       </p>
-    </div>
-  );
-}
-
-function DefaultTextbooksPlaceholder({ onNavigate }: { readonly onNavigate?: (href: string) => void }) {
-  return (
-    <div className="mv2-entry-grid">
-      <EntryTile
-        badge="活教材"
-        title="打开个人教材"
-        detail="阅读已沉淀的概念章节、原位微探针与考前压缩急救卡。"
-        href="/textbooks"
-        {...(onNavigate ? { onNavigate } : {})}
-      />
-      <EntryTile
-        badge="示例"
-        title="起步材料阅读"
-        detail="查看内置示例材料的结构化讲解与随堂练习。"
-        href={defaultLessonPack ? builtinPackPath(defaultLessonPack) : '/materials'}
-        {...(onNavigate ? { onNavigate } : {})}
-      />
-    </div>
-  );
-}
-
-function DefaultPapersPlaceholder({ onNavigate }: { readonly onNavigate?: (href: string) => void }) {
-  return (
-    <div className="mv2-entry-grid">
-      <EntryTile
-        badge="练习卷"
-        title="我的试卷"
-        detail="继续未完成练习、查看作答记录或手动编组新卷。"
-        href="/papers"
-        {...(onNavigate ? { onNavigate } : {})}
-      />
-      <EntryTile
-        badge="纸面闭环"
-        title="清洁打印与拍回"
-        detail="导出清爽纸面试卷并拍照回传批改，形成完整复习闭环。"
-        href="/papers/issued"
-        {...(onNavigate ? { onNavigate } : {})}
-      />
-      <EntryTile
-        badge="互动课堂"
-        title="学习型课堂"
-        detail="进入分步讲解与互动板书课堂，按节奏攻克薄弱环节。"
-        href="/classroom"
-        {...(onNavigate ? { onNavigate } : {})}
-      />
-    </div>
-  );
-}
-
-function DefaultOriginalsPlaceholder({
-  onCaptureMaterial,
-  onNavigate,
-}: {
-  readonly onCaptureMaterial?: () => void;
-  readonly onNavigate?: (href: string) => void;
-}) {
-  return (
-    <div className="mv2-stack">
-      <div className="mv2-entry-grid">
-        <EntryTile
-          badge="导入切片"
-          title="原件库与拍卷切片"
-          detail="导入 PDF、纸卷照片与讲义原件，自动切分并追溯出处。"
-          href="/intake"
-          {...(onNavigate ? { onNavigate } : {})}
-        />
-        <EntryTile
-          badge="外部只读"
-          title="同伴工作区与 Notion 来源"
-          detail="查看已授权的只读外部笔记来源、引用范围与同步状态。"
-          href="/materials/workspace"
-          {...(onNavigate ? { onNavigate } : {})}
-        />
-        <EntryTile
-          badge="个人整理"
-          title="学习笔记"
-          detail="整理自己的总结卡片、思路摘录与关联材料。"
-          href="/notes"
-          {...(onNavigate ? { onNavigate } : {})}
-        />
-      </div>
-      {onCaptureMaterial && (
-        <div className="mv2-inline-cta">
-          <span>手边有一段文字或题目？可以直接交入保存为个人材料。</span>
-          <button type="button" className="mv2-btn mv2-btn-tonal mv2-btn-sm" onClick={onCaptureMaterial}>
-            <Icon name="plus" />
-            <span>交入文字材料</span>
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -341,43 +213,12 @@ export function MaterialsSurface({
       return renderBank ? renderBank(defaultBankNode) : defaultBankNode;
     }
     if (tab === 'textbooks') {
-      return (
-        <div className="mv2-slot-section">
-          <SectionIntro
-            title="个人教材"
-            description="沉淀活教材章节、原位微探针与考前压缩急救卡，随时随地温故知新。"
-          />
-          {renderTextbooks ? renderTextbooks() : <DefaultTextbooksPlaceholder {...(onNavigate ? { onNavigate } : {})} />}
-        </div>
-      );
+      return renderTextbooks ? renderTextbooks() : null;
     }
     if (tab === 'papers') {
-      return (
-        <div className="mv2-slot-section">
-          <SectionIntro
-            title="试卷与课堂"
-            description="集中管理练习卷、清洁打印拍回与互动学习课堂，告别零散入口。"
-          />
-          {renderPapers ? renderPapers() : <DefaultPapersPlaceholder {...(onNavigate ? { onNavigate } : {})} />}
-        </div>
-      );
+      return renderPapers ? renderPapers() : null;
     }
-    return (
-      <div className="mv2-slot-section">
-        <SectionIntro
-          title="原件与笔记"
-          description="归档导入原件、拍卷切片、已授权的 Notion 只读来源以及个人笔记。"
-        />
-        {renderOriginals ? (
-          renderOriginals()
-        ) : (
-          <DefaultOriginalsPlaceholder
-            {...(onCaptureMaterial ? { onCaptureMaterial } : {})}
-            {...(onNavigate ? { onNavigate } : {})}
-          />
-        )}
-      </div>
-    );
+    return renderOriginals ? renderOriginals() : null;
   };
 
   return (

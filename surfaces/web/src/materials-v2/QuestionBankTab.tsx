@@ -1079,21 +1079,23 @@ export function QuestionBankTab({
   const isLoading = externalLoading ?? internalLoading;
   const activeError = externalError ?? internalError;
   const showFoldedView = foldByArchetype && foldingResult.status === 'ready';
-  const showUnavailableFallback = foldByArchetype && foldingResult.status !== 'ready';
+  const showFoldingToggle = foldingResult.status === 'ready';
 
   return (
     <section className="mv2-bank" aria-label="题库与错题">
       <div className="mv2-bank-toolbar">
         <div className="mv2-toggle-group" role="group" aria-label="题库视图切换">
-          <button
-            type="button"
-            className="mv2-toggle-pill"
-            aria-pressed={foldByArchetype}
-            onClick={() => setFoldByArchetype(previous => !previous)}
-          >
-            <FoldIcon />
-            <span>按母题折叠</span>
-          </button>
+          {showFoldingToggle && (
+            <button
+              type="button"
+              className="mv2-toggle-pill"
+              aria-pressed={foldByArchetype}
+              onClick={() => setFoldByArchetype(previous => !previous)}
+            >
+              <FoldIcon />
+              <span>按母题折叠</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -1154,21 +1156,6 @@ export function QuestionBankTab({
         </div>
       ) : (
         <>
-          {showUnavailableFallback && (
-            <div className="mv2-notice mv2-notice-honest" role="status" data-folding-status={foldingResult.status}>
-              <p className="mv2-notice-title">
-                {foldingResult.status === 'unavailable'
-                  ? '当前暂无母题归簇数据，已按平铺题库展示'
-                  : '当前暂无可展示的母题归簇，已按平铺题库展示'}
-              </p>
-              <p className="mv2-notice-body">
-                {mistakesOnly
-                  ? '你仍可浏览全部待回看错题、重练原卷或引用给学习同伴。'
-                  : '后端下发母题折叠投影后，将自动聚合原卷变式并给出代表题建议。'}
-              </p>
-            </div>
-          )}
-
           {showFoldedView ? (
             <div className="mv2-stack">
               {visibleClusters.length > 0 ? (
@@ -1283,6 +1270,16 @@ export function QuestionBankTab({
                   ? '试试清空搜索框，或切换到「只看错题」查看历史错题。'
                   : '导入试卷或交入学习材料后，题目会出现在这里。'}
               </p>
+              {!query && (
+                <button
+                  type="button"
+                  className="mv2-btn mv2-btn-tonal mv2-btn-sm"
+                  onClick={() => navigateTo('/intake')}
+                >
+                  <Icon name="plus" />
+                  <span>交入材料</span>
+                </button>
+              )}
             </div>
           )}
         </>

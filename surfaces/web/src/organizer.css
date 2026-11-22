@@ -1,3 +1,17 @@
+.organizer-embedded-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.organizer-embedded-head h2 {
+  font-size: 20px;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+}
+
 .organizer-card {
   margin-top: 14px;
   padding: clamp(20px, 3vw, 30px);
@@ -27,13 +41,29 @@
 .organizer-editor textarea {
   width: 100%;
   color: var(--ink);
-  background: #f3f6f1;
-  border: 1px solid #adbbad;
+  background: var(--surface-container-low);
+  border: 1px solid var(--line-strong);
   border-radius: 13px;
   min-height: 46px;
-  padding: 0 11px;
+  padding: 0 12px;
   font-weight: 400;
   font-size: 16px;
+}
+
+.organizer-editor select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 40px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+  background-size: 16px 16px;
+}
+
+.organizer-editor select:focus-visible,
+.organizer-editor textarea:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .organizer-editor textarea {
@@ -48,14 +78,14 @@
   margin: 12px 0;
   padding: 10px 14px;
   border-radius: 13px;
-  background: #e7efdf;
+  background: var(--soft-green);
   color: var(--ink);
   font-size: 14px;
   line-height: 1.6;
 }
 
 .organizer-notice.problem {
-  background: #f6e9e8;
+  background: var(--danger-container);
   color: var(--danger);
 }
 
@@ -85,10 +115,10 @@
   height: 44px;
   flex: none;
   padding: 0;
-  border: 1.5px solid #829487;
+  border: 1.5px solid var(--line-strong);
   border-radius: 50%;
   background: transparent;
-  color: #fff;
+  color: var(--primary-ink);
   font-size: 18px;
   font-weight: 750;
 }
@@ -201,7 +231,7 @@
 }
 
 .organizer-note-list li a[aria-current='true'] {
-  background: #dce9d7;
+  background: var(--soft-green);
 }
 
 .organizer-note-list li strong {
@@ -265,7 +295,7 @@
   padding: 13px 15px;
   border: 1px solid var(--line);
   border-radius: 13px;
-  background: #fff;
+  background: var(--surface);
   font-size: 14px;
 }
 
@@ -371,12 +401,12 @@
   gap: 5px 10px;
   padding: 8px 11px;
   border-radius: 11px;
-  background: #f1f5ee;
+  background: var(--surface-container-low);
   font-size: 13px;
 }
 
 .organizer-version-list li.is-current {
-  background: #e1ebdf;
+  background: var(--soft-green);
 }
 
 .organizer-version-list small {

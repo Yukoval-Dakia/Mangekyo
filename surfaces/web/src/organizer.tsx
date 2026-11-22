@@ -92,6 +92,17 @@ function failureElement(message: string) {
   );
 }
 
+function RefreshIcon() {
+  return (
+    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 6v5h-5" />
+      <path d="M20 11a8 8 0 0 0-15.5-3" />
+      <path d="M4 18v-5h5" />
+      <path d="M4 13a8 8 0 0 0 15.5 3" />
+    </svg>
+  );
+}
+
 function Plan({ resource }: { resource: Resource<OrganizerSnapshot> }) {
   const [title, setTitle] = useState('');
   const [date, setDate] = useState(today);
@@ -157,7 +168,7 @@ function Plan({ resource }: { resource: Resource<OrganizerSnapshot> }) {
     <>
       <PageTitle title="计划" meta="写下当天和接下来要推进的学习">
         <button className="text-button" disabled={busy} onClick={resource.reload}>
-          <Icon name="today" /> 刷新
+          <RefreshIcon /> 刷新
         </button>
       </PageTitle>
       <ReadState resource={resource} />
@@ -462,9 +473,13 @@ function NoteEditor({
 export function Organizer({
   section,
   materials,
+  embedded = false,
+  refreshSignal,
 }: {
   section: 'plan' | 'notes';
   materials: readonly OrganizerMaterial[];
+  embedded?: boolean;
+  refreshSignal?: number;
 }) {
   const resource = useResource<OrganizerSnapshot>('/organizer');
   const query = useState(() => new URLSearchParams(location.search))[0];
@@ -490,6 +505,11 @@ export function Organizer({
   useEffect(() => {
     if (waitingFor && resource.data?.notes.some((note) => note.id === waitingFor)) setWaitingFor(null);
   }, [waitingFor, resource.data]);
+
+  useEffect(() => {
+    if (refreshSignal === undefined) return;
+    resource.reload();
+  }, [refreshSignal]);
 
   if (section === 'plan') return <Plan resource={resource} />;
 
@@ -521,11 +541,21 @@ export function Organizer({
 
   return (
     <>
-      <PageTitle title="笔记" meta="保存 Markdown，保留每一版">
-        <button className="text-button" disabled={!resource.data} onClick={resource.reload}>
-          <Icon name="today" /> 刷新
-        </button>
-      </PageTitle>
+      {!embedded && (
+        <PageTitle title="笔记" meta="保存 Markdown，保留每一版">
+          <button className="text-button" disabled={!resource.data} onClick={resource.reload}>
+            <RefreshIcon /> 刷新
+          </button>
+        </PageTitle>
+      )}
+      {embedded && (
+        <div className="organizer-embedded-head">
+          <h2>个人笔记</h2>
+          <button className="text-button" disabled={!resource.data} onClick={resource.reload}>
+            <RefreshIcon /> 刷新
+          </button>
+        </div>
+      )}
       <ReadState resource={resource} />
       {noticeElement(status)}
       {unknownMaterial && <p className="organizer-notice problem" role="alert">找不到要链接的材料。</p>}

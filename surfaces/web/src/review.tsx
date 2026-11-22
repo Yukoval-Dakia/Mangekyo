@@ -6,6 +6,7 @@ import { RecurringErrorStrip, type ErrorCluster } from './recurring-error-strip'
 import { observedDeletionWatermark, subscribeDeletionWatermark } from './deletion-watermark';
 import { useVisibleDocument } from './workbook-presentation';
 import { Message } from './message';
+import './review.css';
 
 export type ReviewEntry = {
   paperId: string; title: string; questionId: string; prompt: string;
@@ -70,7 +71,7 @@ export function Mistakes() {
       <button className="tonal-button" disabled={busy} onClick={() => void discuss()}>保存复习单，找同伴分析</button>
       {error && <p role="alert">{error}</p>}
     </section>}
-    {items.data?.length === 0 && <section className="goal-panel"><h2>还没有待复习的错题</h2><p>练习中答错的题会收在这里。再答正确后，原作答保留在卷子的历史里。</p><a href="/papers">打开练习</a></section>}
+    {items.data?.length === 0 && <section className="goal-panel review-empty"><h2>还没有待复习的错题</h2><p>练习中答错的题会收在这里。再答正确后，原作答保留在卷子的历史里。</p><a className="tonal-button" href="/papers">打开练习</a></section>}
     {items.data?.map(item => <ReviewCard key={item.paperId + ':' + item.questionId} item={item}/>)}
   </>;
 }

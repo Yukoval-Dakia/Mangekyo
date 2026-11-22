@@ -1,6 +1,49 @@
-.issued-papers {max-width:52rem;margin-inline:auto;}
-.issued-papers fieldset {border:1px solid var(--outline-variant,currentColor);border-radius:12px;padding:1rem;margin:1rem 0;min-width:0;}
-.issued-papers select {max-width:100%;}
+.issued-papers {max-width:64rem;margin-inline:auto;}
+.print-controls {display:grid;gap:16px;min-width:0;}
+.issued-papers .back-link {color:var(--primary);font-size:14px;font-weight:650;text-decoration:none;justify-self:start;}
+.issued-papers .back-link:hover {text-decoration:underline;text-underline-offset:4px;}
+.issued-panel {
+  display:grid;
+  gap:14px;
+  min-width:0;
+  padding:clamp(18px,2.6vw,24px);
+  border:1px solid var(--line);
+  border-radius:24px;
+  background:var(--surface);
+  box-shadow:0 2px 10px rgba(24,52,36,0.04);
+}
+.issued-panel-heading {display:grid;gap:4px;}
+.issued-panel-heading h2 {font-size:18px;font-weight:700;letter-spacing:-0.02em;color:var(--ink);}
+.issued-panel-heading p {font-size:14px;line-height:1.6;color:var(--muted);}
+.issued-panel h3 {font-size:15px;font-weight:680;color:var(--ink);margin-top:4px;}
+.issued-actions {display:flex;flex-wrap:wrap;align-items:end;gap:12px;}
+.issued-field {margin-top:0;width:min(100%,560px);}
+.issued-field select,
+.issued-papers .field select {
+  width:100%;
+  appearance:none;
+  -webkit-appearance:none;
+  color:var(--ink);
+  background:var(--surface-container-low);
+  border:1px solid var(--line-strong);
+  border-radius:14px;
+  min-height:46px;
+  padding:0 40px 0 12px;
+  font:inherit;
+  font-weight:400;
+  font-size:15px;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 13px center;
+  background-size:16px 16px;
+}
+.issued-field select:focus-visible,
+.issued-papers .field select:focus-visible {outline:3px solid var(--focus);outline-offset:2px;}
+.issued-empty {color:var(--muted);font-size:14px;line-height:1.7;}
+.issued-meta {color:var(--muted);font-size:13px;}
+.issued-papers .study-actions {gap:10px;}
+.issued-papers [role='alert'] {margin:0;color:var(--danger);font-size:14px;}
+.issued-papers [role='status'] {margin:0;color:var(--muted);font-size:14px;}
 .issued-sheets section {background:white;color:black;padding:1.5rem;margin-block:1rem;overflow-wrap:anywhere;}
 .issued-line {white-space:pre-wrap;min-height:1lh;}
 @media print {
