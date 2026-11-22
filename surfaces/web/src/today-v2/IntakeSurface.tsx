@@ -72,7 +72,12 @@ const VISION_OCR_MEDIA_TYPES = new Set([
   'image/webp',
 ]);
 const LINK_PATTERN = /^https?:\/\/\S+$/i;
+const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|webp|heic|heif|avif|tiff?)$/i;
 const PURPOSE_STORAGE_KEY = 'today-v2:intake-default-purpose';
+
+function isPhotoFile(file: File): boolean {
+  return file.type.startsWith('image/') || IMAGE_EXTENSION_PATTERN.test(file.name);
+}
 
 type PendingPage = {
   readonly file: File;
@@ -642,7 +647,7 @@ export function IntakeSurface({
   function addPendingPages(files: readonly File[]) {
     setError('');
     setNotice('');
-    const images = files.filter(item => item.type.startsWith('image/'));
+    const images = files.filter(isPhotoFile);
     const rejected = files.length - images.length;
     if (rejected > 0) {
       setError(`已忽略 ${rejected} 份非图片文件；多页合并仅支持照片，PDF 或文本请单独交入。`);
@@ -692,7 +697,7 @@ export function IntakeSurface({
     if (busy || pendingPages.length === 0) return;
     const files = pendingPages.map(item => item.file);
     const total = files.reduce((sum, item) => sum + item.size, 0);
-    if (files.some(item => !item.type.startsWith('image/'))) {
+    if (files.some(item => !isPhotoFile(item))) {
       setError('多页合并仅支持照片。');
       return;
     }
@@ -716,7 +721,7 @@ export function IntakeSurface({
       const watermark = bindDeletionWatermark(request);
       await synchronizeDeletion();
       const form = new FormData();
-      form.set('extraction', purpose === 'learning' ? 'vision_llm' : 'local');
+      form.set('extraction', files.length > 1 || purpose === 'learning' ? 'vision_llm' : 'local');
       form.set('requestId', request);
       form.set('deletionWatermark', watermark);
       form.set('title', '');
@@ -769,14 +774,14 @@ export function IntakeSurface({
   }
 
   function handleDroppedFiles(files: readonly File[]) {
-    const images = files.filter(item => item.type.startsWith('image/'));
+    const images = files.filter(isPhotoFile);
     if (files.length === 0) return;
     if (images.length === 0 && files.length === 1) {
       void submitFile(files[0]!);
       return;
     }
     if (images.length > 0) {
-      addPendingPages(images);
+      addPendingPages(files);
       return;
     }
     setError('一次多份材料时，仅照片可合并为一卷；PDF 或文本请单独交入。');

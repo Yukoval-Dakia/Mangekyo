@@ -588,7 +588,7 @@ function OriginalDetails({
 
   async function appendPages(files: readonly File[]) {
     if (!metadata || appendBusy || files.length === 0) return;
-    const images = files.filter(item => item.type.startsWith('image/'));
+    const images = files.filter(item => item.type.startsWith('image/') || /\.(?:png|jpe?g|webp|heic|heif|avif|tiff?)$/i.test(item.name));
     if (images.length === 0) {
       setAppendError('续拍加页仅支持照片。');
       return;
@@ -695,13 +695,25 @@ function OriginalDetails({
   const isPhotoMaterial = metadata.original.mediaType.startsWith('image/');
   const currentPage = Math.min(Math.max(1, activePage), pageCount ?? 1);
 
+  const singlePageFallbackStatus: 'pending' | 'ready' | 'fallback' | 'failed' =
+    metadata.intakeStatus === 'failed' || metadata.extraction.status === 'failed'
+      ? 'failed'
+      : metadata.intakeStatus === 'fallback' || metadata.extraction.method === 'vision_fallback'
+        ? 'fallback'
+        : metadata.intakeStatus === 'queued'
+            || metadata.intakeStatus === 'extracting'
+            || metadata.extraction.status === 'pending'
+          ? 'pending'
+          : 'ready';
+  const initialQuestionCards = questionCardsFromMetadata(metadata);
+
   const questionCards = (
     <IntakeQuestionCards
       materialId={metadata.id}
       materialTitle={metadata.title}
       materialRev={metadata.revision}
       extractionStatus={metadata.extraction.status}
-      initialCards={questionCardsFromMetadata(metadata)}
+      initialCards={initialQuestionCards}
       settings={settings}
       onNavigate={onNavigate}
     />
@@ -727,7 +739,8 @@ function OriginalDetails({
           <div className="intake-pages-strip" role="group" aria-label="切换页面">
             {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => {
               const extraction = pageExtractions.find(item => item.page === page);
-              const status = extraction?.status ?? 'pending';
+              const status = extraction?.status ?? (pageCount === 1 ? singlePageFallbackStatus : 'pending');
+              const pageQuestionCount = extraction?.questionCount ?? (pageCount === 1 ? initialQuestionCards.length : undefined);
               const label = pageCount > 1 ? `第 ${page} 页` : '原图';
               return (
                 <button
@@ -735,11 +748,11 @@ function OriginalDetails({
                   type="button"
                   className={`intake-page-tab${page === currentPage ? ' is-active' : ''}`}
                   aria-pressed={page === currentPage}
-                  aria-label={`${label}（${pageStatusLabel(status, extraction?.questionCount)}）`}
+                  aria-label={`${label}（${pageStatusLabel(status, pageQuestionCount)}）`}
                   onClick={() => setActivePage(page)}
                 >
                   <span className="intake-page-tab-no">{label}</span>
-                  <span className={`intake-page-status is-${status}`}>{pageStatusLabel(status, extraction?.questionCount)}</span>
+                  <span className={`intake-page-status is-${status}`}>{pageStatusLabel(status, pageQuestionCount)}</span>
                 </button>
               );
             })}
