@@ -640,3 +640,111 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
     };
   }
 }
+
+export type MultiPageVisionPageInput = {
+  readonly page: number;
+  readonly bytes: Buffer;
+  readonly storedPath: string;
+  readonly systemPrompt?: string | undefined;
+  readonly userPrompt?: string | undefined;
+};
+
+export type MultiPageVisionExtractionInput<TParsed = unknown> = {
+  readonly pages: readonly MultiPageVisionPageInput[];
+  readonly textLimit: number;
+  readonly visionConfig?: VisionLlmConfig | null | undefined;
+  readonly concurrency?: number | undefined;
+  readonly imageOptions?: VisionImageNormalizeOptions | undefined;
+  readonly signal?: AbortSignal | undefined;
+  readonly fetch?: typeof fetch | undefined;
+  readonly fallbackExtractLocal?: typeof extractLocalDocument | undefined;
+  readonly parseStructuredOutput?: ((rawText: string) => TParsed) | undefined;
+};
+
+export type MultiPageVisionPageOutcome<TParsed = unknown> = {
+  readonly page: number;
+  readonly outcome: PhotoVisionExtractionResult<TParsed>;
+};
+
+export type MultiPageVisionExtractionResult<TParsed = unknown> = {
+  readonly pages: readonly MultiPageVisionPageOutcome<TParsed>[];
+  readonly elapsedMs: number;
+};
+
+/**
+ * Extract multiple exam photo pages with bounded concurrency (default 2, max 4).
+ * Each page runs independent EXIF normalization, strong vision OCR, length-retry/salvage,
+ * and lossless Apple Vision fallback so a single slow/noisy page never spoils sibling pages.
+ */
+export async function extractMultiPagePaperWithVisionOrFallback<TParsed = unknown>(
+  input: MultiPageVisionExtractionInput<TParsed>,
+): Promise<MultiPageVisionExtractionResult<TParsed>> {
+  if (!Array.isArray(input.pages) || input.pages.length === 0) {
+    throw new VisionOcrError('invalid_config', '多页视觉识别至少需要 1 页图片。');
+  }
+  if (input.signal?.aborted) {
+    throw input.signal.reason ?? new DOMException('Aborted', 'AbortError');
+  }
+  const seenPages = new Set<number>();
+  for (const entry of input.pages) {
+    if (!Number.isSafeInteger(entry.page) || entry.page < 1 || seenPages.has(entry.page)) {
+      throw new VisionOcrError('invalid_config', '多页视觉识别页码无效或重复。');
+    }
+    seenPages.add(entry.page);
+  }
+  const ordered = [...input.pages].sort((left, right) => left.page - right.page);
+  const concurrency = Math.min(ordered.length, Math.floor(clampNumber(input.concurrency, 2, 1, 4)));
+  const effectiveVisionConfig = input.visionConfig
+    ? {
+        ...input.visionConfig,
+        timeoutMs: input.visionConfig.timeoutMs ?? (ordered.length > 1 ? 120_000 : defaultTimeoutMs),
+      }
+    : input.visionConfig;
+  const results = new Array<MultiPageVisionPageOutcome<TParsed>>(ordered.length);
+  const startedAt = Date.now();
+  let cursor = 0;
+  const groupController = new AbortController();
+  const externalSignal = input.signal;
+  const onExternalAbort = () => groupController.abort(externalSignal?.reason);
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
+  const worker = async () => {
+    while (cursor < ordered.length) {
+      if (groupController.signal.aborted) {
+        throw groupController.signal.reason ?? new DOMException('Aborted', 'AbortError');
+      }
+      const index = cursor;
+      cursor += 1;
+      const entry = ordered[index]!;
+      try {
+        const outcome = await extractPhotoWithVisionOrFallback<TParsed>({
+          bytes: entry.bytes,
+          storedPath: entry.storedPath,
+          textLimit: input.textLimit,
+          visionConfig: effectiveVisionConfig,
+          ...(entry.systemPrompt !== undefined ? { systemPrompt: entry.systemPrompt } : {}),
+          ...(entry.userPrompt !== undefined ? { userPrompt: entry.userPrompt } : {}),
+          ...(input.imageOptions !== undefined ? { imageOptions: input.imageOptions } : {}),
+          signal: groupController.signal,
+          ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+          ...(input.fallbackExtractLocal !== undefined ? { fallbackExtractLocal: input.fallbackExtractLocal } : {}),
+          ...(input.parseStructuredOutput !== undefined ? { parseStructuredOutput: input.parseStructuredOutput } : {}),
+        });
+        results[index] = { page: entry.page, outcome };
+      } catch (error) {
+        if (!groupController.signal.aborted) groupController.abort(error);
+        throw error;
+      }
+    }
+  };
+
+  try {
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  } finally {
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
+  if (externalSignal?.aborted) {
+    throw externalSignal.reason ?? new DOMException('Aborted', 'AbortError');
+  }
+  return { pages: results, elapsedMs: Date.now() - startedAt };
+}

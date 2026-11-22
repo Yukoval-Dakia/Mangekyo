@@ -2,6 +2,7 @@ import { FactNotFoundError, type BusWitness, type FactId, type FactSnapshot, typ
   type Outcome, type ReadContext } from '@mangekyo/kernel';
 import materialFact from '@mangekyo/module-content/facts/material';
 import { canRetryVisionExtraction, intakeFactType, intakeDocument } from './intake-values.ts';
+import { visionOcrSupports } from './vision-paper-ocr.ts';
 import { captureSourceType, sourceBlocks, sourceEnvelope, validSourceCropPage, type Block, type SourceEnvelope } from './source.ts';
 import { layeredExtractionSlot, mayExtract, mergeExtraction, type LayeredExtractionValue } from './extraction.ts';
 import { openSelectedNotionSource } from './notion-source.ts';
@@ -271,7 +272,8 @@ function projectIntake(fact: FactSnapshot, document: ReturnType<typeof intakeDoc
     title: document.title,
     recordedAt: null, occurredAt: null,
     preview: image ? { kind: 'original', originalIndex: 0, name: document.original.name, mediaType: document.original.mediaType } : null,
-    pageCount: extraction.pages,
+    pageCount: extraction.pages ?? document.originals?.length ??
+      (visionOcrSupports(document.original.mediaType) ? 1 : null),
     extractedQuestionCount: drafts ? drafts.questions.length : previews.length,
     status, statusLabel: statusLabel[status],
     pendingConfirmationCount: draftPending > 0 ? draftPending : status === 'needs_confirmation' ? 1 : 0,

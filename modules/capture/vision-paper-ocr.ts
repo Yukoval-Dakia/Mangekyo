@@ -65,6 +65,7 @@ export type StructuredPaperQuestion = {
   readonly redInk: StructuredPaperRedInk;
   readonly unclearSegments: readonly string[];
   readonly conceptTags?: readonly string[];
+  readonly pageNumber?: number;
 };
 
 export type StructuredPaperOcr = {
@@ -88,6 +89,7 @@ export type StructuredPaperDraftQuestion = {
   readonly redInk: StructuredPaperRedInk;
   readonly unclearSegments: readonly string[];
   readonly conceptTags?: readonly string[];
+  readonly pageNumber?: number;
   readonly confirmationStatus: 'pending_confirmation';
   readonly needsClarification: boolean;
 };
@@ -102,7 +104,7 @@ export type StructuredPaperDrafts = {
 };
 
 const maxWarnings = 8;
-const maxQuestions = 60;
+const maxQuestions = 120;
 const stemLimit = 20_000;
 const optionLimit = 4_000;
 const answerLimit = 8_000;
@@ -426,11 +428,13 @@ export function renderStructuredPaperMarkdown(ocr: StructuredPaperOcr): string {
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
 
-export function structuredPaperToDrafts(ocr: StructuredPaperOcr): StructuredPaperDrafts {
+export function structuredPaperToDrafts(ocr: StructuredPaperOcr, options?: { readonly pageNumber?: number }): StructuredPaperDrafts {
+  const pageNumber = options?.pageNumber;
   const questions: StructuredPaperDraftQuestion[] = ocr.questions.map(question => {
     const conceptTags = normalizeConceptTags(question.conceptTags, { strict: false, max: maxOcrConceptTags });
+    const resolvedPage = pageNumber ?? question.pageNumber;
     return {
-      draftId: `draft-q-${question.index}`,
+      draftId: resolvedPage !== undefined ? `draft-p${resolvedPage}-q-${question.index}` : `draft-q-${question.index}`,
       index: question.index,
       questionNumber: question.number,
       questionType: question.questionType,
@@ -440,6 +444,7 @@ export function structuredPaperToDrafts(ocr: StructuredPaperOcr): StructuredPape
       redInk: question.redInk,
       unclearSegments: question.unclearSegments,
       ...(conceptTags.length > 0 ? { conceptTags } : {}),
+      ...(resolvedPage !== undefined ? { pageNumber: resolvedPage } : {}),
       confirmationStatus: 'pending_confirmation',
       needsClarification: question.studentAnswer.status === 'unclear' ||
         question.redInk.verdict === 'unclear' || question.unclearSegments.length > 0,
@@ -474,6 +479,9 @@ export function validateStructuredPaperDrafts(input: unknown): StructuredPaperDr
     const index = item.index;
     if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 1 || index > maxQuestions)
       throw new Error('切题草案序号无效。');
+    const pageNumber = item.pageNumber;
+    if (pageNumber !== undefined && (typeof pageNumber !== 'number' || !Number.isSafeInteger(pageNumber) || pageNumber < 1 || pageNumber > 1_000))
+      throw new Error('切题草案页码无效。');
     const rawOptions = item.options;
     if (rawOptions !== undefined && rawOptions !== null && !Array.isArray(rawOptions))
       throw new Error('切题草案选项格式无效。');
@@ -494,6 +502,7 @@ export function validateStructuredPaperDrafts(input: unknown): StructuredPaperDr
       redInk,
       unclearSegments,
       ...(conceptTags.length > 0 ? { conceptTags } : {}),
+      ...(pageNumber !== undefined ? { pageNumber } : {}),
       confirmationStatus: 'pending_confirmation',
       needsClarification: studentAnswer.status === 'unclear' ||
         redInk.verdict === 'unclear' || unclearSegments.length > 0 ||
@@ -524,6 +533,8 @@ export type VisionPaperOcrPromptOptions = {
   readonly filename?: string;
   readonly titleHint?: string;
   readonly redInkMeaning?: string;
+  readonly pageNumber?: number;
+  readonly totalPages?: number;
 };
 
 export function buildVisionPaperOcrPrompt(options?: VisionPaperOcrPromptOptions): {
@@ -547,6 +558,11 @@ export function buildVisionPaperOcrPrompt(options?: VisionPaperOcrPromptOptions)
   const redInkMeaning = clean(options?.redInkMeaning, 400);
   if (filename) hints.push(`文件名：${filename}`);
   if (titleHint) hints.push(`标题提示：${titleHint}`);
+  if (options?.pageNumber !== undefined && options?.totalPages !== undefined &&
+      Number.isSafeInteger(options.pageNumber) && Number.isSafeInteger(options.totalPages) &&
+      options.pageNumber >= 1 && options.totalPages > 1) {
+    hints.push(`页码位置：第 ${options.pageNumber} / ${options.totalPages} 页（请保留原卷题号，不要编造其他页的题目）`);
+  }
   if (redInkMeaning) hints.push(`红笔说明：${redInkMeaning}`);
   const userPrompt = hints.length
     ? `请按双栏顺序完整识别这张试卷照片，直接输出JSON。\n${hints.join('\n')}`
