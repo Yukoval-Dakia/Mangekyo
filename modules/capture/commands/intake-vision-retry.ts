@@ -1,4 +1,4 @@
-import { defineCommand, type Revision } from '@mangekyo/kernel';
+import { defineCommand, FactNotFoundError, type Revision } from '@mangekyo/kernel';
 import materialFact from '@mangekyo/module-content/facts/material';
 import {
   canRetryVisionExtraction,
@@ -19,18 +19,19 @@ export default defineCommand({
   schema: retryVisionIntakeSchema,
   async write(ctx, input) {
     const document = await ctx.read.fact(input.intakeId, { mode: 'following' });
-    if (document.type !== intakeFactType) throw new Error('找不到这份原件。');
+    if (document.type !== intakeFactType) throw new FactNotFoundError(input.intakeId);
     if (document.ref.rev !== input.expectedRev)
       throw new IntakeVisionRetryConflict('原文版本已经变更，请刷新后再重试视觉识别。');
     const archived = intakeDocument(document.value);
-    if (archived.materialId !== input.materialId) throw new Error('材料标识与交入记录不匹配。');
+    if (archived.materialId !== input.materialId)
+      throw new IntakeVisionRetryConflict('材料标识与交入记录不匹配。');
     if (archived.extraction.status === 'corrected' || archived.extraction.method === 'learner')
       throw new IntakeVisionRetryConflict('这份文字已由你手动更正，无法自动重跑覆盖。');
     if (!canRetryVisionExtraction(archived))
       throw new IntakeVisionRetryConflict('当前交入记录不处于可重试视觉识别的状态。');
 
     const material = await ctx.read.fact(archived.materialId, { mode: 'following' });
-    if (material.type !== materialType) throw new Error('找不到对应材料。');
+    if (material.type !== materialType) throw new FactNotFoundError(archived.materialId);
     if (input.expectedMaterialRev !== undefined && material.ref.rev !== input.expectedMaterialRev)
       throw new IntakeVisionRetryConflict('材料版本已经变更，请刷新后再试。');
     const saved = materialFact.schema.parse(material.value);
