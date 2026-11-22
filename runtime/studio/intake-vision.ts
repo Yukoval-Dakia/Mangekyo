@@ -1,4 +1,4 @@
-import { extractPhotoWithVisionOrFallback, isWeakVisionModel, readVisionLlmConfigFromEnv, type LocalExtractionResult, type VisionLlmConfig } from '@mangekyo/executor-document-extraction/vision-ocr';
+import { extractMultiPagePaperWithVisionOrFallback, isWeakVisionModel, readVisionLlmConfigFromEnv, type LocalExtractionResult, type VisionLlmConfig } from '@mangekyo/executor-document-extraction/vision-ocr';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/typ
 import { commandId, factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import { cancelWork, finishWork, readReadyWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { isExpectedVisionCompletion } from '../../modules/capture/intake-operations.ts';
-import { completeVisionExtraction, completeVisionIntakeCommand, failedVisionExtraction, fallbackVisionExtraction, intakeDocument, intakeFactType, intakePurpose, intakeTextLimit, materialType, type IntakeExtraction } from '../../modules/capture/intake-values.ts';
+import { completeMultiPageVisionExtraction, completeVisionIntakeCommand, failedVisionExtraction, intakeDocument, intakeDocumentPages, intakeFactType, intakePurpose, intakeTextLimit, materialType, planMultiPageVisionWork, type IntakeExtraction } from '../../modules/capture/intake-values.ts';
 import { buildVisionPaperOcrPrompt, parseStructuredPaperOcr, visionIntakeDeriver, visionIntakeRoute, visionIntakeSlot } from '../../modules/capture/vision-paper-ocr.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -29,7 +29,8 @@ export async function resolveVisionIntakeConfig(): Promise<VisionLlmConfig | nul
   return null;
 }
 export async function enqueueVisionIntake(tx: DbTransaction, tick: Tick, intakeId: string) {
-  await tx.insert('slot_state', { learner_id: tx.learner, slot_type: visionIntakeSlot, slot_key: intakeId, scope_keys: '{}', changed_tick: tick });
+  await tx.query(`INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys,changed_tick)
+    VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, [tx.learner, visionIntakeSlot, intakeId, '{}', tick]);
   await requestWork(tx, tick, { slotType: visionIntakeSlot, slotKey: intakeId, deriver: visionIntakeDeriver }, 'routed_pending');
 }
 
@@ -62,6 +63,7 @@ class StoppedVisionIntake extends Error {}
 const stopped = (error: unknown) => error instanceof StoppedVisionIntake || error instanceof RequestError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 export function openVisionIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
+  originalPage(materialId: string, page: number): Promise<{ original: { name: string; mediaType: string }; bytes: Buffer }>;
   completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction): Promise<void>;
 }, deps: { resolveVisionConfig?: () => VisionLlmConfig | null | Promise<VisionLlmConfig | null>; fetch?: typeof fetch; fallbackExtractLocal?: (kind:string,path:string,bytes:Buffer,limit:number) => Promise<LocalExtractionResult> } = {}) {
   async function execute(ref: WorkRef, terminalFailure = false, signal?: AbortSignal) {
@@ -82,24 +84,43 @@ export function openVisionIntakeWork(db: Db, intake: {
         await finishWork(db, ref);
       };
       if (terminalFailure) return void await publish(failedVisionExtraction('视觉识别未能在规定时间内完成。'));
-      const bytes = await intake.cloudOriginal(frozen.material.ref.id, frozen.value.original.sha256).catch(() => null);
-      if (bytes === null) return void await publish(failedVisionExtraction('本地原件无法读取。'));
+      const plan = planMultiPageVisionWork(frozen.value);
+      if (plan.pagesToRun.length === 0) {
+        return void await publish(completeMultiPageVisionExtraction(plan.preservedPages, { titleHint: frozen.value.title }));
+      }
+      const allPages = intakeDocumentPages(frozen.value);
+      const pageInputs = [] as { page: number; bytes: Buffer; storedPath: string; name: string }[];
+      for (const page of plan.pagesToRun) {
+        const entry = allPages.find(item => item.page === page.page);
+        if (!entry) return void await publish(failedVisionExtraction(`第 ${page.page} 页原件缺少元数据。`, 'vision_llm', plan.totalPages));
+        const result = await intake.originalPage(frozen.material.ref.id, page.page).catch(() => null);
+        if (!result || result.bytes === null) return void await publish(failedVisionExtraction(`第 ${page.page} 页原件无法读取。`, 'vision_llm', plan.totalPages));
+        pageInputs.push({ page: page.page, bytes: result.bytes, storedPath: '', name: entry.name });
+      }
       const directory = await mkdtemp(join(tmpdir(), 'mangekyo-vision-'));
-      const storedPath = join(directory, 'original');
-      await writeFile(storedPath, bytes, { mode: 0o600 });
       try {
+        for (const input of pageInputs) {
+          input.storedPath = join(directory, `page-${input.page}`);
+          await writeFile(input.storedPath, input.bytes, { mode: 0o600 });
+        }
         await db.snapshot({ learner: learnerId(ref.learner) }, unchanged);
-        const prompt = buildVisionPaperOcrPrompt({ filename: frozen.value.original.name, titleHint: frozen.value.title });
-        const outcome = await extractPhotoWithVisionOrFallback({
-          bytes, storedPath, textLimit: intakeTextLimit,
-          visionConfig: 'resolveVisionConfig' in deps && deps.resolveVisionConfig ? await deps.resolveVisionConfig() : await resolveVisionIntakeConfig(),
-          systemPrompt: prompt.systemPrompt, userPrompt: prompt.userPrompt,
-          parseStructuredOutput: parseStructuredPaperOcr, signal, ...(deps.fetch ? { fetch: deps.fetch } : {}),
+        const visionConfig = 'resolveVisionConfig' in deps && deps.resolveVisionConfig ? await deps.resolveVisionConfig() : await resolveVisionIntakeConfig();
+        const outcomes = await extractMultiPagePaperWithVisionOrFallback({
+          pages: pageInputs.map(input => {
+            const prompt = buildVisionPaperOcrPrompt({ filename: input.name, titleHint: frozen.value.title, pageNumber: input.page, totalPages: plan.totalPages });
+            return { page: input.page, bytes: input.bytes, storedPath: input.storedPath, systemPrompt: prompt.systemPrompt, userPrompt: prompt.userPrompt };
+          }),
+          textLimit: intakeTextLimit, visionConfig, signal, ...(deps.fetch ? { fetch: deps.fetch } : {}),
           ...(deps.fallbackExtractLocal ? { fallbackExtractLocal: deps.fallbackExtractLocal } : {}),
+          parseStructuredOutput: parseStructuredPaperOcr,
         });
         await db.snapshot({ learner: learnerId(ref.learner) }, unchanged);
-        await publish(outcome.kind === 'vision_llm' ? completeVisionExtraction(outcome.parsed, 1)
-          : fallbackVisionExtraction(outcome.local, outcome.fallbackReason));
+        await publish(completeMultiPageVisionExtraction(
+          [...plan.preservedPages, ...outcomes.pages.map(item => item.outcome.kind === 'vision_llm'
+            ? { page: item.page, kind: 'vision_llm' as const, ocr: item.outcome.parsed }
+            : { page: item.page, kind: 'vision_fallback' as const, fallbackReason: item.outcome.fallbackReason, local: item.outcome.local })],
+          { titleHint: frozen.value.title },
+        ));
       } finally { await rm(directory, { recursive: true, force: true }).catch(() => undefined); }
     } catch (error) {
       if (stopped(error)) await cancelWork(db, ref);
