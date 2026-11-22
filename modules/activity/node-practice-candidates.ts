@@ -4,10 +4,10 @@ import type { AuthorizedKnowledgeGraph } from '@mangekyo/module-content/facts/kn
 import type { ConceptMasteryState, NodePracticeCandidate, SelectNodePracticeInput } from '@mangekyo/module-plan/facts/node-practice';
 
 export type NodePracticeQuestion =
-  | { readonly id: FactId; readonly rev: number; readonly kind: 'content.asset'; readonly prompt: string }
+  | { readonly id: FactId; readonly rev: number; readonly kind: 'content.asset'; readonly prompt: string; readonly isRedPenError?: boolean }
   | {
     readonly id: FactId; readonly rev: number; readonly kind: 'activity.workspaceEntry';
-    readonly prompt: string; readonly answer?: string | undefined; readonly rubric?: string | undefined;
+    readonly prompt: string; readonly answer?: string | undefined; readonly rubric?: string | undefined; readonly isRedPenError?: boolean;
   };
 
 const masteryStates: Readonly<Record<string, ConceptMasteryState>> = {
@@ -43,7 +43,7 @@ export function buildNodePracticeInput(input: {
         lastOutcome: attempt?.outcome ?? null,
         helpLevel: attempt ? (attempt.exposure === 'independent' ? 'independent' : attempt.exposure === 'exposed' ? 'hinted' : 'unknown') : null,
         lastAttemptedAt: attempt?.occurredAt ?? null,
-        isRedPenError: false,
+        isRedPenError: Boolean(input.readableQuestions.find(question => question.id === link.questionId)?.isRedPenError),
         evidenceRef: attempt?.submission.id ?? `${link.questionId}:${link.questionRev}`,
       };
     });
@@ -68,8 +68,10 @@ export function mapQuickPaperDraft(selection: { title: string; questionRefs: rea
   return {
     title: selection.title,
     questions: selected.map(question => {
-      if (question.kind === 'content.asset') return { kind: 'rubric', prompt: question.prompt, rubric: '请独立完成并结合题目思路核对。' };
       const sourceQuestionRef = { id: question.id, rev: question.rev };
+      if (question.kind === 'content.asset') {
+        return { kind: 'rubric', prompt: question.prompt, rubric: '请独立完成并结合题目思路核对。', sourceQuestionRef };
+      }
       if (question.answer !== undefined) return { kind: 'exact', prompt: question.prompt, answers: [question.answer], sourceQuestionRef };
       if (question.rubric !== undefined && question.rubric.trim()) return { kind: 'rubric', prompt: question.prompt, rubric: question.rubric, sourceQuestionRef };
       return { kind: 'rubric', prompt: question.prompt, rubric: '请独立完成并核对原题评分标准。' };

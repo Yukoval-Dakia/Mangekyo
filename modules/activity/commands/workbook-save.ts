@@ -10,6 +10,7 @@ import { closedPosttest, retentionPaper, retentionPaperType, retentionTeachingPu
 import { creation, object } from '../values.ts';
 import { freezeWorkbookBank } from '../workbook-bank.ts';
 import { arithmeticPracticePaper, arithmeticPracticePaperId, practiceCustody, practiceCustodyId, practiceCustodyType, sealedPracticePurpose } from '../sealed-practice.ts';
+import { assetType, questionAsset, questionPrompt } from '@mangekyo/module-content/facts/asset-contract';
 import {
   saveWorkbookPaperCommand,
   workbookAssessmentPurpose,
@@ -78,10 +79,21 @@ export default defineCommand({
       const ref = question.sourceQuestionRef;
       if (!ref) continue;
       const source = await ctx.read.fact(factId(ref.id), { mode: 'pinned', rev: ref.rev });
-      if (source.type !== workspaceEntryType) {
+      if (source.type === workspaceEntryType) {
+        if (!matchesWorkspaceQuestion(workspaceEntry(source.value), question)) {
+          throw new WorkbookSourceMismatch('引用的来源题目与冻结题项不一致。');
+        }
+        continue;
+      }
+      if (source.type !== assetType) {
         throw new WorkbookSourceMismatch('来源题目引用类型无效。');
       }
-      if (!matchesWorkspaceQuestion(workspaceEntry(source.value), question)) {
+      try {
+        if (questionPrompt(questionAsset(source.value)).trim() !== question.prompt.trim()) {
+          throw new WorkbookSourceMismatch('引用的来源题目与冻结题项不一致。');
+        }
+      } catch (error) {
+        if (error instanceof WorkbookSourceMismatch) throw error;
         throw new WorkbookSourceMismatch('引用的来源题目与冻结题项不一致。');
       }
     }
