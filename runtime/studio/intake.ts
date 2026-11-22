@@ -10,9 +10,10 @@ import { commandId, factId, type FactId } from '../../kernel/src/declarations/id
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { readReadyWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { materialType } from '../../modules/content/text-material.ts';
-import { captureIntakeCommand, completeCloudIntakeCommand, completeVisionIntakeCommand, correctIntakeCommand,
-  retryVisionIntakeCommand, pendingMineruExtraction, pendingVisionExtraction, intakePurpose, intakeTextLimit,
-  setIntakeResearchCommand, type IntakeExtraction } from '../../modules/capture/intake-values.ts';
+import { appendIntakePagesCommand, captureIntakeCommand, completeCloudIntakeCommand, completeVisionIntakeCommand,
+  correctIntakeCommand, retryVisionIntakeCommand, pendingMineruExtraction, pendingVisionExtraction, intakePurpose,
+  intakeTextLimit, setIntakeResearchCommand, intakeDocument, intakeDocumentPages,
+  type IntakeExtraction } from '../../modules/capture/intake-values.ts';
 import { buildWorkbookDraftFromIntakeSelection, projectIntakeQuestionCards,
   type IntakeWorkbookSelection } from '../../modules/capture/intake-question-cards.ts';
 import {
@@ -24,7 +25,8 @@ import {
 } from '../../modules/content/intake-question-bank.ts';
 import { questionMetaDraftType, questionStateType } from '../../modules/content/question-state.ts';
 import * as intakeOps from '../../modules/capture/intake-operations.ts';
-import type { IntakeCaptureInput, IntakeCorrectInput, IntakeRetryVisionInput } from '../../modules/capture/intake-operations.ts';
+import type { IntakeAppendPagesInput, IntakeCaptureInput, IntakeCorrectInput, IntakeMultiPageCaptureInput,
+  IntakeRetryVisionInput } from '../../modules/capture/intake-operations.ts';
 import type { IntakeMetadata } from '../../modules/capture/intake-view.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -51,6 +53,7 @@ export const intakeWriteTargets = {
   [completeCloudIntakeCommand]: { correct: [materialType] },
   [completeVisionIntakeCommand]: { correct: [materialType] },
   [retryVisionIntakeCommand]: { correct: [materialType] },
+  [appendIntakePagesCommand]: { correct: [materialType] },
   [confirmIntakeQuestionsCommand]: { create: [questionAssetType, questionStateType, questionMetaDraftType] },
 } satisfies CrossModuleWrites;
 
@@ -171,6 +174,125 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       throw error;
     }
     return { ...(await metadataFor(materialId)), created: installed };
+  }
+
+  type PagesCaptureInput = Omit<IntakeMultiPageCaptureInput<Buffer>, 'pages'> & {
+    readonly pages: readonly { filename?: unknown; declaredType?: unknown; bytes: Buffer }[];
+  };
+
+  async function capturePages(input: PagesCaptureInput) {
+    const prepared = intakeOps.prepareIntakeMultiPageCapture(input, {
+      isBuffer: Buffer.isBuffer,
+      materialIdFor: (requestId) => factId(stableId('intake-material', requestId)),
+      parseWatermark: submittedWatermark,
+      identify: (bytes, ext, declaredType) => identifyLocalDocument(bytes as Buffer, ext, declaredType),
+      sha256: (bytes) => digest(bytes as Buffer),
+    });
+    const { requestId, materialId, deletionWatermark, title, original, originals, pages } = prepared;
+    const intakeId = intakeIdFor(materialId);
+    const extractionInput = input.extraction === undefined && pages.length === 1 ? 'vision_llm' : input.extraction;
+    const { requested, asyncVision } = intakeOps.resolveCaptureExtraction(
+      extractionInput, original.mediaType, mineruSupports, { asyncPhotoDefault: true },
+    );
+    if (requested === 'mineru') throw new RequestError(400, '多页合并拍卷仅支持视觉模型识别。');
+    if (!asyncVision) throw new RequestError(415, '多页合并拍卷仅支持视觉模型识别。');
+    const matches = (prior: IntakeMetadata) => intakeOps.matchesMultiPageCaptureReplay(prior, originals, title, requested);
+    const prior = await metadataOrNull(materialId.toString(), deletionWatermark);
+    if (prior) {
+      if (!matches(prior)) throw new RequestError(409, '同一个请求标识已经用于不同文件或标题。');
+      return { ...prior, created: false };
+    }
+    let installed = false;
+    try {
+      await objects.withOriginals(materialId, pages.map(item => ({ bytes: item.bytes, original: item.original })),
+        async (_staged, install) => {
+          const extraction: IntakeExtraction = pendingVisionExtraction('queued', { pageCount: originals.length });
+          const commandInput = {
+            materialId, intakeId, title, original, originals, extraction,
+            savedAt: new Date().toISOString(),
+            requestedExtraction: 'vision_llm',
+          };
+          const save = createCommandHandler(db, {
+            ...runtime,
+            hooks: {
+              async onFactsChanged(tx, tick, changes) {
+                await install();
+                installed = true;
+                await enqueueVisionIntake(tx, tick, intakeId);
+                await hooks.onFactsChanged(tx, tick, changes);
+              },
+            },
+          });
+          await save({
+            learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: captureIntakeCommand,
+            id: intakeCaptureId(requestId), deletionWatermark, input: commandInput,
+          });
+        });
+    } catch (error) {
+      if (error instanceof LifecycleError) throw error;
+      const raced = await metadataOrNull(materialId.toString(), deletionWatermark);
+      if (raced && matches(raced)) return { ...raced, created: false };
+      if (raced || (error instanceof Error && error.message === 'Command ID already used with a different command identity')) {
+        throw new RequestError(409, '同一个请求标识已经用于不同内容。');
+      }
+      throw error;
+    }
+    return { ...(await metadataFor(materialId)), created: installed };
+  }
+
+  async function appendPages(input: IntakeAppendPagesInput<Buffer>) {
+    const { materialId, requestId, data, pages } = intakeOps.prepareIntakeAppendPages(input, intakeIdFor, {
+      isBuffer: Buffer.isBuffer,
+      identify: (bytes, ext, declaredType) => identifyLocalDocument(bytes as Buffer, ext, declaredType),
+      sha256: (bytes) => digest(bytes as Buffer),
+    });
+    const intakeId = data.intakeId;
+    let installed = false;
+    try {
+      const current = await factsFor(materialId.toString());
+      const priorPages = intakeDocumentPages(intakeDocument(current.document.value));
+      if (current.document.ref.rev !== data.expectedRev) {
+        throw new RequestError(409, '原文版本已经变更，请刷新后再续拍加页。');
+      }
+      const startPage = priorPages.length + 1;
+      await objects.appendOriginals(materialId, startPage, pages,
+        async (_staged, install) => {
+          const save = createCommandHandler(db, {
+            ...runtime,
+            hooks: {
+              async onFactsChanged(tx, tick, changes) {
+                await install();
+                installed = true;
+                await enqueueVisionIntake(tx, tick, intakeId);
+                await hooks.onFactsChanged(tx, tick, changes);
+              },
+            },
+          });
+          await save({
+            learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: appendIntakePagesCommand,
+            id: commandId(stableId('intake-append-pages', requestId)), input: data,
+          });
+        },
+        {
+          whenUncommitted: async (undo) => {
+            const current = await factsFor(materialId.toString()).catch(() => null);
+            const pagesNow = current ? intakeDocumentPages(intakeDocument(current.document.value)) : [];
+            if (!pagesNow.some(p => p.page >= startPage)) await undo();
+          },
+        });
+    } catch (error) {
+      throw intakeOps.translateIntakeAppendPagesError(error, error instanceof FactReadDeniedError);
+    }
+    return { ...(await metadataFor(materialId.toString())), created: installed };
+  }
+
+  async function originalPage(materialId: string, page: number) {
+    const facts = await factsFor(materialId);
+    const pages = intakeDocumentPages(intakeDocument(facts.document.value));
+    const entry = pages.find(item => item.page === page);
+    if (!entry) throw new RequestError(404, '找不到该页原件。');
+    const bytes = await objects.readPage(facts.id, page, entry);
+    return { original: entry, bytes };
   }
 
   async function paperReturn(input: CaptureInput & Parameters<typeof paperReturnSelection>[0],
@@ -294,7 +416,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
 
   return {
     lifecycle, capture, correct,
-    retryVision, questionCards, confirmDrafts,
+    retryVision, questionCards, confirmDrafts, capturePages, appendPages, originalPage,
     async setResearch(materialId: string, input: unknown) {
       const { id, data } = intakeOps.prepareIntakeResearchPermission(materialId, input, intakeIdFor);
       try {
@@ -374,7 +496,10 @@ export async function handleIntakeRequest(
     erase: (id, input) => intake.lifecycle.erase(id, input),
     metadata: (id) => intake.metadata(id),
     original: (id) => intake.original(id),
+    originalPage: (id, page) => intake.originalPage(id, page),
     capture: (input) => intake.capture(input),
+    capturePages: (input) => intake.capturePages(input),
+    appendPages: (input) => intake.appendPages(input),
     paperReturn: (input) => intake.paperReturn(input, papers!),
     correct: (input) => intake.correct(input),
     setResearch: (id, input) => intake.setResearch(id, input),
