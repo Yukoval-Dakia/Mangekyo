@@ -51,6 +51,24 @@ export async function notifySession(tx: DbQuery, sessionId: string) {
   );
 }
 
+type SessionDelta = { session: string; turnId: string; seq: number; delta: string };
+
+export async function publishSessionDelta(db: Db, session: string, turnId: string, seq: number, delta: string): Promise<number> {
+  if (!delta || !Number.isSafeInteger(seq) || seq < 0) return seq;
+  const chunks: string[] = [];
+  let chunk = '';
+  for (const character of delta) {
+    if (chunk && new TextEncoder().encode(chunk + character).length > 1000) (chunks.push(chunk), chunk = character);
+    else chunk += character;
+  }
+  chunks.push(chunk);
+  for (const part of chunks) await db.query(
+    `SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton`,
+    [JSON.stringify({session, turnId, seq: seq++, delta: part})],
+  );
+  return seq;
+}
+
 export async function publishTurnProgress(
   db: Db,
   ref: WorkRef,
@@ -87,7 +105,7 @@ export async function completeTurnStream(tx: ReadTransaction, turnId: string) {
   if (row?.sessionId) await notifySession(tx, row.sessionId);
 }
 
-type Subscriber = { sessionId: string; refresh: () => void; disconnect: () => void };
+type Subscriber = { sessionId: string; refresh: () => void; delta(chunk: SessionDelta): void; disconnect: () => void };
 const subscriptions = new WeakMap<Db, Set<Subscriber>>();
 
 export async function listenForSessionEvents(db: Db, createListener: () => Client): Promise<() => void> {
@@ -100,7 +118,13 @@ export async function listenForSessionEvents(db: Db, createListener: () => Clien
       for (const subscriber of subscribers) subscriber.disconnect();
     },
     message(payload) {
-      for (const subscriber of subscribers) if (subscriber.sessionId === payload) subscriber.refresh();
+      let value: unknown;
+      try { value = JSON.parse(payload ?? ''); } catch {}
+      const chunk = value as SessionDelta | undefined;
+      if (chunk && typeof chunk.session === 'string' && typeof chunk.turnId === 'string' &&
+          typeof chunk.seq === 'number' && typeof chunk.delta === 'string')
+        for (const subscriber of subscribers) if (subscriber.sessionId === chunk.session) subscriber.delta(chunk);
+      else for (const subscriber of subscribers) if (subscriber.sessionId === payload) subscriber.refresh();
     },
   });
 }
@@ -174,11 +198,16 @@ export async function serveSessionEvents(
   let notifiedSinceHeartbeat = false;
   let lastEventId: string | undefined;
   const seen = new Set(knownMounts);
+  let authorized = false;
   const subscriber: Subscriber = {
     sessionId,
     refresh() {
       notifiedSinceHeartbeat = true;
       scheduleRead();
+    },
+    delta(chunk) {
+      if (authorized && !closed) void writeFrame(event('delta', undefined,
+        {turnId: chunk.turnId, seq: chunk.seq, delta: chunk.delta})).catch(() => {});
     },
     disconnect() {
       cleanup();
@@ -217,6 +246,7 @@ export async function serveSessionEvents(
         dirty = false;
         if (watchMounts) {
           const {authorizedMountIds, unconfirmed} = await sessionMountPermissions(db, sessionId);
+          authorized = true;
           if (closed || dirty) continue;
           const permission = {sessionId, authorizedMountIds, ...mountPermissionFields(unconfirmed, seen)};
           const key = JSON.stringify(permission);
@@ -229,6 +259,7 @@ export async function serveSessionEvents(
         }
         const notion = notionReadScope(db, studioLearner);
         const { session, row, mounts: {snapshots: artifacts, unconfirmed} } = await readSessionEvent(notion, sessionId);
+        authorized = true;
         if (closed) return;
         if (dirty) continue;
         const { currentTurnId, status } = session;

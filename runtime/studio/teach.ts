@@ -42,7 +42,7 @@ import {readCurrentLearningObject, type OpenedCurrentLearningObject} from './cur
 import {isWorkspaceAssessmentSlot, workspaceAssessmentBasis, type AssessmentSlot, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {isRadarRetentionSlot, readRetentionBasis, type RadarSlot, type RetentionBasis} from './learner-radar.ts';
 import { checkProviderAccount, loadSettings } from './settings.ts';
-import { completeTurnStream, publishTurnProgress } from './stream.ts';
+import { completeTurnStream, publishSessionDelta, publishTurnProgress } from './stream.ts';
 import { companionReplyStartedLabel, companionReplyTrackingLabel, questionReceiptsCurrent } from './question-exposure.ts';
 import { confirmedTeachingMethod, learningToolsMethod, notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
@@ -191,6 +191,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       },
       publishProgress: progress => publishTurnProgress(db, ref, job.slotKey, submission.sessionId, progress, validInputs),
     });
+    let deltaSeq = 0;
     const runModelEffect = createTeachingModelEffect<ReadTransaction, DbTransaction>({
       purpose, learningV1, settings, submission, grants, ledger,
       notionRecipientId: () => maySend.notionRecipientId,
@@ -238,6 +239,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           slotKey: job.slotKey, slotType, submission, learningV1, memoryTurn, ledger,
           attachment: original.teaching ? origin.attachment : undefined,
           settings, grants, mcpServers, memoryId, ridingLesson, averageSpeed, onProgress, runEffect: runModelEffect,
+          onTextDelta: async delta => {
+            if (!delta) return;
+            deltaSeq = await publishSessionDelta(db, submission.sessionId, job.slotKey, deltaSeq, delta)
+              .catch(() => deltaSeq + 1);
+          },
         },
         {
           loadClassroomAdjust: async () => {
