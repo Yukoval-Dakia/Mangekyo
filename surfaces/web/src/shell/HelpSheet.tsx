@@ -157,12 +157,36 @@ export function HelpSheet({ onClose }: { onClose: () => void }) {
       <header className="dialog-heading">
         <div>
           <h2 id="help-title">{card.title}</h2>
-          <p>这份支持说明离线可用，不依赖模型，也不会自动联系任何第三方。</p>
+          <p>把常用操作、快捷键和安全说明放在一处；离线也能查看。</p>
         </div>
         <button className="icon-button" type="button" onClick={onClose} aria-label="关闭帮助"><Icon name="close" /></button>
       </header>
       <div className="help-body">
+        <section className="help-card help-quick-card" aria-labelledby="help-quick-title">
+          <h3 id="help-quick-title">快速上手</h3>
+          <div className="help-columns">
+            <div>
+              <h4>快速交入</h4>
+              <ul>
+                <li><kbd>⌘K</kbd> 打开快速搜索与交入</li>
+                <li><kbd>⌘</kbd> + <kbd>Enter</kbd> 发送当前消息或提交</li>
+                <li>拍卷、传 PDF，或先写一句话记录材料</li>
+              </ul>
+            </div>
+            <div>
+              <h4>四个主表面</h4>
+              <ul>
+                <li>今天：安排、节奏与今日建议</li>
+                <li>材料：试卷、错题、教材与来源</li>
+                <li>同伴：对话、练习与陪伴</li>
+                <li>我：目标、记忆与设置</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
         <section className="help-card" aria-label="基础安全支持">
+          <h3>安全与离线支持</h3>
           <p>{card.safetyQuestion}</p>
           <p>{card.trustedContact}</p>
           <p>{card.localEmergencyGuidance}</p>

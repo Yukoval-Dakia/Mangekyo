@@ -121,11 +121,11 @@ function usageCallLabel(call: AiUsageCallItem) {
 
 function handoffChannelLabel(item: AiHandoffItem) {
   switch (item.channel ?? item.kind) {
-    case "night_chain": return "夜链交班";
-    case "research": return "教研整理";
+    case "night_chain": return "后台学习整理";
+    case "research": return "后台学习整理";
     case "retention": return "记忆保持";
     case "notion": return "Notion 同步";
-    default: return "交班记录";
+    default: return "后台整理";
   }
 }
 
@@ -233,7 +233,7 @@ function proposalKindLabel(kind: string) {
     case "textbook_patch": return "教材修订";
     case "question_draft": return "题库草稿";
     case "question_meta": return "题目补充";
-    default: return "待裁决";
+    default: return "待确认";
   }
 }
 
@@ -299,7 +299,7 @@ export function AiActivityDrawer({
       <header className="drawer-header">
         <div>
           <h2>AI 运作</h2>
-          <p className="drawer-subtitle">教研团状态、夜链交班与依据透明视图</p>
+          <p className="drawer-subtitle">教研团状态、后台整理与依据透明视图</p>
         </div>
         <div className="drawer-header-actions">
           <button className="icon-button" type="button" onClick={() => void load(true)} disabled={!open} aria-label="刷新 AI 运作状态">
@@ -326,7 +326,7 @@ export function AiActivityDrawer({
             <Section title="教研团实时读数">
               <ul className="drawer-status-list">
                 <li>
-                  <span>后台教研整理</span>
+                  <span>后台学习整理</span>
                   <strong>
                     {state.fallback.research.status === "ready"
                       ? state.fallback.research.enabled
@@ -368,99 +368,121 @@ export function AiActivityDrawer({
                 </p>
               )}
             </Section>
-            <Section title="夜链与交班"><Empty text="暂未接入夜链交班摘要（等待 /api/ai/activity）。" /></Section>
-            <Section title="工具调用与依据"><Empty text="暂未接入全局工具调用流；各轮对话依据可在学习同伴回复下方查看。" /></Section>
-            <Section title="模型用量账本"><Empty text="暂未接入跨任务用量明细（等待 /api/ai/activity）。" /></Section>
-            <Section title="待裁决提议"><Empty text="暂未接入全局待裁决汇总（等待 /api/ai/activity）。" /></Section>
+            <Section title="后台学习整理"><Empty text="暂时没有后台整理记录。" /></Section>
+            <Section title="工具调用与依据"><Empty text="暂无工具调用记录。" /></Section>
+            <Section title="模型用量"><Empty text="暂无用量明细。" /></Section>
+            <Section title="待你确认的建议"><Empty text="现在没有需要你确认的建议。" /></Section>
           </>
         )}
         {state.status === "ready" && state.activity && (
           <>
-            <Section title="运行中" count={state.activity.running.length}>
-              {state.activity.running.length ? (
-                <ul className="drawer-card-list">
-                  {state.activity.running.map(item => {
-                    const blocked = (item.state ?? item.status) === "blocked";
-                    const href = runningItemHref(item);
-                    return (
-                      <li key={item.id} className="drawer-running-item">
-                        <div className="drawer-running-head">
-                          <a href={href} onClick={event => {
-                            event.preventDefault();
-                            onNavigate(href);
-                          }}>{runningItemTitle(item)}</a>
-                          <span className={blocked ? "state-pill blocked" : "state-pill live"}>
-                            {!blocked && <i className="breathing live" aria-hidden="true" />}
-                            {runningStateLabel(item)}
-                          </span>
-                        </div>
-                        <span>{runningKindLabel(runningKind(item))}</span>
-                        {blocked && <span className="drawer-blocked-hint">{BLOCKED_HINT}</span>}
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : <Empty text="现在没有运行中的任务。" />}
-            </Section>
-            <Section title="夜链与交班" count={state.activity.handoffs.length}>
-              {state.activity.handoffs.length ? (
-                <ul className="drawer-card-list">
-                  {state.activity.handoffs.map(item => {
-                    const heading = cleanHumanTitle(item.title || item.summary);
-                    const meta = [
-                      handoffChannelLabel(item),
-                      handoffStatusLabel(item.status),
-                      typeof item.basisCount === "number" && item.basisCount > 0 ? `依据 ${item.basisCount} 条` : null,
-                    ].filter(Boolean).join(" · ");
-                    const showSummary = Boolean(item.title && item.summary && item.summary !== item.title);
-                    return (
-                      <li key={item.id}>
-                        {isSpaHref(item.href) ? (
-                          <a href={item.href} onClick={event => {
-                            event.preventDefault();
-                            onNavigate(item.href!);
-                          }}>{heading}</a>
-                        ) : (
-                          <strong>{heading}</strong>
-                        )}
-                        {showSummary && <span>{item.summary}</span>}
-                        <span>{meta}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : <Empty text="暂无交班记录。" />}
-            </Section>
-            <Section title="工具调用与依据" count={state.activity.recentTools.length}>
-              {state.activity.recentTools.length ? (
-                <ul className="drawer-card-list">
-                  {state.activity.recentTools.map((item, index) => {
-                    const headline = recentToolHeadline(item);
-                    return (
-                      <li key={`${item.turnId}-${item.step ?? index}`}>
-                        {isSpaHref(item.href) ? (
-                          <a href={item.href} onClick={event => {
-                            event.preventDefault();
-                            onNavigate(item.href!);
-                          }}>{headline}</a>
-                        ) : (
-                          <strong>{headline}</strong>
-                        )}
-                        <span>{recentToolMeta(item)}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : <Empty text="暂无工具调用。" />}
-            </Section>
-            <Section title="模型用量">
+            {(() => {
+              const activity = state.activity;
+              const detailSections =
+                activity.running.length +
+                activity.handoffs.length +
+                activity.recentTools.length +
+                activity.pendingProposals.length;
+              const hasQuietState = detailSections === 0;
+              return (
+                <>
+                  {hasQuietState && (
+                    <section className="drawer-section drawer-quiet" aria-label="当前状态">
+                      <div className="drawer-quiet-copy">
+                        <h3>当前很安静</h3>
+                        <p>没有进行中的后台整理或等待你确认的事项，可以直接回到学习。</p>
+                      </div>
+                    </section>
+                  )}
+
+                  {activity.running.length > 0 && (
+                    <Section title="运行中" count={activity.running.length}>
+                      <ul className="drawer-card-list">
+                        {activity.running.map(item => {
+                          const blocked = (item.state ?? item.status) === "blocked";
+                          const href = runningItemHref(item);
+                          return (
+                            <li key={item.id} className="drawer-running-item">
+                              <div className="drawer-running-head">
+                                <a href={href} onClick={event => {
+                                  event.preventDefault();
+                                  onNavigate(href);
+                                }}>{runningItemTitle(item)}</a>
+                                <span className={blocked ? "state-pill blocked" : "state-pill live"}>
+                                  {!blocked && <i className="breathing live" aria-hidden="true" />}
+                                  {runningStateLabel(item)}
+                                </span>
+                              </div>
+                              <span>{runningKindLabel(runningKind(item))}</span>
+                              {blocked && <span className="drawer-blocked-hint">{BLOCKED_HINT}</span>}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </Section>
+                  )}
+
+                  {activity.handoffs.length > 0 && (
+                    <Section title="后台学习整理" count={activity.handoffs.length}>
+                      <ul className="drawer-card-list">
+                        {activity.handoffs.map(item => {
+                          const heading = cleanHumanTitle(item.title || item.summary);
+                          const meta = [
+                            handoffChannelLabel(item),
+                            handoffStatusLabel(item.status),
+                            typeof item.basisCount === "number" && item.basisCount > 0 ? `依据 ${item.basisCount} 条` : null,
+                          ].filter(Boolean).join(" · ");
+                          const showSummary = Boolean(item.title && item.summary && item.summary !== item.title);
+                          return (
+                            <li key={item.id}>
+                              {isSpaHref(item.href) ? (
+                                <a href={item.href} onClick={event => {
+                                  event.preventDefault();
+                                  onNavigate(item.href!);
+                                }}>{heading}</a>
+                              ) : (
+                                <strong>{heading}</strong>
+                              )}
+                              {showSummary && <span>{item.summary}</span>}
+                              <span>{meta}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </Section>
+                  )}
+
+                  {activity.recentTools.length > 0 && (
+                    <Section title="最近用过什么工具" count={activity.recentTools.length}>
+                      <ul className="drawer-card-list">
+                        {activity.recentTools.map((item, index) => {
+                          const headline = recentToolHeadline(item);
+                          return (
+                            <li key={`${item.turnId}-${item.step ?? index}`}>
+                              {isSpaHref(item.href) ? (
+                                <a href={item.href} onClick={event => {
+                                  event.preventDefault();
+                                  onNavigate(item.href!);
+                                }}>{headline}</a>
+                              ) : (
+                                <strong>{headline}</strong>
+                              )}
+                              <span>{recentToolMeta(item)}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </Section>
+                  )}
+
+                  <Section title="模型用量">
               {(() => {
-                const headline = usageHeadline(state.activity);
+                const headline = usageHeadline(activity);
                 return (
                   <>
                     <p className="drawer-metric">{headline.metric}</p>
                     {headline.hint && <p className="drawer-hint">{headline.hint}</p>}
-                    {headline.summary && headline.summary.countedCalls > 0 && state.activity.usage.spentMicros !== 0 && (
+                    {headline.summary && headline.summary.countedCalls > 0 && activity.usage.spentMicros !== 0 && (
                       <p className="drawer-hint">
                         共 {headline.summary.total.toLocaleString("zh-CN")} tokens（输入 {headline.summary.prompt.toLocaleString("zh-CN")} / 输出 {headline.summary.completion.toLocaleString("zh-CN")}）
                       </p>
@@ -468,45 +490,49 @@ export function AiActivityDrawer({
                   </>
                 );
               })()}
-              {((state.activity.usage.settledMicros ?? 0) > 0 || (state.activity.usage.heldMicros ?? 0) > 0) && (
+              {((activity.usage.settledMicros ?? 0) > 0 || (activity.usage.heldMicros ?? 0) > 0) && (
                 <p className="drawer-hint">
-                  已结算 {formatMicros(state.activity.usage.settledMicros) ?? "$0.0000"} · 预占 {formatMicros(state.activity.usage.heldMicros) ?? "$0.0000"}
+                  已结算 {formatMicros(activity.usage.settledMicros) ?? "$0.0000"} · 预占 {formatMicros(activity.usage.heldMicros) ?? "$0.0000"}
                 </p>
               )}
-              {state.activity.usage.recentCalls.length ? (
+              {activity.usage.recentCalls.length ? (
                 <ul className="drawer-card-list">
-                  {state.activity.usage.recentCalls.map(call => (
+                  {activity.usage.recentCalls.map(call => (
                     <li key={call.id}>
                       <strong>{usageCallLabel(call)}</strong>
                       <span>{usageCallMeta(call) || "已记录"}</span>
                     </li>
                   ))}
                 </ul>
-              ) : <Empty text="暂无近期调用。" />}
+              ) : <Empty text="暂无近期模型调用。" />}
             </Section>
-            <Section title="待裁决提议" count={state.activity.pendingProposals.length}>
-              {state.activity.pendingProposals.length ? (
-                <ul className="drawer-card-list">
-                  {state.activity.pendingProposals.map(item => {
-                    const href = resolveProposalHref(item);
-                    const heading = cleanHumanTitle(item.title);
-                    return (
-                      <li key={item.id}>
-                        {href ? (
-                          <a href={href} onClick={event => {
-                            event.preventDefault();
-                            onNavigate(href);
-                          }}>{heading}</a>
-                        ) : (
-                          <strong>{heading}</strong>
-                        )}
-                        <span>{proposalKindLabel(item.kind)} · {item.summary}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : <Empty text="没有等待你裁决的提议。" />}
-            </Section>
+
+                  {activity.pendingProposals.length > 0 && (
+                    <Section title="待你确认的建议" count={activity.pendingProposals.length}>
+                      <ul className="drawer-card-list">
+                        {activity.pendingProposals.map(item => {
+                          const href = resolveProposalHref(item);
+                          const heading = cleanHumanTitle(item.title);
+                          return (
+                            <li key={item.id}>
+                              {href ? (
+                                <a href={href} onClick={event => {
+                                  event.preventDefault();
+                                  onNavigate(href);
+                                }}>{heading}</a>
+                              ) : (
+                                <strong>{heading}</strong>
+                              )}
+                              <span>{proposalKindLabel(item.kind)} · {item.summary}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </Section>
+                  )}
+                </>
+              );
+            })()}
           </>
         )}
       </div>

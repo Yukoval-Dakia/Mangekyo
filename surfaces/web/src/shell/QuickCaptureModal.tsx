@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { api, submissionId } from "../api";
 import { Icon } from "../icons";
 import { materialFetchHelpers } from "../quick-capture-api";
@@ -39,6 +39,7 @@ export function QuickCaptureModal({
   const [file, setFile] = useState<File>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
 
   useEffect(() => {
     const dialog = ref.current;
@@ -65,6 +66,20 @@ export function QuickCaptureModal({
       item.label.toLowerCase().includes(needle) || item.detail.toLowerCase().includes(needle),
     ).slice(0, 12);
   }, [materials, chats, query]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [query, mode, searchItems.length]);
+
+  useEffect(() => {
+    setActiveIndex((index) => Math.min(index, Math.max(0, searchItems.length - 1)));
+  }, [searchItems.length]);
+
+  useEffect(() => {
+    if (mode !== "search" || searchItems.length === 0) return;
+    const active = ref.current?.querySelector(`#quick-result-${activeIndex}`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, mode, searchItems]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -94,6 +109,24 @@ export function QuickCaptureModal({
     if (event.target === ref.current) onClose();
   }
 
+  function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((index) => searchItems.length ? (index + 1) % searchItems.length : 0);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((index) => searchItems.length ? (index - 1 + searchItems.length) % searchItems.length : 0);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const item = searchItems[activeIndex] ?? searchItems[0];
+      if (item) onNavigate(item.href);
+    }
+  }
+
   return (
     <dialog
       ref={ref}
@@ -110,15 +143,15 @@ export function QuickCaptureModal({
         <button className="icon-button" type="button" onClick={onClose} aria-label="关闭弹窗"><Icon name="close" /></button>
       </header>
       <div className="quick-tabs" role="tablist" aria-label="快捷入口切换">
-        <button type="button" role="tab" aria-selected={mode === "capture"} onClick={() => setMode("capture")}>
+        <button type="button" role="tab" id="quick-tab-capture" aria-selected={mode === "capture"} aria-controls="quick-panel" onClick={() => setMode("capture")}>
           快速交入
         </button>
-        <button type="button" role="tab" aria-selected={mode === "search"} onClick={() => setMode("search")}>
+        <button type="button" role="tab" id="quick-tab-search" aria-selected={mode === "search"} aria-controls="quick-panel" onClick={() => setMode("search")}>
           快速跳转
         </button>
       </div>
       {mode === "capture" ? (
-        <form onSubmit={submit}>
+        <form id="quick-panel" role="tabpanel" aria-labelledby="quick-tab-capture" onSubmit={submit}>
           <label className="field">
             <span>一句话</span>
             <textarea
@@ -145,29 +178,49 @@ export function QuickCaptureModal({
           </div>
         </form>
       ) : (
-        <div>
+        <div id="quick-panel" role="tabpanel" aria-labelledby="quick-tab-search">
           <input
             className="quick-search-input"
             type="search"
             autoFocus
             value={query}
             onChange={event => setQuery(event.target.value)}
+            onKeyDown={handleSearchKeyDown}
             placeholder="输入页面名称、材料或对话关键词…"
             aria-label="搜索学习页面、材料或对话"
+            aria-expanded={searchItems.length > 0}
+            aria-controls="quick-results-list"
+            aria-activedescendant={searchItems.length ? `quick-result-${activeIndex}` : undefined}
+            role="combobox"
           />
           {searchItems.length > 0 ? (
-            <ul className="quick-results">
-              {searchItems.map(item => (
-                <li key={item.href + item.label}>
-                  <button type="button" onClick={() => onNavigate(item.href)}>
-                    <span>{item.label}</span>
-                    <small>{item.detail}</small>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="quick-results" id="quick-results-list" role="listbox" aria-label="搜索结果">
+                {searchItems.map((item, index) => (
+                  <li
+                    key={item.href + item.label}
+                    id={`quick-result-${index}`}
+                    role="option"
+                    aria-selected={index === activeIndex}
+                    data-active={index === activeIndex ? "true" : undefined}
+                    onMouseEnter={() => setActiveIndex(index)}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onNavigate(item.href)}
+                    >
+                      <span>{item.label}</span>
+                      <small>{item.detail}</small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <p className="quick-hints">
+                <kbd>↑</kbd><kbd>↓</kbd> 选择 · <kbd>Enter</kbd> 打开 · <kbd>Esc</kbd> 关闭
+              </p>
+            </>
           ) : (
-            <p className="drawer-empty" style={{ marginTop: 12 }}>没有匹配项，可以切换到「快速交入」直接记录新材料。</p>
+            <p className="quick-empty">没有匹配项，可以切换到「快速交入」直接记录新材料。</p>
           )}
         </div>
       )}
