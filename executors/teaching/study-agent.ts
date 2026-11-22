@@ -96,12 +96,18 @@ function definition(name: string, pythonAttempts: boolean) {
 
 const defaultToolBudget = 6;
 const maxReply = 12_000;
+const possibleTagSuffix = /<\/?[a-z/]{0,16}$/i;
 const memoryRegionTool = { type: 'function', function: { name: 'open_memory_region',
   description: '按本轮 ContextBundle.omitted 中的 expand 对象展开一个已授权的区域。',
   parameters: { type: 'object', properties: { region: { type: 'string' }, start: { type: 'integer' }, basisDigest: { type: 'string' } },
     required: ['region', 'start', 'basisDigest'], additionalProperties: false } } };
 const parallelReadOnlyWorkspaceTools = new Set(['open_learning', 'search_workspace', 'read_workspace', 'read_learner_radar']);
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+
+function streamableAssistantText(raw: string): string {
+  return publicAssistantContent(raw).trimStart().replace(possibleTagSuffix, '').trimEnd();
+}
+
 type ModelReply = {
   message?: string;
   reportedModel?: string;
@@ -199,18 +205,37 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       let reportedModel: string | undefined;
       let lastText = '';
       let lastPush = 0;
+      let emittedDeltaText = '';
       const send = () => requestCompletion(endpoint, body, options.provider.apiKey, requestId, {
         allowTools: available,
         model(value) { reportedModel = verifyTeachingModel(value, options.provider.apiKey, model); },
         async content(text) {
-          if (!streamReply || !reportedModel || !options.onProgress || Date.now() - lastPush < 80) return;
-          const message = publicAssistantContent(text).trimStart();
-          if (message === lastText || !message.trim() || message.length > maxReply) return;
-          lastText = message;
-          lastPush = Date.now();
-          await options.onProgress({ phase: 'replying', message });
+          if (!streamReply || !reportedModel || (!options.onProgress && !options.onTextDelta)) return;
+          if (options.onProgress && Date.now() - lastPush >= 80) {
+            const message = publicAssistantContent(text).trimStart();
+            if (message !== lastText && message.trim() && message.length <= maxReply) {
+              lastText = message;
+              lastPush = Date.now();
+              await options.onProgress({ phase: 'replying', message });
+            }
+          }
+          if (!options.onTextDelta) return;
+          const visible = streamableAssistantText(text);
+          if (visible.length > maxReply || visible.length <= emittedDeltaText.length ||
+              !visible.startsWith(emittedDeltaText)) return;
+          const delta = visible.slice(emittedDeltaText.length);
+          emittedDeltaText = visible;
+          await options.onTextDelta(delta);
         },
       }, options.provider);
+
+      const emitFinalTextDelta = async (message: string, toolCalls?: FunctionCall[]) => {
+        if (!streamReply || !options.onTextDelta || toolCalls || message.length <= emittedDeltaText.length ||
+            !message.startsWith(emittedDeltaText)) return;
+        const delta = message.slice(emittedDeltaText.length);
+        emittedDeltaText = message;
+        await options.onTextDelta(delta);
+      };
       const reply = await (options.jitContext && dispatch ? dispatch(send) : send());
       if ('truncated' in reply) return JSON.stringify({
         ...reply,
@@ -225,6 +250,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         isPhaticMessage(reply.content ?? '') && context.every(entry => entry.role === 'system' || entry === options.metadataOnlyMessage ||
           ((entry.role === 'user' || entry.role === 'assistant') &&
             typeof entry.content === 'string' && isPhaticMessage(entry.content)));
+      await emitFinalTextDelta(message, reply.toolCalls);
       return JSON.stringify({ reportedModel, ...(reply.usage ? {usage: reply.usage} : {}),
         ...(phatic ? {phaticExchangeV1: true} : {}),
         ...(reply.toolCalls ? {calls: reply.toolCalls, ...(reply.providerTurn ? {providerTurn: reply.providerTurn} : {})} : {message}) });
