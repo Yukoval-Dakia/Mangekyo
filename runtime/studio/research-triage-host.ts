@@ -19,15 +19,16 @@ import { readResearchForeground } from './research-foreground.ts';
 import { activeRetentionReview, independentScoutSource, reviewMaterialAvailable, readWorksheetById, researchReader, retentionReviewAnchor, whenAvailable, worksheetPublication } from './research-sources.ts';
 import type { TriageSnapshot } from './research-triage/snapshot.ts';
 import { coverage, noop, projectResearchOverview, projectReviewTodo, researchTriageRequest, response, reviewAction, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
+import * as triageH from '../../modules/companion/studio-research-triage-helpers.ts';
 
 export { researchDecision, reviewGoal } from '../../modules/companion/research-triage-policy.ts';
 
 export function scoutEffectIdentity(settingsId: FactId, dedupKey: string) {
-  return { ownerKind: 'session', ownerId: settingsId, stepKey: dedupKey, label: 'background-research-scout-v1' } as const;
+  return triageH.scoutEffectIdentityValue(settingsId, dedupKey);
 }
-const retrySheetLifetimeMs = 24 * 60 * 60 * 1000;
-const recentWindow = 8;
-const detailLimit = 4;
+const retrySheetLifetimeMs = triageH.retrySheetLifetimeMs;
+const recentWindow = triageH.researchTriageRecentWindow;
+const detailLimit = triageH.researchTriageDetailLimit;
 
 async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
   const { rows } = await tx.query<{ id: string; type: string; rank: number }>(
@@ -59,16 +60,16 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
     const fact = await whenAvailable(() => read.fact(factId(row.id), { mode: 'following' }));
     if (!fact?.purpose.includes(researchPurpose)) continue;
     const add = (kind: string, payload: Json) => {
-      events[row.id] = { event_id: row.id, kind, fact_ref: fact.ref.id, fact_rev: fact.ref.rev, payload };
+      events[row.id] = triageH.makeDeltaEvent(row.id, fact.ref.id, fact.ref.rev, kind as never, payload);
     };
     if (row.type === goalType || row.type === organizerTaskType) {
-      add('goal_or_task_changed', { fact_type: row.type });
+      add('goal_or_task_changed', triageH.goalOrTaskPayload(row.type));
     } else {
       discovery = true;
       if (row.type === researchSettingsType) add('research_enabled', {});
       else if (row.type === retentionReviewPermissionType) {
-        if (await activeRetentionReview(tx, fact)) add('authorized_retention_miss', { status: 'missed' });
-      } else add('authorized_attempt_changed', { submitted_at: workbookAttempt(fact.value).submittedAt });
+        if (await activeRetentionReview(tx, fact)) add('authorized_retention_miss', triageH.retentionMissPayload());
+      } else add('authorized_attempt_changed', triageH.attemptChangedPayload(workbookAttempt(fact.value).submittedAt));
     }
   }
   const completionRows = rows.filter(row => row.type === researchWorksheetType).length;
@@ -182,10 +183,9 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   const retention = await readRetentionRadar(tx, {
     callerPurpose: researchPurpose, maySend: fact => fact.purpose.includes(researchPurpose),
   }, { limitPerKind: 1 });
-  const prefix = { facts, todos, inventory: inventory.items, forecasts: {}, memos: {}, work: {}, signals: {},
-    chain: null, budget: { remaining: 0 } };
+  const prefix = triageH.buildTriagePrefix({ facts, todos, inventory: inventory.items });
   const snapshot: TriageSnapshot = {
-    ...prefix, events, facts: intent && olderCandidate ? { ...facts, [intent.sourceFactRev.id]: olderCandidate } : facts,
+    ...prefix, events, facts: triageH.buildTriageSnapshotFacts(facts, intent?.sourceFactRev.id, olderCandidate),
   };
   const action = intent && reviewAction(intent.sourceFactRev.id);
   const request = researchTriageRequest({ prefix, events, olderCandidate, settingsRevision, overview, retention, recentWindow,
@@ -198,12 +198,10 @@ export async function preparePaidResearchTriage(tx: ReadTransaction, settingsId:
   const { facts, intent, paidCandidate } = await readReviewAttempts(tx, true, settingsRevision, now, 'paid', settingsId);
   if (!intent || !paidCandidate) return null;
   const action = reviewAction(intent.sourceFactRev.id, grant && isWorksheetProfile(grant.profile) ? grant.profile : undefined);
-  const snapshot: TriageSnapshot = { facts, todos: {}, inventory: {}, forecasts: {}, memos: {}, work: {},
-    signals: {}, events: {}, chain: null, budget: { remaining: 0 } };
+  const snapshot: TriageSnapshot = triageH.buildPaidTriageSnapshot(facts);
   const { id, revision: rev, accessEpoch } = intent.sourceFactRev;
   const { rows: [clock] } = await tx.query<{ gather_tick: Tick }>('SELECT clock::text AS gather_tick FROM learners WHERE id=$1', [tx.learner]);
   const manifest = parseManifest({ version: 1, learner: tx.learner, purpose: researchPurpose,
     gatherTick: clock!.gather_tick, inputs: [{ kind: 'fact', id, rev, accessEpoch, mode: 'following' }] });
-  return { snapshot, intent, action, manifest,
-    paidInput: { candidate: paidCandidate, menu: [noop, action], response_format: response(noop) } };
+  return { snapshot, intent, action, manifest, paidInput: triageH.buildPaidTriageInput(paidCandidate, action, noop, response) };
 }

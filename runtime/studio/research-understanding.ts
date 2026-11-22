@@ -48,6 +48,7 @@ import type { WorkspaceWitness } from './workspace-agent.ts';
 import { openWorkbookQuestionSources } from './workbook-diagnosis.ts';
 import { undoTextbookCommand } from './workspace-textbook.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
+import * as understandingH from '../../modules/companion/studio-research-understanding-helpers.ts';
 
 // A zero-cost host supplies an authorized route. A paid route requires budget admission first.
 export type UnderstandingTransport = {
@@ -56,13 +57,13 @@ export type UnderstandingTransport = {
   maySend?: WorkspaceSourceRecipient;
   sample(request: { instructions: string; input: string; providerEffectId: string }): Promise<string>;
 };
-const windowMs = 86_400_000;
-const mayResearch: WorkspaceSourceRecipient = fact =>
-  fact.type === turnEvidenceType ? turnAllowsBackgroundUnderstanding(fact) : fact.purpose.includes(researchPurpose) || fact.purpose.includes('all');
+const windowMs = understandingH.understandingExtractionWindowMs;
+const mayResearch: WorkspaceSourceRecipient = understandingH.makeMayResearch(researchPurpose, turnEvidenceType, turnAllowsBackgroundUnderstanding) as WorkspaceSourceRecipient;
 
 // The priced route sends only an explicitly granted learner utterance or independently authored attempt.
-export const paidExtractionRecipient: WorkspaceSourceRecipient = fact => fact.purpose.includes(researchPurpose) &&
-  (fact.type === workbookAttemptType || fact.type === turnEvidenceType && turnAllowsBackgroundUnderstanding(fact));
+export const paidExtractionRecipient: WorkspaceSourceRecipient = understandingH.makePaidExtractionRecipient(
+  researchPurpose, workbookAttemptType, turnEvidenceType, turnAllowsBackgroundUnderstanding,
+) as WorkspaceSourceRecipient;
 
 const understandingHostDeps = {
   mayResearch, paidExtractionRecipient, claimType, memoryAssertionType, whenAvailable, createAuthorizedFactReader,
@@ -110,13 +111,12 @@ async function learnerGovernedSince(tx: ReadTransaction, tick: string, sourceId:
 
 export function openUnderstandingExtraction(db: Db, companion: LoadedModule, transport: UnderstandingTransport | undefined,
   paid?: {grant: WorkerConsent; tariff: WorkerTariff; signal: AbortSignal}) {
-  if (!transport && !paid) return;
-  const maySend = paid ? paidExtractionRecipient : transport?.maySend;
-  const budgetCap = paid ? workerCap(paid.grant, paid.tariff) : 0;
-  const route = paid?.grant.route ?? transport!.route;
-  if (paid && (!budgetCap || paid.grant.profile !== extractorProfile)) return;
-  if (transport && (!transport.route.trim() || transport.cost !== 0 || typeof transport.sample !== 'function'))
-    throw new Error('个性化抽取只接受已授权的零成本模型传输。');
+  const selection = understandingH.selectExtractionRoute({
+    paid, transport, extractorProfile, workerCap, paidRecipient: paidExtractionRecipient,
+  });
+  if (!selection) return;
+  const { maySend, budgetCap, route } = selection;
+  if (transport) understandingH.assertZeroCostTransport(transport);
   return async function execute(ref: WorkRef, todoId: string, settingsCurrent: (tx: ReadTransaction, rev: number) => Promise<boolean>) {
     const scope = {learner: studioLearner};
     const prepare = async (tx: ReadTransaction) => {
@@ -128,7 +128,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
       const prior = paid || source.quoteOnly ? [] : await existingUnderstandings(tx, source.ref.id, maySend);
       const target = prior.map((entry: any) => ({id: entry.ref.id, kind: entry.data.kind, text: entry.data.text, scope: entry.data.scope, ttl: entry.data.ttl, directions: entry.directions}));
       const input = JSON.stringify({source: {ref: source.ref, kind: source.kind, fragments: source.fragments},
-        considered_at: new Date(todo.spec.expiresAtMs - windowMs).toISOString(), ...(!source.quoteOnly ? {existing: target} : {})});
+        considered_at: understandingH.extractionConsideredAt(todo.spec.expiresAtMs, windowMs), ...(!source.quoteOnly ? {existing: target} : {})});
       return {todo, source, prior, input};
     };
     const cancel = () => cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
@@ -170,11 +170,12 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
         .map(({target, data}) => ({target, ...data}))}));
       if (!parsed.length) return void await cancel();
 
-      const command = commandId(stableId('publish-understanding-v1', todoId));
+      const command = understandingH.buildPublishUnderstandingCommandId(commandId, stableId, todoId) as ReturnType<typeof commandId>;
       const entries = parsed.map(({target, data}, index) => {
         const previous = target && prior.find((entry: any) => entry.ref.id === target);
-        const id = factId(target ?? stableId('extracted-understanding-v1', source.ref.id, String(source.ref.rev),
-          ...(todo.spec.sourceFactRev.anchor ? [todo.spec.sourceFactRev.anchor] : []), String(index)));
+        const id = (target ? factId(target) : understandingH.buildExtractedUnderstandingId(
+          factId, stableId, source.ref.id, source.ref.rev, todo.spec.sourceFactRev.anchor, index,
+        )) as ReturnType<typeof factId>;
         return {id, prior: previous ? previous.ref : null, data: {...data, version: 2 as const, sticky: false,
           evidence_refs: [...(previous ? previous.data.evidence_refs : []), ...data.evidence_refs.map(ref =>
             source.basisDigest ? {...ref, basis_digest: source.basisDigest,

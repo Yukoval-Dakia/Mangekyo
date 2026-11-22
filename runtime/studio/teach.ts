@@ -45,6 +45,7 @@ import { checkProviderAccount, loadSettings } from './settings.ts';
 import { completeTurnStream, publishSessionDelta, publishTurnProgress } from './stream.ts';
 import { companionReplyStartedLabel, companionReplyTrackingLabel, questionReceiptsCurrent } from './question-exposure.ts';
 import { confirmedTeachingMethod, learningToolsMethod, notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
+import * as teachH from '../../modules/companion/studio-teach-helpers.ts';
 
 const hasTeachingModelEffect = async (tx: ReadTransaction, learner: ReturnType<typeof learnerId>, slotKey: string) =>
   Boolean((await tx.query(`SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2 AND label='teaching-model' LIMIT 1`, [learner, slotKey])).rowCount);
@@ -54,10 +55,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   onTurnCompleted?: (tx: DbTransaction, tick: Tick, id: string) => Promise<void>,
   carePause?: { pause: (key: string) => Promise<unknown> },
   notion?: Pick<ReturnType<typeof openStudioNotion>, 'readTool'>) {
-  if (ref.learner !== studioLearner) throw new Error('Unknown teaching scope');
+  if (ref.learner !== studioLearner) throw teachH.unknownTeachingScopeError();
   const job = await readWork(db, ref);
   if (!job) return;
-  if (job.slotType !== slotType || ![methodName,confirmedTeachingMethod,learningToolsMethod].includes(job.deriver)) throw new Error('Unknown teaching method');
+  if (job.slotType !== slotType || !teachH.isTeachingDeriver(methodName, confirmedTeachingMethod, learningToolsMethod, job.deriver))
+    throw teachH.unknownTeachingMethodError();
   const learner = learnerId(ref.learner), {slotKey} = job;
   const scope = { learner };
   let currentObject: OpenedCurrentLearningObject | undefined;
@@ -222,7 +224,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     });
 
     let feedback: DisplayTurn;
-    if (submission.caseId === 'companion' || submission.caseId === 'riding') {
+    if (teachH.isCompanionCase(submission.caseId)) {
       async function authorizeMemory(tx: ReadTransaction) {
         await validWorkInputs(tx);
         await authorizeWorkspace();
@@ -390,7 +392,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
         await carePause?.pause(job.slotKey);
     } else {
       const selected = caseId(submission.caseId);
-      if (selected !== 'independent' && selected !== 'workedExample') throw new Error('Unknown teaching case');
+      if (!teachH.isIntroCase(selected)) throw teachH.unknownTeachingCaseError();
       feedback = await runIntroTeachingTurn(
         { selected, parentId: submission.parentId, answer: submission.answer, settings, onProgress, runEffect: runModelEffect },
         {
@@ -433,5 +435,5 @@ function failTeachingWork(db: Db, ref: WorkRef, job: {slotType: string; slotKey:
 export async function recordTerminalFailure(db: Db, ref: WorkRef) {
   const job = await readWork(db, ref);
   if (!job) return;
-  await failTeachingWork(db, ref, job, {status:'failed', message:terminalRecoveryFailure});
+  await failTeachingWork(db, ref, job, teachH.buildTeachingFailurePayload('failed', terminalRecoveryFailure));
 }

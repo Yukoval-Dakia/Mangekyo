@@ -23,6 +23,7 @@ import { purpose, slotType, stableId, studioLearner } from './identity.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { RecallRequestError } from '../../modules/activity/recall-http-support.ts';
+import * as recallH from '../../modules/companion/studio-recall-helpers.ts';
 
 export { RecallRequestError };
 
@@ -30,45 +31,38 @@ type DisplayWitness = { mount: RecallMount; revealId: string };
 type Issuance = ReturnType<typeof recallIssuance>;
 type Item = Issuance['items'][number];
 type Submission = ReturnType<typeof recallSubmission>;
-const firstRevision = 1 as Revision;
+const firstRevision = recallH.firstRecallRevision;
+
+const recallErrorClassifier: recallH.RecallErrorClassifier = {
+  isReadDenied: e => e instanceof FactReadDeniedError,
+  isNotFound: e => e instanceof FactNotFoundError,
+};
 
 
 /** Existing StudyKits have positional questions. A position is meaningful only in its frozen version. */
 export function recallItemId(turnId: string, version: string, position: number): FactId {
-  return factId(stableId('recall-item', turnId, version, String(position)));
+  return recallH.recallItemIdFor(factId, stableId, turnId, version, position);
 }
 
 function input<T>(parse: () => T): T {
-  try { return parse(); }
-  catch { throw new RecallRequestError(400, '回忆题请求格式无效。'); }
+  return recallH.parseRecallInput(RecallRequestError, parse);
 }
 
 function issuanceRef(mount: RecallMount): HelpRef {
-  return { id: factId(stableId('recall-issuance', mount.turnId, mount.derivationId)), rev: firstRevision };
+  return recallH.recallIssuanceRefFor(factId, stableId, mount);
 }
 
 function itemFor(issuance: Parameters<typeof recallMountedItem>[0], mount: RecallMount) {
-  const item = recallMountedItem(issuance, mount);
-  if (!item) throw new RecallRequestError(404, '回忆题与此回合版本不匹配。');
-  return item;
+  return recallH.mountedRecallItem(RecallRequestError, recallMountedItem, issuance, mount);
 }
 
 async function authorized<T>(read: () => Promise<T>): Promise<T> {
-  try { return await read(); }
-  catch (error) {
-    if (error instanceof FactReadDeniedError) throw new RecallRequestError(403, '回忆题依据已不可读。');
-    if (error instanceof FactNotFoundError) throw new RecallRequestError(404, '找不到回忆题记录。');
-    throw error;
-  }
+  return recallH.authorizedRecall(RecallRequestError, recallErrorClassifier, read);
 }
 
 async function optionalPinned(tx: ReadTransaction, ref: HelpRef) {
-  try {
-    return await createCommandReadContext(tx, storagePurpose).fact(ref.id, { mode: 'pinned', rev: ref.rev });
-  } catch (error) {
-    if (error instanceof FactNotFoundError) return null;
-    throw error;
-  }
+  return recallH.optionalPinnedFact(recallErrorClassifier, () =>
+    createCommandReadContext(tx, storagePurpose).fact(ref.id, { mode: 'pinned', rev: ref.rev }));
 }
 
 async function readSource(tx: ReadTransaction, mount: RecallMount, requireCurrent: boolean, check: CheckNotionRead) {
@@ -82,7 +76,7 @@ async function readSource(tx: ReadTransaction, mount: RecallMount, requireCurren
            AND s.slot_type=d.slot_type AND s.slot_key=d.slot_key AND s.current_id=d.id AND s.last_error IS NULL
        )))`, [tx.learner, slotType, mount.turnId, mount.derivationId, requireCurrent],
   );
-  if (!row) throw new RecallRequestError(404, '此回合没有可用的回忆题版本。');
+  if (!row) throw recallH.recallSourceUnavailable(RecallRequestError);
   const read = createCommandReadContext(tx,purpose);
   const turn = await read.fact(mount.turnId,{mode:'following'});
   const submission = studyTurn(turn.value);
@@ -92,7 +86,7 @@ async function readSource(tx: ReadTransaction, mount: RecallMount, requireCurren
       !manifest.inputs.some(entry => entry.kind === 'fact' && entry.id === turn.ref.id &&
         (entry.mode === 'following' || (entry.rev === turn.ref.rev && entry.accessEpoch === turn.accessEpoch))) ||
       (await teachingResultAuthority(tx, mount.turnId, submission, manifest, workspaceGrantChecker(tx), check, origin)).state !== 'authorized') {
-    throw new RecallRequestError(409, '回忆题的教学依据已变化。');
+    throw recallH.recallTeachingBasisChanged(RecallRequestError);
   }
   return { turn, feedback: row.value, attachment: origin.attachment };
 }
@@ -101,11 +95,11 @@ async function readIssuance(tx: ReadTransaction, mount: RecallMount, ref: HelpRe
   const issuance = recallIssuance(value);
   const item = itemFor(issuance, mount);
   const { turn } = await readSource(tx, mount, false, check);
-  if (!sameHelpRef(turn.ref, issuance.turn)) throw new RecallRequestError(409, '回忆题的原回合已变化。');
+  if (!sameHelpRef(turn.ref, issuance.turn)) throw recallH.recallOriginalTurnChanged(RecallRequestError);
   const read = createCommandReadContext(tx, storagePurpose);
   for (const witness of issuance.materials) {
     const fact = await read.fact(witness.ref.id, { mode: 'pinned', rev: witness.ref.rev });
-    if (fact.accessEpoch !== witness.accessEpoch) throw new RecallRequestError(403, '回忆题材料的授权已变化。');
+    if (fact.accessEpoch !== witness.accessEpoch) throw recallH.recallMaterialsAuthorizationChanged(RecallRequestError);
   }
   return { ref, item };
 }
@@ -113,19 +107,17 @@ async function readIssuance(tx: ReadTransaction, mount: RecallMount, ref: HelpRe
 async function mounted(tx: ReadTransaction, mount: RecallMount, check: CheckNotionRead) {
   const ref = issuanceRef(mount);
   const fact = await optionalPinned(tx, ref);
-  if (fact?.type !== recallIssuanceType) throw new RecallRequestError(404, '这道回忆题尚未发放。');
+  if (fact?.type !== recallIssuanceType) throw recallH.recallNotIssuedYet(RecallRequestError);
   return readIssuance(tx, mount, ref, fact.value, check);
 }
 
 function writtenRef(receipt: CommandReceipt) {
-  const ref = receipt.wrote[0];
-  if (receipt.state !== 'done' || !ref) throw new RecallRequestError(409, '此回忆题操作已失效。');
-  return ref;
+  return recallH.writtenRecallRef(RecallRequestError, receipt);
 }
 
 async function resultFor(tx: ReadTransaction, submission: Submission, ref: FactRef, item: Item) {
   const admission = await readActivitySubmissionBirth(tx, ref, recallSubmissionType);
-  if (!admission) throw new RecallRequestError(409, '回忆题交答尚未确认。');
+  if (!admission) throw recallH.recallSubmissionNotConfirmed(RecallRequestError);
   const review = await readActivityHelpEvents(tx, createCommandReadContext(tx, storagePurpose), {
     activities: [submission.issuance.id], cutoff: admission.tick, mode: 'pinned', issuance: submission.issuance,
   });
@@ -146,8 +138,8 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
       const handle = createCommandHandler(withinLearnerTransaction(db, tx), { modules: [activity], hooks });
       try { return await run(tx, handle, check); }
       catch (error) {
-        if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-          throw new RecallRequestError(409, '同一请求标识已用于不同回忆题操作。');
+        if (recallH.isRecallCommandIdentityConflict(error)) {
+          throw recallH.recallCommandConflict(RecallRequestError);
         }
         throw error;
       }
@@ -164,15 +156,15 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
         const ref = issuanceRef(mount);
         const existing = await optionalPinned(tx, ref);
         if (existing) {
-          if (existing.type !== recallIssuanceType) throw new Error('Invalid Recall issuance identity');
+          if (existing.type !== recallIssuanceType) throw recallH.recallIssuanceIdentityInvalid();
           const { item } = await readIssuance(tx, mount, ref, existing.value, check);
           return recallItemView(mount, ref, item);
         }
         const { turn, feedback, attachment } = await readSource(tx, mount, true, check);
         const kit = studyKit(feedback && typeof feedback === 'object' && 'studyKit' in feedback ? feedback.studyKit : null);
-        if (!kit) throw new RecallRequestError(404, '此回合没有可用的回忆题。');
+        if (!kit) throw recallH.recallNoStudyKit(RecallRequestError);
         const materials = attachment ? await attachmentSources(tx,attachment) : undefined;
-        if (attachment && !materials) throw new RecallRequestError(409,'本轮选段已无法对应到授权原文。');
+        if (attachment && !materials) throw recallH.recallAttachmentUnlinked(RecallRequestError);
         const data = {
           turn: { id: turn.ref.id, rev: turn.ref.rev },
           version: mount.derivationId,
@@ -218,7 +210,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
       const { mount, requestId } = input(() => recallRevealInput(body));
       return write(mount, async (tx, handle, check) => {
         const { ref, item } = await mounted(tx, mount, check);
-        const revealId = factId(stableId('recall-reveal', requestId));
+        const revealId = recallH.recallRevealIdFor(factId, stableId, requestId);
         const request = helpExposureRequest(revealId, {
           kind: 'opened', mount: recallTarget(ref, item.itemId), content: ref,
           step: { kind: 'solution', order: 1 }, alsoAppliesTo: [],
@@ -230,7 +222,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
 
     async confirmDisplay(receipt: unknown) {
       const witness = await options.verifyDisplay?.(receipt);
-      if (!witness) throw new RecallRequestError(403, '缺少可信的回忆题显示回执。');
+      if (!witness) throw recallH.recallDisplayWitnessMissing(RecallRequestError);
       const mount = input(() => parseRecallMount(witness.mount));
       const revealId = input(() => factId(witness.revealId));
       return write(mount, async (tx, handle, check) => {
@@ -238,8 +230,8 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
         const fact = await optionalPinned(tx, { id: revealId, rev: firstRevision });
         const reveal = fact?.type === helpExposureType ? helpExposure(fact.value) : null;
         const display = recallDisplayEvent(reveal, ref, item);
-        if (!display) throw new RecallRequestError(409, '显示回执与获准揭示的题项不匹配。');
-        const displayId = factId(stableId('recall-display', revealId));
+        if (!display) throw recallH.recallDisplayMismatch(RecallRequestError);
+        const displayId = recallH.recallDisplayIdFor(factId, stableId, revealId);
         const request = helpExposureRequest(displayId, display);
         return { display: writtenRef(await handle({ ...scope, actor: 'learner', ...request })) };
       });
@@ -250,7 +242,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
       const { mount, requestId, answer } = input(() => recallSubmitInput(body));
       return write(mount, async (tx, handle, check) => {
         const { ref, item } = await mounted(tx, mount, check);
-        const id = factId(stableId('recall-submission', requestId));
+        const id = recallH.recallSubmissionIdFor(factId, stableId, requestId);
         const existing = await optionalPinned(tx, { id, rev: firstRevision });
         const data = {
           issuance: ref, itemId: item.itemId, responseId: recallResponseId, answer,

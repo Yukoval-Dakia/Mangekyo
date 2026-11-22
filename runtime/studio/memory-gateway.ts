@@ -27,22 +27,18 @@ import { readLearningOverview } from '../../modules/activity/learning-overview.t
 import { textSlice } from './reading.ts';
 import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
+import * as gwH from '../../modules/companion/studio-memory-gateway-helpers.ts';
 
 type AnswerLocation = { id: string; itemId: string };
 export type MemoryScope = StudioMemoryScope;
 export { memoryScopeForObject } from '../../modules/activity/current-object-basis.ts';
 type RegionItem = RecallItem<WorkspaceWitness>;
 
-const witness = (fact: FactSnapshot): WorkspaceWitness => ({ id: fact.ref.id, rev: fact.ref.rev,
-  epoch: fact.accessEpoch, type: fact.type, mode: 'following' });
+const witness = (fact: FactSnapshot): WorkspaceWitness => gwH.witnessFromSnapshot(fact) as WorkspaceWitness;
 async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: WorkspaceSourceRecipient, at: string,
   requested: readonly MemoryRegion[], options: {ownTurn?: string; management?: boolean; query?: string; beliefTools?: boolean}) {
   const results: RecallRegions<WorkspaceWitness> = new Map();
-  function add(region: MemoryRegion, entry: RegionItem) {
-    const items = results.get(region) ?? [];
-    items.push(entry);
-    results.set(region, items);
-  }
+  const add = gwH.makeRegionAdder(results);
   if (requested.includes('goal') || requested.includes('scheduled_tasks')) {
     const overview = await readLearningOverview(tx, { callerPurpose: purpose, maySend: (_projection, fact) => maySend(fact) });
     const known = new Map(overview.witnesses.map(w => [w.id, { id: w.id, rev: w.rev, epoch: w.accessEpoch, type: w.type, mode: 'following' as const }]));
@@ -76,7 +72,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
         `SELECT last_error->>'status' AS status FROM slot_state WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3`,
         [tx.learner, slotType, turn.ref.id],
       );
-      if (settlement?.status === 'failed' || settlement?.status === 'unknown') {
+      if (gwH.isFailedSettlement(settlement?.status)) {
         add('experience', { value: { turn: turn.ref.id, outcome: settlement.status }, sent: [witness(turn)] });
       }
     }
@@ -92,12 +88,15 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       if (!evidence || !excerpt) continue;
       const source = await openClaimEvidence(tx, evidence, excerpt, start, legacy);
       if (!source || !maySend(source)) continue;
-      const region = !options.management && !legacy && (claim.category === 'preference' || claim.category === 'refusal') ? 'preferences' : 'claims';
+      const region = gwH.claimRegionFor({ management: options.management, legacy,
+        category: 'category' in claim ? claim.category : undefined });
       if (!requested.includes(region)) continue;
-      if (!legacy && (claim.action === 'forget' || (claim.valid_until && claim.valid_until <= at))) continue;
+      if (gwH.isClaimExpiredOrForgotten({ legacy,
+        action: 'action' in claim ? claim.action : undefined,
+        validUntil: 'valid_until' in claim ? claim.valid_until : undefined, at })) continue;
       const scopeBasis: WorkspaceWitness[] = [];
       if (!legacy && claim.scope.kind === 'object') {
-        if (!options.management && claim.scope.object !== scope.preference.context) continue;
+        if (!gwH.claimScopeMatches(claim.scope.kind, claim.scope.object, scope.preference.context, options.management)) continue;
         for (const ref of claim.scope.basis) {
           const object = await open(ref.id);
           if (object?.ref.rev === ref.rev && object.accessEpoch === ref.accessEpoch) scopeBasis.push(witness(object));
@@ -148,11 +147,11 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       const fact = await open(id);
       if (!fact) continue;
       const value = extractedUnderstanding(fact.value);
-      if (value.ttl && value.ttl <= at) continue;
+      if (gwH.isUnderstandingExpired({ ttl: value.ttl, at })) continue;
       const sources = await openUnderstandingCitations(tx, value.evidence_refs, purpose, maySend);
       if (sources.length !== value.evidence_refs.length) continue;
       const kind = understandingPresentation(value, sources);
-      const region = kind === 'preference' ? 'preferences' : 'memory';
+      const region = gwH.understandingRegionFor(kind);
       if (!requested.includes(region)) continue;
       const review = reviewUnderstanding(fact.ref.id, value, sources);
       add(region, {value: {id, rev: fact.ref.rev, kind, text: value.text, scope: value.scope,
@@ -182,22 +181,21 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     const { rows: [origin] } = await tx.query<{ tick: string; author: string }>(
       `SELECT tick::text,author FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1`, [tx.learner, current.fact.ref.id],
     );
-    if (origin?.author === 'learner') add('current_answer', { value: { sourceRef: current.ref, content: current.content,
+    if (origin && gwH.isLearnerAuthoredOrigin(origin.author)) add('current_answer', { value: { sourceRef: current.ref, content: current.content,
       occurredAt: current.submittedAt, recordedAt: null, recordedTick: origin.tick, help: 'unknown' }, sent: [current.witness] });
   }
   if (current && wantsMemory) {
     const link = { kind: 'source' as const, id: current.fact.ref.id };
-    matched.set(`source:${link.id}`, { link, basis: [current.witness] });
+    matched.set(gwH.linkKeyFor('source', link.id), { link, basis: [current.witness] });
   }
   for (const link of (wantsMemory || wantsCourse) ? scope.links : []) {
-    if (matched.has(`${link.kind}:${link.id}`)) continue;
+    if (matched.has(gwH.linkKeyFor(link.kind, link.id))) continue;
     const basis: WorkspaceWitness[] = [];
     const source = await resolveSource(tx, link.id, { recipient: 'workspace', maySend, track: fact => basis.push(witness(fact)) });
-    if (!source || (link.kind === 'concept' && source.kind !== 'concept') ||
-        (link.kind === 'family' && !source.tags?.includes('question-family'))) continue;
-    matched.set(`${link.kind}:${link.id}`, { link, basis });
+    if (!gwH.linkMatchesSource(link.kind, source)) continue;
+    matched.set(gwH.linkKeyFor(link.kind, link.id), { link, basis });
     if (wantsCourse && link.kind === 'concept' && typeof source.content === 'string') {
-      const root = basis.find(item => item.id === link.id);
+      const root = gwH.findLinkRootWitness(basis, link.id);
       if (root) add('course_knowledge', { value: { sourceRef: source.sourceRef, title: source.title,
         content: textSlice(source.content, 0, 600).content }, sent: [root], basis });
     }
@@ -235,9 +233,9 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
     if (isExtractedUnderstanding(fact.value)) continue;
     const memory = memoryAssertion(fact.value);
     const { validFrom, validUntil, conditions = [] } = memory.scope;
-    if ((validFrom && validFrom > at) || (validUntil && validUntil <= at) ||
-        !conditions.every(condition => condition === scope.preference.context || scope.conditions?.includes(condition))) continue;
-    const link = memory.links.map(link => matched.get(`${link.kind}:${link.id}`)).find(Boolean);
+    if (!gwH.isMemoryAssertionCurrentlyValid({ validFrom, validUntil, conditions, at,
+      scopeContext: scope.preference.context, scopeConditions: scope.conditions })) continue;
+    const link = memory.links.map(link => matched.get(gwH.linkKeyFor(link.kind, link.id))).find(Boolean);
     if (!link) continue;
 
     const opened = [];

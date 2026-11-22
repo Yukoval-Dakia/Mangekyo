@@ -38,34 +38,20 @@ import { readGoal, readTasks } from '../../modules/activity/learning-overview.ts
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import * as orgH from '../../modules/plan/studio-organizer-helpers.ts';
+
+const organizerErrorDeps = {
+  RequestError,
+  isNotFound: (e: unknown) => e instanceof FactNotFoundError,
+  isDenied: (e: unknown) => e instanceof FactReadDeniedError,
+};
 
 function validate<Input, Value>(parse: (input: Input) => Value, input: Input): Value {
-  try {
-    return parse(input);
-  } catch (error) {
-    throw new RequestError(400, error instanceof Error ? error.message : '内容格式无效。');
-  }
+  return orgH.validateOrganizerInput(RequestError, parse, input);
 }
 
 function translate(error: unknown): Error {
-  if (error instanceof RequestError) return error;
-  if (error instanceof FactNotFoundError) return new RequestError(400, '链接的材料或要恢复的版本不存在。');
-  if (error instanceof FactReadDeniedError) return new RequestError(403, '这份材料当前无法链接。');
-  if (error instanceof Error) {
-    if (error.message === 'Command ID already used with a different command identity') {
-      return new RequestError(409, '同一个请求标识已经用于不同内容。');
-    }
-    if (error.message.startsWith('Fact revision conflict: ')) {
-      return new RequestError(409, '这条记录已在别处更新。请刷新后再试。');
-    }
-    if (error.message.startsWith('Fact does not exist: ')) {
-      return new RequestError(404, '这条记录不存在。');
-    }
-    if (error.message.startsWith('Fact is retracted: ')) {
-      return new RequestError(409, '这条记录已经撤回。');
-    }
-  }
-  return error instanceof Error ? error : new Error('安排保存失败。');
+  return orgH.translateOrganizerError(organizerErrorDeps, error);
 }
 
 export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule,
@@ -89,7 +75,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
         input: input as Json,
       };
       const {wrote: [ref]} = await bus.mutate(command);
-      if (!ref) throw new RequestError(500, '这次写入没有返回记录。');
+      if (!ref) throw orgH.organizerWriteNoRecord(RequestError);
       return {id: ref.id, rev: ref.rev};
     } catch (error) {
       throw translate(error);
@@ -137,19 +123,19 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
             ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts, await allAssessments(tx))),
             ...projectFreshMaterialCandidates(collectFreshMaterialSources(pendingFacts), settings.now),
           ];
-          return {
-            ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? {goal} : {}), rules: rules.map(r => r.data),
-            // Hold proactive practice suggestions while a care pause is active.
-            candidates: paused ? [] : candidates,
-            constraints: {budget_min: null, locks: [], deadlines: []},
-          };
+          return orgH.buildOrganizerTodayDeriveInput({
+            settings, duration: validate(todayDuration, params.get('duration')),
+            goal, rules: rules.map(r => r.data), candidates, paused,
+          });
         }));
-      if (gathered.plan.kind !== 'input') throw new Error('今天的输入未就绪。');
+      if (gathered.plan.kind !== 'input') throw orgH.organizerTodayInputNotReady();
       const input = gathered.plan.data as Parameters<typeof todayDeriver.derive>[0];
       const outcome = await todayDeriver.derive(input);
       if (outcome.kind !== 'value') throw new Error(outcome.reason);
-      const alternatives = input.candidates.filter(c => outcome.value.shortlist.includes(c.id));
-      return {...outcome.value, alternatives, rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, ...(paused ? {paused: true as const} : {})};
+      return orgH.buildOrganizerTodayResult({
+        value: outcome.value, candidates: input.candidates, shortlistedIds: outcome.value.shortlist,
+        rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, paused,
+      });
     });
   }
 
@@ -157,24 +143,23 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
     snapshot, today,
 
     async open(params: URLSearchParams) {
-      const kind = params.get('kind');
+      const kind = orgH.parseOrganizerOpenKind(RequestError, params.get('kind'));
       const id = params.get('id') ?? '';
       const rev = validate(n => integer(n, 1, 2147483647) as Revision, Number(params.get('rev')));
       if (kind === 'pack') return {kind, ...validate(() => openPack(id, rev), null)};
       if (kind === 'material') {
         const match = await readable(() => bus.resolve([{id: validate(factId, id), mode: 'following', rev, type: materialType}], 'organizer'));
-        if (match?.items[0]?.ref.rev === rev) return {kind, id, rev, href: '/materials/saved/' + encodeURIComponent(id)};
-        throw new RequestError(404, '这份材料的冻结版本当前不可打开。');
+        if (match?.items[0]?.ref.rev === rev) return orgH.organizerMaterialOpenResult(id, rev);
+        throw orgH.organizerFrozenVersionNotFound(RequestError, 'material');
       }
-      if (kind !== 'activity') throw new RequestError(400, '活动类型无效。');
       const ref = {id: validate(factId, id), mode: 'following' as const, rev, type: workbookPaperType};
       const match = await readable(() => bus.resolve([ref], 'organizer'));
       const paper = match?.items[0];
       // `resolve` already attests the frozen paper is visible, current, and
       // authorized; pending-correction candidates may point at issued papers
       // the ordinary recommendation filter would skip.
-      if (paper) return {kind, id, rev, href: '/papers/' + id};
-      throw new RequestError(404, '这份活动的冻结版本当前不可打开。');
+      if (paper) return orgH.organizerActivityOpenResult(id, rev);
+      throw orgH.organizerFrozenVersionNotFound(RequestError, 'activity');
     },
 
     async rule(input: Record<string, unknown>) {
@@ -188,7 +173,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
     },
 
     async submit(input: Record<string, unknown>, deletionWatermark?: string) {
-      if (input.actor !== undefined || input.consent !== 'teaching') throw new RequestError(400, '请确认保存本次学习记录。');
+      if (input.actor !== undefined || input.consent !== 'teaching') throw orgH.organizerSubmitConfirmationRequired(RequestError);
       const requestId = clientRequest(input.requestId);
       const idOfPack = typeof input.id === 'string' ? input.id : '';
       const {record, explanation, ...pack} = validate(() => checkPack(idOfPack, integer(input.rev, 1, 2147483647), integer(input.choice, 0, 2147483647)), null);

@@ -22,6 +22,7 @@ import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { areMemoryClaimsCurrent, claimUndoToken, openClaimEvidence, openClaimFact, turnMemoryKey } from './memory-claims.ts';
 import { readMemoryGateway } from './memory-gateway.ts';
+import * as tmH from '../../modules/companion/studio-turn-memory-helpers.ts';
 
 type Packet = NonNullable<Awaited<ReturnType<typeof readMemoryGateway>>>;
 type Entry = {id: string; data: ReturnType<typeof structuredClaim>};
@@ -58,28 +59,11 @@ export function openTurnMemory(options: {
     if (!read || !claims?.length) return;
     // Claims are the sole region in a management response. Locate its serialized array
     // inside the executor envelope; offsets use the same string units as handle paging.
-    const key = '"claims":';
-    const offset = output.indexOf(key + JSON.stringify(claims));
-    if (offset < 0) return;
     read.ranges.push([start,end]);
-    read.ranges.sort((a,b) => a[0] - b[0]);
-    const covered: [number, number][] = [];
-    for (const range of read.ranges) {
-      const last = covered.at(-1);
-      if (last && range[0] <= last[1]) last[1] = Math.max(last[1],range[1]);
-      else covered.push(range);
-    }
-    read.ranges = covered;
-    let position = offset + key.length + 1;
-    for (const item of claims) {
-      const limit = position + JSON.stringify(item).length;
-      if (item && typeof item === 'object' && 'id' in item && 'rev' in item &&
-          covered.some(([from,to]) => from <= position && limit <= to)) {
-        const ref = read.packet.receipt.sent.find(ref => (ref.type === claimType || ref.type === memoryAssertionType) &&
-          ref.id === item.id && ref.rev === item.rev);
-        if (ref) candidates.set(ref.id,ref);
-      }
-      position = limit + 1;
+    read.ranges = tmH.mergeRanges(read.ranges);
+    for (const {item} of tmH.findClaimSpans(output, claims, read.ranges)) {
+      const ref = tmH.matchClaimWitness(read.packet.receipt.sent, item, claimType, memoryAssertionType);
+      if (ref) candidates.set(ref.id, ref);
     }
   }
   async function stageHypothesis(args: Record<string, unknown>, step: number) {
@@ -187,5 +171,9 @@ export function openTurnMemory(options: {
 }
 
 export function isMemoryConflict(error: unknown) {
-  return error instanceof ClaimInputError || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+  return tmH.isMemoryConflictError(error, {
+    isClaimInput: e => e instanceof ClaimInputError,
+    isReadDenied: e => e instanceof FactReadDeniedError,
+    isNotFound: e => e instanceof FactNotFoundError,
+  });
 }
