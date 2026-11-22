@@ -141,6 +141,7 @@ export type PreSubmitRevisionPayload = {
 export type WorkbookV2Attempt = {
   id: string;
   rev?: number;
+  paperRev?: number;
   requestId: string;
   submittedAt: string;
   correctCount?: number;
