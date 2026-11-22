@@ -34,6 +34,7 @@ export type IntakeQuestionCard = {
   };
   readonly isRedPenError: boolean;
   readonly unclearNotice: string | null;
+  readonly conceptTags?: readonly string[];
   readonly defaultSelected: boolean;
 };
 
@@ -54,8 +55,11 @@ type WorkbookReceipt = {
 type BankReceipt = {
   readonly kind: 'bank';
   readonly savedCount: number;
-  readonly skippedCount: number;
+  readonly skippedCount?: number;
   readonly questionIds: readonly string[];
+  readonly conceptIds?: readonly string[];
+  readonly createdConceptCount?: number;
+  readonly linkedEdgeCount?: number;
 };
 
 type ActionKind = 'workbook' | 'bank' | 'classroom';
@@ -77,6 +81,12 @@ const verdictLabels = {
   correct: '已做对',
   unclear: '批注待核对',
 } as const;
+
+const maxConceptTags = 6;
+
+function normalizeConceptTags(tags: readonly string[] | undefined) {
+  return [...new Set(tags?.map(tag => tag.trim()).filter(Boolean) ?? [])].slice(0, maxConceptTags);
+}
 
 function selectedCards(cards: readonly IntakeQuestionCard[], selected: ReadonlySet<string>) {
   return cards.filter(card => selected.has(card.draftId));
@@ -123,6 +133,11 @@ export function IntakeQuestionCards({
   const [action, setAction] = useState<ActionKind | null>(null);
   const [actionError, setActionError] = useState('');
   const [bankReceipt, setBankReceipt] = useState<BankReceipt | null>(null);
+  const [conceptTags, setConceptTags] = useState<ReadonlyMap<string, readonly string[]>>(() =>
+    new Map(initialCards.map(card => [card.draftId, normalizeConceptTags(card.conceptTags)])));
+  const [tagEditor, setTagEditor] = useState<ReadonlySet<string>>(new Set());
+  const [tagDrafts, setTagDrafts] = useState<ReadonlyMap<string, string>>(new Map());
+  const [linkConcepts, setLinkConcepts] = useState(true);
   const loadedKey = useRef<string | null>(null);
   const fetchedKey = useRef<string | null>(null);
   const initialCardsRef = useRef(initialCards);
@@ -134,6 +149,9 @@ export function IntakeQuestionCards({
   const cardsKey = useMemo(() => cards.map(card => card.draftId).join('\n'), [cards]);
   const redPenErrors = cards.filter(card => card.isRedPenError);
   const chosen = selectedCards(cards, selected);
+  function tagsForCard(card: IntakeQuestionCard) {
+    return normalizeConceptTags(conceptTags.get(card.draftId) ?? card.conceptTags);
+  }
 
   useEffect(() => {
     const key = `${materialId}:${materialRev}`;
@@ -187,6 +205,11 @@ export function IntakeQuestionCards({
 
   useEffect(() => {
     if (!cardsKey) return;
+    setConceptTags(current => {
+      const next = new Map<string, readonly string[]>();
+      for (const card of cards) next.set(card.draftId, normalizeConceptTags(current.get(card.draftId) ?? card.conceptTags));
+      return next;
+    });
     setSelected(current => {
       const ids = new Set(cardsKey.split('\n'));
       const next = new Set([...current].filter(id => ids.has(id)));
@@ -198,6 +221,11 @@ export function IntakeQuestionCards({
     setBankReceipt(null);
   }, [cards, cardsKey]);
 
+  useEffect(() => {
+    setTagEditor(current => new Set([...current].filter(id => cards.some(card => card.draftId === id))));
+    setTagDrafts(current => new Map([...current].filter(([id]) => cards.some(card => card.draftId === id))));
+  }, [cards, cardsKey]);
+
   function updateSelection(cardsToSelect: readonly IntakeQuestionCard[], replace = false) {
     setSelected(current => {
       if (replace) return new Set(cardsToSelect.map(card => card.draftId));
@@ -205,6 +233,7 @@ export function IntakeQuestionCards({
       for (const card of cardsToSelect) next.add(card.draftId);
       return next;
     });
+    setBankReceipt(null);
   }
 
   function toggleSelection(card: IntakeQuestionCard, checked: boolean) {
@@ -214,6 +243,46 @@ export function IntakeQuestionCards({
       else next.delete(card.draftId);
       return next;
     });
+    setBankReceipt(null);
+  }
+
+  function updateTagDraft(cardId: string, value: string) {
+    setTagDrafts(current => new Map(current).set(cardId, value));
+  }
+
+  function closeTagEditor(cardId: string) {
+    setTagEditor(current => {
+      const next = new Set(current);
+      next.delete(cardId);
+      return next;
+    });
+    setTagDrafts(current => {
+      if (!current.has(cardId)) return current;
+      const next = new Map(current);
+      next.delete(cardId);
+      return next;
+    });
+  }
+
+  function addConceptTag(cardId: string, input: string) {
+    const tag = input.trim();
+    if (!tag) return;
+    const currentTags = normalizeConceptTags(conceptTags.get(cardId) ?? cards.find(card => card.draftId === cardId)?.conceptTags);
+    if (currentTags.length >= maxConceptTags) return;
+    const nextTags = normalizeConceptTags([...currentTags, tag]);
+    setConceptTags(current => new Map(current).set(cardId, nextTags));
+    if (nextTags.some(nextTag => nextTag === tag)) updateTagDraft(cardId, '');
+    else updateTagDraft(cardId, tag);
+    setBankReceipt(null);
+  }
+
+  function removeConceptTag(cardId: string, tag: string) {
+    setConceptTags(current => {
+      const tags = current.get(cardId);
+      if (!tags) return current;
+      return new Map(current).set(cardId, tags.filter(currentTag => currentTag !== tag));
+    });
+    setBankReceipt(null);
   }
 
   async function runAction(kind: ActionKind) {
@@ -236,6 +305,7 @@ export function IntakeQuestionCards({
       }
 
       if (kind === 'bank') {
+        const tagsByDraft = new Map(chosen.map(card => [card.draftId, tagsForCard(card)]));
         const receipt = await api<BankReceipt>(`/materials/${encodeURIComponent(materialId)}/confirm-drafts`, {
           method: 'POST',
           body: {
@@ -244,6 +314,7 @@ export function IntakeQuestionCards({
             confirmedByLearner: true,
             expectedMaterialRev: bundle.materialRev ?? materialRev,
             purpose: 'storage',
+            linkConcepts,
             items: chosen.map(card => ({
               draftId: card.draftId,
               title: `${bundle.title || materialTitle} 第 ${card.number} 题`.slice(0, 120),
@@ -251,6 +322,7 @@ export function IntakeQuestionCards({
               ...(card.options.length > 0
                 ? { options: card.options.map(option => ({ label: option.label, text: option.text })) }
                 : {}),
+              ...(linkConcepts && tagsByDraft.get(card.draftId)?.length ? { conceptTags: tagsByDraft.get(card.draftId) } : {}),
             })),
           },
         });
@@ -305,6 +377,9 @@ export function IntakeQuestionCards({
       <ul>
         {cards.map(card => {
           const isSelected = selected.has(card.draftId);
+          const tags = tagsForCard(card);
+          const editorOpen = tagEditor.has(card.draftId);
+          const draftValue = tagDrafts.get(card.draftId) ?? '';
           return (
             <li key={card.draftId} className={isSelected ? 'selected' : ''}>
               <header>
@@ -340,6 +415,62 @@ export function IntakeQuestionCards({
                     ))}
                   </ul>
                 )}
+                <div className="intake-concept-tags" aria-label={`第 ${card.number} 题概念标签`}>
+                  <strong>概念标签</strong>
+                  {tags.length > 0 && (
+                    <ul>
+                      {tags.map(tag => (
+                        <li key={tag}>
+                          <span>{tag}</span>
+                          <button
+                            type="button"
+                            aria-label={`移除概念标签：${tag}`}
+                            onClick={event => {
+                              event.stopPropagation();
+                              removeConceptTag(card.draftId, tag);
+                            }}
+                          >
+                            ×
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {editorOpen && tags.length < maxConceptTags ? (
+                    <>
+                      <input
+                        type="text"
+                        value={draftValue}
+                        placeholder="输入概念名"
+                        aria-label={`添加第 ${card.number} 题概念`}
+                        onChange={event => updateTagDraft(card.draftId, event.target.value)}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            addConceptTag(card.draftId, draftValue);
+                          }
+                          if (event.key === 'Escape') closeTagEditor(card.draftId);
+                        }}
+                      />
+                      <span>
+                        <button
+                          type="button"
+                          disabled={!draftValue.trim()}
+                          onClick={() => addConceptTag(card.draftId, draftValue)}
+                        >
+                          确认
+                        </button>
+                        <button type="button" onClick={() => closeTagEditor(card.draftId)}>取消</button>
+                      </span>
+                    </>
+                  ) : tags.length < maxConceptTags ? (
+                    <button type="button" className="intake-add-concept" onClick={() => setTagEditor(current => new Set(current).add(card.draftId))}>
+                      + 添加概念
+                    </button>
+                  ) : (
+                    <span className="intake-concept-limit">最多 6 个概念标签</span>
+                  )}
+                </div>
                 <div className="intake-student-answer">
                   <strong>黑笔作答</strong>
                   {card.studentAnswer.status === 'absent' && <span>未作答</span>}
@@ -365,6 +496,17 @@ export function IntakeQuestionCards({
       </ul>
       <footer>
         <span aria-live="polite">已选 {chosen.length} 题</span>
+        <label className="intake-link-concepts">
+          <input
+            type="checkbox"
+            checked={linkConcepts}
+            onChange={event => {
+              setLinkConcepts(event.target.checked);
+              setBankReceipt(null);
+            }}
+          />
+          同时归入知识图谱
+        </label>
         <div>
           <button
             className="primary-button"
@@ -412,19 +554,50 @@ export function IntakeQuestionCards({
           </p>
         )}
         {bankReceipt && (
-          <p className="intake-action-receipt" role="status">
-            已收入正式题库 {bankReceipt.savedCount} 题
-            {bankReceipt.skippedCount > 0 ? `，跳过已收录 ${bankReceipt.skippedCount} 题` : ''}。
-            <a
-              href="/materials?tab=bank"
-              onClick={event => {
-                event.preventDefault();
-                onNavigate?.('/materials?tab=bank');
-              }}
-            >
-              前往题库查看
-            </a>
-          </p>
+          <div
+            className={bankReceipt.conceptIds?.length ? 'intake-action-receipt intake-graph-receipt' : 'intake-action-receipt'}
+            role="status"
+          >
+            <p>
+              {bankReceipt.conceptIds?.length
+                ? `已收进题库 ${bankReceipt.savedCount} 题${bankReceipt.skippedCount ? `（跳过已收录 ${bankReceipt.skippedCount} 题）` : ''}，并点亮 ${bankReceipt.conceptIds.length} 个知识图谱节点${bankReceipt.createdConceptCount ? `（含 ${bankReceipt.createdConceptCount} 个新节点）` : ''}。`
+                : `已收入正式题库 ${bankReceipt.savedCount} 题${bankReceipt.skippedCount ? `，跳过已收录 ${bankReceipt.skippedCount} 题` : ''}。`}
+            </p>
+            {bankReceipt.conceptIds?.length ? (
+              <span>
+                <a
+                  className="primary-button"
+                  href="/materials?tab=graph"
+                  onClick={event => {
+                    event.preventDefault();
+                    onNavigate?.('/materials?tab=graph');
+                  }}
+                >
+                  去知识图谱看看
+                </a>
+                <a
+                  className="text-button"
+                  href="/materials?tab=bank"
+                  onClick={event => {
+                    event.preventDefault();
+                    onNavigate?.('/materials?tab=bank');
+                  }}
+                >
+                  前往题库查看
+                </a>
+              </span>
+            ) : (
+              <a
+                href="/materials?tab=bank"
+                onClick={event => {
+                  event.preventDefault();
+                  onNavigate?.('/materials?tab=bank');
+                }}
+              >
+                前往题库查看
+              </a>
+            )}
+          </div>
         )}
       </footer>
     </section>
