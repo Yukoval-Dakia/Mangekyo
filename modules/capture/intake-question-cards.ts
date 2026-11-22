@@ -107,8 +107,8 @@ export function extractIntakeFreshMaterialHints(intake: IntakeDocument | unknown
   return { questionCount: questions.length, redPenErrorCount: cards.filter(card => card.isRedPenError).length };
 }
 
-function storedText(value: string | undefined, label: string, limit: number, allowEmpty = false): string {
-  if (value === undefined || (allowEmpty && value === null)) throw new Error(`${label}必须是文字。`);
+function storedText(value: unknown, label: string, limit: number, allowEmpty = false): string {
+  if (typeof value !== 'string') throw new Error(`${label}必须是文字。`);
   const result = value.trim();
   if (!result.isWellFormed() || result.includes('\u0000') || (!allowEmpty && !result) || result.length > limit) {
     throw new Error(`${label}长度或内容无效。`);
@@ -168,8 +168,8 @@ function optionLines(options: readonly StructuredPaperOption[]): string {
 
 function prompt(stem: string, options: readonly StructuredPaperOption[]): string {
   const value = options.length > 0 ? `${stem}\n${optionLines(options)}` : stem;
-  if (value.length > 8_000 || value.length === 0 || !value.isWellFormed() || value.includes('\u0000')) {
-    throw new Error('微卷题干长度或内容无效。');
+  if (value.length > 4_000 || value.length === 0 || !value.isWellFormed() || value.includes('\u0000')) {
+    throw new Error('微卷题干长度或内容无效（无题库引用时须在 1 到 4000 字内）。');
   }
   return value;
 }
@@ -278,8 +278,9 @@ export function buildWorkbookDraftFromIntakeSelection(
     : storedText(selection.title, '试卷标题', 240);
   const allSelected = selectedIds.length === questions.length;
   const allErrors = overrides.every(item => cards.get(item.draftId)?.isRedPenError === true);
-  const title = (customTitle ?? `${parsed.title}${allSelected && !allErrors ? '（拍卷练习）' : '（错题复盘）'}`)
-    .slice(0, 240).toWellFormed();
+  const suffix = allSelected && !allErrors ? '（拍卷练习）' : '（错题复盘）';
+  const defaultTitle = `${parsed.title.slice(0, 240 - suffix.length).toWellFormed()}${suffix}`;
+  const title = (customTitle ?? defaultTitle).slice(0, 240).toWellFormed();
   return {
     title,
     materialId: parsed.materialId,

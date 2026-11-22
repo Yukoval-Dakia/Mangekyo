@@ -30,8 +30,8 @@ function object(input: unknown, label: string): Record<string, unknown> {
   return input as Record<string, unknown>;
 }
 
-function text(input: unknown, label: string, limit: number): string {
-  if (typeof input !== 'string' || !input.trim() || input.length > limit || !input.isWellFormed() || input.includes('\u0000')) {
+function text(input: unknown, label: string, limit: number, allowEmpty = false): string {
+  if (typeof input !== 'string' || (!allowEmpty && !input.trim()) || input.length > limit || !input.isWellFormed() || input.includes('\u0000')) {
     throw new Error(`${label}无效。`);
   }
   return input.trim();
@@ -40,7 +40,7 @@ function text(input: unknown, label: string, limit: number): string {
 function option(input: unknown): { readonly label: string; readonly text: string } {
   const row = object(input, '题目选项');
   if (Object.keys(row).length !== 2) throw new Error('题目选项字段无效。');
-  return { label: text(row.label, '选项字母', 40), text: text(row.text, '选项内容', 4_000) };
+  return { label: text(row.label, '选项字母', 40, true), text: text(row.text, '选项内容', 4_000) };
 }
 
 export function parseConfirmIntakeQuestions(input: unknown): ConfirmIntakeQuestionsInput {
@@ -84,7 +84,7 @@ export function parseConfirmIntakeQuestions(input: unknown): ConfirmIntakeQuesti
 
 export function intakeQuestionFullPrompt(item: ConfirmIntakeQuestionsItem): string {
   const options = item.options ?? [];
-  const optionText = options.map(option => `${option.label}. ${option.text}`).join('\n');
+  const optionText = options.map(option => (option.label ? `${option.label}. ${option.text}` : `- ${option.text}`)).join('\n');
   const prompt = optionText ? `${item.stem}\n${optionText}` : item.stem;
   if (!prompt.isWellFormed() || prompt.includes('\u0000')) throw new Error('完整题干包含无效字符。');
   return prompt;

@@ -13,7 +13,7 @@ import { writeQuestion } from '../question-writes.ts';
 
 export default defineCommand({
   type: confirmIntakeQuestionsCommand,
-  destructive: false,
+  destructive: true,
   schema: { parse: parseConfirmIntakeQuestions },
   async write(ctx, input): Promise<readonly FactWrite[]> {
     const material = await ctx.read.fact(input.materialId, { mode: 'following' });
