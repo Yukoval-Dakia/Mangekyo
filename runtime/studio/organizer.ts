@@ -24,6 +24,7 @@ import { studyRecordType, studyTurnType, submitOfflinePack } from '../../modules
 import { workbookAttemptType, workbookPaperType, workbookRubricAssessmentType } from '../../modules/activity/workbook-values.ts';
 import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { collectFreshMaterialSources, collectPendingCorrectionSources, todayCompletion, todayPaper, todaySettings } from '../../modules/activity/today-values.ts';
+import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import saveRule from '../../modules/plan/commands/save-rule.ts';
 import setGoalStatus from '../../modules/plan/commands/set-goal-status.ts';
 import todayDeriver from '../../modules/plan/derivers/today.ts';
@@ -124,7 +125,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
           const papers: FactSnapshot[] = [];
           const completed = new Set<string | null>();
           const pendingFacts: FactSnapshot[] = [];
-          for await (const fact of readFactCollection(tx, read, [planRuleType, materialType, studyTurnType, workbookPaperType, workbookAttemptType, workbookRubricAssessmentType, workbookCorrectionType, studyRecordType], {pinTypes: [workbookPaperType]})) {
+          for await (const fact of readFactCollection(tx, read, [planRuleType, materialType, intakeFactType, studyTurnType, workbookPaperType, workbookAttemptType, workbookRubricAssessmentType, workbookCorrectionType, studyRecordType], {pinTypes: [workbookPaperType]})) {
             if (fact.type === planRuleType) rules.push({id: fact.ref.id, rev: fact.ref.rev, data: planRule(fact.value)});
             else if (fact.type === workbookPaperType) papers.push(fact);
             else if (fact.type === workbookAttemptType || fact.type === studyRecordType) completed.add(todayCompletion(fact, day, dayOf));

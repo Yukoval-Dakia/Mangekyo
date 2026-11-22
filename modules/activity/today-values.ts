@@ -1,6 +1,7 @@
 import type { FactSnapshot } from '@mangekyo/kernel';
 import { studyRecordFact, studyTurn, studyTurnType } from './values.ts';
 import { materialType, textMaterial } from './library-values.ts';
+import { intakeDocument, intakeFactType } from '@mangekyo/module-capture/facts/intake-document';
 import { workbookCorrection, workbookCorrectionType } from './workbook-correction.ts';
 import {
   workbookAttempt,
@@ -161,16 +162,27 @@ export type FreshMaterialSource = {
   readonly title: string;
   readonly savedAt: string;
   readonly hasDerivedActivity: boolean;
-};
+} & {readonly questionCount?: number; readonly redPenErrorCount?: number};
+
+function freshMaterialHints(document: unknown) {
+  const questions = intakeDocument(document).extraction.drafts?.questions;
+  if (!questions?.length) return {};
+  const redPenErrorCount = questions.filter(question => question.redInk.verdict === 'wrong' || question.redInk.verdict === 'partial' || question.redInk.correction !== null).length;
+  return {questionCount: questions.length, redPenErrorCount};
+}
 
 export function collectFreshMaterialSources(facts: readonly FactSnapshot[]): FreshMaterialSource[] {
   const sources = new Map<string, Omit<FreshMaterialSource, 'hasDerivedActivity'>>();
   const derived = new Set<string>();
+  const intakes = new Map<string, ReturnType<typeof freshMaterialHints>>();
   for (const fact of facts) {
     if (fact.type === materialType) {
       const material = textMaterial(fact.value);
       if (material.savedAt !== undefined)
         sources.set(fact.ref.id, { id: fact.ref.id, rev: fact.ref.rev, title: material.title, savedAt: material.savedAt });
+    } else if (fact.type === intakeFactType) {
+      const document = intakeDocument(fact.value);
+      intakes.set(document.materialId, freshMaterialHints(document));
     } else if (fact.type === workbookPaperType) {
       const paper = workbookPaper(fact.value);
       if (paper.materialId !== null) derived.add(paper.materialId);
@@ -182,5 +194,5 @@ export function collectFreshMaterialSources(facts: readonly FactSnapshot[]): Fre
       if (turn.currentObject !== undefined) derived.add(turn.currentObject.id);
     }
   }
-  return [...sources].map(([id, source]) => ({ ...source, hasDerivedActivity: derived.has(id) }));
+  return [...sources].map(([id, source]) => ({ ...source, ...intakes.get(id), hasDerivedActivity: derived.has(id) }));
 }
