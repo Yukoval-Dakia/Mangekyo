@@ -264,6 +264,7 @@ export function SavedMaterial({
             questionCardsFirst
             onQuestionCardCountChange={(materialId, count) => setQuestionCardReading({id: materialId, count})}
           />
+          <p className="preserve">{m.text}</p>
         </article>
       ) : (
         library.data && <h1>未找到这份材料</h1>

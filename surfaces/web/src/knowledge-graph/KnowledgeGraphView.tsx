@@ -324,6 +324,11 @@ function GraphCanvas({
         aria-label="知识图谱"
         tabIndex={0}
         onKeyDown={onKeyDown}
+        onBlur={event => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setFocusIndex(-1);
+          }
+        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -364,7 +369,10 @@ function GraphCanvas({
                 role="listitem"
                 aria-current={selected ? 'true' : undefined}
                 aria-label={`${node.title}，${masterySummary(node)}`}
-                onClick={() => onSelect(node.id)}
+                onClick={() => {
+                  setFocusIndex(-1);
+                  onSelect(node.id);
+                }}
                 onFocus={() => setFocusIndex(ordered.indexOf(item))}
                 onMouseEnter={() => setHoveredId(node.id)}
                 onMouseLeave={() => setHoveredId(current => current === node.id ? null : current)}
