@@ -66,6 +66,7 @@ export type IntakeMetadata = {
 };
 
 const intakeLimit = 25 * 1024 * 1024;
+const MAX_EXTRACTION_POLL_ATTEMPTS = 60;
 
 function fingerprint(file: File) {
   return `${file.name}:${file.size}:${file.lastModified}`;
@@ -503,7 +504,7 @@ function OriginalDetails({
     }
 
     function schedule() {
-      if (attempts >= 24) {
+      if (attempts >= MAX_EXTRACTION_POLL_ATTEMPTS) {
         setPollPaused(true);
         return;
       }

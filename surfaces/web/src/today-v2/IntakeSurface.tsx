@@ -61,6 +61,7 @@ export type IntakeSurfaceProps = {
 const INTAKE_LIMIT_BYTES = 25 * 1024 * 1024;
 const INTAKE_MAX_PAGES = 6;
 const INTAKE_MULTI_PAGE_TOTAL_BYTES = 60 * 1024 * 1024;
+const MAX_ORGANIZING_POLL_ATTEMPTS = 60;
 const ACCEPTED_FILE_TYPES =
   '.pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,.avif,.tif,.tiff,.txt,.md,.markdown';
 const VISION_OCR_MEDIA_TYPES = new Set([
@@ -417,7 +418,7 @@ export function IntakeSurface({
     const timer = window.setInterval(() => {
       if (document.hidden) return;
       attempts += 1;
-      if (attempts > 12) {
+      if (attempts > MAX_ORGANIZING_POLL_ATTEMPTS) {
         window.clearInterval(timer);
         return;
       }
