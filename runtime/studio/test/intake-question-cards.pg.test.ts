@@ -13,6 +13,8 @@ import type { StructuredPaperOcr } from '../../../modules/capture/vision-paper-o
 import { handleIntakeRequest, intakeWriteTargets, openIntake, type IntakeMetadata } from '../intake.ts';
 import { intakeIdFor } from '../intake-lifecycle.ts';
 import { openOrganizer } from '../organizer.ts';
+import { serve } from '../http.ts';
+import { openTransparency } from '../transparency.ts';
 import { openWorkbook } from '../workbook.ts';
 import { stableId, studioLearner } from '../identity.ts';
 import { loadStudioTestModule } from './modules.ts';
@@ -134,5 +136,34 @@ describe.skipIf(!testDatabaseUrl)('intake question cards in PostgreSQL', () => {
       .find(item => item.id === `material:${material.id}@2`);
     expect(candidate?.freshMaterial).toMatchObject({ questionCount: 1, redPenErrorCount: 1 });
     expect(candidate?.title).toBe('复盘刚拍《fresh》里的 1 道错题');
+  });
+
+  it('links confirmed concepts and feeds graph quick papers', async () => {
+    const material = await finish('flywheel', completeVisionExtraction(ocr(true)));
+    const bundle = await (await fetch(`${origin}/api/materials/${material.id}/question-cards`)).json() as {
+      materialRev: number; questionCards: { draftId: string; conceptTags: string[] }[];
+    };
+    const item = { draftId: bundle.questionCards[0]!.draftId, title: '飞轮题', stem: '计算 1+1', conceptTags: ['交变电流的产生'] };
+    const confirm = async (requestId: string) => post(material.id, { requestId, mode: 'bank', confirmedByLearner: true, expectedMaterialRev: bundle.materialRev, linkConcepts: true, purpose: 'storage', items: [item] });
+    const saved = await confirm('flywheel-0000001');
+    expect(saved.response.status).toBe(201);
+    expect(saved.body).toMatchObject({ savedCount: 1, conceptIds: [expect.any(String)], createdConceptCount: 1, linkedEdgeCount: 1 });
+    const repeated = await confirm('flywheel-0000002');
+    expect(repeated.body).toMatchObject({ savedCount: 0, skippedCount: 1, createdConceptCount: 0, linkedEdgeCount: 0, conceptIds: saved.body.conceptIds });
+    const conceptId = String((saved.body.conceptIds as readonly string[])[0]);
+    const node = (await openTransparency(db).knowledgeGraph()).nodes.find(node => node.id === conceptId);
+    expect(node?.title).toBe('交变电流的产生');
+    expect(node?.counts.questions).toBeGreaterThanOrEqual(1);
+    const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
+    const port = (probe.address() as {port:number}).port; await new Promise<void>((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+    const server = serve(db, {} as never, {} as never, {} as never, { workbook } as never, port);
+    await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve));
+    try {
+      const quick = await fetch(`http://127.0.0.1:${port}/api/knowledge/graph/${conceptId}/quick-paper`, { method: 'POST', headers: { 'content-type': 'application/json', host: `127.0.0.1:${port}` }, body: JSON.stringify({ requestId: 'flywheel-paper' }) });
+      expect(quick.status).toBe(201);
+      expect(await quick.json()).toMatchObject({ kind: 'paper', questionCount: 1 });
+    } finally { await new Promise(resolve => server.close(resolve)); }
+    const teaching = await post(material.id, { requestId: 'flywheel-teach', mode: 'bank', confirmedByLearner: true, expectedMaterialRev: bundle.materialRev, linkConcepts: true, purpose: 'teaching', items: [item] });
+    expect(teaching.response.status).toBe(409);
   });
 });
