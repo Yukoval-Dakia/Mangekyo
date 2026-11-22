@@ -64,7 +64,7 @@ const mayResearch: WorkspaceSourceRecipient = fact =>
 export const paidExtractionRecipient: WorkspaceSourceRecipient = fact => fact.purpose.includes(researchPurpose) &&
   (fact.type === workbookAttemptType || fact.type === turnEvidenceType && turnAllowsBackgroundUnderstanding(fact));
 
-const understandingHostDeps = {
+const getUnderstandingHostDeps = () => ({
   mayResearch, paidExtractionRecipient, claimType, memoryAssertionType, whenAvailable, createAuthorizedFactReader,
   digest: (value: string) => createHash('sha256').update(value).digest('hex'), studyTurn,
   turnAllowsBackgroundUnderstanding, workbookAttemptType, posttestSubmissionType, readActivitySubmissionBirth,
@@ -72,40 +72,40 @@ const understandingHostDeps = {
   resolveSource, openWorkbookQuestionSources, undoTextbookCommand, textSlice,
   researchReader, independentScoutSource, currentResearchSettings, workspaceGrantChecker, notionModelRecipient,
   teachingPurpose: purpose, teachingSlotType: slotType, companionTeachingMethods, completedCompanionTurns,
-} as unknown as ResearchHostDeps;
+}) as unknown as ResearchHostDeps;
 
 async function openUnderstandingActivity(tx: ReadTransaction, id: string, activePurpose = researchPurpose,
   recipient?: WorkspaceSourceRecipient, item?: string) {
-  return openUnderstandingActivitySupport(understandingHostDeps, tx, id, activePurpose, recipient, item);
+  return openUnderstandingActivitySupport(getUnderstandingHostDeps(), tx, id, activePurpose, recipient, item);
 }
 
 export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], activePurpose?: string,
   maySend?: WorkspaceSourceRecipient) {
-  return openUnderstandingCitationsSupport(understandingHostDeps, tx, refs, activePurpose, maySend);
+  return openUnderstandingCitationsSupport(getUnderstandingHostDeps(), tx, refs, activePurpose, maySend);
 }
 
 export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: Tick, settingsRevision: number, now: number, recipient?: WorkspaceSourceRecipient, budgetCap = 0) {
-  return discoverUnderstandingTodosSupport(understandingHostDeps, tx, reviewed, settingsRevision, now, recipient, budgetCap);
+  return discoverUnderstandingTodosSupport(getUnderstandingHostDeps(), tx, reviewed, settingsRevision, now, recipient, budgetCap);
 }
 
 async function paidSource(tx: ReadTransaction, id: string) {
-  return paidSourceSupport(understandingHostDeps, tx, id);
+  return paidSourceSupport(getUnderstandingHostDeps(), tx, id);
 }
 
 export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec, recipient?: WorkspaceSourceRecipient, budgetCap = 0,
   callerPurpose = researchPurpose) {
-  return eligibleExtractionSupport(understandingHostDeps, tx, spec as any, recipient, budgetCap, callerPurpose);
+  return eligibleExtractionSupport(getUnderstandingHostDeps(), tx, spec as any, recipient, budgetCap, callerPurpose);
 }
 
 export async function readRadarTodo(tx: ReadTransaction, maySend: WorkspaceSourceRecipient, id?: string) {
-  return readRadarTodoSupport(understandingHostDeps, tx, maySend, id);
+  return readRadarTodoSupport(getUnderstandingHostDeps(), tx, maySend, id);
 }
 
 async function existingUnderstandings(tx: ReadTransaction, sourceId: string, recipient?: WorkspaceSourceRecipient) {
-  return existingUnderstandingsSupport(understandingHostDeps, tx, sourceId, recipient);
+  return existingUnderstandingsSupport(getUnderstandingHostDeps(), tx, sourceId, recipient);
 }
 async function learnerGovernedSince(tx: ReadTransaction, tick: string, sourceId: string) {
-  return learnerGovernedSinceSupport(understandingHostDeps, tx, tick, sourceId);
+  return learnerGovernedSinceSupport(getUnderstandingHostDeps(), tx, tick, sourceId);
 }
 
 export function openUnderstandingExtraction(db: Db, companion: LoadedModule, transport: UnderstandingTransport | undefined,
