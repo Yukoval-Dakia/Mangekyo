@@ -14,12 +14,24 @@ export type VisionOcrErrorCode =
   | 'timeout'
   | 'invalid_response';
 
+export type VisionOcrErrorDetails = {
+  readonly emptyContent?: boolean;
+  readonly finishReason?: string | null;
+  readonly elapsedMs?: number;
+};
+
 export class VisionOcrError extends Error {
   readonly code: VisionOcrErrorCode;
-  constructor(code: VisionOcrErrorCode, message: string) {
+  readonly emptyContent?: boolean | undefined;
+  readonly finishReason?: string | null | undefined;
+  readonly elapsedMs?: number | undefined;
+  constructor(code: VisionOcrErrorCode, message: string, details?: VisionOcrErrorDetails) {
     super(message);
     this.name = 'VisionOcrError';
     this.code = code;
+    this.emptyContent = details?.emptyContent;
+    this.finishReason = details?.finishReason;
+    this.elapsedMs = details?.elapsedMs;
   }
 }
 
@@ -277,13 +289,17 @@ export async function callVisionPaperOcr(input: VisionPaperLlmCallInput): Promis
   const elapsedMs = Date.now() - startedAt;
   const choices = payload.choices;
   const first = Array.isArray(choices) && choices.length > 0 ? (choices[0] as JsonRecord) : null;
+  const finishReason = typeof first?.finish_reason === 'string' ? first.finish_reason : null;
   const message = first && typeof first === 'object' ? (first.message as JsonRecord | undefined) : undefined;
   const rawText = message ? extractMessageContent(message.content) : '';
   if (!rawText || !rawText.trim()) {
-    throw new VisionOcrError('invalid_response', '强视觉模型返回了空的识别内容。');
+    throw new VisionOcrError('invalid_response', '强视觉模型返回了空的识别内容。', {
+      emptyContent: true,
+      finishReason,
+      elapsedMs,
+    });
   }
   const responseModel = typeof payload.model === 'string' && payload.model ? payload.model : model;
-  const finishReason = typeof first?.finish_reason === 'string' ? first.finish_reason : null;
   return {
     rawText,
     model: responseModel,
@@ -563,10 +579,34 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
       ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
     });
 
-    const firstResult = await invoke({ ...input.visionConfig, maxTokens: initialMaxTokens, timeoutMs: budgetMs });
-    let result = firstResult;
-    normalized = firstResult.normalized;
-    let totalElapsedMs = firstResult.elapsedMs;
+    const firstStartedAt = Date.now();
+    let result: VisionPaperLlmCallResult;
+    let totalElapsedMs: number;
+    let alreadyRetried = false;
+    try {
+      result = await invoke({ ...input.visionConfig, maxTokens: initialMaxTokens, timeoutMs: budgetMs });
+      totalElapsedMs = result.elapsedMs;
+    } catch (firstError) {
+      if (input.signal?.aborted) throw input.signal.reason ?? firstError;
+      const elapsed = firstError instanceof VisionOcrError && firstError.elapsedMs !== undefined
+        ? firstError.elapsedMs
+        : Date.now() - firstStartedAt;
+      const remainingMs = budgetMs - elapsed;
+      const shouldRetryEmpty =
+        firstError instanceof VisionOcrError &&
+        firstError.emptyContent === true &&
+        remainingMs >= minRetryBudgetMs;
+      if (!shouldRetryEmpty) throw firstError;
+      const retryMaxTokens =
+        firstError.finishReason === 'length' && initialMaxTokens < maxRetryTokens
+          ? Math.min(maxRetryTokens, initialMaxTokens * 2)
+          : initialMaxTokens;
+      alreadyRetried = true;
+      result = await invoke({ ...input.visionConfig, maxTokens: retryMaxTokens, timeoutMs: remainingMs });
+      totalElapsedMs = (result.elapsedMs ?? 0) + elapsed;
+    }
+    normalized = result.normalized;
+    const firstResult = result;
 
     const trySalvage = (candidate: VisionPaperLlmCallResult): TParsed | null => {
       if (candidate.finishReason !== 'length') return null;
@@ -586,7 +626,7 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
       if (input.signal?.aborted) throw input.signal.reason ?? firstParseError;
       const truncatedByLength = firstResult.finishReason === 'length';
       const remainingMs = budgetMs - totalElapsedMs;
-      if (truncatedByLength && initialMaxTokens < maxRetryTokens && remainingMs >= minRetryBudgetMs) {
+      if (!alreadyRetried && truncatedByLength && initialMaxTokens < maxRetryTokens && remainingMs >= minRetryBudgetMs) {
         const retryMaxTokens = Math.min(maxRetryTokens, initialMaxTokens * 2);
         let retryResult: VisionPaperLlmCallResult | null = null;
         try {
