@@ -121,8 +121,12 @@ function parseQuickPaper(result: unknown): {kind: 'paper'; paperId: string} | {k
   if (!result || typeof result !== 'object') throw new Error('抽题响应格式无法识别。');
   const record = result as Record<string, unknown>;
   if (record.kind === 'empty') {
-    const message = typeof record.message === 'string' && record.message.trim() !== '' ? record.message : undefined;
-    return {kind: 'empty', message};
+    const raw = typeof record.reason === 'string' && record.reason.trim() !== ''
+      ? record.reason
+      : typeof record.message === 'string' && record.message.trim() !== ''
+        ? record.message
+        : undefined;
+    return {kind: 'empty', message: raw};
   }
   const nested = record.paper && typeof record.paper === 'object' ? (record.paper as Record<string, unknown>).id : undefined;
   const paperId = record.paperId ?? nested ?? record.id;
