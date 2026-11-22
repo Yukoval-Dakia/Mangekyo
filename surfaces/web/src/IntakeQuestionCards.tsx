@@ -484,11 +484,11 @@ export function IntakeQuestionCards({
                 {(card.redPenMark.correction !== null || card.redPenMark.marks.length > 0) && (
                   <div className="intake-red-pen">
                     <strong>红笔评语与订正</strong>
-                    {card.redPenMark.marks.map(mark => <p key={mark}>{mark}</p>)}
+                    {card.redPenMark.marks.map(mark => <p key={mark}><MathText text={mark} /></p>)}
                     {card.redPenMark.correction !== null && <MathText text={card.redPenMark.correction} />}
                   </div>
                 )}
-                {card.unclearNotice && <p className="intake-unclear">{card.unclearNotice}</p>}
+                {card.unclearNotice && <p className="intake-unclear"><MathText text={card.unclearNotice} /></p>}
               </div>
             </li>
           );
