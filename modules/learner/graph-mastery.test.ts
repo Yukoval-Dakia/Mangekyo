@@ -102,3 +102,39 @@ it('projects real Python cognition@3 mastery on Postgres and hides revoked nodes
       expect((await run()).concepts[0]).toMatchObject({ conceptId: 'c-live', status: 'unknown', retrievability: null, independentAttempts: 0, recentEvidenceRefs: [] });
     } finally { await python.close(); }
   }, { postgres: Boolean(testDatabaseUrl) }));
+
+it('transitions multi-novelty (same->isomorphic) to solid and stays conservative across representations', { timeout: 20_000 }, async () => {
+  const python = createPythonDeriverHost();
+  try {
+    const asOfMulti = '2026-11-22T00:00:00.000Z';
+    const mk = (concept: string, n: number, outcome: 'correct' | 'incorrect', occurred: string,
+      novelty: 'same' | 'isomorphic', representation?: string): EvidenceEventV1 =>
+      ({ ref: id(n), rev: 1, occurred_at: occurred, concept_ids: [concept], item_novelty: novelty,
+        ...(representation ? { representation } : {}), help_level: 'independent', outcome, claim_ids: [] });
+    const events: EvidenceEventV1[] = [
+      mk('c-prog', 11, 'incorrect', '2026-11-10T10:00:00.000Z', 'same'),
+      mk('c-prog', 12, 'correct', '2026-11-13T10:00:00.000Z', 'isomorphic'),
+      mk('c-prog', 13, 'correct', '2026-11-18T10:00:00.000Z', 'isomorphic'),
+      mk('c-prog', 14, 'correct', '2026-11-21T10:00:00.000Z', 'isomorphic'),
+      mk('c-rep', 15, 'incorrect', '2026-11-10T10:00:00.000Z', 'isomorphic', 'graphical'),
+      mk('c-rep', 16, 'correct', '2026-11-13T10:00:00.000Z', 'isomorphic', 'symbolic'),
+      mk('c-rep', 17, 'correct', '2026-11-18T10:00:00.000Z', 'isomorphic', 'symbolic'),
+      mk('c-rep', 18, 'correct', '2026-11-21T10:00:00.000Z', 'isomorphic', 'symbolic'),
+    ];
+    const view = await projectGraphConceptMastery({ ...scope, asOf: asOfMulti,
+      concepts: [{ conceptId: 'c-prog' }, { conceptId: 'c-rep' }] }, {
+      readEvidence: async (s, ids) => ({ completeConceptIds: ids, anchors: events.map(ev => anchor(ev)),
+        slice: { clock_watermark: s.clockWatermark, as_of_at: s.asOf, events,
+          constraints: { budget_min: null, locks: [], deadlines: [] }, candidate_pool: [] } }),
+      derive: async (_s, method, slice) => {
+        const out = await python.derive(method.deriver, slice);
+        return out.kind === 'ok' && out.outcome.kind === 'value' ? out.outcome.value as CognitionOutput : null;
+      },
+      reopen: async (_s, refs) => refs,
+    });
+    expect(view.concepts[0]).toMatchObject({ conceptId: 'c-prog', status: 'solid', independentAttempts: 4 });
+    expect(view.concepts[0]!.retrievability!).toBeGreaterThan(0.6);
+    expect(view.concepts[1]).toMatchObject({ conceptId: 'c-rep', status: 'fading', independentAttempts: 4 });
+    expect(view.concepts[1]!.retrievability!).toBeLessThan(0.5);
+  } finally { await python.close(); }
+});
