@@ -964,6 +964,118 @@
   color: var(--tv2-ink-2);
 }
 
+.tv2-pages {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--tv2-line);
+  border-radius: 20px;
+  background: var(--tv2-panel);
+  min-width: 0;
+}
+
+.tv2-pages-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.tv2-pages-head strong {
+  font-size: 14px;
+  color: var(--tv2-ink);
+}
+
+.tv2-pages-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tv2-pages-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--tv2-line);
+  border-radius: 14px;
+  background: var(--tv2-surface);
+}
+
+.tv2-pages-thumb {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 66px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--tv2-surface-low);
+  color: var(--tv2-ink-2);
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+}
+
+.tv2-pages-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tv2-pages-copy {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tv2-pages-copy strong {
+  font-size: 13.5px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.tv2-pages-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.tv2-pages-tools button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--tv2-line);
+  border-radius: 999px;
+  background: var(--tv2-surface);
+  color: var(--tv2-ink-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.tv2-pages-tools button:hover:not(:disabled) {
+  color: var(--tv2-ink);
+  border-color: var(--tv2-forest);
+}
+
+.tv2-pages-tools button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tv2-pages-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .tv2-privacy-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1234,6 +1346,28 @@
 
   .tv2-drop-formats {
     margin-left: 0;
+  }
+
+  .tv2-pages-foot {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .tv2-pages-foot .tv2-btn {
+    width: 100%;
+  }
+
+  .tv2-pages-item {
+    flex-wrap: wrap;
+  }
+
+  .tv2-pages-copy {
+    flex-basis: calc(100% - 64px);
+  }
+
+  .tv2-pages-tools {
+    margin-left: 64px;
   }
 
   .tv2-privacy-bar .tv2-seg--compact {

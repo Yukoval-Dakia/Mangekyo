@@ -35,6 +35,7 @@ export type IntakeQuestionCard = {
   readonly isRedPenError: boolean;
   readonly unclearNotice: string | null;
   readonly conceptTags?: readonly string[];
+  readonly pageNumber?: number;
   readonly defaultSelected: boolean;
 };
 
@@ -394,6 +395,11 @@ export function IntakeQuestionCards({
                 </label>
                 <div>
                   <strong>第 {card.number} 题</strong>
+                  {card.pageNumber !== undefined && (
+                    <span className="page-number" aria-label={`来自第 ${card.pageNumber} 页`}>
+                      P{card.pageNumber}
+                    </span>
+                  )}
                   <span className="kind">{questionKindLabels[card.kind]}</span>
                   {card.redPenMark.verdict !== 'none' && (
                     <span className={`verdict ${card.redPenMark.verdict}`}>
