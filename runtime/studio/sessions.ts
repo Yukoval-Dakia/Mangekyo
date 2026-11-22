@@ -18,8 +18,17 @@ export { introductoryStudyCases as cases } from '../../executors/teaching/exampl
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from '../../executors/teaching/model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
-import { matchesStudyTurnReplay, studyAttachmentRequest, studyCurrentObjectSelection, studyMcpGrants, studyTurn, turnResearchAccess,
-  type StudyTurnReplay } from '../../modules/activity/values.ts';
+import {
+  isStudyCaseId,
+  matchesStudyTurnReplay,
+  requestedStudyBackgroundUnderstanding,
+  studyAttachmentRequest,
+  studyCurrentObjectRequest,
+  studyMcpGrants,
+  studyTurn,
+  turnResearchAccess,
+  type StudyTurnReplay,
+} from '../../modules/activity/values.ts';
 import { attachmentCurrent, attachmentSources, readMaterialText, readOwnStudyTurn, textSlice } from './reading.ts';
 export { readOwnStudyTurn, readTeachingTurn } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
@@ -61,7 +70,7 @@ type TurnRequest = StudyTurnReplay & {
   requestedRoute: unknown;
 };
 export function caseId(value: unknown): CaseId {
-  if (value !== 'independent' && value !== 'workedExample' && value !== 'companion' && value !== 'riding')
+  if (!isStudyCaseId(value))
     throw new RequestError(400, '对话类型无效。');
   return value;
 }
@@ -473,18 +482,13 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     catch { throw new RequestError(400, '本轮 MCP 工具选择无效。'); }
   }
   function requestedCurrentObject(value: unknown) {
-    if (value === undefined) return;
-    try {
-      const selection = studyCurrentObjectSelection(value);
-      if (Object.keys(value as object).length === 3) return selection;
-    } catch {
-      // Only the stable selection fields are accepted from the browser.
-    }
+    const selection = studyCurrentObjectRequest(value);
+    if (selection !== null) return selection;
     throw new RequestError(400, '当前学习对象须包含类型、ID 和版本。');
   }
   function requestedBackgroundUnderstanding(value: unknown) {
     if (value !== undefined && typeof value !== 'boolean') throw new RequestError(400, '本轮后台理解授权无效。');
-    return value === true;
+    return requestedStudyBackgroundUnderstanding(value);
   }
   return {
     classrooms: openClassrooms(db,activity,hooks),

@@ -40,6 +40,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner, purpose, slotType } from './identity.ts';
 import { clientRequest, readTeachingTurn, RequestError } from './sessions.ts';
 import { notifySession } from './stream.ts';
+export { mountPermissionFields } from '../../modules/activity/artifact-action.ts';
 
 const load = (name: string) =>
   loadModuleDirectory(fileURLToPath(new URL('../../modules/' + name, import.meta.url)));
@@ -222,13 +223,6 @@ export async function readClassroomMountEvidence(tx: ReadTransaction, session: s
   const assessment = result.snapshot.assessment;
   if (evidence.assessmentId && (!assessment || !('derivationId' in assessment) || assessment.derivationId !== evidence.assessmentId)) return;
   return {...result,assessment:evidence.assessmentId === null ? undefined : assessment};
-}
-
-export function mountPermissionFields(unconfirmed: readonly string[], known: ReadonlySet<string>) {
-  return unconfirmed.length ? {
-    mountPermissionsPartial: true as const,
-    unconfirmedMountIds: unconfirmed.filter(id => known.has(id)),
-  } : {};
 }
 
 export async function actOnArtifact(db: Db, session: string, raw: Record<string, unknown>) {

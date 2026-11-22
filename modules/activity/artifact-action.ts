@@ -26,3 +26,10 @@ export function artifactActionRecord(input: unknown) {
     ...(input.submission === undefined ? {} : { submission: input.submission }),
   };
 }
+
+export function mountPermissionFields(unconfirmed: readonly string[], known: ReadonlySet<string>) {
+  return unconfirmed.length ? {
+    mountPermissionsPartial: true as const,
+    unconfirmedMountIds: unconfirmed.filter(id => known.has(id)),
+  } : {};
+}

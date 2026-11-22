@@ -7,15 +7,29 @@ import {
 import { readWorkbookQuestionAttachments, type WorkbookAttachmentEvidence } from './workbook-attachments.ts';
 import {
   independentlyAuthoredPaper, sameWorkbookJson, workbookAssessmentConsent, workbookAttempt, workbookAttemptType,
-  workbookCorrectCount, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookAttemptView, type WorkbookDraft,
+  workbookAssessmentPurpose, workbookCorrectCount, workbookPaper, workbookPaperType,
+  type WorkbookAttempt, type WorkbookAttemptView, type WorkbookDraft,
   workbookRubricAssessmentVersion, type WorkbookAssessmentRequest, type WorkbookRubricAssessment,
   type WorkbookRubricQuestion, type WorkbookRubricAssessmentView, type WorkbookPaper, type WorkbookSummary, type WorkbookSourceView,
 } from './workbook-values.ts';
+import formalAssessmentSlot from './slots/workbook-formal-assessment.ts';
 
 import { checkAssessmentPublication, type ReadVerifiedAssessmentPublicationEvidence } from './assessment-publication.ts';
 import { frozenWorkbookSubmission } from './question-assessment.ts';
 
 export const workbookTextEvaluator = { id: 'workbook-text-rubric', version: '1' } as const;
+export const workbookAssessmentPolicy = {
+  slot: formalAssessmentSlot,
+  deriver: 'activity/workbook-formal-assessment-v1',
+  purpose: workbookAssessmentPurpose,
+};
+export const workbookBankAssessmentPolicy = {
+  ...workbookAssessmentPolicy,
+  deriver: 'activity/workbook-bank-assessment-v1',
+};
+export function workbookAssessmentPolicyFor(paper: WorkbookPaper) {
+  return paper.questions.some(question => question.kind === 'bank') ? workbookBankAssessmentPolicy : workbookAssessmentPolicy;
+}
 
 export function checkWorkbookPublication(paper: WorkbookPaper, evidence?: ReadVerifiedAssessmentPublicationEvidence) {
   const release = paper.assessmentRelease;

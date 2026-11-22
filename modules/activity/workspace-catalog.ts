@@ -151,6 +151,19 @@ export function itemOf(row: AccessRow, {display, purposes, fact}: AccessDisplay)
   };
 }
 
+export function workspaceRecordPage(row: AccessRow, read: AccessDisplay, offset: number, limit: number) {
+  const start = Math.min(offset, read.display.text.length);
+  const end = Math.min(start + limit, read.display.text.length);
+  return {
+    ...itemOf(row, read),
+    related: [] as { id: string; title: string }[],
+    ...(read.display.question ? { question: read.display.question } : {}),
+    text: read.display.text.slice(start, end),
+    offset: start,
+    nextOffset: end < read.display.text.length ? end : null,
+  };
+}
+
 export function workspaceCatalogQuery(params: URLSearchParams) {
   const limit = readLimit(params.get('limit'), defaultPage, maximumPage);
   const cursor = decodeCursor(params.get('cursor'));
