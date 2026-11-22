@@ -719,6 +719,12 @@ export async function readKnowledgeGraphView(
   }
 
   const edges: KnowledgeGraphViewEdge[] = [];
+  const directQuestionTargets = new Map<FactId, Set<FactId>>();
+  const variantQuestionBacklinks: {
+    readonly variant: KnowledgeEndpoint;
+    readonly baseId: FactId;
+    readonly proof: Map<string, BusWitness>;
+  }[] = [];
   for (const id of edgeIds) {
     try {
       const proof = witnessSet();
@@ -822,6 +828,31 @@ export async function readKnowledgeGraphView(
           continue;
         }
         recordBacklink(toEntityId, 'questionRefs', edge.from);
+        if (edge.from.blockId === undefined) {
+          let targets = directQuestionTargets.get(edge.from.sourceUse.id);
+          if (!targets) {
+            targets = new Set<FactId>();
+            directQuestionTargets.set(edge.from.sourceUse.id, targets);
+          }
+          targets.add(toEntityId);
+        }
+      } else if (
+        edge.kind === 'variant_of' &&
+        from.kind === 'question' &&
+        to.kind === 'question' &&
+        edge.from.blockId === undefined &&
+        edge.to.blockId === undefined &&
+        edge.from.sourceUse.id !== edge.to.sourceUse.id
+      ) {
+        const fromFact = basisFacts.find(candidate =>
+          candidate.ref.id === edge.from.sourceUse.id && candidate.ref.rev === edge.from.sourceUse.rev);
+        const toFact = basisFacts.find(candidate =>
+          candidate.ref.id === edge.to.sourceUse.id && candidate.ref.rev === edge.to.sourceUse.rev);
+        if ((fromFact?.type === workspaceEntryType && !await access.reopenLegacyQuestion?.(edge.from.sourceUse)) ||
+            (toFact?.type === workspaceEntryType && !await access.reopenLegacyQuestion?.(edge.to.sourceUse))) {
+          continue;
+        }
+        variantQuestionBacklinks.push({ variant: edge.from, baseId: edge.to.sourceUse.id, proof });
       } else if (edge.kind === 'maps_to_chapter' && fromEntityId !== undefined && to.kind === 'chapter') {
         recordBacklink(fromEntityId, 'textbookRefs', edge.to);
       } else if (edge.kind === 'explains') {
@@ -837,6 +868,19 @@ export async function readKnowledgeGraphView(
       }
     } catch (error) {
       if (!unavailable(access, error)) throw error;
+    }
+  }
+
+  for (const { variant, baseId, proof } of variantQuestionBacklinks) {
+    const targets = directQuestionTargets.get(baseId);
+    if (!targets) continue;
+    for (const targetId of targets) {
+      const targetGroup = canonicalGroups.get(targetId);
+      if (!targetGroup) continue;
+      const key = backlinkKey(variant);
+      if (targetGroup.questionRefs.has(key)) continue;
+      targetGroup.questionRefs.add(key);
+      mergeWitnessSets(targetGroup.backlinkProof, proof);
     }
   }
 
