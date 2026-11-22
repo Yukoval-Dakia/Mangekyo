@@ -7,7 +7,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from 'react';
-import { api, ApiError, deletedSubmission, remember, remembered, submissionId } from '../api';
+import { api, ApiError, deletedSubmission, remember, remembered, requestId, submissionId } from '../api';
 import {
   bindDeletionWatermark,
   latestKey,
@@ -43,6 +43,19 @@ export type IntakeFeedEntry = {
   href?: string;
   sizeBytes?: number;
   purpose?: IntakePurpose;
+  revision?: number;
+  canRetryVision?: boolean;
+  questionCount?: number;
+};
+
+type IntakeHistoryEntry = {
+  readonly id: string;
+  readonly rev: number;
+  readonly title: string;
+  readonly status: 'organizing' | 'needs_confirmation' | 'ready';
+  readonly extractedQuestionCount: number;
+  readonly questionPreviews?: readonly { readonly excerpt: string }[];
+  readonly canRetryVision: boolean;
 };
 
 export type IntakeSurfaceProps = {
@@ -70,7 +83,7 @@ function statusFromMetadata(metadata: IntakeMetadata): IntakeStatus {
 
 function entryFromMetadata(
   metadata: IntakeMetadata,
-  fallback: { savedAt?: string; localPreviewUrl?: string } = {},
+  fallback: { savedAt?: string | undefined; localPreviewUrl?: string | undefined } = {},
 ): IntakeFeedEntry {
   const mediaType = metadata.original?.mediaType;
   const isImage = typeof mediaType === 'string' && mediaType.startsWith('image/');
@@ -83,6 +96,7 @@ function entryFromMetadata(
     ? fallback.localPreviewUrl ?? `/api/materials/${encodeURIComponent(metadata.id)}/original`
     : undefined;
   const purpose: IntakePurpose = metadata.backgroundResearch === 'private' ? 'save-only' : 'learning';
+  const questionCount = metadata.questionCards?.length ?? metadata.extraction?.drafts?.questions.length ?? 0;
 
   return {
     id: metadata.id,
@@ -90,11 +104,35 @@ function entryFromMetadata(
     status: statusFromMetadata(metadata),
     href: materialPath(metadata.id),
     purpose,
+    revision: metadata.revision,
+    canRetryVision: metadata.canRetryVision === true,
+    questionCount,
     ...(mediaType ? { mediaType } : {}),
     ...(thumbnailUrl ? { thumbnailUrl } : {}),
     ...(fallback.savedAt ? { savedAt: fallback.savedAt } : {}),
     ...(previewText ? { preview: previewText } : {}),
     ...(typeof sizeBytes === 'number' && sizeBytes > 0 ? { sizeBytes } : {}),
+  };
+}
+
+function entryFromHistory(history: IntakeHistoryEntry, fallback: IntakeFeedEntry): IntakeFeedEntry {
+  const status: IntakeStatus = history.status === 'organizing'
+    ? 'organizing'
+    : history.status === 'needs_confirmation'
+      ? 'needs-confirm'
+      : fallback.status === 'saved'
+        ? 'saved'
+        : 'indexed';
+  const historyPreview = history.questionPreviews?.find(item => item.excerpt)?.excerpt;
+  return {
+    ...fallback,
+    title: history.title || fallback.title,
+    status,
+    href: materialPath(history.id),
+    revision: history.rev,
+    canRetryVision: history.canRetryVision,
+    questionCount: history.extractedQuestionCount,
+    ...(historyPreview && !fallback.preview ? { preview: historyPreview } : {}),
   };
 }
 
@@ -150,9 +188,15 @@ function renderStatusChip(status: IntakeStatus) {
 function FeedRow({
   entry,
   onNavigate,
+  onRetryVision,
+  retrying,
+  retryError,
 }: {
   entry: IntakeFeedEntry;
   onNavigate?: ((href: string) => void) | undefined;
+  onRetryVision: (entry: IntakeFeedEntry) => void;
+  retrying: boolean;
+  retryError?: string | undefined;
 }) {
   const [thumbFailed, setThumbFailed] = useState(false);
   const isLink =
@@ -174,35 +218,57 @@ function FeedRow({
     entry.preview && !isTechnicalIdentifier(entry.preview) ? entry.preview.slice(0, 110) : '';
 
   return (
-    <a
-      className="tv2-feed-item"
+    <article className="tv2-feed-item">
+      <a
+        className="tv2-feed-link"
       href={href}
       onClick={(event) => handleSpaNavigation(event, href, onNavigate)}
-    >
-      <span className={'tv2-thumb' + (thumbSrc ? ' tv2-thumb--photo' : '')} aria-hidden="true">
-        {thumbSrc ? (
-          <img src={thumbSrc} alt="" loading="lazy" onError={() => setThumbFailed(true)} />
-        ) : (
-          <MediaPlaceholder
-            {...(entry.mediaType ? { mediaType: entry.mediaType } : {})}
-            isLink={isLink}
-          />
-        )}
-      </span>
-
-      <span className="tv2-feed-copy">
-        <strong>{entry.title}</strong>
-        {metaParts.length > 0 && <small className="tv2-feed-meta">{metaParts.join(' · ')}</small>}
-        {cleanPreview && <small className="tv2-feed-preview">{cleanPreview}</small>}
-      </span>
-
-      <span className="tv2-feed-end">
-        {renderStatusChip(entry.status)}
-        <span className="tv2-feed-chevron" aria-hidden="true">
-          <Icon name="chevron" />
+      >
+        <span className={'tv2-thumb' + (thumbSrc ? ' tv2-thumb--photo' : '')} aria-hidden="true">
+          {thumbSrc ? (
+            <img src={thumbSrc} alt="" loading="lazy" onError={() => setThumbFailed(true)} />
+          ) : (
+            <MediaPlaceholder
+              {...(entry.mediaType ? { mediaType: entry.mediaType } : {})}
+              isLink={isLink}
+            />
+          )}
         </span>
-      </span>
-    </a>
+
+        <span className="tv2-feed-copy">
+          <strong>{entry.title}</strong>
+          {metaParts.length > 0 && <small className="tv2-feed-meta">{metaParts.join(' · ')}</small>}
+          {cleanPreview && <small className="tv2-feed-preview">{cleanPreview}</small>}
+        </span>
+
+        <span className="tv2-feed-end">
+          {renderStatusChip(entry.status)}
+          <span className="tv2-feed-chevron" aria-hidden="true">
+            <Icon name="chevron" />
+          </span>
+        </span>
+      </a>
+      {entry.questionCount !== undefined && entry.questionCount > 0 && (
+        <a
+          className="tv2-feed-question-link"
+          href={href}
+          onClick={(event) => handleSpaNavigation(event, href, onNavigate)}
+        >
+          已识别 {entry.questionCount} 题 · 核对题目 / 生成微卷
+        </a>
+      )}
+      {entry.canRetryVision && (
+        <button
+          type="button"
+          className="tv2-btn tv2-btn--tonal tv2-feed-retry"
+          disabled={retrying}
+          onClick={() => onRetryVision(entry)}
+        >
+          {retrying ? '正在重新识别…' : '重新用视觉模型识别'}
+        </button>
+      )}
+      {retryError && <p className="tv2-error" role="alert">{retryError}</p>}
+    </article>
   );
 }
 
@@ -230,6 +296,8 @@ export function IntakeSurface({
   const [materials, setMaterials] = useState<IntakeFeedEntry[] | null>(
     feed ? feed.slice(0, maxHistory) : null,
   );
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [retryErrors, setRetryErrors] = useState<Readonly<Record<string, string>>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const objectUrlsRef = useRef<Set<string>>(new Set());
 
@@ -271,9 +339,25 @@ export function IntakeSurface({
       .then(async (workspace) => {
         if (controller.signal.aborted) return;
         const baseEntries = feedFromWorkspace(workspace?.materials ?? []).slice(0, maxHistory);
-        setMaterials(baseEntries);
+        let displayEntries = baseEntries;
+        try {
+          const history = await api<readonly IntakeHistoryEntry[]>('/intake/history', {
+            signal: controller.signal,
+            cache: 'no-store',
+          });
+          if (Array.isArray(history)) {
+            const historyById = new Map(history.slice(0, maxHistory).map(item => [item.id, item]));
+            displayEntries = baseEntries.map(item => {
+              const historyItem = historyById.get(item.id);
+              return historyItem ? entryFromHistory(historyItem, item) : item;
+            });
+          }
+        } catch {
+          // The workspace list remains a compatible fallback when history is unavailable.
+        }
+        setMaterials(displayEntries);
 
-        const enrichTargets = baseEntries.slice(0, Math.min(baseEntries.length, 12));
+        const enrichTargets = displayEntries.slice(0, Math.min(displayEntries.length, 12));
         const plainIds = readPlainMaterialIds();
         const rawById = new Map((workspace?.materials ?? []).map((item) => [item.id, item]));
         const candidates = enrichTargets.filter((entry) => {
@@ -313,7 +397,10 @@ export function IntakeSurface({
         }
         if (byId.size > 0) {
           setMaterials((current) =>
-            (current ?? baseEntries).map((item) => byId.get(item.id) ?? item),
+            (current ?? displayEntries).map((item) => {
+              const enriched = byId.get(item.id);
+              return enriched ? { ...item, ...enriched } : item;
+            }),
           );
         }
       })
@@ -535,6 +622,42 @@ export function IntakeSurface({
     }
   }
 
+  async function retryVision(entry: IntakeFeedEntry) {
+    if (retryingId !== null) return;
+    setRetryingId(entry.id);
+    setRetryErrors(current => ({ ...current, [entry.id]: '' }));
+    try {
+      let revision = entry.revision;
+      if (revision === undefined) {
+        const metadata = await api<IntakeMetadata>(`/materials/${encodeURIComponent(entry.id)}`);
+        revision = metadata.revision;
+      }
+      const metadata = await api<IntakeMetadata>(`/materials/${encodeURIComponent(entry.id)}/retry-vision`, {
+        method: 'POST',
+        body: { requestId: requestId(), expectedRev: revision },
+      });
+      const updated = entryFromMetadata(metadata, { savedAt: entry.savedAt, localPreviewUrl: entry.thumbnailUrl });
+      setMaterials(current => current?.map(item => item.id === entry.id ? { ...item, ...updated } : item) ?? current);
+      setNotice(`「${updated.title}」已重新进入视觉识别队列。`);
+    } catch (failure) {
+      const message = failure instanceof ApiError && failure.status === 409
+        ? '这份材料已更新或当前状态不能重识别，正在回到最新状态。'
+        : '视觉重识别暂时没有排队，请稍后重试。';
+      setRetryErrors(current => ({ ...current, [entry.id]: message }));
+      if (failure instanceof ApiError && failure.status === 409) {
+        try {
+          const metadata = await api<IntakeMetadata>(`/materials/${encodeURIComponent(entry.id)}`);
+          const updated = entryFromMetadata(metadata, { savedAt: entry.savedAt, localPreviewUrl: entry.thumbnailUrl });
+          setMaterials(current => current?.map(item => item.id === entry.id ? { ...item, ...updated } : item) ?? current);
+        } catch {
+          // Keep the inline conflict message if a refresh also fails.
+        }
+      }
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     setDragOver(false);
@@ -697,7 +820,14 @@ export function IntakeSurface({
         ) : (
           <div className="tv2-feed">
             {materials.map((entry) => (
-              <FeedRow key={entry.id} entry={entry} onNavigate={onNavigate} />
+              <FeedRow
+                key={entry.id}
+                entry={entry}
+                onNavigate={onNavigate}
+                onRetryVision={(item) => void retryVision(item)}
+                retrying={retryingId === entry.id}
+                retryError={retryErrors[entry.id] || undefined}
+              />
             ))}
           </div>
         )}

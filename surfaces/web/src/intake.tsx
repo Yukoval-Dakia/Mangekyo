@@ -5,6 +5,8 @@ import { enqueue } from './offline-queue';
 import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, remember, remembered, requestId, submissionId } from './api';
 import { Icon } from './icons';
+import { IntakeQuestionCards, type IntakeQuestionCard } from './IntakeQuestionCards';
+import type { Settings } from './api';
 import { PageTitle, materialPath } from './workspace';
 import './intake.css';
 
@@ -18,16 +20,34 @@ export type IntakeMetadata = {
   fullText: string | null;
   extraction: {
     status: 'pending' | 'ok' | 'partial' | 'failed' | 'corrected';
-    method: 'mineru' | 'pdfkit' | 'vision' | 'pdfkit+vision' | 'utf8' | 'learner';
+    method: 'mineru' | 'pdfkit' | 'vision' | 'vision_llm' | 'vision_fallback' | 'pdfkit+vision' | 'utf8' | 'learner';
     error: string | null;
     warnings: string[];
     pages: number | null;
     truncated: boolean;
     characterCount: number;
+    stage?: 'queued' | 'extracting' | 'ready' | 'fallback' | 'failed';
+    drafts?: {
+      questions: readonly {
+        draftId: string;
+        index: number;
+        questionNumber: string;
+        questionType: IntakeQuestionCard['kind'];
+        stem: string;
+        options: readonly { label: string; text: string }[];
+        studentAnswer: IntakeQuestionCard['studentAnswer'];
+        redInk: IntakeQuestionCard['redPenMark'];
+        unclearSegments: readonly string[];
+      }[];
+    };
   };
+  questionCards?: readonly IntakeQuestionCard[];
   original: { name: string; mediaType: string; size: number; sha256: string };
   corrected: boolean;
   backgroundResearch?: 'allowed' | 'private' | 'all';
+  requestedExtraction?: 'mineru' | 'vision_llm';
+  intakeStatus: 'queued' | 'extracting' | 'ready' | 'fallback' | 'failed';
+  canRetryVision: boolean;
 };
 
 const intakeLimit = 25 * 1024 * 1024;
@@ -71,17 +91,51 @@ function supportsMineru(file: File) {
 }
 
 const statusLabels = {
-  pending: '等待 MinerU 识别',
+  pending: '等待识别',
   ok: '已抽取文字',
   partial: '部分抽取',
   corrected: '已手动更正',
   failed: '抽取失败',
 };
 
+function extractionStatusLabel(metadata: IntakeMetadata) {
+  if (metadata.extraction.status !== 'pending') return statusLabels[metadata.extraction.status];
+  return metadata.requestedExtraction === 'mineru' ? '等待 MinerU 识别' : '等待视觉模型识别';
+}
+
 function typeLabel(mediaType: string) {
   if (mediaType === 'application/pdf') return 'PDF';
   if (mediaType.startsWith('image/')) return '照片';
   return mediaType === 'text/markdown' ? 'Markdown' : '文本';
+}
+
+function questionCardsFromMetadata(metadata: IntakeMetadata): readonly IntakeQuestionCard[] {
+  if (metadata.questionCards) return metadata.questionCards;
+  return (metadata.extraction.drafts?.questions ?? []).map(question => {
+    const redPenMark = question.redInk;
+    const isRedPenError = redPenMark.verdict === 'wrong' || redPenMark.verdict === 'partial' ||
+      redPenMark.correction !== null;
+    const unclearParts = [
+      question.studentAnswer.status === 'unclear'
+        ? `学生作答看不清${question.studentAnswer.note ? `（${question.studentAnswer.note}）` : ''}`
+        : null,
+      redPenMark.verdict === 'unclear' ? '红笔批改看不清' : null,
+      question.unclearSegments.length > 0 ? `模糊位置：${question.unclearSegments.join('；')}` : null,
+    ].filter((part): part is string => part !== null);
+    return {
+      draftId: question.draftId,
+      index: question.index,
+      number: question.questionNumber,
+      kind: question.questionType,
+      stem: question.stem,
+      options: question.options,
+      studentAnswer: question.studentAnswer,
+      redPenMark,
+      isRedPenError,
+      unclearNotice: unclearParts.length > 0 ? unclearParts.join('；') : null,
+      defaultSelected: isRedPenError,
+    };
+  });
 }
 
 export function Intake({}: Record<string, never>) {
@@ -307,13 +361,21 @@ export function Intake({}: Record<string, never>) {
   );
 }
 
-type OriginalProps = { id: string; receipt?: IntakeMetadata; previewText?: string; changed?: () => void; erase?:()=>void };
+type OriginalProps = {
+  id: string;
+  receipt?: IntakeMetadata;
+  previewText?: string;
+  changed?: () => void;
+  erase?: () => void;
+  settings?: Settings | undefined;
+  onNavigate?: ((href: string) => void) | undefined;
+};
 
 export function MaterialOriginal(props: OriginalProps) {
   return <OriginalDetails key={props.id} {...props} />;
 }
 
-function OriginalDetails({ id, receipt, previewText, changed, erase }: OriginalProps) {
+function OriginalDetails({ id, receipt, previewText, changed, erase, settings, onNavigate }: OriginalProps) {
   const [metadata, setMetadata] = useState<IntakeMetadata | null>(receipt ?? null);
   const latest = useRef(receipt);
   const readGeneration = useRef(0);
@@ -331,6 +393,8 @@ function OriginalDetails({ id, receipt, previewText, changed, erase }: OriginalP
   const [correctionError, setCorrectionError] = useState('');
   const [researchBusy, setResearchBusy] = useState(false);
   const [researchError, setResearchError] = useState('');
+  const [retryVisionBusy, setRetryVisionBusy] = useState(false);
+  const [retryVisionError, setRetryVisionError] = useState('');
   const correctionIntent = useRef<{ text: string; revision: number; requestId: string } | null>(null);
 
   useEffect(() => {
@@ -415,6 +479,29 @@ function OriginalDetails({ id, receipt, previewText, changed, erase }: OriginalP
     }
   }
 
+  async function retryVision() {
+    if (!metadata || retryVisionBusy) return;
+    setRetryVisionBusy(true);
+    setRetryVisionError('');
+    try {
+      const value = await api<IntakeMetadata>(`/materials/${encodeURIComponent(metadata.id)}/retry-vision`, {
+        method: 'POST',
+        body: { requestId: requestId(), expectedRev: metadata.revision },
+      });
+      adoptMetadata(value);
+      setRefresh(count => count + 1);
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 409) {
+        setRetryVisionError('这份材料已更新或当前状态不能重识别，正在为你刷新最新状态。');
+        setRefresh(count => count + 1);
+      } else {
+        setRetryVisionError('视觉重识别暂时没有排队，请稍后重试。');
+      }
+    } finally {
+      setRetryVisionBusy(false);
+    }
+  }
+
   async function saveCorrection(event: FormEvent) {
     event.preventDefault();
     if (correctionBusy || researchBusy || !metadata) return;
@@ -469,13 +556,29 @@ function OriginalDetails({ id, receipt, previewText, changed, erase }: OriginalP
         </a>
       </header>
       <p className="intake-extraction-status" role="status">
-        <span className="intake-badge">{statusLabels[metadata.extraction.status]}</span>
+        <span className="intake-badge">{extractionStatusLabel(metadata)}</span>
         {metadata.extraction.status === 'pending' && (
           <span>{pollPaused ? '自动更新已暂停。' : '识别结果会在这里更新。'}也可稍后从<a href="/materials">材料列表</a>回来查看。</span>
         )}
       </p>
+      {metadata.canRetryVision && (
+        <div className="intake-retry-vision">
+          <button className="tonal-button" type="button" disabled={retryVisionBusy} onClick={() => void retryVision()}>
+            {retryVisionBusy ? '正在重新排队…' : '重新用视觉模型识别'}
+          </button>
+          {retryVisionError && <p className="error-text" role="alert">{retryVisionError}</p>}
+        </div>
+      )}
       {error && <p className="error-text" role="alert">{error}</p>}
       {(pollPaused || error) && <button className="text-button" onClick={() => setRefresh(n => n + 1)}>刷新状态</button>}
+      <IntakeQuestionCards
+        materialId={metadata.id}
+        materialTitle={metadata.title}
+        materialRev={metadata.revision}
+        initialCards={questionCardsFromMetadata(metadata)}
+        settings={settings}
+        onNavigate={onNavigate}
+      />
       {metadata.extraction.status === 'failed' && (
         <p className="error-text" role="alert">
           没有自动抽取到文字：{metadata.extraction.error ?? '原因未记录。'} 原件仍然保存，可以在下面手动补充。

@@ -270,7 +270,14 @@ function App() {
   }
   else if (path === '/notes') content = <Organizer key={routeKey} section="notes" materials={library.data?.materials ?? []} />;
   else if (path.startsWith('/materials/saved/'))
-    content = <SavedMaterial library={library} id={path.slice('/materials/saved/'.length)} />;
+    content = (
+      <SavedMaterial
+        library={library}
+        id={path.slice('/materials/saved/'.length)}
+        settings={settings.data}
+        onNavigate={navigate}
+      />
+    );
   else if (builtinClassroom)
     content = (
       <DemoClassroom
