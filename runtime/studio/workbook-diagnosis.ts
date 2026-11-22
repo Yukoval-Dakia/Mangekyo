@@ -39,21 +39,28 @@ const deps: StudioDiagnosisDeps = {
   resolveSource: resolveSource as StudioDiagnosisDeps['resolveSource'],
   readSavedWorkbookAssessment: readSavedWorkbookAssessment as StudioDiagnosisDeps['readSavedWorkbookAssessment'],
   readWorkspaceAttemptAssessments: readWorkspaceAttemptAssessments as StudioDiagnosisDeps['readWorkspaceAttemptAssessments'],
-  diagnosisContext,
+  diagnosisContext: (tx, input) => diagnosisContext(tx, input),
 };
 
 type Access = Parameters<typeof openSource>[3];
 export type { Access as WorkbookDiagnosisAccess };
 
-export const openWorkbookDiagnosisSource = (tx: ReadTransaction, reference: string | SourceRefV1, access: Access) =>
-  openSource(deps, tx, reference, access);
-export const openWorkbookQuestionSources = (tx: ReadTransaction, submission: FactSnapshot, access: Access, itemId?: string) =>
-  openQuestions(deps, tx, submission, access, itemId);
-export const readReleasedAssessment = (tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot,
-  access: Access, cutoff?: Tick) => readReleased(deps, tx, attempt, submission, access, cutoff);
-export const readWorkbookDiagnosis = (tx: ReadTransaction, reference: string | SourceRefV1, access: Access) =>
-  readDiagnosis(deps, tx, reference, access);
-export const sourceUnavailable = (error: unknown) => studioDiagnosisSourceUnavailable(deps, error);
+export function openWorkbookDiagnosisSource(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
+  return openSource(deps, tx, reference, access);
+}
+export function openWorkbookQuestionSources(tx: ReadTransaction, submission: FactSnapshot, access: Access, itemId?: string) {
+  return openQuestions(deps, tx, submission, access, itemId);
+}
+export function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot,
+  access: Access, cutoff?: Tick) {
+  return readReleased(deps, tx, attempt, submission, access, cutoff);
+}
+export function readWorkbookDiagnosis(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
+  return readDiagnosis(deps, tx, reference, access);
+}
+export function sourceUnavailable(error: unknown) {
+  return studioDiagnosisSourceUnavailable(deps, error);
+}
 
 const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 
