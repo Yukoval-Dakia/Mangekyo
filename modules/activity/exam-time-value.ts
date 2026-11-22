@@ -109,11 +109,8 @@ function settledItemScore(
   return { earned, maximum };
 }
 
-export function buildWorkbookExamTimeValueInput(params: {
+export function buildWorkbookExamTimeValueInput(params: ExamTimeValueTarget & {
   readonly learner: FactId | string;
-  readonly paperRef: ExamTimeValueRef;
-  readonly attemptRef: ExamTimeValueRef;
-  readonly attempt: WorkbookAttempt;
   readonly watermark: Tick;
   readonly asOfAt: string;
   readonly formal?: ExamTimeValueFormalInput;
@@ -208,10 +205,7 @@ export function buildWorkbookExamTimeValueInput(params: {
   return { request: { attempt_ref: attemptRef, slice }, recordedDurationMs: timing.recorded };
 }
 
-export function projectWorkbookExamTimeValue(params: {
-  readonly paperRef: ExamTimeValueRef;
-  readonly attemptRef: ExamTimeValueRef;
-  readonly attempt: WorkbookAttempt;
+export function projectWorkbookExamTimeValue(params: ExamTimeValueTarget & {
   readonly rawResult: unknown;
 }): ExamTimeValueView {
   const { paperRef, attemptRef, attempt, rawResult } = params;
@@ -255,6 +249,21 @@ export function projectWorkbookExamTimeValue(params: {
 }
 
 type FactReader = { fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot> };
+type ExamTimeValueTarget = {
+  readonly paperRef: ExamTimeValueRef;
+  readonly attemptRef: ExamTimeValueRef;
+  readonly attempt: WorkbookAttempt;
+};
+type ExamTimeValueChecks<TFormal> = {
+  readonly isUnavailable: (error: unknown) => boolean;
+  readonly isPurposeDenied: (error: unknown) => boolean;
+  readonly onlyGrantsChanged: (id: FactId, before: Revision, after: Revision) => Promise<boolean>;
+  readonly readFormal: (
+    release: NonNullable<WorkbookAttempt['paper']['assessmentRelease']>,
+    attemptRef: ExamTimeValueRef,
+    epochs: { releaseEpoch: string; submissionEpoch: string },
+  ) => Promise<TFormal>;
+};
 
 export type AuthorizedExamTimeValueBundle = {
   readonly paperRef: ExamTimeValueRef;
@@ -286,7 +295,7 @@ async function openFrozenPaperForTimeValue(params: {
   }
 }
 
-export async function gatherAuthorizedExamTimeValueBundle(ports: {
+export async function gatherAuthorizedExamTimeValueBundle(ports: ExamTimeValueChecks<ExamTimeValueFormalInput> & {
   readonly tx: ActivityEvidenceReadScope;
   readonly read: FactReader;
   readonly paperId: FactId;
@@ -295,14 +304,6 @@ export async function gatherAuthorizedExamTimeValueBundle(ports: {
   readonly asOfAt: string;
   readonly estimates?: readonly ExamTimeValueEstimate[];
   readonly errorStages?: Readonly<Record<string, NonNullable<EvidenceEventV1['error_stage']>>>;
-  readonly isUnavailable: (error: unknown) => boolean;
-  readonly isPurposeDenied: (error: unknown) => boolean;
-  readonly onlyGrantsChanged: (id: FactId, before: Revision, after: Revision) => Promise<boolean>;
-  readonly readFormal: (
-    release: NonNullable<WorkbookAttempt['paper']['assessmentRelease']>,
-    attemptRef: ExamTimeValueRef,
-    epochs: { releaseEpoch: string; submissionEpoch: string },
-  ) => Promise<ExamTimeValueFormalInput>;
 }): Promise<AuthorizedExamTimeValueBundle | undefined> {
   try {
     const submission = await ports.read.fact(ports.attemptId, { mode: 'following' });
@@ -340,17 +341,11 @@ export async function gatherAuthorizedExamTimeValueBundle(ports: {
   }
 }
 
-export async function revalidateAuthorizedExamTimeValueBundle(ports: {
+export async function revalidateAuthorizedExamTimeValueBundle(ports: ExamTimeValueChecks<
+  Pick<ExamTimeValueFormalInput, 'state' | 'derivationId'>
+> & {
   readonly read: FactReader;
   readonly bundle: AuthorizedExamTimeValueBundle;
-  readonly isUnavailable: (error: unknown) => boolean;
-  readonly isPurposeDenied: (error: unknown) => boolean;
-  readonly onlyGrantsChanged: (id: FactId, before: Revision, after: Revision) => Promise<boolean>;
-  readonly readFormal: (
-    release: NonNullable<WorkbookAttempt['paper']['assessmentRelease']>,
-    attemptRef: ExamTimeValueRef,
-    epochs: { releaseEpoch: string; submissionEpoch: string },
-  ) => Promise<Pick<ExamTimeValueFormalInput, 'state' | 'derivationId'>>;
 }): Promise<boolean> {
   const { bundle } = ports;
   try {

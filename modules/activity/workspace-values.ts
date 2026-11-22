@@ -17,6 +17,7 @@ import {organizerNoteType} from './organizer-values.ts';
 import {turnResearchPurpose} from './values.ts';
 import {helpExposureType} from './help-exposure-values.ts';
 import {ownWordsClaimType} from './takeaway-values.ts';
+import { positiveRevision, recordParser, textValue } from './validation.ts';
 
 export class WorkspaceInputError extends Error {}
 
@@ -45,12 +46,6 @@ export const workspaceRubricLimit = 8000;
 export const workspaceBasisCountLimit = 256;
 
 export type WorkspaceEntryBasis = FactRevisionBasis;
-
-export type WorkspaceEntryBasisInput = {
-  readonly id: string;
-  readonly rev: number;
-  readonly epoch: string | number;
-};
 
 export type WorkspaceWitness = {
   readonly id: string;
@@ -100,16 +95,6 @@ export type WorkspaceEntry = {
 };
 
 export type WorkspaceEntryFields = Omit<WorkspaceEntry, 'basis'>;
-
-export type WorkspaceEntryInput = {
-  readonly kind: WorkspaceEntryKind;
-  readonly title: string;
-  readonly body?: string | null;
-  readonly tags?: readonly string[];
-  readonly links?: readonly string[];
-  readonly answer?: string | null;
-  readonly rubric?: string | null;
-};
 
 export type SaveWorkspaceEntryInput = {
   readonly id: FactId;
@@ -165,23 +150,11 @@ export function validateWorkspaceTeachingRequest(input: {
   return { ok: true as const, changed: true as const, purpose: purposes[0], flags, row };
 }
 
-function record(input: unknown): Record<string, unknown> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw new WorkspaceInputError('工作区条目格式无效。');
-  }
-  return input as Record<string, unknown>;
-}
-
-function storable(value: string): boolean {
-  return value.isWellFormed() && !value.includes('\u0000');
-}
-
-function text(value: unknown, label: string, limit: number): string {
-  if (typeof value !== 'string') throw new WorkspaceInputError(`${label}必须是文字。`);
-  if (!storable(value)) throw new WorkspaceInputError(`${label}包含无效字符。`);
-  if (value.length > limit) throw new WorkspaceInputError(`${label}超过 ${limit} 字。`);
-  return value;
-}
+const record = recordParser(() => new WorkspaceInputError('工作区条目格式无效。'));
+const text = (value: unknown, label: string, limit: number): string =>
+  textValue(value, reason => new WorkspaceInputError(reason === 'type' ? `${label}必须是文字。`
+    : reason === 'storage' ? `${label}包含无效字符。` : `${label}超过 ${limit} 字。`),
+    { limit, requireNonempty: false, preserveWhitespace: true, storageBeforeLength: true });
 
 function title(value: unknown): string {
   const parsed = text(value, 'title', workspaceTitleLimit).trim();
@@ -216,12 +189,8 @@ function kind(value: unknown): WorkspaceEntryKind {
   return value as WorkspaceEntryKind;
 }
 
-function revision(value: unknown, label: string): Revision {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-    throw new WorkspaceInputError(`${label}无效。`);
-  }
-  return value as Revision;
-}
+const revision = (value: unknown, label: string): Revision =>
+  positiveRevision(value, () => new WorkspaceInputError(`${label}无效。`));
 
 function tags(value: unknown): string[] {
   if (value === undefined || value === null) return [];
@@ -347,22 +316,14 @@ export const workspaceShareableTypes = [
   ownWordsClaimType,
   helpExposureType,
 ];
-export const workspaceOverviewTypes = workspaceShareableTypes;
-
-export type LearningOverviewFact = {
-  readonly id: string;
-  readonly rev: number;
-  readonly type: string;
-  readonly value: unknown;
-  readonly accessEpoch: string;
-};
-
 export type LearningOverviewWitness = {
   readonly id: string;
   readonly rev: number;
   readonly type: string;
   readonly accessEpoch: string;
 };
+
+export type LearningOverviewFact = LearningOverviewWitness & { readonly value: unknown };
 
 export type LearningOverviewTask = ReturnType<typeof organizerTask.schema.parse> & Pick<LearningOverviewWitness, 'id' | 'rev'>;
 
@@ -387,14 +348,6 @@ export type LearningOverview = {
   readonly tasks: LearningOverviewTasks;
   readonly witnesses: readonly LearningOverviewWitness[];
 };
-
-export type LearningOverviewRecipient = (fact: LearningOverviewFact) => boolean;
-
-export const learningOverviewConsumerContract = {
-  purpose: 'teaching',
-  behavior: 'Current-revision reads require caller purpose and recipient permission; witnesses identify actual reads.',
-  futureConsumers: ['today-learning-state', 'review', 'proposal'],
-} as const;
 
 export async function verifyWorkspaceEntryBasis(
   read: Pick<CommandContext['read'],'fact'>, id: FactId, basis: readonly WorkspaceEntryBasis[],

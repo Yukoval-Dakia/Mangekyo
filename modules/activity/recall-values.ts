@@ -2,6 +2,7 @@ import { derivationId, factId, type FactRef, type Revision, type Tick } from '@m
 import { sameHelpRef, sameHelpTarget, type HelpExposureEvent, type HelpRef, type HelpTarget } from './help-exposure-values.ts';
 import { projectHelpExposure, type AdmittedHelpEvent } from './help-exposure.ts';
 import { gradeWorkbook, workbookRequestId, type WorkbookQuestion } from './workbook-values.ts';
+import { exactRecordParser, factIdParser, positiveRevision, recordParser, textValue } from './validation.ts';
 
 export const recallIssuanceType = 'activity.recallIssuance';
 export const recallSubmissionType = 'activity.recallSubmission';
@@ -9,28 +10,17 @@ export const issueRecallCommand = 'activity.issueRecall';
 export const submitRecallCommand = 'activity.submitRecall';
 export const recallResponseId = 'answer';
 
-function record(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('回忆题记录格式无效。');
-  return value as Record<string, unknown>;
-}
+const record = recordParser(() => new Error('回忆题记录格式无效。'));
 
-function id(value: unknown) {
-  if (typeof value !== 'string') throw new Error('回忆题缺少标识。');
-  return factId(value);
-}
+const id = factIdParser(() => new Error('回忆题缺少标识。'));
 
 function ref(value: unknown): HelpRef {
   const row = record(value);
-  if (typeof row.rev !== 'number' || !Number.isSafeInteger(row.rev) || row.rev < 1) {
-    throw new Error('回忆题引用版本无效。');
-  }
-  return { id: id(row.id), rev: row.rev as Revision };
+  return { id: id(row.id), rev: positiveRevision(row.rev, () => new Error('回忆题引用版本无效。')) };
 }
 
 function recallText(value: unknown, limit: number): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > limit ||
-      !value.isWellFormed() || value.includes('\0')) throw new Error('回忆题文本无效。');
-  return value;
+  return textValue(value, () => new Error('回忆题文本无效。'), { limit, preserveWhitespace: true });
 }
 
 export function recallIssuance(value: unknown) {
@@ -94,12 +84,10 @@ function gradeRecallItem(item: ReturnType<typeof recallIssuance>['items'][number
 }
 
 function recallFields(value: unknown, names: readonly string[]): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).length !== names.length || names.some(name => !Object.hasOwn(value, name))) {
-    throw new Error('回忆题请求字段无效。');
-  }
-  return value as Record<string, unknown>;
+  return exactRecord(value, names);
 }
+
+const exactRecord = exactRecordParser(() => new Error('回忆题请求字段无效。'));
 
 export function parseRecallMount(value: unknown) {
   const { turnId, derivationId: version, itemId } = recallFields(value, ['turnId', 'derivationId', 'itemId']);

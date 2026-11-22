@@ -6,6 +6,7 @@ import {
   type Revision,
 } from '@mangekyo/kernel';
 import { textMaterial } from './library-values.ts';
+import { positiveRevision, recordParser, textValue } from './validation.ts';
 
 export const organizerNoteType = 'activity.organizerNote';
 
@@ -33,34 +34,16 @@ export type OrganizerNoteDraft = {
   readonly materialId: FactId | null;
 };
 
-function record(input: unknown): Record<string, unknown> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('安排格式无效。');
-  return input as Record<string, unknown>;
-}
-
-function storable(value: string): boolean {
-  return value.isWellFormed() && !value.includes('\u0000');
-}
-
-function text(input: Record<string, unknown>, key: string, limit: number, label: string): string {
-  const value = input[key];
-  if (typeof value !== 'string' || !value.trim() || value.length > limit || !storable(value)) {
-    throw new Error(`${label}无效。`);
-  }
-  return value;
-}
+const record = recordParser(() => new Error('安排格式无效。'));
+const text = (input: Record<string, unknown>, key: string, limit: number, label: string): string =>
+  textValue(input[key], () => new Error(`${label}无效。`), { limit, preserveWhitespace: true });
 
 function title(input: unknown, key = 'title'): string {
   return text(record(input), key, titleLimit, '标题').trim();
 }
 
-function revision(input: Record<string, unknown>, key: string): Revision {
-  const value = input[key];
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-    throw new Error('版本号无效。');
-  }
-  return value as Revision;
-}
+const revision = (input: Record<string, unknown>, key: string): Revision =>
+  positiveRevision(input[key], () => new Error('版本号无效。'));
 
 function material(input: Record<string, unknown>): FactId | null {
   const value = input.materialId;

@@ -2,7 +2,7 @@ import { FactNotFoundError, FactReadDeniedError, type FactSnapshot, type ReadCon
 import { assetType } from '@mangekyo/module-content/facts/asset-contract';
 import { openArithmeticPractice } from '@mangekyo/module-content/facts/arithmetic-practice';
 import { knowledgeEdgeType } from '@mangekyo/module-content/facts/knowledge-edge';
-import { licensedQuestionCopy, workbookAnswerDisplayCandidates } from './evidence-read.ts';
+import { licensedQuestionCopy, workbookAnswerDisplayCandidates, type FactReadChecks } from './evidence-read.ts';
 import {
   arithmeticPracticePaperId, practiceCustodyId, practiceCustodyType, readPracticeCustody,
 } from './sealed-practice.ts';
@@ -19,12 +19,10 @@ export type PythonQuestionItem = {
   answer_exposed: boolean | null; practice_id?: string;
 };
 export type PythonQuestionsArgs = { kc_ids?: unknown; limit?: unknown; answer_exposed?: unknown };
-export type StudioPythonQuestionsDeps = {
+export type StudioPythonQuestionsDeps = FactReadChecks & {
   readonly purpose: string;
   readonly questionScope: string;
   readonly toolFailure: (code: string, message: string, next: { tool: string; args: unknown }, field?: string) => any;
-  readonly isFactNotFound: (error: unknown) => boolean;
-  readonly isFactReadDenied: (error: unknown) => boolean;
   readonly createAuthorizedFactReader: (tx: ReadTransaction, purpose: string, maySend: PythonQuestionsMaySend) => Pick<ReadContext, 'fact'>;
   readonly resolveSource: (tx: ReadTransaction, input: unknown, access: unknown) => Promise<any>;
   readonly openKnowledgeEdge: (tx: ReadTransaction, input: string, access: unknown) => Promise<any>;

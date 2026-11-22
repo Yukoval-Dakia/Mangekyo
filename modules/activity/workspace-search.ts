@@ -2,6 +2,7 @@ import type { FactSnapshot } from '@mangekyo/kernel';
 import goal from '@mangekyo/module-plan/facts/goal';
 import task from '@mangekyo/module-plan/facts/organizer-task';
 import type { ActivityEvidenceReadScope } from './evidence-read.ts';
+import type { LearningOverviewWitness } from './workspace-values.ts';
 import { materialType } from './library-values.ts';
 import { organizerNoteType } from './organizer-values.ts';
 import { isSourceFactId } from './source-values.ts';
@@ -17,11 +18,7 @@ export const workspaceRecordKinds = [...workspaceEntryKinds, ...Object.keys(lega
 
 export type WorkspaceCandidate = {
   learner: string;
-  id: string;
-  rev: number;
-  type: string;
-  accessEpoch: string;
-};
+} & LearningOverviewWitness;
 export type WorkspaceCandidateChannel = {
   matched: 'semantic';
   candidates: readonly WorkspaceCandidate[];

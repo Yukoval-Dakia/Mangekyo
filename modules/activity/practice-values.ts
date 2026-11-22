@@ -1,4 +1,5 @@
 import { averageSpeed } from './starter.ts';
+import { recordParser, textValue } from './validation.ts';
 
 const firstRide = { distance: 12, moving: 40, stopped: 10 };
 const secondRide = { distance: 9, moving: 30, target: 12 };
@@ -55,16 +56,9 @@ export type PracticeView = { paper: Paper; submission: PracticeAttempt | null; h
 export type PracticeAnswers = Record<string, number | null>;
 export type PracticeInput = { version: string; answers: PracticeAnswers };
 
-function record(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value))
-    throw new Error('请提交有效的练习记录。');
-  return value as Record<string, unknown>;
-}
-
-function text(value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) throw new Error('练习记录缺少文字字段。');
-  return value;
-}
+const record = recordParser(() => new Error('请提交有效的练习记录。'));
+const text = (value: unknown): string =>
+  textValue(value, () => new Error('练习记录缺少文字字段。'), { preserveWhitespace: true, storable: false });
 
 function quantity(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0)

@@ -3,7 +3,7 @@ import {
   type FactSnapshot, type ReadContext, type ReadTransaction, type Revision, type Tick,
 } from '@mangekyo/kernel';
 import { assetType } from '@mangekyo/module-content/facts/asset-contract';
-import { frozenWorkbookRevision, licensedQuestionCopy } from './evidence-read.ts';
+import { frozenWorkbookRevision, licensedQuestionCopy, type FactReadChecks } from './evidence-read.ts';
 import { helpAppliesTo } from './help-exposure-values.ts';
 import { materialType, storagePurpose } from './library-values.ts';
 import { workbookAttemptView } from './workbook-assessment-values.ts';
@@ -18,10 +18,8 @@ import { workspaceEntryType } from './workspace-values.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 export type DiagnosisTrack = (fact: FactSnapshot, mode?: 'pinned' | 'following') => void;
 export type DiagnosisMaySend = (fact: FactSnapshot) => boolean;
-export type StudioDiagnosisDeps = {
+export type StudioDiagnosisDeps = FactReadChecks & {
   readonly purpose: string;
-  readonly isFactNotFound: (error: unknown) => boolean;
-  readonly isFactReadDenied: (error: unknown) => boolean;
   readonly revisionsOnlyChangeGrants: (tx: ReadTransaction, id: FactSnapshot['ref']['id'], fromRev: number, toRev: number) => Promise<boolean>;
   readonly createAuthorizedFactReader: (tx: ReadTransaction, purpose: string, maySend: DiagnosisMaySend) => Pick<ReadContext, 'fact'>;
   readonly createCommandReadContext: (tx: ReadTransaction, purpose: string) => ReadContext;

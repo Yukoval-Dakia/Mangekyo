@@ -37,10 +37,6 @@ export type HelpExposureEvidence =
     readonly evidenceRefs: readonly [];
   };
 
-function sameFact(first: FactRef, second: FactRef): boolean {
-  return first.learner === second.learner && sameHelpRef(first, second);
-}
-
 export function projectHelpExposure({ submission, events, coverage }: HelpExposureQuery): HelpExposureEvidence {
   if (submission.cutoff === null) return { kind: 'unknown', reason: 'missing-cutoff', evidenceRefs: [] };
   const cutoff = BigInt(submission.cutoff);
@@ -55,33 +51,10 @@ export function projectHelpExposure({ submission, events, coverage }: HelpExposu
     const evidenceRefs = [...displays.values()].sort((first, second) => first.id.localeCompare(second.id));
     return { kind: 'exposed', evidenceRefs };
   }
-  if (coverage?.through === submission.cutoff && sameFact(coverage.submission, submission.ref)
+  if (coverage?.through === submission.cutoff && coverage.submission.learner === submission.ref.learner
+    && sameHelpRef(coverage.submission, submission.ref)
     && sameHelpTarget(coverage.target, submission.target)) {
     return { kind: 'unexposed', evidenceRefs: [] };
   }
   return { kind: 'unknown', reason: 'incomplete-observation', evidenceRefs: [] };
-}
-
-export type HelpFollowUpEvidence = Exclude<HelpExposureEvidence, { kind: 'unexposed' }>
-  | { readonly kind: 'independent-follow-up'; readonly evidenceRefs: readonly FactRef[] };
-
-export function projectHelpFollowUp(link: FactRef, query: HelpExposureQuery): HelpFollowUpEvidence {
-  const { submission, events } = query;
-  const followUp = events.find(event => sameFact(event.ref, link));
-  if (submission.cutoff === null) return { kind: 'unknown', reason: 'missing-cutoff', evidenceRefs: [] };
-  const cutoff = BigInt(submission.cutoff);
-  if (followUp?.value.kind !== 'follow-up' || link.learner !== submission.ref.learner
-    || !sameHelpRef(followUp.value.answer.submission, submission.ref)
-    || !sameHelpTarget(followUp.value.answer.target, submission.target)
-    || BigInt(followUp.admittedAt) <= cutoff) {
-    return { kind: 'unknown', reason: 'unconfirmed-follow-up', evidenceRefs: [] };
-  }
-  const { display } = followUp.value;
-  const prior = events.find(event => event.value.kind === 'displayed' && event.ref.learner === link.learner
-    && sameHelpRef(event.ref, display) && BigInt(event.admittedAt) < cutoff);
-  if (!prior) return { kind: 'unknown', reason: 'unconfirmed-follow-up', evidenceRefs: [] };
-
-  const exposure = projectHelpExposure(query);
-  if (exposure.kind !== 'unexposed') return exposure;
-  return { kind: 'independent-follow-up', evidenceRefs: [prior.ref, submission.ref, link] };
 }

@@ -4,7 +4,7 @@ import {
 } from '@mangekyo/kernel';
 import { forecastType, readAnyRetentionMethod, type RetentionForecast } from '@mangekyo/module-learner/facts/retention';
 import { knowledgeEdgeType } from '@mangekyo/module-content/facts/knowledge-edge';
-import { readPosttestIssuanceBirth, workbookLinkCandidates, workbookWitnessesBy } from './evidence-read.ts';
+import { readPosttestIssuanceBirth, workbookLinkCandidates, workbookWitnessesBy, type FactReadChecks } from './evidence-read.ts';
 import {
   workbookTraceConceptProofs, sharedWorkbookTraceConcepts, earlierWorkbookTraceAttempts,
   isFrozenWorkbookFollowup, readWorkbookFollowupForecast, workbookTraceCutoff as cutoff,
@@ -15,11 +15,9 @@ import { memoWorkbookRead } from './workbook-context-read.ts';
 import { workbookAttempt, type WorkbookSourceQuestionRef } from './workbook-values.ts';
 import { posttestAttemptFor, posttestIdFor, readPosttestIssuance } from './retention-host-support.ts';
 type Reader = Pick<ReadContext, 'fact'>;
-export type StudioBacktraceDeps = {
+export type StudioBacktraceDeps = FactReadChecks & {
   readonly retentionPurpose: string;
   readonly isRequestError: (error: unknown) => boolean;
-  readonly isFactNotFound: (error: unknown) => boolean;
-  readonly isFactReadDenied: (error: unknown) => boolean;
   readonly openRetentionTarget: (tx: ReadTransaction, read: Reader, paper: unknown, itemId: string) => Promise<any>;
   readonly readItemConceptLinks: (tx: ReadTransaction, ref: unknown, through: unknown, open: unknown) => Promise<readonly any[]>;
   readonly readWorkbookEvidence: (tx: ReadTransaction, read: Reader, old: any, attemptId: FactId) => Promise<any>;

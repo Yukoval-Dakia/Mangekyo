@@ -14,7 +14,7 @@ import {
   validWorkbookMethod, verifiesOriginalSitting, verifyFrozenWorkbookClaims, workbookEvidenceWatermark,
   type PosttestListItem, type SlotRow,
 } from './retention-history.ts';
-import { throughTick, validatesWorkbookHistory } from './evidence-read.ts';
+import { throughTick, validatesWorkbookHistory, type FactReadChecks } from './evidence-read.ts';
 import { sameWorkbookJson, type WorkbookPaper } from './workbook-values.ts';
 export type OpenedRetentionTarget = {
   paper: WorkbookPaper;
@@ -34,15 +34,13 @@ export type ForecastScope = {
   window: RetentionForecast['input']['window'];
   sourceReconciliationKey?: string;
 };
-export type StudioRetentionDeps = {
+export type StudioRetentionDeps = FactReadChecks & {
   readonly retentionPurpose: string;
   readonly forecastSlotType: string;
   readonly reconciliationSlotType: string;
   readonly forecastUnavailable: string;
   readonly fail: StudioRetentionFail;
   readonly isRequestError: (error: unknown) => boolean;
-  readonly isFactNotFound: (error: unknown) => boolean;
-  readonly isFactReadDenied: (error: unknown) => boolean;
   readonly stableId: (...parts: string[]) => string;
   readonly canonicalJsonString: (value: unknown) => string;
   readonly reconciliationSlotKey: (input: { reconciliationId: string }) => string;

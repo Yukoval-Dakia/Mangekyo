@@ -1,5 +1,6 @@
 import { derivationId, factId, type DerivationId, type ReadContext, type Tick } from '@mangekyo/kernel';
 import { helpRef } from './help-exposure-values.ts';
+import { patternParser, utcTimestamp } from './validation.ts';
 import { object } from './values.ts';
 import {
   sameWorkbookJson, workbookGradingVersion, workbookPaper, workbookRequestId, workbookRubricGradingVersion,
@@ -23,15 +24,10 @@ export function retentionPaper(input: unknown) {
   return paper;
 }
 
-function tick(value: unknown): Tick {
-  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) throw new Error('后测刻度无效。');
-  return value as Tick;
-}
+const tick = patternParser(/^(0|[1-9][0-9]*)$/, () => new Error('后测刻度无效。')) as (value: unknown) => Tick;
 
 export function retentionDeadline(value: unknown): string {
-  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) ||
-      new Date(value).toISOString() !== value) throw new Error('需要 UTC 截止时间。');
-  return value;
+  return utcTimestamp(value, () => new Error('需要 UTC 截止时间。'));
 }
 
 export function posttestIssuance(input: unknown) {

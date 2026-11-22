@@ -5,7 +5,8 @@ import {
 import { helpExposureRequest, type HelpPresentation } from './help-exposure-values.ts';
 import { storagePurpose } from './library-values.ts';
 import {
-  isOwnWordsClaim, ownWordsClaimType, saveOwnWordsTakeawayCommand, withdrawOwnWordsTakeawayCommand,
+  isOwnWordsClaim, itemId as itemIdOf, ownWordsClaimType, requestId, saveOwnWordsTakeawayCommand,
+  text as textOf, withdrawOwnWordsTakeawayCommand,
 } from './takeaway-values.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './evidence-read.ts';
 import { projectHelpExposure } from './help-exposure.ts';
@@ -33,22 +34,9 @@ type Deps = {
   unavailable(error: unknown): boolean;
 };
 
-function requestId(value: unknown): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(value)) throw new Error('口诀请求标识无效。');
-  return value;
-}
 function revOf(value: unknown): Revision {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new Error('版本无效。');
   return value as Revision;
-}
-function textOf(value: unknown): string {
-  if (typeof value !== 'string' || !value.isWellFormed() || !value.trim() || value.length > 60)
-    throw new Error('口诀须为 60 字以内的文字。');
-  return value;
-}
-function itemIdOf(value: unknown): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(value)) throw new Error('口诀题位无效。');
-  return value;
 }
 function refOf(value: unknown): { id: FactId; rev: Revision } {
   const r = value && typeof value === 'object' ? value as Record<string, unknown> : {};

@@ -80,6 +80,7 @@ import {
   workbookAttachmentErrorStatus,
   workbookAttachmentRecordedAt,
   workbookAttachmentUrl,
+  type WorkbookAttachmentUploadInput,
   type WorkbookAttachmentUploadReceipt,
   type WorkbookQuestionAttachments,
 } from './workbook-attachments.ts';
@@ -543,13 +544,7 @@ export function prepareWorkbookSubmit(
 
 export async function runWorkbookAttachmentUpload<TBytes extends Uint8Array>(ports: {
   paperValue: string;
-  input: {
-    readonly bytes: TBytes;
-    readonly filename?: unknown;
-    readonly declaredType?: unknown;
-    readonly itemId?: unknown;
-    readonly requestId?: unknown;
-    readonly scope?: unknown;
+  input: WorkbookAttachmentUploadInput<TBytes> & {
     readonly deletionWatermark?: unknown;
   };
   captureCommandType: string;

@@ -52,6 +52,15 @@ export type WorkbookAttachmentRef = {
 
 export type WorkbookQuestionAttachments = Record<string, readonly WorkbookAttachmentRef[]>;
 
+export type WorkbookAttachmentUploadInput<TBytes extends Uint8Array = Uint8Array> = {
+  readonly bytes: TBytes;
+  readonly filename?: unknown;
+  readonly declaredType?: unknown;
+  readonly itemId?: unknown;
+  readonly requestId?: unknown;
+  readonly scope?: unknown;
+};
+
 export type WorkbookAttachmentView = {
   readonly originalId: FactId;
   readonly rev: Revision;
@@ -61,18 +70,11 @@ export type WorkbookAttachmentView = {
 
 export type WorkbookQuestionAttachmentViews = Record<string, readonly WorkbookAttachmentView[]>;
 
-export type WorkbookAttachmentEvidence = {
-  readonly originalId: FactId;
-  readonly rev: Revision;
-  readonly url: string;
+export type WorkbookAttachmentEvidence = Omit<WorkbookAttachmentView, 'available'> & {
   readonly mimeType: WorkbookAttachmentMimeType;
 };
 
-export type WorkbookAttachmentUploadReceipt = {
-  readonly originalId: FactId;
-  readonly rev: Revision;
-  readonly url: string;
-  readonly mimeType: WorkbookAttachmentMimeType;
+export type WorkbookAttachmentUploadReceipt = WorkbookAttachmentEvidence & {
   readonly scope: WorkbookAttachmentScope;
 };
 
@@ -143,13 +145,7 @@ function safeAttachmentName(filename: unknown, mimeType: WorkbookAttachmentMimeT
   return clean || `question-photo.${extensionByMimeType[mimeType]}`;
 }
 
-export function prepareWorkbookAttachmentUpload(input: {
-  readonly bytes: Uint8Array;
-  readonly filename?: unknown;
-  readonly declaredType?: unknown;
-  readonly itemId?: unknown;
-  readonly requestId?: unknown;
-  readonly scope?: unknown;
+export function prepareWorkbookAttachmentUpload(input: WorkbookAttachmentUploadInput & {
   readonly generatedRequestId: string;
 }): PreparedWorkbookAttachmentUpload {
   const mimeType = detectWorkbookAttachmentMimeType(input.bytes, input.declaredType);

@@ -1,13 +1,8 @@
 import { FactNotFoundError, type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import type { ActivityEvidenceReadScope } from './evidence-read.ts';
+import type { WorkspaceFactInput } from './workspace-values.ts';
 
-export type DigestSourceRef = {
-  readonly kind: 'fact';
-  readonly id: FactId;
-  readonly rev: Revision;
-  readonly accessEpoch: Tick;
-  readonly mode: 'pinned' | 'following';
-};
+export type DigestSourceRef = WorkspaceFactInput;
 
 export type ForegroundDigest = {
   id: string;

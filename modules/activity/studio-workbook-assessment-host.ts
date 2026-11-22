@@ -28,6 +28,7 @@ import {
   verifyWorkbookAttachmentManifestInputs, type WorkbookAttachmentEvidence,
 } from './workbook-attachments.ts';
 import type { ReadVerifiedAssessmentPublicationEvidence } from './assessment-publication.ts';
+import type { FactReadChecks } from './evidence-read.ts';
 export const workbookAssessmentSlot = 'activity.workbookFormalAssessment';
 export { workbookTextEvaluator, frozenWorkbookSubmission as frozenSubmission };
 type RouteCharge = {
@@ -54,10 +55,8 @@ export type WorkbookAssessmentHost = {
   readonly readVerifiedEvidence?: ReadVerifiedAssessmentPublicationEvidence;
   readonly resolveAssessmentRoute?: (routeId: string) => Promise<WorkbookAssessmentRoute | null>;
 };
-export type StudioWorkbookAssessmentDeps = {
+export type StudioWorkbookAssessmentDeps = FactReadChecks & {
   readonly fail: (status: number, message: string) => never;
-  readonly isFactNotFound: (error: unknown) => boolean;
-  readonly isFactReadDenied: (error: unknown) => boolean;
   readonly revisionsOnlyChangeGrants: (tx: ReadTransaction, id: FactSnapshot['ref']['id'], fromRev: number, toRev: number) => Promise<boolean>;
   readonly createAuthorizedFactReader: (tx: ReadTransaction, purpose: string, maySend?: (fact: FactSnapshot) => boolean) => Pick<ReadContext, 'fact'>;
   readonly gatherSnapshot: (db: any, scope: { learner: unknown; purpose: string }, gather: (ctx: { read: Pick<ReadContext, 'fact'> }) => Promise<unknown>) => Promise<unknown>;

@@ -16,6 +16,7 @@ import formalAssessmentSlot from './slots/workbook-formal-assessment.ts';
 
 import { checkAssessmentPublication, type ReadVerifiedAssessmentPublicationEvidence } from './assessment-publication.ts';
 import { frozenWorkbookSubmission } from './question-assessment.ts';
+import { isStorable } from './validation.ts';
 
 export const workbookTextEvaluator = { id: 'workbook-text-rubric', version: '1' } as const;
 export const workbookAssessmentPolicy = {
@@ -157,8 +158,7 @@ export function prepareWorkbookRelease(value: unknown, paperId: FactId, draft: W
 }
 
 function text(value: unknown, limit: number): value is string {
-  return typeof value === 'string' && value.trim().length > 0 && value.length <= limit &&
-    value.isWellFormed() && !value.includes('\u0000');
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= limit && isStorable(value);
 }
 
 export function boundedWorkbookReply(value: Json): Json {
