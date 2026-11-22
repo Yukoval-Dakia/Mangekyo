@@ -71,6 +71,7 @@ export type TeachingDispatch = <T>(send: () => Promise<T>) => Promise<T>;
 export type TeachingDependencies = {
   provider: TeachingProvider;
   onProgress?: (progress: TeachingProgress) => Promise<void>;
+  onTextDelta?: (delta: string) => void | Promise<void>;
   /** Authorize at read time and record successful reads in the host audit. */
   readEvidence: (id: string) => Promise<string | undefined>;
   /**
