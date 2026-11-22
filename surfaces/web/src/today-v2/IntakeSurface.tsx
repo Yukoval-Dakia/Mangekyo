@@ -48,16 +48,6 @@ export type IntakeFeedEntry = {
   questionCount?: number;
 };
 
-type IntakeHistoryEntry = {
-  readonly id: string;
-  readonly rev: number;
-  readonly title: string;
-  readonly status: 'organizing' | 'needs_confirmation' | 'ready';
-  readonly extractedQuestionCount: number;
-  readonly questionPreviews?: readonly { readonly excerpt: string }[];
-  readonly canRetryVision: boolean;
-};
-
 export type IntakeSurfaceProps = {
   onNavigate?: (href: string) => void;
   feed?: readonly IntakeFeedEntry[];
@@ -112,27 +102,6 @@ function entryFromMetadata(
     ...(fallback.savedAt ? { savedAt: fallback.savedAt } : {}),
     ...(previewText ? { preview: previewText } : {}),
     ...(typeof sizeBytes === 'number' && sizeBytes > 0 ? { sizeBytes } : {}),
-  };
-}
-
-function entryFromHistory(history: IntakeHistoryEntry, fallback: IntakeFeedEntry): IntakeFeedEntry {
-  const status: IntakeStatus = history.status === 'organizing'
-    ? 'organizing'
-    : history.status === 'needs_confirmation'
-      ? 'needs-confirm'
-      : fallback.status === 'saved'
-        ? 'saved'
-        : 'indexed';
-  const historyPreview = history.questionPreviews?.find(item => item.excerpt)?.excerpt;
-  return {
-    ...fallback,
-    title: history.title || fallback.title,
-    status,
-    href: materialPath(history.id),
-    revision: history.rev,
-    canRetryVision: history.canRetryVision,
-    questionCount: history.extractedQuestionCount,
-    ...(historyPreview && !fallback.preview ? { preview: historyPreview } : {}),
   };
 }
 
@@ -338,23 +307,7 @@ export function IntakeSurface({
     void api<Workspace>('/workspace', { signal: controller.signal })
       .then(async (workspace) => {
         if (controller.signal.aborted) return;
-        const baseEntries = feedFromWorkspace(workspace?.materials ?? []).slice(0, maxHistory);
-        let displayEntries = baseEntries;
-        try {
-          const history = await api<readonly IntakeHistoryEntry[]>('/intake/history', {
-            signal: controller.signal,
-            cache: 'no-store',
-          });
-          if (Array.isArray(history)) {
-            const historyById = new Map(history.slice(0, maxHistory).map(item => [item.id, item]));
-            displayEntries = baseEntries.map(item => {
-              const historyItem = historyById.get(item.id);
-              return historyItem ? entryFromHistory(historyItem, item) : item;
-            });
-          }
-        } catch {
-          // The workspace list remains a compatible fallback when history is unavailable.
-        }
+        const displayEntries = feedFromWorkspace(workspace?.materials ?? []).slice(0, maxHistory);
         setMaterials(displayEntries);
 
         const enrichTargets = displayEntries.slice(0, Math.min(displayEntries.length, 12));

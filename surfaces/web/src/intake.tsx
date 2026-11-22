@@ -575,6 +575,7 @@ function OriginalDetails({ id, receipt, previewText, changed, erase, settings, o
         materialId={metadata.id}
         materialTitle={metadata.title}
         materialRev={metadata.revision}
+        extractionStatus={metadata.extraction.status}
         initialCards={questionCardsFromMetadata(metadata)}
         settings={settings}
         onNavigate={onNavigate}

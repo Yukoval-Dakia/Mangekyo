@@ -97,6 +97,7 @@ export function IntakeQuestionCards({
   materialId,
   materialTitle,
   materialRev,
+  extractionStatus,
   initialCards,
   settings,
   onNavigate,
@@ -104,6 +105,7 @@ export function IntakeQuestionCards({
   materialId: string;
   materialTitle: string;
   materialRev: number;
+  extractionStatus?: string | undefined;
   initialCards: readonly IntakeQuestionCard[];
   settings?: Settings | undefined;
   onNavigate?: ((href: string) => void) | undefined;
@@ -121,7 +123,12 @@ export function IntakeQuestionCards({
   const [action, setAction] = useState<ActionKind | null>(null);
   const [actionError, setActionError] = useState('');
   const [bankReceipt, setBankReceipt] = useState<BankReceipt | null>(null);
-  const loadedRevision = useRef<number | null>(null);
+  const loadedKey = useRef<string | null>(null);
+  const fetchedKey = useRef<string | null>(null);
+  const initialCardsRef = useRef(initialCards);
+  initialCardsRef.current = initialCards;
+  const initialCardsKey = useMemo(() => initialCards.map(card => card.draftId).join('\n'), [initialCards]);
+  const pending = extractionStatus === 'pending';
   const route = settings && chatRoute(settings, 'companion');
   const cards = bundle.questionCards;
   const cardsKey = useMemo(() => cards.map(card => card.draftId).join('\n'), [cards]);
@@ -129,9 +136,24 @@ export function IntakeQuestionCards({
   const chosen = selectedCards(cards, selected);
 
   useEffect(() => {
-    if (cards.length === 0 || loadedRevision.current === materialRev) return;
-    loadedRevision.current = materialRev;
+    const key = `${materialId}:${materialRev}`;
+    if (fetchedKey.current === key) return;
+    setBundle({
+      materialId,
+      materialRev,
+      intakeRev: materialRev,
+      title: materialTitle,
+      questionCards: initialCardsRef.current,
+    });
+  }, [initialCardsKey, materialId, materialRev, materialTitle]);
+
+  useEffect(() => {
+    if (pending) return;
+    const key = `${materialId}:${materialRev}`;
+    if (loadedKey.current === key) return;
+    loadedKey.current = key;
     const controller = new AbortController();
+    let settled = false;
     setLoading(true);
     api<IntakeQuestionCardBundle>(`/materials/${encodeURIComponent(materialId)}/question-cards`, {
       signal: controller.signal,
@@ -139,23 +161,29 @@ export function IntakeQuestionCards({
     })
       .then(value => {
         if (controller.signal.aborted || value.materialId !== materialId) return;
+        settled = true;
+        fetchedKey.current = key;
         setBundle(value);
       })
       .catch(() => {
         if (controller.signal.aborted) return;
-        setBundle(current => ({
-          ...current,
+        settled = true;
+        setBundle({
+          materialId,
           materialRev,
           intakeRev: materialRev,
           title: materialTitle,
-          questionCards: initialCards,
-        }));
+          questionCards: initialCardsRef.current,
+        });
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
-    return () => controller.abort();
-  }, [cards.length, initialCards, materialId, materialRev, materialTitle]);
+    return () => {
+      controller.abort();
+      if (!settled && loadedKey.current === key) loadedKey.current = null;
+    };
+  }, [materialId, materialRev, materialTitle, pending]);
 
   useEffect(() => {
     if (!cardsKey) return;
