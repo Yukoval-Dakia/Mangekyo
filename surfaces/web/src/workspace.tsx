@@ -217,6 +217,7 @@ export function SavedMaterial({
 }) {
   const [erasure,setErasure] = useState(() => readErasure(id));
   const [start,setStart] = useState(false);
+  const [questionCardReading, setQuestionCardReading] = useState<{ id: string; count: number } | null>(null);
   useEffect(() => {
     const restore = () => setErasure(readErasure(id));
     window.addEventListener('storage',restore);
@@ -224,6 +225,14 @@ export function SavedMaterial({
   },[id]);
   if (erasure) return <ErasureProgress id={id} initial={erasure} start={start} onReset={() => {setStart(false);setErasure(null);library.reload();}}/>;
   const m = library.data?.materials.find((x) => x.id === id);
+  const questionCardCount = questionCardReading?.id === id ? questionCardReading.count : 0;
+  function jumpToQuestionCards(event: React.MouseEvent<HTMLAnchorElement>) {
+    const target = document.getElementById('intake-question-cards');
+    if (!target) return;
+    event.preventDefault();
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+    target.scrollIntoView({behavior: reduceMotion ? 'auto' : 'smooth', block: 'start'});
+  }
   return (
     <>
       <a className="back-link" href="/materials">
@@ -232,14 +241,30 @@ export function SavedMaterial({
       <ReadState resource={library} />
       {m ? (
         <article className="reading-paper">
-          <PageTitle title={m.title} meta="个人材料 · 仅保存" />
+          <PageTitle title={m.title} meta="个人材料 · 仅保存">
+            {questionCardCount > 0 && (
+              <a className="intake-cards-jump" href="#intake-question-cards" onClick={jumpToQuestionCards}>
+                直达 {questionCardCount} 道逐题核对卡 ↓
+              </a>
+            )}
+          </PageTitle>
           <div className="study-actions material-actions">
             <a className="primary-button" href={'/companion?mode=prepare&material='+m.id}>让同伴备课</a>
             <a className="tonal-button" href={'/companion?material='+m.id}>带原文提问</a>
             <a href={'/notes?material='+m.id}>写笔记</a>
             <a href={'/papers/new?material='+m.id}>自己编卷</a>
           </div>
-          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} previewText={m.text} changed={library.reload} erase={() => {setStart(true);setErasure(readErasure(id));}} settings={settings} onNavigate={onNavigate} />
+          <MaterialOriginal
+            id={m.id}
+            previewText={m.text}
+            changed={library.reload}
+            erase={() => {setStart(true);setErasure(readErasure(id));}}
+            settings={settings}
+            onNavigate={onNavigate}
+            questionCardsFirst
+            onQuestionCardCountChange={(materialId, count) => setQuestionCardReading({id: materialId, count})}
+          />
+          <p className="preserve">{m.text}</p>
         </article>
       ) : (
         library.data && <h1>未找到这份材料</h1>

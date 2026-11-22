@@ -377,13 +377,25 @@ type OriginalProps = {
   erase?: () => void;
   settings?: Settings | undefined;
   onNavigate?: ((href: string) => void) | undefined;
+  questionCardsFirst?: boolean | undefined;
+  onQuestionCardCountChange?: ((materialId: string, count: number) => void) | undefined;
 };
 
 export function MaterialOriginal(props: OriginalProps) {
   return <OriginalDetails key={props.id} {...props} />;
 }
 
-function OriginalDetails({ id, receipt, previewText, changed, erase, settings, onNavigate }: OriginalProps) {
+function OriginalDetails({
+  id,
+  receipt,
+  previewText,
+  changed,
+  erase,
+  settings,
+  onNavigate,
+  questionCardsFirst,
+  onQuestionCardCountChange,
+}: OriginalProps) {
   const [metadata, setMetadata] = useState<IntakeMetadata | null>(receipt ?? null);
   const latest = useRef(receipt);
   const readGeneration = useRef(0);
@@ -404,6 +416,16 @@ function OriginalDetails({ id, receipt, previewText, changed, erase, settings, o
   const [retryVisionBusy, setRetryVisionBusy] = useState(false);
   const [retryVisionError, setRetryVisionError] = useState('');
   const correctionIntent = useRef<{ text: string; revision: number; requestId: string } | null>(null);
+  const reportedQuestionCards = useRef<string | null>(null);
+  const questionCardCount = metadata ? questionCardsFromMetadata(metadata).length : 0;
+
+  useEffect(() => {
+    if (!metadata) return;
+    const reportKey = `${metadata.id}:${questionCardCount}`;
+    if (reportedQuestionCards.current === reportKey) return;
+    reportedQuestionCards.current = reportKey;
+    onQuestionCardCountChange?.(metadata.id, questionCardCount);
+  }, [metadata, onQuestionCardCountChange, questionCardCount]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -549,9 +571,22 @@ function OriginalDetails({ id, receipt, previewText, changed, erase, settings, o
       </p>
     );
 
+  const questionCards = (
+    <IntakeQuestionCards
+      materialId={metadata.id}
+      materialTitle={metadata.title}
+      materialRev={metadata.revision}
+      extractionStatus={metadata.extraction.status}
+      initialCards={questionCardsFromMetadata(metadata)}
+      settings={settings}
+      onNavigate={onNavigate}
+    />
+  );
+
   return (
-    <section className="intake-original" aria-label="原件与完整抽取">
+    <section className={`intake-original${questionCardsFirst ? ' intake-original-cards-first' : ''}`} aria-label="原件与完整抽取">
       {erase && <EraseOriginal id={id} revision={metadata.revision} onConfirmed={erase}/>}
+      {questionCardsFirst ? questionCards : null}
       <header className="intake-original-head">
         <div>
           <h2>原件与完整抽取</h2>
@@ -579,15 +614,7 @@ function OriginalDetails({ id, receipt, previewText, changed, erase, settings, o
       )}
       {error && <p className="error-text" role="alert">{error}</p>}
       {(pollPaused || error) && <button className="text-button" onClick={() => setRefresh(n => n + 1)}>刷新状态</button>}
-      <IntakeQuestionCards
-        materialId={metadata.id}
-        materialTitle={metadata.title}
-        materialRev={metadata.revision}
-        extractionStatus={metadata.extraction.status}
-        initialCards={questionCardsFromMetadata(metadata)}
-        settings={settings}
-        onNavigate={onNavigate}
-      />
+      {questionCardsFirst ? null : questionCards}
       {metadata.extraction.status === 'failed' && (
         <p className="error-text" role="alert">
           没有自动抽取到文字：{metadata.extraction.error ?? '原因未记录。'} 原件仍然保存，可以在下面手动补充。

@@ -229,19 +229,24 @@ function GraphCanvas({
   const fontScale = Math.max(1, Math.min(1.5, layout.width / Math.max(canvasWidth, 1)));
   const titleFontSize = Math.round(14 * fontScale);
   const metaFontSize = Math.round(12 * fontScale);
-  const activeId = hoveredId ?? selectedId;
   const dense = layout.edges.length > 10;
+  const interactiveIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (hoveredId) ids.add(hoveredId);
+    if (selectedId) ids.add(selectedId);
+    return ids;
+  }, [hoveredId, selectedId]);
   const activeNodeIds = useMemo(() => {
     const active = new Set<string>();
-    if (activeId) {
-      active.add(activeId);
+    for (const id of interactiveIds) {
+      active.add(id);
       for (const edge of layout.edges) {
-        if (edge.fromId === activeId) active.add(edge.toId);
-        if (edge.toId === activeId) active.add(edge.fromId);
+        if (edge.fromId === id) active.add(edge.toId);
+        if (edge.toId === id) active.add(edge.fromId);
       }
     }
     return active;
-  }, [activeId, layout.edges]);
+  }, [interactiveIds, layout.edges]);
 
   useEffect(() => {
     setView({x: 0, y: 0, scale: 1});
@@ -319,6 +324,11 @@ function GraphCanvas({
         aria-label="知识图谱"
         tabIndex={0}
         onKeyDown={onKeyDown}
+        onBlur={event => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setFocusIndex(-1);
+          }
+        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -338,10 +348,10 @@ function GraphCanvas({
               key={edge.id}
               edge={edge}
               nodes={nodeMap}
-              active={Boolean(activeId) && (edge.fromId === activeId || edge.toId === activeId)}
+              active={interactiveIds.has(edge.fromId) || interactiveIds.has(edge.toId)}
               fontScale={fontScale}
               edgeIndex={edgeIndex}
-              showLabel={!dense || Boolean(activeId) && (edge.fromId === activeId || edge.toId === activeId)}
+              showLabel={!dense || interactiveIds.has(edge.fromId) || interactiveIds.has(edge.toId)}
             />
           ))}
           {layout.nodes.map(item => {
@@ -349,14 +359,21 @@ function GraphCanvas({
             const selected = node.id === selectedId;
             const focused = ordered[focusIndex]?.node.id === node.id;
             const related = activeNodeIds.size === 0 || activeNodeIds.has(node.id);
+            const dimmed = !selected && !focused && !related;
             return (
               <g
                 key={node.id}
-                className={`kg-node ${nodeToneClass(node.mastery.status)}${selected ? ' kg-node-selected' : ''}${focused ? ' kg-node-focused' : ''}${related ? '' : ' kg-node-dim'}`}
+                id={`kg-node-${node.id}`}
+                className={`kg-node ${nodeToneClass(node.mastery.status)}${selected ? ' kg-node-selected' : ''}${focused ? ' kg-node-focused' : ''}${dimmed ? ' kg-node-dim' : ''}`}
                 transform={`translate(${item.x},${item.y})`}
                 role="listitem"
+                aria-current={selected ? 'true' : undefined}
                 aria-label={`${node.title}，${masterySummary(node)}`}
-                onClick={() => onSelect(node.id)}
+                onClick={() => {
+                  setFocusIndex(-1);
+                  onSelect(node.id);
+                }}
+                onFocus={() => setFocusIndex(ordered.indexOf(item))}
                 onMouseEnter={() => setHoveredId(node.id)}
                 onMouseLeave={() => setHoveredId(current => current === node.id ? null : current)}
                 onKeyDown={event => {
@@ -368,6 +385,15 @@ function GraphCanvas({
                 tabIndex={-1}
               >
                 <title>{node.title}</title>
+                <rect
+                  className="kg-node-focus-ring"
+                  x={-NODE_WIDTH / 2 - 8}
+                  y={-NODE_HEIGHT / 2 - 8}
+                  width={NODE_WIDTH + 16}
+                  height={NODE_HEIGHT + 16}
+                  rx={28}
+                  pointerEvents="none"
+                />
                 <rect className="kg-node-card" x={-NODE_WIDTH / 2} y={-NODE_HEIGHT / 2} width={NODE_WIDTH} height={NODE_HEIGHT} rx={22} />
                 <circle className="kg-node-dot" cx={-NODE_WIDTH / 2 + 22} cy={-14} r={6} />
                 <text
