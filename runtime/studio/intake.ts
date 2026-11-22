@@ -239,17 +239,21 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
   }
 
   async function questionCards(materialId: string) {
-    const facts = await factsFor(materialId);
+    let facts;
+    try { facts = await factsFor(materialId); } catch (error) {
+      throw intakeOps.translateIntakeReadError(error, error instanceof LifecycleError, error instanceof FactReadDeniedError);
+    }
     return { materialId: facts.id, materialRev: facts.material.ref.rev, intakeRev: facts.document.ref.rev,
       title: intakeOps.projectIntakeFacts(facts.id, facts.material.value, facts.document.value, facts.document.ref.rev, facts.document.purpose).title,
       questionCards: projectIntakeQuestionCards(facts.document.value) };
   }
 
-  async function confirmDrafts(materialId: string, input: unknown) {
+  async function confirmDrafts(materialId: string, input: unknown, workbookOverride = workbook) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new RequestError(400, '拍卷确认请求格式无效。');
     const value = input as Record<string, unknown>;
     if (value.mode === 'workbook') {
-      if (!workbook) throw new RequestError(500, '练习模块未启用。');
+      const targetWorkbook = workbookOverride ?? workbook;
+      if (!targetWorkbook) throw new RequestError(500, '练习模块未启用。');
       let facts;
       try { facts = await factsFor(materialId); } catch (error) {
         throw intakeOps.translateIntakeReadError(error, error instanceof LifecycleError, error instanceof FactReadDeniedError);
@@ -257,11 +261,12 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       let draft;
       try { draft = buildWorkbookDraftFromIntakeSelection(facts.document.value, value as IntakeWorkbookSelection); }
       catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '微卷选题格式无效。'); }
-      const saved = await workbook.save({requestId: value.requestId, title: draft.title, materialId: draft.materialId, questions: draft.questions});
-      return {kind: 'workbook' as const, paperId: saved.id, href: '/papers/' + saved.id};
+      const saved = await targetWorkbook.save({requestId: value.requestId, title: draft.title, materialId: draft.materialId, questions: draft.questions});
+      return {kind: 'workbook' as const, paperId: saved.id, href: '/papers/' + saved.id, title: draft.title, questionCount: draft.questions.length};
     }
     if (value.mode !== 'bank') throw new RequestError(400, '拍卷确认方式无效。');
     if (value.confirmedByLearner !== true) throw new RequestError(400, '加入题库需要学习者显式确认。');
+    const requestId = clientRequest(value.requestId);
     let data;
     try { data = parseConfirmIntakeQuestions({ confirmedByLearner: true, materialId, expectedMaterialRev: value.expectedMaterialRev,
       items: value.items, ...(value.purpose === undefined ? {} : {purpose: value.purpose}) }); }
@@ -271,7 +276,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     try {
       receipt = await handle({
         learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: confirmIntakeQuestionsCommand,
-        id: commandId(stableId('intake-question-confirmation', String(value.requestId))), input: data,
+        id: commandId(stableId('intake-question-confirmation', requestId)), input: data,
       });
     } catch (error) {
       if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw new RequestError(404, '找不到这份拍卷材料。');
@@ -285,7 +290,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
 
   return {
     lifecycle, capture, correct,
-    retryVision, questionCards, confirmDrafts, workbook,
+    retryVision, questionCards, confirmDrafts,
     async setResearch(materialId: string, input: unknown) {
       const { id, data } = intakeOps.prepareIntakeResearchPermission(materialId, input, intakeIdFor);
       try {
@@ -335,11 +340,12 @@ export async function handleIntakeRequest(
   papers?: ReturnType<typeof openCapturePapers>, _workbook?: { save(input: unknown): Promise<{id: string}> },
 ): Promise<boolean> {
   const cardRoute = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/(question-cards|confirm-drafts)$/.exec(pathname);
-  if (_workbook) intake.workbook = _workbook;
-  if (cardRoute?.[1] && (method === 'GET' || method === 'POST')) {
+  if (cardRoute?.[1]) {
+    const expected = cardRoute[2] === 'question-cards' ? 'GET' : 'POST';
+    if (method !== expected) return json(response, 405, {error: '这个入口只接受指定操作。'}), true;
     try {
       const result = cardRoute[2] === 'question-cards' ? await intake.questionCards(cardRoute[1])
-        : await intake.confirmDrafts(cardRoute[1], JSON.parse((await readBody(request, 1_048_576)).toString('utf8')));
+        : await intake.confirmDrafts(cardRoute[1], JSON.parse((await readBody(request, 1_048_576)).toString('utf8')), _workbook);
       if (result) return json(response, cardRoute[2] === 'question-cards' ? 200 : 201, result), true;
     } catch (error) {
       const status = error instanceof RequestError ? error.status : error instanceof SyntaxError ? 400 : 500;

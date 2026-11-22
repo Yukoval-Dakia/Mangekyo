@@ -40,7 +40,7 @@ describe.skipIf(!testDatabaseUrl)('intake question cards in PostgreSQL', () => {
     if (!activity || !plan || !capture || !content) throw new Error('missing test module');
     const hooks = { onFactsChanged: async () => {} };
     workbook = openWorkbook(db, activity, { capture });
-    intake = openIntake(db, capture, content, hooks, workbook);
+    intake = openIntake(db, capture, content, hooks);
     organizer = openOrganizer(db, activity, plan, hooks);
     const server = createServer((request, response) => void handleIntakeRequest(
       intake, request, response, new URL(request.url!, 'http://127.0.0.1').pathname, request.method, undefined, workbook,
@@ -106,6 +106,8 @@ describe.skipIf(!testDatabaseUrl)('intake question cards in PostgreSQL', () => {
     const item = { draftId, title: '第 1 题', stem: '计算 1+1', options: [{ label: 'A', text: '1' }] };
     const withoutConsent = await post(material.id, { requestId: 'bank-no-0001', mode: 'bank', expectedMaterialRev: bundle.materialRev, items: [item] });
     expect(withoutConsent.response.status).toBe(400);
+    const missingRequest = await post(material.id, { mode: 'bank', confirmedByLearner: true, expectedMaterialRev: bundle.materialRev, items: [item] });
+    expect(missingRequest.response.status).toBe(400);
     const saved = await post(material.id, { requestId: 'bank-1-00000001', mode: 'bank', confirmedByLearner: true, expectedMaterialRev: bundle.materialRev, purpose: 'storage', items: [item] });
     expect(saved.response.status).toBe(201);
     expect(saved.body).toMatchObject({ kind: 'bank', savedCount: 1, skippedCount: 0, questionIds: [expect.any(String)] });
@@ -113,8 +115,15 @@ describe.skipIf(!testDatabaseUrl)('intake question cards in PostgreSQL', () => {
     expect(repeated.body).toMatchObject({ kind: 'bank', savedCount: 0, skippedCount: 1, questionIds: saved.body.questionIds });
     const stale = await post(material.id, { requestId: 'bank-stale-0001', mode: 'bank', confirmedByLearner: true, expectedMaterialRev: bundle.materialRev + 1, items: [item] });
     expect(stale.response.status).toBe(409);
+    const missing = await fetch(`${origin}/api/materials/${material.id.replace(/^./, 'X')}/question-cards`);
+    expect(missing.status).toBe(404);
+    const wrongMethodCards = await fetch(`${origin}/api/materials/${material.id}/question-cards`, {method: 'POST'});
+    expect(wrongMethodCards.status).toBe(405);
+    const wrongMethodDrafts = await fetch(`${origin}/api/materials/${material.id}/confirm-drafts`);
+    expect(wrongMethodDrafts.status).toBe(405);
     const paper = await post(material.id, { requestId: 'workbook-00001', mode: 'workbook', items: [draftId] });
     expect(paper.response.status).toBe(201);
+    expect(paper.body).toMatchObject({kind: 'workbook', paperId: expect.any(String), href: '/papers/' + paper.body.paperId, title: 'cards（错题复盘）', questionCount: 1});
     expect(await workbook.get(String(paper.body.paperId))).toMatchObject({ id: paper.body.paperId, title: 'cards（错题复盘）' });
   });
 
