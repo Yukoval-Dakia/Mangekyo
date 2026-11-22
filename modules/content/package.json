@@ -27,6 +27,7 @@
     "./facts/correction-micro-variant": "./correction-micro-variant-read.ts",
     "./facts/thought-pin": "./thought-pin.ts",
     "./facts/question-release": "./question-release.ts",
+    "./facts/question-state": "./question-state.ts",
     "./facts/arithmetic-practice": "./arithmetic-practice.ts",
     "./facts/assessment": "./assessment-values.ts",
     "./facts/material": "./facts/material.ts",

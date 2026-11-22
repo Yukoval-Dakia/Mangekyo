@@ -1,5 +1,5 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
-import { assetType, checkQuestionTeachingSources, questionAsset } from '../asset.ts';
+import { assetType, checkQuestionTeachingSources, questionAsset, refreshPurposeOnlyTeachingSources } from '../asset.ts';
 import { fields, pageId, record, revision } from '../parse.ts';
 import { parseQuestionMetaDraft, questionMetaDraftId, questionMetaDraftType, readQuestionState } from '../question-state.ts';
 
@@ -24,9 +24,12 @@ export default defineCommand({
     if (metadata.type !== questionMetaDraftType) throw new Error('活元信息类型不匹配。');
     const draft = parseQuestionMetaDraft(metadata.value);
     if (draft.id !== id || draft.expectedRev !== expectedRev) throw new Error('活元信息与题版不匹配。');
+    let refreshedDraftBasis = draft.basis;
     if (allowed) {
-      await checkQuestionTeachingSources(ctx.read, asset);
-      await checkQuestionTeachingSources(ctx.read, { basis: draft.basis });
+      const assetBasis = await refreshPurposeOnlyTeachingSources(ctx.read, asset.basis ?? []);
+      await checkQuestionTeachingSources(ctx.read, { ...asset, basis: assetBasis });
+      refreshedDraftBasis = await refreshPurposeOnlyTeachingSources(ctx.read, draft.basis);
+      await checkQuestionTeachingSources(ctx.read, { basis: refreshedDraftBasis });
     }
     const nextRev = revision(expectedRev + 1);
     return [
@@ -34,7 +37,7 @@ export default defineCommand({
       { kind: 'set_purpose', id: state.ref.id, expectedRev: state.ref.rev, purpose },
       { kind: 'set_purpose', id: metadata.ref.id, expectedRev: metadata.ref.rev, purpose: ['storage'] },
       { kind: 'create', id: await questionMetaDraftId({ ...question.ref, rev: nextRev }),
-        factType: questionMetaDraftType, purpose, data: { ...draft, expectedRev: nextRev },
+        factType: questionMetaDraftType, purpose, data: { ...draft, expectedRev: nextRev, basis: refreshedDraftBasis },
       },
     ];
   },

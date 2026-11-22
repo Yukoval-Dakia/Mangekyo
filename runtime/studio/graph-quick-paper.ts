@@ -4,7 +4,7 @@ import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
 import { readConceptAttemptEvidence } from '../../modules/activity/concept-evidence.ts';
 import { verifyWorkspaceEntryBasis, workspaceEntry } from '../../modules/activity/workspace-values.ts';
-import { buildNodePracticeInput, mapQuickPaperDraft, type NodePracticeQuestion } from '../../modules/activity/node-practice-candidates.ts';
+import { buildNodePracticeInput, collectRedPenQuestionIds, mapQuickPaperDraft, type NodePracticeQuestion } from '../../modules/activity/node-practice-candidates.ts';
 import { parseAsset, questionPrompt } from '../../modules/content/asset.ts';
 import { readAuthorizedKnowledgeGraph } from '../../modules/content/knowledge-graph-overview.ts';
 import { projectBatchConceptMastery } from '../../modules/learner/knowledge-mastery.ts';
@@ -12,6 +12,7 @@ import { selectQuestionsForConceptNode } from '../../modules/plan/node-practice.
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { checkStudioNotionFact, notionReadScope, type CheckNotionRead } from './notion.ts';
 import { studioLearner } from './identity.ts';
+import { intakeIdFor } from './intake-lifecycle.ts';
 import { RequestError } from './sessions.ts';
 import type { openWorkbook } from './workbook.ts';
 
@@ -54,12 +55,13 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
     const node = graph.nodes.find(node => node.id === nodeId);
     if (!node) throw new RequestError(404, '找不到这个知识点。');
     const links = graph.questionConceptLinks.filter(link => link.conceptId === nodeId || graph.edges.some(edge => edge.kind === 'prereq_of' && edge.toId === nodeId && edge.fromId === link.conceptId));
-    const questions: NodePracticeQuestion[] = [];
+    const questions: NodePracticeQuestion[] = []; const materialIds = new Set<FactId>();
     for (const link of links) {
       try {
         const opened = await gated.fact(link.questionId, { mode: 'following' }) as FactSnapshot;
         if (opened.type === 'content.asset') {
           const asset = parseAsset(opened.value);
+          for (const source of asset.basis ?? []) if (source.type === 'activity.textMaterial') materialIds.add(source.id);
           if (asset.kind === 'question' && questionPrompt(asset).trim()) questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'content.asset', prompt: questionPrompt(asset) });
         }
         else if (opened.type === 'activity.workspaceEntry') {
@@ -68,6 +70,10 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
         }
       } catch (error) { if (!unavailable(error)) throw error; }
     }
+    const redPenQuestionIds = await collectRedPenQuestionIds((await Promise.all([...materialIds].map(async id => {
+      try { return await gated.fact(intakeIdFor(id), { mode: 'following' }); } catch (error) { if (!unavailable(error)) throw error; return undefined; }
+    }))).map(document => document?.value));
+    questions.forEach((question, index) => { if (redPenQuestionIds.has(question.id)) questions[index] = { ...question, isRedPenError: true }; });
     const storageRead = { ...createCommandReadContext(tx, 'storage'), fact };
     const evidence = await readConceptAttemptEvidence(tx, storageRead, links, unavailable);
     const mastery = projectBatchConceptMastery({ asOf: new Date().toISOString(), conceptIds: graph.nodes.map(item => item.id), attempts: evidence.attempts, forecasts: [], incompleteConceptIds: evidence.incompleteConceptIds, activeMisconceptionConceptIds: new Set() });
