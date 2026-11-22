@@ -9,6 +9,7 @@ import type { TextbookMasteryScope, TextbookMasterySources } from '@mangekyo/mod
 
 type EvidenceRead = Pick<ReadContext, 'fact'>;
 type PythonHost = { derive(deriver: string, payload: unknown): Promise<unknown> };
+type ConceptEvidence = Awaited<ReturnType<typeof readConceptAttemptEvidence>>;
 
 export type GraphMasteryEvidenceInput = {
   readonly tx: Parameters<typeof readConceptAttemptEvidence>[0];
@@ -17,6 +18,7 @@ export type GraphMasteryEvidenceInput = {
   readonly python: PythonHost;
   readonly reopen: (refs: readonly BusWitness[]) => Promise<readonly BusWitness[]>;
   readonly isUnavailable: (error: unknown) => boolean;
+  readonly evidence?: ConceptEvidence;
 };
 
 const href = (question: FactId) => `/materials/records/${question}?ref=${encodeURIComponent(JSON.stringify({
@@ -45,7 +47,7 @@ export function graphMasterySources(input: GraphMasteryEvidenceInput): TextbookM
     async readEvidence(scope: TextbookMasteryScope, conceptIds: readonly string[]) {
       const requested = new Set(conceptIds);
       const links = input.links.filter(link => requested.has(link.conceptId));
-      const {attempts, incompleteConceptIds} = await readConceptAttemptEvidence(
+      const {attempts, incompleteConceptIds} = input.evidence ?? await readConceptAttemptEvidence(
         input.tx, input.read as never, links, input.isUnavailable);
       const grouped = new Map<string, {attempt: ConceptEvidenceRow; concepts: string[]}>();
       for (const attempt of attempts) {
@@ -55,18 +57,27 @@ export function graphMasterySources(input: GraphMasteryEvidenceInput): TextbookM
         grouped.set(key, row);
       }
       const rows = [...grouped.values()];
-      const anchors: Awaited<ReturnType<typeof anchorFor>>[] = [];
-      for (const row of rows) anchors.push(await anchorFor(input.read, row.attempt));
+      const anchored: {row: typeof rows[number]; anchor: Awaited<ReturnType<typeof anchorFor>>}[] = [];
       const incomplete = new Set(incompleteConceptIds);
-      for (const row of rows) if (row.attempt.exposure === 'unknown') row.concepts.forEach(id => incomplete.add(id));
-      const observations = rows.map(row => ({
+      for (const row of rows) {
+        if (row.attempt.exposure === 'unknown' || row.attempt.helpLevel === 'unknown')
+          row.concepts.forEach(id => incomplete.add(id));
+      }
+      for (const row of rows) {
+        try {
+          anchored.push({row, anchor: await anchorFor(input.read, row.attempt)});
+        } catch (error) {
+          if (!input.isUnavailable(error)) throw error;
+          row.concepts.forEach(id => incomplete.add(id));
+        }
+      }
+      const observations = anchored.map(({row}) => ({
         submission: row.attempt.submission, occurredAt: row.attempt.occurredAt, concepts: row.concepts,
-        novelty: 'same' as const, helpLevel: row.attempt.exposure === 'independent' ? 'independent' as const : 'unknown' as const,
-        result: row.attempt.outcome,
+        novelty: 'same' as const, helpLevel: row.attempt.helpLevel, result: row.attempt.outcome,
       }));
       return {
         slice: activityEvidenceSlice(scope.clockWatermark, scope.asOf, undefined, observations),
-        anchors,
+        anchors: anchored.map(({anchor}) => anchor),
         completeConceptIds: conceptIds.filter(id => !incomplete.has(id)),
       };
     },
@@ -85,10 +96,10 @@ export async function projectGraphMastery(input: GraphMasteryEvidenceInput & {
   readonly concepts: readonly FactId[];
   readonly activeMisconceptionConceptIds?: ReadonlySet<string>;
 }) {
-  const {attempts} = await readConceptAttemptEvidence(input.tx, input.read as never, input.links, input.isUnavailable);
+  const evidence = await readConceptAttemptEvidence(input.tx, input.read as never, input.links, input.isUnavailable);
   const view = await projectGraphConceptMastery({...input.scope, concepts: input.concepts.map(conceptId => ({conceptId}))},
-    graphMasterySources(input));
-  return {view, mastery: mapGraphConceptMastery(view, attempts, input.activeMisconceptionConceptIds)};
+    graphMasterySources({...input, evidence}));
+  return {view, mastery: mapGraphConceptMastery(view, evidence.attempts, input.activeMisconceptionConceptIds)};
 }
 
 export function mapGraphConceptMastery(

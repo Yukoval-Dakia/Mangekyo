@@ -90,22 +90,12 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         const read = gatedReader(tx, readers, use, check);
         const storageRead = { ...createCommandReadContext(tx, use), fact: read.fact };
         const graph = await readAuthorizedKnowledgeGraph(tx, graphAccess(tx, read, use, check));
-        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageRead, graph.questionConceptLinks, isUnavailable);
-        const retention = await readRetention(tx, check);
         const misconceptions = await readActiveMisconceptionConceptIds(tx, {
           readStorage: read, isUnavailable,
           openHypothesisObject: data => openHypothesisObject(tx, data, () => true, hypothesisCheck(check)),
           openObjectiveCitations: refs => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
         });
         const conceptIds = graph.nodes.map(node => node.id);
-        const { rows, conceptsByQuestion } = mapConceptForecastInputs(
-          retention.forecasts.flatMap(({ view, forecast, facts }) => view.kind === 'forecast' && forecast.estimate.kind === 'probabilistic' ? [{
-            effectiveTick: view.effectiveTick, observedThrough: forecast.input.observedThrough, probability: forecast.estimate.probability,
-            ...(forecast.estimate.crossingAt ? { crossingAt: forecast.estimate.crossingAt } : {}),
-            ...(forecast.estimate.bucket.kcId ? { kcId: forecast.estimate.bucket.kcId } : {}),
-            paperId: forecast.input.target.paper.id, itemId: forecast.input.target.itemId, facts,
-          }] : []), graph.questionConceptLinks);
-        const forecasts = extractConceptForecastSignals(rows, new Set(conceptIds), conceptsByQuestion);
         if (pulseHost) {
           const reopen = async (refs: readonly BusWitness[]) => {
             const opened: BusWitness[] = [];
@@ -125,6 +115,16 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
             )).rows[0]?.clock ?? '0') as Tick}, concepts: conceptIds, activeMisconceptionConceptIds: misconceptions});
           return composeKnowledgeGraphResponse(asOf, graph, graphMastery.mastery);
         }
+        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageRead, graph.questionConceptLinks, isUnavailable);
+        const retention = await readRetention(tx, check);
+        const { rows, conceptsByQuestion } = mapConceptForecastInputs(
+          retention.forecasts.flatMap(({ view, forecast, facts }) => view.kind === 'forecast' && forecast.estimate.kind === 'probabilistic' ? [{
+            effectiveTick: view.effectiveTick, observedThrough: forecast.input.observedThrough, probability: forecast.estimate.probability,
+            ...(forecast.estimate.crossingAt ? { crossingAt: forecast.estimate.crossingAt } : {}),
+            ...(forecast.estimate.bucket.kcId ? { kcId: forecast.estimate.bucket.kcId } : {}),
+            paperId: forecast.input.target.paper.id, itemId: forecast.input.target.itemId, facts,
+          }] : []), graph.questionConceptLinks);
+        const forecasts = extractConceptForecastSignals(rows, new Set(conceptIds), conceptsByQuestion);
         return composeKnowledgeGraphResponse(asOf, graph, projectBatchConceptMastery({
           asOf, conceptIds, attempts, forecasts, incompleteConceptIds, activeMisconceptionConceptIds: misconceptions,
         }));

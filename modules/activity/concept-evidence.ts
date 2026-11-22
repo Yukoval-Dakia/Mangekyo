@@ -4,7 +4,7 @@ import {
   readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, workbookItemHistory,
   type ActivityEvidenceReadScope,
 } from './evidence-read.ts';
-import { controlledWorkbookHelp } from './evidence-slice.ts';
+import { controlledWorkbookHelp, type ActivityEvidenceObservation } from './evidence-slice.ts';
 import { reopenControlledHelpBasis, type HelpTarget } from './help-exposure-values.ts';
 import {
   issuedPosttestPaper, posttestIssuance, posttestIssuanceType, posttestSubmissionType,
@@ -21,6 +21,7 @@ export type ConceptEvidenceRow = {
   readonly recordedTick: Tick;
   readonly outcome: 'correct' | 'incorrect' | 'unknown';
   readonly exposure: 'independent' | 'exposed' | 'unknown';
+  readonly helpLevel: ActivityEvidenceObservation['helpLevel'];
   readonly basisRefs: readonly { readonly id: FactId; readonly rev: Revision; readonly type: string }[];
 };
 
@@ -163,6 +164,7 @@ export async function readConceptAttemptEvidence(
         recordedTick: birth.tick,
         outcome,
         exposure,
+        helpLevel: process.helpLevel,
         basisRefs: [
           { id: issuanceFact.ref.id, rev: issuanceFact.ref.rev, type: issuanceFact.type },
           { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type },
