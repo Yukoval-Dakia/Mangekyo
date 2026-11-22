@@ -10,6 +10,7 @@ import { closedPosttest, retentionPaper, retentionPaperType, retentionTeachingPu
 import { creation, object } from '../values.ts';
 import { freezeWorkbookBank } from '../workbook-bank.ts';
 import { arithmeticPracticePaper, arithmeticPracticePaperId, practiceCustody, practiceCustodyId, practiceCustodyType, sealedPracticePurpose } from '../sealed-practice.ts';
+import { assetType } from '@mangekyo/module-content/facts/intake-question-bank';
 import {
   saveWorkbookPaperCommand,
   workbookAssessmentPurpose,
@@ -78,10 +79,31 @@ export default defineCommand({
       const ref = question.sourceQuestionRef;
       if (!ref) continue;
       const source = await ctx.read.fact(factId(ref.id), { mode: 'pinned', rev: ref.rev });
-      if (source.type !== workspaceEntryType) {
+      if (source.type === workspaceEntryType) {
+        if (!matchesWorkspaceQuestion(workspaceEntry(source.value), question)) {
+          throw new WorkbookSourceMismatch('引用的来源题目与冻结题项不一致。');
+        }
+        continue;
+      }
+      if (source.type !== assetType) {
         throw new WorkbookSourceMismatch('来源题目引用类型无效。');
       }
-      if (!matchesWorkspaceQuestion(workspaceEntry(source.value), question)) {
+      const asset = source.value;
+      const prompt = typeof asset === 'object' && asset !== null && !Array.isArray(asset)
+        ? (asset as Record<string, unknown>).blocks
+        : undefined;
+      const promptText = Array.isArray(prompt)
+        ? prompt.find(block => {
+            const row = block as Record<string, unknown>;
+            const body = row?.body as Record<string, unknown> | undefined;
+            return row?.id === (asset as Record<string, unknown>).promptBlockId && body?.kind === 'text';
+          })
+        : undefined;
+      const text = promptText && typeof (promptText as Record<string, unknown>).body === 'object'
+        ? ((promptText as Record<string, unknown>).body as Record<string, unknown>).text
+        : undefined;
+      if (typeof asset !== 'object' || asset === null || (asset as Record<string, unknown>).kind !== 'question' ||
+          typeof text !== 'string' || text.trim() !== question.prompt.trim()) {
         throw new WorkbookSourceMismatch('引用的来源题目与冻结题项不一致。');
       }
     }

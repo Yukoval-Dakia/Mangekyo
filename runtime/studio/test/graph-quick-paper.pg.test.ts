@@ -5,9 +5,11 @@ import { commandId, factId, type FactId } from '../../../kernel/src/declarations
 import type { Json } from '../../../kernel/src/declarations/types.ts';
 import { intakeQuestionId } from '../../../modules/content/intake-question-bank.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
+import { createPythonDeriverHost } from '../../../executors/python-deriver/host.ts';
 import { stableId, studioLearner } from '../identity.ts';
 import { intakeWriteTargets } from '../intake.ts';
 import { serve } from '../http.ts';
+import { openTransparency } from '../transparency.ts';
 import { openWorkbook } from '../workbook.ts';
 import { loadStudioTestModule } from './modules.ts';
 
@@ -76,4 +78,72 @@ it.skipIf(!testDatabaseUrl)('issues authorized node quick papers and filters rev
       expect(await call(id('variant-target'), 'empty-request', 0)).toMatchObject({ status: 400, body: { error: '抽题数量须为 1 到 5。' } });
       expect(await call(id('variant-target'), 'bad', 1).then(result => ({...result, body: {error: result.body.error}}))).toMatchObject({ status: 400, body: { error: '抽题请求标识无效。' } });
     } finally { server.close(); }
+  }));
+
+it.skipIf(!testDatabaseUrl)('closes quick-paper attempts into live graph mastery and keeps S11 fail-closed', { timeout: 30_000 }, () =>
+  withLearnerDatabase(studioLearner, async db => {
+    const [activity, capture, content] = await Promise.all(['activity', 'capture', 'content'].map(loadStudioTestModule));
+    const python = createPythonDeriverHost();
+    const workbook = openWorkbook(db, activity!);
+    const transparency = openTransparency(db, { python, backtrace: () => async () => null });
+    const handle = createCommandHandler(db, { modules: [activity!, capture!, content!], hooks: { async onFactsChanged() {} }, crossModuleWrites: intakeWriteTargets });
+    const send = (type: string, key: string, input: Json, purpose = 'teaching') => handle({ learner: studioLearner, actor: 'learner', purpose, id: commandId(stableId('qp-mastery', key)), type, input });
+    const id = (key: string) => factId(stableId('qp-mastery', key));
+    const use = (factId: FactId, rev = 1) => ({ id: factId, rev, accessEpoch: '0' });
+    try {
+      await send('activity.saveWorkspaceEntry', 'note', { id: id('note'), entry: { kind: 'page', title: '证据', body: '概念依据', tags: [], links: [] }, basis: [] });
+      await send('content.createKnowledgeEntity', 'concept', { id: id('concept'), purpose: 'teaching', entity: { kind: 'concept', canonicalName: '极限', aliases: [], merged_into: null }, resolution: { decision: 'no-match', reason: '新概念', candidates: [], sourceUses: [use(id('note'))] } });
+      await send('content.saveQuestion', 'question', { id: id('question'), purpose: 'teaching', asset: { kind: 'question', title: '极限题', promptBlockId: 'p', blocks: [{ id: 'p', parentId: null, body: { kind: 'text', text: '1+1=?' } }], response_schema: [{ slotId: 'answer', schemaVersion: '1', fields: [{ kind: 'text', path: '' }] }], assessment_contract: [{ criterionId: 'result', inputs: [{ slotId: 'answer', path: '' }], maximum: 1, missingEvidence: 'insufficient-evidence', evaluator: { id: 'frozen-value-match', version: '1' }, parameters: { equivalentAnswers: [{ kind: 'text', value: '2' }] } }] } });
+      await send('content.createKnowledgeEdge', 'edge', { id: id('edge'), purpose: 'teaching', edge: { kind: 'targets_concept', scope: 'qp', from: { kind: 'question', sourceUse: use(id('question')) }, to: { kind: 'concept', sourceUse: use(id('concept')) }, sourceUses: [use(id('question')), use(id('concept'))] } });
+      const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
+      const port = (probe.address() as { port: number }).port; await new Promise<void>((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+      const server = serve(db, {} as never, {} as never, {} as never, { workbook, transparency } as never, port);
+      await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve));
+      const call = async (path: string, method = 'GET', input?: unknown) => {
+        const response = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}${path}`, { method, headers: { 'content-type': 'application/json' }, ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
+        return { status: response.status, body: await response.json() as Record<string, unknown> };
+      };
+      try {
+        const before = await call('/api/knowledge/graph');
+        expect(before.body.nodes).toMatchObject([{ id: id('concept'), mastery: { status: 'unknown', retrievability: null, independentCount: 0 } }]);
+        const issued = await call(`/api/knowledge/graph/${id('concept')}/quick-paper`, 'POST', { requestId: 'mastery-paper' });
+        expect(issued).toMatchObject({ status: 201, body: { kind: 'paper', questionCount: 1 } });
+        const paperId = String(issued.body.paperId);
+        const sheet = await call(`/api/papers/${paperId}`);
+        const itemId = String((sheet.body.questions as readonly Record<string, unknown>[])[0]!.id);
+        const permit = await call(`/api/papers/${paperId}/presentation`, 'POST', { kind: 'question', paper: { id: paperId, rev: 1 }, items: [itemId], phase: 'permit' });
+        await call(`/api/papers/${paperId}/presentation`, 'POST', { kind: 'question', paper: { id: paperId, rev: 1 }, items: [itemId], phase: 'displayed', permit: (permit.body as { permit: string }).permit });
+        const submit = await call(`/api/papers/${paperId}/attempts`, 'POST', { requestId: 'mastery-attempt', answers: { [itemId]: '2' } });
+        expect(submit.status).toBe(200);
+        const attempt = (submit.body.attempts as readonly Record<string, unknown>[]).find(row => (row.answers as Record<string, unknown>)[itemId] === '2')!;
+        const attemptId = String(attempt.id);
+        const paperRev = Number((sheet.body.revision ?? sheet.body.rev ?? 1));
+        const gradeId = stableId('qp-mastery-rubric', attemptId);
+        await db.tx({ learner: studioLearner }, tx => tx.withLearnerWrite(async tick => {
+          const scope = JSON.stringify({ paperId, attemptId });
+          const manifest = JSON.stringify({ version: 1, learner: studioLearner, purpose: 'storage', gatherTick: tick, inputs: [
+            { kind: 'fact', id: attemptId, rev: 1, accessEpoch: '0', mode: 'pinned' },
+            { kind: 'fact', id: paperId, rev: paperRev, accessEpoch: '0', mode: 'pinned' },
+          ] });
+          await tx.insert('derivations', { learner_id: studioLearner, id: gradeId, slot_type: 'activity.workbookRubricAssessment', slot_key: gradeId,
+            deriver: 'workbook-rubric-assessment-v1', scope_keys: scope, lifecycle: 'effective', freshness: 'current', gather_tick: tick, effective_tick: tick,
+            manifest, value: JSON.stringify({ paperId, attemptId, questionId: itemId, requestId: 'mastery-rubric', assessedAt: new Date().toISOString(),
+              assessmentVersion: 'workbook-rubric-assessment-v1', rubricVersion: 'rubric-v1', rubric: '请独立完成并结合题目思路核对。', providerBaseUrl: 'fixture',
+              verdict: 'correct', feedback: '正确', evidence: ['2'], trace: [] }) });
+          await tx.insert('slot_state', { learner_id: studioLearner, slot_type: 'activity.workbookRubricAssessment', slot_key: gradeId,
+            current_id: gradeId, last_id: gradeId, scope_keys: scope, changed_tick: tick });
+        }));
+        const after = await call('/api/knowledge/graph');
+        expect(after.body.nodes).toMatchObject([{ id: id('concept'), mastery: { status: 'fading', retrievability: expect.any(Number), independentCount: 1 } }]);
+        const hidden = await call(`/api/knowledge/graph/${id('concept')}/quick-paper`, 'POST', { requestId: 'hidden-paper' });
+        const hiddenId = String(hidden.body.paperId);
+        const hiddenSheet = await call(`/api/papers/${hiddenId}`);
+        const hiddenItem = String((hiddenSheet.body.questions as readonly Record<string, unknown>[])[0]!.id);
+        await call(`/api/papers/${hiddenId}/attempts`, 'POST', { requestId: 'hidden-attempt', answers: { [hiddenItem]: '2' } });
+        const still = await call('/api/knowledge/graph');
+        expect(still.body.nodes).toMatchObject([{ id: id('concept'), mastery: { independentCount: 1 } }]);
+      } finally { server.close(); }
+      const tampered = await send('activity.saveWorkbookPaper', 'tampered', { id: id('tampered'), data: { title: '篡改', materialId: null, savedAt: '2026-11-22T00:00:00.000Z', questions: [{ id: 'q1', kind: 'exact', prompt: '改过的题干', answers: ['2'], sourceQuestionRef: { id: id('question'), rev: 1 } }] } }, 'storage').catch(error => error);
+      expect(String(tampered?.message ?? tampered)).toContain('引用的来源题目与冻结题项不一致');
+    } finally { await python.close(); }
   }));
