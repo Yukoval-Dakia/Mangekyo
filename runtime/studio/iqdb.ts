@@ -2,10 +2,13 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import type { FactId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
+import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
+import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  bankProposalView, inspectBankQuestion, parsePaper, parseProposal, recordedReferences, selectBankQuestions, type QuestionRef,
+  bankProposalView, inspectBankQuestion, inspectStoredBankQuestion, parsePaper, parseProposal, recordedReferences, selectBankQuestions, type QuestionRef,
 } from '../../modules/activity/iqdb-selection.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
@@ -33,21 +36,37 @@ async function inspectQuestion(tx: ReadTransaction, id: FactId, pinned?: Questio
   }
 }
 
-async function listQuestions(tx: ReadTransaction) {
-  const { rows } = await tx.query<{ id: FactId }>(
-    `SELECT f.id FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+async function listQuestions(tx: ReadTransaction, { teachingOnly = false }: { teachingOnly?: boolean } = {}) {
+  const { rows } = await tx.query<{ id: FactId; purpose: readonly string[] }>(
+    `SELECT f.id, f.purpose FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
      WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'kind'='question'
-       AND f.purpose && ARRAY[$3,'all']::text[] ORDER BY f.id`, [tx.learner, assetType, purpose],
+       AND f.purpose && ARRAY['storage',$3,'all']::text[] ORDER BY f.id`, [tx.learner, assetType, purpose],
   );
   const questions = [];
-  for (const { id } of rows) {
-    const opened = await inspectQuestion(tx, id);
-    if (opened) questions.push(opened.public);
+  for (const { id, purpose: purposes } of rows) {
+    const teachingOpened = purposes.includes('teaching') || purposes.includes('all') ? await inspectQuestion(tx, id) : undefined;
+    let opened = teachingOpened;
+    if (!opened && !teachingOnly) {
+      const fact = await createCommandReadContext(tx, 'storage').fact(id, { mode: 'following' }).catch(error => {
+        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return;
+        throw error;
+      });
+      if (!fact) continue;
+      const stored = await inspectStoredBankQuestion(createCommandReadContext(tx, 'storage'), fact).catch(error => {
+        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return;
+        throw error;
+      });
+      if (!stored) continue;
+      opened = { public: stored.public, version: stored.version, reviewed: false };
+    }
+    if (!opened) continue;
+    questions.push({ ...opened.public, teachingAuthorized: Boolean(teachingOpened) });
   }
   return questions;
 }
 
-export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank) {
+export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank, content?: LoadedModule, hooks?: CommandHooks) {
+  const handle = content && hooks ? createCommandHandler(db, { modules: [content], hooks }) : undefined;
   return {
     questions: () => db.snapshot(scope, async tx => ({ questions: await listQuestions(tx) })),
     async proposals({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
@@ -55,7 +74,7 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
       const proposalId = stableId(proposalLabel, input.requestId);
       const saved = await recordLocalRead(db, { ...scope, ownerKind: 'session', ownerId: proposalId,
         stepKey: 'plan', label: proposalLabel, input }, async tx => {
-        const questionRefs = input.questionRefs.length ? input.questionRefs : selectBankQuestions(input, await listQuestions(tx));
+        const questionRefs = input.questionRefs.length ? input.questionRefs : selectBankQuestions(input, await listQuestions(tx, { teachingOnly: true }));
         return JSON.stringify({ ...input, questionRefs });
       }, tx => assertDeletionWatermark(tx, watermark)).catch(error => {
         if (error instanceof Error && error.message === 'Workspace read receipt does not match the request')
@@ -95,6 +114,45 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         if (!refs.length) throw blocked();
         return issueBank(tx, { requestId: input.requestId, questionRefs: refs, deletionWatermark: watermark });
       });
+    },
+    async setTeaching(id: string, raw: Record<string, unknown>) {
+      if (!handle) throw new RequestError(503, '当前服务不支持题库教学授权。');
+      const input = raw ?? {};
+      const requestId = input.requestId;
+      const expectedRev = input.expectedRev;
+      const allowed = input.allowed;
+      if (typeof requestId !== 'string' || !requestId.trim() || typeof expectedRev !== 'number' ||
+          !Number.isSafeInteger(expectedRev) || expectedRev < 1 || typeof allowed !== 'boolean')
+        throw new RequestError(400, '题库教学授权请求无效。');
+      const questionId = validated(() => factId(id));
+      try {
+        const receipt = await handle({
+          learner: studioLearner,
+          actor: 'learner',
+          purpose: 'storage',
+          type: 'content.setQuestionTeaching',
+          id: commandId(stableId('iqdb-question-teaching', questionId, requestId)),
+          input: { id: questionId, expectedRev, allowed },
+        });
+        const rev = receipt.wrote.find(write => write.id === questionId)?.rev ?? expectedRev;
+        return { id: questionId, rev, teachingAuthorized: allowed, changed: receipt.wrote.length > 0 };
+      } catch (error) {
+        if (error instanceof FactNotFoundError || (error instanceof FactReadDeniedError && error.reason !== 'purpose'))
+          throw new RequestError(404, '找不到这道题。');
+        if (error instanceof Error) {
+          if (error instanceof FactReadDeniedError && error.reason === 'purpose')
+            throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
+          if (error.message.startsWith('Fact revision conflict'))
+            throw new RequestError(409, '题目基版已变化，请刷新后再试。');
+          if (error.message === 'Command ID already used with a different command identity')
+            throw new RequestError(409, '同一个请求标识已经用于不同的教学授权。');
+          if (error.message === '题目来源未授权教学用途或依据已变化。')
+            throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
+          if (error.message === '题目基版已变化。')
+            throw new RequestError(409, '题目基版已变化，请刷新后再试。');
+        }
+        throw error;
+      }
     },
   };
 }

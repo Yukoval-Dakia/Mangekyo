@@ -1,4 +1,4 @@
-import { factId, FactNotFoundError, type FactId, type ReadContext } from '@mangekyo/kernel';
+import { factId, FactNotFoundError, type FactId, type ReadContext, type FactSnapshot } from '@mangekyo/kernel';
 import { assetType, checkQuestionTeachingSources, questionAsset, questionPrompt } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease, questionVerificationKey, questionVerificationType, readQuestionState,
   type QuestionVerification } from '@mangekyo/module-content/facts/question-release';
@@ -90,6 +90,22 @@ export async function inspectBankQuestion(read: ReadContext, id: FactId, pinned?
     }
   }
   return { public: { id, rev: fact.ref.rev, title: asset.title, prompt: questionPrompt(asset), status }, version, reviewed };
+}
+
+export async function inspectStoredBankQuestion(
+  read: Pick<ReadContext, 'fact'>,
+  fact: FactSnapshot,
+  pinned?: QuestionRef['rev'],
+) {
+  if (fact.type !== assetType || (pinned !== undefined && fact.ref.rev !== pinned)) return;
+  const asset = questionAsset(fact.value);
+  const { state } = await readQuestionState(read, fact.ref.id);
+  const version = { id: fact.ref.id, rev: fact.ref.rev, recheck: state.recheck };
+  const restricted = state.restrictions.some(entry => entry.scope === 'all' || entry.scope === use);
+  const complete = Boolean(asset.response_schema && asset.assessment_contract);
+  const status: 'restricted' | 'draft' | 'needs_verification' = restricted ? 'restricted'
+    : complete ? 'needs_verification' : 'draft';
+  return { public: { id: fact.ref.id, rev: fact.ref.rev, title: asset.title, prompt: questionPrompt(asset), status }, version };
 }
 
 export function selectBankQuestions(input: ReturnType<typeof parseProposal>, questions: readonly {id: FactId; rev: QuestionRef['rev']; title: string; prompt: string}[]) {
