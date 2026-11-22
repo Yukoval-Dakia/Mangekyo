@@ -96,6 +96,29 @@ function runningItemTitle(item: AiRunningItem) {
 
 const BLOCKED_HINT = "这项后台任务已安全暂停：不会重复扣费，也不会继续改动你的内容。前往核对并重新放行后才会继续。";
 
+const USAGE_CALL_LABELS: Readonly<Record<string, string>> = {
+  "vision-ocr": "试卷视觉识题",
+  "workbook-rubric": "作业评阅",
+  "teaching-model": "同伴对话模型",
+  "intake-mineru": "云端文档提取",
+  "research-worker-v1": "后台教研执行",
+  "background-research-scout-v1": "后台教研探查",
+  "question-independent-solve": "题库独立解答",
+  "question-contract-validation": "题库格式校验",
+  "question-meta-gardening": "题库元信息整理",
+  "notion-access-denial": "Notion 访问拦截",
+  "notion-request": "Notion 请求",
+};
+
+function usageCallLabel(call: AiUsageCallItem) {
+  const raw = call.label ?? call.purpose ?? "";
+  if (!raw) return "模型调用";
+  const mapped = USAGE_CALL_LABELS[raw];
+  if (mapped) return mapped;
+  if (raw.startsWith("model:")) return `教研模型调用（${raw.slice("model:".length)}）`;
+  return raw;
+}
+
 function handoffChannelLabel(item: AiHandoffItem) {
   switch (item.channel ?? item.kind) {
     case "night_chain": return "夜链交班";
@@ -454,7 +477,7 @@ export function AiActivityDrawer({
                 <ul className="drawer-card-list">
                   {state.activity.usage.recentCalls.map(call => (
                     <li key={call.id}>
-                      <strong>{call.label || call.purpose || "模型调用"}</strong>
+                      <strong>{usageCallLabel(call)}</strong>
                       <span>{usageCallMeta(call) || "已记录"}</span>
                     </li>
                   ))}
