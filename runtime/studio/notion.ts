@@ -1,5 +1,4 @@
 import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
-import { findManifestDependents } from '../../kernel/src/derivations/manifest-dependents.ts';
 import { teachingMemoryBasis } from './memory-claims.ts';
 import type { studyTurn } from '../../modules/activity/values.ts';
 import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
@@ -268,8 +267,7 @@ function createNotionHooks(afterFactsChanged?: CommandHooks['onFactsChanged']) {
   } });
 }
 
-const retireDeps = {findManifestDependents, notionSelectionType, captureSourceType, notionBlockSlot, teachingSlotType,
-  notionModelRecipient};
+const retireDeps = {notionSelectionType, captureSourceType, notionBlockSlot, teachingSlotType, notionModelRecipient};
 const notionHooks = createNotionHooks();
 
 export async function executeNotionBlockWork(db: Db, ref: WorkRef, terminal: boolean, cause?: WorkFailureCause) {

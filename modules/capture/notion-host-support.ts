@@ -1,6 +1,7 @@
 import type {
   DbTransaction, DerivationId, FactChange, FactId, FactSnapshot, ReadTransaction, Tick,
 } from '@mangekyo/kernel';
+import { cancelPendingWork, invalidateDerivationTree } from '@mangekyo/kernel';
 import {
   buildNotionInvalidationTarget, filterInvalidatedNotionTargets, notionBlockRetirementMatchesSlot,
   notionRecordPurpose, notionSelectionFromSnapshot, parseNotionBlockSlotKey, planNotionBlockRetirements,
@@ -9,7 +10,6 @@ import {
 } from './notion-source.ts';
 
 export type RetireNotionDeps = {
-  readonly findManifestDependents: (tx: ReadTransaction, change: {kind:'derivation-invalidated'; derivationId: DerivationId}) => Promise<readonly {derivationId: DerivationId}[]>;
   readonly notionSelectionType: string;
   readonly captureSourceType: string;
   readonly notionBlockSlot: string;
@@ -40,43 +40,6 @@ async function readFactTransition(tx: ReadTransaction, change: FactChange) {
   return reconstructNotionFactPair(tx.learner, change.ref.id, change.kind, rows);
 }
 
-async function invalidateDerivations(deps: RetireNotionDeps, tx: DbTransaction, tick: Tick, initial: readonly DerivationId[], reason: string) {
-  const error = JSON.stringify({ reason });
-  const seen = new Set<string>(), queue = [...initial];
-  while (queue.length) {
-    const currentId = queue.shift()!;
-    if (seen.has(currentId)) continue;
-    seen.add(currentId);
-    const { rows: [staleRow] } = await tx.query<{ slotType: string; slotKey: string }>(
-      `UPDATE derivations d SET lifecycle='stale', invalidated_tick=$3, error=$4 WHERE d.learner_id=$1 AND d.id=$2 AND ${liveDerivationSql}
-       RETURNING d.slot_type AS "slotType", d.slot_key AS "slotKey"`,
-      [tx.learner, currentId, tick, error],
-    );
-    if (!staleRow) continue;
-    await tx.query(
-      `UPDATE slot_state SET current_id=NULL, changed_tick=$5, last_error=$6
-       WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3 AND current_id=$4`,
-      [tx.learner, staleRow.slotType, staleRow.slotKey, currentId, tick, error],
-    );
-    for (const dependent of await deps.findManifestDependents(tx, { kind: 'derivation-invalidated', derivationId: currentId })) queue.push(dependent.derivationId);
-  }
-}
-
-async function cancelOpenWork(deps: RetireNotionDeps, tx: DbTransaction, tick: Tick, rows: readonly { id: string; slotType: string; slotKey: string }[], reason: string) {
-  const error = JSON.stringify({ reason });
-  for (const row of rows) {
-    const updated = await tx.query(
-      `UPDATE work SET state='cancelled', revision=revision + CASE WHEN slot_type='working.todo' THEN 1 ELSE 0 END, gather=NULL, gather_manifest=NULL
-       WHERE learner_id=$1 AND id=$2 AND (state IN ('ready','waiting') OR (slot_type=$3 AND state='blocked'))`,
-      [tx.learner, row.id, deps.notionBlockSlot],
-    );
-    if (!updated.rowCount) continue;
-    await tx.query('DELETE FROM work_waits WHERE learner_id=$1 AND work_id=$2', [tx.learner, row.id]);
-    await tx.query(`UPDATE slot_state SET pending='none', changed_tick=$4, last_error=$5
-      WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3`, [tx.learner, row.slotType, row.slotKey, tick, error]);
-  }
-}
-
 export async function retireNotionChanges(deps: RetireNotionDeps, tx: DbTransaction, tick: Tick, changes: readonly FactChange[]) {
   type LiveRow = { id: string; slotType: string; slotKey: string; scopeKeys?: unknown; slotScopeKeys?: unknown; manifest?: unknown; turnData?: unknown };
   const toTarget = (row: LiveRow) => buildNotionInvalidationTarget(row, {
@@ -105,7 +68,7 @@ export async function retireNotionChanges(deps: RetireNotionDeps, tx: DbTransact
              OR EXISTS (SELECT 1 FROM jsonb_array_elements(d.manifest->'inputs') entry WHERE entry->>'kind'='fact' AND entry->>'id'=ANY($2::text[])))`,
         [tx.learner, sourceIds, deps.notionBlockSlot, deps.teachingSlotType],
       );
-      await invalidateDerivations(deps, tx, tick, filterInvalidatedNotionTargets(invalidation, sourceRows, derivationRows.map(toTarget))
+      await invalidateDerivationTree(tx, tick, filterInvalidatedNotionTargets(invalidation, sourceRows, derivationRows.map(toTarget))
         .map(row => row.id as DerivationId), 'notion-selection-invalidated');
       const { rows: workRows } = await tx.query<LiveRow>(
         `SELECT w.id, w.slot_type AS "slotType", w.slot_key AS "slotKey", s.scope_keys AS "scopeKeys", w.gather_manifest AS manifest, tr.data AS "turnData"
@@ -115,7 +78,8 @@ export async function retireNotionChanges(deps: RetireNotionDeps, tx: DbTransact
              OR (w.gather_manifest IS NOT NULL AND EXISTS (SELECT 1 FROM jsonb_array_elements(w.gather_manifest->'inputs') entry WHERE entry->>'kind'='fact' AND entry->>'id'=ANY($2::text[]))))`,
         [tx.learner, sourceIds, deps.notionBlockSlot, deps.teachingSlotType],
       );
-      await cancelOpenWork(deps, tx, tick, filterInvalidatedNotionTargets(invalidation, sourceRows, workRows.map(toTarget)), 'notion-selection-invalidated');
+      await cancelPendingWork(tx, tick, filterInvalidatedNotionTargets(invalidation, sourceRows, workRows.map(toTarget)),
+        'notion-selection-invalidated', { includeBlockedSlotTypes: [deps.notionBlockSlot] });
     } else if (change.factType === deps.captureSourceType) {
       const pair = await readFactTransition(tx, change);
       if (!pair) continue;
@@ -126,7 +90,7 @@ export async function retireNotionChanges(deps: RetireNotionDeps, tx: DbTransact
            WHERE d.learner_id=$1 AND d.slot_type=$2 AND ${liveDerivationSql} AND (CASE WHEN d.slot_type=$2 THEN (d.slot_key::jsonb)->>'id' END)=$3`,
           [tx.learner, deps.notionBlockSlot, change.ref.id],
         );
-        await invalidateDerivations(deps, tx, tick, blockDerivations
+        await invalidateDerivationTree(tx, tick, blockDerivations
           .filter(row => notionBlockRetirementMatchesSlot(blockPlan.retire, row.slotKey, notionRecordPurpose(row.manifest)))
           .map(row => row.id as DerivationId), 'notion-block-retired');
         const { rows: blockWork } = await tx.query<{ id: string; slotType: string; slotKey: string; scopeKeys: unknown; manifest: unknown }>(
@@ -135,8 +99,9 @@ export async function retireNotionChanges(deps: RetireNotionDeps, tx: DbTransact
            WHERE w.learner_id=$1 AND w.slot_type=$2 AND w.state IN ('ready','waiting','blocked') AND (CASE WHEN w.slot_type=$2 THEN (w.slot_key::jsonb)->>'id' END)=$3`,
           [tx.learner, deps.notionBlockSlot, change.ref.id],
         );
-        await cancelOpenWork(deps, tx, tick, blockWork.filter(row =>
-          notionBlockRetirementMatchesSlot(blockPlan.retire, row.slotKey, notionRecordPurpose(row.manifest, row.scopeKeys))), 'notion-block-retired');
+        await cancelPendingWork(tx, tick, blockWork.filter(row =>
+          notionBlockRetirementMatchesSlot(blockPlan.retire, row.slotKey, notionRecordPurpose(row.manifest, row.scopeKeys))), 'notion-block-retired',
+          { includeBlockedSlotTypes: [deps.notionBlockSlot] });
       }
       if (change.kind === 'retract' || change.kind === 'set_purpose') {
         const { rows: gatheredWork } = await tx.query<{ id: string; slotType: string; slotKey: string; manifest: unknown }>(
@@ -149,7 +114,8 @@ export async function retireNotionChanges(deps: RetireNotionDeps, tx: DbTransact
           const workPurpose = notionRecordPurpose(row.manifest);
           return workPurpose !== undefined && !pair.current.purpose.includes(workPurpose) && !pair.current.purpose.includes('all');
         });
-        await cancelOpenWork(deps, tx, tick, cancelled, change.kind === 'retract' ? 'notion-source-retracted' : 'notion-purpose-changed');
+        await cancelPendingWork(tx, tick, cancelled, change.kind === 'retract' ? 'notion-source-retracted' : 'notion-purpose-changed',
+          { includeBlockedSlotTypes: [deps.notionBlockSlot] });
       }
     }
   }
