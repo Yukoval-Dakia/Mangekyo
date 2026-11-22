@@ -3,154 +3,41 @@ import {
   createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError,
 } from '../../kernel/src/commands/reads.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
+import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
-import { frozenWorkbookRevision, licensedQuestionCopy } from '../../modules/activity/evidence-read.ts';
-import { helpAppliesTo } from '../../modules/activity/help-exposure-values.ts';
-import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
-import { workbookAttemptView } from '../../modules/activity/workbook-assessment-values.ts';
-import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
-import { assetType } from '../../modules/content/asset.ts';
-import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
+import type { SourceRefV1 } from '../../modules/activity/source-values.ts';
+import type { WorkbookAttempt } from '../../modules/activity/workbook-values.ts';
 import {
-  sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
-  WorkbookSourceMismatch, type WorkbookAttempt,
-} from '../../modules/activity/workbook-values.ts';
-import { formalDiagnosisSummary, workbookDiagnosisView } from '../../modules/activity/workbook-views.ts';
-import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
+  openWorkbookDiagnosisSource as openSource, openWorkbookQuestionSources as openQuestions,
+  readReleasedAssessment as readReleased, readWorkbookDiagnosis as readDiagnosis,
+  studioDiagnosisSourceUnavailable, type StudioDiagnosisDeps,
+} from '../../modules/activity/studio-diagnosis-host.ts';
 import { purpose } from './identity.ts';
-import { readActivityHelpEvents, readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
-import { resolveSource, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
+import { resolveSource } from './source-read.ts';
 import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
-import { readWorkspaceAttemptAssessments, type WorkspaceAssessmentBasis } from './workspace-read.ts';
+import { readWorkspaceAttemptAssessments } from './workspace-read.ts';
 
-type Access = { purpose?: string; ownerNotionRead?: true; maySend: WorkspaceSourceRecipient; track: SourceTrack; trackAssessment?: (basis: WorkspaceAssessmentBasis) => void };
-const sourceUnavailable = (error: unknown) => error instanceof FactReadDeniedError ||
-  error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch;
+const deps: StudioDiagnosisDeps = {
+  purpose,
+  isFactNotFound: error => error instanceof FactNotFoundError,
+  isFactReadDenied: error => error instanceof FactReadDeniedError,
+  revisionsOnlyChangeGrants: revisionsOnlyChangeGrants as StudioDiagnosisDeps['revisionsOnlyChangeGrants'],
+  createAuthorizedFactReader: createAuthorizedFactReader as StudioDiagnosisDeps['createAuthorizedFactReader'],
+  createCommandReadContext: createCommandReadContext as StudioDiagnosisDeps['createCommandReadContext'],
+  resolveSource: resolveSource as StudioDiagnosisDeps['resolveSource'],
+  readSavedWorkbookAssessment: readSavedWorkbookAssessment as StudioDiagnosisDeps['readSavedWorkbookAssessment'],
+  readWorkspaceAttemptAssessments: readWorkspaceAttemptAssessments as StudioDiagnosisDeps['readWorkspaceAttemptAssessments'],
+};
 
-async function openFrozenPaper(tx: ReadTransaction, attempt: WorkbookAttempt, cutoff: Tick, access: Access) {
-  const id = factId(attempt.paperId);
-  const ref = attempt.paper.assessmentRelease?.releaseRef;
-  if (ref && ref.id !== id) return;
-  const version = await frozenWorkbookRevision(tx, id, cutoff, ref?.rev ?? null);
-  if (!version) return;
-  const read = createAuthorizedFactReader(tx, access.purpose ?? purpose, access.maySend);
-  const matches = (fact: FactSnapshot) => fact.type === workbookPaperType && sameWorkbookJson(workbookPaper(fact.value), attempt.paper);
-  try {
-    const frozen = await read.fact(id, { mode: 'pinned', rev: version.rev });
-    if (!matches(frozen)) return;
-    access.track(frozen, 'pinned');
-  } catch (error) {
-    if (!(error instanceof FactReadDeniedError) || error.reason !== 'purpose') throw error;
-    // A later grant can license an unchanged copy. Verify the archive only after
-    // opening the currently authorized paper and matching its payload.
-    const current = await read.fact(id, { mode: 'following' });
-    if (!matches(current) || !await revisionsOnlyChangeGrants(tx, id, version.rev, current.ref.rev)) return;
-    const original = await createCommandReadContext(tx, storagePurpose).fact(id, { mode: 'pinned', rev: version.rev });
-    if (!matches(original)) return;
-    access.track(current, 'following');
-  }
-  return { id, rev: version.rev };
-}
+type Access = Parameters<typeof openSource>[3];
+export type { Access as WorkbookDiagnosisAccess };
 
-export async function readReleasedAssessment(tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot, access: Access, cutoff?: Tick) {
-  const release = attempt.paper.assessmentRelease;
-  if (!release) return;
-  const read = createAuthorizedFactReader(tx, purpose, access.maySend);
-  try {
-    const current = await read.fact(submission.ref.id, { mode: 'following' });
-    const paper = await read.fact(release.releaseRef.id, { mode: 'following' });
-    if (current.ref.rev !== submission.ref.rev) return;
-    const result = await readSavedWorkbookAssessment(tx, release.releaseRef, current, paper, cutoff);
-    if (!result) return;
-    // Current grants license the unchanged paper and submission.
-    access.track(current, 'following');
-    access.track(paper, 'following');
-    return result;
-  } catch (error) {
-    if (sourceUnavailable(error)) return;
-    throw error;
-  }
-}
-
-export async function openWorkbookDiagnosisSource(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
-  if (typeof reference !== 'string' && (reference.fact.type !== workbookAttemptType || reference.anchor.kind !== 'whole')) return;
-  const id = typeof reference === 'string' ? reference : reference.fact.id;
-  let submission: FactSnapshot | undefined;
-  const source = await resolveSource(tx, reference, {
-    recipient: 'workspace', rootType: workbookAttemptType, maySend: access.maySend,
-    track(fact, mode) {
-      if (fact.ref.id === id && fact.type === workbookAttemptType) submission = fact;
-      access.track(fact, mode);
-    },
-  });
-  if (!source || !submission) return;
-  const opened = await openWorkbookQuestionSources(tx, submission, access);
-  return opened && {source, submission, ...opened};
-}
-
-export async function openWorkbookQuestionSources(tx: ReadTransaction, submission: FactSnapshot, access: Access, itemId?: string) {
-  if (submission.type !== workbookAttemptType || submission.ref.learner !== tx.learner) return;
-  const attempt = workbookAttempt(submission.value);
-  const birth = await readActivitySubmissionBirth(tx, submission.ref, workbookAttemptType);
-  if (!birth?.unchanged || birth.submittedAt !== attempt.submittedAt) return;
-  try {
-    const paper = await openFrozenPaper(tx, attempt, birth.tick, access);
-    if (!paper) return;
-    const sourceAccess = {...access, recipient: 'workspace' as const, purpose: access.purpose ?? purpose};
-    if (attempt.paper.materialId !== null) {
-      const material = await resolveSource(tx, attempt.paper.materialId, sourceAccess);
-      if (material?.sourceRef.fact.type !== materialType) return;
-    }
-    const questions = itemId === undefined ? attempt.paper.questions : attempt.paper.questions.filter(q => q.id === itemId);
-    const read = createAuthorizedFactReader(tx, sourceAccess.purpose, access.maySend);
-    await readFrozenWorkbookBank(read, {...attempt.paper, questions}, access.track);
-    for (const {kind, sourceQuestionRef, prompt} of questions) {
-      if (kind === 'bank' || !sourceQuestionRef) continue;
-      const readable = await licensedQuestionCopy(tx, sourceQuestionRef, sourceAccess.purpose);
-      const { type } = await read.fact(factId(readable.id), {mode:'pinned', rev:readable.rev as Revision});
-      if (type !== assetType && type !== workspaceEntryType) return;
-      const question = await resolveSource(tx, {
-        v: 1, fact: { ...readable, type }, anchor: { kind: 'question', itemId: 'question' },
-      }, sourceAccess);
-      if (question?.content !== prompt) return;
-    }
-    return {attempt, birth, paper, sourceAccess};
-  } catch (error) {
-    if (sourceUnavailable(error)) return;
-    throw error;
-  }
-}
-
-export async function readWorkbookDiagnosis(tx: ReadTransaction, reference: string | SourceRefV1, access: Access) {
-  const opened = await openWorkbookDiagnosisSource(tx, reference, access);
-  if (!opened) return;
-  const {source, submission, attempt, birth, paper, sourceAccess} = opened;
-  const {ref} = submission;
-  try {
-    // Workbook creates the original issuance at revision 1. Grants can add
-    // revisions of the same paper. Ordinary workbooks have no coverage proof.
-    const targets = attempt.paper.questions.map(({ id }) => ({
-      activityId: paper.id, issuance: { id: paper.id, rev: 1 as Revision }, item: { itemId: id },
-    }));
-    const read = createCommandReadContext(tx, purpose);
-    const { events } = await readActivityHelpEvents(tx, read, {
-      activities: [paper.id], cutoff: birth.tick, mode: 'following',
-    }, async (fact, display) => {
-      if (!access.maySend(fact) || !targets.some(target => helpAppliesTo(display, target))) return false;
-      const content = await read.fact(display.content.id, { mode: 'pinned', rev: display.content.rev });
-      if (!await resolveSource(tx, sourceReference(content, { kind: 'whole' }), sourceAccess)) return false;
-      access.track(fact, 'following');
-      return true;
-    });
-    const assessments = access.trackAssessment
-      ? await readWorkspaceAttemptAssessments(tx, submission, access.maySend, access.trackAssessment) : [];
-    const formal = await readReleasedAssessment(tx, attempt, submission, access);
-    const feedback = workbookAttemptView(ref.id, attempt, [], formal?.result).feedback;
-    return workbookDiagnosisView(source, attempt, paper, { ref, cutoff: birth.tick, targets, events },
-      assessments, formalDiagnosisSummary(formal, Boolean(attempt.paper.assessmentRelease)), feedback);
-  } catch (error) {
-    if (sourceUnavailable(error)) return;
-    throw error;
-  }
-}
+export const openWorkbookDiagnosisSource = (tx: ReadTransaction, reference: string | SourceRefV1, access: Access) =>
+  openSource(deps, tx, reference, access);
+export const openWorkbookQuestionSources = (tx: ReadTransaction, submission: FactSnapshot, access: Access, itemId?: string) =>
+  openQuestions(deps, tx, submission, access, itemId);
+export const readReleasedAssessment = (tx: ReadTransaction, attempt: WorkbookAttempt, submission: FactSnapshot,
+  access: Access, cutoff?: Tick) => readReleased(deps, tx, attempt, submission, access, cutoff);
+export const readWorkbookDiagnosis = (tx: ReadTransaction, reference: string | SourceRefV1, access: Access) =>
+  readDiagnosis(deps, tx, reference, access);
+export const sourceUnavailable = (error: unknown) => studioDiagnosisSourceUnavailable(deps, error);

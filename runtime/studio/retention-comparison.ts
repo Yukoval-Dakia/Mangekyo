@@ -1,11 +1,13 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { derivationId, factId, type DerivationId } from '../../kernel/src/declarations/ids.ts';
-import type { Outcome } from '../../kernel/src/declarations/types.ts';
-import { parseManifest, type Manifest, type ManifestInput } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { derivationId, factId } from '../../kernel/src/declarations/ids.ts';
+import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { failWork, finishWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
+import {
+  frozenInputs, frozenValue, readComparisonPlan, selectPair, validComparisonPlan,
+  type RetentionComparisonDeps, type RetentionComparisonPlan, type RetentionPair,
+} from '../../modules/activity/retention-host-support.ts';
 import {
   forecastType, readAnyRetentionMethod, reconciliationType, type RetentionForecast,
 } from '../../modules/learner/retention.ts';
@@ -22,55 +24,13 @@ export const retentionComparisonWork = 'studio.retentionComparisonWork';
 const retentionComparisonType = 'predict.retentionComparison';
 const comparisonDeriver = 'learner/retention-comparison@1';
 const scope = { learner: studioLearner };
-type Pair = { forecastKey: string; forecastId: DerivationId; reconciliationKey: string; reconciliationId: DerivationId };
-type Plan = { method: string; pairs: Pair[]; manifest: Manifest };
 
-function frozenInputs(pair: Pair): ManifestInput[] {
-  return [
-    { kind: 'slot', slotType: forecastType, slotKey: pair.forecastKey, derivationId: pair.forecastId, mode: 'pinned' },
-    { kind: 'slot', slotType: reconciliationType, slotKey: pair.reconciliationKey, derivationId: pair.reconciliationId, mode: 'pinned' },
-  ];
-}
-
-async function selectPair(tx: ReadTransaction, key: string): Promise<Pair> {
-  const { rows: [pair] } = await tx.query<Pair>(
-    `SELECT r.slot_key AS "reconciliationKey", d.id AS "reconciliationId",
-            r.scope_keys->>'forecastKey' AS "forecastKey", r.scope_keys->>'forecastId' AS "forecastId"
-     FROM slot_state r JOIN derivations d
-       ON (d.learner_id,d.id,d.slot_type,d.slot_key)=(r.learner_id,r.current_id,r.slot_type,r.slot_key)
-     WHERE r.learner_id=$1 AND r.slot_type=$2 AND r.slot_key=$3 AND d.lifecycle='effective'
-       AND NOT d.is_shadow AND (d.value->'value'->>'forecastId')=(r.scope_keys->>'forecastId')`,
-    [tx.learner, reconciliationType, key],
-  );
-  if (!pair) throw new RequestError(409, '找不到当前可用的保持对账。');
-  return pair;
-}
-
-async function readPlan(tx: ReadTransaction, key: string) {
-  const { rows: [job] } = await tx.query<{ plan: Plan; state: string }>(
-    `SELECT s.scope_keys AS plan, w.state FROM slot_state s JOIN work w
-       ON (s.learner_id,s.slot_type,s.slot_key)=(w.learner_id,w.slot_type,w.slot_key)
-     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`, [tx.learner, retentionComparisonWork, key],
-  );
-  return job;
-}
-
-async function value<T>(tx: ReadTransaction, id: DerivationId) {
-  const { rows: [row] } = await tx.query<{ value: Outcome<T> }>(
-    'SELECT value FROM derivations WHERE learner_id=$1 AND id=$2 AND NOT is_shadow', [tx.learner, id],
-  );
-  if (row?.value.kind !== 'value') throw new Error('Frozen retention value unavailable');
-  return row.value.value;
-}
-
-async function validPlan(tx: ReadTransaction, plan: Plan, manifest = parseManifest(plan.manifest)) {
-  if ((await revalidateManifest(tx, manifest, retentionPurpose)).kind !== 'valid') return false;
-  for (const pair of plan.pairs) {
-    const { observation } = await value<RetentionReconciliation>(tx, pair.reconciliationId);
-    if (!await retentionHistoryValid(tx, pair.forecastId, observation)) return false;
-  }
-  return true;
-}
+const deps: RetentionComparisonDeps = {
+  RequestError, retentionPurpose, forecastType, reconciliationType, retentionComparisonWork, retentionHistoryValid,
+};
+const readPlan = (tx: ReadTransaction, key: string) => readComparisonPlan(deps, tx, key);
+const validPlan = (tx: ReadTransaction, plan: RetentionComparisonPlan, manifest = parseManifest(plan.manifest)) =>
+  validComparisonPlan(deps, tx, plan, manifest);
 
 export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) {
   async function get(key: string) {
@@ -108,11 +68,11 @@ export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) 
             throw new RequestError(409, '保持方法对照标识已使用。');
           return;
         }
-        const pairs = await Promise.all(keys.map(item => selectPair(tx, item)));
+        const pairs = await Promise.all(keys.map(item => selectPair(deps, tx, item)));
         await tx.withLearnerWrite(async tick => {
           const manifest = parseManifest({ version: 1, learner: tx.learner, purpose: retentionPurpose,
-            gatherTick: tick, inputs: pairs.flatMap(frozenInputs) });
-          if (!await validPlan(tx, {method, pairs, manifest})) throw new RequestError(409, '保持对账的依据已变化。');
+            gatherTick: tick, inputs: pairs.flatMap(pair => frozenInputs(deps, pair)) });
+          if (!await validPlan(tx, { method, pairs, manifest })) throw new RequestError(409, '保持对账的依据已变化。');
           // The scheduling row has no current or evidence eligibility. Shadow output is stored separately.
           await tx.insert('slot_state', { learner_id: tx.learner, slot_type: retentionComparisonWork, slot_key: key,
             scope_keys: canonicalJsonString({ method, pairs, manifest }), changed_tick: tick });
@@ -131,8 +91,8 @@ export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) 
         const method = readAnyRetentionMethod(job.plan.method);
         if (!method) throw new Error('Retention comparison method missing');
         const pairs = await Promise.all(job.plan.pairs.map(async pair => ({
-          pair, recorded: await value<RetentionForecast>(tx, pair.forecastId),
-          outcome: await value<RetentionReconciliation>(tx, pair.reconciliationId),
+          pair, recorded: await frozenValue<RetentionForecast>(tx, pair.forecastId),
+          outcome: await frozenValue<RetentionReconciliation>(tx, pair.reconciliationId),
         })));
         return { manifest, method, pairs, plan: job.plan };
       });

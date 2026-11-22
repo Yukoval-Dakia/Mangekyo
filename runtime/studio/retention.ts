@@ -16,6 +16,12 @@ import {
 } from '../../modules/activity/retention-history.ts';
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
 import { throughTick, validatesWorkbookHistory, workbookWitnessesBy, workbookReadAtWatermark } from '../../modules/activity/evidence-read.ts';
+import {
+  authorizedRetention, currentRetentionForecast, currentRetentionReconciliation, getRetentionSlot,
+  isRetentionSlot as isRetentionSlotHost, listRetentionPosttests, projectRetentionSlot,
+  reconcileRetentionAttempt, retentionHistoryValid as retentionHistoryValidHost,
+  retentionReconciliationKeyFor, sameRetentionTarget, type ForecastScope, type StudioRetentionDeps,
+} from '../../modules/activity/studio-retention-host.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
@@ -47,91 +53,46 @@ const propagation = createPropagationHooks([]);
 const scope = { learner: studioLearner };
 const forecastUnavailable = '预测的冻结依据已变化或不可读取。';
 
-type ForecastScope = {
-  target: RetentionTarget;
-  method?: string;
-  paperEpoch: Tick;
-  evidenceThrough?: Tick;
-  priorAttemptIds: FactId[];
-  window: RetentionForecast['input']['window'];
-  sourceReconciliationKey?: string;
-};
 type ReconciliationScope = { forecastKey: string; forecastId: DerivationId; attemptId: FactId };
 type ReconciliationValue = Extract<Awaited<ReturnType<typeof reconciliation.derive>>, { kind: 'value' }>['value'];
-export async function retentionHistoryValid(tx: ReadTransaction, id: DerivationId, observation?: RetentionObservation) {
-  const row = await recordedWorkbookForecast(tx, forecastSlot.type, id);
-  if (!row || !validWorkbookMethod(row.forecast, readAnyRetentionMethod)) return false;
-  const { input } = row.forecast;
-  if (!await validatesWorkbookHistory(tx, input.target, observation?.admittedAt ?? row.effective_tick, posttestIdFor(id),
-    observation?.exposure.kind === 'independent')) return false;
-  const read = createCommandReadContext(tx, retentionPurpose);
-  const unavailable = (error: unknown) => error instanceof RequestError ||
-    error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
-  if (observation?.exposure.kind === 'exposed') {
-    try {
-      const opened = await openRetentionTarget(tx,read,input.target.paper.id,input.target.itemId);
-      const actual = await readWorkbookObservation(tx,read,opened,observation.submission.id,id);
-      if (actual.submission.rev !== observation.submission.rev || actual.admittedAt !== observation.admittedAt ||
-          actual.exposure.kind !== 'exposed' || !sameWorkbookJson(actual.exposure.refs,observation.exposure.refs)) return false;
-    } catch (error) {
-      if (unavailable(error)) return false;
-      throw error;
-    }
-  }
-  return verifyFrozenWorkbookClaims(tx, row, read, parseManifest(row.manifest).inputs,
-    async (read, cutoff) => {
-      const target = await openRetentionTarget(tx, read, input.target.paper.id, input.target.itemId);
-      if (target.target.paper.rev !== input.target.paper.rev || target.target.gradingVersion !== input.target.gradingVersion) return;
-      return async attemptId => {
-        const found = await readComparableWorkbookEvidence(tx, read, target, attemptId, cutoff);
-        const valid = await verifiesOriginalSitting(tx, forecastSlot.type, found.evidence,
-          readAnyRetentionMethod, posttestIdFor, posttestAttemptFor);
-        return valid ? found : undefined;
-      };
-    }, unavailable);
-}
 
-async function project<T extends RetentionForecast | ReconciliationValue>(tx: ReadTransaction, key: string, row: SlotRow<T, unknown>) {
-  if (row.current_id && row.effective_tick && row.value?.kind === 'value') {
-    const manifest = parseManifest(row.manifest);
-    const verdict = await revalidateManifest(tx, manifest, retentionPurpose);
-    const value = row.value.value;
-    if (verdict.kind === 'valid' && ('observation' in value
-      ? await retentionHistoryValid(tx, value.forecastId, value.observation)
-      : await retentionHistoryValid(tx, derivationId(row.current_id)))) {
-      return { key, state: 'current' as const, derivationId: derivationId(row.current_id),
-        effectiveTick: row.effective_tick, freshness: verdict.freshness, value: row.value.value, basis: manifest };
-    }
-    return { key, state: 'stale' as const, reason: forecastUnavailable };
-  }
-  if (row.last_id) return { key, state: 'stale' as const, reason: forecastUnavailable };
-  if (row.last_error) return { key, state: 'blocked' as const, reason: row.last_error.reason };
-  return { key, state: 'pending' as const };
-}
+const retentionDeps: StudioRetentionDeps = {
+  retentionPurpose,
+  forecastSlotType: forecastSlot.type,
+  reconciliationSlotType: reconciliationSlot.type,
+  forecastUnavailable,
+  fail: (status, message) => { throw new RequestError(status, message); },
+  isRequestError: error => error instanceof RequestError,
+  isFactNotFound: error => error instanceof FactNotFoundError,
+  isFactReadDenied: error => error instanceof FactReadDeniedError,
+  stableId,
+  canonicalJsonString,
+  reconciliationSlotKey: input => reconciliationSlot.key(input),
+  openRetentionTarget: openRetentionTarget as StudioRetentionDeps['openRetentionTarget'],
+  readWorkbookObservation: readWorkbookObservation as StudioRetentionDeps['readWorkbookObservation'],
+  readComparableWorkbookEvidence: readComparableWorkbookEvidence as StudioRetentionDeps['readComparableWorkbookEvidence'],
+  requireFreshVariant: (tx, target, cutoff, issuance) => requireFreshVariant(tx, target, cutoff, issuance),
+  againstFrozenTarget: againstFrozenTarget as StudioRetentionDeps['againstFrozenTarget'],
+  afterFreeze,
+  enqueueWork: async (tx, slotType, slotKey, scopeKeys) => {
+    await tx.withLearnerWrite(tick => requestCatalogedWork(tx, tick,
+      { slotType, slotKey, deriver: reconciliationPolicy.deriver }, canonicalJsonString(scopeKeys as JsonObject), { reuseSlot: true }));
+  },
+};
 
-async function authorized<T>(run: () => Promise<T>) {
-  try { return await run(); }
-  catch (error) {
-    if (error instanceof FactNotFoundError) throw new RequestError(404, '找不到保持预测的依据。');
-    if (error instanceof FactReadDeniedError) throw new RequestError(403, '保持预测的依据当前未开放教学用途。');
-    throw error;
-  }
-}
+export const retentionHistoryValid = (tx: ReadTransaction, id: DerivationId, observation?: RetentionObservation) =>
+  retentionHistoryValidHost(retentionDeps, tx, id, observation);
+const project = <T>(tx: ReadTransaction, key: string, row: SlotRow<T, unknown>) =>
+  projectRetentionSlot(retentionDeps, tx, key, row);
+const authorized = <T>(run: () => Promise<T>) => authorizedRetention(retentionDeps, run);
+const sameTarget = (actual: Awaited<ReturnType<typeof openRetentionTarget>>, expected: ForecastScope) =>
+  sameRetentionTarget(retentionDeps, actual, expected);
+const reconciliationKeyFor = (forecast: DerivationId, attempt: FactId) =>
+  retentionReconciliationKeyFor(retentionDeps, forecast, attempt);
 
 async function enqueue(tx: DbTransaction, policy: CandidatePolicy, key: string, scopeKeys: JsonObject) {
   await tx.withLearnerWrite(tick => requestCatalogedWork(tx,tick,
     {slotType:policy.slot.type,slotKey:key,deriver:policy.deriver},canonicalJsonString(scopeKeys),{reuseSlot:true}));
-}
-
-function sameTarget(actual: Awaited<ReturnType<typeof openRetentionTarget>>, expected: ForecastScope) {
-  if (canonicalJsonString({ ...actual.target, condition: expected.target.condition }) !== canonicalJsonString(expected.target) ||
-      actual.accessEpoch !== expected.paperEpoch) {
-    throw new RequestError(409, forecastUnavailable);
-  }
-}
-
-function reconciliationKeyFor(forecast: DerivationId, attempt: FactId) {
-  return reconciliationSlot.key({ reconciliationId: stableId('retention-reconcile', forecast, attempt) });
 }
 
 function gatherInSnapshot(
@@ -221,34 +182,15 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   }
 
   async function get(key: string) {
-    return db.snapshot(scope, async tx => {
-      const forecast = await findSlot<RetentionForecast, ForecastScope>(tx, forecastSlot.type, key);
-      if (forecast) return { slot: forecastSlot.type, ...await project(tx, key, forecast) };
-      const reconciliation = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, key);
-      if (reconciliation) return { slot: reconciliationSlot.type, ...await project(tx, key, reconciliation) };
-      throw new RequestError(404, '找不到保持预测或对账记录。');
-    });
+    return db.snapshot(scope, tx => getRetentionSlot(retentionDeps, tx, key));
   }
 
   async function currentForecast(tx: ReadTransaction, key: string) {
-    const row = await findSlot<RetentionForecast, ForecastScope>(tx, forecastSlot.type, key);
-    if (!row) throw new RequestError(404, '找不到保持预测。');
-    const frozen = await project(tx, key, row);
-    if (frozen.state !== 'current') throw new RequestError(409, '预测当前没有可用的冻结版本。');
-    const read = createCommandReadContext(tx, retentionPurpose);
-    const { target, window, sourceReconciliationKey } = row.scope_keys;
-    if (sourceReconciliationKey) await currentReconciliation(tx, sourceReconciliationKey);
-    const opened = await openRetentionTarget(tx, read, target.paper.id, target.itemId);
-    sameTarget(opened, row.scope_keys);
-    return { frozen, read, window, opened, sourceReconciliationKey };
+    return currentRetentionForecast(retentionDeps, tx, key);
   }
 
   async function currentReconciliation(tx: ReadTransaction, key: string) {
-    const source = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, key);
-    if (!source) throw new RequestError(404, '找不到原后测对账记录。');
-    const current = await project(tx, key, source);
-    if (current.state !== 'current') throw new RequestError(409, '原后测当前没有可用的对账记录。');
-    return source.scope_keys;
+    return currentRetentionReconciliation(retentionDeps, tx, key);
   }
 
   async function scheduleFollowup(reconciliationKey: string, input: Record<string, unknown>) {
@@ -278,70 +220,11 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   }
 
   async function listPosttests(selected: string | null = null) {
-    return db.snapshot(scope, async tx => {
-      const readRows = (forecastKey: string | null, parent: string | null) =>
-        listWorkbookPosttestSlots<ForecastScope>(tx,forecastSlot.type,forecastKey,parent);
-      const initial = await readRows(selected, null);
-      const rows = [...initial.rows];
-      const now = new Date().toISOString();
-      const items: PosttestListItem[] = [];
-      for (const { slot_key: forecastKey, scope_keys: scheduled, current_id: currentId } of rows) {
-        try {
-          if (!currentId) {
-            const { target, sourceReconciliationKey, window: { scheduledAt, through } } = scheduled;
-            if (!sourceReconciliationKey || !scheduledAt || through <= now) continue;
-            await currentReconciliation(tx, sourceReconciliationKey);
-            const read = createCommandReadContext(tx, retentionPurpose);
-            const opened = await openRetentionTarget(tx, read, target.paper.id, target.itemId);
-            sameTarget(opened, scheduled);
-            items.push({ forecastKey, title: opened.paper.title, through, scheduledAt, sourceReconciliationKey, state: 'preparing' });
-            continue;
-          }
-          const { frozen, opened, read, window, sourceReconciliationKey } = await currentForecast(tx, forecastKey);
-          const { scheduledAt, through } = window;
-          const entry = { forecastKey, title: opened.paper.title, through, ...(scheduledAt ? { scheduledAt } : {}),
-            ...(sourceReconciliationKey ? { sourceReconciliationKey } : {}) };
-          const attemptId = posttestAttemptFor(posttestIdFor(frozen.derivationId));
-          try {
-            const attempt = await read.fact(attemptId, { mode: 'following' });
-            if (attempt.type === posttestSubmissionType) {
-              const reconciliationKey = reconciliationKeyFor(frozen.derivationId, attemptId);
-              items.push({ ...entry, state: 'submitted', reconciliationKey });
-              if (forecastKey === selected) {
-                const followups = await readRows(null, reconciliationKey);
-                rows.push(...followups.rows.filter(child => child.slot_key !== selected));
-              }
-            }
-          } catch (error) {
-            if (!(error instanceof FactNotFoundError)) throw error;
-            await requireFreshVariant(tx, frozen.value.input.target, await evidenceWatermark(tx), posttestIdFor(frozen.derivationId));
-            if (scheduledAt && now < scheduledAt) items.push({ ...entry, state: 'scheduled', scheduledAt });
-            else if (posttestOpensAt(window) <= now && now < through) items.push({ ...entry, state: 'ready' });
-          }
-        } catch (error) {
-          if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof RequestError)) throw error;
-        }
-      }
-      return { items };
-    });
+    return db.snapshot(scope, tx => listRetentionPosttests(retentionDeps, tx, selected));
   }
 
   async function reconcileAttempt(tx: DbTransaction, current: Awaited<ReturnType<typeof currentForecast>>, attemptId: FactId) {
-    const { frozen, read, window, opened } = current;
-    const observation = againstFrozenTarget(await readWorkbookObservation(tx, read, opened, attemptId, frozen.derivationId),
-      frozen.value.input.target);
-    afterFreeze(observation, window, frozen.effectiveTick, (status,message)=>{throw new RequestError(status,message)});
-    if (!await retentionHistoryValid(tx, frozen.derivationId, observation)) throw new RequestError(409, forecastUnavailable);
-    const key = reconciliationKeyFor(frozen.derivationId, attemptId);
-    const existing = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, key);
-    if (existing) {
-      const latest = await project(tx, key, existing);
-      if (existing.pending !== 'none') return { key, state: 'pending' as const };
-      if (latest.state === 'current' &&
-          canonicalJsonString(latest.value.observation) === canonicalJsonString(observation)) return latest;
-    }
-    await enqueue(tx, reconciliationPolicy, key, { forecastKey: frozen.key, forecastId: frozen.derivationId, attemptId });
-    return { key, state: 'pending' as const };
+    return reconcileRetentionAttempt(retentionDeps, tx, current, attemptId);
   }
 
   async function reconcile(forecastKey: string, input: Record<string, unknown>) {
@@ -490,6 +373,4 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     savePosttestPaper: (input: Record<string, unknown>) => write(tx => posttest.save(tx, input)), startPosttest, submitPosttest };
 }
 
-export function isRetentionSlot(type: string) {
-  return type === forecastSlot.type || type === reconciliationSlot.type;
-}
+export const isRetentionSlot = (type: string) => isRetentionSlotHost(retentionDeps, type);
