@@ -1,3 +1,4 @@
+import { createResearchHost, researchReadSnapshot, researchSettingInput } from '../../modules/companion/research-host-support.ts';
 import { eligibleBasis, executeWorksheet, modelReviewSpec, worksheetView } from '../research/worksheet.ts';
 import { grantHooks, workerCap, workerOffer } from '../research/worker-dispatch.ts';
 import { workerConsent } from '../../modules/companion/worker-consent.ts';
@@ -50,14 +51,6 @@ const wakeSlot = 'companion.researchWake';
 const wake = { slotType: wakeSlot, slotKey: settingsId, deriver: 'studio/research-wake-v1' };
 const idleRecheckMs = 60_000;
 
-function settingInput(input: Record<string, unknown>, minimum: number, field: 'enabled' | 'allowed') {
-  const { revision } = input;
-  const value = input[field];
-  if (typeof value !== 'boolean' || typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < minimum)
-    throw new RequestError(400, '请提交明确的教研开关和原版本。');
-  return { requestId: clientRequest(input.requestId), revision, value };
-}
-
 async function updateSettings<T>(action: () => Promise<T>) {
   try {
     return await action();
@@ -68,281 +61,26 @@ async function updateSettings<T>(action: () => Promise<T>) {
   }
 }
 
-export function openResearch(db: Db, activity: LoadedModule, companion: LoadedModule,
-  scoutHost?: ResearchScoutHost, understandingTransport?: UnderstandingTransport,
-  correctionAuthority?: CorrectionRetestAuthority, tariff?: WorkerTariff,
-  carePause?: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> }) {
-  const held = (tx: ReadTransaction, now = Date.now()) => carePause?.paused(tx, now) ?? Promise.resolve(false);
-  const extract = openUnderstandingExtraction(db, companion, understandingTransport);
-  const settingsCurrent = async (tx: ReadTransaction, revision: number) => {
-    const current = await settings(tx);
-    return current?.enabled === true && current.revision === revision;
-  };
-  const hooks: CommandHooks = createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
-    for (const change of changes) {
-      if (change.factType === researchSettingsType) {
-        await cancelResearchTodos(tx);
-        await enqueueWork(tx, tick, wake);
-      } else if ((change.factType === workbookAttemptType || change.factType === retentionReviewPermissionType) &&
-          (await settings(tx))?.enabled) {
-        await enqueueWork(tx, tick, wake);
-      }
-    }
-  } });
-  const handle = createCommandHandler(db, { modules: [activity, companion], hooks });
+const researchHostDeps = {
+  scope, wake, idleRecheckMs, eligibleBasis, executeWorksheet, modelReviewSpec, worksheetView, workerOffer,
+  grantHooks, startOrWakeCoordinator, effectBudgetUsage, createCommandHandler, consumePricedEffect,
+  researchSettingsType, workbookCorrectionType, storagePurpose, setWorkbookResearchUse, settingsId,
+  retentionReviewPermissionType, researchPurpose, workbookAttempt, workbookPaperType, workspaceEntryType,
+  activityEvidenceTypes, turnEvidenceType, newResearchWatermark, comparisonAttempts, activeRetentionReview,
+  researchReader, retentionReviewPermissionId, readWorksheet, whenAvailable, extractorProfile,
+  openUnderstandingExtraction, eligibleExtraction, discoverUnderstandingTodos, eligibleCorrectionRetest,
+  registerCorrectionRetest, correctionRetestDeriver, executeCorrectionRetest, prepareResearchTriage,
+  preparePaidResearchTriage, researchDecision, scoutEffectIdentity, sampleResearchScout,
+  ScoutAuthorizationChanged, independentScoutSource, checkTodoTriggers, emitTodo, recordTodoEvent,
+  enqueueWork, cancelResearchTodos, saveFactWatermark, readWork, acknowledgeStartedWork, finishWork,
+  cancelWork, failWork, settings, createStudioCommandHooks, workbookAttemptType, workbookSource, lockLearner,
+  workerCap, paidExtractionRecipient, clientRequest, RequestError, workerConsent, researchScoutBudget,
+  updateSettings, configureResearch, commandId, stableId, readMissedPosttest, retentionReviewPermission,
+  withinLearnerTransaction, wakeSlot, todoSlot, allowRetentionReview,
+};
 
-  const read = () => db.snapshot(scope, async tx => {
-    const current = await settings(tx);
-    const budget = current?.scoutBudget;
-    const { held, settled } = await effectBudgetUsage(tx);
-    return { enabled: current?.enabled ?? false, revision: current?.revision ?? 0, paidBudget: budget?.limitMicros ?? 0,
-      ...(tariff && {workerOffers:await workerOffer(tariff), comparisonAttempts:await comparisonAttempts(tx)}),
-      ...(current?.workerGrant && {workerGrant:current.workerGrant}),
-      ...(scoutHost && {scoutOffer: {route: scoutHost.route, maxRetentionDays: scoutHost.retentionDays,
-        maxPerCallMicros: scoutHost.reserveUsdMicros}}),
-      ...(current?.workerGrant || budget || held > 0n || settled > 0n ? { scoutBudget: budget ?? null, unit: 'USD_MICROS',
-        heldUsdMicros: held.toString(), settledUsdMicros: settled.toString() } : {}) };
-  });
-  const permission = (paperId: string, attemptId: string) => db.snapshot(scope, async tx => {
-    const fact = await workbookSource(tx, paperId, attemptId);
-    return { allowed: fact.purpose.includes(researchPurpose), revision: fact.ref.rev };
-  });
-
-  const readRetentionPermission = (tx: ReadTransaction, key: string) =>
-    whenAvailable(() => researchReader(tx).fact(retentionReviewPermissionId(key), { mode: 'following' }));
-
-  const retentionReview = (key: string) => db.snapshot(scope, async tx => {
-    const current = await settings(tx);
-    const fact = await readRetentionPermission(tx, key);
-    const active = fact && await activeRetentionReview(tx, fact);
-    return { enabled: current?.enabled ?? false, revision: fact?.ref.rev ?? 0, allowed: Boolean(active),
-      ...await worksheetView(tx, current?.enabled && active ? fact : null, current?.revision) };
-  });
-
-  const workbookChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
-    const correction = changes.find(change => change.factType === workbookCorrectionType && change.kind === 'create');
-    if (correction) {
-      const current = await settings(tx);
-      if (current?.enabled && await registerCorrectionRetest(tx, tick, correction.ref.id, current.revision, settingsId))
-        await enqueueWork(tx, tick, wake);
-    }
-    const created = changes.find(change => change.factType === workbookAttemptType && change.kind === 'create');
-    if (!created || !(await settings(tx))?.enabled) return;
-    const permitted = await tx.query(
-      `SELECT 1 FROM facts WHERE learner_id=$1 AND id=$2 AND current_rev=$3
-        AND $4=ANY(purpose) AND retracted_rev IS NULL`,
-      [tx.learner, created.ref.id, created.ref.rev, researchPurpose],
-    );
-    if (!permitted.rowCount) return;
-    const fact = await whenAvailable(() => researchReader(tx).fact(created.ref.id, { mode: 'pinned', rev: created.ref.rev }));
-    if (!fact) return;
-    await recordTodoEvent(tx, tick, { type: 'on_attempt_submitted', subject: workbookAttempt(fact.value).paperId });
-    await enqueueWork(tx, tick, wake);
-  };
-
-  const activityChanged: CommandHooks['onFactsChanged'] = async (tx, tick, changes) => {
-    if ((extract || tariff) && changes.some(change => change.factType !== turnEvidenceType &&
-        (activityEvidenceTypes.includes(change.factType) || change.kind === 'set_purpose' &&
-          [workbookPaperType, workspaceEntryType].includes(change.factType)) && change.kind !== 'retract') &&
-        (await settings(tx))?.enabled) await enqueueWork(tx, tick, wake);
-  };
-
-  const turnCompleted = async (tx: DbTransaction, tick: Tick, id: string) => {
-    if ((extract || tariff) && (await settings(tx))?.enabled &&
-        await whenAvailable(() => researchReader(tx).fact(factId(id), {mode: 'following'}))) await enqueueWork(tx, tick, wake);
-  };
-
-  const advance: AdvanceCoordinator = async ({ coordinatorRef }, signal) => {
-    const scan = await db.tx(scope, async tx => {
-      await lockLearner(tx, tx.learner);
-      const current = await settings(tx);
-      if (!current?.enabled || current.coordinatorRef !== coordinatorRef) return { status: 'disabled' } as const;
-      signal.throwIfAborted();
-      const now = Date.now();
-      if (await held(tx, now)) return { status: 'waiting', recheckAtMs: now + idleRecheckMs } as const;
-      const extractionCap = current.workerGrant?.profile === extractorProfile ? workerCap(current.workerGrant, tariff) : 0;
-      const recipient = extractionCap ? paidExtractionRecipient : understandingTransport?.maySend;
-      const eligible = async (spec: TodoSpec) => (await ((extract || extractionCap) && spec.workerProfile === extractorProfile
-        ? eligibleExtraction(tx, spec, recipient, extractionCap) : eligibleBasis(tx, spec, settingsId, tariff))) !== null;
-      const due = await checkTodoTriggers(tx, now, (spec, route) => route === correctionRetestDeriver
-        ? eligibleCorrectionRetest(tx, spec, current.revision, now, correctionAuthority) : eligible(spec), correctionRetestDeriver);
-      if (due.advanced) return { status: 'advanced' } as const;
-      const waiting = { status: 'waiting', recheckAtMs: Math.min(due.nextAt ?? Infinity, now + idleRecheckMs) } as const;
-      const watermark = await newResearchWatermark(tx);
-      if (watermark) {
-        if (extract || extractionCap) {
-          const todos = await discoverUnderstandingTodos(tx, watermark.reviewed, current.revision, now, recipient, extractionCap);
-          if (todos.length) {
-            await tx.withLearnerWrite(async tick => {
-              for (const spec of todos) await emitTodo(tx, tick, spec, now, eligible);
-            });
-            return { status: 'advanced' } as const;
-          }
-        }
-        const local = await prepareResearchTriage(tx, watermark.reviewed, current.revision, now, Boolean(current.scoutBudget), eligible);
-        if (local?.intent && researchDecision(local) === 'review') {
-          const todo = await modelReviewSpec(tx, local.intent, current.workerGrant, tariff);
-          if (!todo) return waiting;
-          await tx.withLearnerWrite(tick => emitTodo(tx, tick, todo, now, eligible));
-          return { status: 'advanced' } as const;
-        }
-        await saveFactWatermark(tx, watermark.observed);
-      }
-      const budget = current.scoutBudget;
-      if (!budget || scoutHost?.route !== budget.route || budget.expiresAtMs <= Date.now()) return waiting;
-      const prepared = await preparePaidResearchTriage(tx, settingsId, current.revision, now, current.workerGrant);
-      return prepared ? { status: 'sample', prepared, waiting, settingsRevision: current.revision, budget } as const : waiting;
-    });
-    if (scan.status !== 'sample' || !scoutHost) return scan.status === 'sample' ? scan.waiting : scan;
-    signal.throwIfAborted();
-    const { budget, prepared, settingsRevision } = scan;
-    const authorizeScout = async (tx: ReadTransaction) => {
-      const current = await settings(tx);
-      if (current?.enabled !== true || current.revision !== settingsRevision ||
-          current.coordinatorRef !== coordinatorRef || !(await eligibleBasis(tx, prepared.intent, settingsId, tariff)))
-        throw new ScoutAuthorizationChanged();
-      const { id } = prepared.intent.sourceFactRev;
-      const source = await whenAvailable(() => researchReader(tx).fact(id, { mode: 'following' }));
-      if (!source || !await independentScoutSource(tx, source) || budget.expiresAtMs <= Date.now())
-        throw new ScoutAuthorizationChanged();
-    };
-    const review = await sampleResearchScout(db, settingsId, settingsRevision, budget, scoutHost,
-      prepared, authorizeScout, signal);
-    if (review === undefined) return scan.waiting;
-    return db.tx(scope, async tx => {
-      signal.throwIfAborted();
-      const consumed = await consumePricedEffect(tx, scoutEffectIdentity(settingsId, prepared.intent.dedupKey), review === 'superseded' ? 'discard' : async tick => {
-        if (!review) return null;
-        try {
-          await authorizeScout(tx);
-        } catch (error) {
-          if (error instanceof ScoutAuthorizationChanged) return null;
-          throw error;
-        }
-        const grant = (await settings(tx))?.workerGrant ?? null;
-        const todo = await modelReviewSpec(tx, prepared.intent, grant, tariff);
-        if (!todo) return null;
-        return (await emitTodo(tx, tick, todo, Date.now(), async spec => Boolean(await eligibleBasis(tx, spec, settingsId, tariff))))?.id ?? null;
-      });
-      return consumed ? { status: 'advanced' } : scan.waiting;
-    });
-  };
-
-  return {
-    read,
-    async configure(input: Record<string, unknown>) {
-      const { requestId, revision, value: enabled } = settingInput(input, 0, 'enabled');
-      let grant: ReturnType<typeof workerConsent> | undefined;
-      let scoutBudget: ReturnType<typeof researchScoutBudget> | undefined;
-      try {
-        if (input.workerGrant !== undefined) grant = workerConsent(input.workerGrant);
-        if (input.scoutBudget !== undefined) scoutBudget = researchScoutBudget(input.scoutBudget);
-      } catch {
-        throw new RequestError(400, '前哨额度、到期时间、服务标识或留存天数无效。');
-      }
-      const configure = grant && enabled ? createCommandHandler(db, {modules:[activity, companion], hooks:grantHooks(hooks, grant, tariff)}) : handle;
-      const receipt = await whenAvailable(() => updateSettings(() => configure({
-        ...scope, actor: 'learner', purpose: researchPurpose, type: configureResearch,
-        id: commandId(stableId('configure-research', requestId)), input: { id: settingsId, revision, enabled, ...(grant !== undefined && {workerGrant:grant}), ...(scoutBudget !== undefined && { scoutBudget }) },
-      })));
-      if (!receipt) throw new RequestError(409, '对照来源权限已变更，请重新确认。');
-      return read();
-    },
-    permission,
-    retentionReview,
-    async allowRetentionReview(key: string, input: Record<string, unknown>) {
-      const { requestId, revision, value: allowed } = settingInput(input, 0, 'allowed');
-      await updateSettings(() => db.tx(scope, async tx => {
-        await lockLearner(tx, tx.learner);
-        const previous = await readRetentionPermission(tx, key);
-        const resultId = allowed ? await readMissedPosttest(tx, key)
-          : previous && retentionReviewPermission(previous.value).resultId;
-        if (!resultId) throw new RequestError(409, '当前没有可授权的独立后测偏差。');
-        const handlePermission = createCommandHandler(withinLearnerTransaction(db, tx), { modules: [companion], hooks });
-        await handlePermission({ ...scope, actor: 'learner', purpose: researchPurpose, type: allowRetentionReview,
-          id: commandId(stableId('allow-retention-review', key, requestId)),
-          input: { id: retentionReviewPermissionId(key), revision, permission: { key, resultId, allowed } } });
-      }));
-      return retentionReview(key);
-    },
-    async allow(paperId: string, attemptId: string, input: Record<string, unknown>) {
-      const { requestId, revision, value: allowed } = settingInput(input, 1, 'allowed');
-      await permission(paperId, attemptId);
-      const receipt = await whenAvailable(() => updateSettings(() => handle({
-        ...scope, actor: 'learner', purpose: storagePurpose, type: setWorkbookResearchUse,
-        id: commandId(stableId('workbook-research-use', attemptId, requestId)),
-        input: { paperId, attemptId, revision, allowed },
-      })));
-      if (!receipt) throw new RequestError(404, '找不到这次作答。');
-      return permission(paperId, attemptId);
-    },
-    worksheet: (paperId: string, attemptId: string) => db.snapshot(scope, async tx => {
-      const current = await settings(tx);
-      return worksheetView(tx, await workbookSource(tx, paperId, attemptId), current?.enabled ? current.revision : undefined);
-    }),
-    async source(paperId: string, attemptId: string, id: string) {
-      const result = await db.snapshot(scope, async tx => readWorksheet(tx, await workbookSource(tx, paperId, attemptId)));
-      if (result?.worksheet.id !== id) throw new RequestError(404, '这份复习依据当前不可读。');
-      return result.source;
-    },
-    workbookChanged,
-    activityChanged,
-    turnCompleted,
-    advance,
-    async reconcile() {
-      await db.tx(scope, async tx => {
-        if (!(await settings(tx))?.enabled) return;
-        await lockLearner(tx, tx.learner);
-        if (!(await settings(tx))?.enabled) return;
-        const pending = await tx.query(
-          `SELECT 1 FROM work w JOIN work_outbox o ON o.intent_id = w.execution_ref
-           WHERE w.learner_id = $1 AND w.slot_type = $2 AND w.state = 'ready' AND o.state = 'pending'`,
-          [tx.learner, wakeSlot],
-        );
-        if (!pending.rowCount) await tx.withLearnerWrite(tick => enqueueWork(tx, tick, wake));
-      });
-    },
-    async relayWake(client: Client, taskQueue: string, ref: WorkRef, id: string) {
-      const work = await readWork(db, ref);
-      if (!work) return true;
-      if (work.slotType !== wakeSlot) return false;
-      const current = await db.snapshot(scope, settings);
-      if (current) await startOrWakeCoordinator(client, current.coordinatorRef, id, { taskQueue });
-      await acknowledgeStartedWork(db, id);
-      await finishWork(db, ref);
-      return true;
-    },
-    async execute(ref: WorkRef, terminal = false, signal = new AbortController().signal) {
-      const work = await readWork(db, ref);
-      if (!work) return true;
-      if (work.slotType === 'companion.researchDelivery') {
-        await cancelWork(db, ref);
-        return true;
-      }
-      if (work.slotType !== todoSlot) return false;
-      const todoId = factId(work.slotKey);
-      if (terminal) {
-        await failWork(db, ref);
-        return true;
-      }
-      // A paid todo acknowledged before the pause took effect must not bill or send.
-      if (await db.snapshot(scope, tx => held(tx))) {
-        await cancelWork(db, ref);
-        return true;
-      }
-      if (work.deriver === extractorProfile) {
-        const grant = (await db.snapshot(scope, settings))?.workerGrant;
-        const run = tariff && grant?.profile === extractorProfile ?
-          openUnderstandingExtraction(db, companion, undefined, {tariff, grant, signal}) : extract;
-        if (run) await run(ref, todoId, settingsCurrent);
-        else await cancelWork(db, ref);
-        return true;
-      }
-      if (work.deriver === correctionRetestDeriver) {
-        await executeCorrectionRetest(db, ref, todoId, settingsCurrent, correctionAuthority);
-        return true;
-      }
-      return executeWorksheet(db, companion, ref, todoId, settingsId, wake, tariff, signal);
-    },
-  };
+export function openResearch(db: any, activity: any, companion: any, scoutHost?: any, understandingTransport?: any,
+  correctionAuthority?: any, tariff?: any, carePause?: {paused: (tx: ReadTransaction, now?: number) => Promise<boolean>}) {
+  return createResearchHost(researchHostDeps).openResearch(db, activity, companion, scoutHost, understandingTransport,
+    correctionAuthority, tariff, carePause);
 }
