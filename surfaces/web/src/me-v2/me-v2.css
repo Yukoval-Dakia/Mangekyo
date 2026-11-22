@@ -76,10 +76,10 @@
   gap: 18px;
 }
 .me-v2-card {
-  background: var(--me-card);
-  border: 1px solid var(--me-line);
-  border-radius: 22px;
-  padding: 22px 24px;
+  background: transparent;
+  border-top: 1px solid var(--me-line);
+  border-radius: 0;
+  padding: 20px 0;
   min-width: 0;
 }
 .me-v2-card-head {
@@ -139,6 +139,7 @@
   padding: 18px;
   border-radius: 16px;
   background: #eef4ea;
+  border: 1px solid var(--me-line);
 }
 .me-v2-empty h3 {
   font-size: 16px;
@@ -296,8 +297,7 @@
   gap: 12px;
   margin-top: 26px;
   padding: 16px 18px;
-  border: 1px solid var(--me-line);
-  border-radius: 16px;
+  border-top: 1px solid var(--me-line);
   color: var(--muted);
   font-size: 13.5px;
   line-height: 1.6;
@@ -307,7 +307,7 @@
 
 /* 移动端 390px 零横向溢出 */
 @media (max-width: 480px) {
-  .me-v2-card { padding: 18px; border-radius: 20px; }
+  .me-v2-card { padding: 18px 0; }
   .me-v2-card-head { flex-direction: column; gap: 10px; }
   .me-v2-pill-button { align-self: flex-start; }
   .me-v2-tabs { padding: 4px; gap: 4px; }

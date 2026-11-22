@@ -10,6 +10,7 @@ import { LearningUnderstandings } from './learning-understandings';
 import { LearningMemory } from './study-tools';
 import { NotionSettings } from './notion-settings';
 import { MaterialOriginal } from './intake';
+import MathText from './math-text';
 import { builtinClassroomPath, builtinClassrooms, builtinPacks, builtinPackPath } from './builtin-packs';
 
 export type Material = { id: string; title: string; text: string };
@@ -217,8 +218,10 @@ export function SavedMaterial({
 }) {
   const [erasure,setErasure] = useState(() => readErasure(id));
   const [start,setStart] = useState(false);
+  const [plainTextMaterial, setPlainTextMaterial] = useState(false);
   const [questionCardReading, setQuestionCardReading] = useState<{ id: string; count: number } | null>(null);
   useEffect(() => {
+    setPlainTextMaterial(false);
     const restore = () => setErasure(readErasure(id));
     window.addEventListener('storage',restore);
     return () => window.removeEventListener('storage',restore);
@@ -262,9 +265,14 @@ export function SavedMaterial({
             settings={settings}
             onNavigate={onNavigate}
             questionCardsFirst
+            onPlainTextChange={setPlainTextMaterial}
             onQuestionCardCountChange={(materialId, count) => setQuestionCardReading({id: materialId, count})}
           />
-          <p className="preserve">{m.text}</p>
+          {plainTextMaterial && (
+            <section className="reading-plain-text formatted-reply" aria-label="材料正文">
+              <MathText text={m.text} />
+            </section>
+          )}
         </article>
       ) : (
         library.data && <h1>未找到这份材料</h1>

@@ -82,7 +82,7 @@ function DataPurposeCard() {
         同伴对你的理解来自已获准的学习活动。你可以随时在「学习设置 → 访问与授权」中查看每个来源的用途，
         或收窄为「仅保存」。
       </p>
-      <p className="me-v2-foot">当前默认：<strong>仅保存</strong>（D06）</p>
+      <p className="me-v2-foot">当前默认：<strong>仅保存</strong></p>
     </article>
   );
 }

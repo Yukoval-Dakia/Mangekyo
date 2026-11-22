@@ -1,5 +1,5 @@
-import { Dictation } from './classroom-voice';
 import { ReadReply } from './message';
+import './companion.css';
 import { recordFromQuery, recordFromSession, recordLabel, type CurrentObject } from './current-record';
 import { builtinPackPath, findBuiltinPack } from './builtin-packs';
 import { chatRoute, taskLabels, type Route } from './model-route';
@@ -165,10 +165,12 @@ function ChatRoom({
   return (
     <>
       <PageTitle title="同伴">
-        <a className="tonal-button" href="/classroom">按主题开课</a>
-        <a className="tonal-button" href="/companion">
-          <Icon name="plus" /> 新对话
-        </a>
+        <div className="companion-title-actions">
+          <a className="tonal-button" href="/classroom">按主题开课</a>
+          <a className="tonal-button" href="/companion">
+            <Icon name="plus" /> 新对话
+          </a>
+        </div>
       </PageTitle>
       <div className="chat-layout">
         <section className="personal-chat" aria-label="学习同伴">
@@ -256,14 +258,6 @@ function ChatRoom({
                   history.replaceState(null, '', '/companion');
                 }}>解除关联</button>}
             </fieldset>}
-            {mode === 'companion' && <label className="workbook-check">
-              <input type="checkbox" checked={allowBackgroundUnderstanding}
-                disabled={pending || unavailable || !!chat.retryOperation}
-                onChange={event => setAuthorizedDraft(event.target.checked ? draftTurn : undefined)} />
-              <span>允许后台从我这条消息整理学习观察</span>
-            </label>}
-            {route && <small>{taskLabels[task]} · {route.providerId} · {route.protocol} · {route.baseUrl} · {route.model} · {route.reasoningEffort}
-              {route.accountRevision && <> · 账户版本 {route.accountRevision}</>}</small>}
             {chat.accountConflict && <p role="alert">发送账户已变更，草稿已保留。
               {sessionId && <a href={shared ? '/companion?material=' + encodeURIComponent(shared.id) + (preparing ? '&mode=prepare' : '') : '/companion'} target="_blank" rel="noreferrer">在新对话中确认发送账户</a>}
             </p>}
@@ -285,8 +279,6 @@ function ChatRoom({
                 </label>;
               })}
             </fieldset>}
-            {!pending && !unavailable && !chat.retryOperation &&
-              <Dictation key={draftKey} append={spoken => edit((value + spoken).slice(0, 4000))} />}
             <textarea
               ref={textarea}
               aria-label="给同伴的话"
@@ -301,8 +293,32 @@ function ChatRoom({
                   e.currentTarget.form?.requestSubmit();
               }}
             />
-            <div>
-              <span>⌘ / Ctrl + Enter</span>
+            <div className="companion-composer-bar">
+              <div className="companion-composer-tools">
+                {route && (
+                  <span
+                    className="companion-route-pill"
+                    title={`${taskLabels[task]} · ${route.providerId} · ${route.model} · ${route.protocol} · ${route.reasoningEffort}`}
+                  >
+                    {route.model}
+                  </span>
+                )}
+                {!pending && !unavailable && !chat.retryOperation && (
+                  <CompactDictation key={draftKey} append={spoken => edit((value + spoken).slice(0, 4000))} />
+                )}
+                {mode === 'companion' && (
+                  <label className="companion-observation-toggle">
+                    <input
+                      type="checkbox"
+                      checked={allowBackgroundUnderstanding}
+                      disabled={pending || unavailable || !!chat.retryOperation}
+                      onChange={event => setAuthorizedDraft(event.target.checked ? draftTurn : undefined)}
+                    />
+                    <span>允许整理学习观察</span>
+                  </label>
+                )}
+                <span className="companion-shortcut">⌘ / Ctrl + Enter</span>
+              </div>
               <button
                 className="primary-button"
                 disabled={
@@ -336,5 +352,89 @@ function ChatRoom({
         </aside>
       </div>
     </>
+  );
+}
+
+function CompactDictation({ append }: { append(text: string): void }) {
+  type Recognition = {
+    lang: string;
+    start(): void;
+    stop(): void;
+    abort(): void;
+    onresult: ((event: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
+    onend: (() => void) | null;
+    onerror: (() => void) | null;
+  };
+  const [listening, setListening] = useState(false);
+  const [supported, setSupported] = useState(false);
+  const recognition = useRef<Recognition | null>(null);
+  useEffect(() => {
+    function abort() {
+      const current = recognition.current;
+      recognition.current = null;
+      current?.abort();
+      setListening(false);
+    }
+    function onVisibility() { if (document.hidden) abort(); }
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', abort);
+    const browser = window as Window & {
+      SpeechRecognition?: new () => Recognition;
+      webkitSpeechRecognition?: new () => Recognition;
+    };
+    const Engine = browser.SpeechRecognition ?? browser.webkitSpeechRecognition;
+    setSupported(Boolean(Engine));
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', abort);
+      abort();
+    };
+  }, []);
+  function toggle() {
+    if (listening) {
+      recognition.current?.stop();
+      return;
+    }
+    const browser = window as Window & {
+      SpeechRecognition?: new () => Recognition;
+      webkitSpeechRecognition?: new () => Recognition;
+    };
+    const Engine = browser.SpeechRecognition ?? browser.webkitSpeechRecognition;
+    if (!Engine) return;
+    const next = new Engine();
+    next.lang = 'zh-CN';
+    next.onresult = event => {
+      const text = Array.from(event.results).slice(event.resultIndex).filter(result => result.isFinal).map(result => result[0].transcript).join('').trim();
+      if (text) append(text);
+    };
+    next.onend = () => {
+      recognition.current = null;
+      setListening(false);
+    };
+    next.onerror = () => {
+      recognition.current = null;
+      setListening(false);
+    };
+    try {
+      recognition.current = next;
+      next.start();
+      setListening(true);
+    } catch {
+      recognition.current = null;
+      setListening(false);
+    }
+  }
+  return (
+    <button
+      type="button"
+      className="companion-icon-button"
+      aria-label={listening ? '结束口述输入' : '开始口述输入'}
+      title={supported ? (listening ? '结束口述输入' : '开始口述输入') : '此浏览器不支持口述，可使用系统听写'}
+      aria-pressed={listening}
+      disabled={!supported}
+      onClick={toggle}
+    >
+      <span className="companion-mic" aria-hidden="true" />
+    </button>
   );
 }
