@@ -716,6 +716,8 @@ function OriginalDetails({
       initialCards={initialQuestionCards}
       settings={settings}
       onNavigate={onNavigate}
+      pageCount={pageCount}
+      onSelectPage={setActivePage}
     />
   );
 

@@ -212,11 +212,38 @@
 }
 
 .intake-question-cards {
+  --intake-red: #a8482b;
+  --intake-red-strong: #7c3220;
+  --intake-red-soft: #f6e1d8;
+  --intake-red-line: #d9ab99;
+  --intake-red-active: #a8482b;
+  --intake-red-active-ink: #ffffff;
+  --intake-amber: #8a6412;
+  --intake-amber-strong: #6f5315;
+  --intake-amber-soft: #f4e7c4;
+  --intake-amber-line: #d3b877;
+  --intake-amber-active: #7a5b1c;
+  --intake-amber-active-ink: #ffffff;
   display: grid;
   gap: 16px;
   margin-top: 20px;
   min-width: 0;
   scroll-margin-top: calc(var(--top-bar-height, 60px) + 18px);
+}
+
+[data-theme="dark"] .intake-question-cards {
+  --intake-red: #f0b7a0;
+  --intake-red-strong: #ffd3c0;
+  --intake-red-soft: #3a241e;
+  --intake-red-line: #6f4233;
+  --intake-red-active: #5a3125;
+  --intake-red-active-ink: #ffd8c9;
+  --intake-amber: #ecd39c;
+  --intake-amber-strong: #ffe6b0;
+  --intake-amber-soft: #352c19;
+  --intake-amber-line: #6d5a2b;
+  --intake-amber-active: #4a3c1c;
+  --intake-amber-active-ink: #ffe3ab;
 }
 
 .intake-cards-jump {
@@ -391,6 +418,184 @@
   flex-wrap: wrap;
 }
 
+.intake-cards-filters button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 14px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  transition: background-color var(--duration-short) var(--ease-standard), border-color var(--duration-short) var(--ease-standard), color var(--duration-short) var(--ease-standard);
+}
+
+.intake-cards-filters button:hover {
+  border-color: color-mix(in srgb, var(--forest) 48%, var(--line));
+  background: var(--soft-green);
+  color: var(--on-soft-green);
+}
+
+.intake-cards-filters button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.intake-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.intake-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.intake-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.25;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--duration-short) var(--ease-standard), border-color var(--duration-short) var(--ease-standard), color var(--duration-short) var(--ease-standard);
+}
+
+.intake-filter-chip:hover {
+  border-color: color-mix(in srgb, var(--forest) 48%, var(--line));
+  background: color-mix(in srgb, var(--soft-green) 42%, var(--surface));
+}
+
+.intake-filter-chip[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--forest) 62%, var(--line));
+  background: var(--soft-green);
+  color: var(--on-soft-green);
+  font-weight: 700;
+}
+
+.intake-filter-chip.is-red {
+  border-color: var(--intake-red-line);
+  background: var(--intake-red-soft);
+  color: var(--intake-red-strong);
+}
+
+.intake-filter-chip.is-red:hover {
+  border-color: var(--intake-red);
+  background: color-mix(in srgb, var(--intake-red-soft) 78%, var(--intake-red));
+}
+
+.intake-filter-chip.is-red[aria-pressed="true"] {
+  border-color: var(--intake-red-active);
+  background: var(--intake-red-active);
+  color: var(--intake-red-active-ink);
+}
+
+.intake-filter-chip.is-amber {
+  border-color: var(--intake-amber-line);
+  background: var(--intake-amber-soft);
+  color: var(--intake-amber-strong);
+}
+
+.intake-filter-chip.is-amber:hover {
+  border-color: var(--intake-amber);
+  background: color-mix(in srgb, var(--intake-amber-soft) 78%, var(--intake-amber));
+}
+
+.intake-filter-chip.is-amber[aria-pressed="true"] {
+  border-color: var(--intake-amber-active);
+  background: var(--intake-amber-active);
+  color: var(--intake-amber-active-ink);
+}
+
+.intake-filter-chip:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.intake-filter-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--intake-red);
+}
+
+.intake-filter-chip.is-amber .intake-filter-dot {
+  background: var(--intake-amber);
+}
+
+.intake-filter-chip.is-red[aria-pressed="true"] .intake-filter-dot,
+.intake-filter-chip.is-amber[aria-pressed="true"] .intake-filter-dot {
+  background: currentColor;
+}
+
+.intake-filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.intake-filter-chip.is-red .intake-filter-count {
+  background: color-mix(in srgb, var(--intake-red) 16%, transparent);
+}
+
+.intake-filter-chip.is-amber .intake-filter-count {
+  background: color-mix(in srgb, var(--intake-amber) 18%, transparent);
+}
+
+.intake-filter-chip[aria-pressed="true"] .intake-filter-count {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.intake-filter-result {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.intake-filter-empty {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 18px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 18px;
+  background: var(--surface-container-low);
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.intake-filter-empty p {
+  margin: 0;
+}
+
 .intake-cards-filters button,
 .intake-question-cards footer button {
   min-height: 38px;
@@ -403,6 +608,10 @@
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.intake-question-cards > ul:empty {
+  display: none;
 }
 
 .intake-question-cards > ul > li {
@@ -819,6 +1028,11 @@
 
   .intake-cards-jump {
     width: 100%;
+  }
+
+  .intake-filter-chip {
+    min-height: 38px;
+    padding-inline: 13px;
   }
 
   .intake-question-cards footer > div > button {
