@@ -102,7 +102,23 @@ type Attempt = {
 
 type Bucket = {
   readonly dimensions: string;
+  readonly novelty: EvidenceEventV1['item_novelty'];
+  readonly contextKey: string;
   readonly attempts: Map<string, Attempt>;
+};
+
+type ConceptBuckets = Map<string, Bucket>;
+
+export type VerifiedConceptMasteryDetail = {
+  readonly retrievability: number;
+  readonly attempts: readonly Attempt[];
+};
+
+const decimalTick = /^(0|[1-9][0-9]*)$/u;
+const noveltyRank: Readonly<Record<EvidenceEventV1['item_novelty'], number>> = {
+  same: 0,
+  isomorphic: 1,
+  transfer: 2,
 };
 
 export function masteryWitnessKey(ref: BusWitness) {
@@ -111,6 +127,10 @@ export function masteryWitnessKey(ref: BusWitness) {
 
 function eventKey(id: string, rev: number) {
   return JSON.stringify([id, rev]);
+}
+
+function contextKey(representation?: string | null, context?: string | null, method?: string | null) {
+  return JSON.stringify([representation ?? null, context ?? null, method ?? null]);
 }
 
 function bucketKey(novelty: string, representation?: string | null, context?: string | null, method?: string | null) {
@@ -130,7 +150,9 @@ function attemptWitnesses({ anchor }: Attempt) {
 }
 
 export function isLocalMasteryWitness(ref: BusWitness, scope: TextbookMasteryScope) {
-  return ref.learner === scope.learner && BigInt(ref.accessEpoch) <= BigInt(scope.clockWatermark);
+  return (ref.mode === 'following' || ref.mode === 'pinned') &&
+    decimalTick.test(ref.accessEpoch) && decimalTick.test(scope.clockWatermark) &&
+    ref.learner === scope.learner && BigInt(ref.accessEpoch) <= BigInt(scope.clockWatermark);
 }
 
 function uniqueWitnesses(refs: Iterable<BusWitness>) {
@@ -138,10 +160,11 @@ function uniqueWitnesses(refs: Iterable<BusWitness>) {
 }
 
 function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMasteryScope, concepts: ReadonlySet<string>) {
-  const buckets = new Map<string, Bucket | null>();
+  const buckets = new Map<string, ConceptBuckets | null>();
   const { slice } = batch;
   const cutoff = Date.parse(scope.asOf);
-  if (slice.as_of_at !== scope.asOf || slice.clock_watermark !== scope.clockWatermark) return null;
+  if (slice.as_of_at !== scope.asOf || slice.clock_watermark !== scope.clockWatermark ||
+      !Number.isFinite(cutoff) || !decimalTick.test(scope.clockWatermark)) return null;
 
   const omitted = new Set(slice.omissions?.map(({ ref }) => eventKey(ref.id, ref.rev)));
   const anchors = new Map<string, TextbookMasteryEvidenceAnchor | null>();
@@ -154,8 +177,8 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
       anchors.set(key, null);
       continue;
     }
-    anchors.set(key, isAttemptEvidenceType(submission.type) && itemId && /^\/(?!\/)[^\\\s]*$/u.test(href)
-      && BigInt(recordedAt) <= BigInt(scope.clockWatermark)
+    anchors.set(key, isAttemptEvidenceType(submission.type) && itemId.trim().length > 0 && /^\/(?!\/)[^\\\s]*$/u.test(href)
+      && decimalTick.test(recordedAt) && BigInt(recordedAt) <= BigInt(scope.clockWatermark)
       && (expiresAt === undefined || cutoff < Date.parse(expiresAt))
       && [submission, question, ...basis].every(ref => isLocalMasteryWitness(ref, scope)) ? anchor : null);
   }
@@ -172,6 +195,7 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
   for (const concept of concepts) {
     if (complete ? !complete.has(concept) : unassignedOmission) buckets.set(concept, null);
   }
+  const conceptRefs = new Map<string, Map<string, string>>();
   for (const event of slice.events) {
     const key = eventKey(event.ref, event.rev);
     const anchor = anchors.get(key);
@@ -182,43 +206,81 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
     }
     if (event.help_level !== 'independent' || event.exam_pacing || event.exam_pacing_item) continue;
     const dimension = bucketKey(event.item_novelty, event.representation, event.context, event.method);
+    const ctxKey = contextKey(event.representation, event.context, event.method);
     for (const concept of new Set(event.concept_ids)) {
       if (!concepts.has(concept)) continue;
-      let bucket = buckets.get(concept);
-      if (bucket === null) continue;
+      let byDimension = buckets.get(concept);
+      if (byDimension === null) continue;
       if (!anchor) {
         buckets.set(concept, null);
         continue;
       }
-      if (!bucket) {
-        bucket = { dimensions: dimension, attempts: new Map() };
-        buckets.set(concept, bucket);
+      if (!byDimension) {
+        byDimension = new Map();
+        buckets.set(concept, byDimension);
       }
-      const prior = bucket.attempts.get(event.ref);
-      if (bucket.dimensions !== dimension || (prior && JSON.stringify(prior.event) !== JSON.stringify(event))) {
+      let refs = conceptRefs.get(concept);
+      if (!refs) {
+        refs = new Map();
+        conceptRefs.set(concept, refs);
+      }
+      const priorDim = refs.get(event.ref);
+      if (priorDim !== undefined && priorDim !== dimension) {
         buckets.set(concept, null);
         continue;
       }
+      let bucket = byDimension.get(dimension);
+      if (!bucket) {
+        bucket = { dimensions: dimension, novelty: event.item_novelty, contextKey: ctxKey, attempts: new Map() };
+        byDimension.set(dimension, bucket);
+      }
+      const prior = bucket.attempts.get(event.ref);
+      if (prior && JSON.stringify(prior.event) !== JSON.stringify(event)) {
+        buckets.set(concept, null);
+        continue;
+      }
+      refs.set(event.ref, dimension);
       bucket.attempts.set(event.ref, { event, anchor });
     }
   }
   return buckets;
 }
 
-function verifiedRows(result: CognitionOutput | null, version: string, buckets: ReadonlyMap<string, Bucket | null>) {
-  const rows = new Map<string, CognitionOutput['state_vector'][number] | null>();
-  if (result?.method_version !== version) return rows;
+type VerifiedBucketRow = {
+  readonly bucket: Bucket;
+  readonly row: CognitionOutput['state_vector'][number];
+};
+
+function verifiedRows(result: CognitionOutput | null, version: string, buckets: ReadonlyMap<string, ConceptBuckets | null>) {
+  const matched = new Map<string, Map<string, VerifiedBucketRow> | null>();
+  if (result?.method_version !== version) return new Map<string, readonly VerifiedBucketRow[]>();
   for (const row of result.state_vector) {
-    const bucket = buckets.get(row.concept_id);
-    if (!bucket) continue;
+    const byDimension = buckets.get(row.concept_id);
+    if (!byDimension) continue;
+    const held = matched.get(row.concept_id);
+    if (held === null) continue;
     const dimensions = bucketKey(row.item_novelty, row.representation, row.context, row.method);
+    const bucket = byDimension.get(dimensions);
     const refs = new Map(row.evidence_refs.map(ref => [ref.ref, ref.rev]));
-    const matching = row.state === 'known' && row.uncertainty.kind === 'interval' && dimensions === bucket.dimensions
+    const ok = !!bucket && row.state === 'known' && row.uncertainty.kind === 'interval'
       && row.evidence_refs.length === bucket.attempts.size && refs.size === bucket.attempts.size
       && [...bucket.attempts].every(([ref, { event }]) => refs.get(ref) === event.rev);
-    rows.set(row.concept_id, matching && !rows.has(row.concept_id) ? row : null);
+    if (!ok || held?.has(dimensions)) {
+      matched.set(row.concept_id, null);
+      continue;
+    }
+    const next = held ?? new Map<string, VerifiedBucketRow>();
+    next.set(dimensions, { bucket, row });
+    matched.set(row.concept_id, next);
   }
-  return rows;
+  const verified = new Map<string, readonly VerifiedBucketRow[]>();
+  for (const [concept, byDimension] of buckets) {
+    if (!byDimension || !byDimension.size) continue;
+    const rows = matched.get(concept);
+    if (!rows || rows.size !== byDimension.size) continue;
+    verified.set(concept, [...rows.values()]);
+  }
+  return verified;
 }
 
 // The registered Python retention methods report crossings at this boundary.
@@ -231,18 +293,55 @@ function newer(attempt: Attempt, latest: Attempt | undefined) {
   return elapsed > 0 || (elapsed === 0 && BigInt(attempt.anchor.recordedAt) > BigInt(latest.anchor.recordedAt));
 }
 
-function projectConcept(conceptId: string, bucket: Bucket, row: CognitionOutput['state_vector'][number],
-  scope: TextbookMasteryScope, allowed: (ref: BusWitness) => boolean): TextbookMasteryConcept {
-  const now = Date.parse(scope.asOf);
-  if (row.state !== 'known' || row.r_now === undefined || !(row.r_now >= 0 && row.r_now <= 1)
-    || (row.crossing_at !== undefined && !(Date.parse(row.crossing_at) >= now))) return { conceptId, state: 'unknown', reason: 'unavailable' };
-  let latest: Attempt | undefined;
-  const latestByQuestion = new Map<string, Attempt>();
-  for (const attempt of bucket.attempts.values()) {
-    if (newer(attempt, latest)) latest = attempt;
-    const questionId = attempt.anchor.question.id;
-    if (newer(attempt, latestByQuestion.get(questionId))) latestByQuestion.set(questionId, attempt);
+function selectEffectiveBucket(
+  entries: readonly VerifiedBucketRow[],
+  latest: Attempt,
+  latestBucket: Bucket,
+): VerifiedBucketRow {
+  if (entries.length === 1) return entries[0]!;
+  if (latest.event.outcome === 'incorrect') {
+    return entries.find(entry => entry.bucket.dimensions === latestBucket.dimensions) ?? entries[0]!;
   }
+  // Within each (representation, context, method) group, higher novelty
+  // (transfer > isomorphic > same) supersedes earlier lower-novelty buckets.
+  const byContext = new Map<string, VerifiedBucketRow>();
+  for (const entry of entries) {
+    const held = byContext.get(entry.bucket.contextKey);
+    if (!held || noveltyRank[entry.bucket.novelty] > noveltyRank[held.bucket.novelty]) {
+      byContext.set(entry.bucket.contextKey, entry);
+    }
+  }
+  // Across distinct (representation, context, method) groups, stay conservative
+  // by surfacing the weakest verified retrievability so gaps are not masked.
+  return [...byContext.values()].reduce((weakest, entry) =>
+    (entry.row.r_now ?? 1) < (weakest.row.r_now ?? 1) ? entry : weakest);
+}
+
+function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[],
+  scope: TextbookMasteryScope, allowed: (ref: BusWitness) => boolean):
+  { concept: TextbookMasteryConcept; detail: VerifiedConceptMasteryDetail } | null {
+  const now = Date.parse(scope.asOf);
+  for (const { row } of entries) {
+    if (row.state !== 'known' || row.r_now === undefined || !(row.r_now >= 0 && row.r_now <= 1)
+      || (row.crossing_at !== undefined && !(Date.parse(row.crossing_at) >= now))) return null;
+  }
+  let latest: Attempt | undefined;
+  let latestBucket: Bucket | undefined;
+  const allAttempts: Attempt[] = [];
+  const latestByQuestion = new Map<string, Attempt>();
+  for (const { bucket } of entries) {
+    for (const attempt of bucket.attempts.values()) {
+      allAttempts.push(attempt);
+      if (newer(attempt, latest)) {
+        latest = attempt;
+        latestBucket = bucket;
+      }
+      const questionId = attempt.anchor.question.id;
+      if (newer(attempt, latestByQuestion.get(questionId))) latestByQuestion.set(questionId, attempt);
+    }
+  }
+  if (!latest || !latestBucket) return null;
+  const { row } = selectEffectiveBucket(entries, latest, latestBucket);
   let error: Attempt | undefined;
   let stable: Attempt | undefined;
   for (const attempt of latestByQuestion.values()) {
@@ -260,19 +359,20 @@ function projectConcept(conceptId: string, bucket: Bucket, row: CognitionOutput[
       && new Set(basis.filter(ref => isAttemptEvidenceType(ref.type)).map(ref => ref.id)).size >= 2
       && basis.every(ref => isLocalMasteryWitness(ref, scope) && allowed(ref))) stable = attempt;
   }
-  if (!latest) return { conceptId, state: 'unknown', reason: 'unavailable' };
-  const decaying = row.r_now <= crossingProbability || (row.crossing_at !== undefined && nearFlashCrossing(row.crossing_at, now));
+  const decaying = row.r_now! <= crossingProbability || (row.crossing_at !== undefined && nearFlashCrossing(row.crossing_at, now));
   const state = latest.event.outcome === 'incorrect' ? 'fragile' : decaying ? 'decaying' : 'steady';
   const selected = state === 'fragile' ? error : stable ?? error;
-  if (!selected) return { conceptId, state };
-  const { event, anchor } = selected;
-  return {
-    conceptId, state,
-    anchor: {
-      kind: event.outcome === 'incorrect' ? 'recent-error' : 'prior-stable',
-      submissionId: event.ref, submissionRev: event.rev, occurredAt: event.occurred_at, itemId: anchor.itemId, href: anchor.href,
-    },
-  };
+  const concept: TextbookMasteryConcept = selected
+    ? {
+        conceptId, state,
+        anchor: {
+          kind: selected.event.outcome === 'incorrect' ? 'recent-error' : 'prior-stable',
+          submissionId: selected.event.ref, submissionRev: selected.event.rev,
+          occurredAt: selected.event.occurred_at, itemId: selected.anchor.itemId, href: selected.anchor.href,
+        },
+      }
+    : { conceptId, state };
+  return { concept, detail: { retrievability: row.r_now!, attempts: allAttempts } };
 }
 
 export async function readConceptMastery(scope: TextbookMasteryScope, conceptIds: ReadonlySet<string>,
@@ -282,19 +382,21 @@ export async function readConceptMastery(scope: TextbookMasteryScope, conceptIds
   if (method && conceptIds.size) sources.prepareEvidence?.(scope, [...conceptIds]);
   const batch = method && conceptIds.size ? await sources.readEvidence(scope, [...conceptIds]) : null;
   const coveredBuckets = batch ? evidenceBuckets(batch, scope, conceptIds) : null;
-  const buckets = coveredBuckets ?? new Map<string, Bucket | null>();
+  const buckets = coveredBuckets ?? new Map<string, ConceptBuckets | null>();
   const eventConcepts = new Map<ScoredEvent, string[]>();
   const usedWitnesses: BusWitness[] = [];
   const stabilityWitnesses: BusWitness[] = [];
-  for (const [concept, bucket] of buckets) {
-    if (!bucket) continue;
-    for (const attempt of bucket.attempts.values()) {
-      const selected = eventConcepts.get(attempt.event);
-      if (selected) selected.push(concept);
-      else {
-        eventConcepts.set(attempt.event, [concept]);
-        usedWitnesses.push(...attemptWitnesses(attempt));
-        stabilityWitnesses.push(...(attempt.anchor.priorStable?.basis.filter(ref => isLocalMasteryWitness(ref, scope)) ?? []));
+  for (const [concept, byDimension] of buckets) {
+    if (!byDimension) continue;
+    for (const bucket of byDimension.values()) {
+      for (const attempt of bucket.attempts.values()) {
+        const selected = eventConcepts.get(attempt.event);
+        if (selected) selected.push(concept);
+        else {
+          eventConcepts.set(attempt.event, [concept]);
+          usedWitnesses.push(...attemptWitnesses(attempt));
+          stabilityWitnesses.push(...(attempt.anchor.priorStable?.basis.filter(ref => isLocalMasteryWitness(ref, scope)) ?? []));
+        }
       }
     }
   }
@@ -311,16 +413,25 @@ export async function readConceptMastery(scope: TextbookMasteryScope, conceptIds
   const current = new Set(reopened.map(masteryWitnessKey));
   const allowed = (ref: BusWitness) => current.has(masteryWitnessKey(ref));
   const projections = new Map<string, TextbookMasteryConcept>();
-  for (const [concept, row] of verifiedRows(result, version, buckets)) {
-    const bucket = buckets.get(concept);
-    if (!row || !bucket || ![...bucket.attempts.values()].every(attempt => attemptWitnesses(attempt).every(allowed))) continue;
-    projections.set(concept, projectConcept(concept, bucket, row, scope, allowed));
+  const details = new Map<string, VerifiedConceptMasteryDetail>();
+  for (const [concept, entries] of verifiedRows(result, version, buckets)) {
+    const allAllowed = entries.every(({ bucket }) =>
+      [...bucket.attempts.values()].every(attempt => attemptWitnesses(attempt).every(allowed)));
+    if (!allAllowed) continue;
+    const projected = projectConcept(concept, entries, scope, allowed);
+    if (!projected) continue;
+    projections.set(concept, projected.concept);
+    details.set(concept, projected.detail);
   }
-  return { allowed, concept: (conceptId: string): TextbookMasteryConcept =>
-    projections.get(conceptId) ?? { conceptId, state: 'unknown',
-      reason: coveredBuckets && !coveredBuckets.has(conceptId) &&
-        (!batch?.slice.omissions?.length || batch.completeConceptIds?.includes(conceptId))
-        ? 'no-independent-evidence' : 'unavailable' } };
+  return {
+    allowed,
+    detail: (conceptId: string): VerifiedConceptMasteryDetail | undefined => details.get(conceptId),
+    concept: (conceptId: string): TextbookMasteryConcept =>
+      projections.get(conceptId) ?? { conceptId, state: 'unknown',
+        reason: coveredBuckets && !coveredBuckets.has(conceptId) &&
+          (!batch?.slice.omissions?.length || batch.completeConceptIds?.includes(conceptId))
+          ? 'no-independent-evidence' : 'unavailable' },
+  };
 }
 
 export async function projectTextbookMastery(request: TextbookMasteryRequest, sources: TextbookMasterySources): Promise<TextbookMasteryView> {
