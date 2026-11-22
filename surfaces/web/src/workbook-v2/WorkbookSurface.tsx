@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { deletedSubmission, submissionId } from '../api.ts';
+import { QuestionPresentation, useWorkbookPresentation } from '../workbook-presentation.tsx';
 import { isNotFound, loadPaper, loadPreSubmitPitfalls, submitAttempt } from './api.ts';
 import type {
   CompanionCitation,
@@ -67,6 +68,40 @@ export function WorkbookSurface({
   const questions = paper?.questions ?? [];
   const total = questions.length;
   const current = questions[index];
+  const feedbackByQuestion = useMemo(() => {
+    const map = new Map<string, NonNullable<WorkbookV2Attempt['feedback']>[number]>();
+    for (const row of submittedAttempt?.feedback ?? []) map.set(row.questionId, row);
+    return map;
+  }, [submittedAttempt]);
+  const answeringItems = useMemo(
+    () => (current && !submittedAttempt ? [current.id] : []),
+    [current, submittedAttempt],
+  );
+  const questionPresentation = useWorkbookPresentation(paperId, paper?.revision, answeringItems);
+  const historicalItems = useMemo(
+    () => (current && submittedAttempt ? [current.id] : []),
+    [current, submittedAttempt],
+  );
+  const historicalPresentation = useWorkbookPresentation(
+    paperId,
+    submittedAttempt?.paperRev,
+    historicalItems,
+    submittedAttempt ? { kind: 'question', attempt: submittedAttempt } : undefined,
+  );
+  const currentFeedback = current ? feedbackByQuestion.get(current.id) : undefined;
+  const solutionEligible =
+    currentFeedback?.expected !== undefined && currentFeedback.expected !== null &&
+    !(typeof currentFeedback.expected === 'object' && currentFeedback.expected.kind === 'rubric');
+  const solutionItems = useMemo(
+    () => (submittedAttempt && current && solutionEligible && historicalPresentation.allowed ? [current.id] : []),
+    [submittedAttempt, current, solutionEligible, historicalPresentation.allowed],
+  );
+  const solutionPresentation = useWorkbookPresentation(
+    paperId,
+    submittedAttempt?.paperRev,
+    solutionItems,
+    submittedAttempt ? { kind: 'solution', attempt: submittedAttempt } : undefined,
+  );
 
   useEffect(() => {
     setIndex(0);
@@ -85,6 +120,7 @@ export function WorkbookSurface({
     if (initialPaper && initialPaper.id === paperId) {
       setPaper(initialPaper);
       setItems(seedItemsFor(initialPaper));
+      setSubmittedAttempt(initialPaper.attempts?.[0] ?? null);
     } else {
       setPaper(null);
     }
@@ -104,6 +140,7 @@ export function WorkbookSurface({
           if (controller.signal.aborted) return;
           setPaper(loaded);
           setItems(seedItemsFor(loaded));
+          setSubmittedAttempt(loaded.attempts?.[0] ?? null);
         })
         .catch((caught: unknown) => {
           if (!controller.signal.aborted) setLoadError(caught instanceof Error ? caught.message : '无法打开试卷。');
@@ -137,12 +174,6 @@ export function WorkbookSurface({
       ),
     [questions, items, attachments.summariesByQuestion],
   );
-
-  const feedbackByQuestion = useMemo(() => {
-    const map = new Map<string, NonNullable<WorkbookV2Attempt['feedback']>[number]>();
-    for (const row of submittedAttempt?.feedback ?? []) map.set(row.questionId, row);
-    return map;
-  }, [submittedAttempt]);
 
   const go = useCallback(
     (next: number) => {
@@ -304,7 +335,6 @@ export function WorkbookSurface({
 
   const currentItem = current ? (items[current.id] ?? emptyItem()) : emptyItem();
   const reviewAttachments = current && submittedAttempt ? submittedAttempt.questionAttachments?.[current.id] : undefined;
-  const currentFeedback = current ? feedbackByQuestion.get(current.id) : undefined;
   const rawSubmittedAnswer = current && submittedAttempt?.answers ? submittedAttempt.answers[current.id] : undefined;
   const currentSubmittedAnswer =
     typeof rawSubmittedAnswer === 'string' || typeof rawSubmittedAnswer === 'number' || rawSubmittedAnswer === null
@@ -315,6 +345,9 @@ export function WorkbookSurface({
       ? questions.findIndex((question) => question.id !== current.id && attachments.lock.blockedItemIds.includes(question.id))
       : -1;
   const reviewExamTimeValue = submittedAttempt?.examTimeValue;
+  const reviewFeedback = currentFeedback && solutionEligible && !solutionPresentation.allowed
+    ? { ...currentFeedback, expected: null, explanation: null }
+    : currentFeedback;
 
   return (
     <div className="wbv2">
@@ -387,33 +420,94 @@ export function WorkbookSurface({
         )}
       </div>
 
-      {current && (
-        <FocusedQuestionCard
-          key={current.id}
-          paperId={paperId}
-          paperRev={paper.revision}
-          index={index}
-          total={total}
-          question={current}
-          answer={currentItem.answer}
-          onAnswer={(itemId, nextAnswer) => patchItem(itemId, { answer: nextAnswer })}
-          confidence={currentItem.confidence}
-          onConfidence={(itemId, nextConfidence) => patchItem(itemId, { confidence: nextConfidence })}
-          attachmentController={attachments}
-          l0Source={l0Sources?.[current.id]}
-          openedHint={openedHints[current.id]}
-          onOpenedHintChange={handleOpenedHintChange}
-          reviewAttachments={reviewAttachments}
-          feedback={currentFeedback}
-          submittedAnswer={currentSubmittedAnswer}
-          savedTakeaway={savedTakeaways[current.id]}
-          onSavedTakeawayChange={handleSavedTakeawayChange}
-          attemptId={submittedAttempt?.id}
-          attemptRev={submittedAttempt?.rev}
-          submitted={!!submittedAttempt}
-          disabled={busy || !!submittedAttempt}
-          onCite={onCiteToCompanion}
-        />
+      {current && !submittedAttempt && (
+        <>
+          {!questionPresentation.allowed && (
+            <p className={questionPresentation.error ? 'wbv2-error' : 'wbv2-attach-note info'} role={questionPresentation.error ? 'alert' : 'status'}>
+              {questionPresentation.error ?? '正在确认题面展示许可…'}
+              {questionPresentation.error && (
+                <button type="button" className="wbv2-jump" onClick={questionPresentation.retry}>
+                  重试
+                </button>
+              )}
+            </p>
+          )}
+          <QuestionPresentation value={questionPresentation.questionPermit}>
+            {questionPresentation.allowed && (
+              <FocusedQuestionCard
+                key={current.id}
+                paperId={paperId}
+                paperRev={paper.revision}
+                index={index}
+                total={total}
+                question={current}
+                answer={currentItem.answer}
+                onAnswer={(itemId, nextAnswer) => patchItem(itemId, { answer: nextAnswer })}
+                confidence={currentItem.confidence}
+                onConfidence={(itemId, nextConfidence) => patchItem(itemId, { confidence: nextConfidence })}
+                attachmentController={attachments}
+                l0Source={l0Sources?.[current.id]}
+                openedHint={openedHints[current.id]}
+                onOpenedHintChange={handleOpenedHintChange}
+                disabled={busy}
+                submitted={false}
+                onCite={onCiteToCompanion}
+              />
+            )}
+          </QuestionPresentation>
+        </>
+      )}
+
+      {current && submittedAttempt && (
+        <>
+          {!historicalPresentation.allowed && (
+            <p className={historicalPresentation.error ? 'wbv2-error' : 'wbv2-attach-note info'} role={historicalPresentation.error ? 'alert' : 'status'}>
+              {historicalPresentation.error ?? '正在确认历史题面展示许可…'}
+              {historicalPresentation.error && (
+                <button type="button" className="wbv2-jump" onClick={historicalPresentation.retry}>
+                  重试
+                </button>
+              )}
+            </p>
+          )}
+          <QuestionPresentation value={historicalPresentation.questionPermit}>
+            {historicalPresentation.allowed && (
+              <FocusedQuestionCard
+                key={current.id}
+                paperId={paperId}
+                paperRev={submittedAttempt.paperRev ?? paper.revision}
+                index={index}
+                total={total}
+                question={current}
+                answer={currentItem.answer}
+                onAnswer={(itemId, nextAnswer) => patchItem(itemId, { answer: nextAnswer })}
+                confidence={currentItem.confidence}
+                onConfidence={(itemId, nextConfidence) => patchItem(itemId, { confidence: nextConfidence })}
+                attachmentController={attachments}
+                reviewAttachments={reviewAttachments}
+                feedback={reviewFeedback}
+                submittedAnswer={currentSubmittedAnswer}
+                savedTakeaway={savedTakeaways[current.id]}
+                onSavedTakeawayChange={handleSavedTakeawayChange}
+                attemptId={submittedAttempt.id}
+                attemptRev={submittedAttempt.rev}
+                submitted
+                disabled
+                onCite={onCiteToCompanion}
+              />
+            )}
+          </QuestionPresentation>
+          {solutionEligible && !solutionPresentation.allowed && historicalPresentation.allowed && (
+            <p className={solutionPresentation.error ? 'wbv2-error' : 'wbv2-attach-note info'} role={solutionPresentation.error ? 'alert' : 'status'}>
+              {solutionPresentation.error ?? '正在确认参考答案与解析展示许可…'}
+              {solutionPresentation.error && (
+                <button type="button" className="wbv2-jump" onClick={solutionPresentation.retry}>
+                  重试
+                </button>
+              )}
+            </p>
+          )}
+        </>
       )}
 
       {preSubmitCardOpen && pitfalls.length > 0 && (
