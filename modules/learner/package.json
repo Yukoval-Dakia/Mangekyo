@@ -13,6 +13,7 @@
     "./facts/knowledge-mastery": "./knowledge-mastery.ts",
     "./facts/graph-mastery": "./graph-mastery.ts",
     "./facts/retention": "./retention.ts",
-    "./facts/textbook-mastery": "./textbook-mastery.ts"
+    "./facts/textbook-mastery": "./textbook-mastery.ts",
+    "./facts/weakness-error-summary": "./weakness-error-summary.ts"
   }
 }
