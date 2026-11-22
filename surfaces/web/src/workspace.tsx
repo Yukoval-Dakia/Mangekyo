@@ -204,7 +204,17 @@ export function Materials({ library, capture }: { library: Resource<Workspace>; 
   );
 }
 
-export function SavedMaterial({ library, id }: { library: Resource<Workspace>; id: string }) {
+export function SavedMaterial({
+  library,
+  id,
+  settings,
+  onNavigate,
+}: {
+  library: Resource<Workspace>;
+  id: string;
+  settings?: Settings | undefined;
+  onNavigate?: (href: string) => void;
+}) {
   const [erasure,setErasure] = useState(() => readErasure(id));
   const [start,setStart] = useState(false);
   useEffect(() => {
@@ -229,7 +239,7 @@ export function SavedMaterial({ library, id }: { library: Resource<Workspace>; i
             <a href={'/notes?material='+m.id}>写笔记</a>
             <a href={'/papers/new?material='+m.id}>自己编卷</a>
           </div>
-          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} previewText={m.text} changed={library.reload} erase={() => {setStart(true);setErasure(readErasure(id));}} />
+          <p className="preserve">{m.text}</p><MaterialOriginal id={m.id} previewText={m.text} changed={library.reload} erase={() => {setStart(true);setErasure(readErasure(id));}} settings={settings} onNavigate={onNavigate} />
         </article>
       ) : (
         library.data && <h1>未找到这份材料</h1>

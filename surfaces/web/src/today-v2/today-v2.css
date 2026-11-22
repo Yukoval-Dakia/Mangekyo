@@ -1016,15 +1016,24 @@
 }
 
 .tv2-feed-item {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+  display: grid;
+  gap: 8px;
   width: 100%;
   min-width: 0;
   padding: 12px 14px 12px 12px;
   border-radius: 18px;
   background: var(--tv2-panel);
   transition: background-color 150ms ease;
+}
+
+.tv2-feed-link {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
 }
 
 .tv2-feed-item:hover {
@@ -1108,6 +1117,27 @@
 .tv2-feed-chevron svg {
   width: 16px;
   height: 16px;
+}
+
+.tv2-feed-question-link {
+  justify-self: start;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--tv2-soft-green);
+  color: var(--tv2-primary);
+  font-size: 12.5px;
+  font-weight: 660;
+  text-decoration: none;
+}
+
+.tv2-feed-retry {
+  justify-self: start;
+  min-height: 36px;
+  padding-inline: 14px;
+  font-size: 13px;
 }
 
 /* 移动端响应式（确保 390px 零横向溢出） */
@@ -1211,15 +1241,26 @@
   }
 
   .tv2-feed-item {
+    display: grid;
+    gap: 9px;
+  }
+
+  .tv2-feed-link {
     flex-wrap: wrap;
     align-items: flex-start;
     gap: 10px 12px;
   }
 
-  .tv2-feed-end {
+  .tv2-feed-link .tv2-feed-end {
     width: 100%;
     justify-content: space-between;
     padding-left: 66px;
+  }
+
+  .tv2-feed-question-link,
+  .tv2-feed-retry {
+    width: 100%;
+    justify-content: center;
   }
 }
 
