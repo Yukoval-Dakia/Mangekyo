@@ -38,6 +38,7 @@ export type IntakeMetadata = {
         studentAnswer: IntakeQuestionCard['studentAnswer'];
         redInk: IntakeQuestionCard['redPenMark'];
         unclearSegments: readonly string[];
+        conceptTags?: readonly string[];
       }[];
     };
   };
@@ -109,6 +110,12 @@ function typeLabel(mediaType: string) {
   return mediaType === 'text/markdown' ? 'Markdown' : '文本';
 }
 
+const maxConceptTags = 6;
+
+function normalizeConceptTags(tags: readonly string[] | undefined) {
+  return [...new Set(tags?.map(tag => tag.trim()).filter(Boolean) ?? [])].slice(0, maxConceptTags);
+}
+
 function questionCardsFromMetadata(metadata: IntakeMetadata): readonly IntakeQuestionCard[] {
   if (metadata.questionCards) return metadata.questionCards;
   return (metadata.extraction.drafts?.questions ?? []).map(question => {
@@ -131,6 +138,7 @@ function questionCardsFromMetadata(metadata: IntakeMetadata): readonly IntakeQue
       options: question.options,
       studentAnswer: question.studentAnswer,
       redPenMark,
+      conceptTags: normalizeConceptTags(question.conceptTags),
       isRedPenError,
       unclearNotice: unclearParts.length > 0 ? unclearParts.join('；') : null,
       defaultSelected: isRedPenError,

@@ -440,6 +440,130 @@
   margin: 0;
 }
 
+.intake-concept-tags {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 11px 13px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--soft-green) 52%, var(--surface));
+}
+
+.intake-concept-tags > strong,
+.intake-concept-tags > .intake-concept-limit {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.intake-concept-tags ul {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.intake-concept-tags li {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 27px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 999px;
+  background: var(--soft-green);
+  color: var(--on-soft-green);
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.intake-concept-tags li > button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-left: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.intake-concept-tags li > button:hover,
+.intake-concept-tags li > button:focus-visible {
+  background: color-mix(in srgb, var(--forest) 18%, transparent);
+}
+
+.intake-question-cards .intake-concept-tags > input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  margin: 0;
+  appearance: auto;
+  position: static;
+  inset: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 0 13px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.intake-concept-tags > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.intake-concept-tags > span button,
+.intake-add-concept {
+  min-height: 30px;
+  padding-inline: 11px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.intake-add-concept {
+  justify-self: start;
+  border: 1px dashed color-mix(in srgb, var(--forest) 42%, var(--line-strong));
+  background: transparent;
+  color: var(--forest);
+}
+
+.intake-link-concepts {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.intake-question-cards .intake-link-concepts input {
+  position: static;
+  inset: auto;
+  margin: 0;
+  appearance: auto;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  accent-color: var(--forest);
+  cursor: inherit;
+}
+
 .intake-unclear,
 .intake-action-receipt {
   margin: 0;
@@ -455,8 +579,35 @@
 }
 
 .intake-action-receipt {
+  display: grid;
+  gap: 10px;
   color: var(--on-secondary-container);
   background: var(--secondary-container);
+}
+
+.intake-graph-receipt {
+  background: color-mix(in srgb, var(--soft-green) 72%, var(--surface));
+}
+
+.intake-action-receipt > p {
+  margin: 0;
+  font-weight: 650;
+}
+
+.intake-action-receipt > a,
+.intake-action-receipt > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.intake-action-receipt > span > a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding-inline: 16px;
 }
 
 [data-theme="dark"] .intake-unclear {
@@ -501,6 +652,20 @@
   }
 
   .intake-question-cards footer > div > button {
+    width: 100%;
+  }
+
+  .intake-link-concepts {
+    align-self: flex-start;
+  }
+
+  .intake-concept-tags > span {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .intake-concept-tags > span button,
+  .intake-action-receipt > span > a {
     width: 100%;
   }
 }
