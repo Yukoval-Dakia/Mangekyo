@@ -360,10 +360,10 @@ export function IntakeQuestionCards({
   if (cards.length === 0) return null;
 
   return (
-    <section className="intake-question-cards" aria-label="逐题核对卡">
+    <section className="intake-question-cards" id="intake-question-cards" aria-labelledby="intake-question-cards-title">
       <header className="intake-cards-head">
         <div>
-          <h2>逐题核对卡</h2>
+          <h2 id="intake-question-cards-title">逐题核对卡</h2>
           <p>共 {cards.length} 题 · {redPenErrors.length} 处红笔错题{loading ? ' · 正在刷新' : ''}</p>
         </div>
         <div className="intake-cards-filters" role="group" aria-label="快捷勾选">

@@ -210,11 +210,38 @@
 
 .kg-node {
   cursor: pointer;
+  outline: none;
   transition: opacity 140ms ease;
+}
+
+.kg-node:focus,
+.kg-node:focus-visible,
+.kg-node:focus-within {
+  outline: none;
 }
 
 .kg-node-dim {
   opacity: .38;
+}
+
+.kg-node-selected,
+.kg-node-focused,
+.kg-node:focus,
+.kg-node:focus-visible {
+  opacity: 1;
+}
+
+.kg-node-focus-ring {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 2.6;
+  transition: stroke 140ms ease, filter 140ms ease;
+}
+
+.kg-node:focus-visible .kg-node-focus-ring,
+.kg-node-focused .kg-node-focus-ring {
+  stroke: var(--focus, var(--primary, #244b36));
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--focus, #236c4f) 42%, transparent));
 }
 
 .kg-node-card {
@@ -266,6 +293,12 @@
   font-size: 11px;
   fill: var(--muted, #4f6056);
   dominant-baseline: middle;
+}
+
+.kg-node-selected :is(.kg-node-title, .kg-node-meta, .kg-node-count),
+.kg-node-focused :is(.kg-node-title, .kg-node-meta, .kg-node-count),
+.kg-node:focus-visible :is(.kg-node-title, .kg-node-meta, .kg-node-count) {
+  opacity: 1;
 }
 
 .kg-pill {
