@@ -478,3 +478,248 @@
 [data-theme='dark'] .memory-edit-form textarea {
   border-color: #3a4d40;
 }
+
+/* 错因画像与薄弱建议（WeaknessSummaryCard） */
+.weak-card {
+  display: grid;
+  gap: 16px;
+  background: var(--mo-surface);
+  border: 1px solid var(--mo-line);
+  border-radius: 24px;
+  padding: clamp(18px, 2.4vw, 28px);
+}
+
+.weak-card-head {
+  display: grid;
+  gap: 8px;
+}
+
+.weak-card-head h3 {
+  font-size: 18px;
+  font-weight: 720;
+}
+
+.weak-summary {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--mo-ink);
+}
+
+.weak-meta {
+  font-size: 12px;
+  color: var(--mo-muted);
+}
+
+.weak-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.weak-progress-track {
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--mo-track);
+}
+
+.weak-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #6f8f78, var(--mo-hit));
+  transition: width 240ms ease;
+}
+
+.weak-progress-text {
+  font-size: 13px;
+  color: var(--mo-muted);
+}
+
+.weak-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.weak-action-btn {
+  min-height: 38px;
+  white-space: normal;
+  text-align: center;
+}
+
+.weak-block {
+  display: grid;
+  gap: 10px;
+}
+
+.weak-block-title {
+  font-size: 14px;
+  font-weight: 680;
+  color: var(--mo-muted);
+}
+
+.weak-stage-list,
+.weak-concept-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.weak-stage-item,
+.weak-concept-item {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--mo-line);
+  background: var(--mo-cell);
+  min-width: 0;
+}
+
+.weak-stage-head,
+.weak-concept-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.weak-stage-head strong,
+.weak-concept-title {
+  font-size: 15px;
+  font-weight: 680;
+  overflow-wrap: anywhere;
+}
+
+.weak-count-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  border: 1px solid var(--mo-line);
+  background: var(--mo-tonal);
+  color: var(--mo-ink);
+  white-space: nowrap;
+}
+
+.weak-count-chip.is-warn {
+  background: #f6ead9;
+  border-color: #d9b884;
+  color: #7a5417;
+}
+
+.weak-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.weak-status.is-weak {
+  background: var(--mo-err-bg);
+  border: 1px solid var(--mo-err-line);
+  color: var(--mo-danger);
+}
+
+.weak-status.is-fading {
+  background: #f6ead9;
+  border: 1px solid #d9b884;
+  color: #7a5417;
+}
+
+.weak-concept-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.weak-retrievability {
+  font-size: 12px;
+  color: var(--mo-muted);
+}
+
+.weak-advice,
+.weak-reason {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--mo-ink);
+  overflow-wrap: anywhere;
+}
+
+.weak-evidence-toggle {
+  font-size: 13px;
+}
+
+.weak-evidence-list li {
+  font-size: 12px;
+}
+
+.weak-evidence-link {
+  min-height: 0;
+  padding: 0;
+  font-size: 12px;
+  text-align: left;
+}
+
+.weak-concept-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.weak-feedback {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--mo-inset);
+}
+
+.weak-feedback-text,
+.weak-feedback.error {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.weak-feedback.error {
+  color: var(--mo-danger);
+  background: var(--mo-err-bg);
+  border: 1px solid var(--mo-err-line);
+}
+
+@media (max-width: 430px) {
+  .weak-card {
+    border-radius: 20px;
+  }
+
+  .weak-stage-head,
+  .weak-concept-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .weak-action-btn {
+    width: 100%;
+  }
+}
+
+[data-theme='dark'] .weak-count-chip.is-warn,
+[data-theme='dark'] .weak-status.is-fading {
+  background: #3a2f1d;
+  border-color: #6d5a33;
+  color: #e8c98a;
+}
+
+[data-theme='dark'] .weak-progress-fill {
+  background: linear-gradient(90deg, #4b6c58, #7fb28e);
+}

@@ -1,4 +1,15 @@
 import type { ReactNode } from 'react';
+import type { Settings } from '../api';
+
+export type {
+  PriorityConceptSummary,
+  TopErrorStageSummary,
+  WeaknessAndErrorSummaryView,
+  WeaknessEvidenceRef,
+  WeaknessNextAction,
+} from '../../../../modules/learner/weakness-error-summary';
+
+import type { WeaknessAndErrorSummaryView } from '../../../../modules/learner/weakness-error-summary';
 
 export type MemoryCategoryKey = 'preference' | 'claim' | 'state' | 'refusal';
 
@@ -96,6 +107,8 @@ export type MemoryOverviewResponse = {
   stickyDirectives: readonly MemoryOverviewItem[];
   hypotheses: readonly MemoryHypothesisItem[];
   calibration: CalibrationSummary;
+  /** Optional add-on from the domain-3 weakness projection; absent before backend rollout. */
+  weaknessSummary?: WeaknessAndErrorSummaryView | undefined;
 };
 
 export type MemoryItem =
@@ -129,4 +142,8 @@ export type MemoryOverviewPanelProps = MemoryOverviewHandlers & {
   hideHeading?: boolean;
   /** Optional slot rendered above the item list (e.g. extra controls). */
   renderHeaderExtra?: (() => ReactNode) | undefined;
+  /** Model settings used when a weakness action starts a classroom. */
+  settings?: Settings | undefined;
+  /** SPA navigation; falls back to location.assign when absent. */
+  onNavigate?: ((href: string) => void) | undefined;
 };

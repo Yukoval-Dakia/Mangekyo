@@ -1,6 +1,7 @@
 import './memory-overview.css';
 
 export { MemoryOverviewPanel } from './MemoryOverviewPanel';
+export { WeaknessSummaryCard } from './WeaknessSummaryCard';
 export { CalibrationCard } from './CalibrationCard';
 export { MemoryItemCard } from './MemoryItemCard';
 export {
@@ -25,4 +26,9 @@ export type {
   MemoryOverviewResponse,
   MemoryOverviewState,
   MemoryRevokeSourceAction,
+  PriorityConceptSummary,
+  TopErrorStageSummary,
+  WeaknessAndErrorSummaryView,
+  WeaknessEvidenceRef,
+  WeaknessNextAction,
 } from './types';

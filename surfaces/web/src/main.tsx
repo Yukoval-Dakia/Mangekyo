@@ -306,7 +306,13 @@ function App() {
         settings={settings.data && forTask(settings.data, 'companion')}
         onOpenGoalEditor={() => open('goal')}
         onOpenSettings={() => open('settings')}
-        renderMemoryOverview={() => <MemoryOverviewPanel hideHeading />}
+        renderMemoryOverview={() => (
+          <MemoryOverviewPanel
+            hideHeading
+            settings={settings.data}
+            onNavigate={navigate}
+          />
+        )}
         renderNotionSettings={() => <NotionSettings />}
         renderErasure={() => (
           <div className="me-v2-stack">
