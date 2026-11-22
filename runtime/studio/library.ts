@@ -1,7 +1,7 @@
 import type { Db } from '../../kernel/src/db/types.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactReadDenied } from './fact-read-helpers.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
 import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -58,7 +58,7 @@ export function openLibrary(db: Db, captureModule: LoadedModule, content: Loaded
         try {
           return (await read.fact(factId(id), { mode: 'following' })).value;
         } catch (error) {
-          if (error instanceof FactReadDeniedError) return null;
+          if (isFactReadDenied(error)) return null;
           throw error;
         }
       }

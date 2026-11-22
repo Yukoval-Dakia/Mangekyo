@@ -1,12 +1,10 @@
-import { snapshotFactReaders } from '../../kernel/src/commands/reads.ts';
+import { snapshotFactReaders } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { FactId } from '../../kernel/src/declarations/ids.ts';
 import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
 import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { pythonAttemptsLimit } from '../../executors/teaching/agent-tools.ts';
-import {
-  bindPulseReader, isTextbookPulseUnavailable, projectTextbookPulse, reopenPulseWitnesses,
-} from '../../modules/activity/textbook-pulse-evidence.ts';
+import { bindPulseReader, isTextbookPulseUnavailable, projectTextbookPulse, reopenPulseWitnesses } from '../../modules/activity/textbook-pulse-evidence.ts';
 import type { TextbookMasteryScope } from '../../modules/learner/textbook-mastery.ts';
 import { projectTextbookMastery } from '../../modules/learner/textbook-mastery.ts';
 import { checkStudioNotionFact, type CheckNotionRead } from './notion.ts';

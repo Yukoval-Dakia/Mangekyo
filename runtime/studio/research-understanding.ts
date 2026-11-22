@@ -14,7 +14,7 @@ import {
   readRadarTodo as readRadarTodoSupport,
   type ResearchHostDeps,
 } from '../../modules/companion/research-host-support.ts';
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, isFactUnavailable } from './fact-read-helpers.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -201,7 +201,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
         purpose: researchPurpose, input: {entries}});
       await finishWork(db, ref);
     } catch (error) {
-      if (!(error instanceof ClaimInputError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError ||
+      if (!(error instanceof ClaimInputError || isFactUnavailable(error) ||
           error instanceof Error && error.message === 'Effect identity already used with different input')) throw error;
       await cancel();
     }

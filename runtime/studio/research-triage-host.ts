@@ -7,9 +7,7 @@ import { readTodo, type TodoSpec } from '../../kernel/src/work/todos.ts';
 import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { independentlyAuthoredPaper, workbookAttempt, workbookAttemptType } from '../../modules/activity/workbook-values.ts';
-import {
-  researchPurpose, researchSettingsType, researchWorksheetType, retentionReviewPermissionType,
-} from '../../modules/companion/research.ts';
+import { researchPurpose, researchSettingsType, researchWorksheetType, retentionReviewPermissionType } from '../../modules/companion/research.ts';
 import { isWorksheetProfile, type WorkerConsent } from '../../modules/companion/worker-consent.ts';
 import { completedWorksheetEvent, reviewDedupKey, summarizeReviewAttempt, worksheetInventoryItem } from '../../modules/companion/worksheet-policy.ts';
 import { readLearningOverview } from '../../modules/activity/learning-overview.ts';

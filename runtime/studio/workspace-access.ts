@@ -16,32 +16,21 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import {
-  createCommandReadContext,
-  FactNotFoundError,
-  FactReadDeniedError,
-} from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactNotFound, isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction, SqlValue } from '../../kernel/src/db/types.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { materialType } from '../../modules/activity/library-values.ts';
-import {
-  activityQuestions,
-} from '../../modules/activity/workspace-projection.ts';
+import { activityQuestions } from '../../modules/activity/workspace-projection.ts';
 import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { studyRecordType } from '../../modules/activity/values.ts';
 import { readFrozenWorkbookRecord } from '../../modules/activity/workbook-bank.ts';
-import {
-  WorkspaceInputError, validateWorkspaceTeachingRequest, workspaceEntryType, workspaceTeachingUse,
-  setWorkspaceTeachingCommand,
-} from '../../modules/activity/workspace-values.ts';
-import {
-  WorkbookSourceMismatch,
-} from '../../modules/activity/workbook-values.ts';
+import { WorkspaceInputError, validateWorkspaceTeachingRequest, workspaceEntryType, workspaceTeachingUse, setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
+import { WorkbookSourceMismatch } from '../../modules/activity/workbook-values.ts';
 import { notionModelRecipient, sourceId, stableId, studioLearner } from './identity.ts';
 import { materialIntakeLink } from './reading.ts';
 import { RequestError } from './sessions.ts';
@@ -54,10 +43,7 @@ import { openKnowledgeEdge, openKnowledgeEdgeEvidence } from './knowledge-graph.
 import { resolveSource } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
 import { lexicalWorkspaceSql, trigramFunction } from './workspace-search.ts';
-import {
-  loadSettings,
-  saveSettings,
-} from './settings.ts';
+import { loadSettings, saveSettings } from './settings.ts';
 
 const factIdentifier = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 export const syntheticStudyRecords = new Set<string>([
@@ -118,7 +104,7 @@ async function readDisplay(
     }
     return { display: displayOf(row.type, snapshot.value), purposes, fact: snapshot };
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError || error instanceof WorkbookSourceMismatch) return null;
+    if (isFactUnavailable(error) || error instanceof WorkbookSourceMismatch) return null;
     throw error;
   }
 }
@@ -142,8 +128,8 @@ function requireFactId(value: string): FactId {
 
 function translate(error: unknown): Error {
   if (error instanceof RequestError) return error;
-  if (error instanceof FactNotFoundError) return new RequestError(404, '找不到这条学习记录。');
-  if (error instanceof FactReadDeniedError) return new RequestError(403, '这条学习记录当前不可读取。');
+  if (isFactNotFound(error)) return new RequestError(404, '找不到这条学习记录。');
+  if (isFactReadDenied(error)) return new RequestError(403, '这条学习记录当前不可读取。');
   if (error instanceof Error) {
     if (error.message.startsWith('Unknown command:')) {
       return new RequestError(503, '当前服务还不支持开放学习记录。');
@@ -266,7 +252,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         if (!ref) throw new RequestError(500,'撤回命令没有返回修订。');
         return {status:'withdrawn',ref:{id:ref.id,rev:ref.rev}};
       } catch (error) {
-        if (error instanceof WorkspaceInputError || error instanceof FactReadDeniedError)
+        if (error instanceof WorkspaceInputError || isFactReadDenied(error))
           throw new RequestError(409,'观察版本已变化。');
         throw error;
       }
@@ -371,7 +357,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
           const prompt = root && ref.anchor.kind === 'whole' ? activityQuestions(root)?.map(({prompt}) => prompt).join('\n\n') : undefined;
           return prompt === undefined ? source : {id, rev, sourceRef, title, content: prompt};
         }).catch(error => {
-          if (!(error instanceof FactReadDeniedError)) throw error;
+          if (!isFactReadDenied(error)) throw error;
         });
         if (!record) throw new RequestError(404, '找不到可读取的版本。');
         return record;

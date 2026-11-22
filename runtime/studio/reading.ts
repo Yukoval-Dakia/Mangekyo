@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { intakeTextOf, materialTextOf } from '../../modules/activity/workspace-source-projection.ts';
 export { intakeTextOf, materialTextOf, textSlice } from '../../modules/activity/workspace-source-projection.ts';
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactNotFoundError, isFactReadDenied, storageRead, teachingRead } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactReadOptions, FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -24,14 +24,14 @@ export async function readOwnStudyTurn(tx: ReadTransaction, id: string, options:
   try {
     return await readStudyTurn(tx, id, storagePurpose, options);
   } catch (error) {
-    if (error instanceof FactReadDeniedError && error.reason === 'purpose') return readStudyTurn(tx, id, purpose, options);
+    if (isFactReadDenied(error) && error.reason === 'purpose') return readStudyTurn(tx, id, purpose, options);
     throw error;
   }
 }
 
 export async function readMaterialText(tx: ReadTransaction, id: string) {
   if (!isSourceFactId(id)) return null;
-  const read = createCommandReadContext(tx, storagePurpose);
+  const read = storageRead(tx);
   return await readable(async () => {
     const snapshot = await read.fact(factId(id), {mode: 'following'});
     if (snapshot.type !== materialType) return null;
@@ -56,7 +56,7 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
 export async function attachmentSources(tx: ReadTransaction, attachment: ReturnType<typeof studyAttachment>) {
   const source = await readMaterialText(tx, attachment.id);
   if (!source || source.title !== attachment.title || !source.text.includes(attachment.text)) return;
-  const read = createCommandReadContext(tx, storagePurpose);
+  const read = storageRead(tx);
   const witnesses = await Promise.all([source.sourceRef.fact, ...(source.sourceRef.textFact ? [source.sourceRef.textFact] : [])]
     .map(async ({id, rev}) => {
       const {ref, accessEpoch} = await read.fact(factId(id), {mode:'pinned', rev:rev as Revision});
@@ -82,7 +82,7 @@ export async function attachmentCurrent(tx: ReadTransaction, origin: ReturnType<
 
 export async function teachingOrigin(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>) {
   if (!turn.parentId) return turn;
-  return studyTurn((await createCommandReadContext(tx,purpose).fact(turn.sessionId,{mode:'following'})).value);
+  return studyTurn((await teachingRead(tx).fact(turn.sessionId,{mode:'following'})).value);
 }
 
 export async function teachingTurnAllowed(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,

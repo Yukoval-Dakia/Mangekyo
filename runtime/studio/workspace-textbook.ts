@@ -1,6 +1,6 @@
 import {fileURLToPath} from 'node:url';
 import {createCommandHandler, readRecordedCommand} from '../../kernel/src/commands/handle.ts';
-import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {isFactUnavailable, purposeReader} from './fact-read-helpers.ts';
 import {isUneditedCompanionDraft} from '../../kernel/src/commands/writes.ts';
 import {commandId, factId} from '../../kernel/src/declarations/ids.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
@@ -34,7 +34,7 @@ export function openWorkspaceTextbook(options: {
 }) {
   const {db, turn, opened} = options;
   const following = {mode:'following'} as const;
-  const reader = (tx:ReadTransaction) => createAuthorizedFactReader(tx, purpose, options.maySend);
+  const reader = (tx:ReadTransaction) => purposeReader(tx, options.maySend);
   const createHandler = async () => createCommandHandler(db, {
     modules:[await (content ??= loadContent())],
     hooks:{...createStudioCommandHooks({afterFactsChanged:options.authorize}), async beforeProposal(tx, request) {
@@ -127,7 +127,7 @@ export function openWorkspaceTextbook(options: {
         {id,rev:written.rev,type:textbookPageType,epoch:plan.epoch,mode:'pinned'});
       return {ok:true,status:'saved',ref:id,rev:written.rev,undo_token:key};
     } catch (cause) {
-      if (cause instanceof FactReadDeniedError || cause instanceof FactNotFoundError)
+      if (isFactUnavailable(cause))
         return error('access_revoked','ref','本轮打开的教材或来源已不可用。',reopen(selectedId ?? links as string[]));
       if (cause instanceof Error && (cause.message.startsWith('Fact revision conflict:') ||
           cause.message === 'Only an unedited companion draft can be revised'))

@@ -1,7 +1,7 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactUnavailable } from './fact-read-helpers.ts';
 import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -91,7 +91,7 @@ async function paperRequest<T>(work: () => Promise<T>) {
   try { return await work(); }
   catch (error) {
     if (error instanceof LifecycleError) throw error;
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError)
+    if (isFactUnavailable(error))
       throw new RequestError(404, '找不到当前可读取的纸面依据。');
     if (error instanceof AssetBasisError || error instanceof WorkbookPresentationError ||
         (error instanceof Error && error.constructor === Error)) throw new RequestError(409, conflict);

@@ -1,6 +1,6 @@
 import { projectWorksheet, type ReviewAccess } from '../../modules/companion/worksheet-policy.ts';
 import { isDeepStrictEqual } from 'node:util';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactUnavailable, storageRead } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -27,7 +27,7 @@ export async function whenAvailable<T>(read: () => Promise<T>): Promise<T | null
   try {
     return await read();
   } catch (error) {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof ResearchBasisChanged)
+    if (isFactUnavailable(error) || error instanceof ResearchBasisChanged)
       return null;
     throw error;
   }
@@ -40,7 +40,7 @@ export function worksheetPublication(tx: ReadTransaction, attemptId: FactId, rev
 }
 
 export async function workbookSource(tx: ReadTransaction, paperId: string, attemptId: string) {
-  const fact = await whenAvailable(() => createCommandReadContext(tx, storagePurpose).fact(factId(attemptId), { mode: 'following' }));
+  const fact = await whenAvailable(() => storageRead(tx).fact(factId(attemptId), { mode: 'following' }));
   if (fact?.type !== workbookAttemptType || workbookAttempt(fact.value).paperId !== paperId)
     throw new RequestError(404, '找不到这次作答。');
   return fact;
@@ -51,8 +51,7 @@ export async function independentScoutSource(tx: ReadTransaction, fact: FactSnap
   if (fact.type !== workbookAttemptType) return false;
   const { paper, paperId } = workbookAttempt(fact.value);
   if (!independentlyAuthoredPaper(paper) || !explicitIndependentPaper(fact.value, 'paper')) return false;
-  const live = await whenAvailable(() => createCommandReadContext(tx, storagePurpose)
-    .fact(factId(paperId), { mode: 'following' }));
+  const live = await whenAvailable(() => storageRead(tx).fact(factId(paperId), { mode: 'following' }));
   return live?.type === workbookPaperType && explicitIndependentPaper(live.value) &&
     isDeepStrictEqual(workbookPaper(live.value), paper);
 }
@@ -64,8 +63,7 @@ function explicitIndependentPaper(value: FactSnapshot['value'], key?: 'paper') {
 
 export async function reviewMaterialAvailable(tx: ReadTransaction, paper: ReturnType<typeof workbookPaper>) {
   const { materialId } = paper;
-  return materialId === null || Boolean(await whenAvailable(() => createCommandReadContext(tx, storagePurpose)
-    .fact(factId(materialId), { mode: 'following' })));
+  return materialId === null || Boolean(await whenAvailable(() => storageRead(tx).fact(factId(materialId), { mode: 'following' })));
 }
 
 export { reviewEvidence, retentionReviewAnchor, type ReviewEvidence } from '../../modules/companion/worksheet-policy.ts';
@@ -90,7 +88,7 @@ export function reviewAccess(tx: ReadTransaction): ReviewAccess {
 }
 export function readWorksheetById(tx: ReadTransaction, id: FactId) {
   return whenAvailable(() => projectWorksheet(reviewAccess(tx), id, async (...source) => (await worksheetPublication(tx, ...source)).factId,
-    key => createCommandReadContext(tx,storagePurpose).fact(key,{mode:'following'})));
+    key => storageRead(tx).fact(key,{mode:'following'})));
 }
 
 export async function readWorksheet(tx: ReadTransaction, attempt: FactSnapshot) {

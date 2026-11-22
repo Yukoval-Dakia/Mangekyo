@@ -3,7 +3,7 @@ import {openArithmeticPractice} from '../../modules/content/arithmetic-practice.
 import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
 import { projectSource as project } from '../../modules/activity/workspace-source-projection.ts';
 export { sourceQuestions, sourceSearchExcerpt, textbookText } from '../../modules/activity/workspace-source-projection.ts';
-import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {createAuthorizedFactReader, isFactNotFound, isFactUnavailable, purposeReader} from './fact-read-helpers.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId, type FactId, type Revision} from '../../kernel/src/declarations/ids.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
@@ -13,9 +13,7 @@ import {isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1} from 
 import {readFrozenWorkbookRecord} from '../../modules/activity/workbook-bank.ts';
 import {workbookAttemptType, WorkbookSourceMismatch} from '../../modules/activity/workbook-values.ts';
 import {openTextbookReference, textbookPageFrom, textbookPageType} from '../../modules/content/textbook-page.ts';
-import {
-  WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes,
-} from '../../modules/activity/workspace-values.ts';
+import { WorkspaceInputError, workspaceEntry, workspaceEntryType, workspaceShareableTypes } from '../../modules/activity/workspace-values.ts';
 import {syntheticStudyRecords} from './workspace-access.ts';
 import {purpose} from './identity.ts';
 import {textSlice, intakeTextOf, isMaterialIntakePair, materialIntakeReference, relatedIntakeId, relatedMaterialId, readOwnStudyTurn} from './reading.ts';
@@ -62,7 +60,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
   const accepts = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const pinnedQuestion = reference?.fact.type === assetType && access.recipient === 'learner' && mode === 'pinned' && !access.rootType;
   if (pinnedQuestion && (reference.anchor.kind !== 'question' || reference.anchor.itemId !== 'question' || reference.textFact)) return;
-  const reader = pinnedQuestion ? createAuthorizedFactReader(tx, purpose, accepts) :
+  const reader = pinnedQuestion ? purposeReader(tx, accepts) :
     bound ?? createAuthorizedFactReader(tx, sourcePurpose(access), accepts);
   const seen = new Map<string, {fact:FactSnapshot; pinned:boolean}>();
   const path = new Set<string>();
@@ -184,7 +182,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
       try {
         currentDocument = await reader.fact(documentId, {mode: 'following'});
       } catch (error) {
-        if (!(error instanceof FactNotFoundError)) throw error;
+        if (!isFactNotFound(error)) throw error;
         if (fact.type !== materialType || textReference) return;
         const projection = project(fact, anchor, access.recipient);
         if (!projection) return;
@@ -226,8 +224,7 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     for (const proof of questionSources) access.track?.(...proof);
     return {...projection, id: fact.ref.id, rev: fact.ref.rev, sourceRef: body === fact ? sourceReference(fact, projectionAnchor) : materialIntakeReference(linkedMaterial!, body, projectionAnchor)};
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
-        error instanceof WorkspaceInputError || error instanceof WorkbookSourceMismatch) return;
+    if (isFactUnavailable(error) || error instanceof WorkspaceInputError || error instanceof WorkbookSourceMismatch) return;
     throw error;
   }
 }

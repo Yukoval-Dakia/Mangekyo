@@ -13,7 +13,7 @@ import { isMemoryConflict, openTurnMemory } from './turn-memory.ts';
 import { turnClaimWitness } from '../../modules/companion/claim.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -28,9 +28,7 @@ import { ChangedEvidence, classifyTeachingFailure, terminalRecoveryFailure } fro
 import { createTurnWitnessLedger } from '../../executors/teaching/turn-witness.ts';
 import { createTeachingModelEffect } from '../../executors/teaching/turn-effect.ts';
 import { executeCompanionTurn } from '../../executors/teaching/turn-companion.ts';
-import {
-  companionForegroundSummary, createTurnProgressHandler, prepareTeachingTurn, runIntroTeachingTurn,
-} from '../../executors/teaching/turn-context.ts';
+import { companionForegroundSummary, createTurnProgressHandler, prepareTeachingTurn, runIntroTeachingTurn } from '../../executors/teaching/turn-context.ts';
 import { studyRecord, studyTurn } from '../../modules/activity/values.ts';
 import { caseId, readOwnStudyTurn, readTeachingTurn, type DisplayTurn } from './sessions.ts';
 import { jitWitnessesCurrent, prepareFirstTurnJit, studioJitCounter, type StudioJitCounter } from './first-turn-jit.ts';
@@ -310,7 +308,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           withHistoryRead: fn => confirmNotionRead(db, learner, (tx, check) => fn({
             readPriorTurn: async id => {
               const prior = await readTeachingTurn(tx, id).catch((error: unknown) => {
-                if (error instanceof FactReadDeniedError && error.reason === 'purpose') return;
+                if (isFactReadDenied(error) && error.reason === 'purpose') return;
                 throw error;
               });
               return prior ? { ref: prior.ref, accessEpoch: prior.accessEpoch, data: studyTurn(prior.value) } : undefined;
@@ -365,7 +363,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
                   return true;
                 });
               } catch (error) {
-                if (error instanceof ChangedEvidence || error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
+                if (error instanceof ChangedEvidence || isFactUnavailable(error) ||
                     error instanceof TeachingError || error instanceof LifecycleError) return false;
                 throw error;
               }

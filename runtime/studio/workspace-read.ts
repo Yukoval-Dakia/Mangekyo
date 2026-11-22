@@ -3,7 +3,7 @@ import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import {createBusScope} from '../../kernel/src/bus.ts';
 import type {Revision} from '../../kernel/src/declarations/ids.ts';
-import {FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {isFactUnavailable} from './fact-read-helpers.ts';
 import {parseManifest, type ManifestInput} from '../../kernel/src/derivations/manifest.ts';
 import {isSourceFactId, parseLearningReference, sourceRefV1} from '../../modules/activity/source-values.ts';
 import {workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, workbookRubricAssessmentType} from '../../modules/activity/workbook-values.ts';
@@ -66,7 +66,7 @@ export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: Assess
         (w.id === current.paper_id && w.type !== workbookPaperType))) return;
     }
   } catch (error) {
-    if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) return;
+    if (isFactUnavailable(error)) return;
     throw error;
   }
   if (!facts.some(fact => fact.id === current.attempt_id) || !facts.some(fact => fact.id === current.paper_id)) return;

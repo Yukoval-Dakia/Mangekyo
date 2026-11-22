@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
-import {
-  firstTurnJitMessages, type FirstTurnJitRoute, type FirstTurnJitSlots, type FirstTurnJitTokenizer,
-} from '../../executors/teaching/first-turn-jit.ts';
+import { firstTurnJitMessages, type FirstTurnJitRoute, type FirstTurnJitSlots, type FirstTurnJitTokenizer } from '../../executors/teaching/first-turn-jit.ts';
 import { providerEndpoint, type TeachingProvider } from '../../executors/teaching/provider.ts';
 import type { studyTurn } from '../../modules/activity/values.ts';
 import { workbookAttemptType } from '../../modules/activity/workbook-values.ts';
@@ -36,12 +34,10 @@ function witness(fact: Parameters<WorkspaceSourceRecipient>[0], mode: WorkspaceW
   return {id: fact.ref.id, rev: fact.ref.rev, epoch: fact.accessEpoch, type: fact.type, mode};
 }
 
-const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
-
 // A previous wrong answer is useful here only when both attempts used the same
 // frozen paper and its ordinary, deterministic grading recorded an incorrect answer.
 async function oldMistake(tx: ReadTransaction, turn: string, current: WorkspaceWitness, maySend: WorkspaceSourceRecipient) {
-  const read = createAuthorizedFactReader(tx, purpose, maySend);
+  const read = purposeReader(tx, maySend);
   const open = async (id: string) => {
     const basis: WorkspaceWitness[] = [];
     try {
@@ -50,7 +46,7 @@ async function oldMistake(tx: ReadTransaction, turn: string, current: WorkspaceW
       const source = await openWorkbookQuestionSources(tx, fact, {maySend, track: (ref, mode) => basis.push(witness(ref, mode))});
       return source && {...source, fact, basis: [witness(fact), ...basis]};
     } catch (error) {
-      if (!unavailable(error)) throw error;
+      if (!isFactUnavailable(error)) throw error;
       return;
     }
   };
@@ -117,12 +113,12 @@ export async function prepareFirstTurnJit(db: Db, learner: ReadTransaction['lear
 }
 
 export async function jitWitnessesCurrent(tx: ReadTransaction, basis: readonly WorkspaceWitness[], maySend: WorkspaceSourceRecipient) {
-  const read = createAuthorizedFactReader(tx, purpose, maySend);
+  const read = purposeReader(tx, maySend);
   try {
     for (const item of basis) await read.reopen({...workspaceInput(item), type: item.type});
     return true;
   } catch (error) {
-    if (!unavailable(error)) throw error;
+    if (!isFactUnavailable(error)) throw error;
     return false;
   }
 }

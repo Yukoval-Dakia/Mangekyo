@@ -8,7 +8,7 @@ export type { WorkspaceWriteView } from '../../executors/teaching/workspace-tool
 export { unconfirmedReplyMessage, unavailableReplyMessage } from '../../executors/teaching/session-feedback.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { factId, commandId } from '../../kernel/src/declarations/ids.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
@@ -97,7 +97,7 @@ export async function requireSessionTurn(tx: ReadTransaction, id: string) {
   try {
     return await readOwnStudyTurn(tx, id);
   } catch (error) {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError)
+    if (isFactUnavailable(error))
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     throw error;
   }
@@ -166,7 +166,7 @@ export function recentConversations(db: Db) {
         const root = studyTurn((await readOwnStudyTurn(tx, row.id)).value);
         if (root.answer) result.push({ id: row.id, title: root.answer.slice(0, 100), caseId: root.caseId });
       } catch (error) {
-        if (!(error instanceof FactReadDeniedError)) throw error;
+        if (!isFactReadDenied(error)) throw error;
       }
     }
     return result;

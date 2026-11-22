@@ -1,9 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
-import {
-  projectWorkspaceSearchResult, runWorkspaceSearch, type SearchFilters, type SearchQuery, type WorkspaceCandidateChannel,
-} from '../../modules/activity/workspace-search.ts';
+import { projectWorkspaceSearchResult, runWorkspaceSearch, type SearchFilters, type SearchQuery, type WorkspaceCandidateChannel } from '../../modules/activity/workspace-search.ts';
 export {
   lexicalWorkspaceSql, parseWorkspaceSearch, queryStrings, trigramFunction, unappliedWorkspaceFilters,
   workspaceOccurredAt, workspaceRecordKind, workspaceRecordKinds, WorkspaceSearchError,

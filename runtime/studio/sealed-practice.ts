@@ -1,5 +1,5 @@
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, storageRead } from './fact-read-helpers.ts';
 import type { CommandHooks, CommandRequest } from '../../kernel/src/commands/contracts.ts';
 import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -22,28 +22,28 @@ const unavailable = () => new RequestError(404,'找不到当前可用的封闭�
 
 async function readPracticeTeaching(tx: ReadTransaction, paper: FactId) {
   try {
-    const read = createCommandReadContext(tx,'storage');
+    const read = storageRead(tx);
     const custody = await readPracticeCustody(read,await practiceCustodyId(paper));
     if (!custody || custody.value.paper.id !== paper) throw unavailable();
     const source = await read.fact(custody.value.question.id,{mode:'following'});
     if (source.type !== assetType) throw unavailable();
     return {id:source.ref.id,rev:source.ref.rev,teaching:source.purpose.includes('teaching') || source.purpose.includes('all')};
   } catch (error) {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw unavailable();
+    if (isFactUnavailable(error)) throw unavailable();
     throw error;
   }
 }
 
 export async function isPracticeWorkbook(tx: ReadTransaction, paper: FactId) {
-  const found = await readPracticeCustody(createCommandReadContext(tx,'storage'),await practiceCustodyId(paper));
+  const found = await readPracticeCustody(storageRead(tx),await practiceCustodyId(paper));
   return found?.value.paper.id === paper;
 }
 
 export async function sealedPracticePaper(tx: ReadTransaction, id: FactId) {
   try {
-    return await openSealedPractice(createCommandReadContext(tx,'storage'),id);
+    return await openSealedPractice(storageRead(tx),id);
   } catch (error) {
-    if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+    if (!isFactUnavailable(error)) throw error;
     return undefined;
   }
 }
@@ -70,7 +70,7 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
         const questionId = await arithmeticQuestionId(practice);
         const id = await arithmeticPracticePaperId(questionId);
         await assertUnburned(tx,'fact',[id,questionId,await practiceCustodyId(id)]);
-        const read = createCommandReadContext(tx,'storage');
+        const read = storageRead(tx);
         const handle = createCommandHandler(withinLearnerTransaction(db,tx),{
           modules:[activity,content],hooks,
           // Keep the existing identity for retries of a previously authorized admission.
@@ -121,7 +121,7 @@ export function submitWithPracticeCustody(db: Db, activity: LoadedModule, hooks:
   paperId: FactId, request: CommandRequest) {
   return db.tx(scope,async tx => {
     await lockLearner(tx,tx.learner);
-    const read = createCommandReadContext(tx,'storage');
+    const read = storageRead(tx);
     const custody = await readPracticeCustody(read,await practiceCustodyId(paperId));
     const handle = createCommandHandler(withinLearnerTransaction(db,tx),{modules:[activity],hooks});
     if (custody?.value.kind === 'sealed') {

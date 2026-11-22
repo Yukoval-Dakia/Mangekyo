@@ -24,9 +24,7 @@ import { openWorkbook } from './workbook.ts';
 import { openTakeaway } from './takeaway.ts';
 import { workbookBacktrace } from './workbook-backtrace.ts';
 import { openPracticeAdmission } from './sealed-practice.ts';
-import {
-  artifactAssessmentSlot, executeArtifactAssessment, type ReadArtifactAssessmentWitness,
-} from './artifact-assessment.ts';
+import { artifactAssessmentSlot, executeArtifactAssessment, type ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import { openWorkbookAssessment, workbookAssessmentSlot, type WorkbookAssessmentHost } from './workbook-assessment.ts';
 import { openOrganizer } from './organizer.ts';
 import { openMemory } from './memory.ts';

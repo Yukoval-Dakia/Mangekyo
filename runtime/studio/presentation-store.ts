@@ -4,11 +4,7 @@ import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import {
-  createCommandReadContext,
-  FactReadDeniedError,
-  FactNotFoundError,
-} from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactUnavailable } from './fact-read-helpers.ts';
 import { factId, commandId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { CommandReceipt } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -19,21 +15,9 @@ import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { assessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import {
-  validateArtifact,
-  savedArtifactCheckpoints,
-  type ArtifactAction,
-  type ArtifactIntentV1,
-} from '../../surfaces/shared/presentation/index.ts';
-import {
-  artifactIntentCommandId,
-  handleArtifactIntent,
-  projectArtifactMountState,
-  projectArtifactSubmission,
-} from '../../surfaces/shared/presentation/artifact-intent.ts';
-import {
-  artifactAssessmentPolicy, qualifyArtifactAssessment, readArtifactAssessment, type ReadArtifactAssessmentWitness,
-} from './artifact-assessment.ts';
+import { validateArtifact, savedArtifactCheckpoints, type ArtifactAction, type ArtifactIntentV1 } from '../../surfaces/shared/presentation/index.ts';
+import { artifactIntentCommandId, handleArtifactIntent, projectArtifactMountState, projectArtifactSubmission } from '../../surfaces/shared/presentation/artifact-intent.ts';
+import { artifactAssessmentPolicy, qualifyArtifactAssessment, readArtifactAssessment, type ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import { registerFormalAssessment } from './formal-assessment.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
@@ -113,7 +97,7 @@ type ActionRecord = { stateRev: number; requestId: string; action: ArtifactActio
 class MountUnavailable extends Error {}
 
 function unavailableMount(error: unknown) {
-  return error instanceof MountUnavailable || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+  return error instanceof MountUnavailable || isFactUnavailable(error);
 }
 
 async function readMount(tx: ReadTransaction, sessionId: string, mountId: string, check: CheckNotionRead, through?: number) {

@@ -1,4 +1,4 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactReadDeniedError, isFactUnavailable } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import { reopenControlledHelpBasis } from '../../modules/activity/help-exposure-values.ts';
@@ -65,8 +65,8 @@ export const studioWorkbookEvidence = (as: string, maySend: WorkspaceSourceRecip
   readPosttestIssuance: readIssuance,
   readFormalAssessment: readSavedWorkbookAssessment,
   createRead: tx => createCommandReadContext(tx,as),
-  unavailable: error => error instanceof FactNotFoundError || error instanceof FactReadDeniedError,
-  unavailableRelease: error => error instanceof RequestError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError,
+    unavailable: isFactUnavailable,
+    unavailableRelease: error => error instanceof RequestError || isFactUnavailable(error),
   reject: (status,message) => new RequestError(status,message),
   edgeType: knowledgeEdgeType,
   questionType,

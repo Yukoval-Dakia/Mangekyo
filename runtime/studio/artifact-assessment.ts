@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable } from './fact-read-helpers.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, learnerId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
@@ -13,15 +13,11 @@ import {
   type AssessmentSubmission,
 } from '../../modules/activity/assessment-values.ts';
 import { artifactActionRecord } from '../../modules/activity/artifact-action.ts';
-import {
-  evaluateSentenceBreaks, qualifySentenceBreakAssessment, sentenceBreakRelease, type SentenceBreakPublicationEvidence,
-} from '../../modules/activity/sentence-break-assessment.ts';
+import { evaluateSentenceBreaks, qualifySentenceBreakAssessment, sentenceBreakRelease, type SentenceBreakPublicationEvidence } from '../../modules/activity/sentence-break-assessment.ts';
 import slot from '../../modules/activity/slots/artifact-formal-assessment.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { sentenceBreakQuestion, type Artifact } from '../../surfaces/shared/presentation/index.ts';
-import {
-  assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, type AssessmentScope,
-} from './formal-assessment.ts';
+import { assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, type AssessmentScope } from './formal-assessment.ts';
 import { purpose, stableId } from './identity.ts';
 
 export const artifactAssessmentSlot = slot.type;
@@ -101,8 +97,7 @@ export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFa
     const value = formalAssessmentValue(release, submission, result, []);
     await submitCandidate(db, ref, artifactAssessmentPolicy, sealed.id, { kind: 'value', value }, propagation);
   } catch (error) {
-    if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
-        error instanceof ArtifactAssessmentInputUnavailable)) throw error;
+    if (!(isFactUnavailable(error) || error instanceof ArtifactAssessmentInputUnavailable)) throw error;
     await failWork(db, ref, async tx => {
       await tx.query('UPDATE slot_state SET last_error=$4 WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
         [learner, artifactAssessmentSlot, work.slotKey, JSON.stringify({ status: 'blocked', reason: assessmentInputsBlocked })]);

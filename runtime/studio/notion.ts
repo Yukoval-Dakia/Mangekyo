@@ -6,7 +6,7 @@ import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/typ
 import { withLearnerLock, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { CommandHooks, FactChange } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError, isFactUnavailable, purposeReader, storageRead } from './fact-read-helpers.ts';
 import { commandId, factId, type DerivationId, type FactId, type LearnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { assertDeletionWatermark, deletionWatermark, LifecycleError } from '../../kernel/src/lifecycle.ts';
@@ -52,7 +52,7 @@ const availablePresets = async () => [
   {id: 'temporary', available: false, allowedRecipients: [], reason: '临时材料尚无独立密钥、到期销毁和接收人复核出口。'},
 ];
 
-const selectionAt = (tx: ReadTransaction, id: string) => readNotionSelection(createCommandReadContext(tx, 'storage'), tx.learner, id);
+const selectionAt = (tx: ReadTransaction, id: string) => readNotionSelection(storageRead(tx), tx.learner, id);
 type Access = {purpose: string; recipientId: string; maySend: (fact: FactSnapshot) => boolean};
 const denialOwner = (id: string, epoch: string) => stableId('notion-access-denial', id, epoch);
 
@@ -62,7 +62,7 @@ async function checkDenial(tx: ReadTransaction, id: string, epoch: string, page?
 function selectedAccess(tx: ReadTransaction, access: Access, requireCurrentSelection = false) {
   return {
     learner: tx.learner, purpose: access.purpose, recipientId: access.recipientId,
-    selectionRead: createCommandReadContext(tx, 'storage'),
+    selectionRead: storageRead(tx),
     sourceRead: createAuthorizedFactReader(tx, access.purpose, access.maySend),
     async checkSelection(selection: NotionSelection, source: ReturnType<typeof sourceEnvelope>) {
       if (requireCurrentSelection && selection.selectionEpoch !== source.sourceSelectionEpoch) throw new NotionSelectionUnavailable();
@@ -157,7 +157,7 @@ export async function notionSendBasis(tx: ReadTransaction, witnesses: Iterable<B
   let unconfirmed: NotionReadUnconfirmed | undefined;
   for (const witness of witnesses) {
     if (witness.type !== captureSourceType) continue;
-    const fact = await createAuthorizedFactReader(tx,'teaching',recipient).reopen({...witness,id:factId(witness.id),
+    const fact = await purposeReader(tx,recipient).reopen({...witness,id:factId(witness.id),
       accessEpoch:witness.epoch as FactSnapshot['accessEpoch'], mode:'pinned'});
     if (!await checkStudioNotionFact(tx,fact,'teaching',recipient)) continue;
     if (!check) pages.push(await notionPageAuthority(tx, sourceEnvelope(fact.value)));
@@ -251,15 +251,15 @@ const exhaustBlock = (db: Db, ref: WorkRef, remote: boolean) => remote
 
 function blockWithdrawn(error: unknown) {
   return !(error instanceof NotionReadUnconfirmed) &&
-    (error instanceof NotionBlockUnavailable || error instanceof NotionSelectionUnavailable || error instanceof FactNotFoundError ||
-      error instanceof FactReadDeniedError || (error instanceof RequestError && error.status === 403));
+    (error instanceof NotionBlockUnavailable || error instanceof NotionSelectionUnavailable ||
+      isFactUnavailable(error) || (error instanceof RequestError && error.status === 403));
 }
 
 const blockScopeKeys = JSON.stringify({ purpose: blockPolicy.purpose, recipientId: learningReader.id });
 function createNotionHooks(afterFactsChanged?: CommandHooks['onFactsChanged']) {
   return createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
     await retireNotionChanges(retireDeps, tx, tick, changes);
-    const read = createCommandReadContext(tx, 'storage');
+    const read = storageRead(tx);
     for await (const basis of changedNotionBlockWork(read, blockPolicy.purpose, changes)) await requestCatalogedWork(
       tx, tick, { slotType: notionBlockSlot, slotKey: notionBlockWorkKey(basis), deriver: notionBlockDeriver }, blockScopeKeys, { pendingState: 'routed_pending' },
     );

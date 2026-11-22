@@ -1,6 +1,6 @@
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHandler, CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactNotFound, isFactReadDenied } from './fact-read-helpers.ts';
 import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
@@ -56,8 +56,8 @@ function itemFor(issuance: Parameters<typeof recallMountedItem>[0], mount: Recal
 async function authorized<T>(read: () => Promise<T>): Promise<T> {
   try { return await read(); }
   catch (error) {
-    if (error instanceof FactReadDeniedError) throw new RecallRequestError(403, '回忆题依据已不可读。');
-    if (error instanceof FactNotFoundError) throw new RecallRequestError(404, '找不到回忆题记录。');
+    if (isFactReadDenied(error)) throw new RecallRequestError(403, '回忆题依据已不可读。');
+    if (isFactNotFound(error)) throw new RecallRequestError(404, '找不到回忆题记录。');
     throw error;
   }
 }
@@ -66,7 +66,7 @@ async function optionalPinned(tx: ReadTransaction, ref: HelpRef) {
   try {
     return await createCommandReadContext(tx, storagePurpose).fact(ref.id, { mode: 'pinned', rev: ref.rev });
   } catch (error) {
-    if (error instanceof FactNotFoundError) return null;
+    if (isFactNotFound(error)) return null;
     throw error;
   }
 }

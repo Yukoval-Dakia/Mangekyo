@@ -5,7 +5,7 @@ import { executeNotionRead, notionReadDefinition, notionReadWriteKeys, type Noti
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
@@ -45,7 +45,7 @@ export function openLearningTools(options: {
     const {rows:[clock]} = await tx.query<{tick:string}>('SELECT clock::text AS tick FROM learners WHERE id=$1',[tx.learner]);
     const manifest = parseManifest({version:1,learner:tx.learner,purpose,gatherTick:clock?.tick,inputs:facts.map(workspaceInput)});
     if ((await revalidateManifest(tx,manifest)).kind !== 'valid' || !await questionReceiptsCurrent(tx,turn,'dispatch')) return false;
-    const read = createAuthorizedFactReader(tx,purpose,maySend);
+    const read = purposeReader(tx,maySend);
     for (const witness of facts) {
       const fact = await read.reopen({...workspaceInput(witness),type:witness.type});
       await checkStudioNotionFact(tx,fact,purpose,maySend);
@@ -164,7 +164,7 @@ export function openLearningTools(options: {
           return {ok:true,values:packet.values};
         }
       } catch (error) {
-        if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+    if (!isFactUnavailable(error)) throw error;
       }
       return toolFailure('access_revoked','该计算的原始读取已不再获准。',learningToolFallback('run_calculation'));
     },

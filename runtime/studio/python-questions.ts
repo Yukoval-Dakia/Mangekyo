@@ -1,4 +1,4 @@
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, factReadChecks } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -26,8 +26,7 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
     purpose,
     questionScope,
     toolFailure: toolFailure as StudioPythonQuestionsDeps['toolFailure'],
-    isFactNotFound: error => error instanceof FactNotFoundError,
-    isFactReadDenied: error => error instanceof FactReadDeniedError,
+    ...factReadChecks,
     createAuthorizedFactReader: createAuthorizedFactReader as StudioPythonQuestionsDeps['createAuthorizedFactReader'],
     resolveSource: resolveSource as StudioPythonQuestionsDeps['resolveSource'],
     openKnowledgeEdge: (innerTx, input, accessArg) => openKnowledgeEdge(innerTx, input, accessArg as never),

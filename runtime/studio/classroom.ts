@@ -4,7 +4,7 @@ import { classroomCommand, classroomMutation, classroomPlan, classroomPrompt, cl
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, teachingRead } from './fact-read-helpers.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { commandId, derivationId, factId, type DerivationId, type FactId } from '../../kernel/src/declarations/ids.ts';
@@ -21,7 +21,7 @@ const scope = {learner:studioLearner};
 const unavailable = () => new RequestError(404,'这次课堂不可读。');
 const conflict = (error: string) => new RequestError(409,error);
 const readTurn = async (tx: ReadTransaction, id: FactId) =>
-  studyTurn((await createCommandReadContext(tx,purpose).fact(id,{mode:'following'})).value);
+  studyTurn((await teachingRead(tx).fact(id,{mode:'following'})).value);
 const classroomId = (session: string) => factId(stableId('classroom',session));
 
 async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNotionRead, pinned?: DerivationId) {
@@ -38,7 +38,7 @@ async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNoti
 }
 
 async function rawClassroom(tx: ReadTransaction, id: FactId) {
-  const fact = await createCommandReadContext(tx,purpose).fact<Classroom>(id,{mode:'following'});
+  const fact = await teachingRead(tx).fact<Classroom>(id,{mode:'following'});
   if (fact.type !== classroomType) throw unavailable();
   return {...fact,value:classroomFact(fact.value)};
 }
@@ -65,7 +65,7 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
     try { await notionSendBasis(tx,opened.basis,recipient,check); }
     catch (error) {
       if (error instanceof NotionReadUnconfirmed) throw new RequestError(503,'暂时无法核对课堂依据。');
-      if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError) throw unavailable();
+      if (isFactUnavailable(error)) throw unavailable();
       throw error;
     }
   }
@@ -90,7 +90,7 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
 async function handleErrors<T>(run: () => Promise<T>) {
   try { return await run(); }
   catch (error) {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw unavailable();
+    if (isFactUnavailable(error)) throw unavailable();
     if (error instanceof ClassroomConflict) throw conflict(error.message);
     if (error instanceof Error && /different command identity/.test(error.message)) throw conflict('课堂请求标识已用于不同操作。');
     throw error;
@@ -133,7 +133,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
         if (state.status === 'active' && generation === 'ready' && step)
           items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
       } catch (error) {
-        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) continue;
+    if (isFactUnavailable(error)) continue;
         if (error instanceof RequestError && error.status === 404) continue;
         if (error instanceof RequestError && error.status === 503) {
           unconfirmed = true;
@@ -211,7 +211,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     try { await notion.read(prepare); }
     catch (error) {
       if (!(error instanceof RequestError || error instanceof ClassroomConflict ||
-            error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+            isFactUnavailable(error))) throw error;
       // Replay bypasses a now-stale expectedRev but still goes through the authorized view.
     }
     const handle = createCommandHandler(db,{modules:[activity],hooks,bindCommandRead:(tx,_request,base) =>

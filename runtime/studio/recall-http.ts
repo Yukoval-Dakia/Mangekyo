@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactNotFound, isFactReadDenied } from './fact-read-helpers.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -40,8 +40,8 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
         }
       });
     } catch (error) {
-      if (error instanceof FactNotFoundError) throw new RecallRequestError(404, '回忆题不属于该会话。');
-      if (error instanceof FactReadDeniedError) throw new RecallRequestError(403, '回忆题依据已不可读。');
+      if (isFactNotFound(error)) throw new RecallRequestError(404, '回忆题不属于该会话。');
+      if (isFactReadDenied(error)) throw new RecallRequestError(403, '回忆题依据已不可读。');
       throw error;
     }
   }

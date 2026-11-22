@@ -3,15 +3,12 @@ import type {DeliveredToolRange} from '../../executors/teaching/learning-tools.t
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable } from './fact-read-helpers.ts';
 import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import type { WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
-import {
-  applyClaimCommand, claimEvidence, claimId, claimType, ClaimInputError, editableTurnClaim, editableTurnDirective,
-  claimRef, structuredClaim,
-} from '../../modules/companion/claim.ts';
+import { applyClaimCommand, claimEvidence, claimId, claimType, ClaimInputError, editableTurnClaim, editableTurnDirective, claimRef, structuredClaim } from '../../modules/companion/claim.ts';
 import { beliefInput, beliefReceiptAction, memoryReceipt, beliefToolFailure, checkedHypothesis, hypothesisRequest, quoteFromTurn, saveBeliefCommand, turnClaimData, turnHypothesisData, validateDirectiveScope, turnMemoryAction, memoryRetrieveQuery, directiveTarget, pendingMemoryReply } from '../../modules/companion/belief.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import type { ActivityCitation } from '../../modules/companion/understanding.ts';
@@ -187,5 +184,5 @@ export function openTurnMemory(options: {
 }
 
 export function isMemoryConflict(error: unknown) {
-  return error instanceof ClaimInputError || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+  return error instanceof ClaimInputError || isFactUnavailable(error);
 }

@@ -2,11 +2,7 @@ import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../k
 import { submittedWatermark } from '../../modules/capture/request.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import {
-  createCommandReadContext,
-  FactNotFoundError,
-  FactReadDeniedError,
-} from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactNotFound, isFactReadDenied } from './fact-read-helpers.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -41,7 +37,7 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
           const fact = await context.fact(factId(row.id), { mode: 'following' });
           history.push({ id: row.id, ...practiceSubmission(fact.value) });
         } catch (error) {
-          if (!(error instanceof FactReadDeniedError)) throw error;
+          if (!isFactReadDenied(error)) throw error;
         }
       }
       const submission = selected ? history.find(({ id }) => id === selected) : history.at(-1);
@@ -61,8 +57,8 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
         return practiceSubmission(fact.value);
       });
     } catch (error) {
-      if (error instanceof FactNotFoundError) return null;
-      if (error instanceof FactReadDeniedError) throw new RequestError(403, '这份练习记录当前不可读取。');
+      if (isFactNotFound(error)) return null;
+      if (isFactReadDenied(error)) throw new RequestError(403, '这份练习记录当前不可读取。');
       throw error;
     }
     let data: PracticeInput;

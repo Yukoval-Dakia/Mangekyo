@@ -5,9 +5,7 @@ import type { CandidatePolicy } from '../../kernel/src/derivations/candidate.ts'
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { requestCatalogedWork } from '../../kernel/src/work/index.ts';
-import {
-  settledAssessmentState, type FormalAssessmentValue, type AssessmentRevisionRef,
-} from '../../modules/activity/assessment-values.ts';
+import { settledAssessmentState, type FormalAssessmentValue, type AssessmentRevisionRef } from '../../modules/activity/assessment-values.ts';
 import { stableId } from './identity.ts';
 
 export const assessmentExecutionFailed = '自动评估执行失败。';

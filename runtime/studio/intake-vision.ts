@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks, CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactUnavailable } from './fact-read-helpers.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import { cancelWork, finishWork, readReadyWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
@@ -60,7 +60,7 @@ export async function completeVisionIntake(db: Db, runtime: { modules: LoadedMod
 }
 
 class StoppedVisionIntake extends Error {}
-const stopped = (error: unknown) => error instanceof StoppedVisionIntake || error instanceof RequestError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
+const stopped = (error: unknown) => error instanceof StoppedVisionIntake || error instanceof RequestError || isFactUnavailable(error);
 export function openVisionIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
   originalPage(materialId: string, page: number): Promise<{ original: { name: string; mediaType: string }; bytes: Buffer }>;

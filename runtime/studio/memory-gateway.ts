@@ -2,7 +2,7 @@ import { openHypothesisObject } from './hypothesis-object.ts';
 import { createHash } from 'node:crypto';
 import { recallPacket, recallRegions, type MemoryIntent, type MemoryRegion, type RegionPage,
   type RecallItem, type RecallRegions, type SentWitness } from '../../modules/companion/recall-packet.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -58,13 +58,12 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
   const wantsPreferences = requested.includes('preferences');
   const wantsCourse = requested.includes('course_knowledge');
   const wantsAnswer = requested.includes('current_answer');
-  const reader = createCommandReadContext(tx, purpose);
+  const reader = purposeReader(tx, maySend);
   async function open(id: string) {
     try {
-      const fact = await reader.fact(factId(id), { mode: 'following' });
-      return maySend(fact) ? fact : undefined;
+      return await reader.fact(factId(id), { mode: 'following' });
     } catch (error) {
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return;
+      if (isFactUnavailable(error)) return;
       throw error;
     }
   }

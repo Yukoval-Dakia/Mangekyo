@@ -2,7 +2,7 @@ import type { StudyObjectWitness } from '../../modules/activity/current-object-b
 import { extractedUnderstanding } from '../../modules/companion/understanding.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, readFactOrNull } from './fact-read-helpers.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { manifestFactInputs, revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
@@ -10,9 +10,7 @@ import { memoryReceipt, saveBeliefCommand } from '../../modules/companion/belief
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { applyClaimCommand, claimType, matchesClaimEvidence, type ClaimRef } from '../../modules/companion/claim.ts';
-import {
-  activeClaimSuccessorSql, checkMemoryClaimsCurrent, parseStoredClaim, queryCurrentMemoryClaims,
-} from '../../modules/companion/memory-overview.ts';
+import { activeClaimSuccessorSql, checkMemoryClaimsCurrent, parseStoredClaim, queryCurrentMemoryClaims } from '../../modules/companion/memory-overview.ts';
 import { purpose, slotType, stableId } from './identity.ts';
 import { readRadarTodo } from './research-understanding.ts';
 import { isDeepStrictEqual } from 'node:util';
@@ -76,12 +74,7 @@ export async function recoverTurnMemoryReceipts(tx: ReadTransaction, turns: stri
 }
 
 export async function openClaimFact(tx: ReadTransaction, id: ClaimRef['id'], callerPurpose = purpose) {
-  try {
-    return await createCommandReadContext(tx, callerPurpose).fact(id, {mode:'following'});
-  } catch (error) {
-    if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError)) throw error;
-    return undefined;
-  }
+  return readFactOrNull(tx, callerPurpose, id, {mode:'following'});
 }
 
 export async function openClaimEvidence(tx: ReadTransaction, ref: ClaimRef, excerpt: string, start = 0, legacy = false) {

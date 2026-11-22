@@ -1,6 +1,6 @@
 import { studyObjectBasisDigest, type StudyObjectWitness } from '../../modules/activity/current-object-basis.ts';
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import { createAuthorizedFactReader } from '../../kernel/src/commands/reads.ts';
+import { purposeReader } from './fact-read-helpers.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { organizerNoteType } from '../../modules/activity/organizer-values.ts';
@@ -23,7 +23,7 @@ export function readCurrentLearningObject(tx: ReadTransaction, selection: StudyC
   maySend: WorkspaceSourceRecipient, ownerNotionRead?: true) {
   return readable(async () => {
     const {kind, id, rev} = selection;
-    const fact = await createAuthorizedFactReader(tx, purpose, maySend).fact(factId(id), {mode: 'pinned', rev: rev as Revision});
+    const fact = await purposeReader(tx, maySend).fact(factId(id), {mode: 'pinned', rev: rev as Revision});
     const sourceRef = sourceReference(fact, {kind: 'whole'});
     const witnesses = new Map<string, StudyObjectWitness>();
     const track: SourceTrack = (source, mode = 'following') => {

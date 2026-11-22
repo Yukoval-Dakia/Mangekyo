@@ -1,5 +1,5 @@
 import {pythonAttemptsLimit, type PythonAttemptRow, type PythonAttemptsRead} from '../../executors/teaching/agent-tools.ts';
-import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {isFactUnavailable, purposeReader, readAuthorizedFactOrNull} from './fact-read-helpers.ts';
 import type {ReadTransaction} from '../../kernel/src/db/types.ts';
 import {factId, type Tick} from '../../kernel/src/declarations/ids.ts';
 import {posttestSubmissionType, retentionPaperType} from '../../modules/activity/retention-posttest.ts';
@@ -23,17 +23,13 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
   if (!scope) return {ok:false, code:'invalid_args', field:'attempts', message:
     `请传 1–${pythonAttemptsLimit} 个不重复的作答 refs（{id, rev?}）。只统计一份卷时可传 paper_id。`};
 
-  const read = createAuthorizedFactReader(tx, purpose, access.maySend);
+  const read = purposeReader(tx, access.maySend);
   async function open(id: string, types: readonly string[]) {
     const denied = access.known(id) ? 'access_revoked' : 'not_found';
-    try {
-      const fact = await read.fact(factId(id), {mode: 'following'});
-      if (!types.includes(fact.type)) return {code: 'not_found'} as const;
-      return {fact} as const;
-    } catch (error) {
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return {code: denied} as const;
-      throw error;
-    }
+    const fact = await readAuthorizedFactOrNull(tx, purpose, access.maySend, factId(id), {mode: 'following'});
+    if (!fact) return {code: denied} as const;
+    if (!types.includes(fact.type)) return {code: 'not_found'} as const;
+    return {fact} as const;
   }
 
   if (scope.paperId) {
@@ -87,7 +83,7 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
           continue;
         }
       } catch (error) {
-        if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof RequestError)) throw error;
+        if (!(isFactUnavailable(error) || error instanceof RequestError)) throw error;
         issues.push({index, code: access.known(ref.id) ? 'access_revoked' : 'not_found'});
         continue;
       }
