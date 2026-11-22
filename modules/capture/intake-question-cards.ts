@@ -19,6 +19,7 @@ export type IntakeQuestionCard = {
   readonly isRedPenError: boolean;
   readonly unclearNotice: string | null;
   readonly defaultSelected: boolean;
+  readonly conceptTags: readonly string[];
 };
 
 export type IntakeFreshMaterialHints = {
@@ -96,6 +97,7 @@ export function projectIntakeQuestionCards(intake: IntakeDocument | unknown): re
       isRedPenError: error,
       unclearNotice: unclearNotice(question.studentAnswer, question.redInk, question.unclearSegments),
       defaultSelected: error,
+      conceptTags: question.conceptTags ? [...question.conceptTags] : [],
     };
   }) ?? [];
 }
