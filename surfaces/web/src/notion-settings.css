@@ -16,7 +16,61 @@
 }
 .notion-choice input { margin: 0; accent-color: var(--primary); }
 .notion-choice small { grid-column: 2; color: var(--muted); }
+.notion-presets .notion-choice {
+  position: relative;
+  padding: 10px 12px 10px 38px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-container-low);
+  transition: background-color var(--duration-short) var(--ease-standard), border-color var(--duration-short) var(--ease-standard);
+}
+.notion-presets .notion-choice + .notion-choice { margin-top: 8px; }
+.notion-presets .notion-choice input {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  translate: 0 -50%;
+}
+.notion-presets .notion-choice:has(input:checked) {
+  border-color: color-mix(in srgb, var(--primary) 58%, var(--line));
+  background: var(--soft-green);
+}
+.notion-presets .notion-choice span { font-weight: 650; }
+.notion-presets .notion-choice small { margin-top: 2px; }
+.notion-sources select,
+.notion-sources input[type="text"],
+.notion-sources input:not([type]) {
+  color: var(--ink);
+  background: var(--surface-container-low);
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  min-height: 46px;
+  padding: 0 12px;
+  font: inherit;
+  font-weight: 400;
+}
+.notion-sources select {
+  appearance: none;
+  padding-right: 34px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+.notion-sources select:focus-visible,
+.notion-sources input:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.notion-sources .field { margin-top: 12px; }
+.notion-sources .field > select,
+.notion-sources .field > input { margin-top: 7px; }
 .notion-panel summary { cursor: pointer; font-weight: 650; }
 .notion-panel[open] summary { margin-bottom: 1rem; }
 .notion-panel .notion-choice { overflow-wrap: anywhere; }
 .notion-recipient { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+
+[data-theme="dark"] .notion-presets .notion-choice {
+  background: #18231c;
+}

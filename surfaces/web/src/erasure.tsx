@@ -39,7 +39,7 @@ export function EraseOriginal({id,revision,onConfirmed}:{id:string;revision:numb
     } catch {setError('无法保存删除请求标识，操作尚未开始。');}
   }
   return <>
-    <button type="button" className="text-button danger" onClick={() => dialog.current?.showModal()}>永久删除原件</button>
+    <button type="button" className="text-button danger erasure-trigger" onClick={() => dialog.current?.showModal()}>永久删除原件</button>
     <dialog ref={dialog} className="settings-dialog" aria-label="确认永久删除原件">
       <h2>永久删除这份原件？</h2>
       <p>将删除此材料、交入记录、关联命令和已归属的本机原件。此操作无法撤回。</p>

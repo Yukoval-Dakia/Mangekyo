@@ -94,7 +94,7 @@ function GrantForm({settings, submit}: {settings: Settings; submit: (cmd: Comman
     <label className="field">来源类型<select value={kind} onChange={event => { setKind(event.target.value as Root['kind']); setChecked([]); }}>
       <option value="page">页面</option><option value="data-source">数据源</option>
     </select></label>
-    <label className="field">Notion 来源 ID<input required pattern={idPattern} title="32 位十六进制 ID，可包含 UUID 连字符"
+    <label className="field">Notion 来源 ID<input required pattern={idPattern} title="32 位十六进制 ID，可包含连字符"
       value={id} onChange={event => { setId(event.target.value.trim()); setChecked([]); }}/></label>
     <fieldset className="notion-presets"><legend>授权用途</legend>{settings.presets.map(item => {
       const usable = item.available && (item.id === 'storage' || item.id === 'learning' &&
@@ -192,7 +192,7 @@ export function NotionSettings() {
     {notice && <p role="status">{notice}</p>}
     {error ? <p role="alert">无法读取 Notion 授权状态。 <button onClick={refresh}>重新读取</button></p> :
       !settings ? <p role="status">正在读取 Notion 授权…</p> : <>
-        {!settings.configured && <p>宿主尚未配置 Notion 连接。</p>}
+        {!settings.configured && <p>尚未配置 Notion 连接。</p>}
         <fieldset className="notion-sources" disabled={busy || !navigator.onLine}>
           <legend>只读来源</legend>
           {pending && commandBasis(settings, pending.cmd) === pending.basis && <button onClick={() => void submit(pending.cmd)}>重试原操作</button>}

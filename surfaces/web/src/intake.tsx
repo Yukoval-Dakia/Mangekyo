@@ -6,6 +6,7 @@ import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'rea
 import { ApiError, api, remember, remembered, requestId, submissionId } from './api';
 import { Icon } from './icons';
 import { IntakeQuestionCards, type IntakeQuestionCard } from './IntakeQuestionCards';
+import MathText from './math-text';
 import type { Settings } from './api';
 import { PageTitle, materialPath } from './workspace';
 import './intake.css';
@@ -402,6 +403,7 @@ type OriginalProps = {
   settings?: Settings | undefined;
   onNavigate?: ((href: string) => void) | undefined;
   questionCardsFirst?: boolean | undefined;
+  onPlainTextChange?: ((isPlain: boolean) => void) | undefined;
   onQuestionCardCountChange?: ((materialId: string, count: number) => void) | undefined;
 };
 
@@ -418,6 +420,7 @@ function OriginalDetails({
   settings,
   onNavigate,
   questionCardsFirst,
+  onPlainTextChange,
   onQuestionCardCountChange,
 }: OriginalProps) {
   const [metadata, setMetadata] = useState<IntakeMetadata | null>(receipt ?? null);
@@ -430,6 +433,9 @@ function OriginalDetails({
     if (previewText !== text) changed?.();
   });
   const [plain, setPlain] = useState(false);
+  useEffect(() => {
+    onPlainTextChange?.(plain);
+  }, [plain, onPlainTextChange]);
   const [error, setError] = useState('');
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionText, setCorrectionText] = useState('');
@@ -723,7 +729,6 @@ function OriginalDetails({
 
   return (
     <section className={`intake-original${questionCardsFirst ? ' intake-original-cards-first' : ''}`} aria-label="原件与完整抽取">
-      {erase && <EraseOriginal id={id} revision={metadata.revision} onConfirmed={erase}/>}
       {questionCardsFirst ? questionCards : null}
       <header className="intake-original-head">
         <div>
@@ -847,7 +852,9 @@ function OriginalDetails({
       {metadata.extraction.status !== 'pending' && metadata.fullText !== null && (
         <details className="intake-details" open={metadata.characterCount <= 4000}>
           <summary>完整文字 · {metadata.characterCount} 字</summary>
-          <pre className="intake-fulltext">{metadata.fullText}</pre>
+          <div className="intake-fulltext formatted-reply">
+            <MathText text={metadata.fullText} />
+          </div>
         </details>
       )}
       {metadata.truncated && <p className="field-help">材料卡片只显示前 4000 字，完整文字和原件都在这里。</p>}
@@ -890,6 +897,9 @@ function OriginalDetails({
           </div>
         </form>
       )}
+      {erase && <div className="intake-danger-zone">
+        <EraseOriginal id={id} revision={metadata.revision} onConfirmed={erase}/>
+      </div>}
     </section>
   );
 }
