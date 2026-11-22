@@ -221,9 +221,10 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       expect(mem.hypotheses).toMatchObject([{ text: '能独立完成标准极限求值' }]);
       expect(mem.hypotheses[0]!.basis.length).toBeGreaterThan(0);
       expect(mem.calibration).toMatchObject({ status: 'available', totalReconciliations: 1, confirmed: 1, missed: 0 });
-      const weak = (mem as { weaknessSummary?: { status: string; sampleCount: number; neededCount: number; priorityConcepts: { conceptId: string; status: string; uncorrectedErrorCount: number; nextAction: string }[]; topErrorStages: unknown[] } }).weaknessSummary;
+      const weak = (mem as { weaknessSummary?: { status: string; sampleCount: number; neededCount: number; priorityConcepts: { conceptId: string; status: string; uncorrectedErrorCount: number; nextAction: string; evidenceRefs: { href?: string }[] }[]; topErrorStages: unknown[] } }).weaknessSummary;
       expect(weak).toMatchObject({ status: 'ready', sampleCount: 2, neededCount: 2 });
       expect(weak!.priorityConcepts.map(row => [row.conceptId, row.status, row.nextAction, row.uncorrectedErrorCount])).toEqual([[c2, 'weak', 'review_mistake', 1], [c1, 'fading', 'quick_paper', 0]]);
+      expect(weak!.priorityConcepts.find(row => row.conceptId === c2)?.evidenceRefs[0]?.href).toBe(`/papers/${paperW}`);
       const pulseHost = { python: { async derive(_d: string, input: unknown) {
         const rows = ((input as { events?: { concept_ids: string[] }[] }).events ?? []).flatMap(ev => ev.concept_ids);
         return { kind: 'ok' as const, outcome: { kind: 'value' as const, value: { method_version: 'cognition@3',
@@ -281,6 +282,7 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       expect(memAfter.calibration).toMatchObject({ status: 'unknown', totalReconciliations: 0, confirmed: 0, missed: 0, recent: [] });
       const weakAfter = (memAfter as { weaknessSummary?: { status: string; sampleCount: number; neededCount: number; topErrorStages: unknown[]; priorityConcepts: unknown[] } }).weaknessSummary;
       expect(weakAfter).toMatchObject({ status: 'insufficient_evidence', sampleCount: 0, neededCount: 2, topErrorStages: [], priorityConcepts: [] });
+      expect(weakAfter!.priorityConcepts).toHaveLength(0);
 
       const aiAfter = (await get('/api/ai/activity')).body as { handoffs: { channel: string }[]; recentTools: unknown[] };
       expect(aiAfter.recentTools).toEqual([]);

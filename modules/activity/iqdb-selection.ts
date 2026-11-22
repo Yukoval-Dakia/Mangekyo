@@ -6,23 +6,20 @@ import { parseQuestionMetaDraft } from '@mangekyo/module-content/facts/question-
 import { object } from './values.ts';
 import { validateBankItem } from './question-assessment.ts';
 import { sourceQuestionRef, workbookRequestId } from './workbook-values.ts';
+import { textValue, unknownFieldsParser } from './validation.ts';
 
 const use = 'practice';
 
-function fields(value: Record<string, unknown>, ...keys: string[]) {
-  if (Object.keys(value).some(key => !keys.includes(key))) throw new Error('题库请求含有未声明字段。');
-}
+const disallowUnknownFields = unknownFieldsParser(() => new Error('题库请求含有未声明字段。'));
+const fields = (value: Record<string, unknown>, ...keys: readonly string[]) => disallowUnknownFields(value, keys);
 
 function list(value: unknown): readonly unknown[] {
   if (!Array.isArray(value)) throw new Error('题库选项须是列表。');
   return value;
 }
 
-function text(value: unknown, label: string) {
-  if (typeof value !== 'string' || !value.isWellFormed() || value.includes('\u0000') || !value.trim())
-    throw new Error(`${label}无效。`);
-  return value;
-}
+const text = (value: unknown, label: string): string =>
+  textValue(value, () => new Error(`${label}无效。`), { preserveWhitespace: true });
 
 function questionRef(input: unknown) {
   const row = object(input);

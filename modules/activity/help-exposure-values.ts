@@ -1,5 +1,6 @@
 import { commandId, factId, learnerId, type BusWitness, type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import { storagePurpose } from './library-values.ts';
+import { positiveRevision, recordParser, textValue, unknownFieldsParser } from './validation.ts';
 
 export const helpExposureType = 'activity.helpExposure';
 export const recordHelpExposureCommand = 'activity.recordHelpExposure';
@@ -41,29 +42,15 @@ export type HelpExposureEvent =
   | { readonly kind: 'assisted-completion'; readonly use: HelpRef; readonly answer: HelpAnswer }
   | { readonly kind: 'follow-up'; readonly display: HelpRef; readonly answer: HelpAnswer };
 
-function record(input: unknown): Record<string, unknown> {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('帮助事件须为对象。');
-  }
-  return input as Record<string, unknown>;
-}
-
-function allowFields(value: Record<string, unknown>, allowed: readonly string[]): void {
-  if (Object.keys(value).some(key => !allowed.includes(key))) {
-    throw new Error('帮助事件含有未声明字段。');
-  }
-}
+const record = recordParser(() => new Error('帮助事件须为对象。'));
+const allowFields = unknownFieldsParser(() => new Error('帮助事件含有未声明字段。'));
 
 function textId(value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) throw new Error('帮助事件缺少标识。');
-  return value;
+  return textValue(value, () => new Error('帮助事件缺少标识。'), { preserveWhitespace: true, storable: false });
 }
 
 function positiveInteger(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-    throw new Error('帮助版本与阶次须为正整数。');
-  }
-  return value;
+  return positiveRevision(value, () => new Error('帮助版本与阶次须为正整数。'));
 }
 
 function stepOrder(value: unknown, kind: unknown): number {

@@ -45,6 +45,10 @@ function alternatives(item: Item, criterion: AssessmentCriterion, releaseRef: As
   return parsedSets;
 }
 
+function answerAddress(item: Item, slot: NonNullable<Item['slots'][number]>, value: AssessmentAnswerValue) {
+  return { itemId: item.itemId, slotId: slot.slotId, schemaVersion: slot.schemaVersion, path: '', value };
+}
+
 export function validateBankItem(item: Item, releaseRef: AssessmentRevisionRef) {
   for (const criterion of item.criteria) {
     if (!isLocalQuestionCriterion(criterion)) throw new Error('题库评估方法当前不可用。');
@@ -114,23 +118,11 @@ export function frozenWorkbookSubmission(
       if (fieldKind === 'attachment') {
         const primary = attachments?.[0];
         if (!primary) return [];
-        return [{
-          itemId: item.itemId,
-          slotId: slot.slotId,
-          schemaVersion: slot.schemaVersion,
-          path: '',
-          value: { kind: 'attachment' as const, ref: { id: primary.originalId, rev: primary.rev } },
-        }];
+        return [answerAddress(item, slot, { kind: 'attachment' as const, ref: { id: primary.originalId, rev: primary.rev } })];
       }
       if (typeof answer !== 'string') return [];
       if (answer.length > 16_000) throw new Error('自动评估作答过长。');
-      return [{
-        itemId: item.itemId,
-        slotId: slot.slotId,
-        schemaVersion: slot.schemaVersion,
-        path: '',
-        value: { kind: 'text' as const, value: answer },
-      }];
+      return [answerAddress(item, slot, { kind: 'text' as const, value: answer })];
     }),
   }, release);
   for (const item of release.items) {

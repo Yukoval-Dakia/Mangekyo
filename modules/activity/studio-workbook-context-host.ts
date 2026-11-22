@@ -20,6 +20,7 @@ import { workspaceEntryType } from './workspace-values.ts';
 import { workbookCapsuleHandles } from './workbook-context-handles.ts';
 import type { WorkbookTraceProof } from './workbook-backtrace-values.ts';
 import { discoverWorkbookCapsules, type CapsuleHandle } from './workbook-capsules.ts';
+import type { FactReadChecks } from './evidence-read.ts';
 type Reader = Pick<ReadContext, 'fact'>;
 export type WorkbookQuestionWithContext = WorkbookQuestionView & { readingContext?: CapsuleHandle[] };
 export type WorkbookContextAuthority = {
@@ -27,7 +28,7 @@ export type WorkbookContextAuthority = {
   backtrace?: (tx: ReadTransaction, local: Reader, facts: any) =>
     (target: { paper: HelpRef; itemId: string; question: HelpRef; attemptRef?: HelpRef }) => Promise<readonly WorkbookTraceProof[] | null>;
 };
-export type StudioWorkbookContextDeps = {
+export type StudioWorkbookContextDeps = FactReadChecks & {
   readonly retentionPurpose: string;
   readonly stableId: (...parts: string[]) => string;
   readonly canonicalJsonString: (value: unknown) => string;
@@ -50,8 +51,6 @@ export type StudioWorkbookContextDeps = {
   readonly hooks: unknown;
   readonly db: unknown;
   readonly learner: ReadTransaction['learner'];
-  readonly isFactNotFound: (error: unknown) => boolean;
-  readonly isFactReadDenied: (error: unknown) => boolean;
 };
 const unavailable = (deps: Pick<StudioWorkbookContextDeps, 'isFactNotFound' | 'isFactReadDenied'>, error: unknown) =>
   deps.isFactNotFound(error) || deps.isFactReadDenied(error) ||

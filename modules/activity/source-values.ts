@@ -1,4 +1,5 @@
 import type {FactSnapshot} from '@mangekyo/kernel';
+import { optionalRecord } from './validation.ts';
 
 export type SourceAnchorV1 =
   | {readonly kind: 'whole'}
@@ -23,10 +24,7 @@ export function isSourceFactId(input: unknown): input is string {
   return typeof input === 'string' && /^[0-9A-HJKMNP-TV-Z]{26}$/.test(input);
 }
 
-function record(input: unknown): Record<string, unknown> | undefined {
-  return input && typeof input === 'object' && !Array.isArray(input)
-    ? input as Record<string, unknown> : undefined;
-}
+const record = optionalRecord;
 
 function offset(input: unknown): input is number {
   return typeof input === 'number' && Number.isSafeInteger(input) && input >= 0;

@@ -26,21 +26,21 @@ export type AiRunningTask = {
 
 export type AiHandoffChannel = 'night_chain' | 'research' | 'retention' | 'notion';
 
-export type AiHandoffItem = {
+type AiSummaryItem = {
   readonly id: string;
-  readonly channel: AiHandoffChannel;
-  readonly status: string;
   readonly title: string;
   readonly summary: string;
+};
+
+export type AiHandoffItem = AiSummaryItem & {
+  readonly channel: AiHandoffChannel;
+  readonly status: string;
   readonly tick: Tick;
   readonly basisCount: number;
   readonly href: string | null;
 };
 
-export type AiRecentToolTurn = {
-  readonly turnId: FactId;
-  readonly sessionId: FactId;
-  readonly caseId: string;
+export type AiRecentToolTurn = AiTurnIdentity & {
   readonly tick: Tick;
   readonly model: string;
   readonly tools: readonly string[];
@@ -48,6 +48,12 @@ export type AiRecentToolTurn = {
   readonly basisCount: number;
   readonly writeCount: number;
   readonly href: string;
+};
+
+type AiTurnIdentity = {
+  readonly turnId: FactId;
+  readonly sessionId: FactId;
+  readonly caseId: string;
 };
 
 export type AiUsageCall = {
@@ -85,13 +91,10 @@ export type AiProposalAction = {
   readonly body?: Record<string, unknown>;
 };
 
-export type AiPendingProposal = {
-  readonly id: string;
+export type AiPendingProposal = AiSummaryItem & {
   readonly kind: AiPendingProposalKind;
   readonly commandType: string;
   readonly status: 'pending';
-  readonly title: string;
-  readonly summary: string;
   readonly targetId: FactId | null;
   readonly createdTick: Tick;
   readonly actions: {
@@ -588,10 +591,7 @@ export async function readAiActivity(
   return { asOf, running, handoffs, recentTools, usage, pendingProposals };
 }
 
-export function projectTurnToolSummary(input: {
-  readonly turnId: FactId;
-  readonly sessionId: FactId;
-  readonly caseId: string;
+export function projectTurnToolSummary(input: AiTurnIdentity & {
   readonly classroom?: boolean;
   readonly value: unknown;
   readonly manifestFactIds: readonly string[];

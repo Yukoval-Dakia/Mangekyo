@@ -1,18 +1,18 @@
 import { factId, type FactSnapshot } from '@mangekyo/kernel';
 import { classroomTurn } from './classroom.ts';
 import { isSourceFactId } from './source-values.ts';
+import { recordParser, textValue } from './validation.ts';
 
 export const turnResearchPurpose = 'background-research';
 export const studyTurnType = 'activity.studyTurn';
 
 export function object(input: unknown): Record<string, unknown> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('记录格式无效');
-  return input as Record<string, unknown>;
+  return parseRecord(input);
 }
+
+const parseRecord = recordParser(() => new Error('记录格式无效'));
 function field(input: Record<string, unknown>, key: string, limit = 4000): string {
-  const value = input[key];
-  if (typeof value !== 'string' || !value.trim() || value.length > limit) throw new Error('记录字段无效');
-  return value;
+  return textValue(input[key], () => new Error('记录字段无效'), { limit, preserveWhitespace: true, storable: false });
 }
 export function studyMcpGrants(input: unknown) {
   if (input === undefined) return [];

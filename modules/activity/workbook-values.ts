@@ -9,6 +9,7 @@ import {
   type WorkbookQuestionAttachmentViews,
   type WorkbookQuestionAttachments,
 } from './workbook-attachments.ts';
+import { isStorable, recordParser, textValue, utcTimestamp } from './validation.ts';
 const pinnedPromptLimit = 8000;
 const pinnedAnswerLimit = 4000;
 export class WorkbookSourceMismatch extends Error {}
@@ -35,38 +36,30 @@ export type WorkbookSourceQuestionRef = {
   readonly id: string;
   readonly rev: Revision;
 };
-export type WorkbookNumericQuestion = {
+type WorkbookQuestionCore = {
   id: string;
-  kind: 'numeric';
   prompt: string;
+  explanation: string | null;
+  sourceQuestionRef?: WorkbookSourceQuestionRef;
+};
+export type WorkbookNumericQuestion = WorkbookQuestionCore & {
+  kind: 'numeric';
   answer: number;
   tolerance: number;
   unit: string | null;
-  explanation: string | null;
-  sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
-export type WorkbookExactQuestion = {
-  id: string;
+export type WorkbookExactQuestion = WorkbookQuestionCore & {
   kind: 'exact';
-  prompt: string;
   answers: string[];
   selfCheck: boolean;
-  explanation: string | null;
-  sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
-export type WorkbookRubricQuestion = {
-  id: string;
+export type WorkbookRubricQuestion = WorkbookQuestionCore & {
   kind: 'rubric';
-  prompt: string;
   rubric: string;
   rubricVersion: string;
-  explanation: string | null;
-  sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
-export type WorkbookBankQuestion = {
-  id: string;
+export type WorkbookBankQuestion = WorkbookQuestionCore & {
   kind: 'bank';
-  prompt: string;
   sourceQuestionRef: WorkbookSourceQuestionRef;
   sourceAccessEpoch: string;
   interaction?: JsonObject;
@@ -113,33 +106,7 @@ export type WorkbookPaper = {
 export function independentlyAuthoredPaper(paper: WorkbookPaper): boolean {
   return paper.materialId === null && paper.questions.every(question => !question.sourceQuestionRef);
 }
-export type WorkbookQuestionDraft = { sourceQuestionRef?: WorkbookSourceQuestionRef } & (
-  | {
-    kind: 'numeric';
-    prompt: string;
-    answer: number;
-    tolerance: number;
-    unit?: string | null;
-    explanation?: string | null;
-  }
-  | {
-    kind: 'exact';
-    prompt: string;
-    answers: string[];
-    selfCheck?: boolean;
-    explanation?: string | null;
-  }
-  | {
-    kind: 'rubric';
-    prompt: string;
-    rubric: string;
-    explanation?: string | null;
-  });
-export type WorkbookDraft = {
-  title: string;
-  materialId: string | null;
-  questions: WorkbookQuestion[];
-};
+export type WorkbookDraft = Omit<WorkbookPaper, 'savedAt' | 'assessmentRelease'>;
 export type WorkbookAnswer = number | string | null;
 export type WorkbookExpected =
   | { kind: 'numeric'; value: number; tolerance: number; unit: string | null }
@@ -284,13 +251,8 @@ export type WorkbookRubricAssessment = {
   reportedModel?: string;
 };
 export type WorkbookRubricAssessmentView = WorkbookRubricAssessment & { id: string };
-export type WorkbookAssessmentRequest = {
-  requestId: string;
-  questionId: string;
-  consent: typeof workbookAssessmentConsent;
-  publicSearchQuery?: string;
-  providerBaseUrl: string;
-};
+export type WorkbookAssessmentRequest = Pick<WorkbookRubricAssessment,
+  'requestId' | 'questionId' | 'publicSearchQuery' | 'providerBaseUrl'> & { consent: typeof workbookAssessmentConsent };
 export type WorkbookDetail = {
   id: string;
   revision?: Revision;
@@ -302,29 +264,16 @@ export type WorkbookDetail = {
   questions: WorkbookQuestionView[];
   attempts: WorkbookAttemptView[];
 };
-function record(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('试卷记录格式无效。');
-  }
-  return value as Record<string, unknown>;
-}
-function canStore(text: string): boolean {
-  return text.isWellFormed() && !text.includes('\u0000');
-}
-function text(value: unknown, label: string, limit: number, preserveWhitespace = false): string {
-  if (typeof value !== 'string') throw new Error(`${label}必须是文字。`);
-  const result = preserveWhitespace ? value : value.trim();
-  if (!result.trim() || result.length > limit || !canStore(result)) {
-    throw new Error(`${label}长度无效。`);
-  }
-  return result;
-}
+const record = recordParser(() => new Error('试卷记录格式无效。'));
+const text = (value: unknown, label: string, limit: number, preserveWhitespace = false): string =>
+  textValue(value, reason => new Error(reason === 'type' ? `${label}必须是文字。` : `${label}长度无效。`),
+    { limit, preserveWhitespace, trimBeforeStorage: !preserveWhitespace });
 function optionalText(value: unknown, label: string, limit: number): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'string') throw new Error(`${label}必须是文字。`);
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (trimmed.length > limit || !canStore(trimmed)) throw new Error(`${label}长度无效。`);
+  if (trimmed.length > limit || !isStorable(trimmed)) throw new Error(`${label}长度无效。`);
   return trimmed;
 }
 function numberValue(value: unknown, label: string): number {
@@ -339,15 +288,7 @@ function jsonObject(value: unknown): JsonObject {
   return row;
 }
 function timestamp(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
-    throw new Error(`${label}格式无效。`);
-  }
-  try {
-    if (new Date(value).toISOString() !== value) throw new Error();
-  } catch {
-    throw new Error(`${label}格式无效。`);
-  }
-  return value;
+  return utcTimestamp(value, () => new Error(`${label}格式无效。`), true);
 }
 function materialReference(value: unknown): string | null {
   if (value === undefined || value === null) return null;
@@ -439,10 +380,7 @@ function storedQuestion(value: unknown, index: number): WorkbookQuestion {
   if (typeof id !== 'string' || !questionIdPattern.test(id)) {
     throw new Error(`第 ${index + 1} 题标识无效。`);
   }
-  const parsed = draftQuestion({
-    ...row,
-    id: undefined,
-  }, index, true);
+  const parsed = draftQuestion({...row, id: undefined}, index, true);
   return { ...parsed, id };
 }
 export function workbookDraft(input: unknown, bank?: ReadonlyMap<number, WorkbookBankQuestion>): WorkbookDraft {

@@ -1,6 +1,7 @@
 import { commandId, factId, type CommandId, type FactId, type Tick } from '@mangekyo/kernel';
 import { helpRef, type HelpRef } from './help-exposure-values.ts';
 import { object } from './values.ts';
+import { optionalRecord, patternParser, textValue } from './validation.ts';
 
 export const saveOwnWordsTakeawayCommand = 'activity.saveOwnWordsTakeaway';
 export const withdrawOwnWordsTakeawayCommand = 'activity.withdrawOwnWordsTakeaway';
@@ -32,22 +33,12 @@ export type WithdrawOwnWordsTakeawayInput = {
   readonly token: CommandId;
 };
 
-function text(value: unknown): string {
-  if (typeof value !== 'string' || !value.isWellFormed() || !value.trim() || value.length > takeawayTextLimit) {
-    throw new Error('口诀须为 60 字以内的文字。');
-  }
-  return value;
-}
+export const text = (value: unknown): string =>
+  textValue(value, () => new Error('口诀须为 60 字以内的文字。'), { limit: takeawayTextLimit, preserveWhitespace: true });
 
-function requestId(value: unknown): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(value)) throw new Error('口诀请求标识无效。');
-  return value;
-}
+export const requestId = patternParser(/^[A-Za-z0-9_-]{8,100}$/, () => new Error('口诀请求标识无效。'));
 
-function itemId(value: unknown): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(value)) throw new Error('口诀题位无效。');
-  return value;
-}
+export const itemId = patternParser(/^[A-Za-z0-9_.-]{1,128}$/, () => new Error('口诀题位无效。'));
 
 function conceptWitness(value: unknown): OwnWordsConceptWitness {
   const row = object(value);
@@ -118,7 +109,7 @@ export function ownWordsClaim(
 }
 
 function fields(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  return optionalRecord(value);
 }
 
 export function isOwnWordsClaim(value: unknown, conceptId?: FactId, attemptId?: FactId,

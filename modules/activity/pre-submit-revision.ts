@@ -16,13 +16,15 @@ import {
   type WorkbookQuestion,
 } from './workbook-values.ts';
 
-export type PreSubmitRevisionCheck = {
-  readonly paperId: FactId;
-  readonly paperRev: Revision;
-  readonly paper: WorkbookPaper;
+export type PreSubmitRevisionCheck = PreSubmitPaperTarget & {
   readonly attemptId: FactId;
   readonly submittedAt: string;
   readonly candidateItemIds: readonly string[];
+};
+type PreSubmitPaperTarget = {
+  readonly paperId: FactId;
+  readonly paperRev: Revision;
+  readonly paper: WorkbookPaper;
 };
 
 export type PreSubmitRevisionWitness = {
@@ -71,10 +73,7 @@ export function candidatePreSubmitRevisedItems(params: {
   return candidates;
 }
 
-export async function resolveWorkbookPreSubmitRevised(read: ReadContext, params: {
-  readonly paperId: FactId;
-  readonly paperRev: Revision;
-  readonly paper: WorkbookPaper;
+export async function resolveWorkbookPreSubmitRevised(read: ReadContext, params: PreSubmitPaperTarget & {
   readonly attemptId: FactId;
   readonly data: WorkbookAttemptRequest;
   readonly gradedAnswers: Readonly<Record<string, WorkbookAnswer>>;

@@ -4,6 +4,7 @@ import {
   type Json, type ReadContext, type ReadTransaction, FactNotFoundError, createCommandReadContext,
 } from '@mangekyo/kernel';
 import { readPosttestIssuanceBirth } from './evidence-read.ts';
+import { factIdParser } from './validation.ts';
 import {
   insideFrozenPosttestWindow, closedPosttest, type RetentionWindow, issuePosttestCommand, posttestIssuance, posttestIssuanceType, posttestSubmissionType,
   retentionPaper, retentionPaperType, retentionTeachingPurpose,
@@ -127,10 +128,7 @@ export function requestInput<T>(parse: () => T, fail: RetentionFail): T {
   catch { fail(400, '保持预测请求格式无效。'); }
 }
 
-export function recordId(value: unknown) {
-  if (typeof value !== 'string') throw new Error('需要记录标识。');
-  return factId(value);
-}
+export const recordId = factIdParser(() => new Error('需要记录标识。'));
 
 export function afterFreeze(observation: {admittedAt: string; submittedAt: string}, window: RetentionWindow, effectiveTick: import('@mangekyo/kernel').Tick, fail: RetentionFail) {
   if (!insideFrozenPosttestWindow(observation as never, window, effectiveTick)) {

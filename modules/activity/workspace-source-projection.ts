@@ -79,14 +79,9 @@ export function displayOf(type: string, value: unknown): WorkspaceDisplay {
   };
 }
 
-type SourceProjection = {
-  title: string;
+type SourceProjection = Omit<WorkspaceDisplay, 'excerpt' | 'text'> & {
   content: string | number | null;
-  kind?: WorkspaceEntryKind;
-  tags?: readonly string[];
-  links?: readonly string[];
   blocks?: readonly {id:string; parentId:string | null; kind:TextbookBlockBody['kind']}[];
-  question?: {prompt:string; answer?:string; rubric?:string};
 };
 
 function sourceText(fact: FactSnapshot) {

@@ -15,6 +15,11 @@ export type ActivityEvidenceReadScope = {
     Promise<{ rows: readonly Row[] }>;
 };
 
+export type FactReadChecks = {
+  readonly isFactNotFound: (error: unknown) => boolean;
+  readonly isFactReadDenied: (error: unknown) => boolean;
+};
+
 const submissionCommands = {
   [workbookAttemptType]: submitWorkbookAttemptCommand,
   [posttestSubmissionType]: submitWorkbookAttemptCommand,

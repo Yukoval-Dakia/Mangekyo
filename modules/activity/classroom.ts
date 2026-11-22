@@ -1,4 +1,5 @@
 import { derivationId, factId, type DerivationId, type FactId, type Revision } from '@mangekyo/kernel';
+import { factIdParser, textValue } from './validation.ts';
 import { object, studyCurrentObjectSelection } from './values.ts';
 
 export const classroomType = 'activity.classroom';
@@ -18,8 +19,7 @@ export type ClassroomEvidence = {mountId: FactId; stateRev: number; assessmentId
 export class ClassroomConflict extends Error {}
 
 function boundedText(value: unknown, limit: number) {
-  if (typeof value !== 'string' || !value.trim() || value.length > limit) throw new Error('课堂文字无效。');
-  return value.trim();
+  return textValue(value, () => new Error('课堂文字无效。'), { limit, preserveWhitespace: false, storable: false });
 }
 
 export function classroomStart(raw: Record<string, unknown>) {
@@ -32,10 +32,7 @@ export function classroomStart(raw: Record<string, unknown>) {
     ...(currentObject === undefined ? {} : {currentObject: studyCurrentObjectSelection(currentObject)})};
 }
 
-function idField(value: unknown) {
-  if (typeof value !== 'string') throw new Error('课堂引用无效。');
-  return factId(value);
-}
+const idField = factIdParser(() => new Error('课堂引用无效。'));
 
 export function classroomFact(input: unknown): Classroom {
   const raw = object(input);

@@ -3,6 +3,7 @@ import { factId, type FactId, type Json, type JsonObject, type Revision } from '
 import type {
   AssessmentAnswerValue, AssessmentCriterion, AssessmentInputAddress, AssessmentRelease, AssessmentRevisionRef,
 } from '@mangekyo/module-content/facts/assessment';
+import { isPlainObject as plainObject, isPositiveRevision, isStorable as storable, textValue } from './validation.ts';
 export {
   assessmentPublicationInput, assessmentRelease,
   type AssessmentAnswerValue, type AssessmentCriterion, type AssessmentEvaluatorRef,
@@ -51,14 +52,6 @@ export type AssessmentResult = {
   readonly submissionRef: AssessmentRevisionRef;
   readonly outcomes: readonly AssessmentCriterionOutcome[];
 };
-export type LegacyAssessmentResult = {
-  readonly state: 'legacy-manual' | 'legacy-self-check';
-  readonly recordRef: AssessmentRevisionRef;
-};
-
-function plainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
-}
 
 function record(value: unknown, label: string, fields: readonly string[]): Record<string, unknown> {
   if (!plainObject(value) || Object.keys(value).some(key => !fields.includes(key))) {
@@ -72,14 +65,8 @@ function list(value: unknown, label: string, allowEmpty = false): unknown[] {
   return Array.from(value);
 }
 
-function storable(value: string): boolean {
-  return value.isWellFormed() && !value.includes('\u0000');
-}
-
-function text(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !storable(value) || !value.trim()) throw new Error(`${label}必须是非空文字。`);
-  return value;
-}
+const text = (value: unknown, label: string): string =>
+  textValue(value, () => new Error(`${label}必须是非空文字。`), { preserveWhitespace: true, storageBeforeLength: true });
 
 function token(value: unknown, label: string): string {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/.test(value)) throw new Error(`${label}无效。`);
@@ -106,7 +93,7 @@ function pointer(value: unknown): string {
 
 function revisionRef(value: unknown, label: string): AssessmentRevisionRef {
   const { id, rev } = record(value, label, ['id', 'rev']);
-  if (typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 1) throw new Error(`${label}须有固定修订。`);
+  if (!isPositiveRevision(rev)) throw new Error(`${label}须有固定修订。`);
   return { id: factId(text(id, label)), rev: rev as Revision };
 }
 
@@ -265,14 +252,6 @@ export function assessmentResult(value: unknown, release: AssessmentRelease, sub
     throw new Error('每项冻结标准都需要明确的结果状态。');
   }
   return { releaseRef, submissionRef, outcomes };
-}
-
-export function legacyAssessmentResult(value: unknown): LegacyAssessmentResult {
-  const row = record(value, '旧评估记录', ['state', 'recordRef']);
-  return {
-    state: choice(row.state, ['legacy-manual', 'legacy-self-check'], '旧评估状态'),
-    recordRef: revisionRef(row.recordRef, '旧评估记录'),
-  };
 }
 
 // A complete contract score. The rule sources remain on the release, and no school grade is inferred.
