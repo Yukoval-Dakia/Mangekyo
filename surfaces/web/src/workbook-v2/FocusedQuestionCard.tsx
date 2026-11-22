@@ -9,6 +9,7 @@ import type {
   PendingAttachment,
   ReviewAttachment,
   SavedTakeawayState,
+  WorkbookV2Assessment,
   WorkbookV2Feedback,
 } from './types.ts';
 import { ConfidenceSelector } from './ConfidenceSelector.tsx';
@@ -19,6 +20,14 @@ import {
   type UploadSummary,
 } from './QuestionAttachmentUploader.tsx';
 import { OwnWordsHint, OwnWordsTakeawayEditor, formatExpectedValue } from './OwnWordsTakeaway.tsx';
+import {
+  AssessTrigger,
+  MarkCorrectedButton,
+  RubricAssessmentCard,
+  verdictMeta,
+} from './RubricAssessmentCard.tsx';
+
+const RUBRIC_PLACEHOLDER = '请独立完成并结合题目思路核对。';
 
 function excerptOf(prompt: string, max = 60): string {
   const flat = prompt.replace(/\s+/g, ' ').trim();
@@ -39,6 +48,20 @@ function formatSubmittedAnswer(answer: string | number | null | undefined, fallb
   if (typeof answer === 'string' && answer.trim()) return answer.trim();
   if (fallback.trim()) return fallback.trim();
   return null;
+}
+
+// P2-3：参考答案为空或默认占位语时不展示「参考答案」区块。
+function showExpected(expected: string | WorkbookV2Feedback['expected'] | null | undefined): boolean {
+  if (expected === null || expected === undefined) return false;
+  if (typeof expected === 'string') {
+    const trimmed = expected.trim();
+    return trimmed !== '' && trimmed !== RUBRIC_PLACEHOLDER;
+  }
+  if (expected.kind === 'rubric') {
+    const trimmed = expected.rubric.trim();
+    return trimmed !== '' && trimmed !== RUBRIC_PLACEHOLDER;
+  }
+  return true;
 }
 
 export function FocusedQuestionCard({
@@ -64,6 +87,13 @@ export function FocusedQuestionCard({
   onSavedTakeawayChange,
   attemptId,
   attemptRev,
+  assessment,
+  assessEligible,
+  assessing,
+  onAssess,
+  correction,
+  correctionBusy,
+  onCorrect,
   submitted,
   disabled,
   onCite,
@@ -90,6 +120,13 @@ export function FocusedQuestionCard({
   onSavedTakeawayChange?: ((itemId: string, next: SavedTakeawayState | null) => void) | undefined;
   attemptId?: string | undefined;
   attemptRev?: number | undefined;
+  assessment?: WorkbookV2Assessment | undefined;
+  assessEligible?: boolean | undefined;
+  assessing?: boolean | undefined;
+  onAssess?: (() => void) | undefined;
+  correction?: { attemptRev: number; recorded: boolean } | undefined;
+  correctionBusy?: boolean | undefined;
+  onCorrect?: (() => void) | undefined;
   submitted: boolean;
   disabled?: boolean | undefined;
   onCite?: ((citation: CompanionCitation) => void) | undefined;
@@ -105,9 +142,13 @@ export function FocusedQuestionCard({
     [paperId, question.id, question.prompt, index],
   );
 
-  const verdict = feedback ? formatVerdict(feedback.result) : null;
+  const rubricVerdict = verdictMeta(assessment);
+  const corrected = correction?.recorded === true;
+  const verdict = corrected
+    ? { label: '已订正', tone: 'ok' as const }
+    : rubricVerdict ?? (feedback ? formatVerdict(feedback.result) : null);
   const shownAnswer = formatSubmittedAnswer(submittedAnswer ?? feedback?.answer, answer);
-  const formattedExpected = formatExpectedValue(feedback?.expected);
+  const formattedExpected = showExpected(feedback?.expected) ? formatExpectedValue(feedback?.expected) : null;
 
   return (
     <article className="wbv2-card" tabIndex={-1} data-wbv2-question-id={question.id} aria-label={`第 ${index + 1} 题，共 ${total} 题`}>
@@ -205,6 +246,19 @@ export function FocusedQuestionCard({
             </section>
           )}
           {reviewAttachments && reviewAttachments.length > 0 && <ReviewAttachmentWall attachments={reviewAttachments} />}
+          {assessment && <RubricAssessmentCard assessment={assessment} />}
+          {assessEligible && onAssess && (
+            <AssessTrigger assessing={assessing === true} onAssess={onAssess} />
+          )}
+          {correction && onCorrect && (
+            <div className="wbv2-correction-row">
+              <MarkCorrectedButton
+                busy={correctionBusy === true}
+                recorded={corrected}
+                onMark={onCorrect}
+              />
+            </div>
+          )}
           {attemptId && (
             <OwnWordsTakeawayEditor
               paperId={paperId}

@@ -47,7 +47,7 @@ function EvidenceDetails({ refs }: { refs: readonly WeaknessEvidenceRef[] }) {
       {open && (
         <ul className="memory-basis-list weak-evidence-list">
           {refs.map((ref, index) => (
-            <li key={`${ref.id}:${ref.rev}`}>
+            <li key={`${ref.id}:${ref.rev}:${ref.itemId ?? index}`}>
               {ref.href ? (
                 <a className="text-button weak-evidence-link" href={ref.href}>
                   {evidenceLabel(ref, index)}

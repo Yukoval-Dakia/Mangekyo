@@ -73,20 +73,22 @@ export function MeSurface(props: MeSurfaceProps) {
         </div>
       </header>
 
-      <nav className="me-v2-tabs" aria-label="我的表面分区">
-        {ME_SECTIONS.map(item => (
-          <button
-            key={item.id}
-            type="button"
-            aria-pressed={item.id === section}
-            aria-label={item.label}
-            title={item.hint}
-            onClick={() => setSection(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
+      <div className="me-v2-tabs-wrap">
+        <nav className="me-v2-tabs" aria-label="我的表面分区">
+          {ME_SECTIONS.map(item => (
+            <button
+              key={item.id}
+              type="button"
+              aria-pressed={item.id === section}
+              aria-label={item.label}
+              title={item.hint}
+              onClick={() => setSection(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </div>
 
       <p className="me-v2-hint">{active.hint}</p>
 

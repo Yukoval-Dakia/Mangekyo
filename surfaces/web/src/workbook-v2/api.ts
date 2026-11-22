@@ -113,6 +113,44 @@ export function loadPreSubmitPitfalls(paperId: string, signal?: AbortSignal) {
   });
 }
 
+// ---------- Rubric 批改 + 错题订正（契约见 runtime/studio workbook.ts） ----------
+export type AssessmentRoute = {
+  providerId: string;
+  model: string;
+  protocol: string;
+  baseUrl: string;
+  reasoningEffort: string;
+};
+
+export function assessRubric(
+  paperId: string,
+  attemptId: string,
+  body: {
+    requestId: string;
+    questionId: string;
+    consent: 'send-question-answer-rubric';
+    providerBaseUrl: string;
+    route?: AssessmentRoute;
+    publicSearchQuery?: string;
+  },
+) {
+  return api<WorkbookV2Detail>(
+    `/papers/${enc(paperId)}/attempts/${enc(attemptId)}/assessments`,
+    { method: 'POST', body },
+  );
+}
+
+export function markCorrected(
+  paperId: string,
+  attemptId: string,
+  body: { requestId: string; attemptRev: number; itemId: string },
+) {
+  return api<unknown>(
+    `/papers/${enc(paperId)}/attempts/${enc(attemptId)}/corrections`,
+    { method: 'POST', body },
+  );
+}
+
 // ---------- 能力 22 · 自留口诀 ----------
 export function saveTakeaway(
   paperId: string,
