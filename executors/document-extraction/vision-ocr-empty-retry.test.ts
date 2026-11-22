@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import sharp from 'sharp';
-import { extractPhotoWithVisionOrFallback, type PhotoVisionExtractionInput, type VisionLlmConfig } from './vision-ocr.ts';
+import { extractPhotoWithVisionOrFallback, readVisionLlmConfigFromEnv, type PhotoVisionExtractionInput, type VisionLlmConfig } from './vision-ocr.ts';
 const png = () => sharp({ create: { width: 8, height: 8, channels: 3, background: '#fff' } }).png().toBuffer();
 const reply = (content: string, finishReason = 'stop') =>
   Response.json({ choices: [{ message: { content }, finish_reason: finishReason }] });
@@ -9,6 +9,12 @@ const base = async (visionConfig: VisionLlmConfig = { baseUrl: 'https://v.test',
   ({ bytes: await png(), storedPath: 'x.png', textLimit: 500, visionConfig,
     fallbackExtractLocal: vi.fn(async () => ({ status: 'ok' })) as never });
 const tokens = (call: unknown[]) => JSON.parse(String((call[1] as RequestInit).body)).max_tokens as number;
+it('clamps the vision OCR timeout override and keeps invalid values unset', () => {
+  const read = (value: string | undefined) =>
+    readVisionLlmConfigFromEnv({ MANGEKYO_VISION_OCR_BASE_URL: 'https://v.test', MANGEKYO_VISION_OCR_MODEL: 'm', MANGEKYO_VISION_OCR_TIMEOUT_MS: value });
+  for (const [value, timeout] of [['300000', 300000], ['1', 1000], ['999999', 600000], ['', undefined], ['bad', undefined]] as const)
+    expect(read(value)?.timeoutMs).toBe(timeout);
+});
 it('retries once on empty content and returns vision_llm', async () => {
   const send = vi.fn().mockResolvedValueOnce(reply('')).mockResolvedValueOnce(reply(okJson));
   const result = await extractPhotoWithVisionOrFallback({ ...(await base()), fetch: send });
