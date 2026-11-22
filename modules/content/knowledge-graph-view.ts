@@ -8,6 +8,7 @@ import {
 import {
   AssetBasisError,
   assetType,
+  isPurposeWidenedContinuation,
   parseAsset,
   textbookPageFrom,
   textbookPageType,
@@ -373,8 +374,10 @@ async function verifyTransitiveBasis(
     if (visited.size >= maxBasisFacts) throw new AssetBasisError('资产依据链超过上限。');
     visited.add(visitKey);
 
-    const opened = await scoped.fact(entry.id, { mode: 'pinned', rev: entry.rev });
-    if (opened.type !== entry.type || opened.accessEpoch !== entry.epoch) {
+    const pinned = await scoped.fact(entry.id, { mode: 'pinned', rev: entry.rev });
+    const opened = pinned.accessEpoch === entry.epoch ? pinned
+      : await isPurposeWidenedContinuation(scoped, pinned, entry.epoch);
+    if (!opened || opened.type !== entry.type) {
       throw new AssetBasisError('教材或资产依据已变更。');
     }
     if (opened.type === assetType) {
@@ -494,14 +497,21 @@ async function verifyProposal(
     try {
       const proof = witnessSet();
       const scoped = reading(read, proof);
-      const opened = ref.mode === 'pinned'
+      const first = ref.mode === 'pinned'
         ? await scoped.fact(ref.id, { mode: 'pinned', rev: ref.rev, requirePurpose: purpose })
         : await scoped.fact(ref.id, { mode: 'following' });
-      if (opened.ref.learner !== access.learner ||
-          opened.ref.id !== ref.id ||
-          opened.ref.rev !== ref.rev ||
-          opened.type !== ref.type ||
-          opened.accessEpoch !== ref.accessEpoch) {
+      // A recorded witness survives a pure monotone purpose widening; the chain
+      // check re-reads the recorded rev and follows each hop to current.
+      const exact = first.ref.rev === ref.rev && first.accessEpoch === ref.accessEpoch;
+      const widened = !exact
+        ? await isPurposeWidenedContinuation(scoped,
+            first.ref.rev === ref.rev ? first
+              : await scoped.fact(ref.id, { mode: 'pinned', rev: ref.rev, requirePurpose: purpose }),
+            ref.accessEpoch)
+        : undefined;
+      const opened = exact ? first : widened;
+      if (!opened || opened.ref.learner !== access.learner ||
+          opened.ref.id !== ref.id || opened.type !== ref.type) {
         return undefined;
       }
       if (opened.type === assetType || opened.type === textbookPageType) {
@@ -761,7 +771,9 @@ export async function readKnowledgeGraphView(
       const project = async (endpoint: KnowledgeEndpoint) => {
         if (!isKnowledgeEntityKind(endpoint.kind)) return endpoint;
         const fact = basisFacts.find(candidate =>
-          candidate.ref.id === endpoint.sourceUse.id && candidate.ref.rev === endpoint.sourceUse.rev);
+          candidate.ref.id === endpoint.sourceUse.id && candidate.ref.rev === endpoint.sourceUse.rev) ??
+          basisFacts.find(candidate =>
+            candidate.ref.id === endpoint.sourceUse.id && candidate.ref.rev > endpoint.sourceUse.rev);
         if (!fact || fact.type !== assetType) throw new KnowledgeEdgeBasisError('图谱端点类型不符。');
         const opened = await openKnowledgeEntity(scoped, fact.ref.id);
         if (opened.entity.kind !== endpoint.kind || opened.snapshot.ref.learner !== access.learner ||

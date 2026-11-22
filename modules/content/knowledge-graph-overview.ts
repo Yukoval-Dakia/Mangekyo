@@ -3,7 +3,7 @@ import { AssetBasisError, assetType, checkTextbookBasis, parseAsset } from './as
 import { evolveGraphCommand, parseGraphEvolution } from './graph-evolution.ts';
 import {
   createKnowledgeEdgeCommand, KnowledgeEdgeBasisError, knowledgeEdgeType, knowledgeEndpointKind,
-  knowledgeUseKey, openKnowledgeWalkEdge, parseEdgeEvidence, parseEdgeWrite, readKnowledgeUse,
+  openKnowledgeWalkEdge, parseEdgeEvidence, parseEdgeWrite, readKnowledgeUse,
   verifyKnowledgeEdge, workspaceEntryType, type KnowledgeEdgeKind, type KnowledgeEndpoint, type KnowledgeSourceUse,
 } from './knowledge-edge.ts';
 import { openKnowledgeEntity } from './knowledge-entity.ts';
@@ -440,11 +440,11 @@ export async function readAuthorizedKnowledgeGraph(
           if (!await verifyNotion(access, fact)) { notionOk = false; break; }
         }
         if (!notionOk) continue;
-        const byKey = new Map(opened.map(fact => [knowledgeUseKey({
-          id: fact.ref.id, rev: fact.ref.rev, accessEpoch: fact.accessEpoch,
-        }), fact]));
-        const fromFact = byKey.get(knowledgeUseKey(edge.from.sourceUse));
-        const toFact = byKey.get(knowledgeUseKey(edge.to.sourceUse));
+        const lookup = (use: KnowledgeSourceUse) =>
+          opened.find(fact => fact.ref.id === use.id && fact.ref.rev === use.rev) ??
+          opened.find(fact => fact.ref.id === use.id && fact.ref.rev > use.rev);
+        const fromFact = lookup(edge.from.sourceUse);
+        const toFact = lookup(edge.to.sourceUse);
         if (!fromFact || !toFact || knowledgeEndpointKind(fromFact) !== edge.from.kind || knowledgeEndpointKind(toFact) !== edge.to.kind) continue;
         const fromId = aliasToCanonical.get(fromFact.ref.id) ?? fromFact.ref.id;
         const toId = aliasToCanonical.get(toFact.ref.id) ?? toFact.ref.id;

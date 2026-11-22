@@ -1,5 +1,5 @@
 import { factId, type Edge, type FactId, type FactSnapshot, type Revision, type Tick } from '@mangekyo/kernel';
-import { assetType, checkTextbookBasis, openAssetReference, parseAsset, type AssetReadContext } from './asset.ts';
+import { assetType, checkTextbookBasis, isPurposeWidenedContinuation, openAssetReference, parseAsset, type AssetReadContext } from './asset.ts';
 import { openKnowledgeEntity } from './knowledge-entity.ts';
 import { fields, key, list, pageId, record, revision, text } from './parse.ts';
 
@@ -231,8 +231,18 @@ export function knowledgeUseKey(use: KnowledgeSourceUse): string {
 export async function readKnowledgeUse(ctx: AssetReadContext, use: KnowledgeSourceUse, requirePurpose?: string): Promise<FactSnapshot> {
   const fact = await ctx.read.fact(use.id, { mode: 'pinned', rev: use.rev,
     ...(requirePurpose === undefined ? {} : { requirePurpose }) });
-  if (fact.ref.learner !== ctx.learner || fact.ref.id !== use.id || fact.ref.rev !== use.rev || fact.accessEpoch !== use.accessEpoch) {
+  if (fact.ref.learner !== ctx.learner || fact.ref.id !== use.id || fact.ref.rev !== use.rev) {
     throw new KnowledgeEdgeBasisError('来源访问代次已经变化。');
+  }
+  if (fact.accessEpoch !== use.accessEpoch) {
+    // A pure monotone purpose widening (set_purpose) bumps rev and accessEpoch
+    // together while keeping the data identical; follow the chain and reopen
+    // the latest revision so downstream projections see the current endpoint.
+    const widened = await isPurposeWidenedContinuation(ctx.read, fact, use.accessEpoch);
+    if (!widened || (requirePurpose !== undefined && !widened.purpose.includes(requirePurpose) && !widened.purpose.includes('all'))) {
+      throw new KnowledgeEdgeBasisError('来源访问代次已经变化。');
+    }
+    return widened;
   }
   return fact;
 }
@@ -296,7 +306,8 @@ async function projectKnowledgeEndpoint(ctx: AssetReadContext, endpoint: Knowled
 
 async function projectKnowledgeEdge(ctx: AssetReadContext, edge: KnowledgeEdge, basis: readonly FactSnapshot[]) {
   const project = (endpoint: KnowledgeEndpoint) => projectKnowledgeEndpoint(ctx, endpoint,
-    basis.find(fact => fact.ref.id === endpoint.sourceUse.id && fact.ref.rev === endpoint.sourceUse.rev)!);
+    basis.find(fact => fact.ref.id === endpoint.sourceUse.id && fact.ref.rev === endpoint.sourceUse.rev) ??
+    basis.find(fact => fact.ref.id === endpoint.sourceUse.id && fact.ref.rev > endpoint.sourceUse.rev)!);
   return { ...edge, from: await project(edge.from), to: await project(edge.to) };
 }
 
