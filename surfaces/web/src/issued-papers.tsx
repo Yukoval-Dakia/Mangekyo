@@ -124,8 +124,8 @@ export default function IssuedPapers({embedded = false}: {embedded?: boolean}) {
           {data.issued.map(item => <option key={item.issuanceId} value={item.issuanceId}>{item.title} · {item.pageCount} 页 · {item.issuanceId}</option>)}
         </select></label> : <p className="issued-empty">当前没有可读取的发行记录。</p>}
         {issued && <div className="study-actions">
-          <button className="tonal-button" onClick={() => void execute(() => reprint(false))}>查看冻结卷面</button>
-          <button className="primary-button" onClick={() => void execute(() => reprint(true))}>重印或存为 PDF</button>
+          <button className="tonal-button" disabled={busy} onClick={() => void execute(() => reprint(false))}>查看冻结卷面</button>
+          <button className="primary-button" disabled={busy} onClick={() => void execute(() => reprint(true))}>重印或存为 PDF</button>
         </div>}
       </section>}
       {issued && <section className="issued-panel">
@@ -156,7 +156,7 @@ export default function IssuedPapers({embedded = false}: {embedded?: boolean}) {
             <option value="">选择已交入的答卷原图</option>
             {originals.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
           </select></label>
-          <button className="tonal-button" disabled={!selected || !page} onClick={() => void execute(collect)}>确认并回收本页</button>
+          <button className="tonal-button" disabled={!selected || !page || busy} onClick={() => void execute(collect)}>确认并回收本页</button>
           {receipt && <p role="status">已回收第 {receipt.page} 页 · 作答 {receipt.runId} · 第 {receipt.rev} 版。独立性未知。</p>}
         </> : <p className="issued-empty">当前没有获准回收的答卷原图。</p>}
       </section>}
