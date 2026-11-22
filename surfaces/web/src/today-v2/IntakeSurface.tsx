@@ -37,6 +37,7 @@ export type IntakeFeedEntry = {
   title: string;
   mediaType?: string;
   thumbnailUrl?: string;
+  pageCount?: number;
   status: IntakeStatus;
   savedAt?: string;
   preview?: string;
@@ -57,6 +58,8 @@ export type IntakeSurfaceProps = {
 };
 
 const INTAKE_LIMIT_BYTES = 25 * 1024 * 1024;
+const INTAKE_MAX_PAGES = 6;
+const INTAKE_MULTI_PAGE_TOTAL_BYTES = 60 * 1024 * 1024;
 const ACCEPTED_FILE_TYPES =
   '.pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,.avif,.tif,.tiff,.txt,.md,.markdown';
 const VISION_OCR_MEDIA_TYPES = new Set([
@@ -70,6 +73,20 @@ const VISION_OCR_MEDIA_TYPES = new Set([
 ]);
 const LINK_PATTERN = /^https?:\/\/\S+$/i;
 const PURPOSE_STORAGE_KEY = 'today-v2:intake-default-purpose';
+
+type PendingPage = {
+  readonly file: File;
+  readonly previewUrl: string;
+};
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error ?? new Error('无法读取图片预览。'));
+    reader.readAsDataURL(file);
+  });
+}
 
 function statusFromMetadata(metadata: IntakeMetadata): IntakeStatus {
   const extractionStatus = metadata.extraction?.status;
@@ -96,6 +113,12 @@ function entryFromMetadata(
     : undefined;
   const purpose: IntakePurpose = metadata.backgroundResearch === 'private' ? 'save-only' : 'learning';
   const questionCount = metadata.questionCards?.length ?? metadata.extraction?.drafts?.questions.length ?? 0;
+  const pageCount =
+    typeof metadata.pageCount === 'number' && metadata.pageCount > 1
+      ? metadata.pageCount
+      : metadata.originals && metadata.originals.length > 1
+        ? metadata.originals.length
+        : undefined;
 
   return {
     id: metadata.id,
@@ -106,6 +129,7 @@ function entryFromMetadata(
     revision: metadata.revision,
     canRetryVision: metadata.canRetryVision === true,
     questionCount,
+    ...(pageCount ? { pageCount } : {}),
     ...(mediaType ? { mediaType } : {}),
     ...(thumbnailUrl ? { thumbnailUrl } : {}),
     ...(fallback.savedAt ? { savedAt: fallback.savedAt } : {}),
@@ -191,7 +215,12 @@ function FeedRow({
   const href = entry.href ?? materialPath(entry.id);
   const timeText = formatFeedTime(entry.savedAt);
   const sizeText = formatFileSize(entry.sizeBytes);
-  const metaParts = [timeText, mediaKindLabel(entry.mediaType, isLink), sizeText].filter(Boolean);
+  const metaParts = [
+    timeText,
+    mediaKindLabel(entry.mediaType, isLink),
+    sizeText,
+    entry.pageCount ? `共 ${entry.pageCount} 页` : undefined,
+  ].filter(Boolean);
   const cleanPreview =
     entry.preview && !isTechnicalIdentifier(entry.preview) ? entry.preview.slice(0, 110) : '';
 
@@ -276,22 +305,14 @@ export function IntakeSurface({
   );
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [retryErrors, setRetryErrors] = useState<Readonly<Record<string, string>>>({});
+  const [pendingPages, setPendingPages] = useState<readonly PendingPage[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const objectUrlsRef = useRef<Set<string>>(new Set());
 
   const purpose: IntakePurpose = defaultPurpose ?? localPurpose;
 
   useEffect(() => {
     if (defaultPurpose) setLocalPurpose(defaultPurpose);
   }, [defaultPurpose]);
-
-  useEffect(() => {
-    const urls = objectUrlsRef.current;
-    return () => {
-      for (const url of urls) URL.revokeObjectURL(url);
-      urls.clear();
-    };
-  }, []);
 
   useEffect(() => {
     if (feed) return;
@@ -498,15 +519,8 @@ export function IntakeSurface({
         }
       }
 
-      let localPreviewUrl: string | undefined;
-      if (file.type.startsWith('image/') && typeof URL.createObjectURL === 'function') {
-        localPreviewUrl = URL.createObjectURL(file);
-        objectUrlsRef.current.add(localPreviewUrl);
-      }
-
       const nextEntry = entryFromMetadata(metadata, {
         savedAt: '刚刚',
-        ...(localPreviewUrl ? { localPreviewUrl } : {}),
       });
       setMaterials((current) => {
         const deduped = (current ?? []).filter((item) => item.id !== nextEntry.id);
@@ -625,17 +639,160 @@ export function IntakeSurface({
     }
   }
 
+  function addPendingPages(files: readonly File[]) {
+    setError('');
+    setNotice('');
+    const images = files.filter(item => item.type.startsWith('image/'));
+    const rejected = files.length - images.length;
+    if (rejected > 0) {
+      setError(`已忽略 ${rejected} 份非图片文件；多页合并仅支持照片，PDF 或文本请单独交入。`);
+    }
+    if (images.length === 0) return;
+    const usable = images.filter(item => item.size > 0 && item.size <= INTAKE_LIMIT_BYTES);
+    if (usable.length < images.length) {
+      setError('单张照片需在 25 MB 以内，已先收下合规的照片。');
+    }
+    if (usable.length === 0) return;
+    void Promise.all(
+      usable.map(async (file) => ({
+        file,
+        previewUrl: await readFileAsDataUrl(file).catch(() => ''),
+      })),
+    ).then((loaded) => {
+      setPendingPages((current) => {
+        const space = INTAKE_MAX_PAGES - current.length;
+        if (space <= 0) {
+          setError(`一份试卷最多合并 ${INTAKE_MAX_PAGES} 页照片。`);
+          return current;
+        }
+        if (loaded.length > space) {
+          setError(`最多再补 ${space} 页，已先收前 ${space} 张；其余照片请另开一份。`);
+        }
+        return [...current, ...loaded.slice(0, space)];
+      });
+    });
+  }
+
+  function movePendingPage(index: number, offset: -1 | 1) {
+    setPendingPages(current => {
+      const target = index + offset;
+      if (index < 0 || target < 0 || index >= current.length || target >= current.length) return current;
+      const next = current.slice();
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item!);
+      return next;
+    });
+  }
+
+  function removePendingPage(index: number) {
+    setPendingPages(current => current.filter((_, position) => position !== index));
+  }
+
+  async function submitPendingPages() {
+    if (busy || pendingPages.length === 0) return;
+    const files = pendingPages.map(item => item.file);
+    const total = files.reduce((sum, item) => sum + item.size, 0);
+    if (files.some(item => !item.type.startsWith('image/'))) {
+      setError('多页合并仅支持照片。');
+      return;
+    }
+    if (files.length > INTAKE_MAX_PAGES) {
+      setError(`一份试卷最多合并 ${INTAKE_MAX_PAGES} 页照片。`);
+      return;
+    }
+    if (total > INTAKE_MULTI_PAGE_TOTAL_BYTES) {
+      setError('多页合并总大小超过 60 MB，请先压缩或分批交入。');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setNotice('');
+    const request = submissionId();
+    try {
+      if (!navigator.onLine) {
+        setError('多页合并需要联网，请在连接后重试。');
+        return;
+      }
+      const watermark = bindDeletionWatermark(request);
+      await synchronizeDeletion();
+      const form = new FormData();
+      form.set('extraction', purpose === 'learning' ? 'vision_llm' : 'local');
+      form.set('requestId', request);
+      form.set('deletionWatermark', watermark);
+      form.set('title', '');
+      for (const file of files) form.append('files', file);
+      const response = await fetch('/api/intake', { method: 'POST', body: form });
+      verifyGenerationReceipt(response, watermark);
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        if (response.status === 410 || failure?.code === 'deletion_watermark_stale') {
+          throw new ApiError(response.status, '删除状态已变化，请重新选择文件再交入。', failure?.code);
+        }
+        throw new ApiError(
+          response.status,
+          typeof failure?.error === 'string' ? failure.error : '交入未确认，请再试一次。',
+          typeof failure?.code === 'string' ? failure.code : undefined,
+        );
+      }
+      let metadata = (await response.json()) as IntakeMetadata;
+      if (!metadata?.id) throw new Error('交入回执不完整。');
+      if (purpose === 'learning' && metadata.backgroundResearch === 'private') {
+        try {
+          metadata = await api<IntakeMetadata>(
+            `/materials/${encodeURIComponent(metadata.id)}/research-permission`,
+            { method: 'PUT', body: { expectedRev: metadata.revision, enabled: true } },
+          );
+        } catch {
+          // Keep the actual backend state honestly if the permission update did not settle.
+        }
+      }
+      const nextEntry = entryFromMetadata(metadata, { savedAt: '刚刚' });
+      setMaterials((current) => {
+        const deduped = (current ?? []).filter((item) => item.id !== nextEntry.id);
+        return [nextEntry, ...deduped].slice(0, maxHistory);
+      });
+      setPendingPages([]);
+      setNotice(
+        nextEntry.status === 'organizing'
+          ? `「${nextEntry.title}」共 ${files.length} 页已交入，正在后台逐页识别。`
+          : `「${nextEntry.title}」共 ${files.length} 页已收进材料库。`,
+      );
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError && failure.message
+          ? failure.message
+          : '交入结果尚未确认，请核对下方历史或重试。',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleDroppedFiles(files: readonly File[]) {
+    const images = files.filter(item => item.type.startsWith('image/'));
+    if (files.length === 0) return;
+    if (images.length === 0 && files.length === 1) {
+      void submitFile(files[0]!);
+      return;
+    }
+    if (images.length > 0) {
+      addPendingPages(images);
+      return;
+    }
+    setError('一次多份材料时，仅照片可合并为一卷；PDF 或文本请单独交入。');
+  }
+
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     setDragOver(false);
-    const file = event.dataTransfer?.files?.[0];
-    if (file) void submitFile(file);
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    handleDroppedFiles(files);
   }
 
   function handleFilePick(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (file) void submitFile(file);
+    const files = Array.from(event.target.files ?? []);
     event.target.value = '';
+    handleDroppedFiles(files);
   }
 
   function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -696,6 +853,7 @@ export function IntakeSurface({
             ref={fileInputRef}
             type="file"
             accept={ACCEPTED_FILE_TYPES}
+            multiple
             hidden
             onChange={handleFilePick}
           />
@@ -720,6 +878,86 @@ export function IntakeSurface({
           )}
           <span className="tv2-drop-formats">PNG / JPEG / WebP / PDF / 文本 · ≤ 25 MB</span>
         </div>
+
+        {pendingPages.length > 0 && (
+          <div className="tv2-pages" aria-label="多页试卷待交入队列">
+            <div className="tv2-pages-head">
+              <strong>多页试卷 · 共 {pendingPages.length} 页</strong>
+              <span className="tv2-muted">按页序合并为一份试卷；顺序即第 1..{pendingPages.length} 页</span>
+            </div>
+            <ul className="tv2-pages-list">
+              {pendingPages.map((item, index) => (
+                <li key={`${item.file.name}-${index}`} className="tv2-pages-item">
+                  <span className="tv2-pages-thumb" aria-hidden="true">
+                    {item.previewUrl ? (
+                      <img src={item.previewUrl} alt="" />
+                    ) : (
+                      <span className="tv2-pages-thumb-empty">P{index + 1}</span>
+                    )}
+                  </span>
+                  <span className="tv2-pages-copy">
+                    <strong>P{index + 1} · {item.file.name}</strong>
+                    <small className="tv2-muted">{formatFileSize(item.file.size) ?? `${item.file.size} B`}</small>
+                  </span>
+                  <span className="tv2-pages-tools">
+                    <button
+                      type="button"
+                      disabled={busy || index === 0}
+                      aria-label={`上移第 ${index + 1} 页`}
+                      onClick={() => movePendingPage(index, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || index === pendingPages.length - 1}
+                      aria-label={`下移第 ${index + 1} 页`}
+                      onClick={() => movePendingPage(index, 1)}
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      aria-label={`移除第 ${index + 1} 页`}
+                      onClick={() => removePendingPage(index)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="tv2-pages-foot">
+              {pendingPages.length < INTAKE_MAX_PAGES && (
+                <button
+                  type="button"
+                  className="tv2-btn tv2-btn--tonal"
+                  disabled={busy}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  + 继续加页（当前 {pendingPages.length}/{INTAKE_MAX_PAGES} 页）
+                </button>
+              )}
+              <button
+                type="button"
+                className="tv2-btn tv2-btn--primary"
+                disabled={busy || pendingPages.length === 0}
+                onClick={() => void submitPendingPages()}
+              >
+                {busy ? '正在交入…' : `合并交入这 ${pendingPages.length} 页试卷`}
+              </button>
+              <button
+                type="button"
+                className="tv2-btn tv2-btn--ghost"
+                disabled={busy}
+                onClick={() => setPendingPages([])}
+              >
+                清空
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="tv2-privacy-bar" role="region" aria-label="隐私与默认用途">
           <div className="tv2-privacy-copy">

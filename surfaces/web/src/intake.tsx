@@ -39,11 +39,24 @@ export type IntakeMetadata = {
         redInk: IntakeQuestionCard['redPenMark'];
         unclearSegments: readonly string[];
         conceptTags?: readonly string[];
+        pageNumber?: number;
       }[];
     };
   };
   questionCards?: readonly IntakeQuestionCard[];
   original: { name: string; mediaType: string; size: number; sha256: string };
+  originals?: readonly { readonly page: number; readonly name: string; readonly mediaType: string; readonly size: number; readonly sha256: string }[];
+  pageCount?: number | null;
+  pageExtractions?: readonly {
+    readonly page: number;
+    readonly status: 'pending' | 'ready' | 'fallback' | 'failed';
+    readonly method: 'vision_llm' | 'vision_fallback';
+    readonly text: string;
+    readonly error: string | null;
+    readonly warnings: readonly string[];
+    readonly questionCount: number;
+  }[];
+  retryableVisionPages?: readonly number[];
   corrected: boolean;
   backgroundResearch?: 'allowed' | 'private' | 'all';
   requestedExtraction?: 'mineru' | 'vision_llm';
@@ -110,6 +123,16 @@ function typeLabel(mediaType: string) {
   return mediaType === 'text/markdown' ? 'Markdown' : '文本';
 }
 
+function pageStatusLabel(
+  status: 'pending' | 'ready' | 'fallback' | 'failed',
+  questionCount: number | undefined,
+) {
+  if (status === 'pending') return '识别中';
+  if (status === 'ready') return `已识别${typeof questionCount === 'number' && questionCount > 0 ? ` · ${questionCount} 题` : ''}`;
+  if (status === 'fallback') return '基础回退';
+  return '识别失败';
+}
+
 const maxConceptTags = 6;
 
 function normalizeConceptTags(tags: readonly string[] | undefined) {
@@ -141,6 +164,7 @@ function questionCardsFromMetadata(metadata: IntakeMetadata): readonly IntakeQue
       conceptTags: normalizeConceptTags(question.conceptTags),
       isRedPenError,
       unclearNotice: unclearParts.length > 0 ? unclearParts.join('；') : null,
+      ...(question.pageNumber !== undefined ? { pageNumber: question.pageNumber } : {}),
       defaultSelected: isRedPenError,
     };
   });
@@ -415,6 +439,13 @@ function OriginalDetails({
   const [researchError, setResearchError] = useState('');
   const [retryVisionBusy, setRetryVisionBusy] = useState(false);
   const [retryVisionError, setRetryVisionError] = useState('');
+  const [pageRetryError, setPageRetryError] = useState('');
+  const [retryingPage, setRetryingPage] = useState<number | null>(null);
+  const [activePage, setActivePage] = useState(1);
+  const [pageImageFailed, setPageImageFailed] = useState<ReadonlySet<number>>(new Set());
+  const [appendBusy, setAppendBusy] = useState(false);
+  const [appendError, setAppendError] = useState('');
+  const appendInput = useRef<HTMLInputElement>(null);
   const correctionIntent = useRef<{ text: string; revision: number; requestId: string } | null>(null);
   const reportedQuestionCards = useRef<string | null>(null);
   const questionCardCount = metadata ? questionCardsFromMetadata(metadata).length : 0;
@@ -532,6 +563,92 @@ function OriginalDetails({
     }
   }
 
+  async function retryVisionPage(page: number) {
+    if (!metadata || retryingPage !== null || retryVisionBusy) return;
+    setRetryingPage(page);
+    setPageRetryError('');
+    try {
+      const value = await api<IntakeMetadata>(`/materials/${encodeURIComponent(metadata.id)}/retry-vision`, {
+        method: 'POST',
+        body: { requestId: requestId(), expectedRev: metadata.revision, pages: [page] },
+      });
+      adoptMetadata(value);
+      setRefresh(count => count + 1);
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 409) {
+        setPageRetryError('这份材料已更新或当前状态不能重识别，正在为你刷新最新状态。');
+        setRefresh(count => count + 1);
+      } else {
+        setPageRetryError(`第 ${page} 页重识别暂时没有排队，请稍后重试。`);
+      }
+    } finally {
+      setRetryingPage(null);
+    }
+  }
+
+  async function appendPages(files: readonly File[]) {
+    if (!metadata || appendBusy || files.length === 0) return;
+    const images = files.filter(item => item.type.startsWith('image/'));
+    if (images.length === 0) {
+      setAppendError('续拍加页仅支持照片。');
+      return;
+    }
+    const current = metadata.pageCount ?? metadata.originals?.length ?? 1;
+    const room = 6 - current;
+    if (room <= 0) {
+      setAppendError('这份试卷已满 6 页，无法再加页。');
+      return;
+    }
+    const accepted = images.slice(0, room);
+    if (images.length > room) {
+      setAppendError(`最多还能加 ${room} 页，已先收前 ${room} 张。`);
+    }
+    const oversize = accepted.filter(item => item.size > intakeLimit);
+    const usable = accepted.filter(item => item.size <= intakeLimit && item.size > 0);
+    if (oversize.length > 0) {
+      setAppendError(`「${oversize[0]!.name}」超过 25 MB，请先压缩后再加页。`);
+    }
+    if (usable.length === 0) return;
+    setAppendBusy(true);
+    setAppendError('');
+    try {
+      const form = new FormData();
+      form.set('requestId', requestId());
+      form.set('expectedRev', String(metadata.revision));
+      for (const file of usable) form.append('files', file);
+      const response = await fetch(`/api/materials/${encodeURIComponent(metadata.id)}/pages`, {
+        method: 'POST',
+        body: form,
+      });
+      if (response.status === 404) {
+        setAppendError('这台后端还没有上线续拍加页，请更新后再试。');
+        return;
+      }
+      if (response.status === 409) {
+        setAppendError('原件版本已更新，正在为你刷新最新状态。');
+        setRefresh(count => count + 1);
+        return;
+      }
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        setAppendError(typeof failure?.error === 'string' ? failure.error : '续拍加页未能完成，请再试一次。');
+        return;
+      }
+      const value = (await response.json()) as IntakeMetadata;
+      if (!value?.id) {
+        setAppendError('续拍回执不完整，请刷新查看。');
+        return;
+      }
+      adoptMetadata(value);
+      setRefresh(count => count + 1);
+    } catch {
+      setAppendError('续拍加页未能完成，请再试一次。');
+    } finally {
+      setAppendBusy(false);
+      if (appendInput.current) appendInput.current.value = '';
+    }
+  }
+
   async function saveCorrection(event: FormEvent) {
     event.preventDefault();
     if (correctionBusy || researchBusy || !metadata) return;
@@ -571,6 +688,13 @@ function OriginalDetails({
       </p>
     );
 
+  const pageCount = metadata.pageCount ?? metadata.originals?.length ??
+    (metadata.original.mediaType.startsWith('image/') ? 1 : null);
+  const pageExtractions = metadata.pageExtractions ?? [];
+  const retryablePages = new Set(metadata.retryableVisionPages ?? []);
+  const isPhotoMaterial = metadata.original.mediaType.startsWith('image/');
+  const currentPage = Math.min(Math.max(1, activePage), pageCount ?? 1);
+
   const questionCards = (
     <IntakeQuestionCards
       materialId={metadata.id}
@@ -598,6 +722,86 @@ function OriginalDetails({
           <Icon name="document" /> 下载原件
         </a>
       </header>
+      {isPhotoMaterial && pageCount !== null && pageCount >= 1 && (
+        <div className="intake-pages" aria-label="分页原图">
+          <div className="intake-pages-strip" role="group" aria-label="切换页面">
+            {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => {
+              const extraction = pageExtractions.find(item => item.page === page);
+              const status = extraction?.status ?? 'pending';
+              const label = pageCount > 1 ? `第 ${page} 页` : '原图';
+              return (
+                <button
+                  key={page}
+                  type="button"
+                  className={`intake-page-tab${page === currentPage ? ' is-active' : ''}`}
+                  aria-pressed={page === currentPage}
+                  aria-label={`${label}（${pageStatusLabel(status, extraction?.questionCount)}）`}
+                  onClick={() => setActivePage(page)}
+                >
+                  <span className="intake-page-tab-no">{label}</span>
+                  <span className={`intake-page-status is-${status}`}>{pageStatusLabel(status, extraction?.questionCount)}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="intake-page-preview">
+            {!pageImageFailed.has(currentPage) ? (
+              <img
+                key={currentPage}
+                src={
+                  pageCount > 1
+                    ? `/api/materials/${encodeURIComponent(metadata.id)}/pages/${currentPage}/original`
+                    : `/api/materials/${encodeURIComponent(metadata.id)}/original`
+                }
+                alt={`试卷第 ${currentPage} 页原图`}
+                onError={() => setPageImageFailed(current => new Set(current).add(currentPage))}
+              />
+            ) : (
+              <p className="intake-page-fallback">第 {currentPage} 页原图暂时无法预览，可点右上角「下载原件」查看。</p>
+            )}
+          </div>
+          <div className="intake-page-meta">
+            {retryablePages.has(currentPage) && (
+              <button
+                type="button"
+                className="tonal-button"
+                disabled={retryingPage !== null || retryVisionBusy}
+                onClick={() => void retryVisionPage(currentPage)}
+              >
+                {retryingPage === currentPage ? `正在重试第 ${currentPage} 页…` : `重试第 ${currentPage} 页`}
+              </button>
+            )}
+            {isPhotoMaterial && (pageCount ?? 1) < 6 && (
+              <>
+                <input
+                  ref={appendInput}
+                  type="file"
+                  accept=".png,.jpg,.jpeg,.webp,.heic,.heif,.avif,.tif,.tiff"
+                  multiple
+                  hidden
+                  onChange={event => {
+                    const files = Array.from(event.target.files ?? []);
+                    event.target.value = '';
+                    void appendPages(files);
+                  }}
+                />
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={appendBusy}
+                  onClick={() => appendInput.current?.click()}
+                >
+                  {appendBusy ? '正在加页…' : `继续拍下一页（还可加 ${6 - (pageCount ?? 1)} 页）`}
+                </button>
+              </>
+            )}
+          </div>
+          {appendError && <p className="error-text" role="alert">{appendError}</p>}
+          {pageRetryError && (
+            <p className="error-text" role="alert">{pageRetryError}</p>
+          )}
+        </div>
+      )}
       <p className="intake-extraction-status" role="status">
         <span className="intake-badge">{extractionStatusLabel(metadata)}</span>
         {metadata.extraction.status === 'pending' && (
