@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { commandId, factId, learnerId } from '@mangekyo/kernel';
 import { archivedIntake, intakeDocument } from './intake-values.ts';
 import { voiceTranscriptionRequest, voiceTranscriptionResult } from './extraction.ts';
+import { buildVisionPaperOcrPrompt } from './vision-paper-ocr.ts';
 import { consumePublicLink, openPublicLink, publicLinkEffect, publicLinkVersion, type PublicLinkReadRequest } from './public-link.ts';
 
 it('keeps the original private intake record readable after projecting its content blocks', () => {
@@ -14,6 +15,13 @@ it('keeps the original private intake record readable after projecting its conte
   };
   expect(intakeDocument(archivedIntake(legacy))).toEqual(intakeDocument(legacy));
   expect(archivedIntake(legacy).envelope.unit.blocks[0]?.body).toMatchObject({ sticky: true, text: '文字' });
+});
+
+it('keeps vision paper OCR prompts constrained to faithful transcription', () => {
+  const { systemPrompt, userPrompt } = buildVisionPaperOcrPrompt();
+  expect(`${systemPrompt}\n${userPrompt}`).toContain('严禁解题、推导计算或判断学生选项对错');
+  expect(`${systemPrompt}\n${userPrompt}`).toContain('保留题干开头的真题来源标注');
+  expect(`${systemPrompt}\n${userPrompt}`).toContain('忽略OMR答题卡填涂泡与条码噪点');
 });
 
 it('binds editable voice transcription to the requested recording', () => {

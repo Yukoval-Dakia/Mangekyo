@@ -82,7 +82,16 @@ export function readVisionLlmConfigFromEnv(env?: Record<string, string | undefin
   const model = source.MANGEKYO_VISION_OCR_MODEL?.trim();
   if (!baseUrl || !model) return null;
   const apiKey = source.MANGEKYO_VISION_OCR_API_KEY?.trim();
-  return { baseUrl, model, ...(apiKey ? { apiKey } : {}) };
+  const timeoutSource = source.MANGEKYO_VISION_OCR_TIMEOUT_MS?.trim();
+  const parsedTimeout = timeoutSource ? Number(timeoutSource) : undefined;
+  return {
+    baseUrl,
+    model,
+    ...(apiKey ? { apiKey } : {}),
+    ...(parsedTimeout !== undefined && Number.isFinite(parsedTimeout)
+      ? { timeoutMs: clampNumber(parsedTimeout, defaultTimeoutMs, 1000, 600_000) }
+      : {}),
+  };
 }
 
 export type VisionPaperLlmCallInput = {
@@ -111,21 +120,23 @@ export type VisionPaperLlmCallResult = {
     | undefined;
 };
 
-const defaultTimeoutMs = 90_000;
+const defaultTimeoutMs = 210_000;
+const defaultMultiPageTimeoutMs = 240_000;
 const defaultMaxTokens = 16_384;
 const maxRetryTokens = 32_768;
 const minRetryBudgetMs = 20_000;
 
 const defaultVisionSystemPrompt =
-  '你是严谨的试卷结构化OCR引擎。只输出单个合法JSON对象，禁止Markdown围栏与多余文字；直接忠实转写，不要冗长思考。';
+  '你是严谨的试卷结构化OCR引擎。只做忠实文字、公式与手写痕迹转写，严禁解题、推导计算或判断学生选项对错；只输出单个合法JSON对象，禁止Markdown围栏与多余文字，不要冗长思考。';
 
 const defaultVisionUserPrompt = `请按双栏顺序完整识别这张试卷照片，直接输出严格 JSON：
-1. 仔细扫描整张图片（注意双栏排版：先左栏从上到下，再右栏从上到下；左栏末题的选项可能跨到右栏顶部），完整输出所有可见题目，不遗漏也不编造被裁切的题。
+1. 只做忠实文字、公式与手写痕迹转写，严禁解题、推导计算或判断学生选项对错；仔细扫描整张图片（注意双栏排版：先左栏从上到下，再右栏从上到下；左栏末题的选项可能跨到右栏顶部），完整输出所有可见题目，不遗漏也不编造被裁切的题。
 2. 印刷题干与选项中的公式用精确 LaTeX（行内 $...$，独立公式 $$...$$）；代码与流程图逻辑用三重反引号逐字保留。
 3. 严格分离学生黑笔/铅笔作答（studentAnswer）与红笔批改/订正（redInk），不得混写。
-4. 反光、遮挡或潦草看不清处严禁猜测，学生作答标 {"status":"unclear","text":null} 并写入 unclearSegments；红笔看不清把 redInk.verdict 标为 "unclear"。
-5. 若为纯讲义/非题目材料，正文放 freeformText，questions 放空数组；两者至少其一非空。
-6. 为每道题提炼 1–3 个简洁规范的中文学科核心知识点名放入 conceptTags（如 ["交变电流的产生","正弦式交变电流"]），不带题号、章节号或泛称；无把握可给空数组。
+4. 保留题干开头的真题来源标注（如（2023·浙江1月选考））；遇到物理/几何示意图时简要描述图意，忽略 OMR 答题卡填涂泡与条码噪点。
+5. 反光、遮挡或潦草看不清处严禁猜测，学生作答标 {"status":"unclear","text":null} 并写入 unclearSegments；红笔看不清把 redInk.verdict 标为 "unclear"。
+6. 若为纯讲义/非题目材料，正文放 freeformText，questions 放空数组；两者至少其一非空。
+7. 为每道题提炼 1–3 个简洁规范的中文学科核心知识点名放入 conceptTags（如 ["交变电流的产生","正弦式交变电流"]），不带题号、章节号或泛称；无把握可给空数组。
 JSON 结构：{"version":"vision-paper-ocr-v1","paperTitle":string|null,"subject":string|null,"pageNote":string|null,"questions":[{"number":string,"questionType":"single_choice"|"multiple_choice"|"fill_blank"|"short_answer"|"calculation"|"proof"|"code"|"other","stem":string,"options":[{"label":string,"text":string}],"studentAnswer":{"status":"present"|"unclear"|"absent","text":string|null,"note"?:string},"redInk":{"verdict":"correct"|"wrong"|"partial"|"none"|"unclear","marks":string[],"correction":string|null,"score":string|null},"unclearSegments":string[],"conceptTags":string[]}],"freeformText":string|null,"warnings":string[]}`;
 
 function clampNumber(value: number | undefined, fallback: number, min: number, max: number) {
@@ -737,7 +748,7 @@ export async function extractMultiPagePaperWithVisionOrFallback<TParsed = unknow
   const effectiveVisionConfig = input.visionConfig
     ? {
         ...input.visionConfig,
-        timeoutMs: input.visionConfig.timeoutMs ?? (ordered.length > 1 ? 120_000 : defaultTimeoutMs),
+        timeoutMs: input.visionConfig.timeoutMs ?? (ordered.length > 1 ? defaultMultiPageTimeoutMs : defaultTimeoutMs),
       }
     : input.visionConfig;
   const results = new Array<MultiPageVisionPageOutcome<TParsed>>(ordered.length);
