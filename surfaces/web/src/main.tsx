@@ -247,7 +247,9 @@ function App() {
       <StudioTextbooks key={textbookVersion} openAccess={() => open('textbook-access')} editor={path.endsWith('/page')} />
     </Suspense>
   );
-  else if (path === '/intake') content = <IntakeSurface onNavigate={navigate} />;
+  else if (path === '/intake') content = (
+    <IntakeSurface onNavigate={navigate} onMaterialSaved={library.reload} />
+  );
   else if (path === '/review') content = <Mistakes />;
   else if (path === '/papers/issued') content = <IssuedPapers />;
   else if (path === '/papers' || path.startsWith('/papers/')) {
