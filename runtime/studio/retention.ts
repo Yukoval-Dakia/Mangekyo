@@ -9,6 +9,7 @@ import {
   insideFrozenPosttestWindow, matchesCurrentPosttest, posttestOpensAt, posttestSubmissionType,
   retentionFollowupRequest, retentionFreezeRequest,
 } from '../../modules/activity/retention-posttest.ts';
+import { afterFreeze, recordId, requestInput, requireIndependentPosttest } from '../../modules/activity/retention-host-support.ts';
 import {
   findWorkbookRetentionSlot as findSlot, workbookEvidenceWatermark as evidenceWatermark, listWorkbookPosttestSlots,
   type SlotRow, type PosttestListItem, recordedWorkbookForecast, validWorkbookMethod, verifiesOriginalSitting, verifyFrozenWorkbookClaims,
@@ -108,34 +109,12 @@ async function project<T extends RetentionForecast | ReconciliationValue>(tx: Re
   return { key, state: 'pending' as const };
 }
 
-function requestInput<T>(parse: () => T): T {
-  try { return parse(); }
-  catch { throw new RequestError(400, '保持预测请求格式无效。'); }
-}
-
-function recordId(value: unknown) {
-  if (typeof value !== 'string') throw new Error('需要记录标识。');
-  return factId(value);
-}
-
 async function authorized<T>(run: () => Promise<T>) {
   try { return await run(); }
   catch (error) {
     if (error instanceof FactNotFoundError) throw new RequestError(404, '找不到保持预测的依据。');
     if (error instanceof FactReadDeniedError) throw new RequestError(403, '保持预测的依据当前未开放教学用途。');
     throw error;
-  }
-}
-
-function afterFreeze(observation: RetentionObservation, window: ForecastScope['window'], effectiveTick: Tick) {
-  if (!insideFrozenPosttestWindow(observation, window, effectiveTick)) {
-    throw new RequestError(409, '这次交卷不在预测冻结后的观察窗口内。');
-  }
-}
-
-function requireIndependentPosttest(observation: RetentionObservation) {
-  if (observation.exposure.kind !== 'independent' || observation.result === 'unknown') {
-    throw new RequestError(422, '需要有判分结果的独立受控后测，才能安排下一次后测。');
   }
 }
 
@@ -209,7 +188,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   }
 
   async function freeze(paperId: string, input: Record<string, unknown>) {
-    const { requestId, itemId, priorAttemptIds, through, condition } = requestInput(() => retentionFreezeRequest(input));
+    const { requestId, itemId, priorAttemptIds, through, condition } = requestInput(() => retentionFreezeRequest(input), (status,message)=>{throw new RequestError(status,message)});
     const id = factId(paperId);
     const key = forecastSlot.key({ forecastId: stableId('retention-forecast', id, requestId) });
     return write(async tx => {
@@ -273,7 +252,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   }
 
   async function scheduleFollowup(reconciliationKey: string, input: Record<string, unknown>) {
-    const { requestId, scheduledAt, through } = requestInput(() => retentionFollowupRequest(input));
+    const { requestId, scheduledAt, through } = requestInput(() => retentionFollowupRequest(input), (status,message)=>{throw new RequestError(status,message)});
     const key = forecastSlot.key({ forecastId: stableId('retention-followup', reconciliationKey, requestId) });
     return write(async tx => {
       const existing = await findSlot<RetentionForecast, ForecastScope>(tx, forecastSlot.type, key);
@@ -290,8 +269,8 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
         throw new RequestError(422, '只能从原受控后测的交卷安排下一次后测。');
       }
       const observation = await readWorkbookObservation(tx, read, opened, attemptId, forecastId);
-      afterFreeze(observation, window, frozen.effectiveTick);
-      requireIndependentPosttest(observation);
+      afterFreeze(observation, window, frozen.effectiveTick, (status,message)=>{throw new RequestError(status,message)});
+      requireIndependentPosttest(observation, (status,message)=>{throw new RequestError(status,message)});
       return enqueueForecast(tx, key, opened, {
         priorAttemptIds: [attemptId], window: { requestedAt, scheduledAt, through }, sourceReconciliationKey: reconciliationKey,
       });
@@ -351,7 +330,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
     const { frozen, read, window, opened } = current;
     const observation = againstFrozenTarget(await readWorkbookObservation(tx, read, opened, attemptId, frozen.derivationId),
       frozen.value.input.target);
-    afterFreeze(observation, window, frozen.effectiveTick);
+    afterFreeze(observation, window, frozen.effectiveTick, (status,message)=>{throw new RequestError(status,message)});
     if (!await retentionHistoryValid(tx, frozen.derivationId, observation)) throw new RequestError(409, forecastUnavailable);
     const key = reconciliationKeyFor(frozen.derivationId, attemptId);
     const existing = await findSlot<ReconciliationValue, ReconciliationScope>(tx, reconciliationSlot.type, key);
@@ -366,7 +345,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
   }
 
   async function reconcile(forecastKey: string, input: Record<string, unknown>) {
-    const attemptId = requestInput(() => recordId(input.attemptId));
+    const attemptId = requestInput(() => recordId(input.attemptId), (status,message)=>{throw new RequestError(status,message)});
     return write(async tx => reconcileAttempt(tx, await currentForecast(tx, forecastKey), attemptId));
   }
 
@@ -448,7 +427,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
             if (observation.submittedAt > window.requestedAt || BigInt(evidence.recordedAt) > BigInt(cutoff)) {
               throw new RequestError(409, '交卷在预测发起时尚未登记。');
             }
-            if (window.scheduledAt) requireIndependentPosttest(observation);
+            if (window.scheduledAt) requireIndependentPosttest(observation, (status,message)=>{throw new RequestError(status,message)});
             if (novelty === 'same') observations.push(observation);
             const dimensions = novelty === 'same' ? targetDimensions
               : await readItemDimensions(tx, read, comparable.opened.question.sourceQuestionRef, cutoff);
@@ -482,7 +461,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
           sameTarget(opened, row.scope_keys);
           const observation = againstFrozenTarget(await readWorkbookObservation(tx, read, opened, attemptId, forecastId),
             frozen.value.input.target);
-          afterFreeze(observation, window, frozen.effectiveTick);
+          afterFreeze(observation, window, frozen.effectiveTick, (status,message)=>{throw new RequestError(status,message)});
           if (!await retentionHistoryValid(tx, forecastId, observation)) throw new RequestError(409, forecastUnavailable);
           return { forecastId, forecast: frozen.value, observation };
         });

@@ -3,6 +3,17 @@ import type { WorkerConsent } from '../../modules/companion/worker-consent.ts';
 import { workerCall, workerCap } from '../research/worker-dispatch.ts';
 import { independentScoutSource, researchReader } from './research-sources.ts';
 import { createHash } from 'node:crypto';
+import {
+  discoverUnderstandingTodos as discoverUnderstandingTodosSupport,
+  eligibleExtraction as eligibleExtractionSupport,
+  existingUnderstandings as existingUnderstandingsSupport,
+  learnerGovernedSince as learnerGovernedSinceSupport,
+  openUnderstandingActivity as openUnderstandingActivitySupport,
+  openUnderstandingCitations as openUnderstandingCitationsSupport,
+  paidSource as paidSourceSupport,
+  readRadarTodo as readRadarTodoSupport,
+  type ResearchHostDeps,
+} from '../../modules/companion/research-host-support.ts';
 import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
@@ -53,192 +64,48 @@ const mayResearch: WorkspaceSourceRecipient = fact =>
 export const paidExtractionRecipient: WorkspaceSourceRecipient = fact => fact.purpose.includes(researchPurpose) &&
   (fact.type === workbookAttemptType || fact.type === turnEvidenceType && turnAllowsBackgroundUnderstanding(fact));
 
-async function openUnderstandingActivity(tx: ReadTransaction, id: string, purpose = researchPurpose,
+const understandingHostDeps = {
+  mayResearch, paidExtractionRecipient, claimType, memoryAssertionType, whenAvailable, createAuthorizedFactReader,
+  digest: (value: string) => createHash('sha256').update(value).digest('hex'), studyTurn,
+  turnAllowsBackgroundUnderstanding, workbookAttemptType, posttestSubmissionType, readActivitySubmissionBirth,
+  readActiveTodos: readActiveTodos as unknown as ResearchHostDeps['readActiveTodos'],
+  resolveSource, openWorkbookQuestionSources, undoTextbookCommand, textSlice,
+  researchReader, independentScoutSource, currentResearchSettings, workspaceGrantChecker, notionModelRecipient,
+  teachingPurpose: purpose, teachingSlotType: slotType, companionTeachingMethods, completedCompanionTurns,
+} as unknown as ResearchHostDeps;
+
+async function openUnderstandingActivity(tx: ReadTransaction, id: string, activePurpose = researchPurpose,
   recipient?: WorkspaceSourceRecipient, item?: string) {
-  const maySend = recipient ?? mayResearch;
-  const allows = Object.assign((fact: Parameters<WorkspaceSourceRecipient>[0]) => mayResearch(fact) && maySend(fact),
-    {notionRecipientId: maySend.notionRecipientId ?? ''});
-  const reader = createAuthorizedFactReader(tx, purpose, allows);
-  const fact = await whenAvailable(() => reader.fact(factId(id), {mode: 'following'}));
-  if (!fact) return null;
-  // A permission change keeps the body, and an undo restores the body from its recorded revision.
-  const {rows: [provenance]} = await tx.query<{ author: string | null; born: Tick }>(`
-    SELECT CASE WHEN origin.type=$4 THEN NULL ELSE last.author END AS author,f.created_tick::text AS born
-    FROM facts f JOIN LATERAL (
-      WITH RECURSIVE body AS (
-        SELECT rev,data,author,command_id FROM fact_revs
-        WHERE (learner_id,fact_id,rev)=(f.learner_id,f.id,f.current_rev)
-        UNION ALL
-        SELECT previous.rev,previous.data,previous.author,previous.command_id FROM body
-        LEFT JOIN commands c ON (c.learner_id,c.id)=(f.learner_id,body.command_id)
-        JOIN fact_revs previous ON (previous.learner_id,previous.fact_id)=(f.learner_id,f.id)
-          AND previous.rev=CASE WHEN c.type=$4 THEN (c.input#>>'{input,priorRev}')::int ELSE body.rev-1 END
-        WHERE f.type=$3 AND previous.rev<body.rev AND previous.kind='value' AND previous.data=body.data
-      ) SELECT author,command_id FROM body ORDER BY rev LIMIT 1
-    ) last ON true
-    LEFT JOIN commands origin ON (origin.learner_id,origin.id)=(f.learner_id,last.command_id)
-    WHERE f.learner_id=$1 AND f.id=$2`, [tx.learner, id, textbookPageType, undoTextbookCommand]);
-  if (provenance?.author !== 'learner') return null;
-  const ref = claimWitness(fact);
-  const basis: WorkspaceWitness[] = [{id: ref.id, rev: ref.rev, epoch: ref.accessEpoch, type: fact.type, mode:'following'}];
-  const track = (source: typeof fact, mode: 'following' | 'pinned' = 'following') => {
-    if (source.ref.id !== ref.id || source.ref.rev !== ref.rev)
-      basis.push({id:source.ref.id, rev:source.ref.rev, epoch:source.accessEpoch, type:source.type, mode});
-  };
-  const access = {purpose, maySend:allows, track};
-  if (fact.type === textbookPageType && !await resolveSource(tx, id, {recipient:'workspace', ...access}, 'following')) return null;
-  // Research defines the stable citation basis. Every subsequent caller also opens the chain for its own purpose.
-  const explicit = Object.assign((dependency: typeof fact) => dependency.purpose.includes(researchPurpose) && maySend(dependency),
-    {notionRecipientId: maySend.notionRecipientId ?? ''});
-  const opened = item && recipient && fact.purpose.includes(researchPurpose) && fact.purpose.includes(purpose) && hasLinkedAttempt(fact)
-    ? await openWorkbookQuestionSources(tx, fact, {purpose: researchPurpose, maySend: explicit, track}, item) : undefined;
-  if (item && !opened) return null;
-  const dependencies = basis.slice(1);
-  if (opened && purpose !== researchPurpose) {
-    basis.splice(1);
-    if (!await openWorkbookQuestionSources(tx, fact, {purpose, maySend, track}, item)) return null;
-  }
-  if (dependencies.length) {
-    // A pinned snapshot exposes its historical purposes. Research also requires a current grant.
-    const ids = [...new Set(dependencies.map(witness => witness.id))];
-    const {rowCount} = await tx.query(`
-      SELECT id FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])
-        AND retracted_rev IS NULL AND CASE WHEN $4 THEN purpose @> ARRAY[$3,$5] ELSE purpose && ARRAY[$3,'all'] END`,
-      [tx.learner, ids, researchPurpose, !!opened, purpose]);
-    if (rowCount !== ids.length) return null;
-  }
-  const basisDigest = dependencies.length
-    ? createHash('sha256').update(JSON.stringify(dependencies)).digest('hex')
-    : undefined;
-  const activity = admittedActivityFragments(fact, item);
-  if (!activity) return null;
-  if ((fact.type === workbookAttemptType || fact.type === posttestSubmissionType) &&
-      !await readActivitySubmissionBirth(tx, fact.ref, fact.type)) return null;
-  const fragments = activity.quoteOnly ? activity.fragments.map(fragment => ({
-    ...fragment, text: textSlice(fragment.text, 0, 1200).content,
-  })) : activity.fragments;
-  return {...activity, fact, ref, basis, basisDigest, fragments, paper: opened?.paper, ...provenance};
+  return openUnderstandingActivitySupport(understandingHostDeps, tx, id, activePurpose, recipient, item);
 }
 
-export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], purpose?: string,
+export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], activePurpose?: string,
   maySend?: WorkspaceSourceRecipient) {
-  const recipient = maySend ?? (purpose === 'storage' ? () => true : undefined);
-  const sources = await Promise.all(refs.map(ref => openUnderstandingActivity(tx, ref.id, purpose, recipient, ref.question_evidence ? ref.anchor : undefined)));
-  return sources.flatMap((source, index) => {
-    const ref = refs[index]!;
-    if (source && JSON.stringify(citeQuestion(source, ref.anchor, ref.question_evidence?.recipient ?? '')) !==
-        JSON.stringify(ref.question_evidence)) return [];
-    return source && source.basisDigest === ref.basis_digest && opensCitation(source, ref) ? [source] : [];
-  });
+  return openUnderstandingCitationsSupport(understandingHostDeps, tx, refs, activePurpose, maySend);
 }
 
 export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: Tick, settingsRevision: number, now: number, recipient?: WorkspaceSourceRecipient, budgetCap = 0) {
-  const {rows} = await tx.query<{ id: string; anchor: string | null }>(`
-    SELECT f.id, item.anchor FROM facts f
-    JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    CROSS JOIN LATERAL (SELECT NULL::text AS anchor UNION ALL
-      SELECT q->>'id' FROM jsonb_array_elements(r.data#>'{paper,questions}') q WHERE f.type=$8 AND q ? 'sourceQuestionRef') item
-    LEFT JOIN (${completedCompanionTurns}) done ON f.type=$7 AND done.id=f.id
-    WHERE f.learner_id=$1 AND f.type=ANY($4::text[]) AND f.retracted_rev IS NULL
-      AND f.purpose && ARRAY[$5,'all'] AND (f.type<>$7 OR
-        (done.id IS NOT NULL AND r.data->'allowBackgroundUnderstanding'='true'::jsonb AND $5=ANY(f.purpose)))
-      AND (GREATEST(f.changed_tick,done.effective_tick)>$6::bigint OR item.anchor IS NOT NULL AND EXISTS (
-        SELECT 1 FROM facts dep WHERE dep.learner_id=f.learner_id AND dep.changed_tick>$6::bigint
-          AND (dep.id=r.data->>'paperId' OR jsonb_path_exists(r.data,
-            '$.paper.questions[*].sourceQuestionRef.id ? (@ == $id)', jsonb_build_object('id',dep.id)))))
-      AND NOT EXISTS (SELECT 1 FROM work t WHERE t.family='todo' AND t.learner_id=f.learner_id
-        AND t.dedup_key='understanding:'||f.id||':'||CASE WHEN f.type=$7 THEN 1 ELSE f.current_rev END||COALESCE(':question:'||item.anchor,''))
-    ORDER BY GREATEST(f.changed_tick,done.effective_tick),f.id,item.anchor`,
-    [tx.learner, slotType, companionTeachingMethods, activityEvidenceTypes, researchPurpose, reviewed, turnEvidenceType, workbookAttemptType]);
-  const todos: TodoInput[] = [];
-  for (const row of rows) {
-    const source = await openUnderstandingActivity(tx, row.id, researchPurpose, recipient, row.anchor ?? undefined);
-    if (!source || budgetCap && !await paidSource(tx, row.id)) continue;
-    todos.push({dedupKey: extractionKey(source.ref.id, source.quoteOnly ? 1 : source.ref.rev, row.anchor ?? undefined), trigger: {kind: 'immediate'},
-      workerProfile: extractorProfile, goal: extractionGoal, refs: [],
-      sourceFactRev: {id: source.ref.id, revision: source.ref.rev, accessEpoch: source.ref.accessEpoch, ...(row.anchor ? {anchor: row.anchor} : {})},
-      autonomyTier: 2, budgetCap, settingsRevision, expiresAtMs: now + windowMs});
-    if (todos.length === 12) break;
-  }
-  return todos;
+  return discoverUnderstandingTodosSupport(understandingHostDeps, tx, reviewed, settingsRevision, now, recipient, budgetCap);
 }
 
 async function paidSource(tx: ReadTransaction, id: string) {
-  const fact = await whenAvailable(() => researchReader(tx).fact(factId(id), {mode:'following'}));
-  return fact && paidExtractionRecipient(fact) && (fact.type !== workbookAttemptType || await independentScoutSource(tx, fact));
+  return paidSourceSupport(understandingHostDeps, tx, id);
 }
 
 export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec, recipient?: WorkspaceSourceRecipient, budgetCap = 0,
   callerPurpose = researchPurpose) {
-  const {id, revision, accessEpoch} = spec.sourceFactRev;
-  const item = spec.sourceFactRev.anchor;
-  if (spec.workerProfile !== extractorProfile || spec.goal !== extractionGoal || spec.budgetCap !== budgetCap || budgetCap && !await paidSource(tx, id) ||
-      spec.autonomyTier !== 2 || spec.expiresAtMs <= Date.now()) return null;
-  const source = await openUnderstandingActivity(tx, id, callerPurpose, recipient, item);
-  if (source?.ref.rev !== revision || source.ref.accessEpoch !== accessEpoch || spec.dedupKey !== extractionKey(id, source.quoteOnly ? 1 : revision, item)) return null;
-  if (source.kind === 'conversation' && (!source.quoteOnly ||
-      !(await tx.query(`${completedCompanionTurns} AND s.slot_key=$4`, [tx.learner, slotType, companionTeachingMethods, id])).rowCount)) return null;
-  return source;
+  return eligibleExtractionSupport(understandingHostDeps, tx, spec as any, recipient, budgetCap, callerPurpose);
 }
 
 export async function readRadarTodo(tx: ReadTransaction, maySend: WorkspaceSourceRecipient, id?: string) {
-  const recipient = maySend.notionRecipientId;
-  if (!recipient) return;
-  const settings = await currentResearchSettings(tx);
-  if (!settings?.enabled) return;
-  const grantCurrent = workspaceGrantChecker();
-  const teachingRecipient: WorkspaceSourceRecipient = fact => {
-    if (fact.type !== turnEvidenceType || !fact.purpose.includes(purpose) || !maySend(fact)) return false;
-    const turn = studyTurn(fact.value);
-    return Boolean(turn.accountRevision && turn.providerId && turn.protocol && turn.workspaceRevision &&
-      notionModelRecipient(turn.providerId, turn.baseUrl, turn.protocol, turn.model, turn.workspaceRevision) === recipient);
-  };
-  for await (const {spec, ...work} of readActiveTodos(tx, extractorProfile, id)) {
-    const source = spec.sourceFactRev;
-    if (spec.settingsRevision !== settings.revision || spec.trigger.kind !== 'immediate' ||
-        spec.refs.length || source.anchor || spec.parentTodoId) continue;
-    const eligible = await eligibleExtraction(tx, spec, teachingRecipient, 0, purpose);
-    if (eligible?.kind !== 'conversation' || !await grantCurrent(studyTurn(eligible.fact.value))) continue;
-    return {fact:eligible.fact, basis:{...work, source, settingsRev:settings.revision, settingsEpoch:settings.accessEpoch, recipient},
-      view:{state:'available', item:{kind:extractorProfile, state:work.state}}};
-  }
-  return undefined;
+  return readRadarTodoSupport(understandingHostDeps, tx, maySend, id);
 }
 
 async function existingUnderstandings(tx: ReadTransaction, sourceId: string, recipient?: WorkspaceSourceRecipient) {
-  const {rows} = await tx.query<{id: string}>(`
-    SELECT f.id FROM facts f JOIN fact_revs r
-      ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND NOT f.sticky
-      AND f.purpose && ARRAY[$3,'all'] AND r.data->>'version'='2' AND r.data->>'sticky'='false'
-      AND (r.data->'scope'->>'kind'='general' OR r.data->'scope'->>'object'=$4)
-    ORDER BY f.changed_tick DESC,f.id LIMIT 6`, [tx.learner, memoryAssertionType, researchPurpose, sourceId]);
-  const entries = [];
-  for (const row of rows) {
-    const fact = await whenAvailable(() => createAuthorizedFactReader(tx, researchPurpose, recipient ?? mayResearch).fact(factId(row.id), {mode: 'following'}));
-    if (!fact) continue;
-    const data = extractedUnderstanding(fact.value);
-    if (data.ttl && data.ttl <= new Date().toISOString()) continue;
-    const sources = await openUnderstandingCitations(tx, data.evidence_refs, researchPurpose, recipient);
-    if (sources.length !== data.evidence_refs.length) continue;
-    const review = reviewUnderstanding(fact.ref.id, data, sources);
-    const directions = review.kind === 'value' ? review.value.findings : null;
-    entries.push({ref: claimWitness(fact), data, directions});
-  }
-  return entries;
+  return existingUnderstandingsSupport(understandingHostDeps, tx, sourceId, recipient);
 }
-
 async function learnerGovernedSince(tx: ReadTransaction, tick: string, sourceId: string) {
-  // A delayed activity must not recreate a learner-managed understanding by paraphrasing it.
-  // Use the existing revision audit, including retractions and teaching-purpose corrections.
-  const {rowCount} = await tx.query(`
-    SELECT 1 FROM facts f JOIN fact_revs r
-    ON (f.learner_id,f.id,f.current_rev)=(r.learner_id,r.fact_id,r.rev)
-    WHERE f.learner_id=$1 AND f.type=ANY($2::text[])
-      AND ((r.author='learner' AND f.changed_tick>$3::bigint)
-        OR (f.type=$4 AND r.data#>>'{evidence_refs,0,id}'=$5))
-    LIMIT 1`, [tx.learner, [claimType, memoryAssertionType, 'learner.preference'], tick, claimType, sourceId]);
-  return Boolean(rowCount);
+  return learnerGovernedSinceSupport(understandingHostDeps, tx, tick, sourceId);
 }
 
 export function openUnderstandingExtraction(db: Db, companion: LoadedModule, transport: UnderstandingTransport | undefined,
@@ -259,7 +126,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
       const source = await eligibleExtraction(tx, todo.spec, maySend, budgetCap);
       if (!source || await learnerGovernedSince(tx, source.born, source.ref.id)) return null;
       const prior = paid || source.quoteOnly ? [] : await existingUnderstandings(tx, source.ref.id, maySend);
-      const target = prior.map(({ref, data: {kind, text, scope, ttl}, directions}) => ({id: ref.id, kind, text, scope, ttl, directions}));
+      const target = prior.map((entry: any) => ({id: entry.ref.id, kind: entry.data.kind, text: entry.data.text, scope: entry.data.scope, ttl: entry.data.ttl, directions: entry.directions}));
       const input = JSON.stringify({source: {ref: source.ref, kind: source.kind, fragments: source.fragments},
         considered_at: new Date(todo.spec.expiresAtMs - windowMs).toISOString(), ...(!source.quoteOnly ? {existing: target} : {})});
       return {todo, source, prior, input};
@@ -305,7 +172,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
 
       const command = commandId(stableId('publish-understanding-v1', todoId));
       const entries = parsed.map(({target, data}, index) => {
-        const previous = target && prior.find(entry => entry.ref.id === target);
+        const previous = target && prior.find((entry: any) => entry.ref.id === target);
         const id = factId(target ?? stableId('extracted-understanding-v1', source.ref.id, String(source.ref.rev),
           ...(todo.spec.sourceFactRev.anchor ? [todo.spec.sourceFactRev.anchor] : []), String(index)));
         return {id, prior: previous ? previous.ref : null, data: {...data, version: 2 as const, sticky: false,
