@@ -93,7 +93,7 @@ export default function IssuedPapers({embedded = false}: {embedded?: boolean}) {
       issuanceId:id, source:selected.source, original:selected.original, page:Number(page), ...(runId ? {retryId:runId} : {}),
     }}));
   }
-  return <div className="issued-papers">
+  return <div className={embedded ? "issued-papers issued-papers--embedded" : "issued-papers"}>
     <div className="print-controls">
       {!embedded && <>
         <a className="back-link" href="/papers">‹ 返回试卷</a>

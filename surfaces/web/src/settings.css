@@ -50,14 +50,11 @@
 }
 
 .settings-dialog-actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  margin: 22px -24px -24px;
+  flex: none;
+  margin: 0;
   padding: 14px 24px calc(14px + max(0px, env(safe-area-inset-bottom)));
   border-top: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  backdrop-filter: blur(10px);
+  background: var(--surface);
 }
 
 .settings-dialog .field,
@@ -185,7 +182,6 @@
   }
 
   .settings-dialog-actions {
-    margin-inline: -18px;
     padding-inline: 18px;
   }
 

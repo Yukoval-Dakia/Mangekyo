@@ -157,7 +157,7 @@ export function SettingsDialog({ onClose, onSave, textbookAccess = false }: {
       <div className="settings-dialog-body">
         <ResearchSettings />
         {draft ? (
-          <form onSubmit={(event) => void save(event)}>
+          <form id="settings-dialog-form" onSubmit={(event) => void save(event)}>
             <section className="settings-section" aria-labelledby="providers-title">
               <div className="settings-section-heading">
                 <h3 id="providers-title">模型配置</h3>
@@ -272,10 +272,6 @@ export function SettingsDialog({ onClose, onSave, textbookAccess = false }: {
 
             {replaceConfig && <p role="status" className="field-help">将写入一份全新的设置。</p>}
             {error && <p role="alert" className="error-text">{error}</p>}
-            <div className="dialog-actions settings-dialog-actions">
-              <button type="button" className="text-button" disabled={saving} onClick={() => dialog.current?.close()}>取消</button>
-              <button type="submit" className="primary-button" disabled={saving}>{saving ? "保存中…" : "保存设置"}</button>
-            </div>
           </form>
         ) : (
           <div className="dialog-loading" role="status">
@@ -283,6 +279,12 @@ export function SettingsDialog({ onClose, onSave, textbookAccess = false }: {
           </div>
         )}
       </div>
+      {draft && (
+        <div className="dialog-actions settings-dialog-actions">
+          <button type="button" className="text-button" disabled={saving} onClick={() => dialog.current?.close()}>取消</button>
+          <button type="submit" form="settings-dialog-form" className="primary-button" disabled={saving}>{saving ? "保存中…" : "保存设置"}</button>
+        </div>
+      )}
     </dialog>
   );
 }

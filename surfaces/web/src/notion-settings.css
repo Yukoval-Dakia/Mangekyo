@@ -18,6 +18,10 @@
 .notion-choice small { grid-column: 2; color: var(--muted); }
 .notion-presets .notion-choice {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
   padding: 10px 12px 10px 38px;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -25,18 +29,29 @@
   transition: background-color var(--duration-short) var(--ease-standard), border-color var(--duration-short) var(--ease-standard);
 }
 .notion-presets .notion-choice + .notion-choice { margin-top: 8px; }
-.notion-presets .notion-choice input {
+.notion-presets .notion-choice input[type="radio"],
+.notion-presets .notion-choice input[type="checkbox"] {
   position: absolute;
   left: 12px;
   top: 50%;
   translate: 0 -50%;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  flex: 0 0 auto;
 }
 .notion-presets .notion-choice:has(input:checked) {
   border-color: color-mix(in srgb, var(--primary) 58%, var(--line));
   background: var(--soft-green);
 }
-.notion-presets .notion-choice span { font-weight: 650; }
-.notion-presets .notion-choice small { margin-top: 2px; }
+.notion-presets .notion-choice span {
+  font-weight: 650;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notion-presets .notion-choice small { grid-column: auto; margin-top: 2px; }
 .notion-sources select,
 .notion-sources input[type="text"],
 .notion-sources input:not([type]) {
