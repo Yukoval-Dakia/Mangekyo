@@ -7,6 +7,7 @@ import { mountBatches, mountQuery } from "./presentation/mount-coverage.ts";
 import { editorDrafts } from "./presentation/editor-draft";
 import { useMountPermissions } from "./presentation/mount-permissions";
 import { authorizeMounts, refreshDraftBases, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
+import { applyDeltaChunk, parseDeltaEvent, progressDeltaState, reconcileProgressText, type DeltaState } from "./stream-delta";
 
 type Operation = {allowBackgroundUnderstanding?: boolean | undefined; currentObject?: CurrentObject | undefined} & (
   | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
@@ -134,6 +135,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     const baseline = sessionRef.current?.id === sessionId ? sessionRef.current : undefined;
     let batch: { id: string; turn: string; order?: Map<string, number>; frame: SessionEvent } | undefined;
     const retiredTurns = new Set<string>();
+    let deltaState: DeltaState | undefined;
     let terminal = false;
     let didHydrate = Boolean(baseline);
     let readNumber = 0;
@@ -187,6 +189,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
           delete current.artifacts;
         setSession(readSession(current, latest, atRequest, new Set(hints)));
         clearReadProblem();
+        if (current.status !== "pending") {
+          deltaState = undefined;
+          setStreamingReply(undefined);
+          setProgressLabel(undefined);
+        }
         if (mode === 'complete') {
           setStreamingReply(undefined);
           setProgressLabel(undefined);
@@ -217,6 +224,25 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       return update;
     }
 
+    source.addEventListener("delta", (event: MessageEvent<string>) => {
+      if (terminal || controller.signal.aborted) return;
+      const chunk = parseDeltaEvent(event.data);
+      if (!chunk) return;
+      const previous = sessionRef.current;
+      if (retiredTurns.has(chunk.turnId) || !previous || previous.id !== sessionId ||
+          previous.status !== "pending" || previous.currentTurnId !== chunk.turnId ||
+          previous.turns.some(turn => turn.turnId === chunk.turnId)) return;
+      const next = applyDeltaChunk(deltaState, chunk, previous.currentTurnId);
+      if (next === deltaState) return;
+      deltaState = next;
+      setProgressLabel(label => label ?? progressLabels.replying);
+      setStreamingReply(next?.text);
+      if (!didHydrate) {
+        didHydrate = true;
+        void hydrate('stream');
+      }
+    });
+
     source.addEventListener("progress", (event: MessageEvent<string>) => {
       const update = receive(event);
       if (!update || update.session.status !== "pending") return;
@@ -239,7 +265,12 @@ export function useConversation(caseId: string, active: boolean, initialSession?
         mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] };
       setSession(batch.order ? authorizeMounts(mounted, turn, batch.order, update, covered) : mounted);
       setProgressLabel(update.phase ? progressLabels[update.phase] : undefined);
-      setStreamingReply(update.message);
+      deltaState = deltaState?.turnId === turn && update.message === undefined
+        ? deltaState
+        : deltaState?.turnId === turn
+          ? { ...deltaState, text: reconcileProgressText(deltaState, update.message) ?? deltaState.text }
+          : progressDeltaState(turn, update.message);
+      setStreamingReply(deltaState?.text);
       // Restore prior turns for a remembered session while the current one streams.
       if (!didHydrate) {
         didHydrate = true;
@@ -266,12 +297,14 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       terminal = true;
       source.close();
       if (!refresh && !sessionRef.current?.mounts.length && baseline?.currentTurnId === update.session.currentTurnId && baseline?.status === update.session.status) {
+        deltaState = undefined;
         setStreamingReply(undefined);
         setProgressLabel(undefined);
         return;
       }
       // Render the accepted public reply immediately, then hydrate the
       // learner's authorized session view once. The stream never carries audit fields.
+      deltaState = undefined;
       setStreamingReply(update.message);
       setProgressLabel(undefined);
       void hydrate('complete', update.session);
@@ -306,6 +339,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       readAssessment.current = undefined;
     };
   }, [active, busy, caseId, refresh, retryOperation, sessionId, sessionKey]);
+
+  useEffect(() => {
+    setStreamingReply(undefined);
+    setProgressLabel(undefined);
+  }, [sessionId]);
 
   // All queued works in this session share one bounded sequence of authorized reads.
   useEffect(() => {
