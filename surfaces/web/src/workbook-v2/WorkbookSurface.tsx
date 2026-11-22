@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { deletedSubmission, submissionId } from '../api.ts';
+import { deletedSubmission, requestId, submissionId, type Settings } from '../api.ts';
+import { forTask, selectedRoute } from '../model-route.ts';
+import type { Resource } from '../workspace.tsx';
 import { QuestionPresentation, useWorkbookPresentation } from '../workbook-presentation.tsx';
-import { isNotFound, loadPaper, loadPreSubmitPitfalls, submitAttempt } from './api.ts';
+import { ApiError, assessRubric, isNotFound, loadPaper, loadPreSubmitPitfalls, markCorrected, submitAttempt } from './api.ts';
 import type {
   CompanionCitation,
   Confidence,
@@ -11,6 +13,7 @@ import type {
   SavedTakeawayState,
   PreSubmitPitfall,
   PreSubmitRevisionPayload,
+  WorkbookV2Assessment,
   WorkbookV2Attempt,
   WorkbookV2Detail,
 } from './types.ts';
@@ -42,11 +45,13 @@ export function WorkbookSurface({
   initialPaper,
   l0Sources,
   onCiteToCompanion,
+  modelSettings,
 }: {
   paperId: string;
   initialPaper?: WorkbookV2Detail | undefined;
   l0Sources?: Record<string, L0Source> | undefined;
   onCiteToCompanion?: ((citation: CompanionCitation) => void) | undefined;
+  modelSettings?: Resource<Settings> | undefined;
 }) {
   const [paper, setPaper] = useState<WorkbookV2Detail | null>(() => initialPaper ?? null);
   const [loadError, setLoadError] = useState('');
@@ -64,6 +69,10 @@ export function WorkbookSurface({
   const [preSubmitAnchors, setPreSubmitAnchors] = useState<Record<string, PreSubmitAnchorState>>({});
   const [focusItemId, setFocusItemId] = useState<string | null>(null);
   const attachments = usePaperAttachments(paperId);
+  const assessmentSettings = modelSettings?.data && forTask(modelSettings.data, 'assessment');
+  const [assessingItem, setAssessingItem] = useState<string | null>(null);
+  const [correctingItem, setCorrectingItem] = useState<string | null>(null);
+  const [actionError, setActionError] = useState('');
 
   const questions = paper?.questions ?? [];
   const total = questions.length;
@@ -73,6 +82,19 @@ export function WorkbookSurface({
     for (const row of submittedAttempt?.feedback ?? []) map.set(row.questionId, row);
     return map;
   }, [submittedAttempt]);
+  const assessmentByQuestion = useMemo(() => {
+    const map = new Map<string, WorkbookV2Assessment>();
+    for (const row of submittedAttempt?.assessments ?? []) map.set(row.questionId, row);
+    return map;
+  }, [submittedAttempt]);
+  const correctedItemIds = useMemo(
+    () => new Set(submittedAttempt?.correctedItemIds ?? []),
+    [submittedAttempt],
+  );
+  const correctionItemIds = useMemo(
+    () => new Set(submittedAttempt?.correctionItemIds ?? []),
+    [submittedAttempt],
+  );
   const answeringItems = useMemo(
     () => (current && !submittedAttempt ? [current.id] : []),
     [current, submittedAttempt],
@@ -288,6 +310,65 @@ export function WorkbookSurface({
     jumpToQuestion(itemId);
   }, [paper?.revision, preSubmitAnchors, items, jumpToQuestion]);
 
+  const refreshPaper = useCallback(async () => {
+    const next = await loadPaper(paperId);
+    setPaper(next);
+    setSubmittedAttempt((previous) => {
+      if (!previous) return next.attempts?.[0] ?? null;
+      return next.attempts?.find((attempt) => attempt.id === previous.id) ?? next.attempts?.[0] ?? null;
+    });
+  }, [paperId]);
+
+  const handleAssess = useCallback(async (itemId: string) => {
+    if (!submittedAttempt || assessingItem || !assessmentSettings) return;
+    setActionError('');
+    setAssessingItem(itemId);
+    try {
+      const route = selectedRoute(assessmentSettings);
+      const next = await assessRubric(paperId, submittedAttempt.id, {
+        requestId: requestId(),
+        questionId: itemId,
+        consent: 'send-question-answer-rubric',
+        providerBaseUrl: assessmentSettings.baseUrl,
+        ...(route ? { route } : {}),
+      });
+      setPaper(next);
+      setSubmittedAttempt((previous) =>
+        next.attempts?.find((attempt) => attempt.id === previous?.id) ?? next.attempts?.[0] ?? null,
+      );
+    } catch (caught: unknown) {
+      setActionError(
+        caught instanceof ApiError
+          ? caught.message
+          : caught instanceof Error ? caught.message : '批改没有完成。',
+      );
+    } finally {
+      setAssessingItem(null);
+    }
+  }, [submittedAttempt, assessingItem, assessmentSettings, paperId]);
+
+  const handleCorrect = useCallback(async (itemId: string, attemptRev: number) => {
+    if (!submittedAttempt || correctingItem) return;
+    setActionError('');
+    setCorrectingItem(itemId);
+    try {
+      await markCorrected(paperId, submittedAttempt.id, {
+        requestId: requestId(),
+        attemptRev,
+        itemId,
+      });
+      await refreshPaper();
+    } catch (caught: unknown) {
+      setActionError(
+        deletedSubmission(caught)
+          ? '删除状态已变化，请重新打开原作答。'
+          : '未能记录订正。请重新打开原作答或重试。',
+      );
+    } finally {
+      setCorrectingItem(null);
+    }
+  }, [submittedAttempt, correctingItem, paperId, refreshPaper]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -349,6 +430,26 @@ export function WorkbookSurface({
     ? { ...currentFeedback, expected: null, explanation: null }
     : currentFeedback;
 
+  const currentAssessment = current ? assessmentByQuestion.get(current.id) : undefined;
+  const currentCorrected = current ? correctedItemIds.has(current.id) : false;
+  const currentAssessEligible =
+    submittedAttempt !== null &&
+    current?.kind === 'rubric' &&
+    (currentFeedback?.answer !== null && currentFeedback?.answer !== undefined) &&
+    (currentAssessment === undefined || currentAssessment.verdict === 'pending') &&
+    Boolean(assessmentSettings);
+  const currentCorrection =
+    submittedAttempt !== null &&
+    current !== undefined &&
+    currentFeedback !== undefined &&
+    (currentFeedback.result === 'incorrect' || currentFeedback.result === 'partial' ||
+      currentAssessment?.verdict === 'incorrect' || currentAssessment?.verdict === 'partial') &&
+    currentFeedback.answer !== null && currentFeedback.answer !== undefined &&
+    correctionItemIds.has(current.id) &&
+    typeof submittedAttempt.rev === 'number'
+      ? { attemptRev: submittedAttempt.rev, recorded: currentCorrected }
+      : undefined;
+
   return (
     <div className="wbv2">
       {paper.title && (
@@ -377,14 +478,21 @@ export function WorkbookSurface({
           {questions.map((question, order) => {
             const summary = attachments.summariesByQuestion[question.id];
             const questionFeedback = feedbackByQuestion.get(question.id);
+            const questionAssessment = assessmentByQuestion.get(question.id);
+            const isCorrected = correctedItemIds.has(question.id);
+            const navVerdict = questionAssessment?.verdict ?? questionFeedback?.result;
             const classes = [
               'wbv2-num',
               answered.has(question.id) ? 'is-answered' : '',
               summary?.failed ? 'is-upload-error' : summary?.uploading ? 'is-uploading' : '',
-              questionFeedback?.result === 'correct'
+              isCorrected
                 ? 'is-correct'
-                : questionFeedback?.result === 'incorrect'
+                : navVerdict === 'correct'
+                  ? 'is-correct'
+                  : navVerdict === 'incorrect'
                   ? 'is-incorrect'
+                  : navVerdict === 'partial'
+                    ? 'is-partial'
                   : '',
             ]
               .filter(Boolean)
@@ -491,6 +599,13 @@ export function WorkbookSurface({
                 onSavedTakeawayChange={handleSavedTakeawayChange}
                 attemptId={submittedAttempt.id}
                 attemptRev={submittedAttempt.rev}
+                assessment={currentAssessment}
+                assessEligible={currentAssessEligible}
+                assessing={assessingItem === current.id}
+                onAssess={currentAssessEligible ? () => void handleAssess(current.id) : undefined}
+                correction={currentCorrection}
+                correctionBusy={correctingItem === current.id}
+                onCorrect={currentCorrection ? () => void handleCorrect(current.id, currentCorrection.attemptRev) : undefined}
                 submitted
                 disabled
                 onCite={onCiteToCompanion}
@@ -561,6 +676,7 @@ export function WorkbookSurface({
               ? `：答对 ${submittedAttempt.correctCount} / ${submittedAttempt.total}`
               : '，可在上方回看每题反馈与口诀对照。'}
           </p>
+          {actionError && <p className="wbv2-error" role="alert">{actionError}</p>}
         </div>
       )}
     </div>

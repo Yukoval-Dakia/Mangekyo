@@ -170,6 +170,7 @@
 }
 .wbv2-num.is-correct:not([aria-selected="true"]) { background: var(--wbv2-ok-bg); border-color: var(--wbv2-ok-border); color: var(--wbv2-ok-ink); }
 .wbv2-num.is-incorrect:not([aria-selected="true"]) { background: var(--wbv2-warn-bg); border-color: var(--wbv2-warn-border); color: var(--wbv2-warn-ink); }
+.wbv2-num.is-partial:not([aria-selected="true"]) { background: var(--wbv2-info-bg); border-color: var(--wbv2-soft-border); color: var(--wbv2-info-ink); }
 .wbv2-arrow {
   flex: none;
   width: 40px; height: 40px;
@@ -747,6 +748,62 @@
 .wbv2-error { color: var(--wbv2-danger); font-size: 13px; }
 
 /* ---------- 复盘附件（available=false 诚实降级） ---------- */
+.wbv2-rubric {
+  margin-top: 14px;
+  padding: 13px 15px;
+  border-radius: 16px;
+  background: var(--wbv2-chip);
+  border: 1px solid var(--wbv2-card-line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wbv2-rubric-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.wbv2-stage-badge,
+.wbv2-score-badge {
+  border-radius: var(--wbv2-radius-chip);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 680;
+}
+.wbv2-stage-badge { background: var(--wbv2-warn-bg); color: var(--wbv2-warn-ink); }
+.wbv2-score-badge { background: var(--wbv2-info-bg); color: var(--wbv2-info-ink); }
+.wbv2-evidence-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.wbv2-evidence-list li { font-size: 14.5px; color: var(--wbv2-ink); line-height: 1.6; }
+.wbv2-evidence-list p { margin: 0; }
+
+.wbv2-btn {
+  border: 0;
+  border-radius: var(--wbv2-radius-chip);
+  min-height: 42px;
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 680;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.wbv2-btn--primary { background: var(--wbv2-primary); color: var(--wbv2-on-primary); }
+.wbv2-btn--tonal { background: var(--wbv2-soft); color: var(--wbv2-ink); border: 1px solid var(--wbv2-soft-border); }
+.wbv2-btn--ghost { background: transparent; color: var(--wbv2-muted); }
+.wbv2-btn:disabled { opacity: .6; }
+
+.wbv2-confirm {
+  margin-top: 12px;
+  padding: 12px 15px;
+  border-radius: 16px;
+  background: var(--wbv2-chip);
+  border: 1px solid var(--wbv2-card-line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wbv2-confirm-text { margin: 0; font-size: 13.5px; color: var(--wbv2-muted); }
+.wbv2-confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.wbv2-correction-row { margin-top: 12px; }
+.wbv2-corrected-badge { align-self: flex-start; }
+
 .wbv2-review-attach { margin-top: 14px; }
 .wbv2-review-attach-title { font-size: 13px; font-weight: 680; color: var(--wbv2-muted); margin: 0 0 8px; }
 .wbv2-review-attach .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }

@@ -33,6 +33,7 @@
 }
 
 /* M3E 胶囊分段页签 */
+.me-v2-tabs-wrap { position: relative; }
 .me-v2-tabs {
   display: flex;
   gap: 6px;
@@ -311,6 +312,23 @@
   .me-v2-pill-button { align-self: flex-start; }
   .me-v2-tabs { padding: 4px; gap: 4px; }
   .me-v2-tabs button { min-height: 38px; padding: 0 12px; font-size: 13.5px; }
+  /* 移动端右缘横滑渐隐提示 */
+  .me-v2-tabs-wrap::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 36px;
+    pointer-events: none;
+    background: linear-gradient(to right, rgba(248, 250, 246, 0), var(--paper, #f8faf6));
+  }
+}
+
+@media (max-width: 480px) {
+  [data-theme='dark'] .me-v2-tabs-wrap::after {
+    background: linear-gradient(to right, rgba(16, 22, 19, 0), var(--paper, #101613));
+  }
 }
 
 /* Ensure card heads wrap instead of clipping action buttons on narrow viewports */

@@ -972,7 +972,9 @@ export function IntakeSurface({
             </span>
             <span className="tv2-privacy">
               {purpose === 'save-only'
-                ? '原件收进私人目录，不进入抽取、题库或后台整理；公开链接不抓取预览，随时可改。'
+                ? pendingPages.length > 1
+                  ? '多页拍照将自动视觉识题便于核对，默认仅保存不开放教学，随时可改。'
+                  : '原件收进私人目录，不进入抽取、题库或后台整理；公开链接不抓取预览，随时可改。'
                 : '新交入文件允许抽取文字并参与整理，单份原件随时可在详情改回仅保存。'}
             </span>
           </div>

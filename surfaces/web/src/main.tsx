@@ -259,6 +259,7 @@ function App() {
           key={routeKey}
           paperId={id}
           onCiteToCompanion={citeWorkbookToCompanion}
+          modelSettings={settings}
         />
       </>;
     } else {

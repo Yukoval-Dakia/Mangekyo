@@ -148,9 +148,27 @@ export type WorkbookV2Attempt = {
   total?: number;
   answers?: Record<string, unknown>;
   feedback?: readonly WorkbookV2Feedback[];
+  assessments?: readonly WorkbookV2Assessment[];
+  correctionItemIds?: readonly string[];
+  correctedItemIds?: readonly string[];
   questionAttachments?: ReviewAttachmentsMap;
   examTimeValue?: ExamTimeValueView;
   preSubmitRevised?: true;
+};
+
+export type WorkbookV2Assessment = {
+  id: string;
+  questionId: string;
+  verdict: 'correct' | 'partial' | 'incorrect' | 'pending';
+  score?: { earned: number; maximum: number };
+  errorStage?: string | null;
+  feedback: string;
+  evidence: readonly string[];
+  trace?: readonly string[];
+  rubricVersion?: string;
+  assessedAt?: string;
+  requestedModel?: string;
+  reportedModel?: string;
 };
 
 export type WorkbookV2Expected =
