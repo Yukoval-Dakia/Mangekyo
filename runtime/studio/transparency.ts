@@ -12,6 +12,7 @@ import { projectRetentionHandoff, readAiActivity } from '../../modules/activity/
 import { mapConceptForecastInputs, readConceptAttemptEvidence } from '../../modules/activity/concept-evidence.ts';
 import { projectGraphMastery } from '../../modules/activity/graph-mastery-evidence.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
+import { gatherWeaknessOverview } from '../../modules/activity/weakness-overview.ts';
 import { verifyWorkspaceEntryBasis, workspaceEntry } from '../../modules/activity/workspace-values.ts';
 import { readActiveNotionSelectionSummary } from '../../modules/capture/notion-source.ts';
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
@@ -29,6 +30,7 @@ import { readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { readAuthorizedRetention } from './learner-radar.ts';
 import { claimUndoToken } from './memory-claims.ts';
 import { checkStudioNotionFact, notionReadScope, savedNotionWitnesses, type CheckNotionRead } from './notion.ts';
+import { readWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorksheetById, researchReader } from './research-sources.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { RequestError } from './sessions.ts';
@@ -137,7 +139,36 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         const readers = snapshotFactReaders(tx);
         const readStorage = gatedReader(tx, readers, 'storage', check);
         const readTeaching = gatedReader(tx, readers, teachingPurpose, check);
-        return readMemoryOverview(tx, asOf, {
+        const graph = await readAuthorizedKnowledgeGraph(tx, graphAccess(tx, readStorage, 'storage', check));
+        const storageCtx = { ...createCommandReadContext(tx, 'storage'), fact: readStorage.fact };
+        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageCtx, graph.questionConceptLinks, isUnavailable);
+        const { forecasts, reconciliations } = await readRetention(tx, check);
+        const misconceptions = await readActiveMisconceptionConceptIds(tx, {
+          readStorage, isUnavailable,
+          openHypothesisObject: data => openHypothesisObject(tx, data, () => true, hypothesisCheck(check)),
+          openObjectiveCitations: refs => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
+        });
+        const { rows, conceptsByQuestion } = mapConceptForecastInputs(
+          forecasts.flatMap(({ view, forecast, facts }) => view.kind === 'forecast' && forecast.estimate.kind === 'probabilistic' ? [{
+            effectiveTick: view.effectiveTick, observedThrough: forecast.input.observedThrough, probability: forecast.estimate.probability,
+            ...(forecast.estimate.crossingAt ? { crossingAt: forecast.estimate.crossingAt } : {}),
+            ...(forecast.estimate.bucket.kcId ? { kcId: forecast.estimate.bucket.kcId } : {}),
+            paperId: forecast.input.target.paper.id, itemId: forecast.input.target.itemId, facts,
+          }] : []), graph.questionConceptLinks);
+        const mastery = projectBatchConceptMastery({
+          asOf, conceptIds: graph.nodes.map(node => node.id), attempts,
+          forecasts: extractConceptForecastSignals(rows, new Set(graph.nodes.map(node => node.id)), conceptsByQuestion),
+          incompleteConceptIds, activeMisconceptionConceptIds: misconceptions,
+        });
+        const weaknessSummary = await gatherWeaknessOverview(tx, {
+          asOf, read: storageCtx, attemptEvidence: attempts, nodes: graph.nodes, links: graph.questionConceptLinks,
+          mastery, isUnavailable,
+          formalFor: async (paper, ref) => {
+            const view = await readWorkbookAssessment(tx, paper.assessmentRelease!, ref, { purpose: 'storage' });
+            return 'result' in view ? view.result : undefined;
+          },
+        });
+        const overview = await readMemoryOverview(tx, asOf, {
           readStorage, readTeaching, isUnavailable, undoTokenFor: claimUndoToken,
           openHypothesisObject: data => openHypothesisObject(tx, data, () => true, hypothesisCheck(check)),
           openObjectiveCitations: refs => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
@@ -145,10 +176,10 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
           checkObjectScopeFact: notionCheck(tx, 'storage', check),
           isRevocableCompanionTurn: fact => fact.type === 'activity.studyTurn' && !fact.purpose.includes('all') && studyTurn(fact.value).caseId === 'companion',
           readCalibration: async () => {
-            const { reconciliations } = await readRetention(tx, check);
             return projectCalibrationSummary(reconciliations.flatMap(({ view }) => view.kind === 'reconciliation' ? [view as CalibrationInputRecord] : []));
           },
         });
+        return { ...overview, weaknessSummary };
       });
     },
 
