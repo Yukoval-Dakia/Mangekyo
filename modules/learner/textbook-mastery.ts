@@ -159,6 +159,14 @@ function uniqueWitnesses(refs: Iterable<BusWitness>) {
   return [...new Map(Array.from(refs, ref => [masteryWitnessKey(ref), ref])).values()];
 }
 
+function validAnchor(anchor: TextbookMasteryEvidenceAnchor, scope: TextbookMasteryScope, cutoff: number) {
+  const { submission, question, basis, recordedAt, expiresAt, itemId, href } = anchor;
+  return isAttemptEvidenceType(submission.type) && itemId.trim().length > 0 && /^\/(?!\/)[^\\\s]*$/u.test(href)
+    && decimalTick.test(recordedAt) && BigInt(recordedAt) <= BigInt(scope.clockWatermark)
+    && (expiresAt === undefined || cutoff < Date.parse(expiresAt))
+    && [submission, question, ...basis].every(ref => isLocalMasteryWitness(ref, scope));
+}
+
 function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMasteryScope, concepts: ReadonlySet<string>) {
   const buckets = new Map<string, ConceptBuckets | null>();
   const { slice } = batch;
@@ -167,47 +175,75 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
       !Number.isFinite(cutoff) || !decimalTick.test(scope.clockWatermark)) return null;
 
   const omitted = new Set(slice.omissions?.map(({ ref }) => eventKey(ref.id, ref.rev)));
-  const anchors = new Map<string, TextbookMasteryEvidenceAnchor | null>();
+  const anchorsByKey = new Map<string, TextbookMasteryEvidenceAnchor[] | null>();
   for (const anchor of batch.anchors) {
-    const { submission, question, basis, recordedAt, expiresAt, itemId, href } = anchor;
-    const key = eventKey(submission.id, submission.rev);
-    if (anchors.has(key)) {
-      // Canonical item events have only a submission ref, so two anchors for
-      // that ref cannot establish which item the worker's result describes.
-      anchors.set(key, null);
+    const key = eventKey(anchor.submission.id, anchor.submission.rev);
+    if (!validAnchor(anchor, scope, cutoff)) {
+      anchorsByKey.set(key, null);
       continue;
     }
-    anchors.set(key, isAttemptEvidenceType(submission.type) && itemId.trim().length > 0 && /^\/(?!\/)[^\\\s]*$/u.test(href)
-      && decimalTick.test(recordedAt) && BigInt(recordedAt) <= BigInt(scope.clockWatermark)
-      && (expiresAt === undefined || cutoff < Date.parse(expiresAt))
-      && [submission, question, ...basis].every(ref => isLocalMasteryWitness(ref, scope)) ? anchor : null);
+    const held = anchorsByKey.get(key);
+    if (held === null) continue;
+    // Duplicate anchors for the exact same (submission, rev, itemId) are ambiguous.
+    if (held?.some(prior => prior.itemId === anchor.itemId)) {
+      anchorsByKey.set(key, null);
+      continue;
+    }
+    anchorsByKey.set(key, held ? [...held, anchor] : [anchor]);
   }
 
+  const eventsByKey = new Map<string, EvidenceEventV1[]>();
   const seen = new Map<string, EvidenceEventV1>();
   for (const event of slice.events) {
     const key = eventKey(event.ref, event.rev);
-    const prior = seen.get(key);
-    if (prior && JSON.stringify(prior) !== JSON.stringify(event)) anchors.set(key, null);
-    else seen.set(key, event);
+    const list = eventsByKey.get(key);
+    if (list) list.push(event);
+    else eventsByKey.set(key, [event]);
+    if (!seen.has(key)) seen.set(key, event);
   }
+  const singleAnchors = new Map<string, TextbookMasteryEvidenceAnchor | null>();
+  const multiAnchors = new Map<string, readonly TextbookMasteryEvidenceAnchor[] | null>();
+  for (const [key, list] of anchorsByKey) {
+    if (!list) {
+      singleAnchors.set(key, null);
+      multiAnchors.set(key, null);
+      continue;
+    }
+    const keyEvents = eventsByKey.get(key) ?? [];
+    if (list.length === 1) {
+      const consistent = keyEvents.every(ev => JSON.stringify(ev) === JSON.stringify(keyEvents[0]));
+      singleAnchors.set(key, consistent ? list[0]! : null);
+    } else {
+      // Multi-item submission: pair 1-to-1 only when exact event count matches distinct item anchors.
+      multiAnchors.set(key, keyEvents.length === list.length ? list : null);
+    }
+  }
+
   const unassignedOmission = [...omitted].some(key => !seen.get(key)?.concept_ids.length);
   const complete = batch.completeConceptIds && new Set(batch.completeConceptIds);
   for (const concept of concepts) {
     if (complete ? !complete.has(concept) : unassignedOmission) buckets.set(concept, null);
   }
   const conceptRefs = new Map<string, Map<string, string>>();
+  const multiIndex = new Map<string, number>();
   for (const event of slice.events) {
     const key = eventKey(event.ref, event.rev);
-    const anchor = anchors.get(key);
+    const multi = multiAnchors.get(key);
+    const position = multi ? (multiIndex.get(key) ?? 0) : 0;
+    if (multi) multiIndex.set(key, position + 1);
+    const anchor = multi !== undefined ? (multi?.[position] ?? null) : (singleAnchors.get(key) ?? null);
     if (!(Date.parse(event.occurred_at) <= cutoff)) continue;
     if (omitted.has(key) || (event.help_level === 'independent' && event.outcome === 'unknown')) {
       for (const concept of event.concept_ids) if (concepts.has(concept)) buckets.set(concept, null);
       continue;
     }
     if (event.help_level !== 'independent' || event.exam_pacing || event.exam_pacing_item) continue;
-    const dimension = bucketKey(event.item_novelty, event.representation, event.context, event.method);
-    const ctxKey = contextKey(event.representation, event.context, event.method);
-    for (const concept of new Set(event.concept_ids)) {
+    const calcEvent: ScoredEvent = multi && anchor
+      ? { ...event, ref: JSON.stringify([anchor.submission.id, anchor.itemId]) }
+      : event;
+    const dimension = bucketKey(calcEvent.item_novelty, calcEvent.representation, calcEvent.context, calcEvent.method);
+    const ctxKey = contextKey(calcEvent.representation, calcEvent.context, calcEvent.method);
+    for (const concept of new Set(calcEvent.concept_ids)) {
       if (!concepts.has(concept)) continue;
       let byDimension = buckets.get(concept);
       if (byDimension === null) continue;
@@ -224,23 +260,23 @@ function evidenceBuckets(batch: TextbookMasteryEvidenceBatch, scope: TextbookMas
         refs = new Map();
         conceptRefs.set(concept, refs);
       }
-      const priorDim = refs.get(event.ref);
+      const priorDim = refs.get(calcEvent.ref);
       if (priorDim !== undefined && priorDim !== dimension) {
         buckets.set(concept, null);
         continue;
       }
       let bucket = byDimension.get(dimension);
       if (!bucket) {
-        bucket = { dimensions: dimension, novelty: event.item_novelty, contextKey: ctxKey, attempts: new Map() };
+        bucket = { dimensions: dimension, novelty: calcEvent.item_novelty, contextKey: ctxKey, attempts: new Map() };
         byDimension.set(dimension, bucket);
       }
-      const prior = bucket.attempts.get(event.ref);
-      if (prior && JSON.stringify(prior.event) !== JSON.stringify(event)) {
+      const prior = bucket.attempts.get(calcEvent.ref);
+      if (prior && JSON.stringify(prior.event) !== JSON.stringify(calcEvent)) {
         buckets.set(concept, null);
         continue;
       }
-      refs.set(event.ref, dimension);
-      bucket.attempts.set(event.ref, { event, anchor });
+      refs.set(calcEvent.ref, dimension);
+      bucket.attempts.set(calcEvent.ref, { event: calcEvent, anchor });
     }
   }
   return buckets;
@@ -290,7 +326,11 @@ const crossingProbability = 0.60;
 function newer(attempt: Attempt, latest: Attempt | undefined) {
   if (!latest) return true;
   const elapsed = Date.parse(attempt.event.occurred_at) - Date.parse(latest.event.occurred_at);
-  return elapsed > 0 || (elapsed === 0 && BigInt(attempt.anchor.recordedAt) > BigInt(latest.anchor.recordedAt));
+  if (elapsed !== 0) return elapsed > 0;
+  const tickDiff = BigInt(attempt.anchor.recordedAt) - BigInt(latest.anchor.recordedAt);
+  if (tickDiff !== 0n) return tickDiff > 0n;
+  if (attempt.event.outcome !== latest.event.outcome) return attempt.event.outcome === 'incorrect';
+  return attempt.anchor.itemId.localeCompare(latest.anchor.itemId) > 0;
 }
 
 function selectEffectiveBucket(
@@ -367,7 +407,7 @@ function projectConcept(conceptId: string, entries: readonly VerifiedBucketRow[]
         conceptId, state,
         anchor: {
           kind: selected.event.outcome === 'incorrect' ? 'recent-error' : 'prior-stable',
-          submissionId: selected.event.ref, submissionRev: selected.event.rev,
+          submissionId: selected.anchor.submission.id, submissionRev: selected.anchor.submission.rev,
           occurredAt: selected.event.occurred_at, itemId: selected.anchor.itemId, href: selected.anchor.href,
         },
       }

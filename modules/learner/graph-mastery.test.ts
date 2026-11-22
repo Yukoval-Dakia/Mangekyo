@@ -136,5 +136,44 @@ it('transitions multi-novelty (same->isomorphic) to solid and stays conservative
     expect(view.concepts[0]!.retrievability!).toBeGreaterThan(0.6);
     expect(view.concepts[1]).toMatchObject({ conceptId: 'c-rep', status: 'fading', independentAttempts: 4 });
     expect(view.concepts[1]!.retrievability!).toBeLessThan(0.5);
+
+    // Multi-item submission: one workbookAttempt grading 2 items for the same concept
+    // (mixed wrong+right, then spaced 2-item independent correct) must transition cleanly,
+    // while duplicate (submission, rev, itemId) anchors stay fail-closed.
+    const multiEvents: EvidenceEventV1[] = [
+      mk('c-multi', 21, 'incorrect', '2026-11-10T10:00:00.000Z', 'isomorphic'),
+      mk('c-multi', 21, 'correct', '2026-11-10T10:00:00.000Z', 'isomorphic'),
+      mk('c-multi', 22, 'correct', '2026-11-15T10:00:00.000Z', 'isomorphic'),
+      mk('c-multi', 22, 'correct', '2026-11-15T10:00:00.000Z', 'isomorphic'),
+      mk('c-multi', 23, 'correct', '2026-11-21T10:00:00.000Z', 'isomorphic'),
+      mk('c-multi', 23, 'correct', '2026-11-21T10:00:00.000Z', 'isomorphic'),
+      mk('c-dup-item', 24, 'correct', '2026-11-18T10:00:00.000Z', 'isomorphic'),
+      mk('c-dup-item', 24, 'correct', '2026-11-18T10:00:00.000Z', 'isomorphic'),
+    ];
+    const multiAnchors = [
+      { ...anchor(multiEvents[0]!), itemId: 'q1' },
+      { ...anchor(multiEvents[1]!), itemId: 'q2' },
+      { ...anchor(multiEvents[2]!), itemId: 'q1' },
+      { ...anchor(multiEvents[3]!), itemId: 'q2' },
+      { ...anchor(multiEvents[4]!), itemId: 'q1' },
+      { ...anchor(multiEvents[5]!), itemId: 'q2' },
+      { ...anchor(multiEvents[6]!), itemId: 'q-same' },
+      { ...anchor(multiEvents[7]!), itemId: 'q-same' },
+    ];
+    const multiView = await projectGraphConceptMastery({ ...scope, asOf: asOfMulti,
+      concepts: [{ conceptId: 'c-multi' }, { conceptId: 'c-dup-item' }] }, {
+      readEvidence: async (s, ids) => ({ completeConceptIds: ids, anchors: multiAnchors,
+        slice: { clock_watermark: s.clockWatermark, as_of_at: s.asOf, events: multiEvents,
+          constraints: { budget_min: null, locks: [], deadlines: [] }, candidate_pool: [] } }),
+      derive: async (_s, method, slice) => {
+        const out = await python.derive(method.deriver, slice);
+        return out.kind === 'ok' && out.outcome.kind === 'value' ? out.outcome.value as CognitionOutput : null;
+      },
+      reopen: async (_s, refs) => refs,
+    });
+    expect(multiView.concepts[0]).toMatchObject({ conceptId: 'c-multi', status: 'solid', independentAttempts: 6 });
+    expect(multiView.concepts[0]!.retrievability!).toBeGreaterThan(0.6);
+    expect(multiView.concepts[0]!.recentEvidenceRefs[0]!.id).toBe(id(23));
+    expect(multiView.concepts[1]).toMatchObject({ conceptId: 'c-dup-item', status: 'unknown', retrievability: null, independentAttempts: 0 });
   } finally { await python.close(); }
 });
