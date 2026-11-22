@@ -97,8 +97,60 @@ export function parseTextbookBasis(input: unknown): readonly TextbookBasis[] {
 export async function checkTextbookBasis(read: AssetReader, basis: readonly AssetBasis[]) {
   for (const {id, rev, epoch, type} of basis) {
     const fact = await read.fact(id, {mode:'pinned', rev});
-    if (fact.type !== type || fact.accessEpoch !== epoch) throw new AssetBasisError('教材依据已变更。');
+    if (fact.type !== type || fact.accessEpoch !== epoch) {
+      const widened = await isPurposeWidenedContinuation(read, fact, epoch);
+      if (!widened || widened.type !== type) throw new AssetBasisError('教材依据已变更。');
+    }
   }
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object' ||
+      Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left);
+  return leftKeys.length === Object.keys(right).length &&
+    leftKeys.every(k => Object.hasOwn(right, k) && sameJsonValue(Reflect.get(left, k), Reflect.get(right, k)));
+}
+
+const purposeWideningStepLimit = 16;
+
+function strictlyWidens(prev: readonly string[], next: readonly string[]): boolean {
+  const covers = (superset: readonly string[], p: string) => superset.includes(p) || superset.includes('all');
+  if (!prev.every(p => covers(next, p))) return false;
+  return next.some(p => !covers(prev, p));
+}
+
+/**
+ * A pure `set_purpose` write bumps `current_rev` and `access_epoch` by 1 while
+ * keeping the data bytes identical and writing a strictly wider revision
+ * purpose. When a basis/use was pinned at (rev, epoch) and the fact has since
+ * been widened one or more times, follow the chain rev-by-rev and confirm
+ * every hop is a monotone widening (no content edit, no narrowing, no skipped
+ * rev). Returns the latest snapshot when the whole chain is a widening; else
+ * returns undefined so the caller must reject.
+ */
+export async function isPurposeWidenedContinuation(
+  read: AssetReader,
+  pinned: FactSnapshot,
+  expectedEpoch: string,
+): Promise<FactSnapshot | undefined> {
+  const current = await read.fact(pinned.ref.id, { mode: 'following' });
+  if (current.ref.learner !== pinned.ref.learner || current.ref.id !== pinned.ref.id ||
+      current.type !== pinned.type) return undefined;
+  const steps = current.ref.rev - pinned.ref.rev;
+  if (steps <= 0 || steps > purposeWideningStepLimit) return undefined;
+  if (BigInt(current.accessEpoch) - BigInt(expectedEpoch) !== BigInt(steps)) return undefined;
+  if (!sameJsonValue(current.value, pinned.value)) return undefined;
+  let previous = pinned;
+  for (let hop = 0; hop < steps; hop++) {
+    const next = hop === steps - 1 ? current
+      : await read.fact(pinned.ref.id, { mode: 'pinned', rev: (pinned.ref.rev + hop + 1) as FactRef['rev'] });
+    if (next.ref.rev !== pinned.ref.rev + hop + 1 || !sameJsonValue(next.value, previous.value) ||
+        !strictlyWidens(previous.purpose, next.purpose)) return undefined;
+    previous = next;
+  }
+  return current;
 }
 
 export function mergeTextbookBasis(previous: readonly TextbookBasis[] | undefined, added: readonly TextbookBasis[]) {
