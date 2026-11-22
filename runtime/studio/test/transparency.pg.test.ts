@@ -46,6 +46,8 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
     try {
       expect((await get('/api/ai/activity')).body).toMatchObject({ running: [], handoffs: [], recentTools: [], usage: { currency: 'USD_MICROS', spentMicros: 0, limitMicros: null, recentCalls: [] }, pendingProposals: [] });
       expect((await get('/api/knowledge/graph')).body).toMatchObject({ nodes: [], edges: [], pendingProposals: [] });
+      const memHead = await fetch(`http://127.0.0.1:${port}/api/memory/overview`);
+      expect(memHead.headers.get('content-security-policy')).toContain("font-src 'self' data:");
       expect((await get('/api/memory/overview')).body).toMatchObject({ categories: { preference: [], claim: [], state: [], refusal: [] }, stickyDirectives: [], hypotheses: [], calibration: { status: 'unknown', totalReconciliations: 0, confirmed: 0, missed: 0, recent: [] } });
       expect((await get('/api/memory/overview')).body).toMatchObject({ weaknessSummary: { status: 'insufficient_evidence', sampleCount: 0, neededCount: 2 } });
       expect((await get('/api/knowledge/graph?purpose=invalid')).status).toBe(400);
@@ -222,6 +224,16 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       const weak = (mem as { weaknessSummary?: { status: string; sampleCount: number; neededCount: number; priorityConcepts: { conceptId: string; status: string; uncorrectedErrorCount: number; nextAction: string }[]; topErrorStages: unknown[] } }).weaknessSummary;
       expect(weak).toMatchObject({ status: 'ready', sampleCount: 2, neededCount: 2 });
       expect(weak!.priorityConcepts.map(row => [row.conceptId, row.status, row.nextAction, row.uncorrectedErrorCount])).toEqual([[c2, 'weak', 'review_mistake', 1], [c1, 'fading', 'quick_paper', 0]]);
+      const pulseHost = { python: { async derive(_d: string, input: unknown) {
+        const rows = ((input as { events?: { concept_ids: string[] }[] }).events ?? []).flatMap(ev => ev.concept_ids);
+        return { kind: 'ok' as const, outcome: { kind: 'value' as const, value: { method_version: 'cognition@3',
+          state_vector: rows.map(concept_id => ({ state: 'known' as const, concept_id, item_novelty: 'transfer',
+            representation: null, context: null, method: null,
+            uncertainty: { kind: 'interval' as const, low: .1, high: .9 }, evidence_refs: [], r_now: concept_id === c1 ? .42 : .9 })) } } };
+      } }, backtrace: () => async () => null };
+      const pulsed = await openTransparency(db, pulseHost as never).memoryOverview();
+      const pulseWeak = (pulsed as { weaknessSummary?: { priorityConcepts: readonly { conceptId: string; retrievability: number | null }[] } }).weaknessSummary;
+      expect(pulseWeak!.priorityConcepts.map(row => [row.conceptId, row.retrievability])).toEqual(graph.nodes.filter(node => pulseWeak!.priorityConcepts.some(row => row.conceptId === node.id)).map(node => [node.id, (node.mastery as { retrievability: number | null }).retrievability]));
 
       await send('content.correctQuestion', 'revise-qw', { id: qw, expectedRev: 2, patch: { prompt: { block_id: 'p', anchor: 'x^3', replacement: 'x^4' } } }, 'learner', 'storage');
       const weakAfterRevise = ((await get('/api/memory/overview')).body as { weaknessSummary?: { priorityConcepts?: { conceptId: string; uncorrectedErrorCount: number }[] } }).weaknessSummary;

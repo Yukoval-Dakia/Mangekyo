@@ -157,8 +157,13 @@ export default defineCommand({
       pageExtractions: nextPageExtractions,
       ...(preservedDrafts ? { preservedDrafts } : {}),
     });
+    const autoTitleSuffix = `（共 ${priorPages.length} 页）`;
+    const nextTitle = archived.title.endsWith(autoTitleSuffix)
+      ? `${archived.title.slice(0, -autoTitleSuffix.length)}（共 ${nextOriginals.length} 页）`
+      : archived.title;
     const nextDocument: IntakeDocument = {
       ...archived,
+      title: nextTitle,
       originals: nextOriginals,
       requestedExtraction: 'vision_llm',
       extraction: nextExtraction,
@@ -170,7 +175,7 @@ export default defineCommand({
         id: material.ref.id,
         expectedRev: material.ref.rev as Revision,
         data: {
-          title: archived.title,
+          title: nextTitle,
           text: intakePreview(nextExtraction),
           ...(saved.savedAt === undefined ? {} : { savedAt: saved.savedAt }),
         },
