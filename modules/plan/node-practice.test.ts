@@ -76,6 +76,26 @@ describe('selectQuestionsForConceptNode (F4 知识图谱节点一键抽题自测
     expect(result.reason).toContain('折叠跳过 1 道同型变式');
   });
 
+  it('returns ready immediately on cold-start concept nodes with only 1-2 unattempted questions', () => {
+    const freshNode = { id: 'concept-ac', title: '交变电流的产生', masteryState: 'unknown' as const, directPrerequisiteIds: [] };
+    const one = selectQuestionsForConceptNode({ node: freshNode, candidates: [q('q-ac-1')] });
+    expect(one.kind).toBe('ready');
+    if (one.kind === 'ready') {
+      expect(one.questionRefs).toEqual(['q-ac-1']);
+      expect(one.reason).toContain('已选取该知识点下的 1 道练习题');
+    }
+    const two = selectQuestionsForConceptNode({
+      node: freshNode,
+      candidates: [q('q-ac-plain'), q('q-ac-red', { isRedPenError: true })],
+    });
+    expect(two.kind).toBe('ready');
+    if (two.kind === 'ready') {
+      expect(two.questionRefs).toEqual(['q-ac-red', 'q-ac-plain']);
+      expect(two.reason).toContain('已选取该知识点下的 2 道练习题');
+      expect(two.reason).toContain('1 道红笔错题');
+    }
+  });
+
   it('returns honest empty fallback without fabricating questions and rejects invalid inputs', () => {
     const empty = selectQuestionsForConceptNode({
       node: baseNode,

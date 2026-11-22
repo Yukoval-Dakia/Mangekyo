@@ -181,19 +181,23 @@ function compareCandidates(a: NormalizedCandidate, b: NormalizedCandidate): numb
 
 function buildReason(selected: readonly NormalizedCandidate[], foldedCount: number): string {
   const parts: string[] = [];
-  const urgent = selected.filter(
-    item => item.priority === 'red-pen-error' || item.priority === 'unmastered-wrong',
-  ).length;
+  const redPen = selected.filter(item => item.priority === 'red-pen-error').length;
+  const wrong = selected.filter(item => item.priority === 'unmastered-wrong').length;
   const hinted = selected.filter(item => item.priority === 'hinted-only-correct').length;
   const unverified = selected.filter(item => item.priority === 'unverified-high-info').length;
   const stale = selected.filter(item => item.priority === 'stale-review').length;
-  if (urgent > 0) parts.push(`优先纳入 ${urgent} 道未独立做对或红笔错题`);
+  const hasPrereq = selected.some(item => item.scope === 'prerequisite');
+  if (redPen > 0) parts.push(`优先纳入 ${redPen} 道红笔错题`);
+  if (wrong > 0) parts.push(`${redPen > 0 ? '' : '优先纳入 '}${wrong} 道未独立做对题`);
   if (hinted > 0) parts.push(`${hinted} 道曾受助做对题需独立复核`);
   if (unverified > 0) parts.push(`${unverified} 道尚待核对题补足辨别证据`);
   if (stale > 0) parts.push(`${stale} 道距今较久题间隔复测`);
-  if (selected.some(item => item.scope === 'prerequisite')) parts.push('并衔接直接先修薄弱点');
+  if (hasPrereq) parts.push('并衔接直接先修薄弱点');
   if (foldedCount > 0) parts.push(`已按母题原型折叠跳过 ${foldedCount} 道同型变式`);
-  return `精选 ${selected.length} 题：${parts.join('，')}。`;
+  const lead = hasPrereq
+    ? `已选取 ${selected.length} 道练习题`
+    : `已选取该知识点下的 ${selected.length} 道练习题`;
+  return `${lead}：${parts.join('，')}。`;
 }
 
 export function selectQuestionsForConceptNode(input: SelectNodePracticeInput): NodePracticeSelection {
