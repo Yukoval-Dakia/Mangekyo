@@ -2,13 +2,15 @@ import { projectArtifactMountTrace } from '../../executors/teaching/artifact-tra
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
 import { createCommandReadContext, FactNotFoundError, FactReadDeniedError, snapshotFactReaders } from '../../kernel/src/commands/reads.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, type FactId, type LearnerId, type Revision } from '../../kernel/src/declarations/ids.ts';
+import { factId, type FactId, type LearnerId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
+import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { manifestFactInputs, revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { effectBudgetUsage } from '../../kernel/src/work/effects.ts';
 import { projectRetentionHandoff, readAiActivity } from '../../modules/activity/ai-activity.ts';
 import { mapConceptForecastInputs, readConceptAttemptEvidence } from '../../modules/activity/concept-evidence.ts';
+import { projectGraphMastery } from '../../modules/activity/graph-mastery-evidence.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { verifyWorkspaceEntryBasis, workspaceEntry } from '../../modules/activity/workspace-values.ts';
 import { readActiveNotionSelectionSummary } from '../../modules/capture/notion-source.ts';
@@ -30,6 +32,7 @@ import { checkStudioNotionFact, notionReadScope, savedNotionWitnesses, type Chec
 import { readWorksheetById, researchReader } from './research-sources.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { RequestError } from './sessions.ts';
+import type { TextbookPulseHost } from './textbook-pulse.ts';
 
 const isUnavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 const hasRemoteNotion = () => Boolean(process.env.MANGEKYO_NOTION_TEST_ORIGIN || process.env.MANGEKYO_NOTION_TOKEN);
@@ -51,7 +54,7 @@ function gatedReader(tx: ReadTransaction, readers: ReturnType<typeof snapshotFac
   return { ...base, fact };
 }
 
-export function openTransparency(db: Db, learner: LearnerId = studioLearner) {
+export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner: LearnerId = studioLearner) {
   const settingsId = factId(stableId('research-settings', learner));
   const readScope = <T>(run: (tx: ReadTransaction, check: CheckNotionRead) => Promise<T>) =>
     notionReadScope(db, learner, { readOnly: true }).read(run);
@@ -87,14 +90,33 @@ export function openTransparency(db: Db, learner: LearnerId = studioLearner) {
         const read = gatedReader(tx, readers, use, check);
         const storageRead = { ...createCommandReadContext(tx, use), fact: read.fact };
         const graph = await readAuthorizedKnowledgeGraph(tx, graphAccess(tx, read, use, check));
-        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageRead, graph.questionConceptLinks, isUnavailable);
-        const retention = await readRetention(tx, check);
         const misconceptions = await readActiveMisconceptionConceptIds(tx, {
           readStorage: read, isUnavailable,
           openHypothesisObject: data => openHypothesisObject(tx, data, () => true, hypothesisCheck(check)),
           openObjectiveCitations: refs => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
         });
         const conceptIds = graph.nodes.map(node => node.id);
+        if (pulseHost) {
+          const reopen = async (refs: readonly BusWitness[]) => {
+            const opened: BusWitness[] = [];
+            for (const ref of refs) {
+              try {
+                const fact = await read.reopen(ref);
+                if (fact.ref.id === ref.id && fact.ref.rev === ref.rev && fact.accessEpoch === ref.accessEpoch &&
+                    (!ref.type || fact.type === ref.type) && await verifyNotion(tx, fact, use, check)) opened.push(ref);
+              } catch {}
+            }
+            return opened;
+          };
+          const graphMastery = await projectGraphMastery({tx, links: graph.questionConceptLinks,
+            read, python: pulseHost.python, reopen, isUnavailable, scope: {learner: tx.learner, purpose: use, recipientId: tx.learner,
+            asOf, clockWatermark: ((await tx.query<{clock:string | null}>(
+              'SELECT max(changed_tick)::text AS clock FROM facts WHERE learner_id=$1', [tx.learner],
+            )).rows[0]?.clock ?? '0') as Tick}, concepts: conceptIds, activeMisconceptionConceptIds: misconceptions});
+          return composeKnowledgeGraphResponse(asOf, graph, graphMastery.mastery);
+        }
+        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageRead, graph.questionConceptLinks, isUnavailable);
+        const retention = await readRetention(tx, check);
         const { rows, conceptsByQuestion } = mapConceptForecastInputs(
           retention.forecasts.flatMap(({ view, forecast, facts }) => view.kind === 'forecast' && forecast.estimate.kind === 'probabilistic' ? [{
             effectiveTick: view.effectiveTick, observedThrough: forecast.input.observedThrough, probability: forecast.estimate.probability,

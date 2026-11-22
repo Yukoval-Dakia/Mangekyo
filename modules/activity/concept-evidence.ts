@@ -4,7 +4,7 @@ import {
   readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, workbookItemHistory,
   type ActivityEvidenceReadScope,
 } from './evidence-read.ts';
-import { controlledWorkbookHelp } from './evidence-slice.ts';
+import { controlledWorkbookHelp, type ActivityEvidenceObservation } from './evidence-slice.ts';
 import { reopenControlledHelpBasis, type HelpTarget } from './help-exposure-values.ts';
 import {
   issuedPosttestPaper, posttestIssuance, posttestIssuanceType, posttestSubmissionType,
@@ -16,10 +16,12 @@ export type ConceptEvidenceRow = {
   readonly conceptId: FactId;
   readonly submission: { readonly id: FactId; readonly rev: Revision; readonly type: string };
   readonly questionId: FactId;
+  readonly questionRev: Revision;
   readonly occurredAt: string;
   readonly recordedTick: Tick;
   readonly outcome: 'correct' | 'incorrect' | 'unknown';
   readonly exposure: 'independent' | 'exposed' | 'unknown';
+  readonly helpLevel: ActivityEvidenceObservation['helpLevel'];
   readonly basisRefs: readonly { readonly id: FactId; readonly rev: Revision; readonly type: string }[];
 };
 
@@ -142,7 +144,8 @@ export async function readConceptAttemptEvidence(
       submission.ref, birth.tick, mounts, events, omitted || visible.length !== releases.length,
       releases.some(release => release.competing_submission),
     );
-    if (process.helpLevel === 'independent' && (await workbookItemHistory(tx, target, birth.tick)).cross_help) {
+    if (process.helpLevel === 'independent' &&
+        (await workbookItemHistory(tx, target, birth.tick, issuanceFact.ref.id, issuedBirth.tick)).cross_help) {
       process = { ...process, exposure: { kind: 'unknown', reason: 'incomplete-observation' }, helpLevel: 'unknown' };
     }
 
@@ -156,10 +159,12 @@ export async function readConceptAttemptEvidence(
         conceptId: link.conceptId,
         submission: { id: submission.ref.id, rev: submission.ref.rev, type: submission.type },
         questionId: link.questionId,
+        questionRev: link.questionRev,
         occurredAt: attempt.submittedAt,
         recordedTick: birth.tick,
         outcome,
         exposure,
+        helpLevel: process.helpLevel,
         basisRefs: [
           { id: issuanceFact.ref.id, rev: issuanceFact.ref.rev, type: issuanceFact.type },
           { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type },

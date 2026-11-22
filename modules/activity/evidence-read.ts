@@ -229,9 +229,12 @@ export async function workbookWitnessesBy(
 
 /** Private veto over immutable event births. A new revision of the same source cannot erase exposure.
  * Positive evidence still requires the exact authorized source revision and access epoch.
+ * `windowStart` scopes only cross-paper answer feedback to a controlled posttest's open window;
+ * old feedback is valid spacing evidence, while hints and solutions remain lifetime vetoes.
  */
 export async function workbookItemHistory(
   tx: ActivityEvidenceReadScope, target: WorkbookHistoryTarget, before: Tick, ownIssuance?: FactId,
+  windowStart?: Tick,
 ) {
   const { rows: [row] } = await tx.query<{ seen: boolean; cross_help: boolean }>(
     `WITH fence AS (
@@ -261,12 +264,12 @@ export async function workbookItemHistory(
         CROSS JOIN LATERAL jsonb_array_elements(r.data->'questions') q CROSS JOIN item
       WHERE (r.paper_id=$2 AND q->>'id'=$4) OR q->'sourceQuestionRef'->>'id'=item.source_id
     ), assignments AS (
-      SELECT r.data, f.type FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
+      SELECT r.data, f.type, r.tick FROM fact_revs r JOIN facts f ON (f.learner_id,f.id)=(r.learner_id,r.fact_id)
         JOIN commands c ON (c.learner_id,c.id)=(r.learner_id,r.command_id)
       WHERE r.learner_id=$1 AND r.rev=1 AND r.author='learner' AND r.tick<(SELECT tick FROM fence) AND c.type=$10
         AND f.type=ANY($11::text[])
     ), attempted AS (
-      SELECT DISTINCT m.paper_id, m.controlled,
+      SELECT DISTINCT m.paper_id, m.controlled, a.tick::text AS attempted_at,
         EXISTS (SELECT 1 FROM jsonb_array_elements(a.data->'feedback') b
           WHERE b->>'questionId'=m.item_id AND b->>'result'<>'unanswered') AS feedback
       FROM assignments a CROSS JOIN item CROSS JOIN LATERAL jsonb_array_elements(a.data->'paper'->'questions') q
@@ -292,13 +295,14 @@ export async function workbookItemHistory(
     )
     SELECT EXISTS (SELECT 1 FROM matches WHERE controlled) OR EXISTS (SELECT 1 FROM attempted)
         OR EXISTS (SELECT 1 FROM helped) OR EXISTS (SELECT 1 FROM presented) AS seen,
-      EXISTS (SELECT 1 FROM attempted WHERE paper_id<>$2 AND feedback) OR
+      EXISTS (SELECT 1 FROM attempted WHERE paper_id<>$2 AND feedback
+        AND ($17::bigint IS NULL OR attempted_at::bigint>=$17::bigint)) OR
         EXISTS (SELECT 1 FROM helped WHERE paper_id<>$2) OR
         EXISTS (SELECT 1 FROM presented WHERE paper_id<>$2 AND kind='solution') AS cross_help`,
     [tx.learner, target.paper.id, target.paper.rev, target.itemId, before, ownIssuance ?? null,
       [workbookPaperType, retentionPaperType], posttestIssuanceType, issuePosttestCommand, submitWorkbookAttemptCommand,
       [workbookAttemptType, posttestSubmissionType], helpExposureType, recordHelpExposureCommand, posttestSubmissionType,
-      workbookPresentationType, recordWorkbookPresentationCommand],
+      workbookPresentationType, recordWorkbookPresentationCommand, windowStart ?? null],
   );
   if (!row) throw new Error('Missing workbook item safety result');
   return row;
@@ -307,9 +311,10 @@ export async function workbookItemHistory(
 export async function validatesWorkbookHistory(
   tx: ActivityEvidenceReadScope, target: WorkbookHistoryTarget & { condition: string },
   before: Tick, ownIssuance?: FactId, independent = false,
+  windowStart?: Tick,
 ) {
   if (target.condition !== 'variant' && !independent) return true;
-  const { seen, cross_help } = await workbookItemHistory(tx, target, before, ownIssuance);
+  const { seen, cross_help } = await workbookItemHistory(tx, target, before, ownIssuance, windowStart);
   return !(target.condition === 'variant' && seen) && !(independent && cross_help);
 }
 

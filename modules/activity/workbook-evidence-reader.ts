@@ -149,7 +149,8 @@ export function workbookEvidenceReader<Tx extends ActivityEvidenceReadScope>({
       }
       process = await readExposure(tx, read, target, submission.ref, birth.tick);
     }
-    if (controlled && process.helpLevel === 'independent' && (await workbookItemHistory(tx, target, birth.tick)).cross_help) {
+    if (controlled && release && process.helpLevel === 'independent' &&
+        (await workbookItemHistory(tx, target, birth.tick, release.issued.fact.ref.id, release.issued.tick)).cross_help) {
       process = activityHelpProcess({ kind: 'unknown', reason: 'incomplete-observation', evidenceRefs: [] }, []);
     }
     let formal: ReturnType<typeof formalItemOutcome>;

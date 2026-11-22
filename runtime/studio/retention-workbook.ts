@@ -7,6 +7,7 @@ import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.
 import { readStudioNotionSource, type CheckNotionRead } from './notion.ts';
 import { workbookEvidenceReader } from '../../modules/activity/workbook-evidence-reader.ts';
 import type { SourceRefV1 } from '../../modules/activity/source-values.ts';
+import { assetType } from '../../modules/content/asset.ts';
 import { knowledgeEdgeType, workspaceEntryType } from '../../modules/content/knowledge-edge.ts';
 import { readPosttestIssuance, type PosttestFactReader } from './retention-posttest.ts';
 import { RequestError } from './sessions.ts';
@@ -53,7 +54,7 @@ async function trackSource(tx: ReadTransaction, read: PosttestFactReader, refere
 }
 
 export const studioWorkbookEvidence = (as: string, maySend: WorkspaceSourceRecipient,
-  readIssuance = readPosttestIssuance, questionType: string | readonly string[] = workspaceEntryType) => workbookEvidenceReader<ReadTransaction>({
+  readIssuance = readPosttestIssuance, questionType: string | readonly string[] = [workspaceEntryType,assetType]) => workbookEvidenceReader<ReadTransaction>({
   trackSource: (tx,read,ref) => trackSource(tx,read,ref,as,maySend),
   async reopenCapsule(tx, read, basis) {
     const teaching = selectedWorkbookRead(tx,retentionPurpose,createCommandReadContext(tx,retentionPurpose));

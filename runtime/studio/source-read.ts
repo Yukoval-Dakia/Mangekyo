@@ -34,6 +34,14 @@ export type SourceAccess = {
   | {recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string; ownerNotionRead?: true}
 );
 
+function conceptAsset(fact: FactSnapshot) {
+  const asset = parseAsset(fact.value);
+  if (asset.kind !== 'concept' || !asset.title.trim()) return;
+  const content = asset.blocks.map(block => block.body.kind === 'text'
+    ? block.body.text : block.body.kind === 'formula' ? block.body.latex : '').filter(Boolean).join('\n\n');
+  return {title: asset.title, content: content || asset.title};
+}
+
 export function sourcePurpose(access: SourceAccess): string {
   return access.recipient === 'learner' ? storagePurpose : access.purpose ?? purpose;
 }
@@ -137,6 +145,8 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
         if (!pinnedQuestion && anchor.kind === 'question' && anchor.itemId === 'question') {
           const question = parseAsset(original.value);
           if (question.kind !== 'question' || !questionPrompt(question)) return;
+        } else if (!pinnedQuestion && anchor.kind === 'whole' && conceptAsset(original)) {
+          // A canonical knowledge entity is readable as a whole concept.
         } else if (!pinnedQuestion && !await openArithmeticPractice(reader,original.ref.id,original)) return;
       } else if (!project(original, anchor, access.recipient)) return;
     }
@@ -144,6 +154,12 @@ export async function resolveSource(tx: ReadTransaction, input: unknown, access:
     if (!fact) return;
     if (fact.type === assetType && !pinnedQuestion) {
       if (anchor.kind !== 'whole' && (anchor.kind !== 'question' || anchor.itemId !== 'question')) return;
+      const concept = anchor.kind === 'whole' ? conceptAsset(fact) : undefined;
+      if (concept) {
+        access.track?.(fact, reference ? mode : 'following');
+        return {id:fact.ref.id,rev:fact.ref.rev,sourceRef:sourceReference(fact,anchor),
+          kind:'concept' as const,title:concept.title,content:concept.content};
+      }
       const result = await openArithmeticPractice(reader,fact.ref.id,fact);
       const question = result ?? (() => {
         const asset = parseAsset(fact.value);
