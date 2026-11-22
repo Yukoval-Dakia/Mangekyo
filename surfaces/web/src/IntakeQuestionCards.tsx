@@ -65,6 +65,8 @@ type BankReceipt = {
 
 type ActionKind = 'workbook' | 'bank' | 'classroom';
 
+type StatusFilter = 'all' | 'red' | 'clarify';
+
 const questionKindLabels = {
   single_choice: '单选',
   multiple_choice: '多选',
@@ -112,6 +114,8 @@ export function IntakeQuestionCards({
   initialCards,
   settings,
   onNavigate,
+  pageCount,
+  onSelectPage,
 }: {
   materialId: string;
   materialTitle: string;
@@ -120,6 +124,8 @@ export function IntakeQuestionCards({
   initialCards: readonly IntakeQuestionCard[];
   settings?: Settings | undefined;
   onNavigate?: ((href: string) => void) | undefined;
+  pageCount?: number | null | undefined;
+  onSelectPage?: ((page: number) => void) | undefined;
 }) {
   const [bundle, setBundle] = useState<IntakeQuestionCardBundle>(() => ({
     materialId,
@@ -139,6 +145,8 @@ export function IntakeQuestionCards({
   const [tagEditor, setTagEditor] = useState<ReadonlySet<string>>(new Set());
   const [tagDrafts, setTagDrafts] = useState<ReadonlyMap<string, string>>(new Map());
   const [linkConcepts, setLinkConcepts] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [pageFilter, setPageFilter] = useState<number | null>(null);
   const loadedKey = useRef<string | null>(null);
   const fetchedKey = useRef<string | null>(null);
   const initialCardsRef = useRef(initialCards);
@@ -149,7 +157,31 @@ export function IntakeQuestionCards({
   const cards = bundle.questionCards;
   const cardsKey = useMemo(() => cards.map(card => card.draftId).join('\n'), [cards]);
   const redPenErrors = cards.filter(card => card.isRedPenError);
+  const needsClarification = cards.filter(card => Boolean(card.unclearNotice));
   const chosen = selectedCards(cards, selected);
+  const chosenRedPenErrors = chosen.filter(card => card.isRedPenError);
+  const cardPages = useMemo(
+    () => [
+      ...new Set(
+        cards
+          .map(card => card.pageNumber)
+          .filter((page): page is number => typeof page === 'number' && Number.isSafeInteger(page) && page > 0),
+      ),
+    ].sort((left, right) => left - right),
+    [cards],
+  );
+  const pageOptions = useMemo(
+    () => ((typeof pageCount === 'number' && pageCount > 1 && cardPages.length > 0) || cardPages.length > 1
+      ? cardPages
+      : []),
+    [cardPages, pageCount],
+  );
+  const visibleCards = cards.filter(card => {
+    if (statusFilter === 'red' && !card.isRedPenError) return false;
+    if (statusFilter === 'clarify' && !card.unclearNotice) return false;
+    if (pageFilter !== null && card.pageNumber !== pageFilter) return false;
+    return true;
+  });
   function tagsForCard(card: IntakeQuestionCard) {
     return normalizeConceptTags(conceptTags.get(card.draftId) ?? card.conceptTags);
   }
@@ -226,6 +258,10 @@ export function IntakeQuestionCards({
     setTagEditor(current => new Set([...current].filter(id => cards.some(card => card.draftId === id))));
     setTagDrafts(current => new Map([...current].filter(([id]) => cards.some(card => card.draftId === id))));
   }, [cards, cardsKey]);
+
+  useEffect(() => {
+    if (pageFilter !== null && !pageOptions.includes(pageFilter)) setPageFilter(null);
+  }, [pageFilter, pageOptions]);
 
   function updateSelection(cardsToSelect: readonly IntakeQuestionCard[], replace = false) {
     setSelected(current => {
@@ -360,23 +396,122 @@ export function IntakeQuestionCards({
 
   if (cards.length === 0) return null;
 
+  const filterScope = pageFilter === null ? '当前筛选' : `第 ${pageFilter} 页`;
+  const filterKind = statusFilter === 'red'
+    ? '红笔错题'
+    : statusFilter === 'clarify'
+      ? '需要人工核对的题目'
+      : '题目';
+
   return (
     <section className="intake-question-cards" id="intake-question-cards" aria-labelledby="intake-question-cards-title">
       <header className="intake-cards-head">
         <div>
           <h2 id="intake-question-cards-title">逐题核对卡</h2>
-          <p>共 {cards.length} 题 · {redPenErrors.length} 处红笔错题{loading ? ' · 正在刷新' : ''}</p>
+          <p>
+            共 {cards.length} 题
+            {redPenErrors.length > 0 && ` · ${redPenErrors.length} 处红笔错题`}
+            {needsClarification.length > 0 && ` · ${needsClarification.length} 题需人工核对`}
+            {loading ? ' · 正在刷新' : ''}
+          </p>
         </div>
         <div className="intake-cards-filters" role="group" aria-label="快捷勾选">
           {redPenErrors.length > 0 && (
-            <button type="button" onClick={() => updateSelection(redPenErrors, true)}>仅选红笔错题</button>
+            <button type="button" onClick={() => updateSelection(redPenErrors, true)}>
+              仅选红笔错题 ({redPenErrors.length})
+            </button>
           )}
           <button type="button" onClick={() => updateSelection(cards, true)}>全选</button>
           <button type="button" onClick={() => updateSelection([], true)}>清空</button>
         </div>
       </header>
+      <div className="intake-filter-bar">
+        <div className="intake-filter-group" role="group" aria-label="按题目状态筛选">
+          <button
+            type="button"
+            className="intake-filter-chip"
+            aria-pressed={statusFilter === 'all'}
+            aria-label={`全部题目，共 ${cards.length} 题`}
+            onClick={() => setStatusFilter('all')}
+          >
+            全部<span className="intake-filter-count">{cards.length}</span>
+          </button>
+          {redPenErrors.length > 0 && (
+            <button
+              type="button"
+              className="intake-filter-chip is-red"
+              aria-pressed={statusFilter === 'red'}
+              aria-label={`只看红笔错题，${redPenErrors.length} 题`}
+              onClick={() => setStatusFilter('red')}
+            >
+              <span className="intake-filter-dot" aria-hidden="true" />
+              红笔错题<span className="intake-filter-count">{redPenErrors.length}</span>
+            </button>
+          )}
+          {needsClarification.length > 0 && (
+            <button
+              type="button"
+              className="intake-filter-chip is-amber"
+              aria-pressed={statusFilter === 'clarify'}
+              aria-label={`只看需人工核对，${needsClarification.length} 题`}
+              onClick={() => setStatusFilter('clarify')}
+            >
+              <span className="intake-filter-dot" aria-hidden="true" />
+              需人工核对<span className="intake-filter-count">{needsClarification.length}</span>
+            </button>
+          )}
+        </div>
+        {pageOptions.length > 0 && (
+          <div className="intake-filter-group" role="group" aria-label="按页码筛选">
+            <button
+              type="button"
+              className="intake-filter-chip"
+              aria-pressed={pageFilter === null}
+              aria-label="显示全部页面的题目"
+              onClick={() => setPageFilter(null)}
+            >
+              全部页
+            </button>
+            {pageOptions.map(page => (
+              <button
+                key={page}
+                type="button"
+                className="intake-filter-chip"
+                aria-pressed={pageFilter === page}
+                aria-label={`只看第 ${page} 页`}
+                onClick={() => {
+                  setPageFilter(page);
+                  onSelectPage?.(page);
+                }}
+              >
+                P{page}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {visibleCards.length !== cards.length && (
+        <p className="intake-filter-result" aria-live="polite">
+          当前显示 {visibleCards.length} / {cards.length} 题，已勾选 {chosen.length} 题不受筛选影响。
+        </p>
+      )}
+      {visibleCards.length === 0 && (
+        <div className="intake-filter-empty">
+          <p role="status">{filterScope}暂时没有{filterKind}，已勾选的题目与概念标签草稿都保留着。</p>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setStatusFilter('all');
+              setPageFilter(null);
+            }}
+          >
+            查看全部题目
+          </button>
+        </div>
+      )}
       <ul>
-        {cards.map(card => {
+        {visibleCards.map(card => {
           const isSelected = selected.has(card.draftId);
           const tags = tagsForCard(card);
           const editorOpen = tagEditor.has(card.draftId);
@@ -501,7 +636,10 @@ export function IntakeQuestionCards({
         })}
       </ul>
       <footer>
-        <span aria-live="polite">已选 {chosen.length} 题</span>
+        <span aria-live="polite">
+          已选 {chosen.length} / 共 {cards.length} 题
+          {redPenErrors.length > 0 && `（含 ${chosenRedPenErrors.length} 道红笔错题）`}
+        </span>
         <label className="intake-link-concepts">
           <input
             type="checkbox"
