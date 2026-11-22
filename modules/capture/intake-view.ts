@@ -2,12 +2,15 @@ import {
   canRetryVisionExtraction,
   intakeResearchPurpose,
   materialTextLimit,
+  retryableVisionPages,
   type IntakeDocument,
   type IntakeExtraction,
   type IntakeExtractionStage,
+  type IntakePageExtraction,
+  type IntakePageOriginal,
   type IntakeRequestedExtraction,
 } from './intake-values.ts';
-import type { StructuredPaperDrafts } from './vision-paper-ocr.ts';
+import { visionOcrSupports, type StructuredPaperDrafts } from './vision-paper-ocr.ts';
 
 export type IntakeMetadata = {
   readonly id: string;
@@ -21,6 +24,10 @@ export type IntakeMetadata = {
   readonly intakeStatus: IntakeExtractionStage;
   readonly drafts?: StructuredPaperDrafts;
   readonly original: { readonly name: string; readonly mediaType: string; readonly size: number; readonly sha256: string };
+  readonly originals?: readonly IntakePageOriginal[];
+  readonly pageCount: number | null;
+  readonly pageExtractions?: readonly IntakePageExtraction[];
+  readonly retryableVisionPages: readonly number[];
   readonly corrected: boolean;
   readonly canRetryVision: boolean;
   readonly backgroundResearch?: 'allowed' | 'private' | 'all';
@@ -31,7 +38,7 @@ function projectIntakeStatus(document: IntakeDocument): IntakeExtractionStage {
   const { extraction } = document;
   if (extraction.status === 'pending') return extraction.stage ?? 'queued';
   if (extraction.status === 'failed') return 'failed';
-  if (extraction.method === 'vision_fallback') return 'fallback';
+  if (extraction.method === 'vision_fallback' || extraction.stage === 'fallback') return 'fallback';
   return 'ready';
 }
 
@@ -40,6 +47,8 @@ export function projectIntakeMetadata(document: IntakeDocument, material: {title
   const fullText = document.extraction.status === 'failed' || document.extraction.status === 'pending'
     ? null : document.extraction.text;
   const truncated = document.extraction.truncated || (fullText !== null && fullText.length > materialTextLimit);
+  const pageCount = document.extraction.pages ?? document.originals?.length ??
+    (visionOcrSupports(document.original.mediaType) ? 1 : null);
   return {
     id: document.materialId,
     title: material.title,
@@ -53,6 +62,10 @@ export function projectIntakeMetadata(document: IntakeDocument, material: {title
     intakeStatus: projectIntakeStatus(document),
     ...(document.extraction.drafts ? { drafts: document.extraction.drafts } : {}),
     original: document.original,
+    ...(document.originals ? { originals: document.originals } : {}),
+    pageCount,
+    ...(document.extraction.pageExtractions ? { pageExtractions: document.extraction.pageExtractions } : {}),
+    retryableVisionPages: retryableVisionPages(document),
     corrected: document.extraction.status === 'corrected',
     canRetryVision: canRetryVisionExtraction(document),
     ...(document.extraction.status === 'corrected' && document.extraction.method === 'learner' ? {

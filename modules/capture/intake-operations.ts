@@ -1,17 +1,22 @@
 import { factId, FactNotFoundError, type FactId } from '@mangekyo/kernel';
 import materialFact from '@mangekyo/module-content/facts/material';
 import {
+  appendIntakePagesInput,
   correctIntakeInput,
+  IntakeAppendPagesConflict,
   intakeDocument,
   intakeFileLimit,
   intakeFilename,
+  intakeMultiPageBodyLimit,
   intakeOriginal,
   IntakeResearchConflict,
   intakeResearchPermission,
   IntakeVisionRetryConflict,
   intakeTextLimit,
   intakeTitle,
+  maxIntakePhotoPages,
   type IntakeOriginal,
+  type IntakePageOriginal,
   type IntakeRequestedExtraction,
   retryVisionIntakeInput,
 } from './intake-values.ts';
@@ -31,6 +36,28 @@ export type IntakeCaptureInput = {
   readonly bytes: Uint8Array;
 };
 
+export type IntakePageFileInput<Bytes extends Uint8Array = Uint8Array> = {
+  readonly filename?: unknown;
+  readonly declaredType?: unknown;
+  readonly bytes: Bytes;
+};
+
+export type IntakeMultiPageCaptureInput<Bytes extends Uint8Array = Uint8Array> = {
+  readonly requestId: unknown;
+  readonly title?: unknown;
+  readonly extraction?: unknown;
+  readonly deletionWatermark?: unknown;
+  readonly pages: readonly IntakePageFileInput<Bytes>[];
+};
+
+export type IntakeAppendPagesInput<Bytes extends Uint8Array = Uint8Array> = {
+  readonly materialId: unknown;
+  readonly requestId: unknown;
+  readonly expectedRev: unknown;
+  readonly expectedMaterialRev?: unknown;
+  readonly pages: readonly IntakePageFileInput<Bytes>[];
+};
+
 export type IntakeCorrectInput = {
   readonly expectedRev: unknown;
   readonly materialId: unknown;
@@ -43,6 +70,7 @@ export type IntakeRetryVisionInput = {
   readonly expectedRev: unknown;
   readonly requestId: unknown;
   readonly expectedMaterialRev?: unknown;
+  readonly pages?: unknown;
 };
 
 export type DetectedDocument = { readonly kind: string; readonly mediaType: string };
@@ -88,31 +116,47 @@ export function intakeFormText(form: FormData, field: string): string | undefine
   return values[0];
 }
 
+function multipartFiles(form: FormData, allowMultiple = true): readonly File[] {
+  const hasFile = form.getAll('file').length > 0;
+  const hasFiles = form.getAll('files').length > 0;
+  if (hasFile && hasFiles) {
+    throw new RequestError(400, '请统一使用 file 或 files 字段上传文件，不要混用。');
+  }
+  const files: File[] = [];
+  for (const [key, value] of form.entries()) {
+    if (key !== 'file' && key !== 'files') continue;
+    if (!value || typeof value === 'string') throw new RequestError(400, '文件表单字段无效。');
+    files.push(value);
+  }
+  if (files.length === 0) throw new RequestError(400, '请选择一个文件。');
+  if (!allowMultiple && files.length !== 1) throw new RequestError(400, '请选择一个文件。');
+  return files;
+}
+
 export function parseMultipartIntakeForm(
   form: FormData,
   hasPapers: boolean,
   parseWatermark: (input: { deletionWatermark?: unknown }) => string,
+  options?: { readonly allowMultiple?: boolean },
 ) {
-  const file = form.get('file');
-  if (!file || typeof file === 'string' || form.getAll('file').length !== 1) {
-    throw new RequestError(400, '请选择一个文件。');
-  }
+  const files = multipartFiles(form, options?.allowMultiple ?? true);
   const watermark = parseWatermark({ deletionWatermark: intakeFormText(form, 'deletionWatermark') });
   const intent = intakeFormText(form, 'intent');
-  const fields = {
-    deletionWatermark: watermark,
-    requestId: intakeFormText(form, 'requestId'),
-    title: intakeFormText(form, 'title'),
-    extraction: intakeFormText(form, 'extraction'),
-    filename: file.name,
-    declaredType: file.type,
-  };
   if (intent === 'paper-return' && hasPapers) {
+    if (files.length !== 1) throw new RequestError(400, '纸卷拍回单次仅支持上传一个文件。');
+    const file = files[0]!;
     return {
       kind: 'paper-return' as const,
       file,
       watermark,
-      fields,
+      fields: {
+        deletionWatermark: watermark,
+        requestId: intakeFormText(form, 'requestId'),
+        title: intakeFormText(form, 'title'),
+        extraction: intakeFormText(form, 'extraction'),
+        filename: file.name,
+        declaredType: file.type,
+      },
       paperFields: {
         issuanceId: intakeFormText(form, 'issuanceId'),
         page: intakeFormText(form, 'page'),
@@ -122,9 +166,58 @@ export function parseMultipartIntakeForm(
     };
   }
   if (intent === undefined) {
-    return { kind: 'capture' as const, file, watermark, fields };
+    if (files.length === 1) {
+      const file = files[0]!;
+      return {
+        kind: 'capture' as const,
+        file,
+        files,
+        watermark,
+        fields: {
+          deletionWatermark: watermark,
+          requestId: intakeFormText(form, 'requestId'),
+          title: intakeFormText(form, 'title'),
+          extraction: intakeFormText(form, 'extraction'),
+          filename: file.name,
+          declaredType: file.type,
+        },
+      };
+    }
+    if (files.length > maxIntakePhotoPages) {
+      throw new RequestError(400, `单次最多合并 ${maxIntakePhotoPages} 页试卷照片。`);
+    }
+    return {
+      kind: 'capture-pages' as const,
+      files,
+      watermark,
+      fields: {
+        deletionWatermark: watermark,
+        requestId: intakeFormText(form, 'requestId'),
+        title: intakeFormText(form, 'title'),
+        extraction: intakeFormText(form, 'extraction'),
+      },
+    };
   }
   throw new RequestError(400, '交入用途无效。');
+}
+
+export function parseMultipartAppendPagesForm(form: FormData) {
+  const files = multipartFiles(form);
+  if (files.length >= maxIntakePhotoPages) {
+    throw new RequestError(400, `单次续拍最多追加 ${maxIntakePhotoPages - 1} 页照片。`);
+  }
+  const expectedRevRaw = intakeFormText(form, 'expectedRev');
+  const expectedMaterialRevRaw = intakeFormText(form, 'expectedMaterialRev');
+  const expectedRev = expectedRevRaw !== undefined && /^[1-9]\d*$/.test(expectedRevRaw) ? Number(expectedRevRaw) : NaN;
+  const expectedMaterialRev = expectedMaterialRevRaw === undefined
+    ? undefined
+    : /^[1-9]\d*$/.test(expectedMaterialRevRaw) ? Number(expectedMaterialRevRaw) : NaN;
+  return {
+    files,
+    requestId: intakeFormText(form, 'requestId'),
+    expectedRev,
+    ...(expectedMaterialRev === undefined ? {} : { expectedMaterialRev }),
+  };
 }
 
 export function requireHeaderRequestId(headers: Record<string, string | string[] | undefined>): string {
@@ -188,6 +281,174 @@ export function prepareIntakeCapture<Detected extends DetectedDocument>(
   return { requestId, materialId, deletionWatermark, detected, title, original };
 }
 
+export function prepareIntakeMultiPageCapture<Detected extends DetectedDocument, Bytes extends Uint8Array = Uint8Array>(
+  input: IntakeMultiPageCaptureInput<Bytes>,
+  deps: {
+    readonly isBuffer: (value: unknown) => boolean;
+    readonly materialIdFor: (requestId: string) => FactId;
+    readonly parseWatermark: (input: { deletionWatermark?: unknown }) => string;
+    readonly identify: (bytes: Uint8Array, extension: string, declaredType: unknown) => Detected | null;
+    readonly sha256: (bytes: Uint8Array) => string;
+  },
+) {
+  const requestId = clientRequest(input.requestId);
+  if (!Array.isArray(input.pages) || input.pages.length === 0) {
+    throw new RequestError(400, '请选择要交入的文件。');
+  }
+  if (input.pages.length > maxIntakePhotoPages) {
+    throw new RequestError(400, `单次最多合并 ${maxIntakePhotoPages} 页试卷照片。`);
+  }
+  if (input.pages.length > 1 && input.extraction !== undefined && input.extraction !== 'vision_llm') {
+    throw new RequestError(400, '多页合并拍卷仅支持视觉模型识别。');
+  }
+  const materialId = deps.materialIdFor(requestId);
+  const deletionWatermark = deps.parseWatermark(input);
+  let totalBytes = 0;
+  const pages: { readonly page: number; readonly bytes: Bytes; readonly detected: Detected; readonly original: IntakePageOriginal }[] = [];
+  for (let index = 0; index < input.pages.length; index += 1) {
+    const entry = input.pages[index]!;
+    if (!deps.isBuffer(entry.bytes) || entry.bytes.length === 0) {
+      throw new RequestError(400, `第 ${index + 1} 页文件为空。`);
+    }
+    if (entry.bytes.length > intakeFileLimit) {
+      throw new RequestError(413, `第 ${index + 1} 页文件超过 25 MB。`);
+    }
+    totalBytes += entry.bytes.length;
+    if (totalBytes > intakeMultiPageBodyLimit) {
+      throw new RequestError(413, '多页合并文件总大小超过 60 MB。');
+    }
+    const filename = intakeFilename(entry.filename);
+    const detected = deps.identify(entry.bytes, extensionOf(filename), entry.declaredType);
+    if (!detected || (input.pages.length > 1 && !visionOcrSupports(detected.mediaType))) {
+      throw new RequestError(415, '多页合并拍卷仅支持照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF/WebP）。');
+    }
+    const name = filename || `试卷第${index + 1}页`;
+    const sha256 = deps.sha256(entry.bytes);
+    try {
+      const base = intakeOriginal({ name, mediaType: detected.mediaType, size: entry.bytes.length, sha256 });
+      pages.push({ page: index + 1, bytes: entry.bytes, detected, original: { ...base, page: index + 1 } });
+    } catch (error) {
+      throw new RequestError(400, error instanceof Error ? error.message : '交入材料无效。');
+    }
+  }
+  const firstOriginal = pages[0]!.original;
+  const baseName = firstOriginal.name.replace(/\.[^.]+$/, '') || '多页试卷';
+  const fallbackTitle = pages.length > 1 ? `${baseName}（共 ${pages.length} 页）` : baseName;
+  const title = intakeTitle(input.title, fallbackTitle);
+  try {
+    materialFact.schema.parse({ title, text: '原件' });
+  } catch (error) {
+    throw new RequestError(400, error instanceof Error ? error.message : '交入标题无效。');
+  }
+  const { page: _firstPage, ...coverOriginal } = firstOriginal;
+  return {
+    requestId,
+    materialId,
+    deletionWatermark,
+    title,
+    original: coverOriginal as IntakeOriginal,
+    originals: pages.map(item => item.original),
+    pages,
+  };
+}
+
+export function matchesMultiPageCaptureReplay(
+  prior: IntakeMetadata,
+  originals: readonly IntakePageOriginal[],
+  title: string,
+  requested: 'local' | 'mineru' | 'vision_llm',
+): boolean {
+  const priorPages: readonly IntakePageOriginal[] = prior.originals && prior.originals.length > 0
+    ? prior.originals
+    : [{ ...prior.original, mediaType: prior.original.mediaType as IntakeOriginal['mediaType'], page: 1 }];
+  if (prior.title !== title || (prior.requestedExtraction ?? 'local') !== requested) return false;
+  if (priorPages.length !== originals.length) return false;
+  return originals.every((page, index) => {
+    const existing = priorPages[index]!;
+    return existing.page === page.page &&
+      existing.sha256 === page.sha256 &&
+      existing.name === page.name &&
+      existing.mediaType === page.mediaType &&
+      existing.size === page.size;
+  });
+}
+
+export function prepareIntakeAppendPages<Detected extends DetectedDocument, Bytes extends Uint8Array = Uint8Array>(
+  input: IntakeAppendPagesInput<Bytes>,
+  intakeIdFor: (id: FactId) => FactId,
+  deps: {
+    readonly isBuffer: (value: unknown) => boolean;
+    readonly identify: (bytes: Uint8Array, extension: string, declaredType: unknown) => Detected | null;
+    readonly sha256: (bytes: Uint8Array) => string;
+  },
+) {
+  const requestId = clientRequest(input.requestId);
+  let materialId: FactId;
+  try {
+    materialId = factId(input.materialId as string);
+  } catch {
+    throw new RequestError(400, '材料标识无效。');
+  }
+  if (!Array.isArray(input.pages) || input.pages.length === 0 || input.pages.length >= maxIntakePhotoPages) {
+    throw new RequestError(400, `单次续拍可追加 1 到 ${maxIntakePhotoPages - 1} 页照片。`);
+  }
+  let totalBytes = 0;
+  const prepared: { readonly bytes: Bytes; readonly original: IntakeOriginal }[] = [];
+  for (let index = 0; index < input.pages.length; index += 1) {
+    const entry = input.pages[index]!;
+    if (!deps.isBuffer(entry.bytes) || entry.bytes.length === 0) {
+      throw new RequestError(400, `第 ${index + 1} 张续拍照片为空。`);
+    }
+    if (entry.bytes.length > intakeFileLimit) {
+      throw new RequestError(413, `第 ${index + 1} 张续拍照片超过 25 MB。`);
+    }
+    totalBytes += entry.bytes.length;
+    if (totalBytes > intakeMultiPageBodyLimit) {
+      throw new RequestError(413, '续拍照片总大小超过 60 MB。');
+    }
+    const filename = intakeFilename(entry.filename);
+    const detected = deps.identify(entry.bytes, extensionOf(filename), entry.declaredType);
+    if (!detected || !visionOcrSupports(detected.mediaType)) {
+      throw new RequestError(415, '续拍加页仅支持照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF/WebP）。');
+    }
+    const name = filename || `续拍第${index + 1}页`;
+    const sha256 = deps.sha256(entry.bytes);
+    try {
+      prepared.push({
+        bytes: entry.bytes,
+        original: intakeOriginal({ name, mediaType: detected.mediaType, size: entry.bytes.length, sha256 }),
+      });
+    } catch (error) {
+      throw new RequestError(400, error instanceof Error ? error.message : '续拍照片无效。');
+    }
+  }
+  try {
+    const data = appendIntakePagesInput({
+      materialId,
+      intakeId: intakeIdFor(materialId),
+      expectedRev: input.expectedRev,
+      ...(input.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: input.expectedMaterialRev }),
+      pages: prepared.map(item => item.original),
+    });
+    return { materialId, requestId, data, pages: prepared };
+  } catch (error) {
+    throw new RequestError(400, error instanceof Error ? error.message : '续拍加页请求无效。');
+  }
+}
+
+export function translateIntakeAppendPagesError(error: unknown, isDenied: boolean): unknown {
+  if (error instanceof IntakeAppendPagesConflict) return new RequestError(409, error.message);
+  if (error instanceof Error && (error.message === 'Fact revision conflict' ||
+      error.message.startsWith('Fact revision conflict'))) {
+    return new RequestError(409, '原文版本已经变更，请刷新后再续拍加页。');
+  }
+  if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '找不到这份原件。');
+  if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
+    return new RequestError(409, '同一个续拍标识已经用于不同照片。');
+  }
+  return error;
+}
+
 export function resolveCaptureExtraction(
   extraction: unknown,
   mediaType: string,
@@ -218,7 +479,9 @@ export function matchesCaptureReplay(
   requested: 'local' | 'mineru' | 'vision_llm',
 ): boolean {
   return (
+    (prior.originals?.length ?? 1) === 1 &&
     prior.original.sha256 === original.sha256 &&
+    prior.original.size === original.size &&
     prior.original.name === original.name &&
     prior.title === title &&
     prior.original.mediaType === mediaType &&
@@ -307,6 +570,7 @@ export function prepareIntakeVisionRetry(input: IntakeRetryVisionInput, intakeId
       intakeId: intakeIdFor(materialId),
       expectedRev: input.expectedRev,
       ...(input.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: input.expectedMaterialRev }),
+      ...(input.pages === undefined ? {} : { pages: input.pages }),
     });
     return { materialId, requestId, data };
   } catch (error) {
@@ -366,12 +630,15 @@ export type IntakeRoute =
   | { readonly kind: 'material-read'; readonly id: string }
   | { readonly kind: 'erasure'; readonly id: string }
   | { readonly kind: 'original'; readonly id: string }
+  | { readonly kind: 'original-page'; readonly id: string; readonly page: number }
+  | { readonly kind: 'append-pages'; readonly id: string }
   | { readonly kind: 'correction'; readonly id: string }
   | { readonly kind: 'research-permission'; readonly id: string }
   | { readonly kind: 'retry-vision'; readonly id: string }
   | { readonly kind: 'method-not-allowed'; readonly error: string };
 
-const materialPathPattern = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction|research-permission|retry-vision|erasure))?$/;
+const materialPathPattern = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|pages|correction|research-permission|retry-vision|erasure))?$/;
+const materialPageOriginalPattern = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/pages\/([1-9]\d*)\/original$/;
 
 export function parseIntakeRoute(pathname: string, method: string | undefined): IntakeRoute | null {
   if (pathname === '/api/lifecycle' && method === 'GET') return { kind: 'lifecycle' };
@@ -380,6 +647,14 @@ export function parseIntakeRoute(pathname: string, method: string | undefined): 
     return method === 'POST'
       ? { kind: 'intake' }
       : { kind: 'method-not-allowed', error: '这个入口只接受交入请求。' };
+  }
+  const pageMatch = materialPageOriginalPattern.exec(pathname);
+  if (pageMatch?.[1] && pageMatch[2]) {
+    const page = Number(pageMatch[2]);
+    if (!Number.isSafeInteger(page) || page < 1 || page > maxIntakePhotoPages) return null;
+    return method === 'GET'
+      ? { kind: 'original-page', id: pageMatch[1], page }
+      : { kind: 'method-not-allowed', error: '分页原件只接受下载。' };
   }
   const match = materialPathPattern.exec(pathname);
   if (!match?.[1]) return null;
@@ -400,6 +675,11 @@ export function parseIntakeRoute(pathname: string, method: string | undefined): 
     return method === 'GET'
       ? { kind: 'original', id }
       : { kind: 'method-not-allowed', error: '原件只接受下载。' };
+  }
+  if (action === 'pages') {
+    return method === 'POST'
+      ? { kind: 'append-pages', id }
+      : { kind: 'method-not-allowed', error: '续拍加页只接受提交。' };
   }
   if (action === 'correction') {
     return method === 'POST'
@@ -469,7 +749,10 @@ export type IntakeHttpAdapter<Bytes extends Uint8Array> = {
   readonly erase: (id: string, input: Record<string, unknown>) => Promise<unknown>;
   readonly metadata: (id: string) => Promise<unknown>;
   readonly original: (id: string) => Promise<{ readonly metadata: Pick<IntakeMetadata, 'original'>; readonly bytes: Bytes }>;
+  readonly originalPage?: (id: string, page: number) => Promise<{ readonly original: Pick<IntakeOriginal, 'name' | 'mediaType'>; readonly bytes: Bytes }>;
   readonly capture: (input: Omit<IntakeCaptureInput, 'bytes'> & { readonly bytes: Bytes }) => Promise<unknown>;
+  readonly capturePages?: (input: IntakeMultiPageCaptureInput<Bytes>) => Promise<unknown>;
+  readonly appendPages?: (input: IntakeAppendPagesInput<Bytes>) => Promise<unknown>;
   readonly paperReturn: (
     input: Omit<IntakeCaptureInput, 'bytes'> & {
       readonly bytes: Bytes;
@@ -522,19 +805,30 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
       let result: unknown;
       let watermark: string;
       if (contentType === 'multipart/form-data') {
-        const bytes = await adapter.readBody(intakeFileLimit + 512 * 1024);
+        const allowMultiPage = Boolean(adapter.capturePages);
+        const bytes = await adapter.readBody((allowMultiPage ? intakeMultiPageBodyLimit : intakeFileLimit) + 512 * 1024);
         let form: FormData;
         try {
           form = await new Response(new Uint8Array(bytes), { headers: { 'Content-Type': rawContentType } }).formData();
         } catch {
           throw new RequestError(400, '文件表单无法读取。');
         }
-        const parsed = parseMultipartIntakeForm(form, adapter.hasPapers, adapter.parseWatermark);
+        const parsed = parseMultipartIntakeForm(form, adapter.hasPapers, adapter.parseWatermark, { allowMultiple: allowMultiPage });
         watermark = parsed.watermark;
-        const upload = { ...parsed.fields, bytes: adapter.fromArrayBuffer(await parsed.file.arrayBuffer()) };
-        result = parsed.kind === 'paper-return'
-          ? await adapter.paperReturn({ ...upload, ...parsed.paperFields })
-          : await adapter.capture(upload);
+        if (parsed.kind === 'capture-pages') {
+          if (!adapter.capturePages) throw new RequestError(400, '当前宿主尚未启用多页合并拍卷。');
+          const pages = await Promise.all(parsed.files.map(async file => ({
+            filename: file.name,
+            declaredType: file.type,
+            bytes: adapter.fromArrayBuffer(await file.arrayBuffer()),
+          })));
+          result = await adapter.capturePages({ ...parsed.fields, pages });
+        } else {
+          const upload = { ...parsed.fields, bytes: adapter.fromArrayBuffer(await parsed.file.arrayBuffer()) };
+          result = parsed.kind === 'paper-return'
+            ? await adapter.paperReturn({ ...upload, ...parsed.paperFields })
+            : await adapter.capture(upload);
+        }
       } else {
         const requestId = requireHeaderRequestId(adapter.headers);
         const bytes = await adapter.readBody(intakeFileLimit);
@@ -575,6 +869,57 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
       return fail(error, '原件未能读取。');
     }
   }
+  if (route.kind === 'original-page') {
+    if (!adapter.originalPage) {
+      if (route.page === 1) {
+        try {
+          const { metadata, bytes } = await adapter.original(route.id);
+          return { kind: 'bytes', status: 200, headers: originalDownloadHeaders(metadata.original, bytes.length), bytes };
+        } catch (error) {
+          return fail(error, '原件未能读取。');
+        }
+      }
+      return { kind: 'json', status: 404, body: { error: '找不到该页原件。' } };
+    }
+    try {
+      const { original, bytes } = await adapter.originalPage(route.id, route.page);
+      return { kind: 'bytes', status: 200, headers: originalDownloadHeaders(original, bytes.length), bytes };
+    } catch (error) {
+      return fail(error, '分页原件未能读取。');
+    }
+  }
+  if (route.kind === 'append-pages') {
+    if (!adapter.appendPages) return { kind: 'json', status: 404, body: { error: '找不到这份原件。' } };
+    const rawContentType = typeof adapter.headers['content-type'] === 'string' ? adapter.headers['content-type'] : '';
+    if (rawContentType.split(';')[0]?.toLowerCase() !== 'multipart/form-data') {
+      return { kind: 'json', status: 415, body: { error: '续拍加页需要 multipart/form-data 表单。' } };
+    }
+    try {
+      const bytes = await adapter.readBody(intakeMultiPageBodyLimit + 512 * 1024);
+      let form: FormData;
+      try {
+        form = await new Response(new Uint8Array(bytes), { headers: { 'Content-Type': rawContentType } }).formData();
+      } catch {
+        throw new RequestError(400, '续拍表单无法读取。');
+      }
+      const parsed = parseMultipartAppendPagesForm(form);
+      const pages = await Promise.all(parsed.files.map(async file => ({
+        filename: file.name,
+        declaredType: file.type,
+        bytes: adapter.fromArrayBuffer(await file.arrayBuffer()),
+      })));
+      const result = await adapter.appendPages({
+        materialId: route.id,
+        requestId: parsed.requestId,
+        expectedRev: parsed.expectedRev,
+        ...(parsed.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: parsed.expectedMaterialRev }),
+        pages,
+      });
+      return { kind: 'json', status: 202, body: result };
+    } catch (error) {
+      return fail(error, '续拍加页未能完成。');
+    }
+  }
   if (route.kind === 'correction') {
     try {
       const value = JSON.parse(adapter.decodeUtf8Bytes(await adapter.readBody(intakeTextLimit * 4 + 4096))) as Record<string, unknown>;
@@ -596,6 +941,7 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
         requestId: body.requestId,
         expectedRev: body.expectedRev,
         ...(body.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: body.expectedMaterialRev }),
+        ...(body.pages === undefined ? {} : { pages: body.pages }),
       });
       return { kind: 'json', status: 202, body: result };
     } catch (error) {

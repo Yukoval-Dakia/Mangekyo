@@ -3,15 +3,19 @@ import materialFact from '@mangekyo/module-content/facts/material';
 import {
   canRetryVisionExtraction,
   intakeDocument,
+  intakeDocumentPages,
   intakeFactType,
   IntakeVisionRetryConflict,
   intakePreview,
   materialType,
   pendingVisionExtraction,
+  retryableVisionPages,
   retryVisionIntakeCommand,
   retryVisionIntakeSchema,
   type IntakeDocument,
+  type IntakePageExtraction,
 } from '../intake-values.ts';
+import { validateStructuredPaperDrafts, visionPaperDraftsVersion } from '../vision-paper-ocr.ts';
 
 export default defineCommand({
   type: retryVisionIntakeCommand,
@@ -35,7 +39,55 @@ export default defineCommand({
     if (input.expectedMaterialRev !== undefined && material.ref.rev !== input.expectedMaterialRev)
       throw new IntakeVisionRetryConflict('材料版本已经变更，请刷新后再试。');
     const saved = materialFact.schema.parse(material.value);
-    const nextExtraction = pendingVisionExtraction('queued');
+
+    const allPages = intakeDocumentPages(archived);
+    let nextExtraction = pendingVisionExtraction('queued');
+    if (allPages.length > 1) {
+      const targetPages = input.pages ?? retryableVisionPages(archived);
+      if (targetPages.length === 0 || targetPages.some(page => page < 1 || page > allPages.length)) {
+        throw new IntakeVisionRetryConflict('指定重试页码超出当前试卷页数范围。');
+      }
+      const targetSet = new Set(targetPages);
+      const existingByPage = new Map((archived.extraction.pageExtractions ?? []).map(item => [item.page, item]));
+      const nextPageExtractions: IntakePageExtraction[] = allPages.map(page => {
+        const current = existingByPage.get(page.page);
+        if (!targetSet.has(page.page) && current && current.status !== 'pending') {
+          return current;
+        }
+        return {
+          page: page.page,
+          status: 'pending',
+          method: 'vision_llm',
+          text: '',
+          error: null,
+          warnings: [],
+          questionCount: 0,
+        };
+      });
+      const readyPages = new Set(nextPageExtractions.filter(item => item.status === 'ready').map(item => item.page));
+      const keptQuestions = archived.extraction.drafts && readyPages.size > 0
+        ? archived.extraction.drafts.questions
+            .filter(question => question.pageNumber !== undefined && readyPages.has(question.pageNumber))
+            .map((question, index) => ({ ...question, index: index + 1 }))
+        : [];
+      const preservedDrafts = keptQuestions.length > 0 && archived.extraction.drafts
+        ? validateStructuredPaperDrafts({
+            version: visionPaperDraftsVersion,
+            confirmationRequired: true,
+            paperTitle: archived.extraction.drafts.paperTitle,
+            subject: archived.extraction.drafts.subject,
+            questions: keptQuestions,
+            pendingConfirmationCount: keptQuestions.length,
+          })
+        : undefined;
+      nextExtraction = pendingVisionExtraction('queued', {
+        pageExtractions: nextPageExtractions,
+        ...(preservedDrafts ? { preservedDrafts } : {}),
+      });
+    } else if (input.pages && input.pages.some(page => page !== 1)) {
+      throw new IntakeVisionRetryConflict('单页试卷仅支持重试第 1 页。');
+    }
+
     const nextDocument: IntakeDocument = {
       ...archived,
       requestedExtraction: 'vision_llm',

@@ -20,6 +20,7 @@ export type IntakeQuestionCard = {
   readonly unclearNotice: string | null;
   readonly defaultSelected: boolean;
   readonly conceptTags: readonly string[];
+  readonly pageNumber?: number;
 };
 
 export type IntakeFreshMaterialHints = {
@@ -98,6 +99,7 @@ export function projectIntakeQuestionCards(intake: IntakeDocument | unknown): re
       unclearNotice: unclearNotice(question.studentAnswer, question.redInk, question.unclearSegments),
       defaultSelected: error,
       conceptTags: question.conceptTags ? [...question.conceptTags] : [],
+      ...(question.pageNumber !== undefined ? { pageNumber: question.pageNumber } : {}),
     };
   }) ?? [];
 }
@@ -197,7 +199,7 @@ function sourceExplanation(
   }
   const red = question.redPenMark;
   const parts = [
-    `原卷题号：${question.number}。`,
+    `${question.pageNumber !== undefined ? `第 ${question.pageNumber} 页 · ` : ''}原卷题号：${question.number}。`,
     question.studentAnswer.status === 'present'
       ? `当时作答：${question.studentAnswer.text ?? ''}。`
       : `当时作答：${question.studentAnswer.status === 'absent' ? '未作答' : '看不清'}。`,
