@@ -218,6 +218,7 @@ export function SavedMaterial({
   const [erasure,setErasure] = useState(() => readErasure(id));
   const [start,setStart] = useState(false);
   const [questionCardReading, setQuestionCardReading] = useState<{ id: string; count: number } | null>(null);
+  const [pendingRefresh, setPendingRefresh] = useState<{ id: string; staleData: Workspace } | null>(null);
   useEffect(() => {
     const restore = () => setErasure(readErasure(id));
     window.addEventListener('storage',restore);
@@ -225,6 +226,18 @@ export function SavedMaterial({
   },[id]);
   if (erasure) return <ErasureProgress id={id} initial={erasure} start={start} onReset={() => {setStart(false);setErasure(null);library.reload();}}/>;
   const m = library.data?.materials.find((x) => x.id === id);
+  if (
+    library.data &&
+    !m &&
+    !pendingRefresh
+  ) {
+    setPendingRefresh({ id, staleData: library.data });
+    library.reload();
+  }
+  const refreshing =
+    pendingRefresh?.id === id &&
+    library.data === pendingRefresh.staleData &&
+    !library.error;
   const questionCardCount = questionCardReading?.id === id ? questionCardReading.count : 0;
   function jumpToQuestionCards(event: React.MouseEvent<HTMLAnchorElement>) {
     const target = document.getElementById('intake-question-cards');
@@ -267,7 +280,11 @@ export function SavedMaterial({
           <p className="preserve">{m.text}</p>
         </article>
       ) : (
-        library.data && <h1>未找到这份材料</h1>
+        refreshing ? (
+          <p role="status" className="muted">正在读取…</p>
+        ) : (
+          library.data && <h1>未找到这份材料</h1>
+        )
       )}
     </>
   );

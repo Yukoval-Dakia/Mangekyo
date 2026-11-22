@@ -51,6 +51,7 @@ export type IntakeFeedEntry = {
 
 export type IntakeSurfaceProps = {
   onNavigate?: (href: string) => void;
+  onMaterialSaved?: () => void;
   feed?: readonly IntakeFeedEntry[];
   defaultPurpose?: IntakePurpose;
   onPurposeChange?: (purpose: IntakePurpose) => void;
@@ -291,6 +292,7 @@ function readStoredPurpose(): IntakePurpose {
 
 export function IntakeSurface({
   onNavigate,
+  onMaterialSaved,
   feed,
   defaultPurpose,
   onPurposeChange,
@@ -531,6 +533,7 @@ export function IntakeSurface({
         const deduped = (current ?? []).filter((item) => item.id !== nextEntry.id);
         return [nextEntry, ...deduped].slice(0, maxHistory);
       });
+      onMaterialSaved?.();
       const policySuffix =
         nextEntry.status === 'organizing'
           ? '正在后台整理中。'
@@ -588,6 +591,7 @@ export function IntakeSurface({
         ...(createdId ? { href: materialPath(createdId) } : {}),
       };
       setMaterials((current) => [nextEntry, ...(current ?? [])].slice(0, maxHistory));
+      onMaterialSaved?.();
       setNotice(
         isLink
           ? '公开链接已按「仅保存」记下，不会抓取外部预览。'
@@ -756,6 +760,7 @@ export function IntakeSurface({
         const deduped = (current ?? []).filter((item) => item.id !== nextEntry.id);
         return [nextEntry, ...deduped].slice(0, maxHistory);
       });
+      onMaterialSaved?.();
       setPendingPages([]);
       setNotice(
         nextEntry.status === 'organizing'
