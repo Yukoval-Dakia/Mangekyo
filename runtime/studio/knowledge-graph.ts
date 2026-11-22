@@ -63,7 +63,8 @@ export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeE
   }
   const from = sources.get(knowledgeUseKey(edge.from.sourceUse));
   const to = sources.get(knowledgeUseKey(edge.to.sourceUse));
-  if (!from || !to || ![workspaceEntryType,assetType].includes(from.sourceRef.fact.type) || to.sourceRef.fact.type !== workspaceEntryType ||
+  if (!from || !to || ![workspaceEntryType,assetType].includes(from.sourceRef.fact.type) ||
+      ![workspaceEntryType,assetType].includes(to.sourceRef.fact.type) ||
       from.kind !== edge.from.kind || to.kind !== edge.to.kind)
     throw new KnowledgeEdgeBasisError('概念或题目端点类型不符。');
   return {from, to, sources: [...[...sources.values()].map(source => source.sourceRef), ...external], opened};
@@ -152,7 +153,7 @@ export async function readKnowledgeGraph<Result>(
   const rootWitnesses: Parameters<SourceTrack>[] = [];
   const concept = await resolveSource(tx, query.conceptId, { ...access, track: (...witness) => rootWitnesses.push(witness) });
   const root = rootWitnesses.find(([fact]) => fact.ref.id === query.conceptId)?.[0];
-  if (concept?.kind !== 'concept' || root?.type !== workspaceEntryType) return;
+  if (concept?.kind !== 'concept' || !root || ![workspaceEntryType,assetType].includes(root.type)) return;
   for (const witness of rootWitnesses) access.track?.(...witness);
   return traverseKnowledgeGraph<WorkspaceSource, OpenedEdgeValue, Parameters<SourceTrack>, Result>(query, concept, root, {
     async candidates(endpoints) {

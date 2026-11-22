@@ -140,7 +140,8 @@ async function openWeb() {
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
-    research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db), carePause };
+    research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db, {python: pythonHost,
+      backtrace: (tx, read, facts) => workbookBacktrace(tx, read as never, facts) as never}), carePause };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }

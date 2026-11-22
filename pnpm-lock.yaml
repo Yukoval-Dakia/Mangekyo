@@ -86,6 +86,9 @@ importers:
       '@mangekyo/module-content':
         specifier: workspace:*
         version: link:../content
+      '@mangekyo/module-learner':
+        specifier: workspace:*
+        version: link:../learner
       '@mangekyo/module-plan':
         specifier: workspace:*
         version: link:../plan

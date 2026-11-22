@@ -2,7 +2,7 @@ import {
   factId, type CanonicalEvidenceSliceV1, type DerivationId, type FactId, type Json, type Outcome,
   type ReadContext, type Revision, type Tick,
 } from '@mangekyo/kernel';
-import { validatesWorkbookHistory, workbookWitnessesBy, type ActivityEvidenceReadScope, type WorkbookHistoryTarget } from './evidence-read.ts';
+import { readPosttestIssuanceBirth, validatesWorkbookHistory, workbookWitnessesBy, type ActivityEvidenceReadScope, type WorkbookHistoryTarget } from './evidence-read.ts';
 import { insideFrozenPosttestWindow, posttestOpensAt, retentionPaperType, type posttestIssuance, type RetentionWindow } from './retention-posttest.ts';
 import type { HelpRef } from './help-exposure-values.ts';
 import { sameWorkbookJson } from './workbook-values.ts';
@@ -84,7 +84,8 @@ export async function verifiesOriginalSitting(
       target.itemId !== issuance.itemId || target.gradingVersion !== issuance.gradingVersion ||
       window.through !== issuance.through || issuance.startedAt < posttestOpensAt(window) ||
       !insideFrozenPosttestWindow(observation, window, own.effective_tick)) return false;
-  return validatesWorkbookHistory(tx, target, observation.admittedAt, fact.ref.id, process.helpLevel === 'independent');
+  return validatesWorkbookHistory(tx, target, observation.admittedAt, fact.ref.id, process.helpLevel === 'independent',
+    (await readPosttestIssuanceBirth(tx, fact.ref.id))?.tick);
 }
 
 async function claimsMatch(

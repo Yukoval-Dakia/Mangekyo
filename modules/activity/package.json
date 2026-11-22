@@ -7,6 +7,7 @@
     "@mangekyo/kernel": "workspace:*",
     "@mangekyo/module-capture": "workspace:*",
     "@mangekyo/module-content": "workspace:*",
+    "@mangekyo/module-learner": "workspace:*",
     "@mangekyo/module-plan": "workspace:*"
   },
   "exports": {
