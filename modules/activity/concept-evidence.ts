@@ -1,4 +1,4 @@
-import { FactNotFoundError, FactReadDeniedError, factId, parseManifest, type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
+import { FactNotFoundError, factId, parseManifest, type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import type { QuestionConceptLink } from '@mangekyo/module-content/facts/knowledge-graph-overview';
 import {
   readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, readWorkbookPreSubmitObservation,
@@ -85,7 +85,9 @@ export async function readConceptAttemptEvidence(
 
     const birth = await readActivitySubmissionBirth(tx, submission.ref, submission.type);
     if (!birth || !birth.unchanged || birth.submittedAt !== attempt.submittedAt) {
-      for (const { matched } of matchedQuestions) for (const link of matched) incompleteConceptIds.add(link.conceptId);
+      if (submission.type === posttestSubmissionType) {
+        for (const { matched } of matchedQuestions) for (const link of matched) incompleteConceptIds.add(link.conceptId);
+      }
       continue;
     }
 
@@ -240,26 +242,42 @@ export async function readConceptAttemptEvidence(
              AND d.invalidated_tick IS NULL AND d.selection_ended_tick IS NULL
              AND d.effective_tick >= d.gather_tick ORDER BY d.slot_key`, [tx.learner, workbookRubricAssessmentType, submission.ref.id, attempt.paperId]);
         for (const row of rows) {
-          const assessment = workbookRubricAssessment(row.value);
+          let assessment;
+          try {
+            assessment = workbookRubricAssessment(row.value);
+          } catch {
+            continue;
+          }
           if (assessment.attemptId !== submission.ref.id || assessment.paperId !== attempt.paperId ||
               assessment.questionId !== question.id || assessment.verdict === 'pending' ||
               question.rubricVersion !== assessment.rubricVersion || question.rubric !== assessment.rubric) continue;
           const answer = attempt.answers[question.id];
           if (typeof answer !== 'string' || !assessment.evidence.length ||
               !assessment.evidence.every(quote => answer.includes(quote))) continue;
-          const manifest = parseManifest(row.manifest);
+          let manifest;
+          try {
+            manifest = parseManifest(row.manifest);
+          } catch {
+            continue;
+          }
           const inputs = manifest.inputs.filter((input): input is Extract<typeof input, { kind: 'fact' }> => input.kind === 'fact');
           if (inputs.length !== 2) continue;
           let authorized = true;
           for (const input of inputs) {
-            const fact = await read.fact(input.id, { mode: 'pinned', rev: input.rev as Revision });
-            if (fact.accessEpoch !== input.accessEpoch) authorized = false;
+            try {
+              const fact = await read.fact(input.id, { mode: 'pinned', rev: input.rev as Revision });
+              if (fact.accessEpoch !== input.accessEpoch) authorized = false;
+            } catch (error) {
+              if (unavailable(error)) authorized = false;
+              else throw error;
+            }
           }
           if (!authorized) continue;
           outcome = assessment.verdict === 'correct' ? 'correct' as const : 'incorrect' as const;
           break;
         }
       }
+      if (outcome === 'unknown') continue;
       for (const link of matched) {
         attempts.push({
           conceptId: link.conceptId,
