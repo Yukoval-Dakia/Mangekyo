@@ -421,7 +421,7 @@ export function IntakeQuestionCards({
                     <ul>
                       {tags.map(tag => (
                         <li key={tag}>
-                          <span>{tag}</span>
+                          <span><MathText text={tag} /></span>
                           <button
                             type="button"
                             aria-label={`移除概念标签：${tag}`}

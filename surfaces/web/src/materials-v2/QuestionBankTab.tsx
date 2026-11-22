@@ -70,6 +70,8 @@ interface TeachingNotice {
   readonly key: string;
   readonly tone: 'success' | 'error';
   readonly text: string;
+  readonly linkHref?: string;
+  readonly linkLabel?: string;
 }
 
 function matchesSearch(query: string, fields: readonly (string | null | undefined)[]): boolean {
@@ -524,6 +526,12 @@ function FlatQuestionCard({
           role={notice.tone === 'error' ? 'alert' : 'status'}
         >
           {notice.text}
+          {notice.linkHref && (
+            <>
+              {' '}
+              <a className="mv2-inline-notice-link" href={notice.linkHref}>{notice.linkLabel ?? '查看'}</a>
+            </>
+          )}
         </p>
       )}
     </article>
@@ -921,7 +929,24 @@ export function QuestionBankTab({
           (failure instanceof ApiError && failure.status === 409
             ? '记录版本已更新，正在刷新最新状态…'
             : '暂时未能更新教学授权，请稍后重试。');
-        setTeachingNotice({ key: teachingKey, tone: 'error', text });
+        let link: { linkHref: string; linkLabel: string } | undefined;
+        if (failure instanceof ApiError && failure.status === 409 && serverMessage?.includes('教学权限')) {
+          try {
+            const workspace = await api<{ materials?: { id?: string; title?: string }[] }>('/workspace');
+            const sourceTitle = (question.sourceLabel ?? question.title ?? '').replace(/\s*第\s*\d+\s*题\s*$/, '').trim();
+            const candidates = (workspace.materials ?? []).filter(
+              (m): m is { id: string; title: string } =>
+                typeof m.id === 'string' && typeof m.title === 'string' && m.title === sourceTitle,
+            );
+            const material = candidates.length === 1 ? candidates[0] : undefined;
+            link = material
+              ? { linkHref: `/materials/saved/${encodeURIComponent(material.id)}`, linkLabel: '去原件页开放教学权限' }
+              : { linkHref: '/materials?tab=originals', linkLabel: '去原件页开放教学权限' };
+          } catch {
+            link = { linkHref: '/materials?tab=originals', linkLabel: '去原件页开放教学权限' };
+          }
+        }
+        setTeachingNotice({ key: teachingKey, tone: 'error', text, ...(link ?? {}) });
         if (failure instanceof ApiError && failure.status === 409) {
           void reload();
         }
