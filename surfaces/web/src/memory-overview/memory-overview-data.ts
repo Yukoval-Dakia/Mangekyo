@@ -10,6 +10,7 @@ import type {
   MemoryOverviewItem,
   MemoryOverviewResponse,
   MemoryRevokeSourceAction,
+  WeaknessAndErrorSummaryView,
 } from './types';
 
 const memoryOverviewPath = '/memory/overview';
@@ -200,6 +201,19 @@ function normalizeCategoryArray(value: unknown, key: MemoryCategoryKey): readonl
   return value.map(entry => normalizeOverviewItem(entry, key)).filter((entry): entry is MemoryOverviewItem => !!entry);
 }
 
+function isWeaknessSummary(value: unknown): value is WeaknessAndErrorSummaryView {
+  if (!isRecord(value)) return false;
+  if (value.status === 'insufficient_evidence') {
+    return Number.isSafeInteger(value.sampleCount) && Number.isSafeInteger(value.neededCount)
+      && Array.isArray(value.topErrorStages) && Array.isArray(value.priorityConcepts);
+  }
+  if (value.status === 'ready') {
+    return Number.isSafeInteger(value.sampleCount)
+      && Array.isArray(value.topErrorStages) && Array.isArray(value.priorityConcepts);
+  }
+  return false;
+}
+
 export function normalizeOverview(value: unknown): MemoryOverviewResponse {
   if (!isRecord(value)) throw new Error('记忆总览格式无效。');
   const categories = isRecord(value.categories) ? value.categories : {};
@@ -220,6 +234,7 @@ export function normalizeOverview(value: unknown): MemoryOverviewResponse {
     stickyDirectives,
     hypotheses,
     calibration: normalizeCalibration(value.calibration),
+    ...(isWeaknessSummary(value.weaknessSummary) ? { weaknessSummary: value.weaknessSummary } : {}),
   };
 }
 

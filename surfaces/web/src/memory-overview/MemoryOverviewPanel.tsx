@@ -8,6 +8,7 @@ import type {
 import { memoryOverviewDefaults } from './memory-overview-data';
 import { CalibrationCard } from './CalibrationCard';
 import { MemoryItemCard } from './MemoryItemCard';
+import { WeaknessSummaryCard } from './WeaknessSummaryCard';
 
 const categoryCards: { key: MemoryCategoryKey; title: string; copy: string }[] = [
   { key: 'preference', title: '学习偏好', copy: '你对讲解方式、节奏和例子偏好的长期选择' },
@@ -33,6 +34,8 @@ export function MemoryOverviewPanel({
   initialOverview,
   hideHeading = false,
   renderHeaderExtra,
+  settings,
+  onNavigate,
 }: MemoryOverviewPanelProps) {
   const [state, setState] = useState<MemoryOverviewState>(
     initialOverview ? { status: 'ready', data: initialOverview } : { status: 'loading' },
@@ -111,6 +114,14 @@ export function MemoryOverviewPanel({
 
       {state.status === 'ready' && (
         <>
+          {state.data.weaknessSummary && (
+            <WeaknessSummaryCard
+              summary={state.data.weaknessSummary}
+              settings={settings}
+              onNavigate={onNavigate}
+            />
+          )}
+
           <div className="memory-category-grid" role="tablist" aria-label="记忆类别">
             {categoryCards.map((card) => {
               const active = category === card.key;
