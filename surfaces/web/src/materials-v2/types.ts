@@ -119,6 +119,7 @@ export interface RawBankQuestion {
   readonly date?: string;
   readonly revoked?: boolean;
   readonly authorized?: boolean;
+  readonly teachingAuthorized?: boolean;
 }
 
 export interface RawQuestionCatalogResponse {
@@ -189,6 +190,7 @@ export interface NormalizedBankQuestion {
   readonly status: BankQuestionStatus;
   readonly statusLabel: string;
   readonly canPractice: boolean;
+  readonly teachingAuthorized: boolean;
   readonly mastery?: NormalizedMasteryState;
   readonly sourceLabel?: string;
   readonly dateLabel?: string;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { api, ApiError, submissionId } from '../api';
+import { api, ApiError, requestId, submissionId } from '../api';
 import { paperPracticePath } from '../builtin-packs';
 import { latestKey } from '../deletion-watermark';
 import { useDraftWatermark } from '../draft-watermark';
@@ -64,6 +64,12 @@ function CiteIcon() {
       <path d="M8.5 12.5h4.5" />
     </svg>
   );
+}
+
+interface TeachingNotice {
+  readonly key: string;
+  readonly tone: 'success' | 'error';
+  readonly text: string;
 }
 
 function matchesSearch(query: string, fields: readonly (string | null | undefined)[]): boolean {
@@ -417,18 +423,27 @@ function FlatQuestionCard({
   question,
   busyActionKey,
   citedKey,
+  teachingBusyKey,
+  teachingNotice,
   onPractice,
   onCite,
+  onAuthorizeTeaching,
 }: {
   readonly question: NormalizedBankQuestion;
   readonly busyActionKey: string | null;
   readonly citedKey: string | null;
+  readonly teachingBusyKey: string | null;
+  readonly teachingNotice: TeachingNotice | null;
   readonly onPractice: (actionKey: string, payload: PracticeQuestionPayload) => void;
   readonly onCite: (citeKey: string, payload: CompanionCitationPayload) => void;
+  readonly onAuthorizeTeaching: (question: NormalizedBankQuestion) => void;
 }) {
   const actionKey = `bank:${question.key}`;
   const citeKey = `cite-bank:${question.key}`;
+  const teachingKey = `teaching:${question.sourceRef.id}`;
   const masteryMeta = question.mastery ? MASTERY_META[question.mastery] : null;
+  const notice = teachingNotice && teachingNotice.key === teachingKey ? teachingNotice : null;
+  const authorizing = teachingBusyKey === teachingKey;
 
   return (
     <article className="mv2-item-card">
@@ -440,6 +455,7 @@ function FlatQuestionCard({
         <span className={`mv2-pill ${question.canPractice ? 'mv2-pill-steady' : 'mv2-pill-unknown'}`}>
           {question.statusLabel}
         </span>
+        {!question.teachingAuthorized && <span className="mv2-pill mv2-pill-storage">仅保存</span>}
         {masteryMeta && (
           <span className={`mv2-pill mv2-pill-${masteryMeta.tone}`}>{masteryMeta.label}</span>
         )}
@@ -454,7 +470,8 @@ function FlatQuestionCard({
         </details>
       )}
       <div className="mv2-item-actions">
-        {question.canPractice && (
+        {question.teachingAuthorized ? (
+          question.canPractice && (
           <button
             type="button"
             className="mv2-btn mv2-btn-tonal mv2-btn-sm"
@@ -471,6 +488,16 @@ function FlatQuestionCard({
             }
           >
             {busyActionKey === actionKey ? '正在开练…' : '单题开练'}
+          </button>
+          )
+        ) : (
+          <button
+            type="button"
+            className="mv2-btn mv2-btn-tonal mv2-btn-sm"
+            disabled={authorizing}
+            onClick={() => onAuthorizeTeaching(question)}
+          >
+            {authorizing ? '正在授权…' : '允许用于出题与练习'}
           </button>
         )}
         <button
@@ -491,6 +518,14 @@ function FlatQuestionCard({
           <span>{citedKey === citeKey ? '已引用' : '引用到学习同伴'}</span>
         </button>
       </div>
+      {notice && (
+        <p
+          className={`mv2-inline-notice ${notice.tone === 'success' ? 'mv2-inline-notice-soft' : 'mv2-inline-notice-error'}`}
+          role={notice.tone === 'error' ? 'alert' : 'status'}
+        >
+          {notice.text}
+        </p>
+      )}
     </article>
   );
 }
@@ -620,6 +655,8 @@ export function QuestionBankTab({
   const [busyActionKey, setBusyActionKey] = useState<string | null>(null);
   const [citedKey, setCitedKey] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [teachingBusyKey, setTeachingBusyKey] = useState<string | null>(null);
+  const [teachingNotice, setTeachingNotice] = useState<TeachingNotice | null>(null);
   const citeTimerRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
 
@@ -855,6 +892,46 @@ export function QuestionBankTab({
     [navigateTo, onCiteToCompanion],
   );
 
+  const handleAuthorizeTeaching = useCallback(
+    async (question: NormalizedBankQuestion) => {
+      const teachingKey = `teaching:${question.sourceRef.id}`;
+      setTeachingBusyKey(teachingKey);
+      setTeachingNotice(null);
+      try {
+        const result = await api<{ id: string; rev: number; teachingAuthorized: boolean; changed: boolean }>(
+          `/iqdb/questions/${encodeURIComponent(question.sourceRef.id)}/teaching`,
+          {
+            method: 'PUT',
+            body: { requestId: requestId(), expectedRev: question.sourceRef.rev, allowed: true },
+          },
+        );
+        setTeachingNotice({
+          key: teachingKey,
+          tone: 'success',
+          text: result.changed ? '已允许用于出题与练习' : '该题已处于已授权状态',
+        });
+        void reload();
+      } catch (failure) {
+        const serverMessage =
+          failure instanceof ApiError && failure.message && failure.message !== `HTTP ${failure.status}`
+            ? failure.message
+            : undefined;
+        const text =
+          serverMessage ??
+          (failure instanceof ApiError && failure.status === 409
+            ? '记录版本已更新，正在刷新最新状态…'
+            : '暂时未能更新教学授权，请稍后重试。');
+        setTeachingNotice({ key: teachingKey, tone: 'error', text });
+        if (failure instanceof ApiError && failure.status === 409) {
+          void reload();
+        }
+      } finally {
+        setTeachingBusyKey(null);
+      }
+    },
+    [reload],
+  );
+
   const isLoading = externalLoading ?? internalLoading;
   const activeError = externalError ?? internalError;
   const showFoldedView = foldByArchetype && foldingResult.status === 'ready';
@@ -1045,8 +1122,11 @@ export function QuestionBankTab({
                   question={question}
                   busyActionKey={busyActionKey}
                   citedKey={citedKey}
+                  teachingBusyKey={teachingBusyKey}
+                  teachingNotice={teachingNotice}
                   onPractice={handlePractice}
                   onCite={handleCite}
+                  onAuthorizeTeaching={handleAuthorizeTeaching}
                 />
               ))}
             </div>

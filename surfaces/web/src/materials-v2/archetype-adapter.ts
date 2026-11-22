@@ -183,6 +183,7 @@ export function normalizeBankQuestions(rawQuestions: readonly RawBankQuestion[] 
       status,
       statusLabel: BANK_STATUS_LABELS[status],
       canPractice: status === 'release_ready',
+      teachingAuthorized: item.teachingAuthorized !== false,
       ...(hasExplicitMastery ? { mastery: normalizeMastery(item.mastery, item.state) } : {}),
       ...(sourceLabel ? { sourceLabel } : {}),
       ...(dateLabel ? { dateLabel } : {}),
