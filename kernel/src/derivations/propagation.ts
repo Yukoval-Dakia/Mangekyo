@@ -45,6 +45,37 @@ const activeCandidate = `d.lifecycle = 'candidate' AND EXISTS (
 const address = 'd.slot_type AS "slotType", d.slot_key AS "slotKey"';
 const slotIdentity = (type: string, key: string) => JSON.stringify([type, key]);
 
+/** Invalidate a derivation and every live derivation that manifest-recursively depends on it. */
+export async function invalidateDerivationTree(
+  tx: DbTransaction,
+  tick: Tick,
+  initial: readonly DerivationId[],
+  reason: string,
+): Promise<void> {
+  const error = JSON.stringify({ reason });
+  const seen = new Set<string>();
+  const queue = [...initial];
+  while (queue.length) {
+    const currentId = queue.shift()!;
+    if (seen.has(currentId)) continue;
+    seen.add(currentId);
+    const { rows: [stale] } = await tx.query<{ slotType: string; slotKey: string }>(
+      `UPDATE derivations d SET lifecycle = 'stale', invalidated_tick = $3, error = $4
+       WHERE d.learner_id = $1 AND d.id = $2 AND ${liveDerivation}
+       RETURNING d.slot_type AS "slotType", d.slot_key AS "slotKey"`,
+      [tx.learner, currentId, tick, error],
+    );
+    if (!stale) continue;
+    await tx.query(
+      `UPDATE slot_state SET current_id = NULL, changed_tick = $5, last_error = $6
+       WHERE learner_id = $1 AND slot_type = $2 AND slot_key = $3 AND current_id = $4`,
+      [tx.learner, stale.slotType, stale.slotKey, currentId, tick, error],
+    );
+    const dependents = await findManifestDependents(tx, { kind: 'derivation-invalidated', derivationId: currentId });
+    for (const dependent of dependents) queue.push(dependent.derivationId);
+  }
+}
+
 async function markStale(tx: DbTransaction, tick: Tick, dependent: Stale) {
   const error = JSON.stringify({ reason: dependent.reason });
   const { rows: [stale] } = await tx.query<AffectedSlot>(

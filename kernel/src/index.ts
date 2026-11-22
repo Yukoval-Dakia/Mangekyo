@@ -9,5 +9,7 @@ export { LifecycleError } from './lifecycle.ts';
 export type { DbTransaction, ReadTransaction } from './db/types.ts';
 export { parseManifest, type Manifest, type ManifestInput } from './derivations/manifest.ts';
 export { createPropagationHooks } from './derivations/propagation.ts';
+export { invalidateDerivationTree } from './derivations/propagation.ts';
 export { revalidateManifest } from './derivations/revalidate.ts';
 export { storeSettledValue } from './derivations/settled-value.ts';
+export { cancelPendingWork } from './work/index.ts';

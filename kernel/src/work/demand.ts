@@ -17,6 +17,11 @@ export type WorkRequest = {
   readonly slotKey: string;
   readonly deriver: string;
 };
+type PendingWorkTarget = {
+  readonly id: string;
+  readonly slotType: string;
+  readonly slotKey: string;
+};
 type CurrentWork = {
   id: string;
   generation: string;
@@ -111,6 +116,34 @@ export async function enqueueGeneration(tx: DbTransaction, slot: Pick<WorkReques
 
 export function clearWaits(tx: DbTransaction, workId: string) {
   return tx.query('DELETE FROM work_waits WHERE learner_id = $1 AND work_id = $2', [tx.learner, workId]);
+}
+
+/** Cancel selected open work, with opt-in cancellation of blocked work in named slot types. */
+export async function cancelPendingWork(
+  tx: DbTransaction,
+  tick: Tick,
+  rows: readonly PendingWorkTarget[],
+  reason: string,
+  options: { readonly includeBlockedSlotTypes?: readonly string[] } = {},
+): Promise<void> {
+  const error = JSON.stringify({ reason });
+  const blockedSlotTypes = options.includeBlockedSlotTypes ?? [];
+  for (const row of rows) {
+    const updated = await tx.query(
+      `UPDATE work SET state = 'cancelled', revision = revision + CASE WHEN slot_type = $3 THEN 1 ELSE 0 END,
+         gather = NULL, gather_manifest = NULL
+       WHERE learner_id = $1 AND id = $2
+         AND (state IN ('ready', 'waiting') OR (slot_type = ANY($4::text[]) AND state = 'blocked'))`,
+      [tx.learner, row.id, todoSlot, blockedSlotTypes],
+    );
+    if (!updated.rowCount) continue;
+    await clearWaits(tx, row.id);
+    await tx.query(
+      `UPDATE slot_state SET pending = 'none', changed_tick = $4, last_error = $5
+       WHERE learner_id = $1 AND slot_type = $2 AND slot_key = $3`,
+      [tx.learner, row.slotType, row.slotKey, tick, error],
+    );
+  }
 }
 
 export function setPending(
