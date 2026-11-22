@@ -1,0 +1,10 @@
+.review-empty {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.review-empty a.tonal-button {
+  margin-top: 4px;
+  text-decoration: none;
+}

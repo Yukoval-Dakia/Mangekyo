@@ -18,7 +18,7 @@ type Collection = {issuanceId: string; runId: string; rev: number; page: number;
 const path = '/capture/papers';
 const candidateKey = ({source, epoch, extraction}: Candidate) => JSON.stringify([source, epoch, extraction]);
 
-export default function IssuedPapers() {
+export default function IssuedPapers({embedded = false}: {embedded?: boolean}) {
   const catalog = useResource<Catalog>(path);
   const [sourceKey, setSourceKey] = useState('');
   const [id, setId] = useState('');
@@ -95,35 +95,46 @@ export default function IssuedPapers() {
   }
   return <div className="issued-papers">
     <div className="print-controls">
-      <a className="back-link" href="/papers">‹ 返回试卷</a>
-      <PageTitle title="纸面试卷"/>
+      {!embedded && <>
+        <a className="back-link" href="/papers">‹ 返回试卷</a>
+        <PageTitle title="纸面试卷"/>
+      </>}
       <ReadState resource={catalog}/>
       {error && <p role="alert">{error}</p>}
-      {data && <fieldset disabled={busy}>
-        <legend>发行纸卷</legend>
-        {data.sources.length ? <>
-          <label className="field">卷面来源<select value={sourceKey} onChange={e => setSourceKey(e.target.value)}>
+      {data && <section className="issued-panel">
+        <div className="issued-panel-heading">
+          <h2>{embedded ? '纸面发行' : '发行纸卷'}</h2>
+          <p>把获准材料发成可打印的干净纸卷，写完后拍回回收。</p>
+        </div>
+        {data.sources.length ? <div className="issued-actions">
+          <label className="field issued-field">卷面来源<select value={sourceKey} onChange={e => setSourceKey(e.target.value)}>
             <option value="">选择可发行来源</option>
             {data.sources.map(item => <option key={candidateKey(item)} value={candidateKey(item)}>{item.title} · 第 {item.source.rev} 版</option>)}
           </select></label>
-          <button className="primary-button" disabled={!candidate} onClick={() => void execute(issue)}>发行纸卷</button>
-        </> : <p>当前没有获准发行的来源。</p>}
-      </fieldset>}
-      {data && <fieldset disabled={busy}>
-        <legend>已发行试卷</legend>
-        {data.issued.length ? <label className="field">选择发行记录<select value={id} onChange={e => selectPaper(e.target.value)}>
+          <button className="primary-button" disabled={!candidate || busy} onClick={() => void execute(issue)}>发行纸卷</button>
+        </div> : <p className="issued-empty">当前没有获准发行的来源。</p>}
+      </section>}
+      {data && <section className="issued-panel">
+        <div className="issued-panel-heading">
+          <h2>已发行试卷</h2>
+          <p>选择一份纸卷，查看冻结卷面、重印或回收本页答卷。</p>
+        </div>
+        {data.issued.length ? <label className="field issued-field">选择发行记录<select value={id} onChange={e => selectPaper(e.target.value)}>
           <option value="">选择已发行卷</option>
           {data.issued.map(item => <option key={item.issuanceId} value={item.issuanceId}>{item.title} · {item.pageCount} 页 · {item.issuanceId}</option>)}
-        </select></label> : <p>当前没有可读取的发行记录。</p>}
+        </select></label> : <p className="issued-empty">当前没有可读取的发行记录。</p>}
         {issued && <div className="study-actions">
-          <button className="tonal-button" onClick={() => void execute(() => reprint(false))}>查看冻结卷面</button>
-          <button className="primary-button" onClick={() => void execute(() => reprint(true))}>重印或存为 PDF</button>
+          <button className="tonal-button" disabled={busy} onClick={() => void execute(() => reprint(false))}>查看冻结卷面</button>
+          <button className="primary-button" disabled={busy} onClick={() => void execute(() => reprint(true))}>重印或存为 PDF</button>
         </div>}
-      </fieldset>}
-      {issued && <fieldset disabled={busy}>
-        <legend>回收答卷</legend>
-        <p>{runId ? '另一次作答 · ' + runId : '首次作答'}</p>
-        <label className="field">与原图对应的发行页<select value={page} onChange={e => {setPage(e.target.value); setReceipt(undefined);}}>
+      </section>}
+      {issued && <section className="issued-panel">
+        <div className="issued-panel-heading">
+          <h2>回收答卷</h2>
+          <p>核对页码与原图后，把这一页作答回收进学习记录。</p>
+        </div>
+        <p className="issued-meta">{runId ? '另一次作答 · ' + runId : '首次作答'}</p>
+        <label className="field issued-field">与原图对应的发行页<select value={page} onChange={e => {setPage(e.target.value); setReceipt(undefined);}}>
           <option value="">核对原图后选择页码</option>
           {Array.from({length:issued.pageCount}, (_,i) => <option key={i} value={i+1}>第 {i+1} 页</option>)}
         </select></label>
@@ -141,14 +152,14 @@ export default function IssuedPapers() {
           {...(runId ? {retryId:runId} : {})} setBusy={setBusy} reload={catalog.reload}/>}
         <h3>使用已交入的原图</h3>
         {originals.length ? <>
-          <label className="field">答卷原图<select value={originalKey} onChange={e => {setOriginalKey(e.target.value); setReceipt(undefined);}}>
+          <label className="field issued-field">答卷原图<select value={originalKey} onChange={e => {setOriginalKey(e.target.value); setReceipt(undefined);}}>
             <option value="">选择已交入的答卷原图</option>
             {originals.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
           </select></label>
-          <button className="tonal-button" disabled={!selected || !page} onClick={() => void execute(collect)}>确认并回收本页</button>
+          <button className="tonal-button" disabled={!selected || !page || busy} onClick={() => void execute(collect)}>确认并回收本页</button>
           {receipt && <p role="status">已回收第 {receipt.page} 页 · 作答 {receipt.runId} · 第 {receipt.rev} 版。独立性未知。</p>}
-        </> : <p>当前没有获准回收的答卷原图。</p>}
-      </fieldset>}
+        </> : <p className="issued-empty">当前没有获准回收的答卷原图。</p>}
+      </section>}
     </div>
     {issued && view?.paper.issuanceId === id && <IssuedPaperView paper={view.paper} print={view.print}/>}
   </div>;

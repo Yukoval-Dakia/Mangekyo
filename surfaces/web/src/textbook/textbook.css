@@ -338,7 +338,128 @@
 .tb-workspace .tb-toggle {
   display: none;
 }
+.tb-create-bar {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface-container-low);
+}
+
+.tb-create-field {
+  display: grid;
+  gap: 7px;
+  flex: 1 1 320px;
+  min-width: min(100%, 240px);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.tb-create-field input {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
+}
+
+.tb-create-field input::placeholder {
+  color: var(--muted);
+}
+
+.tb-create-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.tb-page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.tb-page-card {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  padding: 16px;
+  min-height: 112px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+  transition: background-color 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.tb-page-card:hover {
+  border-color: var(--forest);
+  background: var(--surface-container-low);
+  transform: translateY(-1px);
+}
+
+.tb-page-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: var(--soft-green);
+  color: var(--forest);
+}
+
+.tb-page-card strong {
+  font-size: 15px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.tb-page-card > span:last-child {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tb-empty {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 22px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 20px;
+  background: var(--surface);
+}
+
+.tb-empty h2 {
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+.tb-empty p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
 @media (max-width: 700px) {
+  .tb-create-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tb-create-bar .primary-button {
+    width: 100%;
+  }
+
   .tb-workspace {
     display: block;
   }

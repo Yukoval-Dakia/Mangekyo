@@ -1,7 +1,8 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { RecordQuestionLink } from '../current-record';
 import { api, requestId } from '../api';
-import { ListLink, PageTitle, ReadState, useResource } from '../workspace';
+import { Icon } from '../icons';
+import { PageTitle, ReadState, useResource } from '../workspace';
 import { TextbookWorkspace, textbookLink, type Page, type Transport } from './index';
 
 import { pulseRows } from './pulse-projection';
@@ -43,7 +44,7 @@ const transport: Transport = {
   },
 };
 
-export default function StudioTextbooks({ editor, openAccess }: { editor: boolean; openAccess: () => void }) {
+export default function StudioTextbooks({ editor, openAccess, embedded = false }: { editor: boolean; openAccess: () => void; embedded?: boolean }) {
   const index = useResource<{ pages: { id: string; title: string }[] }>('/textbooks');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -75,15 +76,43 @@ export default function StudioTextbooks({ editor, openAccess }: { editor: boolea
           : <button className="text-button" onClick={openAccess}>在学习记录访问中开放教材</button>}} />}
   </>;
   return <>
-    <PageTitle title="个人教材" />
-    <form className="study-actions" onSubmit={create}>
-      <label className="field">教材页标题<input required maxLength={240} value={title}
-        disabled={busy} onChange={event => setTitle(event.target.value)} /></label>
-      <button className="primary-button" disabled={busy || !title.trim()}>创建教材页</button>
+    {!embedded && <PageTitle title="个人教材" />}
+    <form className="tb-create-bar" onSubmit={create}>
+      <label className="tb-create-field">
+        <span>{embedded ? '新教材页主题' : '教材页标题'}</span>
+        <input
+          required
+          maxLength={240}
+          value={title}
+          disabled={busy}
+          placeholder="输入新教材主题，例如：洛伦兹力与带电粒子运动"
+          onChange={event => setTitle(event.target.value)}
+        />
+      </label>
+      <button className="primary-button" disabled={busy || !title.trim()}>
+        <Icon name="plus" />
+        <span>{busy ? '创建中…' : '创建教材页'}</span>
+      </button>
     </form>
-    {error && <p role="alert">{error}</p>}
+    {error && <p className="tb-create-error" role="alert">{error}</p>}
     <ReadState resource={index} />
-    {index.data?.pages.map(page => <ListLink key={page.id} title={page.title}
-      detail="打开当前版本" href={pagePath(page.id)} icon="book" />)}
+    {index.data && (
+      index.data.pages.length ? (
+        <div className="tb-page-grid">
+          {index.data.pages.map(page => (
+            <a key={page.id} className="tb-page-card" href={pagePath(page.id)}>
+              <span className="tb-page-icon" aria-hidden="true"><Icon name="book" /></span>
+              <strong>{page.title}</strong>
+              <span>打开当前版本</span>
+            </a>
+          ))}
+        </div>
+      ) : (
+        <section className="tb-empty">
+          <h2>先建一页个人教材</h2>
+          <p>写下你最想弄清的主题；教材页会沉淀章节、微探针与考前急救卡。</p>
+        </section>
+      )
+    )}
   </>;
 }

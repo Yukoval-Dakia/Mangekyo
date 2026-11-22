@@ -1,7 +1,43 @@
-.classroom-form, .classroom-controls { display: grid; gap: 1rem; justify-items: start; }
+.classroom-form, .classroom-controls { display: grid; gap: 1rem; justify-items: start; width: min(100%, 52rem); }
 .classroom-form label, .classroom-controls label { width: 100%; }
 .classroom-controls, .classroom-work { border: 0; min-width: 0; padding: 0; margin: 0; }
 .classroom-controls { margin-block: 1.5rem; }
+.classroom-field { margin-top: 0; display: grid; gap: 7px; font-size: 14px; font-weight: 650; color: var(--ink); }
+.classroom-field textarea,
+.classroom-field input {
+  width: 100%;
+  color: var(--ink);
+  background: var(--surface-container-low);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  padding: 12px;
+  min-height: 46px;
+  font: inherit;
+  font-weight: 400;
+  line-height: 1.55;
+  resize: vertical;
+}
+.classroom-field textarea { min-height: 120px; }
+.classroom-field textarea:focus-visible,
+.classroom-field input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.classroom-field textarea::placeholder,
+.classroom-field input::placeholder { color: var(--muted); }
+.classroom-minutes { width: 100%; display: grid; gap: 10px; }
+.classroom-quick { display: flex; gap: 8px; flex-wrap: wrap; }
+.classroom-pill {
+  min-height: 36px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+.classroom-pill:hover { background: var(--surface-container-low); }
+.classroom-pill[data-active="true"] { background: var(--forest); border-color: var(--forest); color: var(--primary-ink); }
+.classroom-pill:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.classroom-route { color: var(--muted); font-size: 13px; }
 
 .classroom-progress {
   display: grid;
