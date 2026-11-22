@@ -237,6 +237,7 @@ function App() {
       onNavigate={navigate}
       onCaptureMaterial={() => open('material')}
       onCiteToCompanion={citeToCompanion}
+      settings={settings.data}
     />
   );
   else if (path === '/materials/workspace') content = <WorkspaceLibrary key={routeKey} />;

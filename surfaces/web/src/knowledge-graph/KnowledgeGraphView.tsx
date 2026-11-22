@@ -1,5 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {api, ApiError} from '../api.ts';
+import {api, ApiError, requestId, type Settings} from '../api.ts';
+import {rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite} from '../classroom-contract.ts';
+import {chatRoute} from '../model-route.ts';
 import {Icon} from '../icons.tsx';
 import {normalizeKnowledgeGraphResponse} from './normalize.ts';
 import {
@@ -93,6 +95,43 @@ function useGraphData(props: KnowledgeGraphViewProps) {
 
 function nodeToneClass(status: MasteryStatus): string {
   return STATUS_CLASS[status];
+}
+
+function masteryTopicHint(status: MasteryStatus): string {
+  switch (status) {
+    case 'fragile': return '该点尚薄弱，请先巩固再推进';
+    case 'fading': return '已学内容待巩固，请安排复习';
+    case 'unknown': return '掌握情况尚待核对，请先梳理要点';
+    default: return '';
+  }
+}
+
+function microLessonTopic(node: KnowledgeGraphNode): string {
+  const parts = [`围绕知识点「${node.title}」上一节 10 分钟微课`];
+  const hint = masteryTopicHint(node.mastery.status);
+  if (hint) parts.push(hint);
+  const details: string[] = [];
+  if (node.counts.questions > 0) details.push(`${node.counts.questions} 道关联题`);
+  if (node.counts.textbooks > 0) details.push(`${node.counts.textbooks} 个教材块`);
+  if (details.length > 0) parts.push(`结合${details.join('、')}展开`);
+  return parts.join('，').slice(0, 280);
+}
+
+function parseQuickPaper(result: unknown): {kind: 'paper'; paperId: string} | {kind: 'empty'; message?: string | undefined} {
+  if (!result || typeof result !== 'object') throw new Error('抽题响应格式无法识别。');
+  const record = result as Record<string, unknown>;
+  if (record.kind === 'empty') {
+    const raw = typeof record.reason === 'string' && record.reason.trim() !== ''
+      ? record.reason
+      : typeof record.message === 'string' && record.message.trim() !== ''
+        ? record.message
+        : undefined;
+    return {kind: 'empty', message: raw};
+  }
+  const nested = record.paper && typeof record.paper === 'object' ? (record.paper as Record<string, unknown>).id : undefined;
+  const paperId = record.paperId ?? nested ?? record.id;
+  if (typeof paperId === 'string' && paperId.trim() !== '') return {kind: 'paper', paperId};
+  throw new Error('抽题响应未包含试卷标识。');
 }
 
 function EdgePath({
@@ -447,6 +486,9 @@ function DetailPanel({
   edges,
   pending,
   onClose,
+  settings,
+  onNavigate,
+  onCaptureMaterial,
   onSelectQuestion,
   onCiteToCompanion,
 }: {
@@ -455,12 +497,75 @@ function DetailPanel({
   edges: KnowledgeGraphResponse['edges'];
   pending: KnowledgeGraphResponse['pendingProposals'];
   onClose: () => void;
+  settings?: Settings | null | undefined;
+  onNavigate?: ((href: string) => void) | undefined;
+  onCaptureMaterial?: (() => void) | undefined;
   onSelectQuestion?: (questionId: string) => void;
   onCiteToCompanion?: (node: KnowledgeGraphNode) => void;
 }) {
   const relations = useMemo(() => relatedEdges(node.id, nodes, edges, pending), [node.id, nodes, edges, pending]);
   const [basisOpen, setBasisOpen] = useState(false);
   const basisRefs = node.mastery.basisRefs;
+  const [lesson, setLesson] = useState<{state: 'idle'} | {state: 'starting'} | {state: 'no-route'} | {state: 'error'; message: string}>({state: 'idle'});
+  const [paper, setPaper] = useState<{state: 'idle'} | {state: 'drawing'} | {state: 'empty'; message?: string | undefined} | {state: 'error'; message: string}>({state: 'idle'});
+  const lessonBusy = useRef(false);
+  const paperBusy = useRef(false);
+  const lessonOperation = useRef<ClassroomWrite | undefined>(undefined);
+
+  const startMicroLesson = async () => {
+    if (lessonBusy.current || lesson.state === 'starting') return;
+    const route = settings && chatRoute(settings, 'companion');
+    if (!route) {
+      setLesson({state: 'no-route'});
+      return;
+    }
+    lessonBusy.current = true;
+    const operation = lessonOperation.current ?? {
+      path: '/classrooms',
+      body: {requestId: requestId(), topic: microLessonTopic(node), minutes: 10, route},
+    };
+    lessonOperation.current = operation;
+    setLesson({state: 'starting'});
+    try {
+      const room = await writeRoom(operation);
+      lessonOperation.current = undefined;
+      rememberRoom(room.id);
+      if (onNavigate) onNavigate(roomPath(room.id));
+      else setLesson({state: 'idle'});
+    } catch (failure) {
+      if (rejected(failure)) lessonOperation.current = undefined;
+      setLesson({state: 'error', message: failure instanceof ApiError ? failure.message : '尚未收到开课回执，可重试。'});
+    } finally {
+      lessonBusy.current = false;
+    }
+  };
+
+  const drawQuickPaper = async () => {
+    if (paperBusy.current || paper.state === 'drawing') return;
+    paperBusy.current = true;
+    setPaper({state: 'drawing'});
+    try {
+      const result = await api<unknown>(`/knowledge/graph/${encodeURIComponent(node.id)}/quick-paper`, {
+        method: 'POST',
+        body: {requestId: requestId()},
+      });
+      const parsed = parseQuickPaper(result);
+      if (parsed.kind === 'paper') {
+        if (onNavigate) onNavigate(`/papers/${encodeURIComponent(parsed.paperId)}`);
+        else setPaper({state: 'idle'});
+      } else {
+        setPaper({state: 'empty', message: parsed.message});
+      }
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 404) {
+        setPaper({state: 'empty'});
+      } else {
+        setPaper({state: 'error', message: failure instanceof Error ? failure.message : '抽题暂时失败，请稍后重试。'});
+      }
+    } finally {
+      paperBusy.current = false;
+    }
+  };
 
   return (
     <aside className="kg-detail" aria-label="节点详情">
@@ -532,6 +637,12 @@ function DetailPanel({
       ) : null}
 
       <div className="kg-detail-actions">
+        <button type="button" className="primary-button" disabled={lesson.state === 'starting'} onClick={() => void startMicroLesson()}>
+          {lesson.state === 'starting' ? '正在开课…' : '开 10 分钟微课'}
+        </button>
+        <button type="button" className="tonal-button" disabled={paper.state === 'drawing'} onClick={() => void drawQuickPaper()}>
+          {paper.state === 'drawing' ? '正在抽题…' : '抽题自测'}
+        </button>
         {onSelectQuestion && node.counts.questions > 0 ? (
           <button type="button" className="tonal-button" onClick={() => onSelectQuestion(node.id)}>
             查看关联题
@@ -543,6 +654,48 @@ function DetailPanel({
           </button>
         ) : null}
       </div>
+
+      {lesson.state === 'no-route' ? (
+        <p className="kg-detail-notice" role="status">
+          尚未配置教学模型，先去设置后即可开课
+          {onNavigate ? (
+            <button type="button" className="kg-detail-link" onClick={() => onNavigate('/me?section=models')}>
+              去设置
+            </button>
+          ) : null}
+        </p>
+      ) : null}
+      {lesson.state === 'starting' ? (
+        <p className="kg-detail-notice" role="status">
+          正在为你开课；首次生成课堂通常需要一到两分钟，请勿重复点击。
+        </p>
+      ) : null}
+      {lesson.state === 'error' ? (
+        <p className="kg-detail-notice kg-detail-notice-error" role="alert">
+          开课未完成：{lesson.message}，可直接重试。
+        </p>
+      ) : null}
+      {paper.state === 'error' ? (
+        <p className="kg-detail-notice kg-detail-notice-error" role="alert">
+          {paper.message}，可直接重试。
+        </p>
+      ) : null}
+      {paper.state === 'empty' ? (
+        <div className="kg-detail-card">
+          <p className="kg-detail-card-title">该知识点暂无题库题</p>
+          {paper.message ? <p className="kg-detail-card-sub">{paper.message}</p> : null}
+          <div className="kg-detail-card-actions">
+            <button type="button" className="tonal-button" onClick={() => void startMicroLesson()}>
+              开 10 分钟微课
+            </button>
+            {onCaptureMaterial ? (
+              <button type="button" className="text-button" onClick={onCaptureMaterial}>
+                + 交入练习
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -647,11 +800,15 @@ export function KnowledgeGraphView(props: KnowledgeGraphViewProps) {
         </div>
         {selected ? (
           <DetailPanel
+            key={selected.id}
             node={selected}
             nodes={nodes}
             edges={edges}
             pending={pending}
             onClose={clearSelection}
+            settings={props.settings}
+            onNavigate={props.onNavigate}
+            onCaptureMaterial={props.onCaptureMaterial}
             {...(props.onSelectQuestion ? {onSelectQuestion: props.onSelectQuestion} : {})}
             {...(props.onCiteToCompanion ? {onCiteToCompanion: props.onCiteToCompanion} : {})}
           />

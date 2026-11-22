@@ -1,4 +1,5 @@
 import {Suspense, lazy, useCallback} from 'react';
+import type {Settings} from './api';
 import {MaterialsSurface} from './materials-v2/MaterialsSurface';
 import type {CompanionCitationPayload, NormalizedMasteryState, PracticeQuestionPayload} from './materials-v2/types';
 import {KnowledgeGraphView} from './knowledge-graph/KnowledgeGraphView';
@@ -49,12 +50,14 @@ export function MaterialsPage({
   onCaptureMaterial,
   onCiteToCompanion,
   onPracticeQuestion,
+  settings,
 }: {
   materials: readonly Material[];
   onNavigate: (href: string) => void;
   onCaptureMaterial: () => void;
   onCiteToCompanion?: CiteToCompanion;
   onPracticeQuestion?: (payload: PracticeQuestionPayload) => void | Promise<void>;
+  settings?: Settings | undefined;
 }) {
   const citeToCompanion = useCallback(
     (citation: CompanionCitation) => onCiteToCompanion?.(citation),
@@ -90,6 +93,9 @@ export function MaterialsPage({
       }}
       renderGraph={() => (
         <KnowledgeGraphView
+          settings={settings}
+          onNavigate={onNavigate}
+          onCaptureMaterial={onCaptureMaterial}
           onSelectQuestion={handleSelectQuestion}
           onCiteToCompanion={handleGraphCite}
         />
