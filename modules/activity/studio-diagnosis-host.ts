@@ -13,7 +13,7 @@ import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
   WorkbookSourceMismatch, type WorkbookAttempt,
 } from './workbook-values.ts';
-import { formalDiagnosisSummary, workbookDiagnosisView } from './workbook-views.ts';
+import { formalDiagnosisSummary, workbookDiagnosisView, type WorkbookDiagnosisContext } from './workbook-views.ts';
 import { workspaceEntryType } from './workspace-values.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from './learning-attempt-read.ts';
 export type DiagnosisTrack = (fact: FactSnapshot, mode?: 'pinned' | 'following') => void;
@@ -26,6 +26,7 @@ export type StudioDiagnosisDeps = FactReadChecks & {
   readonly resolveSource: (tx: ReadTransaction, input: unknown, access: unknown) => Promise<any>;
   readonly readSavedWorkbookAssessment: (tx: ReadTransaction, releaseRef: any, submission: FactSnapshot, paper: FactSnapshot, cutoff?: Tick) => Promise<any>;
   readonly readWorkspaceAttemptAssessments: (tx: ReadTransaction, attempt: FactSnapshot, maySend: DiagnosisMaySend, track: (basis: any) => void) => Promise<any>;
+  readonly diagnosisContext: (tx: ReadTransaction, input: { readonly attempt: WorkbookAttempt; readonly access: StudioDiagnosisAccess }) => Promise<WorkbookDiagnosisContext>;
 };
 export type StudioDiagnosisAccess = {
   purpose?: string;
@@ -157,8 +158,9 @@ export async function readWorkbookDiagnosis(deps: StudioDiagnosisDeps, tx: ReadT
       ? await deps.readWorkspaceAttemptAssessments(tx, submission, access.maySend, access.trackAssessment) : [];
     const formal = await readReleasedAssessment(deps, tx, attempt, submission, access);
     const feedback = workbookAttemptView(ref.id, attempt, [], formal?.result).feedback;
+    const diagnosisContext = await deps.diagnosisContext(tx, { attempt, access: sourceAccess });
     return workbookDiagnosisView(source, attempt, paper, { ref, cutoff: birth.tick, targets, events },
-      assessments, formalDiagnosisSummary(formal, Boolean(attempt.paper.assessmentRelease)), feedback);
+      assessments, formalDiagnosisSummary(formal, Boolean(attempt.paper.assessmentRelease)), feedback, diagnosisContext);
   } catch (error) {
     if (studioDiagnosisSourceUnavailable(deps, error)) return;
     throw error;

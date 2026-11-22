@@ -168,6 +168,17 @@ export function formalDiagnosisSummary<Score>(
 
 type DiagnosisSource = { id: string; rev: number; title: string; sourceRef: SourceRefV1 };
 type DiagnosisHelp = { ref: FactRef; cutoff: Tick; targets: readonly HelpTarget[]; events: readonly AdmittedHelpEvent[] };
+export type DiagnosisValue = { readonly state: 'available' | 'unavailable' | 'observed' | 'unknown' } & Record<string, unknown>;
+export type WorkbookDiagnosisContext = {
+  readonly imageCrop: DiagnosisValue; readonly conceptHistory: DiagnosisValue;
+  readonly mastery: DiagnosisValue; readonly retention: DiagnosisValue;
+};
+const noDiagnosisContext: WorkbookDiagnosisContext = {
+  imageCrop: { state: 'unavailable', reason: 'no-source-image' },
+  conceptHistory: { state: 'unknown', reason: 'no-linked-concepts' },
+  mastery: { state: 'unknown', reason: 'no-linked-concepts' },
+  retention: { state: 'unknown', reason: 'no-linked-concepts' },
+};
 
 export function workbookDiagnosisView<Formal>(
   source: DiagnosisSource, attempt: WorkbookAttempt, paper: { id: FactId; rev: Revision },
@@ -175,6 +186,7 @@ export function workbookDiagnosisView<Formal>(
   assessments: readonly Pick<WorkbookRubricAssessmentView, 'questionId' | 'verdict' | 'score' | 'errorStage'>[],
   formalAssessment: Formal | undefined,
   feedback: readonly {result: string}[] = attempt.feedback,
+  diagnosisContext: WorkbookDiagnosisContext = noDiagnosisContext,
 ) {
   const unavailable = { state: 'unavailable' } as const;
   const byQuestion = new Map(assessments.map(({ questionId, verdict, score, errorStage }) => [questionId,
@@ -202,8 +214,8 @@ export function workbookDiagnosisView<Formal>(
   });
   return { id: source.id, rev: source.rev, title: source.title, kind: 'attempt', lens: 'diagnose',
     sourceRef: source.sourceRef, frozenPaper: paper, questions, ...(formalAssessment ? { formalAssessment } : {}),
-    image_crop: unavailable,
+    image_crop: diagnosisContext.imageCrop, concept_history: diagnosisContext.conceptHistory,
+    mastery: diagnosisContext.mastery, retention: diagnosisContext.retention,
     effective_duration_ms: attempt.effectiveDurationMs === undefined ? unavailable
-      : { state: 'observed', value: attempt.effectiveDurationMs, source: 'browser-focus-v1' },
-    concept_history: unavailable, mastery: unavailable, retention: unavailable };
+      : { state: 'observed', value: attempt.effectiveDurationMs, source: 'browser-focus-v1' } };
 }

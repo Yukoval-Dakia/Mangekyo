@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import type {CommandHooks, FactChange} from '../../../kernel/src/commands/contracts.ts';
 import type {CanonicalEvidenceSliceV1} from '../../../kernel/src/pipeline-contracts.ts';
-import {commandId, learnerId} from '../../../kernel/src/declarations/ids.ts';
+import {commandId, factId, learnerId} from '../../../kernel/src/declarations/ids.ts';
 import {createCommandHandler} from '../../../kernel/src/commands/handle.ts';
 import {recordLocalRead} from '../../../kernel/src/work/effects.ts';
 import {studioLearner,stableId} from '../identity.ts';
@@ -20,6 +20,8 @@ import {openTextbook} from '../textbook.ts';
 import {readCurrentLearningObject} from '../current-learning-object.ts';
 import {openResearch} from '../research.ts';
 import {openRelationReview} from '../workspace-relation.ts';
+import {factWriter} from '../../../modules/learner/test/facts.ts';
+import {retentionPaperType,retentionTeachingPurpose} from '../../../modules/activity/retention-posttest.ts';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { loadStudioTestModule } from './modules.ts';
 
@@ -223,9 +225,76 @@ it.skipIf(!testDatabaseUrl)('reopens authorized workspace versions and searches 
       frozenPaper:{id:paper.id,rev:1},
       questions:[{prompt:question.prompt,answer:'实测东北风',assessment:{verdict:'incorrect'},
         independence:'unknown',help_exposure:{state:'unknown'}}],
-      image_crop:{state:'unavailable'},effective_duration_ms:{state:'unavailable'},
+      image_crop:{state:'unavailable',reason:'no-source-image'},effective_duration_ms:{state:'unavailable'},
+      concept_history:{state:'unknown',reason:'no-linked-concepts'},mastery:{state:'unknown',reason:'no-linked-concepts'},
+      retention:{state:'unknown',reason:'no-linked-concepts'},
     }]});
     expect(JSON.stringify(openedDiagnosis)).not.toContain('参考答案独有字样');
+
+    const questionAuthor = turn('diagnosis question author');
+    const diagnosisConcept = await questionAuthor('save_workspace',{kind:'concept',title:'风向',body:'按方位描述风向。'},1);
+    const sourceQuestion = await questionAuthor('save_workspace',{kind:'question',title:'风向题',body:'描述风向。',
+      answer:'内部答案正向',links:[diagnosisConcept.id]},2);
+    const conceptGrant = await access.setTeaching(diagnosisConcept.id,{enabled:true,expectedRev:1});
+    await access.setTeaching(sourceQuestion.id,{enabled:true,expectedRev:1});
+    const photoMaterial = stableId('diagnosis photo material'), photoIntake = stableId('intake-document',photoMaterial);
+    await command({learner:studioLearner,actor:'learner',purpose:'storage',type:'activity.captureIntake',
+      id:commandId(stableId('diagnosis photo capture')),input:{materialId:photoMaterial,intakeId:photoIntake,title:'拍卷',
+      requestedExtraction:'vision_llm',original:{name:'paper.png',mediaType:'image/png',size:4,sha256:'c'.repeat(64)},
+      extraction:{status:'ok',method:'vision_llm',text:'描述风向。',error:null,warnings:[],pages:null,truncated:false,characterCount:5}}});
+    await access.setTeaching(photoMaterial,{enabled:true,expectedRev:1});
+    const linkedQuestions = [{id:'q1',kind:'exact' as const,prompt:'描述风向。',answers:['内部答案正向'],
+      sourceQuestionRef:{id:sourceQuestion.id,rev:sourceQuestion.rev}}];
+    const linkedPaper = await workbook.save({requestId:'linked-photo-paper',title:'拍卷诊断',materialId:photoMaterial,questions:linkedQuestions});
+    const linkedQuestion = linkedPaper.questions[0]!;
+    const linkedSubmission = (await workbook.submit(linkedPaper.id,{requestId:'linked-photo-attempt',
+      answers:{[linkedQuestion.id]:'实测北风'}})).attempts[0]!;
+    const linkedPaperGrant = await access.setTeaching(linkedPaper.id,{enabled:true,expectedRev:1});
+    await access.setTeaching(linkedSubmission.id,{enabled:true,expectedRev:1});
+    const historyPaper = factId(stableId('diagnosis history paper')), historyIssue = stableId('diagnosis history issue');
+    await factWriter(db,{learner:studioLearner,purpose:'teaching'})([{kind:'create',id:historyPaper,
+      factType:retentionPaperType,purpose:['storage',retentionTeachingPurpose],data:{title:'独立后测',materialId:null,
+      savedAt:new Date().toISOString(),questions:linkedQuestions}}],211);
+    await command({learner:studioLearner,actor:'learner',purpose:'teaching',type:'activity.issueRetentionPosttest',
+      id:commandId(stableId('diagnosis history issuance')),input:{id:historyIssue,data:{condition:'studio-closed-workbook-v1',
+      gradingVersion:'workbook-v1',forecastKey:stableId('diagnosis history forecast key'),forecastId:stableId('diagnosis history forecast'),
+      effectiveTick:'1',paper:{id:historyPaper,rev:1},paperEpoch:'0',itemId:linkedQuestion.id,
+      startedAt:new Date().toISOString(),through:new Date(Date.now()+86_400_000).toISOString()}}});
+    await command({learner:studioLearner,actor:'learner',purpose:'teaching',type:'activity.submitWorkbookAttempt',
+      id:commandId(stableId('diagnosis history submission')),
+      input:{id:stableId('diagnosis history attempt'),condition:'studio-closed-workbook-v1',data:{paperId:historyIssue,requestId:'diagnosis-history',
+      submittedAt:new Date().toISOString(),answers:{[linkedQuestion.id]:'北风'}}}});
+    const now = new Date().toISOString();
+    await db.tx({learner:studioLearner},tx => tx.withLearnerWrite(async tick => {
+      const id = stableId('diagnosis forecast'), value = {kind:'value',value:{method:{id:'cognition',version:'3'},
+        estimate:{kind:'probabilistic',probability:.91,interval:[.8,.96],uncertainty:.1,effectiveEvidence:1,
+          bucket:{kcId:diagnosisConcept.id,representation:'symbolic',context:'practice',method:'direct'},basis:null},
+        input:{target:{activity:'frozen-workbook-item',paper:{id:linkedPaper.id,rev:linkedPaperGrant.rev},
+          itemId:linkedQuestion.id,condition:'same-item',gradingVersion:'workbook-v1'},
+          window:{requestedAt:now,through:new Date(Date.now()+86_400_000).toISOString()},
+          observedThrough:tick,observations:[]}}};
+      const manifest = {version:1,learner:studioLearner,purpose:'teaching',gatherTick:tick,
+        inputs:[{kind:'fact',id:linkedPaper.id,rev:linkedPaperGrant.rev,accessEpoch:'1',mode:'following'}]};
+      await tx.insert('derivations',{learner_id:studioLearner,id,slot_type:'predict.forecast',slot_key:id,
+        deriver:'learner/retention-forecast@1',scope_keys:'{}',value:JSON.stringify(value),lifecycle:'effective',
+        freshness:'current',gather_tick:tick,effective_tick:tick,manifest:JSON.stringify(manifest)});
+      await tx.insert('slot_state',{learner_id:studioLearner,slot_type:'predict.forecast',slot_key:id,
+        current_id:id,last_id:id,pending:'none',changed_tick:tick,scope_keys:'{}'});
+    }));
+    const positive = await diagnose('open_learning',{refs:linkedSubmission.id,lens:'diagnose'},10);
+    expect(positive).toMatchObject({
+      ok: true,
+      items: [{
+        image_crop: { state: 'available', mediaType: 'image/png' },
+        concept_history: { state: 'observed', concepts: [{ conceptId: diagnosisConcept.id, recentAttempts: [{ outcome: 'incorrect' }] }] },
+        mastery: { state: 'observed', concepts: [{ conceptId: diagnosisConcept.id, status: expect.any(String) }] },
+        retention: { state: 'observed', concepts: [{ conceptId: diagnosisConcept.id, probability: .91 }] },
+      }],
+    });
+    expect(JSON.stringify(positive)).not.toContain('内部答案正向');
+    const conceptRevocation = await access.setTeaching(diagnosisConcept.id,{enabled:false,expectedRev:conceptGrant.rev});
+    expect(await diagnose('open_learning',{refs:linkedSubmission.id,lens:'diagnose'},11)).toMatchObject({ok:false,code:'basis_stale'});
+    await access.setTeaching(diagnosisConcept.id,{enabled:true,expectedRev:conceptRevocation.rev});
     const reopenedPaper = await diagnose('read_workspace',{id:paper.id},4);
     expect(reopenedPaper.content).toContain(question.prompt);
     expect(JSON.stringify(await diagnose('read_workspace',{id:JSON.stringify(reopenedPaper.sourceRef)},5)))
