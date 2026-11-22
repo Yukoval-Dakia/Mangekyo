@@ -34,3 +34,9 @@ export {
   type MemoryOverviewScope, type MemoryOverviewSources, type MemoryOverviewView,
   type MemoryRecentChange, type MemoryRecentChangeKind, type MemoryRetentionCase,
 } from './memory-overview.ts';
+export {
+  projectWeaknessAndErrorSummary,
+  type ErrorStage, type PriorityConceptSummary, type TopErrorStageSummary,
+  type WeaknessAndErrorSummaryInput, type WeaknessAndErrorSummaryView,
+  type WeaknessConceptInput, type WeaknessErrorSample, type WeaknessEvidenceRef, type WeaknessNextAction,
+} from './weakness-error-summary.ts';
