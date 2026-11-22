@@ -163,6 +163,10 @@ export function serve(
       if (path === '/api/iqdb/questions' && method === 'GET') {
         return json(res, 200, await student.iqdb.questions());
       }
+      const iqdbTeaching = /^\/api\/iqdb\/questions\/([0-9A-HJKMNP-TV-Z]{26})\/teaching$/.exec(path);
+      if (iqdbTeaching?.[1] && method === 'PUT') {
+        return json(res, 200, await student.iqdb.setTeaching(iqdbTeaching[1], await body(req)));
+      }
       if (path === '/api/ai/activity' && method === 'GET') return json(res, 200, await transparency.aiActivity());
       if (path === '/api/knowledge/graph' && method === 'GET') return json(res, 200, await transparency.knowledgeGraph(url.searchParams));
       const quickPaper = path.match(/^\/api\/knowledge\/graph\/([^/]+)\/quick-paper$/);

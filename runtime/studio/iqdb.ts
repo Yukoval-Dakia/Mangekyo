@@ -2,12 +2,16 @@ import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import type { FactId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
+import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
+import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  bankProposalView, inspectBankQuestion, parsePaper, parseProposal, recordedReferences, selectBankQuestions, type QuestionRef,
+  bankProposalView, inspectBankQuestion, inspectStoredBankQuestion, parsePaper, parseProposal, recordedReferences, selectBankQuestions, type QuestionRef,
 } from '../../modules/activity/iqdb-selection.ts';
 import { assetType } from '../../modules/content/asset.ts';
+import { questionMetaDraftId, questionStateId } from '../../modules/content/question-state.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { enqueueQuestionVerification, readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { RequestError } from './sessions.ts';
@@ -34,20 +38,30 @@ async function inspectQuestion(tx: ReadTransaction, id: FactId, pinned?: Questio
 }
 
 async function listQuestions(tx: ReadTransaction) {
-  const { rows } = await tx.query<{ id: FactId }>(
-    `SELECT f.id FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+  const { rows } = await tx.query<{ id: FactId; purpose: readonly string[] }>(
+    `SELECT f.id, f.purpose FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
      WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'kind'='question'
-       AND f.purpose && ARRAY[$3,'all']::text[] ORDER BY f.id`, [tx.learner, assetType, purpose],
+       AND f.purpose && ARRAY['storage',$3,'all']::text[] ORDER BY f.id`, [tx.learner, assetType, purpose],
   );
   const questions = [];
-  for (const { id } of rows) {
-    const opened = await inspectQuestion(tx, id);
-    if (opened) questions.push(opened.public);
+  for (const { id, purpose: purposes } of rows) {
+    let opened = purposes.includes('teaching') || purposes.includes('all') ? await inspectQuestion(tx, id) : undefined;
+    if (!opened) {
+      const fact = await createCommandReadContext(tx, 'storage').fact(id, { mode: 'following' }).catch(error => {
+        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return;
+        throw error;
+      });
+      if (!fact) continue;
+      const stored = await inspectStoredBankQuestion(createCommandReadContext(tx, 'storage'), fact);
+      if (!stored) continue;
+      opened = { public: stored.public, version: stored.version, reviewed: false };
+    }
+    questions.push({ ...opened.public, teachingAuthorized: purposes.includes('teaching') || purposes.includes('all') });
   }
   return questions;
 }
 
-export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank) {
+export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank, content?: LoadedModule, hooks?: CommandHooks) {
   return {
     questions: () => db.snapshot(scope, async tx => ({ questions: await listQuestions(tx) })),
     async proposals({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
@@ -95,6 +109,56 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         if (!refs.length) throw blocked();
         return issueBank(tx, { requestId: input.requestId, questionRefs: refs, deletionWatermark: watermark });
       });
+    },
+    async setTeaching(id: string, raw: Record<string, unknown>) {
+      if (!content || !hooks) throw new RequestError(503, '当前服务不支持题库教学授权。');
+      const input = raw ?? {};
+      const requestId = input.requestId;
+      const expectedRev = input.expectedRev;
+      const allowed = input.allowed;
+      if (typeof requestId !== 'string' || !requestId.trim() || typeof expectedRev !== 'number' ||
+          !Number.isSafeInteger(expectedRev) || expectedRev < 1 || typeof allowed !== 'boolean')
+        throw new RequestError(400, '题库教学授权请求无效。');
+      const questionId = factId(id);
+      try {
+        const stateId = await questionStateId(questionId);
+        const metaId = await questionMetaDraftId({ learner: studioLearner, id: questionId, rev: expectedRev as Revision });
+        const handle = createCommandHandler(db, { modules: [content], hooks,
+          bindCommandRead: (tx, request, base) => {
+            if (request.type !== 'content.setQuestionTeaching') return base;
+            const storage = createCommandReadContext(tx, 'storage');
+            return { ...base,
+              fact: async <Value>(id: FactId, options: Parameters<typeof base.fact>[1]) => {
+                return storage.fact<Value>(id, options);
+              } };
+          } });
+        const receipt = await handle({
+          learner: studioLearner,
+          actor: 'learner',
+          purpose: 'storage',
+          type: 'content.setQuestionTeaching',
+          id: commandId(stableId('iqdb-question-teaching', questionId, requestId)),
+          input: { id: questionId, expectedRev, allowed },
+        });
+        const rev = receipt.wrote.find(write => write.id === questionId)?.rev ?? expectedRev;
+        return { id: questionId, rev, teachingAuthorized: allowed, changed: receipt.wrote.length > 0 };
+      } catch (error) {
+        if (error instanceof FactNotFoundError || (error instanceof FactReadDeniedError && error.reason !== 'purpose'))
+          throw new RequestError(404, '找不到这道题。');
+        if (error instanceof Error) {
+          if (error instanceof FactReadDeniedError && error.reason === 'purpose')
+            throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
+          if (error.message.startsWith('Fact revision conflict'))
+            throw new RequestError(409, '题目基版已变化，请刷新后再试。');
+          if (error.message === 'Command ID already used with a different command identity')
+            throw new RequestError(409, '同一个请求标识已经用于不同的教学授权。');
+          if (error.message === '题目来源未授权教学用途或依据已变化。')
+            throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
+          if (error.message === '题目基版已变化。')
+            throw new RequestError(409, '题目基版已变化，请刷新后再试。');
+        }
+        throw error;
+      }
     },
   };
 }
