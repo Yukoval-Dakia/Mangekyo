@@ -8,10 +8,12 @@ import {
   intakeOriginal,
   IntakeResearchConflict,
   intakeResearchPermission,
+  IntakeVisionRetryConflict,
   intakeTextLimit,
   intakeTitle,
   type IntakeOriginal,
   type IntakeRequestedExtraction,
+  retryVisionIntakeInput,
 } from './intake-values.ts';
 import { projectIntakeMetadata, type IntakeMetadata } from './intake-view.ts';
 import { visionOcrSupports } from './vision-paper-ocr.ts';
@@ -34,6 +36,13 @@ export type IntakeCorrectInput = {
   readonly materialId: unknown;
   readonly requestId: unknown;
   readonly text: unknown;
+};
+
+export type IntakeRetryVisionInput = {
+  readonly materialId: unknown;
+  readonly expectedRev: unknown;
+  readonly requestId: unknown;
+  readonly expectedMaterialRev?: unknown;
 };
 
 export type DetectedDocument = { readonly kind: string; readonly mediaType: string };
@@ -289,6 +298,22 @@ export function prepareIntakeCorrection(input: IntakeCorrectInput, intakeIdFor: 
   }
 }
 
+export function prepareIntakeVisionRetry(input: IntakeRetryVisionInput, intakeIdFor: (id: FactId) => FactId) {
+  const requestId = clientRequest(input.requestId);
+  try {
+    const materialId = factId(input.materialId as string);
+    const data = retryVisionIntakeInput({
+      materialId,
+      intakeId: intakeIdFor(materialId),
+      expectedRev: input.expectedRev,
+      ...(input.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: input.expectedMaterialRev }),
+    });
+    return { materialId, requestId, data };
+  } catch (error) {
+    throw new RequestError(400, error instanceof Error ? error.message : '视觉重识别请求无效。');
+  }
+}
+
 export function prepareIntakeResearchPermission(materialId: string, input: unknown, intakeIdFor: (id: FactId) => FactId) {
   const id = factId(materialId);
   try {
@@ -316,6 +341,18 @@ export function translateIntakeCorrectionError(error: unknown, isDenied: boolean
   return error;
 }
 
+export function translateIntakeVisionRetryError(error: unknown, isDenied: boolean): unknown {
+  if (error instanceof IntakeVisionRetryConflict)
+    return new RequestError(409, error.message);
+  if (error instanceof Error && (error.message === 'Fact revision conflict' ||
+      error.message.startsWith('Fact revision conflict')))
+    return new RequestError(409, '原文版本已经变更，请刷新后再重试视觉识别。');
+  if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '找不到这份原件。');
+  if (error instanceof Error && error.message === 'Command ID already used with a different command identity')
+    return new RequestError(409, '同一个重试标识已经用于不同请求。');
+  return error;
+}
+
 export function translateIntakeResearchError(error: unknown, isDenied: boolean): unknown {
   if (error instanceof IntakeResearchConflict) return new RequestError(409, error.message);
   if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '找不到这份原件。');
@@ -331,9 +368,10 @@ export type IntakeRoute =
   | { readonly kind: 'original'; readonly id: string }
   | { readonly kind: 'correction'; readonly id: string }
   | { readonly kind: 'research-permission'; readonly id: string }
+  | { readonly kind: 'retry-vision'; readonly id: string }
   | { readonly kind: 'method-not-allowed'; readonly error: string };
 
-const materialPathPattern = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction|research-permission|erasure))?$/;
+const materialPathPattern = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|correction|research-permission|retry-vision|erasure))?$/;
 
 export function parseIntakeRoute(pathname: string, method: string | undefined): IntakeRoute | null {
   if (pathname === '/api/lifecycle' && method === 'GET') return { kind: 'lifecycle' };
@@ -372,6 +410,11 @@ export function parseIntakeRoute(pathname: string, method: string | undefined): 
     return method === 'PUT'
       ? { kind: 'research-permission', id }
       : { kind: 'method-not-allowed', error: '这个入口只接受用途设置。' };
+  }
+  if (action === 'retry-vision') {
+    return method === 'POST'
+      ? { kind: 'retry-vision', id }
+      : { kind: 'method-not-allowed', error: '视觉重识别只接受提交。' };
   }
   return null;
 }
@@ -438,6 +481,7 @@ export type IntakeHttpAdapter<Bytes extends Uint8Array> = {
   ) => Promise<unknown>;
   readonly correct: (input: IntakeCorrectInput) => Promise<unknown>;
   readonly setResearch: (id: string, input: unknown) => Promise<unknown>;
+  readonly retryVision?: (input: IntakeRetryVisionInput) => Promise<unknown>;
 };
 
 export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
@@ -538,6 +582,24 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
       return { kind: 'json', status: 200, body: result };
     } catch (error) {
       return fail(error, '更正未能保存。', { syntaxMessage: '更正请求格式无效。' });
+    }
+  }
+  if (route.kind === 'retry-vision') {
+    if (!adapter.retryVision) return { kind: 'json', status: 404, body: { error: '找不到这份原件。' } };
+    try {
+      const value: unknown = JSON.parse(adapter.decodeUtf8Bytes(await adapter.readBody(4096)));
+      if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new RequestError(400, '视觉重识别请求格式无效。');
+      const body = value as Record<string, unknown>;
+      const result = await adapter.retryVision({
+        materialId: route.id,
+        requestId: body.requestId,
+        expectedRev: body.expectedRev,
+        ...(body.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: body.expectedMaterialRev }),
+      });
+      return { kind: 'json', status: 202, body: result };
+    } catch (error) {
+      return fail(error, '视觉重识别未能排队。', { syntaxMessage: '视觉重识别请求格式无效。' });
     }
   }
   try {

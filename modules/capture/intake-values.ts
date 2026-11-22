@@ -5,6 +5,7 @@ import {
   renderStructuredPaperMarkdown,
   structuredPaperToDrafts,
   validateStructuredPaperDrafts,
+  visionOcrSupports,
   type StructuredPaperDrafts,
   type StructuredPaperOcr,
 } from './vision-paper-ocr.ts';
@@ -20,12 +21,14 @@ export const captureIntakeCommand = 'activity.captureIntake';
 export const correctIntakeCommand = 'activity.correctIntakeText';
 export const setIntakeResearchCommand = 'capture.setIntakeResearch';
 export const completeCloudIntakeCommand = 'activity.completeCloudIntake';
+export const retryVisionIntakeCommand = 'activity.retryVisionIntake';
 
 export const materialTextLimit = 4000;
 export const intakeTextLimit = 2_000_000;
 export const intakeFileLimit = 25 * 1024 * 1024;
 
 export class IntakeResearchConflict extends Error {}
+export class IntakeVisionRetryConflict extends Error {}
 
 export function intakeResearchPermission(input: unknown) {
   const { materialId, intakeId, expectedRev, enabled } = object(input);
@@ -88,6 +91,14 @@ export type IntakeDocument = {
   readonly requestedExtraction?: IntakeRequestedExtraction;
 };
 
+export function canRetryVisionExtraction(document: IntakeDocument): boolean {
+  const { extraction } = document;
+  if (!visionOcrSupports(document.original.mediaType)) return false;
+  if (extraction.status === 'corrected' || extraction.method === 'learner') return false;
+  if (extraction.status === 'pending') return false;
+  return extraction.method === 'vision_fallback' || extraction.stage === 'fallback' || extraction.status === 'failed';
+}
+
 export function archivedIntake(input: unknown): IntakeDocument & { readonly envelope: SourceEnvelope } {
   const document = intakeDocument(input);
   const { original, materialId, extraction, title } = document;
@@ -126,6 +137,13 @@ export type CorrectIntakeInput = {
   readonly materialId: FactId;
   readonly intakeId: FactId;
   readonly text: string;
+};
+
+export type RetryVisionIntakeInput = {
+  readonly materialId: FactId;
+  readonly intakeId: FactId;
+  readonly expectedRev: number;
+  readonly expectedMaterialRev?: number;
 };
 
 function object(input: unknown): Record<string, unknown> {
@@ -432,5 +450,23 @@ export function correctIntakeInput(input: unknown): CorrectIntakeInput {
   };
 }
 
+export function retryVisionIntakeInput(input: unknown): RetryVisionIntakeInput {
+  const value = object(input);
+  const expectedRev = value.expectedRev;
+  const expectedMaterialRev = value.expectedMaterialRev;
+  if (typeof expectedRev !== 'number' || !Number.isSafeInteger(expectedRev) || expectedRev < 1)
+    throw new Error('缺少有效的原文版本。');
+  if (expectedMaterialRev !== undefined && (typeof expectedMaterialRev !== 'number' ||
+      !Number.isSafeInteger(expectedMaterialRev) || expectedMaterialRev < 1))
+    throw new Error('缺少有效的材料版本。');
+  return {
+    materialId: factId(text(value.materialId, '材料标识', 26)),
+    intakeId: factId(text(value.intakeId, '交入记录标识', 26)),
+    expectedRev,
+    ...(expectedMaterialRev === undefined ? {} : { expectedMaterialRev }),
+  };
+}
+
 export const captureIntakeSchema = { parse: captureIntakeInput };
 export const correctIntakeSchema = { parse: correctIntakeInput };
+export const retryVisionIntakeSchema = { parse: retryVisionIntakeInput };
