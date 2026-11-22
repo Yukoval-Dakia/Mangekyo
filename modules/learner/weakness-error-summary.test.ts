@@ -59,4 +59,26 @@ describe('projectWeaknessAndErrorSummary (Wave Next-D)', () => {
       ['c-fading', 'quick_paper'],
     ]);
   });
+
+  it('deduplicates sampleCount and topErrorStages when one wrong item spans multiple concepts', () => {
+    const mkConcept = (id: string, refId: string) => ({
+      conceptId: id, title: id, status: 'fragile' as const, retrievability: 0.4, independentAttempts: 1, evidenceRefs: [{ id: refId, rev: 1 }],
+    });
+    const oneItem = projectWeaknessAndErrorSummary({
+      asOf, errorSamples: ['c1', 'c2', 'c3'].map(conceptId => sample('sub1', 'modeling', { conceptId })),
+      concepts: ['c1', 'c2', 'c3'].map(id => mkConcept(id, 'sub1')),
+    });
+    expect(oneItem).toMatchObject({ status: 'insufficient_evidence', sampleCount: 1, neededCount: 2 });
+    const twoItems = projectWeaknessAndErrorSummary({
+      asOf,
+      errorSamples: [...['c1', 'c2', 'c3'].map(c => sample('sub1', 'modeling', { conceptId: c })),
+        ...['c4', 'c5', 'c6'].map(c => sample('sub2', 'modeling', { conceptId: c }))],
+      concepts: [...['c1', 'c2', 'c3'].map(id => mkConcept(id, 'sub1')), ...['c4', 'c5', 'c6'].map(id => mkConcept(id, 'sub2'))],
+    });
+    expect(twoItems).toMatchObject({ status: 'ready', sampleCount: 2 });
+    if (twoItems.status === 'ready') {
+      expect(twoItems.topErrorStages).toMatchObject([{ stage: 'modeling', count: 2 }]);
+      expect(twoItems.topErrorStages[0]!.evidenceRefs.map(r => r.id)).toEqual(['sub1', 'sub2']);
+    }
+  });
 });

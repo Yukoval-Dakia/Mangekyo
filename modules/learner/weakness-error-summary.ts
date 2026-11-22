@@ -131,7 +131,7 @@ function validRef(ref: WeaknessEvidenceRef | undefined): WeaknessEvidenceRef | u
 }
 
 function refKey(ref: WeaknessEvidenceRef): string {
-  return JSON.stringify([ref.id, ref.rev, ref.itemId ?? '']);
+  return JSON.stringify([ref.id, ref.itemId ?? '']);
 }
 
 function uniqueRefs(refs: readonly WeaknessEvidenceRef[], limit = 5): readonly WeaknessEvidenceRef[] {
@@ -193,37 +193,40 @@ export function projectWeaknessAndErrorSummary(input: WeaknessAndErrorSummaryInp
   const halfLifeDays = Math.max(7, windowDays / 2);
   const validStageSet = new Set<string>(stageOrder);
 
-  // S11: only independent incorrect/partial samples with canonical error_stage and valid refs count.
+  // S11: only independent incorrect/partial samples with valid refs count.
+  // One wrong question linked to multiple concepts is deduplicated by (submissionId, itemId)
+  // while still recording every linked conceptId so none are double-counted below.
+  const sampledConceptIds = new Set<string>();
+  const independentErrorKeys = new Set<string>();
   const dedupedSamples = new Map<string, {
     readonly stage: ErrorStage;
     readonly occurredMs: number;
     readonly weight: number;
     readonly ref: WeaknessEvidenceRef;
-    readonly conceptId?: string;
   }>();
   for (const sample of input.errorSamples) {
     if (sample.helpLevel !== 'independent') continue;
     if (sample.outcome !== 'incorrect' && sample.outcome !== 'partial') continue;
-    if (!sample.errorStage || !validStageSet.has(sample.errorStage)) continue;
     const ref = validRef(sample.evidenceRef);
     const occurredMs = evidenceTime(sample.occurredAt);
     if (!ref || !Number.isFinite(occurredMs) || occurredMs > asOfMs) continue;
     const key = refKey(ref);
+    independentErrorKeys.add(key);
+    const conceptId = cleanText(sample.conceptId);
+    if (conceptId !== undefined) sampledConceptIds.add(conceptId);
+    if (!sample.errorStage || !validStageSet.has(sample.errorStage)) continue;
     if (dedupedSamples.has(key)) continue;
     const ageDays = Math.max(0, (asOfMs - occurredMs) / dayMs);
     const weight = Math.pow(0.5, ageDays / halfLifeDays);
-    const conceptId = cleanText(sample.conceptId);
     dedupedSamples.set(key, {
       stage: sample.errorStage,
       occurredMs,
       weight,
       ref,
-      ...(conceptId === undefined ? {} : { conceptId }),
     });
   }
 
   const samples = [...dedupedSamples.values()];
-  const sampledConceptIds = new Set(samples.map(item => item.conceptId).filter((id): id is string => id !== undefined));
 
   // Aggregate priority concepts (weak / fading with independent evidence or uncorrected errors).
   const byConcept = new Map<string, {
@@ -253,7 +256,7 @@ export function projectWeaknessAndErrorSummary(input: WeaknessAndErrorSummaryInp
       byConcept.set(conceptId, {
         conceptId,
         title,
-        status,
+        status: prior?.status === 'weak' ? 'weak' : status,
         retrievability,
         independentAttempts: Math.max(attempts, prior?.independentAttempts ?? 0),
         uncorrectedErrorCount: Math.max(uncorrected, prior?.uncorrectedErrorCount ?? 0),
@@ -263,11 +266,11 @@ export function projectWeaknessAndErrorSummary(input: WeaknessAndErrorSummaryInp
     }
   }
 
-  // Never double-count one single wrong attempt as both an error sample and a separate concept record.
+  // Never double-count one independent attempt across multiple linked concepts.
   const extraWeakConceptSamples = [...byConcept.values()].filter(
     concept => concept.independentAttempts >= 1 && !sampledConceptIds.has(concept.conceptId),
   ).length;
-  const sampleCount = samples.length + extraWeakConceptSamples;
+  const sampleCount = independentErrorKeys.size + extraWeakConceptSamples;
 
   if (sampleCount < neededCount) {
     const missing = neededCount - sampleCount;
