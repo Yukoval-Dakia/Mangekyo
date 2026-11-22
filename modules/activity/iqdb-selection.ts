@@ -109,12 +109,44 @@ export async function inspectStoredBankQuestion(
   return { public: { id: fact.ref.id, rev: fact.ref.rev, title: asset.title, prompt: questionPrompt(asset), status }, version };
 }
 
-export async function inspectPurposeGrantedBankQuestion(storage: Pick<ReadContext, 'fact'>, teaching: ReadContext, fact: FactSnapshot) {
-  const stored = await inspectStoredBankQuestion(storage, fact);
+export async function inspectPurposeGrantedBankQuestion(
+  storage: Pick<ReadContext, 'fact'>,
+  teaching: ReadContext,
+  fact: FactSnapshot,
+  pinned?: QuestionRef['rev'],
+) {
+  const stored = await inspectStoredBankQuestion(storage, fact, pinned);
   if (!stored) return;
   const basis = await refreshPurposeOnlyTeachingSources(storage, questionAsset(fact.value).basis ?? []);
   await checkQuestionTeachingSources(teaching, { basis });
   return { ...stored, reviewed: false };
+}
+
+export async function inspectTeachingBankQuestion(
+  teaching: ReadContext,
+  storage: Pick<ReadContext, 'fact'>,
+  id: FactId,
+  pinned?: QuestionRef['rev'],
+): Promise<NonNullable<Awaited<ReturnType<typeof inspectBankQuestion>>> | undefined> {
+  const fact = await storage.fact(id, { mode: 'following' }).catch(error => {
+    const unavailableFact = error instanceof Error && (error.name === 'FactNotFoundError' || error.name === 'FactReadDeniedError' ||
+      error.message.includes(' does not allow read purpose ') || error.message.endsWith(' does not exist for this learner'));
+    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError || unavailableFact) return undefined;
+    throw error;
+  });
+  if (!fact || fact.type !== assetType || (!fact.purpose.includes('teaching') && !fact.purpose.includes('all'))) return undefined;
+  try { return await inspectBankQuestion(teaching, id, pinned); }
+  catch (error) {
+    const basisChanged = error instanceof Error && error.message === '题目来源未授权教学用途或依据已变化。';
+    const unavailableFact = error instanceof Error && (error.name === 'FactNotFoundError' || error.name === 'FactReadDeniedError' ||
+      error.message.includes(' does not allow read purpose ') || error.message.endsWith(' does not exist for this learner'));
+    if (!(basisChanged || unavailableFact || error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+    return inspectPurposeGrantedBankQuestion(storage, teaching, fact, pinned).catch(fallbackError => {
+      if (fallbackError instanceof FactNotFoundError || fallbackError instanceof FactReadDeniedError ||
+          (fallbackError instanceof Error && fallbackError.message === '题目来源未授权教学用途或依据已变化。')) return undefined;
+      throw fallbackError;
+    });
+  }
 }
 
 export async function storedIqdbQuestionView(
@@ -132,13 +164,18 @@ export async function storedIqdbQuestionView(
   });
   if (!stored) return;
   const teaching = purposes.includes('teaching') || purposes.includes('all');
-  return teaching
-    ? await inspectPurposeGrantedBankQuestion(createCommandReadContext(tx, 'storage'), createCommandReadContext(tx, teachingPurpose), fact).catch(error => {
-        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError ||
-            (error instanceof Error && error.message === '题目来源未授权教学用途或依据已变化。')) return undefined;
-        throw error;
-      })
-    : (!teachingOnly ? { public: stored.public, version: stored.version, reviewed: false } : undefined);
+  if (!teaching) return teachingOnly ? undefined : { view: stored, teachingAuthorized: false };
+  const opened = await inspectPurposeGrantedBankQuestion(
+    createCommandReadContext(tx, 'storage'),
+    createCommandReadContext(tx, teachingPurpose),
+    fact,
+  ).catch(error => {
+    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError ||
+        (error instanceof Error && error.message === '题目来源未授权教学用途或依据已变化。')) return undefined;
+    throw error;
+  });
+  if (opened) return { view: opened, teachingAuthorized: true };
+  return teachingOnly ? undefined : { view: stored, teachingAuthorized: false };
 }
 
 export function selectBankQuestions(input: ReturnType<typeof parseProposal>, questions: readonly {id: FactId; rev: QuestionRef['rev']; title: string; prompt: string}[]) {

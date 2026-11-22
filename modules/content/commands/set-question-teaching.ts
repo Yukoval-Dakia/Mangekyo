@@ -24,10 +24,12 @@ export default defineCommand({
     if (metadata.type !== questionMetaDraftType) throw new Error('活元信息类型不匹配。');
     const draft = parseQuestionMetaDraft(metadata.value);
     if (draft.id !== id || draft.expectedRev !== expectedRev) throw new Error('活元信息与题版不匹配。');
+    let refreshedDraftBasis = draft.basis;
     if (allowed) {
       const assetBasis = await refreshPurposeOnlyTeachingSources(ctx.read, asset.basis ?? []);
       await checkQuestionTeachingSources(ctx.read, { ...asset, basis: assetBasis });
-      await checkQuestionTeachingSources(ctx.read, { basis: await refreshPurposeOnlyTeachingSources(ctx.read, draft.basis) });
+      refreshedDraftBasis = await refreshPurposeOnlyTeachingSources(ctx.read, draft.basis);
+      await checkQuestionTeachingSources(ctx.read, { basis: refreshedDraftBasis });
     }
     const nextRev = revision(expectedRev + 1);
     return [
@@ -35,7 +37,7 @@ export default defineCommand({
       { kind: 'set_purpose', id: state.ref.id, expectedRev: state.ref.rev, purpose },
       { kind: 'set_purpose', id: metadata.ref.id, expectedRev: metadata.ref.rev, purpose: ['storage'] },
       { kind: 'create', id: await questionMetaDraftId({ ...question.ref, rev: nextRev }),
-        factType: questionMetaDraftType, purpose, data: { ...draft, expectedRev: nextRev },
+        factType: questionMetaDraftType, purpose, data: { ...draft, expectedRev: nextRev, basis: refreshedDraftBasis },
       },
     ];
   },

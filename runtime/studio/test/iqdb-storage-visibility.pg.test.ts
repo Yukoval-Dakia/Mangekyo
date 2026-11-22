@@ -68,6 +68,12 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       expect(await grant.json()).toMatchObject({ id: taughtId, rev: 2, teachingAuthorized: true, changed: true });
       listed = await getQuestions();
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 2, teachingAuthorized: true }));
+      await send('activity.setWorkspaceTeaching', 'source-revoke', { id: materialId, expectedRev: 2, enabled: false });
+      listed = await getQuestions();
+      expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 2, teachingAuthorized: false }));
+      const revokedSource = await post('/api/iqdb/proposals', { requestId: 'source-revoked', need: '可授权', durationMinutes: 10, coverage: [], questionRefs: [{ id: taughtId, rev: 2 }] });
+      expect(revokedSource.status).toBe(201);
+      expect(await revokedSource.json()).toMatchObject({ questionRefs: [], gaps: expect.arrayContaining(['question_unavailable']) });
       const revoke = await fetch(`${base}/api/iqdb/questions/${taughtId}/teaching`, { method: 'PUT', ...body({ requestId: 'revoke-0001', expectedRev: 2, allowed: false }) });
       expect(revoke.status).toBe(200);
       expect(await revoke.json()).toMatchObject({ id: taughtId, rev: 3, teachingAuthorized: false, changed: true });

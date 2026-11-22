@@ -8,7 +8,7 @@ import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
-  bankProposalView, inspectBankQuestion, parsePaper, parseProposal, questionSourceMaterialIds, recordedReferences, selectBankQuestions, storedIqdbQuestionView, type QuestionRef,
+  bankProposalView, inspectTeachingBankQuestion, parsePaper, parseProposal, questionSourceMaterialIds, recordedReferences, selectBankQuestions, storedIqdbQuestionView, type QuestionRef,
 } from '../../modules/activity/iqdb-selection.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { questionMetaDraftId } from '../../modules/content/question-state.ts';
@@ -31,14 +31,9 @@ function validated<Result>(parse: () => Result) {
 }
 
 async function inspectQuestion(tx: ReadTransaction, id: FactId, pinned?: QuestionRef['rev']) {
-  const read = { ...createCommandReadContext(tx, purpose), slot: readCurrentQuestionVerification(tx) };
-  try {
-    return await inspectBankQuestion(read, id, pinned);
-  } catch (error) {
-    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError ||
-        (error instanceof Error && error.message === '题目来源未授权教学用途或依据已变化。')) return;
-    throw error;
-  }
+  return inspectTeachingBankQuestion(
+    { ...createCommandReadContext(tx, purpose), slot: readCurrentQuestionVerification(tx) },
+    createCommandReadContext(tx, 'storage'), id, pinned);
 }
 
 async function listQuestions(tx: ReadTransaction, { teachingOnly = false }: { teachingOnly?: boolean } = {}) {
@@ -49,12 +44,11 @@ async function listQuestions(tx: ReadTransaction, { teachingOnly = false }: { te
   );
   const questions = [];
   for (const { id, purpose: purposes } of rows) {
-    const teachingAuthorized = purposes.includes('teaching') || purposes.includes('all');
-    const teachingOpened = teachingAuthorized ? await inspectQuestion(tx, id) : undefined;
-    let opened = teachingOpened;
-    if (!opened) opened = await storedIqdbQuestionView(tx, { id, purposes, teachingOnly, teachingPurpose: purpose });
+    const strict = (purposes.includes('teaching') || purposes.includes('all')) ? await inspectQuestion(tx, id) : undefined;
+    const opened = strict ? { view: strict, teachingAuthorized: true }
+      : await storedIqdbQuestionView(tx, { id, purposes, teachingOnly, teachingPurpose: purpose });
     if (!opened) continue;
-    questions.push({ ...opened.public, teachingAuthorized });
+    questions.push({ ...opened.view.public, teachingAuthorized: opened.teachingAuthorized });
   }
   return questions;
 }

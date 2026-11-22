@@ -470,8 +470,8 @@ export async function refreshPurposeOnlyTeachingSources(
     const current = await read.fact(source.id, { mode: 'following' });
     if (current.ref.rev === source.rev && current.accessEpoch === source.epoch) return source;
     const prior = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
-    if (current.type !== source.type || current.ref.rev !== source.rev + 1 ||
-        Number(current.accessEpoch) !== Number(source.epoch) + 1 ||
+    if (current.type !== source.type || current.ref.rev <= source.rev ||
+        BigInt(current.accessEpoch) <= BigInt(source.epoch) ||
         JSON.stringify(current.value) !== JSON.stringify(prior.value) ||
         (!current.purpose.includes('teaching') && !current.purpose.includes('all'))) {
       throw new AssetBasisError('题目来源未授权教学用途或依据已变化。');
