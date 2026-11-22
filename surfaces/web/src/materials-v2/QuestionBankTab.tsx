@@ -72,6 +72,17 @@ interface TeachingNotice {
   readonly text: string;
   readonly linkHref?: string;
   readonly linkLabel?: string;
+  readonly sourceConfirm?: { readonly busy: boolean };
+}
+
+const SOURCE_TEACHING_DENIED = '题目来源未授权教学用途';
+
+interface TeachingAuthorizationResult {
+  readonly id: string;
+  readonly rev: number;
+  readonly teachingAuthorized: boolean;
+  readonly changed: boolean;
+  readonly sourceMaterialAuthorized: boolean;
 }
 
 function matchesSearch(query: string, fields: readonly (string | null | undefined)[]): boolean {
@@ -430,6 +441,7 @@ function FlatQuestionCard({
   onPractice,
   onCite,
   onAuthorizeTeaching,
+  onConfirmSourceTeaching,
 }: {
   readonly question: NormalizedBankQuestion;
   readonly busyActionKey: string | null;
@@ -439,13 +451,17 @@ function FlatQuestionCard({
   readonly onPractice: (actionKey: string, payload: PracticeQuestionPayload) => void;
   readonly onCite: (citeKey: string, payload: CompanionCitationPayload) => void;
   readonly onAuthorizeTeaching: (question: NormalizedBankQuestion) => void;
+  readonly onConfirmSourceTeaching: (question: NormalizedBankQuestion) => void;
 }) {
   const actionKey = `bank:${question.key}`;
   const citeKey = `cite-bank:${question.key}`;
   const teachingKey = `teaching:${question.sourceRef.id}`;
   const masteryMeta = question.mastery ? MASTERY_META[question.mastery] : null;
   const notice = teachingNotice && teachingNotice.key === teachingKey ? teachingNotice : null;
-  const authorizing = teachingBusyKey === teachingKey;
+  const confirmId = `${teachingKey}:source-confirm`;
+  const confirmNoteId = `${confirmId}-note`;
+  const authorizing = teachingBusyKey === teachingKey && notice === null;
+  const confirming = teachingBusyKey === teachingKey && notice?.sourceConfirm?.busy === true;
 
   return (
     <article className="mv2-item-card">
@@ -496,7 +512,7 @@ function FlatQuestionCard({
           <button
             type="button"
             className="mv2-btn mv2-btn-tonal mv2-btn-sm"
-            disabled={authorizing}
+            disabled={authorizing || confirming}
             onClick={() => onAuthorizeTeaching(question)}
           >
             {authorizing ? '正在授权…' : '允许用于出题与练习'}
@@ -521,18 +537,38 @@ function FlatQuestionCard({
         </button>
       </div>
       {notice && (
-        <p
+        <div
           className={`mv2-inline-notice ${notice.tone === 'success' ? 'mv2-inline-notice-soft' : 'mv2-inline-notice-error'}`}
-          role={notice.tone === 'error' ? 'alert' : 'status'}
         >
-          {notice.text}
-          {notice.linkHref && (
-            <>
-              {' '}
-              <a className="mv2-inline-notice-link" href={notice.linkHref}>{notice.linkLabel ?? '查看'}</a>
-            </>
+          <p
+            className="mv2-inline-notice-text"
+            role={notice.tone === 'error' ? 'alert' : 'status'}
+          >
+            {notice.text}
+            {notice.linkHref && (
+              <>
+                {' '}
+                <a className="mv2-inline-notice-link" href={notice.linkHref}>{notice.linkLabel ?? '查看'}</a>
+              </>
+            )}
+          </p>
+          {notice.sourceConfirm && !question.teachingAuthorized && (
+            <div className="mv2-source-confirm" id={confirmId}>
+              <p className="mv2-source-confirm-note" id={confirmNoteId}>
+                确认后会同时开放对应来源原件的教学授权，原件会与本题一起用于出题与练习；也可以先去原件页单独处理。
+              </p>
+              <button
+                type="button"
+                className="mv2-btn mv2-btn-tonal mv2-btn-sm"
+                disabled={notice.sourceConfirm.busy}
+                aria-describedby={confirmNoteId}
+                onClick={() => onConfirmSourceTeaching(question)}
+              >
+                {notice.sourceConfirm.busy ? '正在同时开放…' : '确认同时开放来源原件与本题的教学授权'}
+              </button>
+            </div>
           )}
-        </p>
+        </div>
       )}
     </article>
   );
@@ -906,7 +942,7 @@ export function QuestionBankTab({
       setTeachingBusyKey(teachingKey);
       setTeachingNotice(null);
       try {
-        const result = await api<{ id: string; rev: number; teachingAuthorized: boolean; changed: boolean }>(
+        const result = await api<TeachingAuthorizationResult>(
           `/iqdb/questions/${encodeURIComponent(question.sourceRef.id)}/teaching`,
           {
             method: 'PUT',
@@ -930,7 +966,9 @@ export function QuestionBankTab({
             ? '记录版本已更新，正在刷新最新状态…'
             : '暂时未能更新教学授权，请稍后重试。');
         let link: { linkHref: string; linkLabel: string } | undefined;
-        if (failure instanceof ApiError && failure.status === 409 && serverMessage?.includes('教学权限')) {
+        const sourceDenied =
+          failure instanceof ApiError && failure.status === 409 && serverMessage?.includes(SOURCE_TEACHING_DENIED);
+        if (sourceDenied) {
           try {
             const workspace = await api<{ materials?: { id?: string; title?: string }[] }>('/workspace');
             const sourceTitle = (question.sourceLabel ?? question.title ?? '').replace(/\s*第\s*\d+\s*题\s*$/, '').trim();
@@ -946,7 +984,88 @@ export function QuestionBankTab({
             link = { linkHref: '/materials?tab=originals', linkLabel: '去原件页开放教学权限' };
           }
         }
-        setTeachingNotice({ key: teachingKey, tone: 'error', text, ...(link ?? {}) });
+        setTeachingNotice({
+          key: teachingKey,
+          tone: 'error',
+          text,
+          ...(link ?? {}),
+          ...(sourceDenied ? { sourceConfirm: { busy: false } } : {}),
+        });
+        if (failure instanceof ApiError && failure.status === 409) {
+          void reload();
+        }
+      } finally {
+        setTeachingBusyKey(null);
+      }
+    },
+    [reload],
+  );
+
+  const handleConfirmSourceTeaching = useCallback(
+    async (question: NormalizedBankQuestion) => {
+      const teachingKey = `teaching:${question.sourceRef.id}`;
+      setTeachingBusyKey(teachingKey);
+      setTeachingNotice(previous =>
+        previous && previous.key === teachingKey
+          ? { ...previous, sourceConfirm: { busy: true } }
+          : previous,
+      );
+      try {
+        const catalog = await api<RawQuestionCatalogResponse>('/iqdb/questions', { cache: 'no-store' });
+        const latest = normalizeBankQuestions(catalog.questions).find(
+          item => item.sourceRef.id === question.sourceRef.id,
+        );
+        if (!latest) {
+          setTeachingNotice({
+            key: teachingKey,
+            tone: 'error',
+            text: '暂时找不到这道题的最新记录，请刷新后再试。',
+          });
+          void reload();
+          return;
+        }
+        const result = await api<TeachingAuthorizationResult>(
+          `/iqdb/questions/${encodeURIComponent(latest.sourceRef.id)}/teaching`,
+          {
+            method: 'PUT',
+            body: {
+              requestId: requestId(),
+              expectedRev: latest.sourceRef.rev,
+              allowed: true,
+              includeSourceMaterial: true,
+            },
+          },
+        );
+        setTeachingNotice({
+          key: teachingKey,
+          tone: 'success',
+          text: result.sourceMaterialAuthorized === true
+            ? '已同时开放来源原件与本题，可用于出题与练习'
+            : '已允许用于出题与练习',
+        });
+        void reload();
+      } catch (failure) {
+        const serverMessage =
+          failure instanceof ApiError && failure.message && failure.message !== `HTTP ${failure.status}`
+            ? failure.message
+            : undefined;
+        const text =
+          serverMessage ??
+          (failure instanceof ApiError && failure.status === 409
+            ? '记录版本已更新，正在刷新最新状态…'
+            : '暂时未能同时开放来源原件与本题，请稍后重试。');
+        const canRetry =
+          failure instanceof ApiError &&
+          failure.status === 409 &&
+          serverMessage !== undefined &&
+          !serverMessage.includes('版本') &&
+          !serverMessage.includes('请求标识');
+        setTeachingNotice({
+          key: teachingKey,
+          tone: 'error',
+          text,
+          ...(canRetry ? { sourceConfirm: { busy: false } } : {}),
+        });
         if (failure instanceof ApiError && failure.status === 409) {
           void reload();
         }
@@ -1152,6 +1271,7 @@ export function QuestionBankTab({
                   onPractice={handlePractice}
                   onCite={handleCite}
                   onAuthorizeTeaching={handleAuthorizeTeaching}
+                  onConfirmSourceTeaching={handleConfirmSourceTeaching}
                 />
               ))}
             </div>
