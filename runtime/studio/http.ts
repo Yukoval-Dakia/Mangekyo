@@ -29,6 +29,7 @@ import { parseWorkbookAttachmentMultipart, workbookAttachmentErrorStatus, workbo
 import type { openCapturePapers } from './capture-papers.ts';
 import type { openWorkbook } from './workbook.ts';
 import { openTakeaway } from './takeaway.ts';
+import { issueGraphQuickPaperResponse } from './graph-quick-paper.ts';
 import type { openPracticeAdmission } from './sealed-practice.ts';
 import { readWorkbookDisplayAccess } from './workbook-display-access.ts';
 import type { openOrganizer } from './organizer.ts';
@@ -164,6 +165,8 @@ export function serve(
       }
       if (path === '/api/ai/activity' && method === 'GET') return json(res, 200, await transparency.aiActivity());
       if (path === '/api/knowledge/graph' && method === 'GET') return json(res, 200, await transparency.knowledgeGraph(url.searchParams));
+      const quickPaper = path.match(/^\/api\/knowledge\/graph\/([^/]+)\/quick-paper$/);
+      if (quickPaper && method === 'POST') return await issueGraphQuickPaperResponse(db, student.workbook, quickPaper[1]!, await body(req)).then(result => json(res, result.status, result.body));
       if (path === '/api/memory/overview' && method === 'GET') return json(res, 200, await transparency.memoryOverview());
       if (path === '/api/care/support' && method === 'GET') {
         return json(res, 200, { card: offlineCrisisSupportCard, pause: await student.carePause.read() });

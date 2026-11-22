@@ -12,6 +12,7 @@
     "./offline-pack": "./offline-pack.ts",
     "./rules": "./rules.ts",
     "./tomorrow-warmup": "./tomorrow-warmup.ts"
+    ,"./facts/node-practice": "./node-practice.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"
