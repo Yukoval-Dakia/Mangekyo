@@ -10,6 +10,7 @@ import { intakeIdFor } from '../intake-lifecycle.ts';
 import { openVisionIntakeWork, visionIntakeRoute } from '../intake-vision.ts';
 import { handleIntakeRequest, openIntake, type IntakeMetadata } from '../intake.ts';
 import { stableId, studioLearner } from '../identity.ts';
+import { openTransparency } from '../transparency.ts';
 import { loadStudioTestModule } from './modules.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC', 'base64');
@@ -37,7 +38,8 @@ describe.skipIf(!testDatabaseUrl)('async vision intake in PostgreSQL', () => {
         studentAnswer: { status: 'present', text: '$\\frac{1}{2}$' }, redInk: { verdict: 'correct', marks: [], correction: null, score: '1' }, unclearSegments: [] }],
       freeformText: null, warnings: [] };
     const model = serve(body => (modelRequests.push(body), { model: 'vision-strong',
-      choices: [{ message: { content: JSON.stringify(ocr) } }], usage: { total_tokens: 20 } }));
+      choices: [{ message: { content: JSON.stringify(ocr) } }],
+      usage: { prompt_tokens: 1200, completion_tokens: 340, total_tokens: 1540 } }));
     for (const [server, name] of [[api, ''], [model, 'model']] as const) {
       await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
       const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing port');
@@ -86,11 +88,15 @@ describe.skipIf(!testDatabaseUrl)('async vision intake in PostgreSQL', () => {
     expect(modelRequests[0]).toMatchObject({model: 'group/powerful', messages: expect.any(Array)});
     expect(await intake.metadata(receipt.id)).toMatchObject({ fullText: expect.stringContaining('计算 $\\frac{1}{2}$'), intakeStatus: 'ready',
       extraction: { method: 'vision_llm', status: 'ok', drafts: { pendingConfirmationCount: 1 } } });
+    const calls = async () => (await openTransparency(db).aiActivity()).usage.recentCalls.filter(c => c.label === 'vision-ocr');
+    expect(await calls()).toContainEqual(expect.objectContaining({ ownerId: receipt.id, model: 'vision-strong',
+      promptTokens: 1200, completionTokens: 340, totalTokens: 1540 }));
     const { receipt: fallback } = await capture('vision-fallback'); const ref = await workFor(fallback);
     await writeFile(settingsFile, JSON.stringify({version: 2, providers: [{id: 'studio', label: 'Studio', baseUrl: modelOrigin, protocol: 'openai', model: 'group/flash', reasoningEffort: 'default', apiKey: 'test-key'}], activeProviderId: 'studio', mcpServers: [], allowSearch: false}));
     await openVisionIntakeWork(db, intake, {fallbackExtractLocal: async () => ({
       status: 'ok', method: 'vision', text: '本地识别', error: null, warnings: [], pages: 1, truncated: false, characterCount: 4 }) }).execute(ref);
     expect(await intake.metadata(fallback.id)).toMatchObject({ fullText: '本地识别', intakeStatus: 'fallback', extraction: { method: 'vision_fallback', status: 'ok' } });
+    expect((await calls()).every(c => c.ownerId !== fallback.id)).toBe(true);
     const { receipt: corrected } = await capture('vision-corrected'); const stale = await workFor(corrected);
     await intake.correct({ materialId: corrected.id, expectedRev: corrected.revision, text: '人工更正', requestId: 'manual-vision' });
     await openVisionIntakeWork(db, intake).execute(stale);
@@ -131,5 +137,6 @@ describe.skipIf(!testDatabaseUrl)('async vision intake in PostgreSQL', () => {
       body: JSON.stringify({ requestId: 'mp-erase', expectedRev: retried.revision, confirmation: 'permanently-delete-original' }) });
     expect(erase.status).toBe(200);
     expect((await fetch(`${origin}/api/materials/${receipt.id}`)).status).toBe(404);
+    expect((await openTransparency(db).aiActivity()).usage.recentCalls.every(c => !(c.label === 'vision-ocr' && c.ownerId === receipt.id))).toBe(true);
   });
 });

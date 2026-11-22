@@ -1,4 +1,4 @@
-import { extractMultiPagePaperWithVisionOrFallback, isWeakVisionModel, readVisionLlmConfigFromEnv, type LocalExtractionResult, type VisionLlmConfig } from '@mangekyo/executor-document-extraction/vision-ocr';
+import { extractMultiPagePaperWithVisionOrFallback, isWeakVisionModel, readVisionLlmConfigFromEnv, type LocalExtractionResult, type VisionLlmConfig, type VisionPaperLlmCallResult } from '@mangekyo/executor-document-extraction/vision-ocr';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +7,7 @@ import type { CommandHooks, CrossModuleWrites } from '../../kernel/src/commands/
 import { createCommandReadContext, isFactUnavailable } from './fact-read-helpers.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
-import { cancelWork, finishWork, readReadyWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
+import { cancelWork, finishWork, readReadyWork, recordCompletedEffect, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { isExpectedVisionCompletion } from '../../modules/capture/intake-operations.ts';
 import { completeMultiPageVisionExtraction, completeVisionIntakeCommand, failedVisionExtraction, intakeDocument, intakeDocumentPages, intakeFactType, intakePurpose, intakeTextLimit, materialType, planMultiPageVisionWork, type IntakeExtraction } from '../../modules/capture/intake-values.ts';
 import { buildVisionPaperOcrPrompt, parseStructuredPaperOcr, visionIntakeDeriver, visionIntakeRoute, visionIntakeSlot } from '../../modules/capture/vision-paper-ocr.ts';
@@ -18,15 +18,27 @@ import { loadSettings } from './settings.ts';
 import { RequestError } from './sessions.ts';
 
 export { visionIntakeRoute, visionIntakeSlot };
-export async function resolveVisionIntakeConfig(): Promise<VisionLlmConfig | null> {
+export type VisionOcrCallTelemetry = {
+  readonly page: number;
+  readonly totalPages: number;
+  readonly route: string;
+  readonly requestedModel: string;
+  readonly reportedModel: string;
+  readonly elapsedMs: number;
+  readonly usage?: VisionPaperLlmCallResult['usage'];
+};
+export async function resolveVisionIntakeTarget(): Promise<{ config: VisionLlmConfig; route: string } | null> {
   const fromEnv = readVisionLlmConfigFromEnv();
-  if (fromEnv) return fromEnv;
+  if (fromEnv) return { config: fromEnv, route: 'env' };
   for (const task of ['preparation', 'companion'] as const) {
     const settings = await loadSettings(task).catch(() => null);
     if (!settings?.baseUrl || !settings.model || settings.protocol === 'anthropic' || isWeakVisionModel(settings.model)) continue;
-    return { baseUrl: settings.baseUrl, ...(settings.apiKey ? { apiKey: settings.apiKey } : {}), model: settings.model };
+    return { config: { baseUrl: settings.baseUrl, ...(settings.apiKey ? { apiKey: settings.apiKey } : {}), model: settings.model }, route: task };
   }
   return null;
+}
+export async function resolveVisionIntakeConfig(): Promise<VisionLlmConfig | null> {
+  return (await resolveVisionIntakeTarget())?.config ?? null;
 }
 export async function enqueueVisionIntake(tx: DbTransaction, tick: Tick, intakeId: string) {
   await tx.query(`INSERT INTO slot_state (learner_id,slot_type,slot_key,scope_keys,changed_tick)
@@ -46,12 +58,19 @@ async function visionInput(tx: ReadTransaction, intakeId: string) {
 }
 
 export type VisionIntakeInput = NonNullable<Awaited<ReturnType<typeof visionInput>>>;
-export async function completeVisionIntake(db: Db, runtime: { modules: LoadedModule[]; crossModuleWrites: CrossModuleWrites }, hooks: CommandHooks, ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction) {
+export async function completeVisionIntake(db: Db, runtime: { modules: LoadedModule[]; crossModuleWrites: CrossModuleWrites }, hooks: CommandHooks, ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]) {
   const { document, material } = input;
   const complete = createCommandHandler(db, { ...runtime, hooks: { ...hooks, async onFactsChanged(tx, tick, changes) {
       const work = await readReadyWork(tx, ref);
       if (!isExpectedVisionCompletion(work, visionIntakeSlot, document.ref, material.ref, changes)) throw new RequestError(409, '交入工作已更改。');
       await hooks.onFactsChanged(tx, tick, changes);
+      for (const entry of telemetry ?? []) await recordCompletedEffect(tx, tick, {
+        ownerKind: 'session', ownerId: material.ref.id,
+        stepKey: `vision-ocr:r${document.ref.rev}:p${entry.page}`, label: 'vision-ocr',
+        providerEffectId: `vision-ocr:${ref.workId}:g${ref.generation}:p${entry.page}`,
+        input: { model: entry.requestedModel, page: entry.page, totalPages: entry.totalPages },
+        result: { reportedModel: entry.reportedModel, elapsedMs: entry.elapsedMs, route: entry.route, ...(entry.usage ? { usage: entry.usage } : {}) },
+      });
     } },
   });
   await complete({ learner: studioLearner, actor: 'learner', purpose: intakePurpose, type: completeVisionIntakeCommand,
@@ -64,7 +83,7 @@ const stopped = (error: unknown) => error instanceof StoppedVisionIntake || erro
 export function openVisionIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
   originalPage(materialId: string, page: number): Promise<{ original: { name: string; mediaType: string }; bytes: Buffer }>;
-  completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction): Promise<void>;
+  completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]): Promise<void>;
 }, deps: { resolveVisionConfig?: () => VisionLlmConfig | null | Promise<VisionLlmConfig | null>; fetch?: typeof fetch; fallbackExtractLocal?: (kind:string,path:string,bytes:Buffer,limit:number) => Promise<LocalExtractionResult> } = {}) {
   async function execute(ref: WorkRef, terminalFailure = false, signal?: AbortSignal) {
     if (ref.learner !== studioLearner) throw new Error('Invalid intake learner');
@@ -79,8 +98,8 @@ export function openVisionIntakeWork(db: Db, intake: {
         const now = await current(tx);
         if (!now || now.document.ref.id !== frozen.document.ref.id || now.document.ref.rev !== frozen.document.ref.rev || now.material.ref.id !== frozen.material.ref.id || now.material.ref.rev !== frozen.material.ref.rev) throw new StoppedVisionIntake();
       };
-      const publish = async (extraction: IntakeExtraction) => {
-        await intake.completeVision(ref, frozen, extraction);
+      const publish = async (extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]) => {
+        await intake.completeVision(ref, frozen, extraction, telemetry);
         await finishWork(db, ref);
       };
       if (terminalFailure) return void await publish(failedVisionExtraction('视觉识别未能在规定时间内完成。'));
@@ -104,7 +123,10 @@ export function openVisionIntakeWork(db: Db, intake: {
           await writeFile(input.storedPath, input.bytes, { mode: 0o600 });
         }
         await db.snapshot({ learner: learnerId(ref.learner) }, unchanged);
-        const visionConfig = 'resolveVisionConfig' in deps && deps.resolveVisionConfig ? await deps.resolveVisionConfig() : await resolveVisionIntakeConfig();
+        const resolved = 'resolveVisionConfig' in deps && deps.resolveVisionConfig
+          ? { config: await deps.resolveVisionConfig(), route: 'custom' }
+          : await resolveVisionIntakeTarget();
+        const visionConfig = resolved?.config ?? null;
         const outcomes = await extractMultiPagePaperWithVisionOrFallback({
           pages: pageInputs.map(input => {
             const prompt = buildVisionPaperOcrPrompt({ filename: input.name, titleHint: frozen.value.title, pageNumber: input.page, totalPages: plan.totalPages });
@@ -115,12 +137,17 @@ export function openVisionIntakeWork(db: Db, intake: {
           parseStructuredOutput: parseStructuredPaperOcr,
         });
         await db.snapshot({ learner: learnerId(ref.learner) }, unchanged);
+        const telemetry: VisionOcrCallTelemetry[] = outcomes.pages.flatMap(item => item.outcome.kind === 'vision_llm'
+          ? [{ page: item.page, totalPages: plan.totalPages, route: resolved?.route ?? 'custom',
+            requestedModel: visionConfig?.model ?? '', reportedModel: item.outcome.model,
+            elapsedMs: item.outcome.elapsedMs, ...(item.outcome.usage ? { usage: item.outcome.usage } : {}) }]
+          : []);
         await publish(completeMultiPageVisionExtraction(
           [...plan.preservedPages, ...outcomes.pages.map(item => item.outcome.kind === 'vision_llm'
             ? { page: item.page, kind: 'vision_llm' as const, ocr: item.outcome.parsed }
             : { page: item.page, kind: 'vision_fallback' as const, fallbackReason: item.outcome.fallbackReason, local: item.outcome.local })],
           { titleHint: frozen.value.title },
-        ));
+        ), telemetry);
       } finally { await rm(directory, { recursive: true, force: true }).catch(() => undefined); }
     } catch (error) {
       if (stopped(error)) await cancelWork(db, ref);

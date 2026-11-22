@@ -24,6 +24,31 @@ export type EffectResult =
   | { readonly kind: 'done'; readonly result: Json }
   | { readonly kind: 'unknown'; readonly providerEffectId: string | null; readonly inFlight?: true };
 
+export type CompletedEffectRecord = {
+  readonly ownerKind: 'derivation' | 'session';
+  readonly ownerId: string;
+  readonly stepKey: string;
+  readonly label: string;
+  readonly input: Json;
+  readonly result: Json;
+  readonly providerEffectId?: string;
+};
+
+/** Record an already-finished provider call inside the caller's transaction; replay-safe. */
+export async function recordCompletedEffect(tx: DbTransaction, tick: Tick, record: CompletedEffectRecord) {
+  const input = canonicalizeJson(record.input);
+  const result = canonicalizeJson(record.result);
+  await tx.query(
+    `INSERT INTO effects (learner_id, owner_kind, owner_id, step_key, label, input_digest, input,
+       provider_effect_id, state, result, started_tick, ended_tick)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'done',$9,$10,$10)
+     ON CONFLICT (learner_id, owner_kind, owner_id, step_key, label) DO NOTHING`,
+    [tx.learner, record.ownerKind, record.ownerId, record.stepKey, record.label,
+     createHash('sha256').update(canonicalJsonString(input)).digest('hex'), JSON.stringify(input),
+     record.providerEffectId ?? null, JSON.stringify(result), tick],
+  );
+}
+
 type EffectIdentity = readonly [string, EffectRequest['ownerKind'], string, string, string];
 
 type EffectRow = {
