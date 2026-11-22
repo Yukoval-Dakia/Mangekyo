@@ -8,6 +8,7 @@
     "./facts/*": "./facts/*.ts",
     "./slots/*": "./slots/*.ts",
     "./today": "./today.ts",
+    "./node-practice": "./node-practice.ts",
     "./offline-pack": "./offline-pack.ts",
     "./rules": "./rules.ts",
     "./tomorrow-warmup": "./tomorrow-warmup.ts"
