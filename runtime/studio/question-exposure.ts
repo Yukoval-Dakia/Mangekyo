@@ -1,4 +1,4 @@
-import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
+import { teachingRead } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { FactId } from '../../kernel/src/declarations/ids.ts';
 import { preservesUnexposedPractice } from '../../modules/activity/arithmetic-practice-history.ts';
@@ -15,7 +15,7 @@ export const companionReplyStartedLabel = 'local:companion-reply-started';
 export const companionReplyTrackingLabel = 'local:companion-reply-tracking';
 
 export async function questionNegativeCurrent(tx: ReadTransaction, id: FactId, turn: string, beforeReply: boolean) {
-  const candidate = await readIndependentSealedPractice(createCommandReadContext(tx,purpose), id);
+  const candidate = await readIndependentSealedPractice(teachingRead(tx), id);
   if (!candidate) return false;
   const {paperId, practice} = candidate;
   const {rows:[window]} = await tx.query<{born: string; ambiguous: boolean}>(`

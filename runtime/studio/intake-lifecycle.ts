@@ -1,5 +1,5 @@
 import { assertDeletionWatermark, assertUnburned, deletionState, eraseOriginal, LifecycleError } from '../../kernel/src/lifecycle.ts';
-import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext } from './fact-read-helpers.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import { appendIntakePagesCommand, captureIntakeCommand, correctIntakeCommand, completeCloudIntakeCommand, completeVisionIntakeCommand, retryVisionIntakeCommand, setIntakeResearchCommand, intakeDocument, intakeFactType, intakePurpose, materialType } from '../../modules/capture/intake-values.ts';

@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { toolFailure } from '../../executors/teaching/learning-tools.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
 import { commandId, factId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { parseSaveQuestion, QuestionAuthoringError } from '../../modules/content/question-authoring.ts';
@@ -31,7 +31,7 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
       const pins = [...new Map(witnesses().map(w => [`${w.id}:${w.rev}`,w])).values()];
       const basis = await confirmNotionRead(db,studioLearner,async (tx,check) => {
         await authorize(tx);
-        const read = createAuthorizedFactReader(tx,purpose,maySend);
+        const read = purposeReader(tx,maySend);
         return Promise.all(pins.map(async w => {
           const fact = await read.reopen({id:w.id,rev:w.rev,accessEpoch:w.epoch,mode:'pinned'});
           await checkStudioNotionFact(tx,fact,purpose,maySend);
@@ -50,7 +50,7 @@ export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSo
         id:commandId(stableId('learning-question-command',turn,String(step))),type:saveQuestionCommand,input:{id,asset}});
       return {ok:true as const,data:{status:'draft',ref:id,rev:receipt.wrote[0]!.rev,commandId:receipt.commandId}};
     } catch (error) {
-      if (error instanceof FactReadDeniedError || error instanceof FactNotFoundError)
+      if (isFactUnavailable(error))
         return toolFailure('access_revoked','题目草稿的依据已不可用。',schema);
       if (error instanceof QuestionAuthoringError) return toolFailure(error.code,error.message,schema,error.field);
       if (error instanceof Error && /题目|评估|作答|题干|JSON/.test(error.message))

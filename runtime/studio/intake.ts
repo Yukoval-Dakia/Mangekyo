@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks, CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, FactReadDeniedError, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactReadDeniedError, isFactUnavailable } from './fact-read-helpers.ts';
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { readReadyWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
@@ -14,8 +14,7 @@ import { appendIntakePagesCommand, captureIntakeCommand, completeCloudIntakeComm
   correctIntakeCommand, retryVisionIntakeCommand, pendingMineruExtraction, pendingVisionExtraction, intakePurpose,
   intakeTextLimit, setIntakeResearchCommand, intakeDocument, intakeDocumentPages,
   type IntakeExtraction } from '../../modules/capture/intake-values.ts';
-import { buildWorkbookDraftFromIntakeSelection, projectIntakeQuestionCards,
-  type IntakeWorkbookSelection } from '../../modules/capture/intake-question-cards.ts';
+import { buildWorkbookDraftFromIntakeSelection, projectIntakeQuestionCards, type IntakeWorkbookSelection } from '../../modules/capture/intake-question-cards.ts';
 import {
   assetType as questionAssetType,
   confirmIntakeQuestionsCommand,
@@ -25,8 +24,7 @@ import {
 } from '../../modules/content/intake-question-bank.ts';
 import { questionMetaDraftType, questionStateType } from '../../modules/content/question-state.ts';
 import * as intakeOps from '../../modules/capture/intake-operations.ts';
-import type { IntakeAppendPagesInput, IntakeCaptureInput, IntakeCorrectInput, IntakeMultiPageCaptureInput,
-  IntakeRetryVisionInput } from '../../modules/capture/intake-operations.ts';
+import type { IntakeAppendPagesInput, IntakeCaptureInput, IntakeCorrectInput, IntakeMultiPageCaptureInput, IntakeRetryVisionInput } from '../../modules/capture/intake-operations.ts';
 import type { IntakeMetadata } from '../../modules/capture/intake-view.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -104,7 +102,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       try {
         return intakeOps.extractPaperReturnOriginal(await read.fact(id, { mode: 'following' }), id);
       } catch (error) {
-        if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+        if (!isFactUnavailable(error)) throw error;
       }
       return null;
     });
@@ -403,7 +401,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
         id: commandId(stableId('intake-question-confirmation', requestId)), input: data,
       });
     } catch (error) {
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw new RequestError(404, '找不到这份拍卷材料。');
+      if (isFactUnavailable(error)) throw new RequestError(404, '找不到这份拍卷材料。');
       if (error instanceof Error && (error.message.startsWith('材料版本已变化') || error.message.startsWith('Fact revision conflict') ||
           error.message === 'Command ID already used with a different command identity')) throw new RequestError(409, '拍卷题目或材料版本已变化，请重新核对。');
       if (error instanceof Error && ['这份材料未授权教学用途。', '已有题目未授权教学用途。', '已有概念节点未授权教学用途。', '规范概念类型不符。', '概念标识已被其他记录占用。', '知识边标识已被其他记录占用。', '题目标识已被其他记录占用。'].includes(error.message)) throw new RequestError(409, error.message);

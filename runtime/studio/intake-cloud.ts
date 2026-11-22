@@ -2,19 +2,11 @@ import { mineruSupports, pollMineru, type readMineru, type submitMineru } from '
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { LifecycleError } from '../../kernel/src/lifecycle.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactUnavailable } from './fact-read-helpers.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import { cancelWork, finishWork, readReadyWork, requestWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
-import {
-  intakeDocument,
-  intakeFactType,
-  intakePurpose,
-  failedMineruExtraction,
-  completeMineruExtraction,
-  materialType,
-  type IntakeExtraction,
-} from '../../modules/capture/intake-values.ts';
+import { intakeDocument, intakeFactType, intakePurpose, failedMineruExtraction, completeMineruExtraction, materialType, type IntakeExtraction } from '../../modules/capture/intake-values.ts';
 import { studioLearner } from './identity.ts';
 
 export const cloudIntakeSlot = 'activity.intakeCloudExtraction';
@@ -53,7 +45,7 @@ export type CloudIntakeInput = NonNullable<Awaited<ReturnType<typeof cloudInput>
 class StoppedCloudIntake extends Error {}
 
 function intakeStopped(error: unknown) {
-  return (error instanceof LifecycleError && error.status === 410) || error instanceof StoppedCloudIntake || error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
+  return (error instanceof LifecycleError && error.status === 410) || error instanceof StoppedCloudIntake || isFactUnavailable(error);
 }
 
 export function openCloudIntakeWork(db: Db, intake: {

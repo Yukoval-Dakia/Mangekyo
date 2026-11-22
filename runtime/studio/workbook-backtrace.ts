@@ -1,14 +1,10 @@
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { ReadContext } from '../../kernel/src/declarations/types.ts';
-import { FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
-import {
-  studioWorkbookBacktrace, type StudioBacktraceDeps, type StudioBacktraceInput,
-} from '../../modules/activity/studio-backtrace-host.ts';
+import { factReadChecks } from './fact-read-helpers.ts';
+import { studioWorkbookBacktrace, type StudioBacktraceDeps, type StudioBacktraceInput } from '../../modules/activity/studio-backtrace-host.ts';
 import { backtrace } from '../../modules/learner/retention-backtrace.ts';
 import { scopedKnowledgeEdges } from './knowledge-graph.ts';
-import {
-  openRetentionTarget, readItemConceptLinks, retentionPurpose, retentionWorkbookEvidence,
-} from './retention-workbook.ts';
+import { openRetentionTarget, readItemConceptLinks, retentionPurpose, retentionWorkbookEvidence } from './retention-workbook.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
 import { retentionHistoryValid } from './retention.ts';
 import { RequestError } from './sessions.ts';
@@ -20,8 +16,7 @@ const { readWorkbookEvidence } = retentionWorkbookEvidence(readPosttestIssuance)
 const deps: StudioBacktraceDeps = {
   retentionPurpose,
   isRequestError: error => error instanceof RequestError,
-  isFactNotFound: error => error instanceof FactNotFoundError,
-  isFactReadDenied: error => error instanceof FactReadDeniedError,
+  ...factReadChecks,
   openRetentionTarget: openRetentionTarget as StudioBacktraceDeps['openRetentionTarget'],
   readItemConceptLinks: readItemConceptLinks as StudioBacktraceDeps['readItemConceptLinks'],
   readWorkbookEvidence: readWorkbookEvidence as StudioBacktraceDeps['readWorkbookEvidence'],

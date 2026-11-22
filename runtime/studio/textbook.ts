@@ -9,36 +9,20 @@ import { sourceReference } from '../../modules/activity/source-values.ts';
 import { checkStudioNotionFact, confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { resolveSource } from './source-read.ts';
 import { createCommandHandler, readCommandProposals, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
-import {
-  createCommandReadContext,
-  FactNotFoundError,
-  FactReadDeniedError,
-} from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactReadDeniedError, isFactNotFound, isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { commandId, factId, learnerId, type CommandId, type LearnerId } from '../../kernel/src/declarations/ids.ts';
-import type {
-  CommandReceipt,
-  FactSnapshot,
-  Json,
-  ReadContext,
-} from '../../kernel/src/declarations/types.ts';
+import type { CommandReceipt, FactSnapshot, Json, ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { organizerNote, organizerNoteType, projectLegacyTextbookNote as legacyView } from '../../modules/activity/organizer-values.ts';
 import { editSequence, key, pageId, revision } from '../../modules/content/parse.ts';
 import { parseTextbookRevision, previewTextbookRevision, selectTextbookEdits, type TextbookRevision } from '../../modules/content/textbook-edits.ts';
-import {
-  checkTextbookBasis,
-  openTextbookBlock,
-  parseTextbookPage,
-  textbookPageFrom,
-  textbookPageType,
-} from '../../modules/content/textbook-page.ts';
+import { checkTextbookBasis, openTextbookBlock, parseTextbookPage, textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
 import { purpose as teaching, stableId, textbookUndoId } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
-import { createTextbookCommand as createCommand, reviseTextbookCommand as reviseCommand, reviseTextbookDraftCommand,
-  undoTextbookCommand } from './workspace-textbook.ts';
+import { createTextbookCommand as createCommand, reviseTextbookCommand as reviseCommand, reviseTextbookDraftCommand, undoTextbookCommand } from './workspace-textbook.ts';
 import { textbookMasteryPulse, type TextbookPulseHost } from './textbook-pulse.ts';
 import { parseTextbookPulseClaim, textbookPulseClaimMatches } from '../../modules/activity/textbook-pulse-evidence.ts';
 
@@ -63,16 +47,16 @@ function scopedLearner(value: unknown): LearnerId {
 
 function translateRead(error: unknown): never {
   if (error instanceof RequestError) throw error;
-  if (error instanceof FactNotFoundError) throw new RequestError(404, '找不到这份教材或笔记。');
+  if (isFactNotFound(error)) throw new RequestError(404, '找不到这份教材或笔记。');
   if (error instanceof TextbookReferenceScopeError) throw new RequestError(403, error.message);
-  if (error instanceof FactReadDeniedError) throw new RequestError(403, '当前用途不能读取这份内容或其引用。');
+  if (isFactReadDenied(error)) throw new RequestError(403, '当前用途不能读取这份内容或其引用。');
   throw error;
 }
 
 function translateWrite(error: unknown): never {
   if (error instanceof RequestError) throw error;
-  if (error instanceof FactNotFoundError) throw new RequestError(404, '找不到要编辑的教材或引用。');
-  if (error instanceof FactReadDeniedError) throw new RequestError(403, '当前用途不能读取或引用这份内容。');
+  if (isFactNotFound(error)) throw new RequestError(404, '找不到要编辑的教材或引用。');
+  if (isFactReadDenied(error)) throw new RequestError(403, '当前用途不能读取或引用这份内容。');
   if (error instanceof Error) {
     if (error.message === 'Command ID already used with a different command identity') {
       throw new RequestError(409, '同一个请求标识已经用于不同编辑。');
@@ -189,7 +173,7 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
             const {proposalId,status,base} = await proposalView(tx,check,proposal);
             proposals.push({proposalId,status,base});
           } catch (error) {
-            if (!(error instanceof FactReadDeniedError || error instanceof FactNotFoundError ||
+            if (!(isFactUnavailable(error) ||
                 (error instanceof Error && error.message === '教材依据已变更。'))) throw error;
           }
         }
@@ -243,7 +227,7 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
         id:textbookUndoId(undoToken), type:undoTextbookCommand,
         input:{id,expectedRev:original.rev,priorRev:original.priorRev},
       }).catch(error => {
-        if (error instanceof FactReadDeniedError && error.reason === 'retracted')
+        if (isFactReadDenied(error) && error.reason === 'retracted')
           throw new RequestError(409, '教材已撤回。');
         return translateWrite(error);
       });
@@ -271,7 +255,7 @@ export function openTextbook(db: Db, contentModule: LoadedModule, hooks: Command
             const summary = { id: row.id, rev: fact.ref.rev, purpose: fact.purpose, ...view };
             (view.kind === 'textbook' ? pages : legacyNotes).push(summary);
           } catch (error) {
-            if (!(error instanceof FactReadDeniedError) && !(error instanceof FactNotFoundError)) throw error;
+            if (!isFactUnavailable(error)) throw error;
           }
         }
         return { pages, legacyNotes };

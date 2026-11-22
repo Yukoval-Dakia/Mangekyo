@@ -1,6 +1,6 @@
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext } from './fact-read-helpers.ts';
 import { RequestError } from './sessions.ts';
 import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import { posttestWriter as writer } from '../../modules/activity/retention-host-support.ts';

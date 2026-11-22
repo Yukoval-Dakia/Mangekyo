@@ -1,5 +1,5 @@
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import { createAuthorizedFactReader } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import { objectiveBeliefEvidence } from '../../modules/companion/belief.ts';

@@ -1,5 +1,5 @@
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import { createAuthorizedFactReader, createCommandReadContext } from '../../kernel/src/commands/reads.ts';
+import { purposeReader, teachingRead } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { originalHypothesisObject } from '../../modules/companion/belief.ts';
 import { claimRef } from '../../modules/companion/claim.ts';
@@ -11,11 +11,11 @@ import type { WorkspaceSourceRecipient } from './source-read.ts';
 export async function openHypothesisObject(tx: ReadTransaction, data: ExtractedUnderstanding,
   maySend: WorkspaceSourceRecipient, checkSelf?: CheckNotionRead) {
   if (data.scope.kind !== 'object') return [];
-  const reader = createAuthorizedFactReader(tx, 'teaching', maySend);
+  const reader = purposeReader(tx, maySend);
   return readable(async () => {
     let basis = data.belief?.objectBasis;
     if (!basis) {
-      const original = await originalHypothesisObject(createCommandReadContext(tx, 'teaching'), data);
+      const original = await originalHypothesisObject(teachingRead(tx), data);
       if (!original) return;
       const opened = await readCurrentLearningObject(tx, original, maySend, checkSelf && true);
       if (opened?.basisDigest !== original.basisDigest) return;

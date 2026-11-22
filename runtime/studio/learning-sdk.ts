@@ -7,7 +7,7 @@ import { pythonPrerequisiteKinds, pythonPrerequisites, type PythonRead, type Pyt
 import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../modules/activity/evidence-slice.ts';
 import { posttestIssuanceType, posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
@@ -49,7 +49,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
   }
   if (request.args.subject !== undefined) return absent('subject','作答没有可核对的学科归属。');
 
-  const reader = createAuthorizedFactReader(tx,purpose,access.maySend);
+  const reader = purposeReader(tx,access.maySend);
   const tracked = {fact:async (...[id,options]: Parameters<ReadContext['fact']>) => {
     const fact = await reader.fact(id,options);
     await checkStudioNotionFact(tx,fact,purpose,access.maySend);
@@ -64,7 +64,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
       if (paper.type !== workbookPaperType && paper.type !== retentionPaperType)
         return absent('paper_ids','请提供当前获准的试卷引用。');
     } catch (error) {
-      if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+    if (!isFactUnavailable(error)) throw error;
       return access.known(id) ? toolFailure('access_revoked','先前打开的试卷已不可用。',{tool:'read_context',args:{intent:'tutoring'}})
         : absent('paper_ids','请提供当前获准的试卷引用。');
     }
@@ -132,7 +132,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
       observations.push({submission:ref,occurredAt:observation.submittedAt,concepts,novelty:'same',
         helpLevel:process.helpLevel,result:observation.result,...(observation.scoreNorm === undefined ? {} : {score:observation.scoreNorm}),...(observation.errorStage === undefined ? {} : {errorStage:observation.errorStage}),...(duration === undefined ? {} : {duration})});
     } catch (error) {
-      if (!(error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof RequestError)) throw error;
+    if (!(isFactUnavailable(error) || error instanceof RequestError)) throw error;
       omissions.push({ref,reason:'unavailable-process-witness'});
     }
   }

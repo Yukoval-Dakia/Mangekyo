@@ -1,5 +1,5 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactReadDeniedError, factReadChecks, isFactUnavailable } from './fact-read-helpers.ts';
 import { withLearnerLock } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { derivationId, factId, learnerId, type DerivationId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
@@ -42,9 +42,7 @@ import { createPythonDeriverHost, type PythonDeriverHost } from '../../executors
 import type { CognitionResult } from '../../executors/python-deriver/schema.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { posttestAttemptFor, posttestIdFor, posttestWriter, readPosttestIssuance } from './retention-posttest.ts';
-import {
-  openRetentionTarget, readComparableWorkbookEvidence, readItemDimensions, readWorkbookObservation, retentionPurpose,
-} from './retention-workbook.ts';
+import { openRetentionTarget, readComparableWorkbookEvidence, readItemDimensions, readWorkbookObservation, retentionPurpose } from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
 
 const forecastPolicy = { slot: forecastSlot, purpose: retentionPurpose, deriver: forecast.name + '@' + forecast.version };
@@ -63,8 +61,7 @@ const retentionDeps: StudioRetentionDeps = {
   forecastUnavailable,
   fail: (status, message) => { throw new RequestError(status, message); },
   isRequestError: error => error instanceof RequestError,
-  isFactNotFound: error => error instanceof FactNotFoundError,
-  isFactReadDenied: error => error instanceof FactReadDeniedError,
+  ...factReadChecks,
   stableId,
   canonicalJsonString,
   reconciliationSlotKey: input => reconciliationSlot.key(input),
@@ -364,7 +361,7 @@ export function openRetention(db: Db, activity: LoadedModule, method = defaultRe
         await submitCandidate(db, ref, policy, sealed.id, reconciliation.derive(input), propagation);
       }
     } catch (error) {
-      if (!(error instanceof RequestError || error instanceof FactNotFoundError || error instanceof FactReadDeniedError)) throw error;
+      if (!(error instanceof RequestError || isFactUnavailable(error))) throw error;
       await block(forecastUnavailable);
     }
   }

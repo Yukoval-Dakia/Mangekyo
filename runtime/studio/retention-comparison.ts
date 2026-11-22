@@ -8,12 +8,8 @@ import {
   frozenInputs, frozenValue, readComparisonPlan, selectPair, validComparisonPlan,
   type RetentionComparisonDeps, type RetentionComparisonPlan, type RetentionPair,
 } from '../../modules/activity/retention-host-support.ts';
-import {
-  forecastType, readAnyRetentionMethod, reconciliationType, type RetentionForecast,
-} from '../../modules/learner/retention.ts';
-import {
-  retentionComparisonCase, retentionComparisonReport, type RetentionReconciliation,
-} from '../../modules/learner/retention-view.ts';
+import { forecastType, readAnyRetentionMethod, reconciliationType, type RetentionForecast } from '../../modules/learner/retention.ts';
+import { retentionComparisonCase, retentionComparisonReport, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
 import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { retentionPurpose } from './retention-workbook.ts';

@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactUnavailable } from './fact-read-helpers.ts';
 import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type CommandId } from '../../kernel/src/declarations/ids.ts';
@@ -14,7 +14,6 @@ import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 
-const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 const reject = (status: number, message: string) => new RequestError(status, message);
 
 export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
@@ -25,7 +24,8 @@ export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks
     (request: { id: CommandId; type: string; input: unknown; purpose: string }) =>
       executor({ learner: studioLearner, actor: 'learner', purpose: request.purpose, id: request.id, type: request.type, input: request.input as Json } as never);
   const deps = (tx: DbTransaction, handle: ReturnType<typeof bind>) => ({
-    scope: tx, read: createCommandReadContext(tx, storagePurpose), handle, reject, sign, stable: stableId, unavailable,
+    scope: tx, read: createCommandReadContext(tx, storagePurpose), handle, reject, sign, stable: stableId,
+    unavailable: isFactUnavailable,
   });
 
   const locked = (run: (tx: DbTransaction, handle: ReturnType<typeof bind>) => Promise<unknown>) =>
@@ -54,7 +54,7 @@ export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks
   const read = async (paperId: string, attemptId: string, itemId: string) => {
     try {
       return await db.snapshot({ learner: studioLearner }, tx =>
-        takeawayFeedback({ scope: tx, read: createCommandReadContext(tx, storagePurpose), handle: () => Promise.reject(new Error('feedback is read-only')), reject, sign, stable: stableId, unavailable }, factId(paperId), factId(attemptId), itemId));
+        takeawayFeedback({ scope: tx, read: createCommandReadContext(tx, storagePurpose), handle: () => Promise.reject(new Error('feedback is read-only')), reject, sign, stable: stableId, unavailable: isFactUnavailable }, factId(paperId), factId(attemptId), itemId));
     } catch (error) {
       if (error instanceof RequestError) throw error;
       throw new RequestError(400, error instanceof Error ? error.message : '请求无效。');

@@ -13,13 +13,8 @@ import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learn
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import {
-  acknowledgeStartedWork, cancelWork, failWork, finishWork, readWork, type WorkRef,
-} from '../../kernel/src/work/index.ts';
-import {
-  cancelResearchTodos, checkTodoTriggers, emitTodo, enqueueWork,
-  readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec,
-} from '../../kernel/src/work/todos.ts';
+import { acknowledgeStartedWork, cancelWork, failWork, finishWork, readWork, type WorkRef } from '../../kernel/src/work/index.ts';
+import { cancelResearchTodos, checkTodoTriggers, emitTodo, enqueueWork, readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec } from '../../kernel/src/work/todos.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
@@ -36,9 +31,7 @@ import {
   activeRetentionReview, comparisonAttempts, independentScoutSource, readWorksheet, researchReader,
   currentResearchSettings as settings, settingsId, retentionReviewPermissionId, whenAvailable, workbookSource,
 } from './research-sources.ts';
-import {
-  preparePaidResearchTriage, prepareResearchTriage, researchDecision, scoutEffectIdentity,
-} from './research-triage-host.ts';
+import { preparePaidResearchTriage, prepareResearchTriage, researchDecision, scoutEffectIdentity } from './research-triage-host.ts';
 import { sampleResearchScout, ScoutAuthorizationChanged, type ResearchScoutHost } from './research-scout.ts';
 import { discoverUnderstandingTodos, eligibleExtraction, openUnderstandingExtraction, paidExtractionRecipient, type UnderstandingTransport } from './research-understanding.ts';
 import { activityEvidenceTypes, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';

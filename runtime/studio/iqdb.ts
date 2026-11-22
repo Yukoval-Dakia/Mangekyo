@@ -1,4 +1,4 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactNotFound, isFactReadDenied, isFactUnavailable, storageRead } from './fact-read-helpers.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -118,14 +118,14 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         let sources: readonly { id: FactId; rev: number; intakeId?: FactId; teaching: boolean }[] = [];
         if (allowed === true && includeSourceMaterial === true) {
           sources = await db.snapshot(scope, async tx => {
-            const read = createCommandReadContext(tx, 'storage');
+            const read = storageRead(tx);
             const question = await read.fact(questionId, { mode: 'following' });
             if (question.type !== assetType || question.ref.rev !== expectedRev) throw new RequestError(409, '题目基版已变化，请刷新后再试。');
             const metadata = await read.fact(await questionMetaDraftId(question.ref), { mode: 'following' });
             return Promise.all([...questionSourceMaterialIds(question, metadata)].map(async materialId => {
               const material = await read.fact(materialId, { mode: 'following' });
               const intakeId = await read.fact(intakeIdFor(materialId), { mode: 'following' }).then(fact => fact.ref.id).catch(error => {
-                if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return undefined;
+                if (isFactUnavailable(error)) return undefined;
                 throw error;
               });
               return { id: materialId, rev: material.ref.rev, ...(intakeId ? { intakeId } : {}), teaching: material.purpose.includes('teaching') || material.purpose.includes('all') };
@@ -145,10 +145,10 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
         const rev = receipt.wrote.find(write => write.id === questionId)?.rev ?? expectedRev;
         return { id: questionId, rev, teachingAuthorized: allowed, changed: receipt.wrote.length > 0, sourceMaterialAuthorized: allowed };
       } catch (error) {
-        if (error instanceof FactNotFoundError || (error instanceof FactReadDeniedError && error.reason !== 'purpose'))
+        if (isFactNotFound(error) || (isFactReadDenied(error) && error.reason !== 'purpose'))
           throw new RequestError(404, '找不到这道题。');
         if (error instanceof Error) {
-          if (error instanceof FactReadDeniedError && error.reason === 'purpose')
+          if (isFactReadDenied(error) && error.reason === 'purpose')
             throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
           if (error.message.startsWith('Fact revision conflict'))
             throw new RequestError(409, '题目基版已变化，请刷新后再试。');

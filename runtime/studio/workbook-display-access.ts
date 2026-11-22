@@ -1,4 +1,4 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { isFactUnavailable, storageRead } from './fact-read-helpers.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
 import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import { recordWorkbookPresentationCommand, workbookPresentation, workbookPresentationType } from '../../modules/activity/workbook-presentation.ts';
@@ -13,7 +13,7 @@ export function readWorkbookDisplayAccess(db: Db, paper: string, attempt: string
   if (after !== null && !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(after))
     throw new RequestError(400,'展示记录翻页位置无效。');
   return db.snapshot({learner:studioLearner},async tx => {
-    const read = createCommandReadContext(tx,'storage');
+    const read = storageRead(tx);
     const following = {mode:'following'} as const;
     try {
       const source = await read.fact(factId(paper),following);
@@ -46,7 +46,7 @@ export function readWorkbookDisplayAccess(db: Db, paper: string, attempt: string
       }
       return {items,next:rows.length > pageSize ? items.at(-1)!.id : null};
     } catch (error) {
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw unavailable();
+      if (isFactUnavailable(error)) throw unavailable();
       throw error;
     }
   });

@@ -1,6 +1,6 @@
 import { projectArtifactMountTrace } from '../../executors/teaching/artifact-trace.ts';
 import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError, snapshotFactReaders } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactUnavailable, snapshotFactReaders } from './fact-read-helpers.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId, type LearnerId, type Revision, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
@@ -19,10 +19,7 @@ import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.
 import { authorizeResearchTodoSpec, readActiveMisconceptionConceptIds, readMemoryOverview } from '../../modules/companion/memory-overview.ts';
 import { researchPurpose, researchSettings } from '../../modules/companion/research.ts';
 import { composeKnowledgeGraphResponse, openPendingTextbookProposal, readAuthorizedKnowledgeGraph } from '../../modules/content/knowledge-graph-overview.ts';
-import {
-  extractConceptForecastSignals, projectBatchConceptMastery, projectCalibrationSummary,
-  type CalibrationInputRecord,
-} from '../../modules/learner/knowledge-mastery.ts';
+import { extractConceptForecastSignals, projectBatchConceptMastery, projectCalibrationSummary, type CalibrationInputRecord } from '../../modules/learner/knowledge-mastery.ts';
 import { openObjectiveCitations } from './belief-evidence.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
 import { purpose as teachingPurpose, slotType, stableId, studioLearner } from './identity.ts';
@@ -36,7 +33,6 @@ import { openUnderstandingCitations } from './research-understanding.ts';
 import { RequestError } from './sessions.ts';
 import type { TextbookPulseHost } from './textbook-pulse.ts';
 
-const isUnavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 const hasRemoteNotion = () => Boolean(process.env.MANGEKYO_NOTION_TEST_ORIGIN || process.env.MANGEKYO_NOTION_TOKEN);
 
 async function verifyNotion(tx: ReadTransaction, fact: FactSnapshot, use: string, check: CheckNotionRead) {
@@ -68,7 +64,7 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
       catch { return false; }
     };
     return {
-      learner: tx.learner, purpose: use, recipient: tx.learner, read, isUnavailable,
+      learner: tx.learner, purpose: use, recipient: tx.learner, read, isUnavailable: isFactUnavailable,
       preloadFollowing: read.preloadFollowing, verifyLegacyBasis,
       reopenLegacyQuestion: async (ref: { id: FactId; rev: Revision; accessEpoch: string }) => {
         const fact = await read.fact(ref.id, { mode: 'pinned', rev: ref.rev });
@@ -104,7 +100,7 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         'SELECT max(changed_tick)::text AS clock FROM facts WHERE learner_id=$1', [tx.learner],
       )).rows[0]?.clock ?? '0') as Tick;
       return (await projectGraphMastery({tx, links: input.graph.questionConceptLinks, read, python: pulseHost.python,
-        reopen, isUnavailable, scope: {learner: tx.learner, purpose: use, recipientId: tx.learner, asOf: input.asOf,
+        reopen, isUnavailable: isFactUnavailable, scope: {learner: tx.learner, purpose: use, recipientId: tx.learner, asOf: input.asOf,
         clockWatermark: clock}, concepts: conceptIds, activeMisconceptionConceptIds: input.misconceptions})).mastery;
     }
     const { rows, conceptsByQuestion } = mapConceptForecastInputs(
@@ -131,11 +127,11 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         const storageRead = { ...createCommandReadContext(tx, use), fact: read.fact };
         const graph = await readAuthorizedKnowledgeGraph(tx, graphAccess(tx, read, use, check));
         const misconceptions = await readActiveMisconceptionConceptIds(tx, {
-          readStorage: read, isUnavailable,
+          readStorage: read, isUnavailable: isFactUnavailable,
           openHypothesisObject: data => openHypothesisObject(tx, data, () => true, hypothesisCheck(check)),
           openObjectiveCitations: refs => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
         });
-        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageRead, graph.questionConceptLinks, isUnavailable);
+        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageRead, graph.questionConceptLinks, isFactUnavailable);
         const retention = await readRetention(tx, check);
         return composeKnowledgeGraphResponse(asOf, graph, await conceptMastery(tx, read, use, check, {
           asOf, graph, misconceptions, retention, attempts, incompleteConceptIds }));
@@ -150,10 +146,10 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         const readTeaching = gatedReader(tx, readers, teachingPurpose, check);
         const graph = await readAuthorizedKnowledgeGraph(tx, graphAccess(tx, readStorage, 'storage', check));
         const storageCtx = { ...createCommandReadContext(tx, 'storage'), fact: readStorage.fact };
-        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageCtx, graph.questionConceptLinks, isUnavailable);
+        const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, storageCtx, graph.questionConceptLinks, isFactUnavailable);
         const { forecasts, reconciliations } = await readRetention(tx, check);
         const misconceptions = await readActiveMisconceptionConceptIds(tx, {
-          readStorage, isUnavailable,
+          readStorage, isUnavailable: isFactUnavailable,
           openHypothesisObject: data => openHypothesisObject(tx, data, () => true, hypothesisCheck(check)),
           openObjectiveCitations: refs => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
         });
@@ -161,14 +157,14 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
           asOf, graph, misconceptions, retention: { forecasts, reconciliations }, attempts, incompleteConceptIds });
         const weaknessSummary = await gatherWeaknessOverview(tx, {
           asOf, read: storageCtx, attemptEvidence: attempts, nodes: graph.nodes, links: graph.questionConceptLinks,
-          mastery, isUnavailable,
+          mastery, isUnavailable: isFactUnavailable,
           formalFor: async (paper, ref) => {
             const view = await readWorkbookAssessment(tx, paper.assessmentRelease!, ref, { purpose: 'storage' });
             return 'result' in view ? view.result : undefined;
           },
         });
         const overview = await readMemoryOverview(tx, asOf, {
-          readStorage, readTeaching, isUnavailable, undoTokenFor: claimUndoToken,
+          readStorage, readTeaching, isUnavailable: isFactUnavailable, undoTokenFor: claimUndoToken,
           openHypothesisObject: data => openHypothesisObject(tx, data, () => true, hypothesisCheck(check)),
           openObjectiveCitations: refs => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
           openUnderstandingCitations: refs => openUnderstandingCitations(tx, refs, 'storage'),
@@ -190,10 +186,10 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         const readTeaching = gatedReader(tx, readers, teachingPurpose, check);
         const readResearch = researchReader(tx);
         return readAiActivity(tx, asOf, {
-          feedbackSlotType: slotType, readStorage, readTeaching, isUnavailable,
+          feedbackSlotType: slotType, readStorage, readTeaching, isUnavailable: isFactUnavailable,
           readBankQuestion: { ...createCommandReadContext(tx, teachingPurpose), fact: readTeaching.fact, slot: readCurrentQuestionVerification(tx) },
           authorizeTodo: rawSpec => authorizeResearchTodoSpec(rawSpec, {
-            settingsId, readResearch, isUnavailable, verifyFact: notionCheck(tx, researchPurpose, check),
+            settingsId, readResearch, isUnavailable: isFactUnavailable, verifyFact: notionCheck(tx, researchPurpose, check),
           }),
           projectTrace: projectArtifactMountTrace,
           async validateTurnManifest(rawManifest) {
@@ -221,7 +217,7 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
           readBudgetUsage: () => effectBudgetUsage(tx),
           readBudgetLimit: async () => (await readable(() => readResearch.fact(settingsId, { mode: 'following' }).then(f => researchSettings(f.value))))?.scoutConsent?.limitMicros ?? null,
           readGraphProposals: async () => (await readAuthorizedKnowledgeGraph(tx, graphAccess(tx, readStorage, 'storage', check))).pendingProposals,
-          openTextbookProposal: (_proposalId, input) => openPendingTextbookProposal(readStorage, input, isUnavailable),
+          openTextbookProposal: (_proposalId, input) => openPendingTextbookProposal(readStorage, input, isFactUnavailable),
         });
       });
     },

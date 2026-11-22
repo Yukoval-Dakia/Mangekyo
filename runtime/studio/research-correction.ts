@@ -1,4 +1,4 @@
-import { createAuthorizedFactReader, createCommandReadContext } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, createCommandReadContext, teachingRead } from './fact-read-helpers.ts';
 import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, learnerId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
@@ -95,7 +95,7 @@ const deferred = (reason: NotDispatched, now: number): TodoDeferral =>
 async function unavailablePool(tx: ReadTransaction, { originalQuestion: { id, rev } }: RecordedCorrection): Promise<NotDispatched> {
   const { rows: [clock] } = await tx.query<{ tick: Tick }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner]);
   const edges = await workbookLinkCandidates(tx, knowledgeEdgeType, { id, rev }, clock!.tick, ['variant_of'], 'unspoiled-variant');
-  const read = createCommandReadContext(tx, 'teaching');
+  const read = teachingRead(tx);
   for (const edge of edges) if (await whenAvailable(() => read.fact(edge.id, { mode: 'following' }))) return 'coverage_unknown';
   return 'no_unexposed_variant';
 }

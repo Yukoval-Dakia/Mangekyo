@@ -8,11 +8,7 @@ import { posttestIssuanceType } from '../../modules/activity/retention-posttest.
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import {
-  createCommandReadContext,
-  FactNotFoundError,
-  FactReadDeniedError,
-} from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
 import { commandId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import { newUlid } from '../../kernel/src/work/identity.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
@@ -23,13 +19,8 @@ import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
 import { runEffect } from '../../kernel/src/work/index.ts';
 import { assessWithAgent } from '../../executors/teaching/assessment-agent.ts';
 import { createPythonDeriverHost, type PythonDeriverHost } from '../../executors/python-deriver/host.ts';
-import {
-  TeachingError,
-  type TeachingDependencies,
-} from '../../executors/teaching/index.ts';
-import {
-  examTimeValueMethod, projectWorkbookExamTimeValue, unknownExamTimeValue, type ExamTimeValueView,
-} from '../../modules/activity/exam-time-value.ts';
+import { TeachingError, type TeachingDependencies } from '../../executors/teaching/index.ts';
+import { examTimeValueMethod, projectWorkbookExamTimeValue, unknownExamTimeValue, type ExamTimeValueView } from '../../modules/activity/exam-time-value.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { bindPreSubmitRevisionWitness } from '../../modules/activity/pre-submit-revision.ts';
 import { workbookPaperType, workbookQuestionsView, type WorkbookAttemptView, type WorkbookDetail, type WorkbookPaper, type WorkbookSummary } from '../../modules/activity/workbook-values.ts';
@@ -58,27 +49,21 @@ import {
   allAssessments, openWorkbookExamTimeValueBundle, verifyWorkbookExamTimeValueBundle,
   type AuthorizedExamTimeValueBundle, type WorkbookExamTimeValueAccess,
 } from '../../modules/activity/learning-attempt-read.ts';
-import {
-  readWorkbookPreSubmitPitfalls, verifyWorkbookPreSubmitRevision,
-  type WorkbookPreSubmitAuthority, type WorkbookPreSubmitReadOptions,
-} from './workbook-pre-submit.ts';
+import { readWorkbookPreSubmitPitfalls, verifyWorkbookPreSubmitRevision, type WorkbookPreSubmitAuthority, type WorkbookPreSubmitReadOptions } from './workbook-pre-submit.ts';
 import { readCurrentQuestionVerification } from './iqdb-verification.ts';
-import {
-  frozenSubmission, openWorkbookAssessment, prepareWorkbookRelease, readWorkbookAssessment,
-} from './workbook-assessment.ts';
+import { frozenSubmission, openWorkbookAssessment, prepareWorkbookRelease, readWorkbookAssessment } from './workbook-assessment.ts';
 
 const checks: WorkbookErrorChecks = {
   fail: (status, message) => { throw new RequestError(status, message); },
   isRequestError: error => error instanceof RequestError,
-  isReadDenied: error => error instanceof FactReadDeniedError,
+  isReadDenied: isFactReadDenied,
   isLifecycleError: error => error instanceof LifecycleError,
 };
 const factIdOf = (value: unknown, message: string) => workbookFactIdOf(value, message, checks.fail);
-const factUnavailable = (error: unknown) => error instanceof FactReadDeniedError || error instanceof FactNotFoundError;
-const workbookUnavailable = (error: unknown) => factUnavailable(error) ||
+const workbookUnavailable = (error: unknown) => isFactUnavailable(error) ||
   (error instanceof RequestError && (error.status === 403 || error.status === 404));
 const sourceView = (read: ReturnType<typeof createCommandReadContext>, id: string) =>
-  readWorkbookSourceView(read, id, factUnavailable);
+  readWorkbookSourceView(read, id, isFactUnavailable);
 const readPaperSnapshot = (tx: ReadTransaction, id: FactId) => readWorkbookPaperSnapshot({
   id, factType: target => factType(tx, target), assertUnburnedFact: ids => assertUnburned(tx, 'fact', ids),
   sealedPracticePaper: target => sealedPracticePaper(tx, target), read: () => createCommandReadContext(tx, storagePurpose), checks,
@@ -90,7 +75,7 @@ const readAttemptOrNull = (tx: ReadTransaction, id: FactId) => readWorkbookAttem
   id, factType: target => factType(tx, target), read: () => createCommandReadContext(tx, storagePurpose), checks,
 });
 const readAttempts = (tx: ReadTransaction, read: ReturnType<typeof createCommandReadContext>, paperId?: FactId) =>
-  readWorkbookAttempts(tx, read, factUnavailable, paperId);
+  readWorkbookAttempts(tx, read, isFactUnavailable, paperId);
 
 type FormalAssessmentView = Awaited<ReturnType<typeof readWorkbookAssessment>>;
 type WorkbookDetailWithAssessment = Omit<WorkbookDetail, 'attempts'> & {
@@ -174,7 +159,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
       const snapshot = await readPaperSnapshot(tx, paperId);
       const read = createCommandReadContext(tx, storagePurpose);
       const detail: WorkbookDetailWithAssessment = await loadWorkbookDetail({
-        paperId, snapshot, sealedPractice: await isPracticeWorkbook(tx, paperId), read, unavailable: factUnavailable,
+        paperId, snapshot, sealedPractice: await isPracticeWorkbook(tx, paperId), read, unavailable: isFactUnavailable,
         sourceView: materialId => sourceView(read, materialId),
         assessments: await allAssessments(tx, paperId),
         attempts: await readAttempts(tx, read, paperId),
@@ -217,7 +202,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
     async correct(paperId: string, attemptId: string, input: Record<string, unknown>, deletionWatermark: string) {
       let activeTx!: DbTransaction;
       return runWorkbookCorrection({
-        paperId, attemptId, input, deletionWatermark, stableId, unavailable: factUnavailable, checks,
+        paperId, attemptId, input, deletionWatermark, stableId, unavailable: isFactUnavailable, checks,
         locked: run => locked(async tx => { activeTx = tx; return run(); }),
         assertDeletionWatermark: wm => assertDeletionWatermark(activeTx, wm),
         read: () => createCommandReadContext(activeTx, storagePurpose),
@@ -376,7 +361,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
           paperId, attemptId, questionId: request.questionId, stableId, fail: checks.fail,
           readPaper: pid => readPaper(tx, pid), readAttemptOrNull: aid => readAttemptOrNull(tx, aid),
           read: () => createCommandReadContext(tx, storagePurpose),
-          unavailable: factUnavailable,
+          unavailable: isFactUnavailable,
           allAssessments: (pid, aid) => allAssessments(tx, pid, aid),
         });
         const { rows } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [tx.learner]);

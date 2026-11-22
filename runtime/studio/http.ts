@@ -10,15 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Db } from '../../kernel/src/db/types.ts';
-import {
-  cases,
-  caseId,
-  clientRequest,
-  getSession,
-  recentConversations,
-  RequestError,
-  type openStudio,
-} from './sessions.ts';
+import { cases, caseId, clientRequest, getSession, recentConversations, RequestError, type openStudio } from './sessions.ts';
 import { TextbookConflictError, type openTextbook } from './textbook.ts';
 import type { openRelationReview } from './workspace-relation.ts';
 import { studioLearner } from './identity.ts';

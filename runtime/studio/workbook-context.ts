@@ -2,13 +2,11 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { FactNotFoundError, FactReadDeniedError, snapshotFactReaders } from '../../kernel/src/commands/reads.ts';
+import { factReadChecks, isFactUnavailable, snapshotFactReaders } from './fact-read-helpers.ts';
 import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
 import type { Db } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import {
-  openStudioWorkbookContext, type StudioWorkbookContextDeps, type WorkbookContextAuthority as HostAuthority,
-} from '../../modules/activity/studio-workbook-context-host.ts';
+import { openStudioWorkbookContext, type StudioWorkbookContextDeps, type WorkbookContextAuthority as HostAuthority } from '../../modules/activity/studio-workbook-context-host.ts';
 import { historicalWorkbookMount as hostMount } from '../../modules/activity/studio-workbook-context-host.ts';
 import { WorkbookSourceMismatch } from '../../modules/activity/workbook-values.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -17,7 +15,7 @@ import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/ty
 
 export const historicalWorkbookMount = (tx: ReadTransaction, id: FactId, fact: FactSnapshot, read: ReadContext) =>
   hostMount(tx, id, fact, read, error =>
-    error instanceof WorkbookSourceMismatch || error instanceof FactNotFoundError || error instanceof FactReadDeniedError);
+    error instanceof WorkbookSourceMismatch || isFactUnavailable(error));
 import { notionReadScope, NotionReadUnchecked } from './notion.ts';
 import type { openRetention } from './retention.ts';
 import { isWorkbookNotionSource, selectedWorkbookRead, retentionPurpose } from './retention-workbook.ts';
@@ -52,8 +50,7 @@ export function openWorkbookContext(db: Db, activity: LoadedModule, hooks: Comma
     hooks,
     db,
     learner: studioLearner,
-    isFactNotFound: error => error instanceof FactNotFoundError,
-    isFactReadDenied: error => error instanceof FactReadDeniedError,
+    ...factReadChecks,
   };
   return openStudioWorkbookContext(deps, authority);
 }

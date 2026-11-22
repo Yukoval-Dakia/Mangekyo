@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { revisionsOnlyChangeGrants } from '../../kernel/src/commands/fact-collection.ts';
-import { createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, factReadChecks } from './fact-read-helpers.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
@@ -21,9 +21,7 @@ import {
   type WorkbookAssessmentReadAccess, type AssessmentScope,
 } from '../../modules/activity/studio-workbook-assessment-host.ts';
 import type { WorkbookDraft } from '../../modules/activity/workbook-values.ts';
-import {
-  assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment,
-} from './formal-assessment.ts';
+import { assessmentExecutionFailed, assessmentInputsBlocked, readFormalAssessment, registerFormalAssessment } from './formal-assessment.ts';
 import { RequestError } from './sessions.ts';
 
 export const workbookAssessmentSlot = slot;
@@ -36,8 +34,7 @@ const effectLabel = 'workbook-assessment';
 
 const deps: StudioWorkbookAssessmentDeps = {
   fail: (status, message) => { throw new RequestError(status, message); },
-  isFactNotFound: error => error instanceof FactNotFoundError,
-  isFactReadDenied: error => error instanceof FactReadDeniedError,
+  ...factReadChecks,
   revisionsOnlyChangeGrants: revisionsOnlyChangeGrants as StudioWorkbookAssessmentDeps['revisionsOnlyChangeGrants'],
   createAuthorizedFactReader: createAuthorizedFactReader as StudioWorkbookAssessmentDeps['createAuthorizedFactReader'],
   gatherSnapshot: gatherSnapshot as StudioWorkbookAssessmentDeps['gatherSnapshot'],

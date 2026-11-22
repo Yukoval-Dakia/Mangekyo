@@ -1,5 +1,5 @@
 import { traverseKnowledgeGraph, type Traversed } from '../../modules/content/knowledge-traversal.ts';
-import { createAuthorizedFactReader, snapshotFactReaders, FactNotFoundError, FactReadDeniedError } from '../../kernel/src/commands/reads.ts';
+import { createAuthorizedFactReader, isFactUnavailable, snapshotFactReaders } from './fact-read-helpers.ts';
 import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
@@ -12,9 +12,7 @@ import {
   matchingKnowledgeEdgeEvidence, parseEdgeEvidence, parseKnowledgeEdge, workspaceEntryType,
   type KnowledgeEdge, type KnowledgeEdgeKind,
 } from '../../modules/content/knowledge-edge.ts';
-import {
-  resolveSource, sourceMaySend, sourcePurpose, type SourceAccess, type SourceTrack,
-} from './source-read.ts';
+import { resolveSource, sourceMaySend, sourcePurpose, type SourceAccess, type SourceTrack } from './source-read.ts';
 
 const whole = { kind: 'whole' } as const;
 export type WorkspaceSource = NonNullable<Awaited<ReturnType<typeof resolveSource>>>;
@@ -71,7 +69,7 @@ export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeE
 }
 
 function graphReadUnavailable(error: unknown) {
-  return error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof KnowledgeEdgeBasisError;
+  return isFactUnavailable(error) || error instanceof KnowledgeEdgeBasisError;
 }
 
 export async function openKnowledgeEdgeEvidence(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {

@@ -5,9 +5,7 @@ import type { Db } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyTurn, turnResearchAccess, turnResearchPurpose } from '../../modules/activity/values.ts';
 import { setWorkspaceTeachingCommand } from '../../modules/activity/workspace-values.ts';
-import {
-  applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand,
-} from '../../modules/companion/claim.ts';
+import { applyClaimCommand, claimId, claimRef, claimText, claimType, ClaimInputError, manageClaimCommand, structuredClaim, undoClaimCommand } from '../../modules/companion/claim.ts';
 import { saveBeliefCommand, undoHypothesisCommand } from '../../modules/companion/belief.ts';
 import { listManagedMemory } from '../../modules/companion/memory-overview.ts';
 import { notionReadScope } from './notion.ts';

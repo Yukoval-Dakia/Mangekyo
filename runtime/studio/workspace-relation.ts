@@ -1,7 +1,7 @@
 import {fileURLToPath} from 'node:url';
 import type {CommandHooks} from '../../kernel/src/commands/contracts.ts';
 import {createCommandHandler, readCommandProposals} from '../../kernel/src/commands/handle.ts';
-import {createAuthorizedFactReader, FactNotFoundError, FactReadDeniedError} from '../../kernel/src/commands/reads.ts';
+import {FactReadDeniedError, isFactUnavailable, purposeReader} from './fact-read-helpers.ts';
 import {commandId, factId} from '../../kernel/src/declarations/ids.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
 import {loadModuleDirectory, type LoadedModule} from '../../kernel/src/loader.ts';
@@ -76,7 +76,7 @@ export function openWorkspaceRelation(options: {
     for (const {id,rev,epoch} of options.modelBasis?.() ?? []) uses.push(sourceUse({id,rev,accessEpoch:epoch}));
     const id = factId(stableId('knowledge-edge',options.turn,String(step)));
     const key = commandId(stableId('save-relation-command',options.turn,String(step)));
-    const read = (tx:ReadTransaction) => createAuthorizedFactReader(tx,purpose,options.maySend);
+  const read = (tx:ReadTransaction) => purposeReader(tx, options.maySend);
     try {
       const endpoints = await db.snapshot(scope, async tx => {
         const reader = read(tx);
@@ -127,7 +127,7 @@ export function openWorkspaceRelation(options: {
         });
       if (error instanceof KnowledgeEdgeBasisError || (error instanceof FactReadDeniedError && error.reason === 'changed'))
         return learningToolError('basis_stale','sources','写入依据已变化，请重新打开。',reopen(refs));
-      if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError)
+      if (isFactUnavailable(error))
         return learningToolError('access_revoked','sources','本轮打开的依据当前不可用。',search);
       throw error;
     }
@@ -137,7 +137,7 @@ export function openWorkspaceRelation(options: {
 export function openRelationReview(db:Db, contentModule:LoadedModule, afterFactsChanged?: CommandHooks['onFactsChanged']) {
   const handle = createCommandHandler(db,{modules:[contentModule],hooks:createStudioCommandHooks(afterFactsChanged ? {afterFactsChanged} : {})});
   function unavailableBasis(error:unknown) {
-    return error instanceof FactNotFoundError || error instanceof FactReadDeniedError || error instanceof KnowledgeEdgeBasisError;
+    return isFactUnavailable(error) || error instanceof KnowledgeEdgeBasisError;
   }
   function translate(error:unknown): never {
     if (unavailableBasis(error))

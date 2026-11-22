@@ -1,4 +1,4 @@
-import { createCommandReadContext, FactNotFoundError, FactReadDeniedError, snapshotFactReaders } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, FactReadDeniedError, isFactUnavailable, snapshotFactReaders } from './fact-read-helpers.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/types.ts';
@@ -16,7 +16,6 @@ import { intakeIdFor } from './intake-lifecycle.ts';
 import { RequestError } from './sessions.ts';
 import type { openWorkbook } from './workbook.ts';
 
-const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<typeof openWorkbook>, nodeIdValue: string, input: Record<string, unknown>) {
   let nodeId: FactId;
   try { nodeId = factId(nodeIdValue); } catch { throw new RequestError(400, '知识点标识无效。'); }
@@ -39,7 +38,7 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
     };
     const gated = { ...read, fact };
     const graph = await readAuthorizedKnowledgeGraph(tx, {
-      learner: tx.learner, purpose: 'storage', recipient: tx.learner, read: gated, isUnavailable: unavailable,
+      learner: tx.learner, purpose: 'storage', recipient: tx.learner, read: gated, isUnavailable: isFactUnavailable,
       preloadFollowing: read.preloadFollowing,
       verifyLegacyBasis: async (id, source) => {
         try { await verifyWorkspaceEntryBasis(gated, id, workspaceEntry(source.value).basis); return true; } catch { return false; }
@@ -68,14 +67,14 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
           const value = workspaceEntry(opened.value);
           if (value.kind === 'question' && value.body.trim()) questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'activity.workspaceEntry', prompt: value.body, ...(value.answer === undefined ? {} : { answer: value.answer }), ...(value.rubric === undefined ? {} : { rubric: value.rubric }) });
         }
-      } catch (error) { if (!unavailable(error)) throw error; }
+      } catch (error) { if (!isFactUnavailable(error)) throw error; }
     }
     const redPenQuestionIds = await collectRedPenQuestionIds((await Promise.all([...materialIds].map(async id => {
-      try { return await gated.fact(intakeIdFor(id), { mode: 'following' }); } catch (error) { if (!unavailable(error)) throw error; return undefined; }
+      try { return await gated.fact(intakeIdFor(id), { mode: 'following' }); } catch (error) { if (!isFactUnavailable(error)) throw error; return undefined; }
     }))).map(document => document?.value));
     questions.forEach((question, index) => { if (redPenQuestionIds.has(question.id)) questions[index] = { ...question, isRedPenError: true }; });
     const storageRead = { ...createCommandReadContext(tx, 'storage'), fact };
-    const evidence = await readConceptAttemptEvidence(tx, storageRead, links, unavailable);
+    const evidence = await readConceptAttemptEvidence(tx, storageRead, links, isFactUnavailable);
     const mastery = projectBatchConceptMastery({ asOf: new Date().toISOString(), conceptIds: graph.nodes.map(item => item.id), attempts: evidence.attempts, forecasts: [], incompleteConceptIds: evidence.incompleteConceptIds, activeMisconceptionConceptIds: new Set() });
     const selection = selectQuestionsForConceptNode(buildNodePracticeInput({ graph, nodeId, masteryByConcept: mastery, attempts: evidence.attempts, readableQuestions: questions, ...(count === undefined ? {} : { count }) }));
     if (selection.kind === 'empty') return selection;

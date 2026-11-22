@@ -3,23 +3,14 @@ import { createBusScope } from '../../kernel/src/bus.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import {
-  createCommandReadContext,
-  FactNotFoundError,
-  FactReadDeniedError,
-} from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactNotFound, isFactReadDenied } from './fact-read-helpers.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { commandId, factId, type Revision } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { organizerNoteType, organizerNoteView, prepareOrganizerNote } from '../../modules/activity/organizer-values.ts';
-import {
-  createOrganizerTask,
-  organizerTaskDoneInput,
-  organizerTaskDraft,
-  setOrganizerTaskDone,
-} from '../../modules/plan/organizer-task-values.ts';
+import { createOrganizerTask, organizerTaskDoneInput, organizerTaskDraft, setOrganizerTaskDone } from '../../modules/plan/organizer-task-values.ts';
 import { studyRecordType, studyTurnType, submitOfflinePack } from '../../modules/activity/values.ts';
 import { workbookAttemptType, workbookPaperType, workbookRubricAssessmentType } from '../../modules/activity/workbook-values.ts';
 import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
@@ -49,8 +40,8 @@ function validate<Input, Value>(parse: (input: Input) => Value, input: Input): V
 
 function translate(error: unknown): Error {
   if (error instanceof RequestError) return error;
-  if (error instanceof FactNotFoundError) return new RequestError(400, '链接的材料或要恢复的版本不存在。');
-  if (error instanceof FactReadDeniedError) return new RequestError(403, '这份材料当前无法链接。');
+  if (isFactNotFound(error)) return new RequestError(400, '链接的材料或要恢复的版本不存在。');
+  if (isFactReadDenied(error)) return new RequestError(403, '这份材料当前无法链接。');
   if (error instanceof Error) {
     if (error.message === 'Command ID already used with a different command identity') {
       return new RequestError(409, '同一个请求标识已经用于不同内容。');

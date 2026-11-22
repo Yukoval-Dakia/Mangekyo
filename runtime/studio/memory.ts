@@ -1,6 +1,6 @@
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, FactNotFoundError } from '../../kernel/src/commands/reads.ts';
+import { createCommandReadContext, isFactNotFound } from './fact-read-helpers.ts';
 import { commandId, factId } from '../../kernel/src/declarations/ids.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -17,7 +17,7 @@ export async function currentMemory(tx: ReadTransaction) {
     const fact = await createCommandReadContext(tx, purpose).fact(memoryId, { mode: 'following' });
     return { ...memoryValue(fact.value), revision: fact.ref.rev };
   } catch (error) {
-    if (!(error instanceof FactNotFoundError)) throw error;
+    if (!isFactNotFound(error)) throw error;
     return { text: '', endpoint: '', providerId: 'default', protocol: 'openai', revision: 0 };
   }
 }
