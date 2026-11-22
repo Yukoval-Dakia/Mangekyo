@@ -47,6 +47,11 @@ it.skipIf(!testDatabaseUrl)('issues authorized node quick papers and filters rev
     await send('content.confirmIntakeQuestions', 'asset-q', { confirmedByLearner: true, materialId, expectedMaterialRev: 1, purpose: 'storage', items: [{ draftId: 'draft-1', title: '资产题', stem: '资产题干' }] }, 'storage');
     const assetQ = await intakeQuestionId(materialId, 'draft-1');
     await edge('asset-link', { kind: 'targets_concept', scope: 'qp', from: { kind: 'question', sourceUse: use(assetQ) }, to: { kind: 'concept', sourceUse: use(id('asset-node')) }, sourceUses: [use(assetQ), use(id('asset-node'))] }, 'storage');
+    const redMaterialId = id('red-material'); const redIntakeId = factId(stableId('intake-document', redMaterialId)); const redInk = { verdict: 'wrong', marks: [], correction: '订正', score: '0' };
+    await send('activity.captureIntake', 'red-material', { materialId: redMaterialId, intakeId: redIntakeId, title: '红笔材料', requestedExtraction: 'vision_llm', original: { name: 'red.png', mediaType: 'image/png', size: 4, sha256: 'b'.repeat(64) }, extraction: { status: 'ok', method: 'vision_llm', text: '红笔题干', error: null, warnings: [], pages: null, truncated: false, characterCount: 4, drafts: { version: 'vision-paper-drafts-v1', confirmationRequired: true, paperTitle: '红笔卷', subject: '数学', pendingConfirmationCount: 1, questions: [{ draftId: 'red-1', index: 1, questionNumber: '1', questionType: 'short_answer', stem: '红笔题干', options: [], studentAnswer: { status: 'present', text: '错' }, redInk, unclearSegments: [], confirmationStatus: 'pending_confirmation', needsClarification: false }] } } }, 'storage');
+    await send('content.confirmIntakeQuestions', 'red-q', { confirmedByLearner: true, materialId: redMaterialId, expectedMaterialRev: 1, purpose: 'storage', items: [{ draftId: 'red-1', title: '红笔题', stem: '红笔题干' }] }, 'storage');
+    const redQ = await intakeQuestionId(redMaterialId, 'red-1');
+    await edge('red-link', { kind: 'targets_concept', scope: 'qp', from: { kind: 'question', sourceUse: use(redQ) }, to: { kind: 'concept', sourceUse: use(id('asset-node')) }, sourceUses: [use(redQ), use(id('asset-node'))] }, 'storage');
 
     const student = { workbook: openWorkbook(db, activity!) } as never;
     const probe = createServer(); await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
@@ -72,9 +77,11 @@ it.skipIf(!testDatabaseUrl)('issues authorized node quick papers and filters rev
       await db.tx({ learner: studioLearner }, async tx => tx.withLearnerWrite(tick =>
         tx.query('UPDATE facts SET retracted_rev=current_rev, changed_tick=$2 WHERE learner_id=$1 AND id=$3', [studioLearner, tick, id('variant-q')])));
       expect(await call(id('variant-target'), 'after-revoke')).toMatchObject({ status: 201, body: { kind: 'paper', questionCount: 1 } });
-      const asset = await call(id('asset-node'), 'asset-request');
+      const asset = await call(id('asset-node'), 'asset-request', 1);
       expect(asset).toMatchObject({ status: 201, body: { kind: 'paper', questionCount: 1, href: `/papers/${asset.body.paperId}` } });
       expect((await fetch(`http://127.0.0.1:${(server.address() as {port: number}).port}/api/papers/${asset.body.paperId}`)).status).toBe(200);
+      const red = await call(id('asset-node'), 'red-request', 1);
+      expect(red.body).toMatchObject({ kind: 'paper', questionCount: 1, reason: expect.stringContaining('红笔错题'), basis: [{ questionRef: redQ }] });
       expect(await call(id('variant-target'), 'empty-request', 0)).toMatchObject({ status: 400, body: { error: '抽题数量须为 1 到 5。' } });
       expect(await call(id('variant-target'), 'bad', 1).then(result => ({...result, body: {error: result.body.error}}))).toMatchObject({ status: 400, body: { error: '抽题请求标识无效。' } });
     } finally { server.close(); }

@@ -2,6 +2,9 @@ import type { FactId } from '@mangekyo/kernel';
 import type { ConceptEvidenceRow } from './concept-evidence.ts';
 import type { AuthorizedKnowledgeGraph } from '@mangekyo/module-content/facts/knowledge-graph-overview';
 import type { ConceptMasteryState, NodePracticeCandidate, SelectNodePracticeInput } from '@mangekyo/module-plan/facts/node-practice';
+import { intakeDocument } from '@mangekyo/module-capture/facts/intake-document';
+import { projectIntakeQuestionCards } from '@mangekyo/module-capture/facts/intake-question-cards';
+import { intakeQuestionId } from '@mangekyo/module-content/facts/intake-question-bank';
 
 export type NodePracticeQuestion =
   | { readonly id: FactId; readonly rev: number; readonly kind: 'content.asset'; readonly prompt: string; readonly isRedPenError?: boolean }
@@ -13,6 +16,19 @@ export type NodePracticeQuestion =
 const masteryStates: Readonly<Record<string, ConceptMasteryState>> = {
   steady: 'solid', fading: 'fading', fragile: 'weak', unknown: 'unknown',
 };
+
+export async function collectRedPenQuestionIds(intakeDocuments: readonly unknown[]): Promise<ReadonlySet<FactId>> {
+  const ids = new Set<FactId>();
+  await Promise.all(intakeDocuments.map(async intake => {
+    try {
+      const materialId = intakeDocument(intake).materialId;
+      for (const card of projectIntakeQuestionCards(intake)) {
+        if (card.isRedPenError) ids.add(await intakeQuestionId(materialId, card.draftId));
+      }
+    } catch { /* unrelated or malformed documents cannot affect quick-paper priority */ }
+  }));
+  return ids;
+}
 
 export function buildNodePracticeInput(input: {
   graph: Pick<AuthorizedKnowledgeGraph, 'nodes' | 'edges' | 'questionConceptLinks'>;

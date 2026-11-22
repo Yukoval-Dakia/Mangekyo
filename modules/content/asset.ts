@@ -462,6 +462,24 @@ export async function checkQuestionTeachingSources(read: AssetReader, asset: Pic
   }
 }
 
+export async function refreshPurposeOnlyTeachingSources(
+  read: AssetReader,
+  sources: NonNullable<QuestionAsset['basis']>,
+): Promise<NonNullable<QuestionAsset['basis']>> {
+  return Promise.all(sources.map(async source => {
+    const current = await read.fact(source.id, { mode: 'following' });
+    if (current.ref.rev === source.rev && current.accessEpoch === source.epoch) return source;
+    const prior = await read.fact(source.id, { mode: 'pinned', rev: source.rev });
+    if (current.type !== source.type || current.ref.rev !== source.rev + 1 ||
+        Number(current.accessEpoch) !== Number(source.epoch) + 1 ||
+        JSON.stringify(current.value) !== JSON.stringify(prior.value) ||
+        (!current.purpose.includes('teaching') && !current.purpose.includes('all'))) {
+      throw new AssetBasisError('题目来源未授权教学用途或依据已变化。');
+    }
+    return { ...source, rev: current.ref.rev, epoch: current.accessEpoch };
+  }));
+}
+
 export function questionPrompt(asset: QuestionAsset) {
   const body = locateTextbookBlock(asset.blocks, asset.promptBlockId)?.block.body;
   if (body?.kind !== 'text') throw new Error('题目缺少题干。');

@@ -19,6 +19,7 @@
     "./intake-question-cards": "./intake-question-cards.ts",
     "./vision-paper-ocr": "./vision-paper-ocr.ts",
     "./facts/intake-document": "./intake-values.ts",
+    "./facts/intake-question-cards": "./intake-question-cards.ts",
     "./facts/*": "./facts/*.ts"
   },
   "dependencies": {

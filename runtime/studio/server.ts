@@ -132,7 +132,7 @@ async function openWeb() {
     { python: pythonHost,
       backtrace: (tx, read, facts) => workbookBacktrace(tx, read as never, facts) as never },
     workbook.issueBank);
-  const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks);
+  const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture);
   const student = { notion:openStudioNotion(db,capture,research.activityChanged), textbook,
     relationReview:openRelationReview(db,content,research.activityChanged),
     workbook, takeaways, practiceAdmission:openPracticeAdmission(db,content,activity,createStudioCommandHooks()),

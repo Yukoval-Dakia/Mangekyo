@@ -1,7 +1,8 @@
-import { factId, FactNotFoundError, type FactId, type ReadContext, type FactSnapshot } from '@mangekyo/kernel';
-import { assetType, checkQuestionTeachingSources, questionAsset, questionPrompt } from '@mangekyo/module-content/facts/asset-contract';
+import { createCommandReadContext, factId, FactNotFoundError, FactReadDeniedError, type FactId, type ReadContext, type FactSnapshot, type ReadTransaction } from '@mangekyo/kernel';
+import { assetType, checkQuestionTeachingSources, questionAsset, questionPrompt, refreshPurposeOnlyTeachingSources } from '@mangekyo/module-content/facts/asset-contract';
 import { openQuestionForRelease, questionVerificationKey, questionVerificationType, readQuestionState,
   type QuestionVerification } from '@mangekyo/module-content/facts/question-release';
+import { parseQuestionMetaDraft } from '@mangekyo/module-content/facts/question-state';
 import { object } from './values.ts';
 import { validateBankItem } from './question-assessment.ts';
 import { sourceQuestionRef, workbookRequestId } from './workbook-values.ts';
@@ -108,9 +109,48 @@ export async function inspectStoredBankQuestion(
   return { public: { id: fact.ref.id, rev: fact.ref.rev, title: asset.title, prompt: questionPrompt(asset), status }, version };
 }
 
+export async function inspectPurposeGrantedBankQuestion(storage: Pick<ReadContext, 'fact'>, teaching: ReadContext, fact: FactSnapshot) {
+  const stored = await inspectStoredBankQuestion(storage, fact);
+  if (!stored) return;
+  const basis = await refreshPurposeOnlyTeachingSources(storage, questionAsset(fact.value).basis ?? []);
+  await checkQuestionTeachingSources(teaching, { basis });
+  return { ...stored, reviewed: false };
+}
+
+export async function storedIqdbQuestionView(
+  tx: ReadTransaction,
+  { id, purposes, teachingOnly, teachingPurpose }: { id: FactId; purposes: readonly string[]; teachingOnly: boolean; teachingPurpose: string },
+) {
+  const fact = await createCommandReadContext(tx, 'storage').fact(id, { mode: 'following' }).catch(error => {
+    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return;
+    throw error;
+  });
+  if (!fact) return;
+  const stored = await inspectStoredBankQuestion(createCommandReadContext(tx, 'storage'), fact).catch(error => {
+    if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) return;
+    throw error;
+  });
+  if (!stored) return;
+  const teaching = purposes.includes('teaching') || purposes.includes('all');
+  return teaching
+    ? await inspectPurposeGrantedBankQuestion(createCommandReadContext(tx, 'storage'), createCommandReadContext(tx, teachingPurpose), fact).catch(error => {
+        if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError ||
+            (error instanceof Error && error.message === '题目来源未授权教学用途或依据已变化。')) return undefined;
+        throw error;
+      })
+    : (!teachingOnly ? { public: stored.public, version: stored.version, reviewed: false } : undefined);
+}
+
 export function selectBankQuestions(input: ReturnType<typeof parseProposal>, questions: readonly {id: FactId; rev: QuestionRef['rev']; title: string; prompt: string}[]) {
   return questions.filter(question => [input.need, ...input.coverage].some(term => mentions(question, term)))
     .slice(0, 20).map(({ id, rev }) => ({ id, rev }));
+}
+
+export function questionSourceMaterialIds(question: FactSnapshot, metadata: FactSnapshot): ReadonlySet<FactId> {
+  const asset = questionAsset(question.value);
+  const draft = parseQuestionMetaDraft(metadata.value);
+  if (draft.id !== question.ref.id || draft.expectedRev !== question.ref.rev) throw new Error('题目活元信息与题版不匹配。');
+  return new Set([...asset.basis ?? [], ...draft.basis].filter(source => source.type === 'activity.textMaterial').map(source => source.id));
 }
 
 export function bankProposalView(input: ReturnType<typeof parseProposal>, proposalId: string, requested: readonly QuestionRef[],

@@ -1,5 +1,5 @@
 import { defineCommand, type FactWrite } from '@mangekyo/kernel';
-import { assetType, checkQuestionTeachingSources, questionAsset } from '../asset.ts';
+import { assetType, checkQuestionTeachingSources, questionAsset, refreshPurposeOnlyTeachingSources } from '../asset.ts';
 import { fields, pageId, record, revision } from '../parse.ts';
 import { parseQuestionMetaDraft, questionMetaDraftId, questionMetaDraftType, readQuestionState } from '../question-state.ts';
 
@@ -25,8 +25,9 @@ export default defineCommand({
     const draft = parseQuestionMetaDraft(metadata.value);
     if (draft.id !== id || draft.expectedRev !== expectedRev) throw new Error('活元信息与题版不匹配。');
     if (allowed) {
-      await checkQuestionTeachingSources(ctx.read, asset);
-      await checkQuestionTeachingSources(ctx.read, { basis: draft.basis });
+      const assetBasis = await refreshPurposeOnlyTeachingSources(ctx.read, asset.basis ?? []);
+      await checkQuestionTeachingSources(ctx.read, { ...asset, basis: assetBasis });
+      await checkQuestionTeachingSources(ctx.read, { basis: await refreshPurposeOnlyTeachingSources(ctx.read, draft.basis) });
     }
     const nextRev = revision(expectedRev + 1);
     return [
