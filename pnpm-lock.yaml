@@ -131,6 +131,9 @@ importers:
       '@mangekyo/kernel':
         specifier: workspace:*
         version: link:../../kernel
+      '@mangekyo/module-content':
+        specifier: workspace:*
+        version: link:../content
 
   modules/plan:
     dependencies:

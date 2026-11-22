@@ -1,6 +1,7 @@
 import { factId, type FactId, type FactSnapshot, type ReadContext, type ReadTransaction, type Revision } from '@mangekyo/kernel';
 import type { QuestionConceptLink, KnowledgeGraphNodeDraft } from '@mangekyo/module-content/facts/knowledge-graph-overview';
 import type { ConceptMasteryView } from '@mangekyo/module-learner/facts/knowledge-mastery';
+import { widenedRevOr } from '@mangekyo/module-learner/facts/widened-rev';
 import { projectWeaknessAndErrorSummary, type ErrorStage, type WeaknessAndErrorSummaryView, type WeaknessConceptInput, type WeaknessErrorSample, type WeaknessEvidenceRef } from '@mangekyo/module-learner/facts/weakness-error-summary';
 import type { AssessmentResult } from './assessment-values.ts';
 import { workbookMistakes } from './workbook-assessment-values.ts';
@@ -29,49 +30,48 @@ export async function gatherWeaknessOverview(tx: ReadTransaction, ports: Weaknes
   const stageByKey = new Map<string, { readonly errorStage: ErrorStage; readonly itemId: string }>();
   const uncorrectedByConcept = new Map<FactId, number>();
   const seen = new Set<string>();
-  const conceptByQuestion = new Map<string, FactId[]>();
+  const conceptByQuestion = new Map<FactId, Map<Revision, FactId[]>>();
   for (const { questionId, questionRev, conceptId } of ports.links) {
-    const key = `${questionId}:${questionRev}`, list = conceptByQuestion.get(key) ?? [];
-    list.push(conceptId); conceptByQuestion.set(key, list);
+    const byRev = conceptByQuestion.get(questionId) ?? conceptByQuestion.set(questionId, new Map()).get(questionId)!;
+    (byRev.get(questionRev) ?? byRev.set(questionRev, []).get(questionRev)!).push(conceptId);
   }
   for (const { id, rev, attempt, fact } of attemptFacts) {
-    const formal = attempt.paper.assessmentRelease
-      ? await ports.formalFor(attempt.paper, { id, rev }).catch(error => {
-          if (ports.isUnavailable(error)) return undefined;
-          throw error;
-        }) : undefined;
+    const formal = attempt.paper.assessmentRelease ? await ports.formalFor(attempt.paper, { id, rev }).catch(error => {
+      if (ports.isUnavailable(error)) return undefined; throw error;
+    }) : undefined;
     const byItem = new Map(attempt.paper.questions.map(q => [q.id, q.sourceQuestionRef] as const));
     for (const entry of workbookMistakes(attempt, grades.get(id) ?? [], seen, formal)) {
       const source = byItem.get(entry.questionId);
-      if (source && entry.errorStage) stageByKey.set(`${id}:${source.id}:${source.rev}`, { errorStage: entry.errorStage, itemId: entry.questionId });
+      if (source && entry.errorStage) stageByKey.set(`${id}:${source.id}`, { errorStage: entry.errorStage, itemId: entry.questionId });
     }
     const eligible = workbookCorrectionItems(attempt, grades.get(id) ?? [], formal).filter(itemId => byItem.get(itemId));
     if (!eligible.length) continue;
     const correctionIds = await listWorkbookCorrectionIds(tx, factId(attempt.paperId), id);
-    const corrected = new Set((correctionIds.length ? (await readWorkbookCorrections(correctionIds, ports.read, ports.isUnavailable)).get(id) ?? [] : [])
-      .filter(saved => sameWorkbookCorrectionAttempt(saved, fact as FactSnapshot)).map(saved => saved.itemId));
+    const corrected = new Set((correctionIds.length ? (await readWorkbookCorrections(correctionIds, ports.read, ports.isUnavailable)).get(id) ?? [] : []).filter(saved => sameWorkbookCorrectionAttempt(saved, fact as FactSnapshot)).map(saved => saved.itemId));
     const counted = new Set<FactId>();
     for (const itemId of eligible) if (!corrected.has(itemId)) {
       const source = byItem.get(itemId)!;
-      for (const conceptId of conceptByQuestion.get(`${source.id}:${source.rev}`) ?? []) {
+      const byRev = conceptByQuestion.get(factId(source.id));
+      let conceptIds = byRev?.get(source.rev) ?? [];
+      for (const rev of byRev?.keys() ?? []) if (!conceptIds.length && rev > source.rev &&
+          await widenedRevOr(ports.read, factId(source.id), source.rev, rev, ports.isUnavailable)) conceptIds = byRev!.get(rev)!;
+      for (const conceptId of conceptIds) {
         if (!counted.has(conceptId)) { counted.add(conceptId); uncorrectedByConcept.set(conceptId, (uncorrectedByConcept.get(conceptId) ?? 0) + 1); }
       }
     }
   }
   const errorSamples: WeaknessErrorSample[] = ports.attemptEvidence.map(row => {
-    const staged = stageByKey.get(`${row.submission.id}:${row.questionId}:${row.questionRev}`);
+    const staged = stageByKey.get(`${row.submission.id}:${row.questionId}`);
     const paper = row.basisRefs.find(ref => ref.type === workbookPaperType || ref.type === retentionPaperType || ref.type === posttestIssuanceType);
     const evidenceRef: WeaknessEvidenceRef = { id: row.submission.id, rev: row.submission.rev,
       ...(staged?.itemId === undefined ? {} : { itemId: staged.itemId }), href: `/papers/${paper?.id ?? row.submission.id}` };
-    return { evidenceRef, occurredAt: row.occurredAt, outcome: row.outcome,
-      helpLevel: row.exposure === 'independent' ? 'independent' : row.exposure === 'exposed' ? 'hinted' : 'unknown',
-      ...(staged?.errorStage === undefined ? {} : { errorStage: staged.errorStage }), conceptId: row.conceptId };
+    return { evidenceRef, occurredAt: row.occurredAt, outcome: row.outcome, conceptId: row.conceptId,
+      helpLevel: row.exposure === 'independent' ? 'independent' : row.exposure === 'exposed' ? 'hinted' : 'unknown', ...(staged?.errorStage === undefined ? {} : { errorStage: staged.errorStage }) };
   });
   const concepts: WeaknessConceptInput[] = ports.nodes.map(node => {
     const mastery = ports.mastery.get(node.id);
-    return { conceptId: node.id, title: node.title, status: mastery?.status ?? 'unknown', retrievability: mastery?.retrievability ?? null,
-      independentAttempts: mastery?.independentCount ?? 0, uncorrectedErrorCount: uncorrectedByConcept.get(node.id) ?? 0,
-      hasPracticeQuestions: node.counts.questions > 0, evidenceRefs: (mastery?.basisRefs ?? []).map(ref => ({ id: ref.id, rev: ref.rev })) };
+    return { conceptId: node.id, title: node.title, status: mastery?.status ?? 'unknown', retrievability: mastery?.retrievability ?? null, hasPracticeQuestions: node.counts.questions > 0,
+      independentAttempts: mastery?.independentCount ?? 0, uncorrectedErrorCount: uncorrectedByConcept.get(node.id) ?? 0, evidenceRefs: (mastery?.basisRefs ?? []).map(ref => ({ id: ref.id, rev: ref.rev })) };
   });
   return projectWeaknessAndErrorSummary({ asOf: ports.asOf, errorSamples, concepts });
 }
