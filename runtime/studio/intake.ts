@@ -30,7 +30,7 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { cloudIntakeSlot, enqueueCloudIntake, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
-import { completeVisionIntake, enqueueVisionIntake, resolveVisionIntakeConfig, type VisionIntakeInput } from './intake-vision.ts';
+import { completeVisionIntake, enqueueVisionIntake, resolveVisionIntakeConfig, type VisionIntakeInput, type VisionOcrCallTelemetry } from './intake-vision.ts';
 import { visionIntakeDeriver, visionIntakeSlot } from '../../modules/capture/vision-paper-ocr.ts';
 import { captureSourceType } from '../../modules/capture/source.ts';
 import type { paperReturnSelection } from '../../modules/capture/paper.ts';
@@ -325,8 +325,8 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     });
   }
 
-  async function completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction) {
-    await completeVisionIntake(db, runtime, hooks, ref, input, extraction);
+  async function completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]) {
+    await completeVisionIntake(db, runtime, hooks, ref, input, extraction, telemetry);
   }
 
   async function correct(input: IntakeCorrectInput) {

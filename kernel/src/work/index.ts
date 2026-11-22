@@ -17,7 +17,8 @@ export type { WaitRegistration, WaitTransition, WaitTerminalState } from './wait
 export { registerWorkWait, wakeWaitingWork } from './wait.ts';
 
 export type { EffectRequest, EffectResult } from './effects.ts';
-export { runEffect } from './effects.ts';
+export type { CompletedEffectRecord } from './effects.ts';
+export { recordCompletedEffect, runEffect } from './effects.ts';
 
 // Retain outbox identities across generations. Only a current ready generation may be started.
 const currentIntent = `FROM work_outbox o JOIN work w
