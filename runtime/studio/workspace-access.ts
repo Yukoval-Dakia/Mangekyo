@@ -5,7 +5,7 @@ export type { WorkspaceProviderView } from '../../executors/teaching/workspace-p
 import { workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { workbookPresentationType } from '../../modules/activity/workbook-presentation.ts';
 import {
-  allowedTypes, categories, encodeCursor, itemOf, purposesOf, workspaceCatalogPage, workspaceCatalogQuery,
+  allowedTypes, categories, encodeCursor, itemOf, purposesOf, workspaceCatalogPage, workspaceCatalogQuery, workspaceRecordPage,
   WorkspaceCatalogInputError, type AccessRow, type AccessDisplay,
 } from '../../modules/activity/workspace-catalog.ts';
 import { displayOf } from '../../modules/activity/workspace-source-projection.ts';
@@ -36,7 +36,8 @@ import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { studyRecordType } from '../../modules/activity/values.ts';
 import { readFrozenWorkbookRecord } from '../../modules/activity/workbook-bank.ts';
 import {
-  WorkspaceInputError, workspaceEntryType, setWorkspaceTeachingCommand,
+  WorkspaceInputError, validateWorkspaceTeachingRequest, workspaceEntryType, workspaceTeachingUse,
+  setWorkspaceTeachingCommand,
 } from '../../modules/activity/workspace-values.ts';
 import {
   WorkbookSourceMismatch,
@@ -79,6 +80,22 @@ function catalogInput<T>(parse: (params: URLSearchParams) => T, params: URLSearc
     throw error;
   }
 }
+
+const teachingFailures = {
+  settings: [400, '开放设置无效。'],
+  purpose: [400, '记录用途无效。'],
+  revision: [400, '记录版本无效。'],
+  missing: [404, '找不到这条学习记录。'],
+  'source-type': [400, '请选择教材、试卷或来源题。'],
+  conflict: [409, '这条记录已在别处更新。请刷新后再试。'],
+  'intake-mismatch': [409, '材料与交入记录不匹配。'],
+  'all-purposes': [409, '这条记录已设置为全部用途。'],
+  'no-purpose': [409, '这条记录当前没有可用的读取用途。'],
+} as const;
+const teachingFailure = (reason: keyof typeof teachingFailures) => {
+  const [status, message] = teachingFailures[reason];
+  return new RequestError(status, message);
+};
 
 async function readDisplay(
   tx: ReadTransaction,
@@ -368,9 +385,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         }
         const read = await readDisplay(tx, row, check);
         if (!read) throw new RequestError(403, '这条学习记录当前不可读取。');
-        const item = itemOf(row, read);
-        const start = Math.min(offset, read.display.text.length);
-        const end = Math.min(start + limit, read.display.text.length);
+        const page = workspaceRecordPage(row, read, offset, limit);
         const related: {id:string;title:string}[] = [];
         for (const linkedId of read.display.links ?? []) {
           const linked = await currentRow(tx,factId(linkedId));
@@ -378,66 +393,45 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
           const target = await readDisplay(tx,linked,check);
           if (target) related.push({id:linkedId,title:target.display.title});
         }
-        return {
-          ...item,
-          related,
-          ...(read.display.question ? {question:read.display.question} : {}),
-          text: read.display.text.slice(start, end),
-          offset: start,
-          nextOffset: end < read.display.text.length ? end : null,
-        };
+        return {...page, related};
       });
     },
 
-    async setTeaching(id: string, input: unknown) {
+    async setTeaching(id: string, input: unknown): Promise<{
+      id: string; rev: number; teaching: boolean; research?: boolean; changed: boolean;
+    }> {
       const itemId = requireFactId(id);
-      const value = object(input);
-      if (!value || typeof value.enabled !== 'boolean') throw new RequestError(400, '开放设置无效。');
-      const use = value.purpose === undefined ? 'teaching' : value.purpose;
-      if (use !== 'teaching' && use !== 'background-research') throw new RequestError(400, '记录用途无效。');
-      if (typeof value.expectedRev !== 'number' || !Number.isSafeInteger(value.expectedRev) ||
-          value.expectedRev < 1) {
-        throw new RequestError(400, '记录版本无效。');
-      }
-      const expectedRev = value.expectedRev;
-      const enabled = value.enabled;
+      const requested = workspaceTeachingUse(input);
+      if (!requested.ok) throw teachingFailure(requested.reason);
+      const {use, expectedRev, enabled} = requested;
       const {row, link} = await db.snapshot({ learner: studioLearner }, async tx => {
         const row = await currentRow(tx, itemId);
         return {row, link: use === 'teaching' && row?.type === materialType ? await materialIntakeLink(tx, itemId) : undefined};
       });
-      if (!row || (!allowedTypes.has(row.type) && row.type !== workbookPresentationType) ||
-        (row.type === studyRecordType && syntheticStudyRecords.has(row.id))) {
-        throw new RequestError(404, '找不到这条学习记录。');
-      }
-      if (use === 'background-research' && ![textbookPageType, workbookPaperType, workspaceEntryType].includes(row.type))
-        throw new RequestError(400, '请选择教材、试卷或来源题。');
-      if (row.current_rev !== expectedRev) {
-        throw new RequestError(409, '这条记录已在别处更新。请刷新后再试。');
-      }
-      if (link && !link.matches) throw new RequestError(409, '材料与交入记录不匹配。');
-      const purposes = purposesOf(row.purpose);
-      if (purposes.includes('all')) throw new RequestError(409, '这条记录已设置为全部用途。');
-      const flags = use === 'teaching' ? {teaching: enabled} :
-        {teaching: purposes.includes('teaching'), research: enabled};
-      if (purposes.includes(use) === enabled && (!link || link.purpose.includes(use) === enabled))
-        return { id: row.id, rev: row.current_rev, ...flags, changed: false };
-      const purpose = purposes[0];
-      if (!purpose) throw new RequestError(409, '这条记录当前没有可用的读取用途。');
+      if (!row) throw new RequestError(404, '找不到这条学习记录。');
+      const checked = validateWorkspaceTeachingRequest({
+        row, allowedType: allowedTypes.has(row.type) || row.type === workbookPresentationType,
+        synthetic: row.type === studyRecordType && syntheticStudyRecords.has(row.id),
+        purposes: purposesOf(row.purpose), use, expectedRev, enabled, link,
+      });
+      if (!checked.ok) throw teachingFailure(checked.reason);
+      if (!checked.changed) return {...checked, changed: false};
+      const {purpose, flags, row: current} = checked;
       try {
         const receipt = await handle({
           learner: studioLearner,
           actor: 'learner',
           purpose,
-          type: row.type === textbookPageType
+          type: current.type === textbookPageType
             ? use === 'teaching' ? 'content.setTextbookTeaching' : 'content.setTextbookResearch'
             : setWorkspaceTeachingCommand,
           id: commandId(stableId('workspace-' + use, itemId, String(expectedRev), String(enabled))),
-          input: { id: itemId, expectedRev, enabled, ...(use === 'background-research' && row.type !== textbookPageType ? {use} : {}), ...(link ? { intakeId: link.id } : {}) } as Json,
+          input: { id: itemId, expectedRev, enabled, ...(use === 'background-research' && current.type !== textbookPageType ? {use} : {}), ...(link ? { intakeId: link.id } : {}) } as Json,
         });
-        const ref = receipt.wrote.find((written) => written.id === row.id);
+        const ref = receipt.wrote.find((written) => written.id === current.id);
         const paired = link && receipt.wrote.some(written => written.id === link.id);
         if (!ref && !paired) throw new RequestError(500, '这次设置没有返回记录。');
-        return { id: row.id, rev: ref?.rev ?? row.current_rev, ...flags, changed: true };
+        return { id: current.id, rev: ref?.rev ?? current.current_rev, ...flags, changed: true };
       } catch (error) {
         throw translate(error);
       }

@@ -4,7 +4,7 @@ import {createAuthorizedFactReader, createCommandReadContext, FactNotFoundError,
 import {createCommandHandler} from '../../kernel/src/commands/handle.ts';
 import {canonicalJsonString} from '../../kernel/src/commands/canonical.ts';
 import {recordLocalRead} from '../../kernel/src/work/effects.ts';
-import {commandId, factId, type Revision, type Tick} from '../../kernel/src/declarations/ids.ts';
+import {commandId, factId, type Revision} from '../../kernel/src/declarations/ids.ts';
 import {isJson} from '../../kernel/src/declarations/define.ts';
 import type {FactSnapshot} from '../../kernel/src/declarations/types.ts';
 import type {Db, ReadTransaction} from '../../kernel/src/db/types.ts';
@@ -12,7 +12,7 @@ import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
 import type {PreparedPythonAttempts} from '../../executors/teaching/study-agent.ts';
 import {observationToolInput, parseOpenLearningArgs, presentationTool, validateWorkspaceToolArgs, workspaceStoredReceipt, workspaceWriteResult, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
-import type {SourceReadMode, SourceTrack} from './source-read.ts';
+import type {SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {openLearningBatch} from './workspace-open.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
@@ -24,7 +24,17 @@ import {workbookAttemptType, workbookPaperType, WorkbookSourceMismatch} from '..
 import {goalType} from '../../modules/plan/goal-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
 import {organizerTaskType} from '../../modules/plan/organizer-task-values.ts';
-import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, type WorkspaceEntryBasis} from '../../modules/activity/workspace-values.ts';
+import {
+  WorkspaceInputError,
+  workspaceAttemptTypes,
+  workspaceEntry,
+  workspaceEntryType,
+  workspaceInput,
+  workspaceProofKey,
+  type WorkspaceEntryBasis,
+  type WorkspaceWitness,
+} from '../../modules/activity/workspace-values.ts';
+export {workspaceInput, workspaceProofKey, type WorkspaceWitness};
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
 import {readPythonAttempts} from './python-attempts.ts';
@@ -44,7 +54,6 @@ import {openWorkspaceTextbook} from './workspace-textbook.ts';
 import {openWorkspaceRelation, type OpenedRelationSource} from './workspace-relation.ts';
 
 const artifactTool = presentationTool(presentationCatalog.schema, presentationCatalog.bindings);
-export type WorkspaceWitness = {id: string; rev: number; epoch: string; type: string; mode?: SourceReadMode; writeBasis?: true; jitBasis?: true};
 type Seen = {id: string; title: string; text: string; workspace: true};
 const activity = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
 let declarations: ReturnType<typeof activity> | undefined;
@@ -496,12 +505,4 @@ export function openWorkspaceTools(options: {
       return [...basis.values()];
     },
   };
-}
-export function workspaceProofKey(w: WorkspaceWitness) {
-  return `${w.id}:${w.rev}:${workspaceInput(w).mode}`;
-}
-
-export function workspaceInput(w: WorkspaceWitness) {
-  return {kind: 'fact' as const, id: factId(w.id), rev: w.rev as Revision, accessEpoch: w.epoch as Tick,
-    mode: w.mode ?? (w.type === 'activity.workspaceEntry' || w.type === textbookPageType ? 'pinned' : 'following')};
 }

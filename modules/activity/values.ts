@@ -40,6 +40,28 @@ export function studyCurrentObjectSelection(input: unknown) {
 }
 export type StudyCurrentObjectSelection = ReturnType<typeof studyCurrentObjectSelection>;
 
+export const studyCaseIds = ['independent', 'workedExample', 'companion', 'riding'] as const;
+export type StudyCaseId = (typeof studyCaseIds)[number];
+
+export function isStudyCaseId(value: unknown): value is StudyCaseId {
+  return studyCaseIds.includes(value as StudyCaseId);
+}
+
+export function studyCurrentObjectRequest(input: unknown) {
+  if (input === undefined) return undefined;
+  try {
+    const selection = studyCurrentObjectSelection(input);
+    if (Object.keys(input as object).length === 3) return selection;
+  } catch {
+    // Browser requests may contain only the stable selection fields.
+  }
+  return null;
+}
+
+export function requestedStudyBackgroundUnderstanding(input: unknown) {
+  return input === true;
+}
+
 function studyCurrentObject(input: unknown) {
   const selection = studyCurrentObjectSelection(input);
   const basisDigest = field(object(input), 'basisDigest', 64);

@@ -5,9 +5,11 @@ import {
   type CommandContext,
   type FactId,
   type Revision,
+  type Tick,
 } from '@mangekyo/kernel';
 import {ridingPracticeType} from './practice-values.ts';
 import {workbookAttemptType, workbookPaperType} from './workbook-values.ts';
+import {textbookPageType} from '@mangekyo/module-content/facts/textbook-page';
 import goal from '@mangekyo/module-plan/facts/goal';
 import organizerTask from '@mangekyo/module-plan/facts/organizer-task';
 import {materialType} from './library-values.ts';
@@ -50,6 +52,38 @@ export type WorkspaceEntryBasisInput = {
   readonly epoch: string | number;
 };
 
+export type WorkspaceWitness = {
+  readonly id: string;
+  readonly rev: number;
+  readonly epoch: string;
+  readonly type: string;
+  readonly mode?: 'pinned' | 'following';
+  readonly writeBasis?: true;
+  readonly jitBasis?: true;
+};
+
+export type WorkspaceFactInput = {
+  readonly kind: 'fact';
+  readonly id: FactId;
+  readonly rev: Revision;
+  readonly accessEpoch: Tick;
+  readonly mode: 'pinned' | 'following';
+};
+
+export function workspaceInput(witness: WorkspaceWitness): WorkspaceFactInput {
+  return {
+    kind: 'fact' as const,
+    id: factId(witness.id),
+    rev: witness.rev as Revision,
+    accessEpoch: witness.epoch as Tick,
+    mode: witness.mode ?? (witness.type === workspaceEntryType || witness.type === textbookPageType ? 'pinned' : 'following'),
+  };
+}
+
+export function workspaceProofKey(witness: WorkspaceWitness) {
+  return `${witness.id}:${witness.rev}:${workspaceInput(witness).mode}`;
+}
+
 /**
  * The persisted flat shape of activity.workspaceEntry. `body` is always a
  * string; relation entries store an empty body when none was supplied.
@@ -90,6 +124,46 @@ export type SetWorkspaceTeachingInput = {
   readonly enabled: boolean;
   readonly purpose?: typeof turnResearchPurpose;
 };
+
+export function workspaceTeachingUse(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof (value as Record<string, unknown>).enabled !== 'boolean')
+    return { ok: false as const, reason: 'settings' as const };
+  const input = value as Record<string, unknown>;
+  const use = input.purpose === undefined ? 'teaching' : input.purpose;
+  if (use !== 'teaching' && use !== turnResearchPurpose)
+    return { ok: false as const, reason: 'purpose' as const };
+  if (typeof input.expectedRev !== 'number' || !Number.isSafeInteger(input.expectedRev) || input.expectedRev < 1)
+    return { ok: false as const, reason: 'revision' as const };
+  return { ok: true as const, use: use as 'teaching' | typeof turnResearchPurpose,
+    expectedRev: input.expectedRev as Revision, enabled: input.enabled as boolean };
+}
+
+export function validateWorkspaceTeachingRequest(input: {
+  readonly row: { readonly id: string; readonly type: string; readonly current_rev: number; readonly purpose: unknown };
+  readonly purposes: readonly string[];
+  readonly allowedType: boolean;
+  readonly synthetic: boolean;
+  readonly use: 'teaching' | typeof turnResearchPurpose;
+  readonly expectedRev: Revision;
+  readonly enabled: boolean;
+  readonly link?: { readonly matches: boolean; readonly purpose: readonly string[] } | undefined;
+}) {
+  const { row, purposes, use, enabled, link } = input;
+  if (!input.allowedType || input.synthetic)
+    return { ok: false as const, reason: 'missing' as const };
+  if (use === turnResearchPurpose && ![workspaceEntryType, workbookPaperType, textbookPageType].includes(row.type))
+    return { ok: false as const, reason: 'source-type' as const };
+  if (row.current_rev !== input.expectedRev)
+    return { ok: false as const, reason: 'conflict' as const };
+  if (link && !link.matches) return { ok: false as const, reason: 'intake-mismatch' as const };
+  if (purposes.includes('all')) return { ok: false as const, reason: 'all-purposes' as const };
+  const flags = use === 'teaching' ? { teaching: enabled } :
+    { teaching: purposes.includes('teaching'), research: enabled };
+  if (purposes.includes(use) === enabled && (!link || link.purpose.includes(use) === enabled))
+    return { ok: true as const, changed: false as const, id: row.id, rev: row.current_rev, ...flags };
+  if (!purposes[0]) return { ok: false as const, reason: 'no-purpose' as const };
+  return { ok: true as const, changed: true as const, purpose: purposes[0], flags, row };
+}
 
 function record(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {

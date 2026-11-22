@@ -12,7 +12,8 @@ import { workbookAttempt, workbookAttemptType } from '../../modules/activity/wor
 import { memoryAssertion, memoryAssertionType, type MemoryLink } from '../../modules/companion/memory-assertion.ts';
 import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory-claims.ts';
 import type { OpenedCurrentLearningObject } from './current-learning-object.ts';
-import { learnerPreferenceType, type PreferenceScope } from '../../modules/learner/preference-values.ts';
+import { learnerPreferenceType } from '../../modules/learner/preference-values.ts';
+import { type StudioMemoryScope } from '../../modules/activity/current-object-basis.ts';
 import { witnessIdentity } from '../../modules/learner/memory-evidence.ts';
 import { preSubmitRevisionWitness } from '../../modules/learner/pre-submit-process.ts';
 import {
@@ -28,15 +29,9 @@ import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
 
 type AnswerLocation = { id: string; itemId: string };
-export type MemoryScope = { preference: PreferenceScope; links: readonly MemoryLink[];
-  conditions?: readonly string[]; attempt?: AnswerLocation; experienceTurn?: string };
+export type MemoryScope = StudioMemoryScope;
+export { memoryScopeForObject } from '../../modules/activity/current-object-basis.ts';
 type RegionItem = RecallItem<WorkspaceWitness>;
-export function memoryScopeForObject(current: OpenedCurrentLearningObject | undefined): MemoryScope {
-  if (!current) return {preference: {}, links: [], conditions: []};
-  const {root, view} = current;
-  return {preference: {activity: view.alias === 'current_attempt' ? 'attempt' : 'page', context: root.id},
-    links: [{kind: 'source', id: factId(root.id)}], ...(current.answerSlot ? {attempt: {id: root.id, itemId: current.answerSlot}} : {})};
-}
 
 const witness = (fact: FactSnapshot): WorkspaceWitness => ({ id: fact.ref.id, rev: fact.ref.rev,
   epoch: fact.accessEpoch, type: fact.type, mode: 'following' });

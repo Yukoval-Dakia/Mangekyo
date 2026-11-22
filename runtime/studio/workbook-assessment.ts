@@ -6,7 +6,7 @@ import { lockLearner } from '../../kernel/src/db/learner.ts';
 import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId, learnerId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
-import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
+import { sealCandidate, submitCandidate } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
@@ -21,12 +21,13 @@ import { evaluateBankCriterion, frozenWorkbookSubmission, isLocalQuestionCriteri
 import { readFrozenWorkbookBank } from '../../modules/activity/workbook-bank.ts';
 import { boundedWorkbookReply, checkWorkbookPublication, publicBankAssessment, workbookAssessmentValue, prepareWorkbookRelease as prepareRelease, sameAssessmentRef as sameRef,
   AssessmentInputUnavailable, gatherWorkbookAssessment, workbookEvaluation, workbookTextEvaluator,
+  workbookAssessmentPolicy as policy, workbookBankAssessmentPolicy as bankPolicy,
+  workbookAssessmentPolicyFor as assessmentPolicy,
   type FrozenWorkbookAssessmentInputs, type WorkbookEvaluation } from '../../modules/activity/workbook-assessment-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import formalAssessmentSlot from '../../modules/activity/slots/workbook-formal-assessment.ts';
 import {
-  workbookAssessmentPurpose, workbookAttempt, workbookAttemptType,
-  workbookFormalAssessmentType, workbookPaper, workbookPaperType, WorkbookSourceMismatch, type WorkbookDraft, type WorkbookPaper,
+  workbookAttempt, workbookAttemptType, workbookFormalAssessmentType, workbookPaper, workbookPaperType,
+  WorkbookSourceMismatch, type WorkbookDraft,
 } from '../../modules/activity/workbook-values.ts';
 import { verifyWorkbookAttachmentManifestInputs, type WorkbookAttachmentEvidence } from '../../modules/activity/workbook-attachments.ts';
 import {
@@ -37,13 +38,6 @@ import { RequestError } from './sessions.ts';
 
 export const workbookAssessmentSlot = workbookFormalAssessmentType;
 export { workbookTextEvaluator };
-const policy: CandidatePolicy = {
-  slot: formalAssessmentSlot,
-  deriver: 'activity/workbook-formal-assessment-v1',
-  purpose: workbookAssessmentPurpose,
-};
-const bankPolicy: CandidatePolicy = { ...policy, deriver: 'activity/workbook-bank-assessment-v1' };
-const assessmentPolicy = (paper: WorkbookPaper) => paper.questions.some(question => question.kind === 'bank') ? bankPolicy : policy;
 const propagation = createPropagationHooks([]);
 const maxOutputTokens = 512;
 
