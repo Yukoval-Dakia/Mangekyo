@@ -608,6 +608,11 @@
   justify-content: center;
   min-height: 36px;
   padding-inline: 16px;
+  text-decoration: none;
+}
+
+.intake-action-receipt > span > a.primary-button {
+  color: var(--on-primary, #ffffff);
 }
 
 [data-theme="dark"] .intake-unclear {

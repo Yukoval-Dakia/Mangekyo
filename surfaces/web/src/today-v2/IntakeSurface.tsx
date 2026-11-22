@@ -59,6 +59,15 @@ export type IntakeSurfaceProps = {
 const INTAKE_LIMIT_BYTES = 25 * 1024 * 1024;
 const ACCEPTED_FILE_TYPES =
   '.pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,.avif,.tif,.tiff,.txt,.md,.markdown';
+const VISION_OCR_MEDIA_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/heic',
+  'image/heif',
+  'image/avif',
+  'image/tiff',
+  'image/webp',
+]);
 const LINK_PATTERN = /^https?:\/\/\S+$/i;
 const PURPOSE_STORAGE_KEY = 'today-v2:intake-default-purpose';
 
@@ -452,7 +461,12 @@ export function IntakeSurface({
       const watermark = bindDeletionWatermark(request);
       await synchronizeDeletion();
       const form = new FormData();
-      form.set('extraction', 'local');
+      form.set(
+        'extraction',
+        purpose === 'learning' && VISION_OCR_MEDIA_TYPES.has(file.type)
+          ? 'vision_llm'
+          : 'local',
+      );
       form.set('requestId', request);
       form.set('deletionWatermark', watermark);
       form.set('title', '');
