@@ -863,10 +863,14 @@
   line-height: 1.5;
 }
 
-.quick-capture-dialog,
-.help-dialog {
+.quick-capture-dialog[open],
+.help-dialog[open] {
   display: flex;
   flex-direction: column;
+}
+
+.quick-capture-dialog,
+.help-dialog {
   width: min(600px, calc(100vw - 24px));
   max-height: min(calc(100dvh - 44px), 760px);
   margin: auto;
@@ -887,8 +891,7 @@
   border-bottom: 1px solid var(--line);
 }
 
-.quick-capture-dialog > form,
-.quick-capture-dialog > div,
+.quick-capture-dialog > #quick-panel,
 .help-dialog > .help-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -898,7 +901,6 @@
   scrollbar-gutter: stable;
 }
 
-.quick-capture-dialog > form,
 .quick-capture-dialog > #quick-panel {
   padding-top: 0;
 }
@@ -925,13 +927,15 @@
 }
 
 .quick-tabs {
+  flex: none;
+  align-self: flex-start;
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   border-radius: var(--radius-pill);
   background: var(--surface-container);
-  margin: 0 22px 14px;
+  margin: 14px 22px 12px;
 }
 
 .quick-tabs button {
@@ -1246,10 +1250,8 @@
 
   .quick-capture-dialog > .dialog-heading,
   .help-dialog > .dialog-heading,
-  .quick-capture-dialog > form,
-  .quick-capture-dialog > div,
+  .quick-capture-dialog > #quick-panel,
   .help-dialog > .help-body,
-  .quick-tabs,
   .quick-capture-dialog > .dialog-actions,
   .help-dialog > .dialog-actions {
     padding-inline: 18px;

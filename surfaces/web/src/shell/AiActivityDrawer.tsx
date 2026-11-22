@@ -395,7 +395,7 @@ export function AiActivityDrawer({
                     </section>
                   )}
 
-                  {(activity.running.length > 0 || !hasQuietState) && (
+                  {activity.running.length > 0 && (
                     <Section title="运行中" count={activity.running.length}>
                       <ul className="drawer-card-list">
                         {activity.running.map(item => {

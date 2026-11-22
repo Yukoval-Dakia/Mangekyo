@@ -186,7 +186,7 @@ export function HelpSheet({ onClose }: { onClose: () => void }) {
         </section>
 
         <section className="help-card" aria-label="基础安全支持">
-          <h3>眼前安全吗</h3>
+          <h3>安全与离线支持</h3>
           <p>{card.safetyQuestion}</p>
           <p>{card.trustedContact}</p>
           <p>{card.localEmergencyGuidance}</p>

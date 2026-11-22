@@ -1,6 +1,9 @@
-.settings-dialog {
+.settings-dialog[open] {
   display: flex;
   flex-direction: column;
+}
+
+.settings-dialog {
   width: min(calc(100vw - 32px), 620px);
   max-height: min(calc(100dvh - 48px), 820px);
   margin: auto;
@@ -41,7 +44,7 @@
 
 .settings-dialog .research-choice {
   margin-block: 0 16px;
-  padding-block: 0 0 14px;
+  padding-block: 0 14px;
   border-block: 0;
   border-bottom: 1px solid var(--line);
 }
