@@ -58,11 +58,11 @@ export const sourceUnavailable = (error: unknown) => studioDiagnosisSourceUnavai
 const unavailable = (error: unknown) => error instanceof FactNotFoundError || error instanceof FactReadDeniedError;
 
 function trackingReader(tx: ReadTransaction, access: Access, use = purpose): ReadContext {
-  const base = createCommandReadContext(tx, purpose);
+  const base = createCommandReadContext(tx, use);
   const authorized = createAuthorizedFactReader(tx, use, access.maySend);
   const fact: ReadContext['fact'] = async <Value>(id: FactId, options: FactReadOptions) => {
     const opened = await authorized.fact(id, options);
-    if (!access.maySend(opened)) return undefined as never;
+    if (!access.maySend(opened)) throw new FactReadDeniedError('recipient', 'Fact read denied by recipient policy');
     access.track(opened, options?.mode ?? 'following');
     return opened as FactSnapshot<Value>;
   };
@@ -145,9 +145,15 @@ async function diagnosisContext(tx: ReadTransaction, input: {
   readonly attempt: WorkbookAttempt; readonly access: Access;
 }): Promise<WorkbookDiagnosisContext> {
   const { attempt, access } = input;
+  const noImage = { state: 'unavailable', reason: 'no-source-image' } as const;
   const noLinks = { state: 'unknown', reason: 'no-linked-concepts' } as const;
+  let image: WorkbookDiagnosisContext['imageCrop'] = noImage;
   try {
-    const image = await imageCrop(tx, attempt, access);
+    image = await imageCrop(tx, attempt, access);
+  } catch (error) {
+    if (!unavailable(error)) throw error;
+  }
+  try {
     const linked = await linkedConcepts(tx, access, attempt);
     const conceptIds = [...linked.concepts.keys()].sort();
     if (!conceptIds.length) return { imageCrop: image, conceptHistory: noLinks, mastery: noLinks, retention: noLinks };
@@ -196,19 +202,27 @@ async function diagnosisContext(tx: ReadTransaction, input: {
 
     const masteryValues = projectBatchConceptMastery({ asOf: new Date().toISOString(), conceptIds, attempts, forecasts: signals,
       incompleteConceptIds: evidence.incompleteConceptIds });
-    for (const mastery of masteryValues.values()) for (const ref of mastery.basisRefs) {
-      await linked.reader.fact(factId(ref.id), { mode: 'pinned', rev: ref.rev as Revision });
+    const masteryConcepts = [];
+    for (const id of conceptIds) {
+      const value = masteryValues.get(factId(id))!;
+      let verified = true;
+      try {
+        for (const ref of value.basisRefs) {
+          await linked.reader.fact(factId(ref.id), { mode: 'pinned', rev: ref.rev as Revision });
+        }
+      } catch (error) {
+        if (!unavailable(error)) throw error;
+        verified = false;
+      }
+      masteryConcepts.push(verified
+        ? { conceptId: id, title: linked.concepts.get(id), status: value.status, retrievability: value.retrievability, independentCount: value.independentCount }
+        : { conceptId: id, title: linked.concepts.get(id), status: 'unknown' as const, retrievability: null, independentCount: 0 });
     }
-    const masteryConcepts = conceptIds.map(id => {
-      const mastery = masteryValues.get(factId(id))!;
-      return { conceptId: id, title: linked.concepts.get(id), status: mastery.status,
-        retrievability: mastery.retrievability, independentCount: mastery.independentCount };
-    });
     const mastery = masteryConcepts.some(({ status }) => status !== 'unknown') ? { state: 'observed' as const, concepts: masteryConcepts }
       : { state: 'unknown' as const, reason: 'no-independent-evidence', conceptIds };
     return { imageCrop: image, conceptHistory, mastery, retention };
   } catch (error) {
-    if (unavailable(error)) return { imageCrop: { state: 'unavailable', reason: 'no-source-image' }, conceptHistory: noLinks, mastery: noLinks, retention: noLinks };
+    if (unavailable(error)) return { imageCrop: image, conceptHistory: noLinks, mastery: noLinks, retention: noLinks };
     throw error;
   }
 }
