@@ -9,13 +9,10 @@ import {
   type WorkbookQuestionAttachmentViews,
   type WorkbookQuestionAttachments,
 } from './workbook-attachments.ts';
-
 const pinnedPromptLimit = 8000;
 const pinnedAnswerLimit = 4000;
-
 export class WorkbookSourceMismatch extends Error {}
 export class WorkbookRevisionMismatch extends Error {}
-
 export const workbookPaperType = 'activity.workbookPaper';
 export const workbookAttemptType = 'activity.workbookAttempt';
 export const workbookResearchPurpose = 'background-research';
@@ -30,17 +27,14 @@ export const workbookRubricVersion = 'rubric-v1';
 export const workbookRubricAssessmentVersion = 'workbook-rubric-assessment-v1';
 export const workbookAssessmentConsent = 'send-question-answer-rubric';
 export const workbookAssessmentPurpose = 'workbook-assessment';
-
 const requestPattern = /^[A-Za-z0-9_-]{8,100}$/;
 const questionIdPattern = /^[A-Za-z0-9_-]{1,40}$/;
 const rubricVersionPattern = /^rubric-v[1-9][0-9]{0,3}$/;
 const maxQuestions = 100;
-
 export type WorkbookSourceQuestionRef = {
   readonly id: string;
   readonly rev: Revision;
 };
-
 export type WorkbookNumericQuestion = {
   id: string;
   kind: 'numeric';
@@ -51,7 +45,6 @@ export type WorkbookNumericQuestion = {
   explanation: string | null;
   sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
-
 export type WorkbookExactQuestion = {
   id: string;
   kind: 'exact';
@@ -61,7 +54,6 @@ export type WorkbookExactQuestion = {
   explanation: string | null;
   sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
-
 export type WorkbookRubricQuestion = {
   id: string;
   kind: 'rubric';
@@ -71,7 +63,6 @@ export type WorkbookRubricQuestion = {
   explanation: string | null;
   sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
-
 export type WorkbookBankQuestion = {
   id: string;
   kind: 'bank';
@@ -84,13 +75,11 @@ export type WorkbookBankQuestion = {
   verification: JsonObject;
   explanation: null;
 };
-
 export type WorkbookQuestion =
   | WorkbookNumericQuestion
   | WorkbookExactQuestion
   | WorkbookRubricQuestion
   | WorkbookBankQuestion;
-
 export function sourceQuestionRef(value: unknown): WorkbookSourceQuestionRef | undefined {
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -110,12 +99,10 @@ export function sourceQuestionRef(value: unknown): WorkbookSourceQuestionRef | u
     throw new Error('来源题目标识无效。');
   }
 }
-
 export function workbookBankReference(value: unknown) {
   const row = record(value);
   return Object.keys(row).length === 1 ? sourceQuestionRef(row.sourceQuestionRef) : undefined;
 }
-
 export type WorkbookPaper = {
   title: string;
   materialId: string | null;
@@ -123,11 +110,9 @@ export type WorkbookPaper = {
   questions: WorkbookQuestion[];
   assessmentRelease?: AssessmentRelease;
 };
-
 export function independentlyAuthoredPaper(paper: WorkbookPaper): boolean {
   return paper.materialId === null && paper.questions.every(question => !question.sourceQuestionRef);
 }
-
 export type WorkbookQuestionDraft = { sourceQuestionRef?: WorkbookSourceQuestionRef } & (
   | {
     kind: 'numeric';
@@ -150,20 +135,16 @@ export type WorkbookQuestionDraft = { sourceQuestionRef?: WorkbookSourceQuestion
     rubric: string;
     explanation?: string | null;
   });
-
 export type WorkbookDraft = {
   title: string;
   materialId: string | null;
   questions: WorkbookQuestion[];
 };
-
 export type WorkbookAnswer = number | string | null;
-
 export type WorkbookExpected =
   | { kind: 'numeric'; value: number; tolerance: number; unit: string | null }
   | { kind: 'exact'; values: string[] }
   | { kind: 'rubric'; rubric: string; rubricVersion: string };
-
 export type WorkbookFeedback = {
   questionId: string;
   result: 'correct' | 'incorrect' | 'partial' | 'pending' | 'unanswered' | 'self-check';
@@ -172,7 +153,6 @@ export type WorkbookFeedback = {
   explanation: string | null;
 };
 type WorkbookAttemptFeedback = Omit<WorkbookFeedback, 'expected'> & { expected: WorkbookExpected | null; errorStage?: WorkbookErrorStage };
-
 export type WorkbookPacingV1 = {
   version: 1;
   items: ({
@@ -180,19 +160,16 @@ export type WorkbookPacingV1 = {
     effectiveDurationMs: number;
   } & ({ skipped: false; returned: false } | { skipped: true; returned: boolean }))[];
 };
-
 type WorkbookPacingFields = {
   paperRev?: Revision;
   pacing?: WorkbookPacingV1;
 };
-
 export type WorkbookPreSubmitRevisionClaim = {
   readonly draftRequestId: string;
   readonly paperRev: Revision;
   readonly itemId: string;
   readonly originalAnswer: string | readonly Json[] | null;
 };
-
 export type WorkbookAttempt = {
   paperId: string;
   requestId: string;
@@ -207,7 +184,6 @@ export type WorkbookAttempt = {
   assessmentConsent?: typeof workbookAssessmentConsent;
   preSubmitRevised?: true;
 } & WorkbookPacingFields;
-
 export type WorkbookAttemptRequest = {
   paperId: string;
   requestId: string;
@@ -218,7 +194,6 @@ export type WorkbookAttemptRequest = {
   assessmentConsent?: typeof workbookAssessmentConsent;
   preSubmitRevisions?: readonly WorkbookPreSubmitRevisionClaim[];
 } & WorkbookPacingFields;
-
 export type WorkbookQuestionView =
   | {
     id: string;
@@ -251,13 +226,11 @@ export type WorkbookQuestionView =
     sharedMaterials: readonly JsonObject[];
     interaction?: JsonObject;
   };
-
 export type WorkbookSourceView = {
   id: string;
   title: string | null;
   available: boolean;
 };
-
 export type WorkbookSummary = {
   id: string;
   title: string;
@@ -268,7 +241,6 @@ export type WorkbookSummary = {
   attemptCount: number;
   lastAttemptAt: string | null;
 };
-
 export type WorkbookAttemptView = {
   id: string;
   rev?: Revision;
@@ -286,11 +258,8 @@ export type WorkbookAttemptView = {
   total: number;
   preSubmitRevised?: true;
 } & WorkbookPacingFields;
-
 export type WorkbookAssessmentVerdict = 'correct' | 'partial' | 'incorrect' | 'pending';
-
 export type WorkbookErrorStage = AssessmentErrorStage;
-
 export type WorkbookRubricAssessment = {
   attemptId: string;
   paperId: string;
@@ -314,9 +283,7 @@ export type WorkbookRubricAssessment = {
   trace: string[];
   reportedModel?: string;
 };
-
 export type WorkbookRubricAssessmentView = WorkbookRubricAssessment & { id: string };
-
 export type WorkbookAssessmentRequest = {
   requestId: string;
   questionId: string;
@@ -324,7 +291,6 @@ export type WorkbookAssessmentRequest = {
   publicSearchQuery?: string;
   providerBaseUrl: string;
 };
-
 export type WorkbookDetail = {
   id: string;
   revision?: Revision;
@@ -336,18 +302,15 @@ export type WorkbookDetail = {
   questions: WorkbookQuestionView[];
   attempts: WorkbookAttemptView[];
 };
-
 function record(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('试卷记录格式无效。');
   }
   return value as Record<string, unknown>;
 }
-
 function canStore(text: string): boolean {
   return text.isWellFormed() && !text.includes('\u0000');
 }
-
 function text(value: unknown, label: string, limit: number, preserveWhitespace = false): string {
   if (typeof value !== 'string') throw new Error(`${label}必须是文字。`);
   const result = preserveWhitespace ? value : value.trim();
@@ -356,7 +319,6 @@ function text(value: unknown, label: string, limit: number, preserveWhitespace =
   }
   return result;
 }
-
 function optionalText(value: unknown, label: string, limit: number): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'string') throw new Error(`${label}必须是文字。`);
@@ -365,20 +327,17 @@ function optionalText(value: unknown, label: string, limit: number): string | nu
   if (trimmed.length > limit || !canStore(trimmed)) throw new Error(`${label}长度无效。`);
   return trimmed;
 }
-
 function numberValue(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new Error(`${label}必须是数字。`);
   }
   return value === 0 ? 0 : value;
 }
-
 function jsonObject(value: unknown): JsonObject {
   const row = record(value);
   if (!isJson(row)) throw new Error('冻结题项数据无效。');
   return row;
 }
-
 function timestamp(value: unknown, label: string): string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
     throw new Error(`${label}格式无效。`);
@@ -390,13 +349,11 @@ function timestamp(value: unknown, label: string): string {
   }
   return value;
 }
-
 function materialReference(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'string') throw new Error('来源材料标识无效。');
   return factId(value);
 }
-
 function alternatives(value: unknown, limit: number): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 20) {
     throw new Error('精确答案至少需要一条，最多二十条。');
@@ -411,7 +368,6 @@ function alternatives(value: unknown, limit: number): string[] {
   });
   return answers;
 }
-
 function draftQuestion(value: unknown, index: number, stored = false): WorkbookQuestion {
   const row = record(value);
   const kind = row.kind;
@@ -477,7 +433,6 @@ function draftQuestion(value: unknown, index: number, stored = false): WorkbookQ
   }
   throw new Error(`第 ${index + 1} 题类型无效。`);
 }
-
 function storedQuestion(value: unknown, index: number): WorkbookQuestion {
   const row = record(value);
   const id = row.id;
@@ -490,7 +445,6 @@ function storedQuestion(value: unknown, index: number): WorkbookQuestion {
   }, index, true);
   return { ...parsed, id };
 }
-
 export function workbookDraft(input: unknown, bank?: ReadonlyMap<number, WorkbookBankQuestion>): WorkbookDraft {
   const row = record(input);
   const questions = row.questions;
@@ -503,7 +457,6 @@ export function workbookDraft(input: unknown, bank?: ReadonlyMap<number, Workboo
     questions: questions.map((question, index) => bank?.get(index) ?? draftQuestion(question, index)),
   };
 }
-
 export function workbookPaper(input: unknown): WorkbookPaper {
   const row = record(input);
   const questions = row.questions;
@@ -524,14 +477,12 @@ export function workbookPaper(input: unknown): WorkbookPaper {
     ...(release === undefined ? {} : { assessmentRelease: release }),
   };
 }
-
 export function workbookRequestId(value: unknown): string {
   if (typeof value !== 'string' || !requestPattern.test(value)) {
     throw new Error('请求标识无效。');
   }
   return value;
 }
-
 export function workbookAttemptRequest(input: unknown, mounted?: { paperId: FactId; submittedAt: string }): WorkbookAttemptRequest {
   const row = record(input);
   const answers = record(row.answers);
@@ -554,14 +505,12 @@ export function workbookAttemptRequest(input: unknown, mounted?: { paperId: Fact
     ...workbookPreSubmitRevisions(row.preSubmitRevisions),
   };
 }
-
 function duration(value: unknown, minimum: number): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > 86_400_000) {
     throw new Error(`有效用时须为 ${minimum} 毫秒至 24 小时之间的整数毫秒。`);
   }
   return value;
 }
-
 function workbookPacingFields(row: Record<string, unknown>): WorkbookPacingFields & Pick<WorkbookAttempt, 'effectiveDurationMs'> {
   const result: WorkbookPacingFields & Pick<WorkbookAttempt, 'effectiveDurationMs'> = {};
   if (row.paperRev !== undefined) {
@@ -603,7 +552,6 @@ function workbookPacingFields(row: Record<string, unknown>): WorkbookPacingField
   result.pacing = { version: 1, items };
   return result;
 }
-
 export function checkWorkbookPacingItems(paper: WorkbookPaper, pacing: WorkbookPacingV1 | undefined) {
   if (!pacing) return;
   const positions = new Set(paper.questions.map(question => question.id));
@@ -611,13 +559,11 @@ export function checkWorkbookPacingItems(paper: WorkbookPaper, pacing: WorkbookP
     throw new Error('逐题过程包含当前卷版没有的题位。');
   }
 }
-
 function assessmentConsent(value: unknown): Pick<WorkbookAttemptRequest, 'assessmentConsent'> {
   if (value === undefined) return {};
   if (value !== workbookAssessmentConsent) throw new Error('自动评阅授权格式无效。');
   return { assessmentConsent: value };
 }
-
 function workbookPreSubmitRevisions(value: unknown): Pick<WorkbookAttemptRequest, 'preSubmitRevisions'> {
   if (value === undefined) return {};
   if (!Array.isArray(value) || value.length > maxQuestions) {
@@ -643,17 +589,14 @@ function workbookPreSubmitRevisions(value: unknown): Pick<WorkbookAttemptRequest
   }
   return { preSubmitRevisions: items };
 }
-
 function storedPreSubmitRevised(value: unknown): Pick<WorkbookAttempt, 'preSubmitRevised'> {
   if (value === undefined) return {};
   if (value !== true) throw new Error('交卷自检改写标记无效。');
   return { preSubmitRevised: true };
 }
-
 export function normalizeExactWorkbookAnswer(value: string): string {
   return normalizeExact(value);
 }
-
 export function workbookAssessmentRequest(input: unknown): WorkbookAssessmentRequest {
   const row = record(input);
   if (row.consent !== workbookAssessmentConsent) {
@@ -671,11 +614,9 @@ export function workbookAssessmentRequest(input: unknown): WorkbookAssessmentReq
     providerBaseUrl: text(row.providerBaseUrl, '模型端点', 2000),
   };
 }
-
 function normalizeExact(value: string): string {
   return value.normalize('NFKC').trim().replace(/\s+/g, ' ');
 }
-
 export function isStandaloneWorkbookPaper(value: unknown) {
   try {
     const { materialId, assessmentRelease, questions } = workbookPaper(value);
@@ -684,7 +625,6 @@ export function isStandaloneWorkbookPaper(value: unknown) {
     return false;
   }
 }
-
 export function sameWorkbookJson(left: unknown, right: unknown): boolean {
   function canonical(value: unknown): string {
     if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
@@ -698,7 +638,6 @@ export function sameWorkbookJson(left: unknown, right: unknown): boolean {
   }
   return canonical(left) === canonical(right);
 }
-
 export function normalizeWorkbookAnswer(
   paper: WorkbookPaper,
   question: WorkbookQuestion,
@@ -719,7 +658,6 @@ export function normalizeWorkbookAnswer(
   }
   return trimmed;
 }
-
 export function gradeWorkbook(
   paper: WorkbookPaper,
   input: unknown,
@@ -797,7 +735,6 @@ export function gradeWorkbook(
   }
   return { answers, feedback };
 }
-
 function parsedAnswer(question: WorkbookQuestion, value: unknown, index: number): WorkbookAnswer {
   if (value === null) return null;
   if (question.kind === 'numeric') {
@@ -809,7 +746,6 @@ function parsedAnswer(question: WorkbookQuestion, value: unknown, index: number)
   if (typeof value !== 'string') throw new Error(`第 ${index + 1} 题归档答案无效。`);
   return value;
 }
-
 function storedExpected(
   question: WorkbookQuestion,
   value: unknown,
@@ -860,7 +796,6 @@ function storedExpected(
     ),
   };
 }
-
 export function workbookAttempt(input: unknown): WorkbookAttempt {
   const row = record(input);
   const pap = workbookPaper(row.paper);
@@ -968,7 +903,6 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     ...storedPreSubmitRevised(row.preSubmitRevised),
   };
 }
-
 export function workbookQuestionView(question: WorkbookQuestion, release?: AssessmentRelease): WorkbookQuestionView {
   const base = { id: question.id, prompt: question.prompt };
   const source = question.sourceQuestionRef;
@@ -988,27 +922,22 @@ export function workbookQuestionView(question: WorkbookQuestion, release?: Asses
   }
   return { ...base, kind: 'rubric', rubricVersion: question.rubricVersion, ...ref };
 }
-
 export function workbookQuestionsView(paper: WorkbookPaper): WorkbookQuestionView[] {
   return paper.questions.map(question => workbookQuestionView(question, paper.assessmentRelease));
 }
-
 export function workbookCorrectCount(feedback: readonly Pick<WorkbookFeedback, 'result'>[]): number {
   return feedback.filter(({ result }) => result === 'correct').length;
 }
-
 function verdict(value: unknown): WorkbookAssessmentVerdict {
   if (value === 'correct' || value === 'partial' || value === 'incorrect' || value === 'pending') {
     return value;
   }
   throw new Error('评分标准批改结果无效。');
 }
-
 function stringList(value: unknown, label: string, limit = 40, length = 4000): string[] {
   if (!Array.isArray(value) || value.length > limit) throw new Error(`${label}格式无效。`);
   return value.map((entry, index) => text(entry, `${label}第 ${index + 1} 项`, length));
 }
-
 export function workbookAssessmentResult(input: unknown): {
   verdict: WorkbookAssessmentVerdict;
   score?: { earned: number; maximum: number };
@@ -1045,7 +974,6 @@ export function workbookAssessmentResult(input: unknown): {
     ...(reportedModel === null ? {} : { reportedModel }),
   };
 }
-
 export function workbookRubricAssessment(input: unknown): WorkbookRubricAssessment {
   const row = record(input);
   if (row.assessmentVersion !== workbookRubricAssessmentVersion) {

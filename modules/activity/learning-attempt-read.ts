@@ -4,7 +4,6 @@ import {
   gatherAuthorizedExamTimeValueBundle, revalidateAuthorizedExamTimeValueBundle,
   type AuthorizedExamTimeValueBundle, type ExamTimeValueEstimate, type ExamTimeValueFormalInput, type ExamTimeValueRef,
 } from './exam-time-value.ts';
-
 export type { AuthorizedExamTimeValueBundle } from './exam-time-value.ts';
 import { storagePurpose } from './library-values.ts';
 import {
@@ -20,13 +19,10 @@ import {
   type WorkbookRubricAssessmentView,
 } from './workbook-values.ts';
 const teachingPurpose = 'teaching';
-
 type AssessmentRow = { id: string; slot_key: string; value: unknown; manifest: unknown };
 type ArchivedAssessment = AssessmentRow & { original_id: string | null };
 const rubricPropagation = createPropagationHooks([]);
-
 export { readActivitySubmissionBirth } from './evidence-read.ts';
-
 export function readActivityHelpEvents(
   tx: ReadTransaction, read: ReadContext, query: Parameters<typeof readHelpEvents>[2],
   admit?: Parameters<typeof readHelpEvents>[3],
@@ -34,12 +30,10 @@ export function readActivityHelpEvents(
   return readHelpEvents(tx, read, query, admit,
     error => error instanceof FactReadDeniedError || error instanceof FactNotFoundError);
 }
-
 const currentAssessmentsSql = `SELECT d.id, d.slot_key, d.value, d.manifest, d.scope_keys->>'originalAssessmentId' AS original_id
        FROM derivations d JOIN slot_state s
          ON s.learner_id=d.learner_id AND s.slot_type=d.slot_type AND s.current_id=d.id
        WHERE d.learner_id=$1 AND d.slot_type=$2`;
-
 const archivedAssessmentsSql = `SELECT d.id, d.slot_key, d.value, d.manifest, d.scope_keys->>'originalAssessmentId' AS original_id
        FROM slot_state s JOIN derivations d
          ON (d.learner_id,d.slot_type,d.slot_key,d.id)=(s.learner_id,s.slot_type,s.slot_key,s.last_id)

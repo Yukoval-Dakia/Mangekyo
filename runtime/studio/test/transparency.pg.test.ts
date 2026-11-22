@@ -47,6 +47,7 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       expect((await get('/api/ai/activity')).body).toMatchObject({ running: [], handoffs: [], recentTools: [], usage: { currency: 'USD_MICROS', spentMicros: 0, limitMicros: null, recentCalls: [] }, pendingProposals: [] });
       expect((await get('/api/knowledge/graph')).body).toMatchObject({ nodes: [], edges: [], pendingProposals: [] });
       expect((await get('/api/memory/overview')).body).toMatchObject({ categories: { preference: [], claim: [], state: [], refusal: [] }, stickyDirectives: [], hypotheses: [], calibration: { status: 'unknown', totalReconciliations: 0, confirmed: 0, missed: 0, recent: [] } });
+      expect((await get('/api/memory/overview')).body).toMatchObject({ weaknessSummary: { status: 'insufficient_evidence', sampleCount: 0, neededCount: 2 } });
       expect((await get('/api/knowledge/graph?purpose=invalid')).status).toBe(400);
 
       const srcNoteId = factId(stableId('tr', 'note'));
@@ -118,6 +119,16 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       const postSubId = factId(stableId('tr', 'post-sub'));
       await send('activity.issueRetentionPosttest', 'issue', { id: issueId, data: { condition: 'studio-closed-workbook-v1', gradingVersion: 'workbook-v1', forecastKey, forecastId, effectiveTick: '1', paper: { id: sealedPaperId, rev: 1 }, paperEpoch: '0', itemId: 'item1', startedAt: '2026-11-21T09:10:00.000Z', through: '2026-11-22T09:10:00.000Z' } });
       await send('activity.submitWorkbookAttempt', 'post-sub', { id: postSubId, condition: 'studio-closed-workbook-v1', data: { paperId: issueId, requestId: 'post-req-1', submittedAt: '2026-11-21T10:00:00.000Z', answers: { item1: '1' } } });
+      const wq2 = factId(stableId('tr', 'wq2'));
+      await send('activity.saveWorkspaceEntry', 'wq2', { id: wq2, entry: { kind: 'question', title: '导数练手题', body: '求 (x^2) 的导数', answer: '2', tags: [], links: [] }, basis: [{ id: srcNoteId, rev: 2, epoch: '1' }] });
+      const wq2Use = { id: wq2, rev: 1, accessEpoch: '0' };
+      await send('content.createKnowledgeEdge', 'e-wq2', { id: factId(stableId('tr', 'e-wq2')), purpose: 'teaching', edge: { kind: 'targets_concept', scope: 'calculus', from: { kind: 'question', sourceUse: wq2Use }, to: { kind: 'concept', sourceUse: c2Use }, sourceUses: [wq2Use, c2Use] } });
+      const sealedPaper2Id = factId(stableId('tr', 'sealed-paper2'));
+      const forecastKey2 = stableId('tr', 'fc-key2'), forecastId2 = stableId('tr', 'fc-id2');
+      const issue2Id = factId(stableId('tr', 'post-issue2')), postSub2Id = factId(stableId('tr', 'post-sub2'));
+      await send('activity.saveWorkbookPaper', 'sealed-paper2', { id: sealedPaper2Id, condition: 'studio-closed-workbook-v1', data: { title: '导数后测卷', materialId: null, savedAt: '2026-11-21T09:09:00.000Z', questions: [{ id: 'item1', kind: 'numeric', prompt: '求 (x^2) 的导数', answer: 2, tolerance: 0, unit: null, explanation: null, sourceQuestionRef: { id: wq2, rev: 1 } }] } }, 'learner', 'teaching');
+      await send('activity.issueRetentionPosttest', 'issue2', { id: issue2Id, data: { condition: 'studio-closed-workbook-v1', gradingVersion: 'workbook-v1', forecastKey: forecastKey2, forecastId: forecastId2, effectiveTick: '1', paper: { id: sealedPaper2Id, rev: 1 }, paperEpoch: '0', itemId: 'item1', startedAt: '2026-11-21T09:11:00.000Z', through: '2026-11-22T09:11:00.000Z' } });
+      await send('activity.submitWorkbookAttempt', 'post-sub2', { id: postSub2Id, condition: 'studio-closed-workbook-v1', data: { paperId: issue2Id, requestId: 'post-req-2', submittedAt: '2026-11-21T10:05:00.000Z', answers: { item1: '0' } } });
 
       const turnId = factId(stableId('tr', 'turn1'));
       const turnText = '先画图再推导；最近有点累；我习惯例题先行；不要推送刷题提醒';
@@ -151,9 +162,13 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       await send('companion.configureResearch', 'res-cfg', { id: settingsId, revision: 0, enabled: true, scoutBudget: { route: 'default', limitMicros: 500000, maxPerCallMicros: 50000, maxRetentionDays: 0, expiresAtMs: Date.now() + 3600_000 } }, 'learner', 'background-research');
       await db.tx({ learner: studioLearner }, async tx => tx.withLearnerWrite(async tick => {
         const fcManifest = { version: 1, learner: studioLearner, purpose: 'teaching', gatherTick: tick, inputs: [{ kind: 'fact', id: sealedPaperId, rev: 1, accessEpoch: '0', mode: 'following' }] };
-        const fcVal = { kind: 'value', value: { method: { id: 'cognition', version: '3' }, estimate: { kind: 'probabilistic', probability: 0.82, interval: [0.7, 0.9], uncertainty: 0.1, effectiveEvidence: 2, bucket: { kcId: c1, representation: 'symbolic', context: 'practice', method: 'direct' }, basis: null }, input: { target: { activity: 'frozen-workbook-item', paper: { id: sealedPaperId, rev: 1 }, itemId: 'item1', condition: 'same-item', gradingVersion: 'v1' }, window: { requestedAt: '2026-11-21T09:10:00.000Z', through: '2026-11-22T09:10:00.000Z' }, observedThrough: tick, observations: [] } } };
+        const fcVal = { kind: 'value', value: { method: { id: 'cognition', version: '3' }, estimate: { kind: 'probabilistic', probability: 0.42, interval: [0.3, 0.55], uncertainty: 0.1, effectiveEvidence: 2, bucket: { kcId: c1, representation: 'symbolic', context: 'practice', method: 'direct' }, basis: null }, input: { target: { activity: 'frozen-workbook-item', paper: { id: sealedPaperId, rev: 1 }, itemId: 'item1', condition: 'same-item', gradingVersion: 'v1' }, window: { requestedAt: '2026-11-21T09:10:00.000Z', through: '2026-11-22T09:10:00.000Z' }, observedThrough: tick, observations: [] } } };
         await tx.insert('derivations', { learner_id: studioLearner, id: forecastId, slot_type: 'predict.forecast', slot_key: forecastKey, deriver: 'learner/retention-forecast@1', scope_keys: '{}', value: JSON.stringify(fcVal), lifecycle: 'effective', freshness: 'current', gather_tick: tick, effective_tick: tick, manifest: JSON.stringify(fcManifest) });
         await tx.insert('slot_state', { learner_id: studioLearner, slot_type: 'predict.forecast', slot_key: forecastKey, current_id: forecastId, last_id: forecastId, pending: 'none', changed_tick: tick, scope_keys: '{}' });
+        const fc2Manifest = { version: 1, learner: studioLearner, purpose: 'teaching', gatherTick: tick, inputs: [{ kind: 'fact', id: sealedPaper2Id, rev: 1, accessEpoch: '0', mode: 'following' }] };
+        const fc2Val = { kind: 'value', value: { method: { id: 'cognition', version: '3' }, estimate: { kind: 'probabilistic', probability: 0.9, interval: [0.8, 0.95], uncertainty: 0.1, effectiveEvidence: 2, bucket: { kcId: c2, representation: 'symbolic', context: 'practice', method: 'direct' }, basis: null }, input: { target: { activity: 'frozen-workbook-item', paper: { id: sealedPaper2Id, rev: 1 }, itemId: 'item1', condition: 'same-item', gradingVersion: 'v1' }, window: { requestedAt: '2026-11-21T09:11:00.000Z', through: '2026-11-22T09:11:00.000Z' }, observedThrough: tick, observations: [] } } };
+        await tx.insert('derivations', { learner_id: studioLearner, id: forecastId2, slot_type: 'predict.forecast', slot_key: forecastKey2, deriver: 'learner/retention-forecast@1', scope_keys: '{}', value: JSON.stringify(fc2Val), lifecycle: 'effective', freshness: 'current', gather_tick: tick, effective_tick: tick, manifest: JSON.stringify(fc2Manifest) });
+        await tx.insert('slot_state', { learner_id: studioLearner, slot_type: 'predict.forecast', slot_key: forecastKey2, current_id: forecastId2, last_id: forecastId2, pending: 'none', changed_tick: tick, scope_keys: '{}' });
         const recManifest = { version: 1, learner: studioLearner, purpose: 'teaching', gatherTick: tick, inputs: [{ kind: 'slot', slotType: 'predict.forecast', slotKey: forecastKey, derivationId: forecastId, mode: 'following' }, { kind: 'fact', id: postSubId, rev: 1, accessEpoch: '0', mode: 'following' }] };
         const recVal = { kind: 'value', value: { forecastId, observedThrough: tick, status: 'matched', observation: { submission: { id: postSubId, rev: 1 }, submittedAt: '2026-11-21T10:00:00.000Z', admittedAt: tick, result: 'correct', exposure: { kind: 'independent' } } } };
         await tx.insert('derivations', { learner_id: studioLearner, id: recId, slot_type: 'predict.reconciliation', slot_key: recKey, deriver: 'learner/retention-reconciliation@1', scope_keys: '{}', value: JSON.stringify(recVal), lifecycle: 'effective', freshness: 'current', gather_tick: tick, effective_tick: tick, manifest: JSON.stringify(recManifest) });
@@ -182,8 +197,8 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       }));
 
       const graph = (await get('/api/knowledge/graph')).body as { nodes: { id: string; counts: Record<string, number>; mastery: Record<string, unknown> }[]; edges: { verified: boolean; kind: string }[]; pendingProposals: { commandType: string }[] };
-      expect(graph.nodes.find(n => n.id === c1)).toMatchObject({ counts: { questions: 2, textbooks: 1, notes: 1, notionBlocks: 1 }, mastery: { status: 'steady', retrievability: 0.82, independentCount: 1 } });
-      expect(graph.nodes.find(n => n.id === c2)?.mastery).toMatchObject({ status: 'unknown', retrievability: null, independentCount: 0 });
+      expect(graph.nodes.find(n => n.id === c1)).toMatchObject({ counts: { questions: 2, textbooks: 1, notes: 1, notionBlocks: 1 }, mastery: { status: 'fading', retrievability: 0.42, independentCount: 1 } });
+      expect(graph.nodes.find(n => n.id === c2)?.mastery).toMatchObject({ status: 'fragile', retrievability: 0.9, independentCount: 1 });
       expect(graph.edges).toMatchObject([{ kind: 'prereq_of', verified: true }]);
       expect(graph.pendingProposals).toMatchObject([{ commandType: 'content.createKnowledgeEdge' }]);
 
@@ -196,6 +211,9 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       expect(mem.hypotheses).toMatchObject([{ text: '能独立完成标准极限求值' }]);
       expect(mem.hypotheses[0]!.basis.length).toBeGreaterThan(0);
       expect(mem.calibration).toMatchObject({ status: 'available', totalReconciliations: 1, confirmed: 1, missed: 0 });
+      const weak = (mem as { weaknessSummary?: { status: string; sampleCount: number; neededCount: number; priorityConcepts: { conceptId: string; status: string; uncorrectedErrorCount: number; nextAction: string }[]; topErrorStages: unknown[] } }).weaknessSummary;
+      expect(weak).toMatchObject({ status: 'ready', sampleCount: 2, neededCount: 2 });
+      expect(weak!.priorityConcepts.map(row => [row.conceptId, row.status, row.nextAction])).toEqual([[c2, 'weak', 'quick_paper'], [c1, 'fading', 'quick_paper']]);
 
       const ai = (await get('/api/ai/activity')).body as {
         running: unknown[];
@@ -223,6 +241,7 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       await db.tx({ learner: studioLearner }, async tx => tx.withLearnerWrite(async tick => {
         await tx.query('UPDATE facts SET access_epoch=access_epoch+1, changed_tick=$2 WHERE learner_id=$1 AND id=$3', [studioLearner, tick, c1]);
         await tx.query('UPDATE facts SET retracted_rev=current_rev, changed_tick=$2 WHERE learner_id=$1 AND id=$3', [studioLearner, tick, postSubId]);
+        await tx.query('UPDATE facts SET retracted_rev=current_rev, changed_tick=$2 WHERE learner_id=$1 AND id=$3', [studioLearner, tick, postSub2Id]);
       }));
 
       const graphAfter = (await get('/api/knowledge/graph')).body as { nodes: { id: string; counts: Record<string, number>; mastery: Record<string, unknown> }[]; edges: unknown[]; pendingProposals: unknown[] };
@@ -236,6 +255,8 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       expect(memAfter.categories.refusal).toEqual([]);
       expect(memAfter.hypotheses).toEqual([]);
       expect(memAfter.calibration).toMatchObject({ status: 'unknown', totalReconciliations: 0, confirmed: 0, missed: 0, recent: [] });
+      const weakAfter = (memAfter as { weaknessSummary?: { status: string; sampleCount: number; neededCount: number; topErrorStages: unknown[]; priorityConcepts: unknown[] } }).weaknessSummary;
+      expect(weakAfter).toMatchObject({ status: 'insufficient_evidence', sampleCount: 0, neededCount: 2, topErrorStages: [], priorityConcepts: [] });
 
       const aiAfter = (await get('/api/ai/activity')).body as { handoffs: { channel: string }[]; recentTools: unknown[] };
       expect(aiAfter.recentTools).toEqual([]);
