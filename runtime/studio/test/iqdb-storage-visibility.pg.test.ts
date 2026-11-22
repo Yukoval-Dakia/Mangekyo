@@ -44,7 +44,7 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       expect(listed.questions).toContainEqual(expect.objectContaining({ id: questionId, rev: 1, teachingAuthorized: false }));
       const auto = await post('/api/iqdb/proposals', { requestId: 'auto-refs-0001', need: 'storage', durationMinutes: 10, coverage: [] });
       expect(auto.status).toBe(201);
-      expect(await auto.json()).toMatchObject({ questionRefs: [], gaps: expect.arrayContaining(['question_unavailable']) });
+      expect(await auto.json()).toMatchObject({ questionRefs: [], gaps: expect.arrayContaining(['no_matching_question']) });
       const explicit = await post('/api/iqdb/proposals', { requestId: 'explicit-refs01', need: 'storage', durationMinutes: 10, coverage: [], questionRefs: [{ id: questionId, rev: 1 }] });
       expect(explicit.status).toBe(201);
       expect(await explicit.json()).toMatchObject({ questionRefs: [], gaps: expect.arrayContaining(['question_unavailable']) });
@@ -63,5 +63,9 @@ it.skipIf(!testDatabaseUrl)('shows storage questions without weakening teaching 
       const revoke = await fetch(`${base}/api/iqdb/questions/${taughtId}/teaching`, { method: 'PUT', ...body({ requestId: 'revoke-0001', expectedRev: 2, allowed: false }) });
       expect(revoke.status).toBe(200);
       expect(await revoke.json()).toMatchObject({ id: taughtId, rev: 3, teachingAuthorized: false, changed: true });
+      const materialRev = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ rev: number }>('SELECT current_rev AS rev FROM facts WHERE learner_id=$1 AND id=$2', [studioLearner, materialId])).then(({ rows }) => rows[0]!.rev);
+      await send('activity.setWorkspaceTeaching', 'material-unlearn', { id: materialId, expectedRev: materialRev, enabled: false });
+      listed = await getQuestions();
+      expect(listed.questions).toContainEqual(expect.objectContaining({ id: taughtId, rev: 3, teachingAuthorized: false }));
     } finally { server.close(); }
   }));
