@@ -219,25 +219,22 @@ export function SavedMaterial({
   const [start,setStart] = useState(false);
   const [questionCardReading, setQuestionCardReading] = useState<{ id: string; count: number } | null>(null);
   const [pendingRefresh, setPendingRefresh] = useState<{ id: string; staleData: Workspace } | null>(null);
+  const m = library.data?.materials.find((x) => x.id === id);
+  const needsRefresh = Boolean(!erasure && library.data && !m && !library.error && pendingRefresh?.id !== id);
+  const refreshing =
+    needsRefresh ||
+    (pendingRefresh?.id === id && library.data === pendingRefresh.staleData && !library.error);
   useEffect(() => {
     const restore = () => setErasure(readErasure(id));
     window.addEventListener('storage',restore);
     return () => window.removeEventListener('storage',restore);
   },[id]);
-  if (erasure) return <ErasureProgress id={id} initial={erasure} start={start} onReset={() => {setStart(false);setErasure(null);library.reload();}}/>;
-  const m = library.data?.materials.find((x) => x.id === id);
-  if (
-    library.data &&
-    !m &&
-    !pendingRefresh
-  ) {
+  useEffect(() => {
+    if (!needsRefresh || !library.data) return;
     setPendingRefresh({ id, staleData: library.data });
     library.reload();
-  }
-  const refreshing =
-    pendingRefresh?.id === id &&
-    library.data === pendingRefresh.staleData &&
-    !library.error;
+  }, [id, library, needsRefresh]);
+  if (erasure) return <ErasureProgress id={id} initial={erasure} start={start} onReset={() => {setStart(false);setErasure(null);library.reload();}}/>;
   const questionCardCount = questionCardReading?.id === id ? questionCardReading.count : 0;
   function jumpToQuestionCards(event: React.MouseEvent<HTMLAnchorElement>) {
     const target = document.getElementById('intake-question-cards');
