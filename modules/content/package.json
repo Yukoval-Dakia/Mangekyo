@@ -6,6 +6,7 @@
   "exports": {
     ".": "./module.ts",
     "./facts/asset": "./facts/asset.ts",
+    "./facts/intake-question-bank": "./intake-question-bank.ts",
     "./facts/asset-contract": "./asset.ts",
     "./facts/knowledge-edge": "./knowledge-edge.ts",
     "./facts/textbook-page": "./textbook-page.ts",
