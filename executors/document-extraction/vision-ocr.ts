@@ -113,7 +113,8 @@ const defaultVisionUserPrompt = `请按双栏顺序完整识别这张试卷照�
 3. 严格分离学生黑笔/铅笔作答（studentAnswer）与红笔批改/订正（redInk），不得混写。
 4. 反光、遮挡或潦草看不清处严禁猜测，学生作答标 {"status":"unclear","text":null} 并写入 unclearSegments；红笔看不清把 redInk.verdict 标为 "unclear"。
 5. 若为纯讲义/非题目材料，正文放 freeformText，questions 放空数组；两者至少其一非空。
-JSON 结构：{"version":"vision-paper-ocr-v1","paperTitle":string|null,"subject":string|null,"pageNote":string|null,"questions":[{"number":string,"questionType":"single_choice"|"multiple_choice"|"fill_blank"|"short_answer"|"calculation"|"proof"|"code"|"other","stem":string,"options":[{"label":string,"text":string}],"studentAnswer":{"status":"present"|"unclear"|"absent","text":string|null,"note"?:string},"redInk":{"verdict":"correct"|"wrong"|"partial"|"none"|"unclear","marks":string[],"correction":string|null,"score":string|null},"unclearSegments":string[]}],"freeformText":string|null,"warnings":string[]}`;
+6. 为每道题提炼 1–3 个简洁规范的中文学科核心知识点名放入 conceptTags（如 ["交变电流的产生","正弦式交变电流"]），不带题号、章节号或泛称；无把握可给空数组。
+JSON 结构：{"version":"vision-paper-ocr-v1","paperTitle":string|null,"subject":string|null,"pageNote":string|null,"questions":[{"number":string,"questionType":"single_choice"|"multiple_choice"|"fill_blank"|"short_answer"|"calculation"|"proof"|"code"|"other","stem":string,"options":[{"label":string,"text":string}],"studentAnswer":{"status":"present"|"unclear"|"absent","text":string|null,"note"?:string},"redInk":{"verdict":"correct"|"wrong"|"partial"|"none"|"unclear","marks":string[],"correction":string|null,"score":string|null},"unclearSegments":string[],"conceptTags":string[]}],"freeformText":string|null,"warnings":string[]}`;
 
 function clampNumber(value: number | undefined, fallback: number, min: number, max: number) {
   if (value === undefined) return fallback;

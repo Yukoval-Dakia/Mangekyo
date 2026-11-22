@@ -64,6 +64,7 @@ export type StructuredPaperQuestion = {
   readonly studentAnswer: StructuredPaperStudentAnswer;
   readonly redInk: StructuredPaperRedInk;
   readonly unclearSegments: readonly string[];
+  readonly conceptTags?: readonly string[];
 };
 
 export type StructuredPaperOcr = {
@@ -86,6 +87,7 @@ export type StructuredPaperDraftQuestion = {
   readonly studentAnswer: StructuredPaperStudentAnswer;
   readonly redInk: StructuredPaperRedInk;
   readonly unclearSegments: readonly string[];
+  readonly conceptTags?: readonly string[];
   readonly confirmationStatus: 'pending_confirmation';
   readonly needsClarification: boolean;
 };
@@ -108,6 +110,9 @@ const noteLimit = 500;
 const labelLimit = 40;
 const titleLimit = 240;
 const freeformLimit = 200_000;
+const conceptTagLimit = 80;
+const maxOcrConceptTags = 3;
+const maxDraftConceptTags = 6;
 
 function clean(value: unknown, limit: number): string | null {
   if (typeof value !== 'string') return null;
@@ -126,6 +131,46 @@ function cleanList(value: unknown, label: string, limit: number, max = maxWarnin
     if (cleaned !== null) items.push(cleaned);
   }
   return items;
+}
+
+function normalizeConceptTagKey(tag: string): string {
+  return tag.normalize('NFKC').toLowerCase().trim().replace(/\s+/gu, ' ');
+}
+
+function normalizeConceptTags(value: unknown, options: { readonly strict: boolean; readonly max: number }): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    if (options.strict) throw new Error('切题草案知识点标签格式无效。');
+    return [];
+  }
+  if (options.strict && value.length > options.max) {
+    throw new Error('切题草案知识点标签数量超过上限。');
+  }
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of value) {
+    if (options.strict) {
+      if (typeof raw !== 'string' || !raw.isWellFormed() || raw.includes('\u0000')) {
+        throw new Error('切题草案知识点标签无效。');
+      }
+      const trimmed = raw.trim();
+      if (!trimmed || trimmed.length > conceptTagLimit) throw new Error('切题草案知识点标签无效。');
+      const key = normalizeConceptTagKey(trimmed);
+      if (!key) throw new Error('切题草案知识点标签无效。');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tags.push(trimmed);
+      continue;
+    }
+    const cleaned = clean(raw, conceptTagLimit);
+    if (cleaned === null) continue;
+    const key = normalizeConceptTagKey(cleaned);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    tags.push(cleaned);
+    if (tags.length >= options.max) break;
+  }
+  return tags;
 }
 
 /** Marker phrases a vision model writes when handwriting is illegible.
@@ -218,6 +263,7 @@ function normalizeQuestion(value: unknown, index: number): StructuredPaperQuesti
     throw new Error(`第 ${index} 题选项格式无效。`);
   const options = (rawOptions ?? []).map(normalizeOption);
   const unclearSegments = cleanList(row.unclearSegments, '模糊提示', noteLimit, 12);
+  const conceptTags = normalizeConceptTags(row.conceptTags, { strict: false, max: maxOcrConceptTags });
   return {
     index,
     number,
@@ -227,6 +273,7 @@ function normalizeQuestion(value: unknown, index: number): StructuredPaperQuesti
     studentAnswer: normalizeStudentAnswer(row.studentAnswer),
     redInk: normalizeRedInk(row.redInk),
     unclearSegments,
+    ...(conceptTags.length > 0 ? { conceptTags } : {}),
   };
 }
 
@@ -361,6 +408,10 @@ export function renderStructuredPaperMarkdown(ocr: StructuredPaperOcr): string {
       lines.push(`**红笔批改**：${parts.join('；')}`);
       lines.push('');
     }
+    if (question.conceptTags && question.conceptTags.length > 0) {
+      lines.push(`**知识点**：${question.conceptTags.join('、')}`);
+      lines.push('');
+    }
     if (question.unclearSegments.length) {
       lines.push(`> 模糊提示：${question.unclearSegments.join('；')}`);
       lines.push('');
@@ -376,20 +427,24 @@ export function renderStructuredPaperMarkdown(ocr: StructuredPaperOcr): string {
 }
 
 export function structuredPaperToDrafts(ocr: StructuredPaperOcr): StructuredPaperDrafts {
-  const questions: StructuredPaperDraftQuestion[] = ocr.questions.map(question => ({
-    draftId: `draft-q-${question.index}`,
-    index: question.index,
-    questionNumber: question.number,
-    questionType: question.questionType,
-    stem: question.stem,
-    options: question.options,
-    studentAnswer: question.studentAnswer,
-    redInk: question.redInk,
-    unclearSegments: question.unclearSegments,
-    confirmationStatus: 'pending_confirmation',
-    needsClarification: question.studentAnswer.status === 'unclear' ||
-      question.redInk.verdict === 'unclear' || question.unclearSegments.length > 0,
-  }));
+  const questions: StructuredPaperDraftQuestion[] = ocr.questions.map(question => {
+    const conceptTags = normalizeConceptTags(question.conceptTags, { strict: false, max: maxOcrConceptTags });
+    return {
+      draftId: `draft-q-${question.index}`,
+      index: question.index,
+      questionNumber: question.number,
+      questionType: question.questionType,
+      stem: question.stem,
+      options: question.options,
+      studentAnswer: question.studentAnswer,
+      redInk: question.redInk,
+      unclearSegments: question.unclearSegments,
+      ...(conceptTags.length > 0 ? { conceptTags } : {}),
+      confirmationStatus: 'pending_confirmation',
+      needsClarification: question.studentAnswer.status === 'unclear' ||
+        question.redInk.verdict === 'unclear' || question.unclearSegments.length > 0,
+    };
+  });
   const pendingConfirmationCount = questions.length > 0 ? questions.length : 1;
   return {
     version: visionPaperDraftsVersion,
@@ -427,6 +482,7 @@ export function validateStructuredPaperDrafts(input: unknown): StructuredPaperDr
     const studentAnswer = normalizeStudentAnswer(item.studentAnswer);
     const redInk = normalizeRedInk(item.redInk);
     const unclearSegments = cleanList(item.unclearSegments, '模糊提示', noteLimit, 12);
+    const conceptTags = normalizeConceptTags(item.conceptTags, { strict: true, max: maxDraftConceptTags });
     return {
       draftId,
       index,
@@ -437,6 +493,7 @@ export function validateStructuredPaperDrafts(input: unknown): StructuredPaperDr
       studentAnswer,
       redInk,
       unclearSegments,
+      ...(conceptTags.length > 0 ? { conceptTags } : {}),
       confirmationStatus: 'pending_confirmation',
       needsClarification: studentAnswer.status === 'unclear' ||
         redInk.verdict === 'unclear' || unclearSegments.length > 0 ||
@@ -481,7 +538,8 @@ export function buildVisionPaperOcrPrompt(options?: VisionPaperOcrPromptOptions)
     '3. 严格分离学生黑笔/铅笔作答（studentAnswer）与教师红笔批改/订正（redInk），绝不混淆。',
     '4. 反光、遮挡或潦草看不清处严禁猜测：学生作答标{"status":"unclear","text":null}并写入unclearSegments；红笔批改看不清把redInk.verdict标为"unclear"。',
     '5. 若为纯讲义/非题目材料，正文放freeformText，questions放空数组；两者至少其一非空。',
-    'JSON结构：{"version":"vision-paper-ocr-v1","paperTitle":string|null,"subject":string|null,"pageNote":string|null,"questions":[{"number":string,"questionType":"single_choice"|"multiple_choice"|"fill_blank"|"short_answer"|"calculation"|"proof"|"code"|"other","stem":string,"options":[{"label":string,"text":string}],"studentAnswer":{"status":"present"|"unclear"|"absent","text":string|null,"note"?:string},"redInk":{"verdict":"correct"|"wrong"|"partial"|"none"|"unclear","marks":string[],"correction":string|null,"score":string|null},"unclearSegments":string[]}],"freeformText":string|null,"warnings":string[]}',
+    '6. 为每道题提炼1–3个简洁规范的中文学科核心知识点名放入conceptTags（如["交变电流的产生","正弦式交变电流"]），不带题号、章节号或泛称；无把握可给空数组。',
+    'JSON结构：{"version":"vision-paper-ocr-v1","paperTitle":string|null,"subject":string|null,"pageNote":string|null,"questions":[{"number":string,"questionType":"single_choice"|"multiple_choice"|"fill_blank"|"short_answer"|"calculation"|"proof"|"code"|"other","stem":string,"options":[{"label":string,"text":string}],"studentAnswer":{"status":"present"|"unclear"|"absent","text":string|null,"note"?:string},"redInk":{"verdict":"correct"|"wrong"|"partial"|"none"|"unclear","marks":string[],"correction":string|null,"score":string|null},"unclearSegments":string[],"conceptTags":string[]}],"freeformText":string|null,"warnings":string[]}',
   ].join('\n');
   const hints: string[] = [];
   const filename = clean(options?.filename, 180);
