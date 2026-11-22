@@ -1,7 +1,7 @@
 import { FactNotFoundError, type BusWitness, type FactId, type FactSnapshot, type LearnerId,
   type Outcome, type ReadContext } from '@mangekyo/kernel';
 import materialFact from '@mangekyo/module-content/facts/material';
-import { intakeFactType, intakeDocument } from './intake-values.ts';
+import { canRetryVisionExtraction, intakeFactType, intakeDocument } from './intake-values.ts';
 import { captureSourceType, sourceBlocks, sourceEnvelope, validSourceCropPage, type Block, type SourceEnvelope } from './source.ts';
 import { layeredExtractionSlot, mayExtract, mergeExtraction, type LayeredExtractionValue } from './extraction.ts';
 import { openSelectedNotionSource } from './notion-source.ts';
@@ -71,6 +71,7 @@ export type IntakeHistoryEntry = {
   readonly pendingConfirmationCount: number;
   readonly questionPreviews: readonly IntakeQuestionPreview[];
   readonly proof: readonly BusWitness[];
+  readonly canRetryVision: boolean;
 };
 
 const statusLabel: Record<IntakeStatus, IntakeStatusLabel> = {
@@ -237,6 +238,7 @@ function projectSource(fact: FactSnapshot, source: SourceEnvelope,
     status, statusLabel: statusLabel[status], pendingConfirmationCount: pending,
     questionPreviews: previews,
     proof: [witnessOf(fact, 'following')],
+    canRetryVision: false,
   };
 }
 
@@ -275,6 +277,7 @@ function projectIntake(fact: FactSnapshot, document: ReturnType<typeof intakeDoc
     pendingConfirmationCount: draftPending > 0 ? draftPending : status === 'needs_confirmation' ? 1 : 0,
     questionPreviews: previews,
     proof: [witnessOf(fact, 'following')],
+    canRetryVision: canRetryVisionExtraction(document),
   };
 }
 

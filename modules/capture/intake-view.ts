@@ -1,4 +1,5 @@
 import {
+  canRetryVisionExtraction,
   intakeResearchPurpose,
   materialTextLimit,
   type IntakeDocument,
@@ -21,6 +22,7 @@ export type IntakeMetadata = {
   readonly drafts?: StructuredPaperDrafts;
   readonly original: { readonly name: string; readonly mediaType: string; readonly size: number; readonly sha256: string };
   readonly corrected: boolean;
+  readonly canRetryVision: boolean;
   readonly backgroundResearch?: 'allowed' | 'private' | 'all';
   readonly revision: number;
 };
@@ -52,6 +54,7 @@ export function projectIntakeMetadata(document: IntakeDocument, material: {title
     ...(document.extraction.drafts ? { drafts: document.extraction.drafts } : {}),
     original: document.original,
     corrected: document.extraction.status === 'corrected',
+    canRetryVision: canRetryVisionExtraction(document),
     ...(document.extraction.status === 'corrected' && document.extraction.method === 'learner' ? {
       backgroundResearch: purpose.includes('all') ? 'all' : purpose.includes(intakeResearchPurpose) ? 'allowed' : 'private',
     } : {}),
