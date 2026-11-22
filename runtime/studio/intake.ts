@@ -20,6 +20,7 @@ import {
   confirmIntakeQuestionsCommand,
   intakeQuestionId,
   parseConfirmIntakeQuestions,
+  summarizeIntakeQuestionConfirmation,
 } from '../../modules/content/intake-question-bank.ts';
 import { questionMetaDraftType, questionStateType } from '../../modules/content/question-state.ts';
 import * as intakeOps from '../../modules/capture/intake-operations.ts';
@@ -269,7 +270,8 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     const requestId = clientRequest(value.requestId);
     let data;
     try { data = parseConfirmIntakeQuestions({ confirmedByLearner: true, materialId, expectedMaterialRev: value.expectedMaterialRev,
-      items: value.items, ...(value.purpose === undefined ? {} : {purpose: value.purpose}) }); }
+      items: value.items, ...(value.purpose === undefined ? {} : {purpose: value.purpose}),
+      ...(value.linkConcepts === undefined ? {} : {linkConcepts: value.linkConcepts}) }); }
     catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '拍卷题目确认无效。'); }
     const questionIds = await Promise.all(data.items.map(item => intakeQuestionId(data.materialId, item.draftId)));
     let receipt;
@@ -282,10 +284,12 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       if (error instanceof FactNotFoundError || error instanceof FactReadDeniedError) throw new RequestError(404, '找不到这份拍卷材料。');
       if (error instanceof Error && (error.message.startsWith('材料版本已变化') || error.message.startsWith('Fact revision conflict') ||
           error.message === 'Command ID already used with a different command identity')) throw new RequestError(409, '拍卷题目或材料版本已变化，请重新核对。');
+      if (error instanceof Error && ['这份材料未授权教学用途。', '已有题目未授权教学用途。', '已有概念节点未授权教学用途。', '规范概念类型不符。', '概念标识已被其他记录占用。', '知识边标识已被其他记录占用。', '题目标识已被其他记录占用。'].includes(error.message)) throw new RequestError(409, error.message);
       throw error;
     }
-    const wrote = new Set(receipt.wrote.map(ref => ref.id));
-    return { kind: 'bank' as const, questionIds, savedCount: questionIds.filter(id => wrote.has(id)).length, skippedCount: questionIds.filter(id => !wrote.has(id)).length };
+    const summary = await db.snapshot({ learner: studioLearner }, tx =>
+      summarizeIntakeQuestionConfirmation(createCommandReadContext(tx, intakePurpose), data, receipt.wrote));
+    return { kind: 'bank' as const, ...summary };
   }
 
   return {
