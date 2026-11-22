@@ -680,6 +680,41 @@
   gap: 8px;
 }
 
+.turn-message.mk-streaming {
+  position: relative;
+  min-height: 1.75em;
+  padding-right: .68ch;
+}
+
+.mk-stream-cursor {
+  position: absolute;
+  right: 0;
+  bottom: .42em;
+  width: .56ch;
+  height: 1.05em;
+  border-radius: 1px;
+  background: var(--forest);
+  animation: mk-stream-blink 1.1s steps(2, start) infinite;
+}
+
+.turn-message.mk-streaming .katex-error {
+  color: inherit;
+  background: transparent;
+  font-size: 1em;
+  padding: 0;
+}
+
+@keyframes mk-stream-blink {
+  50% { opacity: .18; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mk-stream-cursor {
+    animation: none;
+    opacity: .72;
+  }
+}
+
 .drawer-evidence {
   border-top: 1px solid var(--line);
   padding-top: 6px;

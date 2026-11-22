@@ -145,6 +145,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
 }) {
   const item = useRef<HTMLLIElement>(null);
   const complete = Boolean(turn);
+  const streaming = !turn && message !== undefined;
   useLayoutEffect(() => {
     const focus = document.activeElement;
     if (complete && focus instanceof HTMLElement && item.current?.contains(focus)) {
@@ -158,7 +159,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
       <article className="companion-turn">
         {turn ? <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
           : <span className="live-status" role="status"><i />{progress}</span>}
-        {message && <Message text={message} />}
+        {message && <Message text={message} streaming={streaming} />}
         {applySnapshot && mounts && <TurnArtifacts mounts={mounts} apply={applySnapshot} live={!turn} />}
         {turn && <>
         {!!turn.writes?.length && <ul className="read-list" aria-label="学习工作区回执">{turn.writes.map(item =>

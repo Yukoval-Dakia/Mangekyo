@@ -163,7 +163,7 @@ function DrawerThread({
           {pending && (
             <div className="drawer-note" role="status">
               <p>{chat.progressLabel || "同伴正在处理…"}</p>
-              {chat.streamingReply && <Message text={chat.streamingReply} />}
+              {chat.streamingReply && <Message text={chat.streamingReply} streaming />}
             </div>
           )}
           {!pending && sessionDown && (
