@@ -1,3 +1,5 @@
+import type {Settings} from '../api.ts';
+
 export type MasteryStatus = 'steady' | 'fading' | 'fragile' | 'unknown';
 
 export type KnowledgeGraphNode = {
@@ -49,6 +51,9 @@ export type KnowledgeGraphViewProps = {
   loading?: boolean;
   error?: string | null;
   fetchOnMount?: boolean;
+  settings?: Settings | null | undefined;
+  onNavigate?: (href: string) => void;
+  onCaptureMaterial?: () => void;
   onSelectQuestion?: (questionId: string) => void;
   onCiteToCompanion?: (node: KnowledgeGraphNode) => void;
 };
