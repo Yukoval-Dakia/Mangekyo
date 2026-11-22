@@ -5,12 +5,13 @@ import type { FactSnapshot, ReadContext } from '../../kernel/src/declarations/ty
 import { readConceptAttemptEvidence } from '../../modules/activity/concept-evidence.ts';
 import { verifyWorkspaceEntryBasis, workspaceEntry } from '../../modules/activity/workspace-values.ts';
 import { buildNodePracticeInput, mapQuickPaperDraft, type NodePracticeQuestion } from '../../modules/activity/node-practice-candidates.ts';
+import { parseAsset, questionPrompt } from '../../modules/content/asset.ts';
 import { readAuthorizedKnowledgeGraph } from '../../modules/content/knowledge-graph-overview.ts';
 import { projectBatchConceptMastery } from '../../modules/learner/knowledge-mastery.ts';
 import { selectQuestionsForConceptNode } from '../../modules/plan/node-practice.ts';
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { checkStudioNotionFact, notionReadScope, type CheckNotionRead } from './notion.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import type { openWorkbook } from './workbook.ts';
 
@@ -24,9 +25,8 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
   const rawCount = input.count;
   if (rawCount !== undefined && (typeof rawCount !== 'number' || !Number.isSafeInteger(rawCount) || rawCount < 1 || rawCount > 5)) throw new RequestError(400, '抽题数量须为 1 到 5。');
   const count = rawCount as number | undefined;
-  const body = await notionReadScope(db, studioLearner, { readOnly: true }).read(async (tx, check) => {
+  const prepared = await notionReadScope(db, studioLearner, { readOnly: true }).read(async (tx, check) => {
     const read = snapshotFactReaders(tx)('storage', () => true);
-    const teachingRead = snapshotFactReaders(tx)('teaching', () => true);
     const rawFact = read.fact;
     const fact: ReadContext['fact'] = async (...[id, options]) => {
       const opened = await rawFact(id, options) as FactSnapshot;
@@ -57,8 +57,11 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
     const questions: NodePracticeQuestion[] = [];
     for (const link of links) {
       try {
-        const opened = await teachingRead.fact(link.questionId, { mode: 'following' }) as FactSnapshot;
-        if (opened.type === 'content.asset') questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'content.asset' });
+        const opened = await gated.fact(link.questionId, { mode: 'following' }) as FactSnapshot;
+        if (opened.type === 'content.asset') {
+          const asset = parseAsset(opened.value);
+          if (asset.kind === 'question' && questionPrompt(asset).trim()) questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'content.asset', prompt: questionPrompt(asset) });
+        }
         else if (opened.type === 'activity.workspaceEntry') {
           const value = workspaceEntry(opened.value);
           if (value.kind === 'question' && value.body.trim()) questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'activity.workspaceEntry', prompt: value.body, ...(value.answer === undefined ? {} : { answer: value.answer }), ...(value.rubric === undefined ? {} : { rubric: value.rubric }) });
@@ -71,9 +74,11 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
     const selection = selectQuestionsForConceptNode(buildNodePracticeInput({ graph, nodeId, masteryByConcept: mastery, attempts: evidence.attempts, readableQuestions: questions, ...(count === undefined ? {} : { count }) }));
     if (selection.kind === 'empty') return selection;
     const draft = mapQuickPaperDraft({ ...selection, questionRefs: selection.questionRefs.map(factId) }, questions);
-    if (!draft) return { kind: 'empty', suggestedAction: 'start_classroom', reason: '该知识点尚未收录可自测题，建议先开 10 分钟微课或拍入相关练习。' } as const;
-    const paper = await workbook.save({ requestId: input.requestId, ...draft, materialId: null });
-    return { kind: 'paper', paperId: paper.id, title: selection.title, questionCount: selection.questionRefs.length, reason: selection.reason, href: `/papers/${paper.id}`, basis: selection.basis };
+    if (!draft) return { kind: 'empty' as const, suggestedAction: 'start_classroom' as const, reason: '该知识点尚未收录可自测题，建议先开 10 分钟微课或拍入相关练习。' as const };
+    return { kind: 'ready' as const, selection, draft };
   });
+  if (prepared.kind !== 'ready') return { status: 200, body: prepared };
+  const paper = await workbook.save({ requestId: input.requestId, ...prepared.draft, materialId: null });
+  const body = { kind: 'paper', paperId: paper.id, title: prepared.selection.title, questionCount: prepared.draft.questions.length, reason: prepared.selection.reason, href: `/papers/${paper.id}`, basis: prepared.selection.basis };
   return { status: body.kind === 'paper' ? 201 : 200, body };
 }
