@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@mangekyo/kernel": "workspace:*"
+    "@mangekyo/kernel": "workspace:*",
+    "@mangekyo/module-content": "workspace:*"
   },
   "exports": {
     ".": "./module.ts",
@@ -14,6 +15,7 @@
     "./facts/graph-mastery": "./graph-mastery.ts",
     "./facts/retention": "./retention.ts",
     "./facts/textbook-mastery": "./textbook-mastery.ts",
-    "./facts/weakness-error-summary": "./weakness-error-summary.ts"
+    "./facts/weakness-error-summary": "./weakness-error-summary.ts",
+    "./facts/widened-rev": "./widened-rev.ts"
   }
 }

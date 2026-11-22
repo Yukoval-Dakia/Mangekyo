@@ -1,5 +1,6 @@
 import { FactNotFoundError, factId, parseManifest, type FactId, type FactSnapshot, type ReadContext, type Revision, type Tick } from '@mangekyo/kernel';
 import type { QuestionConceptLink } from '@mangekyo/module-content/facts/knowledge-graph-overview';
+import { widenedRevOr } from '@mangekyo/module-learner/facts/widened-rev';
 import {
   readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, readWorkbookPreSubmitObservation,
   workbookItemHistory, type ActivityEvidenceReadScope,
@@ -13,7 +14,7 @@ import {
 } from './retention-posttest.ts';
 import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
-  workbookRubricAssessment, workbookRubricAssessmentType,
+  workbookRubricAssessment, workbookRubricAssessmentType, type WorkbookQuestion,
 } from './workbook-values.ts';
 
 export type ConceptEvidenceRow = {
@@ -42,17 +43,14 @@ export async function readConceptAttemptEvidence(
 ): Promise<{ readonly attempts: readonly ConceptEvidenceRow[]; readonly incompleteConceptIds: ReadonlySet<string> }> {
   const unavailable = (error: unknown) => error instanceof FactNotFoundError || isUnavailable(error) ||
     (error instanceof Error && (error.name === 'FactReadDeniedError' ||
-      (error as { reason?: unknown }).reason === 'purpose' || (error as { reason?: unknown }).reason === 'retracted' ||
-      (error as { reason?: unknown }).reason === 'recipient' || (error as { reason?: unknown }).reason === 'changed'));
+      ['purpose','retracted','recipient','changed'].includes(String((error as {reason?:unknown}).reason))));
   const incompleteConceptIds = new Set<string>();
   if (!links.length) return { attempts: [], incompleteConceptIds };
 
-  const linksByQuestion = new Map<string, QuestionConceptLink[]>();
+  const linksByQuestion = new Map<FactId, Map<Revision, QuestionConceptLink[]>>();
   for (const link of links) {
-    const key = `${link.questionId}:${link.questionRev}`;
-    const list = linksByQuestion.get(key) ?? [];
-    list.push(link);
-    linksByQuestion.set(key, list);
+    const byRev = linksByQuestion.get(link.questionId) ?? linksByQuestion.set(link.questionId, new Map()).get(link.questionId)!;
+    (byRev.get(link.questionRev) ?? byRev.set(link.questionRev, []).get(link.questionRev)!).push(link);
   }
 
   const { rows: submissionRows } = await tx.query<{ id: string; type: string }>(`
@@ -75,12 +73,16 @@ export async function readConceptAttemptEvidence(
     let attempt;
     try { attempt = workbookAttempt(submission.value); } catch { continue; }
 
-    const matchedQuestions = attempt.paper.questions.flatMap(question => {
+    const matchedQuestions: { question: WorkbookQuestion; matched: QuestionConceptLink[] }[] = [];
+    for (const question of attempt.paper.questions) {
       const ref = question.sourceQuestionRef;
-      if (!ref) return [];
-      const matched = linksByQuestion.get(`${ref.id}:${ref.rev}`);
-      return matched?.length ? [{ question, matched }] : [];
-    });
+      if (!ref) continue;
+      const byRev = linksByQuestion.get(factId(ref.id));
+      let matched = byRev?.get(ref.rev) ?? [];
+      for (const rev of byRev?.keys() ?? []) if (!matched.length && rev > ref.rev &&
+          await widenedRevOr(read, factId(ref.id), ref.rev, rev, unavailable)) matched = byRev!.get(rev)!;
+      if (matched.length) matchedQuestions.push({ question, matched });
+    }
     if (!matchedQuestions.length) continue;
 
     const birth = await readActivitySubmissionBirth(tx, submission.ref, submission.type);

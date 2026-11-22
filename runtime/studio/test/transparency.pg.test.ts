@@ -129,6 +129,14 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       await send('activity.saveWorkbookPaper', 'sealed-paper2', { id: sealedPaper2Id, condition: 'studio-closed-workbook-v1', data: { title: '导数后测卷', materialId: null, savedAt: '2026-11-21T09:09:00.000Z', questions: [{ id: 'item1', kind: 'numeric', prompt: '求 (x^2) 的导数', answer: 2, tolerance: 0, unit: null, explanation: null, sourceQuestionRef: { id: wq2, rev: 1 } }] } }, 'learner', 'teaching');
       await send('activity.issueRetentionPosttest', 'issue2', { id: issue2Id, data: { condition: 'studio-closed-workbook-v1', gradingVersion: 'workbook-v1', forecastKey: forecastKey2, forecastId: forecastId2, effectiveTick: '1', paper: { id: sealedPaper2Id, rev: 1 }, paperEpoch: '0', itemId: 'item1', startedAt: '2026-11-21T09:11:00.000Z', through: '2026-11-22T09:11:00.000Z' } });
       await send('activity.submitWorkbookAttempt', 'post-sub2', { id: postSub2Id, condition: 'studio-closed-workbook-v1', data: { paperId: issue2Id, requestId: 'post-req-2', submittedAt: '2026-11-21T10:05:00.000Z', answers: { item1: '0' } } });
+      const qw = factId(stableId('tr', 'qw'));
+      await send('content.saveQuestion', 'qw', { id: qw, purpose: 'storage', asset: { kind: 'question', title: '导数口算', promptBlockId: 'p', blocks: [{ id: 'p', parentId: null, body: { kind: 'text', text: '求 (x^3) 的导数' } }] } }, 'learner', 'storage');
+      const qwUse = { id: qw, rev: 1, accessEpoch: '0' };
+      await send('content.createKnowledgeEdge', 'e-qw', { id: factId(stableId('tr', 'e-qw')), purpose: 'storage', edge: { kind: 'targets_concept', scope: 'calculus', from: { kind: 'question', sourceUse: qwUse }, to: { kind: 'concept', sourceUse: c2Use }, sourceUses: [qwUse, c2Use] } }, 'learner', 'storage');
+      const paperW = factId(stableId('tr', 'paper-w'));
+      await send('activity.saveWorkbookPaper', 'paper-w', { id: paperW, data: { title: 'w', materialId: null, savedAt: '2026-11-21T09:12:00.000Z', questions: [{ id: 'i1', kind: 'numeric', prompt: '求 (x^3) 的导数', answer: 3, tolerance: 0, unit: null, explanation: null, sourceQuestionRef: { id: qw, rev: 1 } }] } }, 'learner', 'storage');
+      await send('activity.submitWorkbookAttempt', 'att-w', { id: factId(stableId('tr', 'att-w')), data: { paperId: paperW, requestId: 'req-att-w', submittedAt: '2026-11-21T10:12:00.000Z', answers: { i1: '0' } } }, 'learner', 'storage');
+      await send('content.setQuestionTeaching', 'widen-qw', { id: qw, expectedRev: 1, allowed: true }, 'learner', 'storage');
 
       const turnId = factId(stableId('tr', 'turn1'));
       const turnText = '先画图再推导；最近有点累；我习惯例题先行；不要推送刷题提醒';
@@ -213,7 +221,11 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
       expect(mem.calibration).toMatchObject({ status: 'available', totalReconciliations: 1, confirmed: 1, missed: 0 });
       const weak = (mem as { weaknessSummary?: { status: string; sampleCount: number; neededCount: number; priorityConcepts: { conceptId: string; status: string; uncorrectedErrorCount: number; nextAction: string }[]; topErrorStages: unknown[] } }).weaknessSummary;
       expect(weak).toMatchObject({ status: 'ready', sampleCount: 2, neededCount: 2 });
-      expect(weak!.priorityConcepts.map(row => [row.conceptId, row.status, row.nextAction])).toEqual([[c2, 'weak', 'quick_paper'], [c1, 'fading', 'quick_paper']]);
+      expect(weak!.priorityConcepts.map(row => [row.conceptId, row.status, row.nextAction, row.uncorrectedErrorCount])).toEqual([[c2, 'weak', 'review_mistake', 1], [c1, 'fading', 'quick_paper', 0]]);
+
+      await send('content.correctQuestion', 'revise-qw', { id: qw, expectedRev: 2, patch: { prompt: { block_id: 'p', anchor: 'x^3', replacement: 'x^4' } } }, 'learner', 'storage');
+      const weakAfterRevise = ((await get('/api/memory/overview')).body as { weaknessSummary?: { priorityConcepts?: { conceptId: string; uncorrectedErrorCount: number }[] } }).weaknessSummary;
+      expect(weakAfterRevise?.priorityConcepts?.find(row => row.conceptId === c2)?.uncorrectedErrorCount ?? -1).toBe(0);
 
       const ai = (await get('/api/ai/activity')).body as {
         running: unknown[];
