@@ -239,6 +239,12 @@ export async function readAuthorizedKnowledgeGraph(
 
   const edges: KnowledgeGraphEdge[] = [];
   const questionConceptLinks: QuestionConceptLink[] = [];
+  const variantQuestionLinks: {
+    readonly variantId: FactId;
+    readonly variantRev: Revision;
+    readonly baseId: FactId;
+    readonly edgeRef: { readonly id: FactId; readonly rev: Revision; readonly type: string };
+  }[] = [];
   const seenEdges = new Set<string>();
 
   const resolveConceptId = (endpoint: KnowledgeEndpoint): FactId | undefined => {
@@ -326,6 +332,23 @@ export async function readAuthorizedKnowledgeGraph(
           await recordResourceLink(fromConcept, projected.to, edgeRef, projected.kind);
         } else if (toConcept && projected.from.kind !== 'concept') {
           await recordResourceLink(toConcept, projected.from, edgeRef, projected.kind);
+        } else if (
+          projected.kind === 'variant_of' &&
+          projected.from.kind === 'question' &&
+          projected.to.kind === 'question' &&
+          projected.from.blockId === undefined &&
+          projected.to.blockId === undefined
+        ) {
+          const variantOpened = await openKnowledgeQuestion(access, projected.from.sourceUse);
+          const baseOpened = variantOpened ? await openKnowledgeQuestion(access, projected.to.sourceUse) : null;
+          if (variantOpened && baseOpened && variantOpened.ref.id !== baseOpened.ref.id) {
+            variantQuestionLinks.push({
+              variantId: variantOpened.ref.id,
+              variantRev: variantOpened.ref.rev,
+              baseId: baseOpened.ref.id,
+              edgeRef,
+            });
+          }
         }
       } else {
         const fact = await access.read.fact(id, { mode: 'following' });
@@ -375,6 +398,34 @@ export async function readAuthorizedKnowledgeGraph(
       }
     } catch (error) {
       if (!isUnavailable(access, error)) throw error;
+    }
+  }
+
+  // One-hop variant_of concept inheritance: a variant question linked via an authorized
+  // variant_of edge inherits its base question's direct concept links without chaining
+  // further variant hops or duplicating existing direct links.
+  if (variantQuestionLinks.length > 0 && questionConceptLinks.length > 0) {
+    const directConceptsByQuestion = new Map<FactId, Set<FactId>>();
+    const seenQuestionConcept = new Set<string>();
+    for (const link of questionConceptLinks) {
+      seenQuestionConcept.add(`${link.questionId}:${link.conceptId}`);
+      let concepts = directConceptsByQuestion.get(link.questionId);
+      if (!concepts) {
+        concepts = new Set<FactId>();
+        directConceptsByQuestion.set(link.questionId, concepts);
+      }
+      concepts.add(link.conceptId);
+    }
+    for (const { variantId, variantRev, baseId, edgeRef } of variantQuestionLinks) {
+      const inheritedConcepts = directConceptsByQuestion.get(baseId);
+      if (!inheritedConcepts) continue;
+      for (const conceptId of inheritedConcepts) {
+        const key = `${variantId}:${conceptId}`;
+        if (seenQuestionConcept.has(key)) continue;
+        seenQuestionConcept.add(key);
+        ensureCounts(conceptId).questions.add(variantId);
+        questionConceptLinks.push({ questionId: variantId, questionRev: variantRev, conceptId, edgeRef });
+      }
     }
   }
 
