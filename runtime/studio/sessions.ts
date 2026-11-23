@@ -7,6 +7,7 @@ import { projectTeachingFeedback, unavailableReply, type TeachingFeedback } from
 export type { WorkspaceWriteView } from '../../executors/teaching/workspace-tools.ts';
 export { unconfirmedReplyMessage, unavailableReplyMessage } from '../../executors/teaching/session-feedback.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+import type { Json } from '../../kernel/src/declarations/types.ts';
 import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -58,10 +59,42 @@ import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
 
 import { RequestError } from '../../modules/capture/request.ts';
 export { RequestError };
+import {
+  buildSessionProjectionHead,
+  buildSubmitTurnData,
+  checkCurrentObjectRequest,
+  checkSessionAnswerInput,
+  checkSessionReplyGuard,
+  checkSessionStartInput,
+  checkMcpGrantsAllowed,
+  checkBackgroundUnderstandingAllowed,
+  checkMcpGrantsResolved,
+  checkAccountSettings,
+  checkSubmitOrReplayFallback,
+  checkAttachmentFreshness,
+  checkSessionTurnError,
+  checkStudyCaseId,
+  isStudioTurnCreateChange,
+  resolveStudioTurnDeriver,
+  buildSessionTurnRequest,
+  buildReplayRouteSettings,
+  buildSubmitTurnPayload,
+  buildSessionProjectionView,
+  projectTurnSubmission,
+  recoveryTurnIds,
+  resolveLearningToolsVersion,
+  resolveRequestedAccount,
+  resolveTurnRouteGuard,
+  visibleTimelineTurnIds,
+  buildHistoryTurnView,
+  buildFormattedTurn,
+  buildRecentConversation,
+  resolveProtectedTurn,
+} from '../../modules/companion/facts/session-stream-slice.ts';
+
 const confirmAccount = () => new RequestError(409, '请重新选择材料或开始新对话，并确认当前模型账户。',
   'provider_account_confirmation_required');
-const requestedAccount = (route:unknown) => route && typeof route === 'object' && 'accountRevision' in route
-  ? route.accountRevision : undefined;
+const requestedAccount = resolveRequestedAccount;
 
 export type CaseId = (typeof cases)[number]['id'] | 'companion' | 'riding';
 type TurnRequest = StudyTurnReplay & {
@@ -70,9 +103,9 @@ type TurnRequest = StudyTurnReplay & {
   requestedRoute: unknown;
 };
 export function caseId(value: unknown): CaseId {
-  if (!isStudyCaseId(value))
-    throw new RequestError(400, '对话类型无效。');
-  return value;
+  const error = checkStudyCaseId(value, isStudyCaseId);
+  if (error) throw new RequestError(error.status, error.message);
+  return value as CaseId;
 }
 export { clientRequest } from '../../modules/capture/request.ts';
 export type DisplayTurn = TeachingFeedback & {
@@ -97,8 +130,8 @@ export async function requireSessionTurn(tx: ReadTransaction, id: string) {
   try {
     return await readOwnStudyTurn(tx, id);
   } catch (error) {
-    if (isFactUnavailable(error))
-      throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
+    const turnError = checkSessionTurnError(isFactUnavailable(error));
+    if (turnError) throw new RequestError(turnError.status, turnError.message);
     throw error;
   }
 }
@@ -128,8 +161,7 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     const stored = studyTurn(snapshot.value);
     if (!stored.parentId && stored.attachment)
       materialAvailable = await attachmentCurrent(tx,stored) && await grantCurrent(stored);
-    const {attachment: _attachment, ...withoutAttachment} = stored;
-    const submission = stored.classroom ? {...withoutAttachment,answer:null} : materialAvailable ? stored : withoutAttachment;
+    const submission = projectTurnSubmission(stored, materialAvailable);
     let authority: 'authorized' | 'unconfirmed' | 'withdrawn' = 'withdrawn';
     if (materialAvailable && row.value) {
       if (check) authority = (await teachingResultAuthority(tx, row.id, stored, row.manifest, grantCurrent, check, undefined, 'history')).state;
@@ -137,15 +169,12 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     }
     let feedback = authority === 'authorized' ? row.value : null;
     if (!feedback && row.settled) feedback = unavailableReply(submission.model, authority === 'unconfirmed');
-    result.push({
-      id: row.id,
-      submission,
-      ...(submission.caseId === 'companion' ? {backgroundUnderstanding: turnResearchAccess(snapshot)} : {}),
-      feedback,
-      derivationId: row.derivationId,
-      status: row.error?.status ?? (feedback ? 'ready' : 'pending'),
-      ...(row.error ? { error: row.error.message } : {}),
-    });
+    result.push(buildHistoryTurnView({
+      id: row.id, submission,
+      backgroundUnderstanding: submission.caseId === 'companion' ? turnResearchAccess(snapshot) : undefined,
+      feedback, derivationId: row.derivationId,
+      status: row.error?.status ?? (feedback ? 'ready' : 'pending'), error: row.error,
+    }));
   }
   return result;
 }
@@ -164,7 +193,7 @@ export function recentConversations(db: Db) {
     for (const row of rows) {
       try {
         const root = studyTurn((await readOwnStudyTurn(tx, row.id)).value);
-        if (root.answer) result.push({ id: row.id, title: root.answer.slice(0, 100), caseId: root.caseId });
+        if (root.answer) result.push(buildRecentConversation(row.id, root.answer, root.caseId));
       } catch (error) {
         if (!isFactReadDenied(error)) throw error;
       }
@@ -202,10 +231,9 @@ async function recoverRevokedReceipts(tx: ReadTransaction, turnIds: string[]) {
 }
 
 async function readableTurnMounts(tx: ReadTransaction, session: string, timeline: readonly TurnView[], check: CheckNotionRead) {
-  const last = timeline.at(-1);
-  const visible = timeline.filter(row => row.feedback || (row === last && row.status === 'pending'));
+  const visible = visibleTimelineTurnIds(timeline);
   const byTurn = new Map<string, Awaited<ReturnType<typeof turnArtifacts>>>();
-  for (const row of visible) byTurn.set(row.id, await turnArtifacts(tx, session, row.id, check));
+  for (const id of visible) byTurn.set(id, await turnArtifacts(tx, session, id, check));
   return byTurn;
 }
 
@@ -226,27 +254,22 @@ async function sessionProjection(tx: ReadTransaction, session: string, check: Ch
   if (!last) throw new RequestError(404, '这次学习会话不存在。');
   const mounts = await readableTurnMounts(tx, session, timeline, check);
   const currentObject = last.submission.classroom ? undefined : last.submission.currentObject;
-  const recoveryIds = timeline.filter(row => !row.feedback || row.feedback.action === 'reply_unavailable').map(row => row.id);
+  const recoveryIds = recoveryTurnIds(timeline);
   const recovered = await recoverRevokedReceipts(tx, recoveryIds);
   const memory = await recoverTurnMemoryReceipts(tx, recoveryIds.filter(id => !recovered.get(id)?.some(write => write.memory)));
-  return {
-    id: session,
-    caseId: last.submission.caseId,
-    currentTurnId: last.id,
-    ...(last.backgroundUnderstanding ? {backgroundUnderstanding: last.backgroundUnderstanding} : {}),
-    ...(timeline[0]?.submission.attachment ? { attachment: timeline[0].submission.attachment } : {}),
-    ...(currentObject ? {currentObject: {alias: currentObjectAlias(currentObject.kind), id: currentObject.id, rev: currentObject.rev}} : {}),
-    status: last.status,
-    ...(last.status !== 'ready' && last.submission.answer ? { pendingAnswer: last.submission.answer } : {}),
-    ...(last.error ? { error: last.error } : {}),
-    ...(last.status === 'pending' ? { artifacts: mounts.get(last.id)?.snapshots ?? [] } : {}),
-    ...mountPermissionFields([...mounts.values()].flatMap(turn => turn.unconfirmed), knownMounts),
+  return buildSessionProjectionView({
+    sessionId: session, lastId: last.id, lastStatus: last.status, lastError: last.error, caseId: last.submission.caseId,
+    pendingAnswer: last.submission.answer, backgroundUnderstanding: last.backgroundUnderstanding,
+    firstAttachment: timeline[0]?.submission.attachment,
+    currentObjectView: currentObject ? { alias: currentObjectAlias(currentObject.kind), id: currentObject.id, rev: currentObject.rev } : undefined,
+    pendingArtifacts: mounts.get(last.id)?.snapshots ?? [],
+    mountFields: mountPermissionFields([...mounts.values()].flatMap(turn => turn.unconfirmed), knownMounts),
     turns: await Promise.all(timeline.filter(row => row.feedback || memory.has(row.id)).map(async row => {
       const writes = row.feedback?.writes ?? [...(recovered.get(row.id) ?? []), ...(memory.get(row.id) ?? [])];
       return {row, feedback: row.feedback ?? unavailableReply(row.submission.model),
         writes: writes.length ? await projectWrites(tx, writes) : undefined, artifacts: mounts.get(row.id)?.snapshots ?? []};
     })),
-  };
+  });
 }
 
 async function formatSession({turns,...view}: Awaited<ReturnType<typeof sessionProjection>>,
@@ -257,11 +280,9 @@ async function formatSession({turns,...view}: Awaited<ReturnType<typeof sessionP
     const projectedRecall = row.derivationId && studyKit
       ? await recall?.(row.id,row.derivationId,studyKit)
       : undefined;
-    projected.push({
-      ...projectTeachingFeedback(value, projectedRecall), ...(writes && {writes}), turnId: row.id, artifacts,
-      ...(row.backgroundUnderstanding ? {backgroundUnderstanding: row.backgroundUnderstanding} : {}),
-      ...(row.submission.answer ? { answer: row.submission.answer } : {}),
-    });
+    projected.push(buildFormattedTurn({ turnId: row.id, artifacts, writes,
+      backgroundUnderstanding: row.backgroundUnderstanding, answer: row.submission.answer,
+      feedbackProjection: projectTeachingFeedback(value, projectedRecall) }));
   }
   return { ...view, turns: projected };
 }
@@ -332,12 +353,12 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
           if (submission.accountRevision) {
             const settings = await checkProviderAccount(tx,{providerId:submission.providerId ?? 'default',accountRevision:submission.accountRevision},
               turnTask(submission.caseId,origin.attachment?.mode === 'prepare'));
-            if (!settings || !sameRoute(submission,settings) ||
-                (submission.workspaceRevision && await workspaceRouteRevision(settings) !== submission.workspaceRevision))
-              throw confirmAccount();
+            const accountError = checkAccountSettings(settings, settings ? sameRoute(submission, settings) : false,
+              submission.workspaceRevision ? await workspaceRouteRevision(settings!) === submission.workspaceRevision : true);
+            if (accountError) throw confirmAccount();
           }
           if (origin.attachment && !await attachmentCurrent(tx, origin))
-            throw new RequestError(409, '选段的原件或版本已经变化，请重新打开原文。');
+            { const e = checkAttachmentFreshness(false); throw new RequestError(e!.status, e!.message); }
           await tx.insert('slot_state', {
             learner_id: tx.learner,
             slot_type: slotType,
@@ -346,8 +367,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
             changed_tick: tick,
           });
           const guarded = requiresAccountConfirmation(submission) || requiresAccountConfirmation(origin);
-          const deriver = submission.learningToolsVersion ? learningToolsMethod : guarded ? confirmedTeachingMethod : methodName;
-          await requestWork(tx,tick,{slotType,slotKey:id,deriver},guarded ? 'routed_pending' : 'pending');
+          const deriver = resolveStudioTurnDeriver({ learningToolsVersion: submission.learningToolsVersion, guarded });
+          await requestWork(tx,tick,{slotType,slotKey:id,deriver: deriver.method},deriver.pending);
         }
       },
   });
@@ -368,8 +389,10 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     }
   async function submit(request: TurnRequest, selected: CaseId) {
     const {session, parent, answer, req, grants, requestedRoute, currentObject, allowBackgroundUnderstanding} = request;
-    if (allowBackgroundUnderstanding === true && selected !== 'companion')
-      throw new RequestError(400, '本轮后台理解授权仅用于普通同伴对话。');
+    if (allowBackgroundUnderstanding === true) {
+      const background = checkBackgroundUnderstandingAllowed(selected);
+      if (background) throw new RequestError(background.status, background.message);
+    }
     const id = parent ? nextTurn(session, parent) : firstTurn(req);
     const origin = parent ? await db.snapshot({learner: studioLearner}, async tx =>
       studyTurn((await readOwnStudyTurn(tx, session)).value)) : undefined;
@@ -388,55 +411,31 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     const task = turnTask(selected, (origin?.attachment ?? attachment)?.mode === 'prepare');
     const settings = await loadSettings(task);
     if (grants?.length) {
-      if (selected !== 'companion' && selected !== 'riding') throw new RequestError(400, '此活动未开放 MCP 工具。');
+      const grantsError = checkMcpGrantsAllowed(selected);
+      if (grantsError) throw new RequestError(grantsError.status, grantsError.message);
       try { resolveMcpGrants(grants, settings); }
-      catch { throw new RequestError(409, 'MCP 设置已变化，请重新选择本轮工具。'); }
+      catch { const resolved = checkMcpGrantsResolved(false); throw new RequestError(resolved!.status, resolved!.message); }
     }
     const workspaceRevision = selected === 'companion' && !(origin?.attachment && !origin.workspaceRevision)
       ? await workspaceRouteRevision(settings) : undefined;
     const account = providerAccount(settings);
     const jitCounter = enableJit && account && !parent && workspaceRevision && !grants?.length && !attachment ? studioJitCounter(jitCounters, settings) : undefined;
-    const supplied = requestedAccount(requestedRoute);
-    const learningToolsVersion = workspaceRevision && account && supplied === account.accountRevision && !jitCounter &&
-      !grants?.length && (!origin || origin.learningToolsVersion === 1) ? 1 : undefined;
-    const accountRevision = attachment || jitCounter || learningToolsVersion ? account?.accountRevision : origin?.accountRevision;
-    const protectedTurn = origin?.attachment || origin?.jitContextVersion || attachment || jitCounter || accountRevision;
-    if (protectedTurn || supplied !== undefined) {
-      if (!account || supplied !== account.accountRevision || (protectedTurn && origin && !origin.accountConfirmation) ||
-          !routeMatchesInput(requestedRoute,settings) || (origin && !sameRoute(origin,settings))) throw confirmAccount();
-    } else if (!routeMatchesInput(requestedRoute,settings)) {
-      throw new RequestError(409, '模型配置已更改，请重新确认。');
-    } else if (origin && !sameRoute(origin,settings)) {
-      throw new RequestError(422, '这次对话已绑定原模型配置，请切回该配置或新建对话。');
-    }
     let boundObject;
     if (currentObject) {
-      if (selected !== 'companion' || origin?.attachment || attachment)
-        throw new RequestError(400, '当前学习对象只用于未附选段的自由对话。');
-      if (!workspaceRevision) throw new RequestError(403, '此模型未获准访问学习工作区。');
       const opened = await db.snapshot({learner: studioLearner}, tx => readCurrentLearningObject(tx, currentObject, Object.assign(() => true,
-        {notionRecipientId:notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,workspaceRevision)})));
+        {notionRecipientId:notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,workspaceRevision!)})));
       if (!opened) throw new RequestError(403, '无法为本轮打开该版本及所需依据。请核对教学用途和版本。');
       boundObject = {...currentObject, basisDigest: opened.basisDigest};
     }
-    const data = {
-      caseId: selected,
-      sessionId: session,
-      parentId: parent,
-      answer,
-      ...(allowBackgroundUnderstanding ? {allowBackgroundUnderstanding: true} : {}),
-      ...(attachmentBasis ? {attachment, attachmentBasis:attachmentBasis.digest} : {}),
-      ...(boundObject ? {currentObject: boundObject} : {}),
-      ...(learningToolsVersion ? {learningToolsVersion} : {}),
-      ...(jitCounter ? {jitContextVersion: 1, jitCounterId: jitCounter.id} : {}),
-      ...(accountRevision ? {accountRevision,accountConfirmation:1} : {}),
-      ...((selected === 'companion' || selected === 'riding') ? { agentVersion: workspaceRevision ? 2 : 1, allowSearch: settings.allowSearch } : {}),
-      ...(workspaceRevision ? {workspaceRevision, ...(!grants?.length && {memoryVersion: 1})} : {}),
-      model: settings.model, reasoningEffort: settings.reasoningEffort,
-      providerId: settings.activeProviderId, protocol: settings.protocol,
-      ...(grants?.length ? {mcpGrants: grants, mcpRevision: mcpRevision(grants, settings)} : {}),
-      baseUrl: settings.baseUrl,
-    };
+    const payload = buildSubmitTurnPayload({
+      selected, session, parent, answer, allowBackgroundUnderstanding, attachment, attachmentBasisDigest: attachmentBasis?.digest,
+      origin, requestedRoute, currentObject, settings, workspaceRevision, account, jitCounter, grants,
+      mcpRevision: grants?.length ? mcpRevision(grants, settings) : undefined,
+      boundObject,
+      routeMatchesSettings: routeMatchesInput(requestedRoute, settings), originMatchesSettings: origin ? sameRoute(origin, settings) : true,
+    });
+    if (payload.error) throw new RequestError(payload.error.status, payload.error.message, payload.error.code);
+    const data = payload.data as Json;
     await handle({
       learner: studioLearner,
       purpose,
@@ -459,11 +458,8 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     const existing = studyTurn(row.data);
     if (existing.accountConfirmation && requestedAccount(requestedRoute) !== existing.accountRevision) throw confirmAccount();
     if (!matchesStudyTurnReplay(existing, request) ||
-        !routeMatchesInput(requestedRoute, {activeProviderId: existing.providerId ?? 'default',
-          protocol: existing.protocol === 'anthropic' ? 'anthropic' : 'openai', baseUrl: existing.baseUrl,
-          model: existing.model, reasoningEffort: existing.reasoningEffort ?? 'high'})) {
+        !routeMatchesInput(requestedRoute, buildReplayRouteSettings(existing)))
       throw new RequestError(409, '同一个提交标识已经用于不同内容。');
-    }
     return getSession(db, session, projectRecall);
   }
   async function submitOrReplay(request: TurnRequest, selected: string) {
@@ -473,7 +469,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       const prior = await replay(request);
       if (prior) return prior;
       if (request.parent && (await loadHistory(db, request.session)).at(-1)?.id !== request.parent)
-        throw new RequestError(409, '另一份回答已提交，请刷新会话。');
+        { const e = checkSubmitOrReplayFallback({ hasParent: true, lastTurnIdMatchesParent: false }); throw new RequestError(e!.status, e!.message); }
       throw error;
     }
   }
@@ -498,17 +494,16 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       const currentObject = requestedCurrentObject(requestedObject);
       const allowBackgroundUnderstanding = requestedBackgroundUnderstanding(requestedBackground);
       const personal = selected === 'companion' || selected === 'riding';
-      if (personal && (typeof question !== 'string' || !question.trim() || question.length > 4000))
-        throw new RequestError(400, '请输入 1 至 4000 字的问题。');
+      const startError = checkSessionStartInput({ personal, question, hasShared: shared !== undefined });
+      if (startError) throw new RequestError(startError.status, startError.message);
       const firstAnswer = personal && typeof question === 'string' ? question.trim() : null;
       let attachment;
       if (shared !== undefined) {
-        if (selected !== 'companion') throw new RequestError(400, '请在自由对话中使用个人材料。');
         try { attachment = studyAttachmentRequest(shared); }
         catch { throw new RequestError(400, '请选择材料或其片段。'); }
       }
-      const request: TurnRequest = {req:requestId, session:firstTurn(requestId), selected, parent:null, answer:firstAnswer,
-        attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding};
+      const request = buildSessionTurnRequest({ req: requestId, session: firstTurn(requestId), selected, parent: null, answer: firstAnswer,
+        attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding }) as TurnRequest;
       return await replay(request) ?? submitOrReplay(request, selected);
     },
     async answer(session: string, parent: unknown, input: unknown, requestId: string, requestedMcp?: unknown,
@@ -516,20 +511,18 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       const grants = requestedGrants(requestedMcp);
       const currentObject = requestedCurrentObject(requestedObject);
       const allowBackgroundUnderstanding = requestedBackgroundUnderstanding(requestedBackground);
-      if (typeof input !== 'string' || !input.trim() || input.length > 4000)
-        throw new RequestError(400, '请输入 1 至 4000 字的回答。');
-      if (typeof parent !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(parent))
-        throw new RequestError(400, '提交时须指明当前问题。');
-      const request: TurnRequest = {req:requestId, session, parent, answer:input.trim(),
-        grants, requestedRoute, currentObject, allowBackgroundUnderstanding};
+      const answerError = checkSessionAnswerInput({ answer: input, parent });
+      if (answerError) throw new RequestError(answerError.status, answerError.message);
+      const text = input as string;
+      const request: TurnRequest = buildSessionTurnRequest({ req: requestId, session, parent: parent as string, answer: text.trim(),
+        grants, requestedRoute, currentObject, allowBackgroundUnderstanding }) as TurnRequest;
       const prior = await replay(request);
       if (prior) return prior;
       const last = (await loadHistory(db, session)).at(-1);
-      if (!last) throw new RequestError(404, '学习会话不存在。');
-      if (last.submission.classroom) throw new RequestError(409, '请在课堂步骤内完成学习活动。');
-      if (last.id !== parent) throw new RequestError(409, '此题已有回答，请刷新后查看下一步。');
-      if (last.status !== 'ready') throw new RequestError(409, '请先等同伴完成这一轮。');
-      return submitOrReplay(request, last.submission.caseId);
+      const replyGuard = checkSessionReplyGuard({ lastExists: Boolean(last), lastIsClassroom: Boolean(last?.submission.classroom),
+        lastIdMatches: last?.id === parent, lastStatus: last?.status ?? 'pending' });
+      if (replyGuard) throw new RequestError(replyGuard.status, replyGuard.message);
+      return submitOrReplay(request, last!.submission.caseId);
     },
   };
 }

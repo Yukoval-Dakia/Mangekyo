@@ -7,6 +7,7 @@ import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { isFactUnavailable, teachingRead } from './fact-read-helpers.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
+import type { Json } from '../../kernel/src/declarations/types.ts';
 import { commandId, derivationId, factId, type DerivationId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { notionReadScope, notionSendBasis, NotionReadUnconfirmed, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
@@ -16,6 +17,24 @@ import { readCurrentLearningObject } from './current-learning-object.ts';
 import { RequestError, clientRequest, readClassroomSession, type DisplayTurn } from './sessions.ts';
 import { classroomMountEvidence } from './presentation-store.ts';
 import { notionModelRecipient, stableId, studioLearner, purpose, slotType } from './identity.ts';
+import {
+  buildClassroomTurnData,
+  buildClassroomView,
+  checkClassroomAction,
+  checkClassroomAdjustNote,
+  checkClassroomMutation,
+  checkClassroomRoute,
+  classroomPathPattern,
+  buildAuthorizedReply,
+  buildReadClassroomResult,
+  buildActiveClassroomItem,
+  checkClassroomRouteMatches,
+  buildStartPrepareResult,
+  buildMutatePrepareResult,
+  buildClassroomCommandInput,
+  buildClassroomStartPayload,
+  buildClassroomMutatePayload,
+} from '../../modules/companion/facts/session-stream-slice.ts';
 
 const scope = {learner:studioLearner};
 const unavailable = () => new RequestError(404,'这次课堂不可读。');
@@ -30,11 +49,13 @@ async function authorizedReply(tx: ReadTransaction, id: FactId, check: CheckNoti
       ON (d.learner_id,d.slot_type,d.slot_key)=(s.learner_id,s.slot_type,s.slot_key)
       AND d.id=coalesce($4,s.current_id) AND NOT d.is_shadow AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
     WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,[tx.learner,slotType,id,pinned ?? null]);
-  if (!row?.id || !row.value) return {status:row?.failed ? 'failed' as const : 'pending' as const};
-  const {state: authority} = await teachingResultAuthority(tx,id,await readTurn(tx,id),row.manifest,workspaceGrantChecker(tx),check);
-  if (authority === 'unconfirmed') throw new RequestError(503,'暂时无法核对课堂依据。');
-  if (authority !== 'authorized') throw unavailable();
-  return {status:'ready' as const, steps:row.value.classroomPlan,derivationId:derivationId(row.id)};
+  const {state: authority} = await teachingResultAuthority(tx,id,await readTurn(tx,id),row!.manifest,workspaceGrantChecker(tx),check);
+  const reply = buildAuthorizedReply({ failed: Boolean(row?.failed), hasValue: Boolean(row?.id && row?.value), authority,
+    derivationId: row?.id ?? '', steps: row?.value?.classroomPlan });
+  if (reply.status === 'unconfirmed') throw new RequestError(503,'暂时无法核对课堂依据。');
+  if (reply.status === 'unavailable') throw unavailable();
+  if (reply.status === 'ready') return {status:'ready' as const, steps:reply.steps as readonly string[],derivationId:derivationId(reply.derivationId!)};
+  return {status: reply.status as 'failed' | 'pending'};
 }
 
 async function rawClassroom(tx: ReadTransaction, id: FactId) {
@@ -47,7 +68,8 @@ export async function assertClassroomAction(tx: ReadTransaction, session: string
   if (!(await readTurn(tx,factId(session))).classroom) return;
   const {value:state} = await rawClassroom(tx,classroomId(session));
   const active = activeClassroomStep(state)?.turnId ?? (state.pending?.kind === 'start' ? state.pending.turnId : undefined);
-  if (state.status !== 'active' || active !== turn) throw conflict('此课堂步骤已停止接收新操作。');
+  const check = checkClassroomAction({ isClassroom: true, stateStatus: state.status, activeTurnId: active, turnId: turn });
+  if (check) throw conflict(check.message);
 }
 
 async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotionRead) {
@@ -79,12 +101,12 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
   }
   if (pending?.status === 'ready') {
     if (!pending.steps) throw unavailable();
-    state = classroomPlan(state,pending.steps,pending.derivationId);
+    state = classroomPlan(state,pending.steps as readonly string[],pending.derivationId!);
   }
   const active = activeClassroomStep(state);
   const step = active && await authorizedReply(tx,active.turnId!,check);
   const generation = adjustmentFailed || pending?.status === 'ready' ? step?.status : pending?.status ?? step?.status;
-  return {fact,state,origin,generation,adjustmentFailed};
+  return buildReadClassroomResult({ fact, state, origin, generation, adjustmentFailed });
 }
 
 async function handleErrors<T>(run: () => Promise<T>) {
@@ -116,9 +138,8 @@ async function activeClassroomIds(tx: ReadTransaction) {
 export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHooks) {
   const view = async (tx: ReadTransaction, id: FactId, check: CheckNotionRead) => {
     const {fact,state,generation,adjustmentFailed} = await readClassroom(tx,id,check);
-    const {topic,minutes,sessionId,status,steps} = state;
-    return {id,rev:fact.ref.rev,topic,minutes,sessionId,status,steps,activeStepId:activeClassroomStep(state)?.id ?? null,
-      ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {})};
+    return buildClassroomView({ id, rev: fact.ref.rev, topic: state.topic, minutes: state.minutes, sessionId: state.sessionId,
+      status: state.status, steps: state.steps, activeStepId: activeClassroomStep(state)?.id ?? null, generation, adjustmentFailed });
   };
   const readView = (id: FactId, readOnly = false) =>
     handleErrors(() => notionReadScope(db,studioLearner,{readOnly}).read((tx,check) => view(tx,id,check)));
@@ -131,7 +152,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
         const {fact, state, generation} = await readClassroom(tx, id, check);
         const step = activeClassroomStep(state);
         if (state.status === 'active' && generation === 'ready' && step)
-          items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
+          items.push(buildActiveClassroomItem(id, fact.ref.rev, state.topic, step.title));
       } catch (error) {
     if (isFactUnavailable(error)) continue;
         if (error instanceof RequestError && error.status === 404) continue;
@@ -161,27 +182,17 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
       bindClassroomPreparation(base,async () => {
         const settings = start.currentObject ? await loadSettings('companion') : (await freezeProviderAccount(tx,'companion')).settings;
         const account = providerAccount(settings);
-        if (!routeMatchesInput(route,settings) || (route?.accountRevision !== undefined && route.accountRevision !== account?.accountRevision))
-          throw conflict('模型配置已变更，请重新确认。');
         const workspaceRevision = start.currentObject && await workspaceRouteRevision(settings);
         const recipient = workspaceRevision && notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,workspaceRevision);
-        if (start.currentObject && (!recipient || !account || route?.accountRevision !== account.accountRevision))
-          throw new RequestError(403,'请确认模型账户与工作区教学授权。');
         const source = start.currentObject && recipient && await readCurrentLearningObject(tx,start.currentObject,
           Object.assign(() => true,{notionRecipientId:recipient}));
-        if (start.currentObject && !source) throw unavailable();
-        return {state,turn:{id:sessionId,data:studyTurn({
-          caseId:'companion', sessionId, parentId:null, answer:classroomPrompt('start',state),
-          classroom:{mode:'start',evidence:[]}, agentVersion:1,
-          ...(workspaceRevision ? {workspaceRevision} : {}),
-          ...(source ? {currentObject:{...start.currentObject,basisDigest:source.basisDigest}} : {}),
-          ...(account && account.accountRevision ? {accountRevision:account.accountRevision,accountConfirmation:1} : {}),
-          providerId:settings.activeProviderId, protocol:settings.protocol, model:settings.model,
-          baseUrl:settings.baseUrl, reasoningEffort:settings.reasoningEffort,
-        })}};
+        const payload = buildClassroomStartPayload({ start, sessionId, state, route, settings, account, workspaceRevision, source,
+          prompt: classroomPrompt('start', state), routeMatches: routeMatchesInput(route, settings) });
+        if (payload.error) throw conflict(payload.error.message);
+        return buildStartPrepareResult({ state: payload.result!.state, turn: payload.result!.turn });
       })});
     await handleErrors(() => handle({...scope,actor:'learner',purpose,id:commandId(stableId('classroom-command',requestId)),
-      type:classroomCommand,input:{id,start,route:route ?? null}}));
+      type:classroomCommand,input:buildClassroomCommandInput({ id, start, route }) as Json}));
     return readView(id);
   }
 
@@ -192,20 +203,18 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     const turnId = factId(stableId('classroom-turn',id,requestId));
     const prepare = async (tx: ReadTransaction, check: CheckNotionRead) => {
       const {fact,state,origin,generation} = await readClassroom(tx,id,check);
-      if (fact.ref.rev !== mutation.expectedRev) throw conflict('课堂已更新，请刷新。');
-      if (generation === 'pending') throw conflict('请先等当前课堂回合完成。');
       const next = transitionClassroom(state,op,turnId);
       const active = activeClassroomStep(state);
       const mode = op === 'adjust' ? 'adjust' : activeClassroomStep(next)?.turnId === turnId ? 'advance' : undefined;
-      if (!mode) return {state:next,expectedRev:mutation.expectedRev};
+      if (!mode) return buildMutatePrepareResult({ state: next, expectedRev: mutation.expectedRev });
       const evidence = mode === 'adjust' && active?.turnId
         ? await classroomMountEvidence(tx,state.sessionId,active.turnId,check) : [];
-      const noteOnly = mode === 'adjust' && evidence.length === 0;
-      if (noteOnly && !mutation.note) throw conflict('请说明希望调整的内容，或先完成课堂作品。');
-      if (!sameRoute(origin,await loadSettings('companion'))) throw conflict('课堂绑定的模型已变更。');
-      const parentId = state.lastTurnId;
-      return {state:next,expectedRev:mutation.expectedRev,turn:{id:turnId,data:studyTurn({...origin,parentId,
-        answer:classroomPrompt(mode,mode === 'adjust' ? state : next,mutation.note),classroom:{mode,evidence,...(noteOnly ? {noteOnly} : {}),...(mode === 'adjust' ? {evidenceTurn:active?.turnId} : {})}})}};
+      const payload = buildClassroomMutatePayload({ factRev: fact.ref.rev, expectedRev: mutation.expectedRev, generation, nextState: next,
+        origin, mode, evidence, note: mutation.note, parentId: state.lastTurnId, turnId, activeTurnId: active?.turnId,
+        sameRoute: sameRoute(origin, await loadSettings('companion')),
+        prompt: classroomPrompt(mode, mode === 'adjust' ? state : next, mutation.note) });
+      if (payload.error) throw conflict(payload.error.message);
+      return buildMutatePrepareResult({ state: payload.result!.state, expectedRev: payload.result!.expectedRev, turn: payload.result!.turn });
     };
     // Probe remotely outside the learner lock. The command repeats all local checks under the lock.
     try { await notion.read(prepare); }
@@ -217,11 +226,11 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     const handle = createCommandHandler(db,{modules:[activity],hooks,bindCommandRead:(tx,_request,base) =>
       bindClassroomPreparation(base,() => prepare(tx,notion.check(tx)))});
     await handleErrors(() => handle({...scope,actor:'learner',purpose,id:commandId(stableId('classroom-command',requestId)),
-      type:classroomCommand,input:{id,op,...mutation}}));
+      type:classroomCommand,input:buildClassroomCommandInput({ id, op, mutation }) as Json}));
     return readView(id);
   }
   return {start,get,listActive,mutate,print};
 }
 
-export const classroomPath = /^\/api\/classrooms(?:\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(adjust|advance|skip|finish|archive|print))?)?$/;
+export const classroomPath = classroomPathPattern;
 export { factId };

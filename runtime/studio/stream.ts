@@ -11,21 +11,28 @@ import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingProgress } from '../../executors/teaching/index.ts';
 import { slotType, studioLearner } from './identity.ts';
-import { requireSessionTurn, RequestError, sessionMountPermissions, unconfirmedReplyMessage, unavailableReplyMessage } from './sessions.ts';
+import { requireSessionTurn, RequestError, sessionMountPermissions } from './sessions.ts';
 import { workspaceGrantChecker } from './harness.ts';
 import type { RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 
-import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
+import { turnArtifacts } from './presentation-store.ts';
+import {
+  buildCompleteEventData,
+  buildProgressEventData,
+  buildProgressEventId,
+  buildStreamSession,
+  chunkSessionDelta,
+  isSessionDelta,
+  mountPermissionData,
+  resolveStreamTurnState,
+  sseEvent,
+  sseHeaders,
+  type StreamSession,
+  buildSessionEventView,
+} from '../../modules/companion/facts/session-stream-slice.ts';
 
 type Phase = TeachingProgress['phase'];
-type StreamSession = {
-  id: string;
-  caseId: string;
-  currentTurnId: string;
-  status: 'pending' | 'ready' | 'failed' | 'unknown';
-  pendingAnswer?: string;
-};
 
 export async function prepareSessionEvents(db: Db): Promise<void> {
   await db.schemaTransaction(async (tx) => {
@@ -55,13 +62,7 @@ type SessionDelta = { session: string; turnId: string; seq: number; delta: strin
 
 export async function publishSessionDelta(db: Db, session: string, turnId: string, seq: number, delta: string): Promise<number> {
   if (!delta || !Number.isSafeInteger(seq) || seq < 0) return seq;
-  const chunks: string[] = [];
-  let chunk = '';
-  for (const character of delta) {
-    if (chunk && new TextEncoder().encode(chunk + character).length > 1000) (chunks.push(chunk), chunk = character);
-    else chunk += character;
-  }
-  chunks.push(chunk);
+  const chunks = chunkSessionDelta(delta);
   for (const part of chunks) await db.query(
     `SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton`,
     [JSON.stringify({session, turnId, seq: seq++, delta: part})],
@@ -120,9 +121,8 @@ export async function listenForSessionEvents(db: Db, createListener: () => Clien
     message(payload) {
       let value: unknown;
       try { value = JSON.parse(payload ?? ''); } catch {}
-      const chunk = value as SessionDelta | undefined;
-      if (chunk && typeof chunk.session === 'string' && typeof chunk.turnId === 'string' &&
-          typeof chunk.seq === 'number' && typeof chunk.delta === 'string')
+      const chunk = isSessionDelta(value) ? value : undefined;
+      if (chunk)
         for (const subscriber of subscribers) if (subscriber.sessionId === chunk.session) subscriber.delta(chunk);
       else for (const subscriber of subscribers) if (subscriber.sessionId === payload) subscriber.refresh();
     },
@@ -160,24 +160,16 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
     );
     if (!row) throw new RequestError(404, '这次学习会话不存在。');
     const submission = studyTurn((await requireSessionTurn(tx, row.turnId)).value);
-    const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
+    const status = resolveStreamTurnState(row.status, row.settled, row.message);
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
     const allowed = await teachingTurnAllowed(tx, submission, grantCurrent);
     if (!allowed && status === 'pending')
       throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     const authority = !allowed ? 'withdrawn' : manifest
       ? (await teachingResultAuthority(tx, row.turnId, submission, manifest, grantCurrent, check, undefined, status === 'ready' ? 'history' : 'publish')).state : 'authorized';
-    if (authority !== 'authorized') row.draft = null;
-    if (status === 'ready' && (authority !== 'authorized' || row.message === null)) {
-      row.message = authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage;
-      row.hasStudyKit = false;
-    }
-    const session: StreamSession = {
-      id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status,
-      ...(status !== 'ready' && !submission.classroom && submission.answer ? { pendingAnswer: submission.answer } : {}),
-    };
-    const mounts = status === 'pending' ? await turnArtifacts(tx,sessionId,row.turnId,check) : {snapshots: [], unconfirmed: []};
-    return {session,row,mounts};
+    const mounts = status === 'pending'
+      ? await turnArtifacts(tx,sessionId,row.turnId,check) : {snapshots: [], unconfirmed: []};
+    return buildSessionEventView({ sessionId, row, submission, authority, allowed, mounts, status });
   });
 }
 
@@ -189,7 +181,7 @@ export async function serveSessionEvents(
   if (res.destroyed) return;
   if (!subscribers) {
     // Keep EventSource's retry semantics during a LISTEN reconnect.
-    res.writeHead(200, eventHeaders).end('retry: 1500\n\n');
+    res.writeHead(200, sseHeaders).end('retry: 1500\n\n');
     return;
   }
   let closed = false;
@@ -206,7 +198,7 @@ export async function serveSessionEvents(
       scheduleRead();
     },
     delta(chunk) {
-      if (authorized && !closed) void writeFrame(event('delta', undefined,
+      if (authorized && !closed) void writeFrame(sseEvent('delta', undefined,
         {turnId: chunk.turnId, seq: chunk.seq, delta: chunk.delta})).catch(() => {});
     },
     disconnect() {
@@ -248,12 +240,12 @@ export async function serveSessionEvents(
           const {authorizedMountIds, unconfirmed} = await sessionMountPermissions(db, sessionId);
           authorized = true;
           if (closed || dirty) continue;
-          const permission = {sessionId, authorizedMountIds, ...mountPermissionFields(unconfirmed, seen)};
+          const permission = {sessionId, authorizedMountIds, ...mountPermissionData(unconfirmed, seen)};
           const key = JSON.stringify(permission);
           if (key !== lastEventId) {
             lastEventId = key;
             authorizedMountIds.forEach(id => seen.add(id));
-            await writeFrame(event('mount-permissions', undefined, permission));
+            await writeFrame(sseEvent('mount-permissions', undefined, permission));
           }
           continue;
         }
@@ -269,35 +261,25 @@ export async function serveSessionEvents(
           if (closed) return;
           if (dirty) continue;
           const message = status === 'ready' ? recall?.lesson ?? row.message : undefined;
-          res.end(event('complete', currentTurnId + ':' + status, {
-            session, ...(message ? { message } : {}), ...(recall ? { recall } : {}),
-          }));
+          res.end(sseEvent('complete', currentTurnId + ':' + status, buildCompleteEventData(session, message, recall)));
           return;
         }
-        const partial = mountPermissionFields(unconfirmed, seen);
-        const eventId = [currentTurnId,row.revision ?? 0,Number(Boolean(row.draft)),
-          ...artifacts.map(a => a.mountId+'-'+a.viewSeq),
-          ...(partial.mountPermissionsPartial ? ['partial', ...partial.unconfirmedMountIds] : [])].join(':');
+        const partial = mountPermissionData(unconfirmed, seen);
+        const eventId = buildProgressEventId({ currentTurnId, revision: row.revision ?? null, hasDraft: Boolean(row.draft), artifacts, partial });
         if (eventId === lastEventId) continue;
         lastEventId = eventId;
         // Each event carries cumulative state, including on Last-Event-ID reattachment.
-        const data = {
-          session,
-          phase: row.phase ?? 'queued',
-          authorizedMountIds: artifacts.map(artifact => artifact.mountId),
-          ...partial,
-          ...(row.draft ? { message: row.draft } : {}),
-        };
+        const data = buildProgressEventData({ session, phase: row.phase, artifacts, partial, draft: row.draft });
         data.authorizedMountIds.forEach(id => seen.add(id));
-        await writeFrame(event('progress', eventId, data) +
-          artifacts.map(artifact => event('artifact-snapshot', eventId, artifact)).join(''));
+        await writeFrame(sseEvent('progress', eventId, data) +
+          artifacts.map(artifact => sseEvent('artifact-snapshot', eventId, artifact)).join(''));
       }
     } catch (error) {
       if (closed) return;
       if ((error instanceof RequestError || error instanceof RecallRequestError) && [403, 404, 409].includes(error.status)) {
         res.end(watchMounts
-          ? event('mount-permissions', undefined, { sessionId, authorizedMountIds: [] })
-          : event('session-error', undefined, { status: error.status }));
+          ? sseEvent('mount-permissions', undefined, { sessionId, authorizedMountIds: [] })
+          : sseEvent('session-error', undefined, { status: error.status }));
       } else {
         // Dropping the stream makes EventSource reconnect and reload a fresh snapshot.
         subscriber.disconnect();
@@ -307,7 +289,7 @@ export async function serveSessionEvents(
     }
   }
 
-  res.writeHead(200, eventHeaders);
+  res.writeHead(200, sseHeaders);
   res.flushHeaders();
   res.write('retry: 1500\n\n');
   res.once('close', cleanup);
@@ -321,13 +303,4 @@ export async function serveSessionEvents(
   // Register before the initial DB read so a commit cannot fall between the read and LISTEN.
   subscribers.add(subscriber);
   scheduleRead();
-}
-
-const eventHeaders = {
-  'Content-Type': 'text/event-stream; charset=utf-8',
-  'Cache-Control': 'no-store, no-transform',
-  'X-Accel-Buffering': 'no',
-};
-function event(name: string, id: string | undefined, payload: object) {
-  return (id ? 'id: ' + id + '\n' : '') + 'event: ' + name + '\ndata: ' + JSON.stringify(payload) + '\n\n';
 }

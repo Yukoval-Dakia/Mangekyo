@@ -15,7 +15,7 @@ import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { assessmentRelease } from '../../modules/activity/assessment-values.ts';
 import { artifactMount } from '../../modules/content/artifact.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { validateArtifact, savedArtifactCheckpoints, type ArtifactAction, type ArtifactIntentV1 } from '../../surfaces/shared/presentation/index.ts';
+import { validateArtifact, savedArtifactCheckpoints, type ArtifactAction, type ArtifactIntentV1, type Artifact } from '../../surfaces/shared/presentation/index.ts';
 import { artifactIntentCommandId, handleArtifactIntent, projectArtifactMountState, projectArtifactSubmission } from '../../surfaces/shared/presentation/artifact-intent.ts';
 import { artifactAssessmentPolicy, qualifyArtifactAssessment, readArtifactAssessment, type ReadArtifactAssessmentWitness } from './artifact-assessment.ts';
 import { registerFormalAssessment } from './formal-assessment.ts';
@@ -24,7 +24,22 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner, purpose, slotType } from './identity.ts';
 import { clientRequest, readTeachingTurn, RequestError } from './sessions.ts';
 import { notifySession } from './stream.ts';
+import type { Json } from '../../kernel/src/declarations/types.ts';
 export { mountPermissionFields } from '../../modules/activity/artifact-action.ts';
+import {
+  buildArtifactActionData,
+  checkArtifactActionSubmit,
+  checkMountArgs,
+  isUlid,
+  buildMountViewData,
+  buildMountArtifactInput,
+  buildMountProjectionResult,
+  buildConfirmedActionResult,
+  buildSessionMountEvidenceItem,
+  checkArtifactActionReceipt,
+  buildArtifactActionRequest,
+  buildMountArtifactRequest,
+} from '../../modules/companion/facts/session-stream-slice.ts';
 
 const load = (name: string) =>
   loadModuleDirectory(fileURLToPath(new URL('../../modules/' + name, import.meta.url)));
@@ -40,18 +55,20 @@ export async function mountArtifact(
   authorize: (tx: ReadTransaction) => Promise<Manifest>,
   readWitness?: ReadArtifactAssessmentWitness,
 ) {
-  const checked = validateArtifact(args.view);
-  if (!checked.ok) return learningToolError('invalid_args','view',checked.error);
-  const prompt = args.predictionPrompt ?? null;
-  if (prompt !== null && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 160))
-    return learningToolError('invalid_args','predictionPrompt','预测提示应为 1–160 字。');
+  const viewCheck = validateArtifact(args.view);
   const id = stableId('artifact-mount', turnId, String(step));
-  const view = { ...checked.view, id: 'work-' + id.toLowerCase() };
+  const viewCheckView = viewCheck.ok ? viewCheck.view : undefined;
+  const argCheck = buildMountArtifactRequest({ viewOk: viewCheck.ok, viewError: viewCheck.ok ? undefined : viewCheck.error,
+    predictionPrompt: args.predictionPrompt, hasSentenceBreaks: args.sentenceBreaks !== undefined,
+    checkedView: viewCheck.ok ? viewCheck.view : ({} as Artifact), mountId: id, turnId, sessionId: '', manifest: {}, gatherTick: undefined, assessment: undefined });
+  if (argCheck.error) return learningToolError('invalid_args', argCheck.error.field, argCheck.error.message);
+  const checked = viewCheck;
+  const prompt = (args.predictionPrompt ?? null) as string | null;
+  const view = argCheck.view!;
   let assessment: ReturnType<typeof qualifyArtifactAssessment> | undefined;
   if (args.sentenceBreaks !== undefined) {
-    if (!prompt) return learningToolError('invalid_args','predictionPrompt','正式断句须先保存预测。');
     try {
-      assessment = qualifyArtifactAssessment({ id: factId(id), rev: 1 as Revision }, view, prompt, args.sentenceBreaks, readWitness);
+      assessment = qualifyArtifactAssessment({ id: factId(id), rev: 1 as Revision }, view, prompt!, args.sentenceBreaks, readWitness);
     } catch (error) {
       return learningToolError('invalid_args','sentenceBreaks',error instanceof Error ? error.message : '正式断句无法发放。');
     }
@@ -88,7 +105,7 @@ export async function mountArtifact(
     purpose,
     type: 'content.mountArtifact',
     id: commandId(stableId('mount-command', id)),
-    input: { id, data },
+    input: buildMountArtifactInput(id, data) as Json,
   });
   return { mountId: id, revision: view.revision, commandId: receipt.commandId, state: receipt.state };
 }
@@ -153,21 +170,14 @@ async function projectMount(
   const release = data.assessment ? assessmentRelease(data.assessment.release) : undefined;
   if (!projected.ok) throw new MountUnavailable(projected.code);
   const latest = history.at(-1);
-  const snapshot = {
-    ...projected.snapshot,
-    hostState,
-    submitted,
-    predicting,
-    unavailable,
-    prediction: prediction ? { id: prediction.id, ...(release ? { rev: 1 } : {}), answer: prediction.action.answers.estimate } : null,
-    ...(release ? { questionRef: release.releaseRef } : {}),
-    ...(release && submissionEvent ? {
-      assessment: await readArtifactAssessment(tx, release.releaseRef, { id: factId(submissionEvent.id), rev: 1 as Revision }),
-    } : {}),
-    saved: savedArtifactCheckpoints(history),
-    commandId: latest?.receipt?.commandId ?? null,
-  };
-  return { mount, grant, history, snapshot, release, source, manifest:data.manifest };
+  const assessment = release && submissionEvent
+    ? await readArtifactAssessment(tx, release.releaseRef, { id: factId(submissionEvent.id), rev: 1 as Revision }) : undefined;
+  return buildMountProjectionResult({
+    source, turnIdMatches: true, workFailed: false, viewOk: true, authority: 'authorized',
+    history, projected: projected.snapshot, projectedOk: true, hostState, submitted, predicting, unavailable,
+    prediction, release, submissionEvent: assessment, saved: savedArtifactCheckpoints(history),
+    commandId: latest?.receipt?.commandId ?? null, grant, mount, manifest: data.manifest,
+  });
 }
 
 export async function turnArtifacts(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
@@ -194,10 +204,7 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
 export async function classroomMountEvidence(tx: ReadTransaction, session: string, turn: string, check: CheckNotionRead) {
   const {snapshots,unconfirmed} = await turnArtifacts(tx,session,turn,check);
   if (unconfirmed.length) throw new RequestError(503,'暂时无法核对课堂作品依据。');
-  return snapshots.filter(item => item.stateRev > 0).map(item => ({
-    mountId:item.mountId,stateRev:item.stateRev,
-    assessmentId:item.assessment && 'derivationId' in item.assessment ? item.assessment.derivationId : null,
-  }));
+  return snapshots.filter(item => item.stateRev > 0).map(buildSessionMountEvidenceItem);
 }
 
 export async function readClassroomMountEvidence(tx: ReadTransaction, session: string, turn: string,
@@ -211,16 +218,16 @@ export async function readClassroomMountEvidence(tx: ReadTransaction, session: s
 
 export async function actOnArtifact(db: Db, session: string, raw: Record<string, unknown>) {
   const requestId = clientRequest(raw.requestId);
-  if (typeof raw.mountId !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(raw.mountId))
-    throw new RequestError(400, '作品标识无效。');
-  const mountId = raw.mountId;
+  if (!isUlid(raw.mountId)) throw new RequestError(400, '作品标识无效。');
+  const mountId = raw.mountId as string;
   const notion = notionReadScope(db, studioLearner);
   const read = () => notion.read((tx, check) => readMount(tx, session, mountId, check));
   const { mount, grant, history, snapshot, release } = await read();
   const key = artifactIntentCommandId(requestId);
   function confirmed(state: typeof snapshot, receipt: CommandReceipt | null | undefined) {
-    if (receipt?.state !== 'done' || receipt.commandId !== key) throw conflict('操作回执尚未确认。');
-    return { receipt: { ...receipt, requestId, mountId, status: 'accepted' }, snapshot: state };
+    const result = buildConfirmedActionResult({ receipt, key, snapshot: state, requestId, mountId });
+    if (!result) throw conflict('操作回执尚未确认。');
+    return result;
   }
   const existing = history.find((e) => e.requestId === requestId);
   if (existing) {
@@ -239,25 +246,12 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
   }
   const execute = async ({ input }: { input: { intent: ArtifactIntentV1 } }) => {
     const { action } = input.intent;
-    const estimate = action.answers.estimate;
-    if (snapshot.predicting && (estimate?.kind !== 'text' || !estimate.text.trim()))
-      throw conflict('请先写下预测。');
-    if (action.intent === 'submit' && action.trace.omitted) throw conflict('操作轨迹不完整。');
     const stateRev = mount.stateRev + 1;
     const id = stableId('artifact-action', mountId, String(stateRev));
-    const submission = action.intent === 'submit' ? projectArtifactSubmission(mountId, snapshot.view, id, action, release) : undefined;
-    if (action.intent === 'submit' && !submission) throw conflict('提交动作未声明。');
-    const data = {
-      stateRev,
-      mountId,
-      sessionId: session,
-      turnId: mount.turnId,
-      requestId,
-      action: { ...action },
-      prediction: snapshot.predicting,
-      predictionRef: snapshot.prediction?.id ?? null,
-      ...(submission ? { submission, traceSource: 'learner-reported' } : {}),
-    };
+    const request = buildArtifactActionRequest({ mountStateRev: mount.stateRev, snapshot, action, sessionId: session, turnId: mount.turnId,
+      mountId, requestId, release, projectSubmission: projectArtifactSubmission, id });
+    if (request.error) throw conflict(request.error.message);
+    const data = request.data as Json;
     const handle = createCommandHandler(db, {
       modules: [await (activity ??= load('activity'))],
       hooks: createStudioCommandHooks({
@@ -279,7 +273,7 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
         purpose,
         type: 'activity.recordArtifactAction',
         id: key,
-        input: { id, data },
+        input: { id, data: data as Json },
       });
     } catch (error) {
       if (error instanceof Error && /Fact already exists|different command identity/.test(error.message))
