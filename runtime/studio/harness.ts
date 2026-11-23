@@ -1,7 +1,7 @@
 import {loadWorkspaceAccessRoutes, workspaceGrantRevision} from './workspace-access.ts';
 import { sameRoute } from '../../executors/teaching/provider-consent.ts';
 export { sameRoute, sameActiveProvider, resolveMcpGrants, mcpRevision, routeMatchesInput } from '../../executors/teaching/provider-consent.ts';
-import type { ReadTransaction } from '../../kernel/src/db/types.ts';
+import type { ReadTransaction } from '../../kernel/src/index.ts';
 import { nextTurn, slotType, stableId } from './identity.ts';
 import { turnTask } from '../../executors/teaching/model-routes.ts';
 import { teachingOrigin } from './reading.ts';

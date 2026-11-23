@@ -1,5 +1,5 @@
 import { learningPythonReadLabel } from '../../executors/teaching/question-read-receipts.ts';
-import { learnerId } from '../../kernel/src/declarations/ids.ts';
+import { learnerId } from '../../kernel/src/index.ts';
 import type { SessionErasure } from '../../kernel/src/work/session-erasure.ts';
 import { slotType } from './identity.ts';
 import { completeTurnStream } from './stream.ts';

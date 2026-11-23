@@ -1,10 +1,9 @@
 import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from '../../modules/capture/request.ts';
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, isFactNotFound, isFactReadDenied } from './fact-read-helpers.ts';
-import type { Db } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import {
+  commandId, createCommandReadContext, createLearnerHost, factId, isFactReadDenied, matchKernelError,
+  type CommandHooks, type Db, type FactId,
+} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import {
   practiceInput,
@@ -22,10 +21,11 @@ import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
 export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
-  const handle = createCommandHandler(db, { modules: [activity], hooks });
+  const host = createLearnerHost(db, studioLearner);
+  const handle = host.boundHandler([activity], hooks);
 
   async function read(selected?: FactId): Promise<PracticeView> {
-    return db.snapshot({ learner: studioLearner }, async (tx) => {
+    return host.snapshot(async (tx) => {
       const { rows } = await tx.query<{ id: string }>(
         'SELECT id FROM facts WHERE learner_id=$1 AND type=$2 ORDER BY created_tick, id',
         [tx.learner, ridingPracticeType],
@@ -49,7 +49,7 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
   async function replay(attemptId: FactId, input: unknown): Promise<PracticeView | null> {
     let archived;
     try {
-      archived = await db.snapshot({ learner: studioLearner }, async (tx) => {
+      archived = await host.snapshot(async (tx) => {
         await assertUnburned(tx, 'fact', [attemptId]);
         await assertDeletionWatermark(tx,submittedWatermark(input));
         const fact = await createCommandReadContext(tx, ridingPracticePurpose)
@@ -57,9 +57,11 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
         return practiceSubmission(fact.value);
       });
     } catch (error) {
-      if (isFactNotFound(error)) return null;
-      if (isFactReadDenied(error)) throw new RequestError(403, '这份练习记录当前不可读取。');
-      throw error;
+      return matchKernelError(error, {
+        not_found: () => null,
+        denied: () => { throw new RequestError(403, '这份练习记录当前不可读取。'); },
+        otherwise: err => { throw err.cause; },
+      });
     }
     let data: PracticeInput;
     try {
@@ -90,14 +92,8 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
         throw new RequestError(400, error instanceof Error ? error.message : '练习提交格式无效。');
       }
       try {
-        await handle({
-          learner: studioLearner,
-          purpose: ridingPracticePurpose,
-          actor: 'learner',
-          type: ridingPracticeCommand,
-          id: submissionId, deletionWatermark:submittedWatermark(input),
-          input: { id: attemptId, data },
-        });
+        await handle({purpose: ridingPracticePurpose, type: ridingPracticeCommand, id: submissionId,
+          deletionWatermark: submittedWatermark(input), input: { id: attemptId, data }});
       } catch (error) {
         if (error instanceof LifecycleError) throw error;
         const accepted = await replay(attemptId, input);
