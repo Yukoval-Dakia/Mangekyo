@@ -1,0 +1,34 @@
+import type { Revision } from '@mangekyo/kernel';
+import { checkPack, packCandidates } from './offline-pack.ts';
+import { organizerTaskDoneInput, organizerTaskDraft } from './organizer-task-values.ts';
+import { integer } from './validation.ts';
+
+export function classifyOrganizerCommandError(message: string): { readonly status: number; readonly message: string } | null {
+  if (message === 'Command ID already used with a different command identity') return { status: 409, message: '同一个请求标识已经用于不同内容。' };
+  if (message.startsWith('Fact revision conflict: ')) return { status: 409, message: '这条记录已在别处更新。请刷新后再试。' };
+  if (message.startsWith('Fact does not exist: ')) return { status: 404, message: '这条记录不存在。' };
+  if (message.startsWith('Fact is retracted: ')) return { status: 409, message: '这条记录已经撤回。' };
+  return null;
+}
+
+export function mergePackCandidatesWithCompletion(completed: ReadonlySet<string | null>, day: string) {
+  return packCandidates().map(c => completed.has(`${c.id}@${c.open?.rev}`) ? { ...c, state: 'completed' as const, date: day } : c);
+}
+
+export function parseOrganizerOpenRev(rawRev: string | null): Revision {
+  return integer(Number(rawRev), 1, 2147483647) as Revision;
+}
+
+export function parseOfflinePackSubmit(input: Record<string, unknown>) {
+  if (input.actor !== undefined || input.consent !== 'teaching') throw new Error('请确认保存本次学习记录。');
+  const idOfPack = typeof input.id === 'string' ? input.id : '';
+  return checkPack(idOfPack, integer(input.rev, 1, 2147483647), integer(input.choice, 0, 2147483647));
+}
+
+export function parseOrganizerTaskInput(input: unknown) {
+  const value = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+  if (typeof value.id === 'string' && value.id.length > 0) {
+    return { kind: 'done' as const, commandInput: organizerTaskDoneInput({ ...value, expectedRev: value.expectedRev ?? value.rev }) };
+  }
+  return { kind: 'create' as const, data: organizerTaskDraft(input) };
+}
