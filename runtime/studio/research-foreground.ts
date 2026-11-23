@@ -1,8 +1,9 @@
+import type {ReadTransaction} from '../../kernel/src/index.ts';
+import {parseManifest, revalidateManifest} from '../../kernel/src/index.ts';
 import { isDeepStrictEqual } from 'node:util';
-import type { ReadTransaction } from '../../kernel/src/db/types.ts';
+
 import type { Revision, Tick } from '../../kernel/src/declarations/ids.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+
 import { studyTurn } from '../../modules/activity/values.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import type { ForegroundDigest } from './foreground-digest.ts';

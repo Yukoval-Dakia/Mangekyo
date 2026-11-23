@@ -1,10 +1,11 @@
+import type {Db, ReadTransaction} from '../../kernel/src/index.ts';
+import {LifecycleError, withLearnerLock} from '../../kernel/src/index.ts';
 import { scoutReceipt, type ResearchScoutHost } from '../../executors/temporal/src/research-scout.ts';
 export { validateResearchScoutHost, type ResearchScoutHost } from '../../executors/temporal/src/research-scout.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+
 import type { FactId } from '../../kernel/src/declarations/ids.ts';
 import type { Json } from '../../kernel/src/declarations/types.ts';
-import { LifecycleError } from '../../kernel/src/lifecycle.ts';
+
 import { EffectBudgetExceeded, EffectIdentityMismatch, runEffect } from '../../kernel/src/work/effects.ts';
 import type { researchScoutBudget } from '../../modules/companion/research.ts';
 import { studioLearner } from './identity.ts';
@@ -28,8 +29,7 @@ export async function sampleResearchScout(db: Db, settingsId: FactId, revision: 
     }, async (providerEffectId, checkDispatch) => {
       let dispatched = false;
       try {
-        const { response } = await db.tx(scope, async tx => {
-          await lockLearner(tx, tx.learner);
+        const { response } = await withLearnerLock(db, scope, async tx => {
           await checkDispatch(tx);
           await authorize(tx);
           if (host.retentionDays > budget.maxRetentionDays || host.route !== budget.route || reserveUsdMicros > budget.maxPerCallMicros)

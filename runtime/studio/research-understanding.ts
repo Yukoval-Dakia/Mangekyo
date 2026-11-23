@@ -1,3 +1,5 @@
+import type {Db, ReadTransaction} from '../../kernel/src/index.ts';
+import {withLearnerLock} from '../../kernel/src/index.ts';
 import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
 import type { WorkerConsent } from '../../modules/companion/worker-consent.ts';
 import { workerCall, workerCap } from '../research/worker-dispatch.ts';
@@ -14,11 +16,9 @@ import {
   readRadarTodo as readRadarTodoSupport,
   type ResearchHostDeps,
 } from '../../modules/companion/research-host-support.ts';
-import { createAuthorizedFactReader, isFactUnavailable } from './fact-read-helpers.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
+import { createAuthorizedFactReader, createStudioCommand, isFactUnavailable } from './fact-read-helpers.ts';
+
+import { commandId, factId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { cancelWork, failWork, finishWork, readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { runEffect } from '../../kernel/src/work/effects.ts';
@@ -64,7 +64,7 @@ const mayResearch: WorkspaceSourceRecipient = fact =>
 export const paidExtractionRecipient: WorkspaceSourceRecipient = fact => fact.purpose.includes(researchPurpose) &&
   (fact.type === workbookAttemptType || fact.type === turnEvidenceType && turnAllowsBackgroundUnderstanding(fact));
 
-const getUnderstandingHostDeps = () => ({
+const understandingHostDeps: ResearchHostDeps = {
   mayResearch, paidExtractionRecipient, claimType, memoryAssertionType, whenAvailable, createAuthorizedFactReader,
   digest: (value: string) => createHash('sha256').update(value).digest('hex'), studyTurn,
   turnAllowsBackgroundUnderstanding, workbookAttemptType, posttestSubmissionType, readActivitySubmissionBirth,
@@ -72,40 +72,40 @@ const getUnderstandingHostDeps = () => ({
   resolveSource, openWorkbookQuestionSources, undoTextbookCommand, textSlice,
   researchReader, independentScoutSource, currentResearchSettings, workspaceGrantChecker, notionModelRecipient,
   teachingPurpose: purpose, teachingSlotType: slotType, companionTeachingMethods, completedCompanionTurns,
-}) as unknown as ResearchHostDeps;
+} as unknown as ResearchHostDeps;
 
 async function openUnderstandingActivity(tx: ReadTransaction, id: string, activePurpose = researchPurpose,
   recipient?: WorkspaceSourceRecipient, item?: string) {
-  return openUnderstandingActivitySupport(getUnderstandingHostDeps(), tx, id, activePurpose, recipient, item);
+  return openUnderstandingActivitySupport(understandingHostDeps, tx, id, activePurpose, recipient, item);
 }
 
 export async function openUnderstandingCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], activePurpose?: string,
   maySend?: WorkspaceSourceRecipient) {
-  return openUnderstandingCitationsSupport(getUnderstandingHostDeps(), tx, refs, activePurpose, maySend);
+  return openUnderstandingCitationsSupport(understandingHostDeps, tx, refs, activePurpose, maySend);
 }
 
 export async function discoverUnderstandingTodos(tx: ReadTransaction, reviewed: Tick, settingsRevision: number, now: number, recipient?: WorkspaceSourceRecipient, budgetCap = 0) {
-  return discoverUnderstandingTodosSupport(getUnderstandingHostDeps(), tx, reviewed, settingsRevision, now, recipient, budgetCap);
+  return discoverUnderstandingTodosSupport(understandingHostDeps, tx, reviewed, settingsRevision, now, recipient, budgetCap);
 }
 
 async function paidSource(tx: ReadTransaction, id: string) {
-  return paidSourceSupport(getUnderstandingHostDeps(), tx, id);
+  return paidSourceSupport(understandingHostDeps, tx, id);
 }
 
 export async function eligibleExtraction(tx: ReadTransaction, spec: TodoSpec, recipient?: WorkspaceSourceRecipient, budgetCap = 0,
   callerPurpose = researchPurpose) {
-  return eligibleExtractionSupport(getUnderstandingHostDeps(), tx, spec as any, recipient, budgetCap, callerPurpose);
+  return eligibleExtractionSupport(understandingHostDeps, tx, spec as any, recipient, budgetCap, callerPurpose);
 }
 
 export async function readRadarTodo(tx: ReadTransaction, maySend: WorkspaceSourceRecipient, id?: string) {
-  return readRadarTodoSupport(getUnderstandingHostDeps(), tx, maySend, id);
+  return readRadarTodoSupport(understandingHostDeps, tx, maySend, id);
 }
 
 async function existingUnderstandings(tx: ReadTransaction, sourceId: string, recipient?: WorkspaceSourceRecipient) {
-  return existingUnderstandingsSupport(getUnderstandingHostDeps(), tx, sourceId, recipient);
+  return existingUnderstandingsSupport(understandingHostDeps, tx, sourceId, recipient);
 }
 async function learnerGovernedSince(tx: ReadTransaction, tick: string, sourceId: string) {
-  return learnerGovernedSinceSupport(getUnderstandingHostDeps(), tx, tick, sourceId);
+  return learnerGovernedSinceSupport(understandingHostDeps, tx, tick, sourceId);
 }
 
 export function openUnderstandingExtraction(db: Db, companion: LoadedModule, transport: UnderstandingTransport | undefined,
@@ -155,8 +155,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
         label: 'model:' + route, input: {instructions, input,
           ...(source.basisDigest ? {basis: source.basisDigest} : {})}}, async (providerEffectId, checkDispatch) => {
         // Protect admission and starting the send, then release the learner lock while the host awaits the reply.
-        const {response} = await db.tx(scope, async tx => {
-          await lockLearner(tx, tx.learner);
+        const {response} = await withLearnerLock(db, scope, async tx => {
           await checkDispatch(tx);
           await matches(tx);
           const response = transport!.sample({instructions, input, providerEffectId});
@@ -182,7 +181,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
           undo_token: previous ? previous.data.undo_token : factId(claimUndoToken(command, id))}};
       });
 
-      const handle = createCommandHandler(db, {modules: [companion],
+      const handle = createStudioCommand(db, {modules: [companion],
         bindCommandRead: (tx, _, base) => bindLinkedCitationRead(base, async citation => {
           if (citation.question_evidence && citation.question_evidence.recipient !== route) return;
           if (!(await openUnderstandingCitations(tx, [citation], researchPurpose, maySend)).length) return;
