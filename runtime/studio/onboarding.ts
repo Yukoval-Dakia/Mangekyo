@@ -96,7 +96,7 @@ export function openOnboarding(db: Db, modules: Modules, options: Options = {}) 
       throw new RequestError(error.code === 'model_unavailable' ? 503 : error.code === 'timeout' ? 504 : 502, error.message, error.code);
     }) as OnboardingAgentResult;
     const proposal = parseProposal(result.proposal), effect = { ownerKind: 'session' as const, ownerId: `onboarding:${requestId}`, stepKey: 'onboarding-setup',
-      label: 'onboarding-setup', input: { requestId, currentDate: input.currentDate, timeZone: input.timeZone, mode: 'llm' },
+      label: 'onboarding-setup', providerEffectId: `onboarding:${requestId}`, input: { requestId, currentDate: input.currentDate, timeZone: input.timeZone, mode: 'llm' },
       result: { model: result.usage.model, durationMs: result.usage.durationMs, route: 'onboarding-setup',
         ...(result.usage.reportedModel ? { reportedModel: result.usage.reportedModel } : {}),
         ...(result.usage.inputTokens === undefined ? {} : { inputTokens: result.usage.inputTokens }),
