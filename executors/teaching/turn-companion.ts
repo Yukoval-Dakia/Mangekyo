@@ -88,6 +88,7 @@ export async function executeCompanionTurn<
     averageSpeed: (distanceKm: number, minutes: number) => number;
     onProgress: NonNullable<TeachingDependencies['onProgress']>;
     onTextDelta?: TeachingDependencies['onTextDelta'];
+    onActivity?: TeachingDependencies['onActivity'];
     runEffect: TeachingDependencies['runEffect'];
     ledger: TurnWitnessLedger<TWitness, TAssessment, TRetention, TMemoryPacket>;
   },
@@ -139,7 +140,7 @@ export async function executeCompanionTurn<
 ) {
   const {
     slotKey, slotType, submission, learningV1, memoryTurn, attachment, settings, grants, mcpServers,
-    memoryId, ridingLesson, averageSpeed, onProgress, onTextDelta, runEffect, ledger,
+    memoryId, ridingLesson, averageSpeed, onProgress, onTextDelta, onActivity, runEffect, ledger,
   } = params;
   let answer = submission.answer;
   if (!answer) throw new TeachingError('invalid_input', '请输入有效的学习问题。');
@@ -249,6 +250,7 @@ export async function executeCompanionTurn<
         }
       },
       ...(onTextDelta && !suppressTextDelta ? {onTextDelta} : {}),
+      ...(onActivity && !suppressTextDelta ? {onActivity} : {}),
       ...(historyNotice ? { historyNotice } : {}),
       ...(evidenceMessage ? { classroomEvidence: evidenceMessage } : {}),
       ...(jit ? { jitContext: jit.context } : currentObject ? { currentLearningObject: JSON.stringify(currentObject.view) } : {}),

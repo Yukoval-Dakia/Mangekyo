@@ -22,15 +22,101 @@ export function learningArguments(raw: string): ToolArgs | undefined {
 const schemaLookup = (name: string) => ({tool: 'find_tools', args: {query: name}});
 const readNames = new Set<string>([...hostedReads, 'find_tools']);
 const writeNames = new Set<string>([...hostedWrites, ...onDemandTools, 'mount_artifact']);
+const checkingNames = new Set<string>([
+  'python', 'run_calculation', 'save_memory', 'save_workspace', 'save_relation', 'record_observation', ...writeNames,
+]);
+
+export function toolProgressPhase(calls: readonly FunctionCall[]): 'reading' | 'checking' {
+  return calls.some(call => checkingNames.has(call.function.name)) ? 'checking' : 'reading';
+}
+
+const toolLabels: Record<string, string> = {
+  search_workspace: '检索学习资料',
+  search_learning: '检索学习资料',
+  open_learning: '打开学习原文',
+  read_workspace: '打开学习原文',
+  read_context: '读取个人记忆与学情',
+  read_learner_radar: '查看学情雷达',
+  retrieve_memory: '检索长期记忆',
+  open_memory_region: '展开更多记忆片段',
+  mount_artifact: '生成交互图解组件',
+  manage_activity: '发放交互学习组件',
+  save_page: '整理学习讲义',
+  save_belief: '记录学习观察',
+  save_memory: '记录学习记忆',
+  save_question: '生成练习题草稿',
+  save_edge: '关联知识图谱',
+  save_relation: '关联知识图谱',
+  record_observation: '记录学情观察',
+  save_workspace: '保存学习记录',
+  python: '运行 Python 验算',
+  run_calculation: '运行 Python 验算',
+  exa_search: '搜索公开参考资料',
+  notion_read: '读取 Notion 笔记',
+  find_tools: '查找可用工具',
+  open_tool_result: '展开工具结果',
+  read_file: '读取工作区文件',
+  write_file: '写入工作区文件',
+  schedule_followup: '安排后续跟进',
+  evolve_graph: '更新知识图谱',
+  refresh_living_slots: '刷新活资产内容',
+};
+
+const contextIntentLabels: Record<string, string> = {
+  radar: '学情雷达',
+  tutoring: '伴学上下文',
+  conversation: '对话记忆',
+  management: '记忆管理',
+  planning: '学习规划',
+  execution: '执行上下文',
+  history: '历史记录',
+};
+
+function compactText(value: unknown, limit = 60): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const clean = value.replace(/\s+/g, ' ').trim();
+  return clean ? clean.slice(0, limit) : undefined;
+}
+
+export function toolDisplayLabel(name: string): string {
+  return toolLabels[name] ?? `调用工具 · ${name}`;
+}
+
+export function toolCallSummary(name: string, args: ToolArgs | undefined): string | undefined {
+  if (!args) return undefined;
+  if (name === 'read_context') return typeof args.intent === 'string' ? contextIntentLabels[args.intent] ?? compactText(args.intent) : undefined;
+  if (name === 'mount_artifact' || name === 'manage_activity') {
+    const view = args.view && typeof args.view === 'object' && !Array.isArray(args.view) ? args.view as Record<string, unknown> : undefined;
+    return compactText(view?.title);
+  }
+  if (name === 'search_learning' || name === 'search_workspace' || name === 'exa_search' || name === 'find_tools') return compactText(args.query);
+  if (name === 'save_page' || name === 'save_question' || name === 'record_observation' || name === 'save_workspace') return compactText(args.title);
+  if (name === 'read_file' || name === 'write_file') return compactText(args.name);
+  if (name === 'run_calculation' || name === 'python') return '数值与符号验算';
+  return undefined;
+}
+
+export function toolResultStatus(content: string): 'done' | 'error' {
+  if (!content.trim().startsWith('{')) return 'done';
+  try {
+    const value = JSON.parse(content) as Record<string, unknown> | null;
+    if (value && (value.ok === false || value.state === 'rejected' || typeof value.error === 'string')) return 'error';
+  } catch { /* Plain text output counts as done. */ }
+  return 'done';
+}
 
 export function createLearningTurn(host: LearningTools, results: ReturnType<typeof studyToolResults>,
   runEffect: TeachingDependencies['runEffect'], model: string) {
   // Core definitions are stable for a turn. Only authorized owner bindings enter discovery.
   const definitions = {...host.definitions, save_belief: saveBeliefDefinition};
   const resident = [...hostedReads.map(name => definitions[name]), findTools,
-    ...hostedWrites.map(name => definitions[name]), runCalculationDefinition];
-  const onDemand = [...onDemandTools, 'mount_artifact' as const].flatMap(name => definitions[name] ?? []);
-  const hostedNames = new Set<string>([...hostedReads, ...hostedWrites, ...onDemand.map(tool => tool.function.name)]);
+    ...hostedWrites.map(name => definitions[name]),
+    ...(definitions.mount_artifact ? [definitions.mount_artifact] : []),
+    runCalculationDefinition];
+  const onDemand = onDemandTools.flatMap(name => definitions[name] ?? []);
+  const hostedNames = new Set<string>([...hostedReads, ...hostedWrites,
+    ...(definitions.mount_artifact ? ['mount_artifact'] : []),
+    ...onDemand.map(tool => tool.function.name)]);
 
   function failure(error: LearningError) {
     return {content: formatLearningResult(error)};

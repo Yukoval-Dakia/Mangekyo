@@ -356,10 +356,12 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
           blocks[index] = { type: 'tool_use', id: callId, name, initial, json: '', complete: false };
           rawContent[index] = { ...block, input: initial };
           sawToolBlock = true;
+          await hooks.toolCallsStart?.({ id: callId, name });
         } else if (block.type === 'thinking') {
           const thinking = typeof block.thinking === 'string' ? block.thinking : '';
           blocks[index] = { type: 'thinking', thinking, signature: '' };
           rawContent[index] = { ...block, thinking };
+          if (thinking) await hooks.thinking?.(thinking);
         } else if (block.type === 'redacted_thinking') {
           blocks[index] = { type: 'raw', block };
           rawContent[index] = block;
@@ -389,6 +391,7 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
           rawContent[event.index as number] = {
             ...rawContent[event.index as number]!, thinking: block.thinking,
           };
+          if (delta.thinking) await hooks.thinking?.(delta.thinking);
         } else if (delta.type === 'signature_delta') {
           if (block.type !== 'thinking' || typeof delta.signature !== 'string') throw new Error('Invalid completion event');
           block.signature = delta.signature;

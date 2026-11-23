@@ -1,6 +1,9 @@
 import {expect, it} from 'vitest';
-import {runCompanionTurn} from './index.ts';
+import {runCompanionTurn, type TeachingActivity} from './index.ts';
+import {learningHostDefinitions} from './learning-tools.ts';
+import {createLearningTurn} from './learning-turn.ts';
 import {runStudyAgent} from './study-agent.ts';
+import {studyToolResults} from './study-tool-results.ts';
 import {deps, model, mockChat, providerModel, responseFrame, sseResponse, watchFetch} from './test/chat.ts';
 import {executeCompanionTurn} from './turn-companion.ts';
 import type {GuardableTurn} from './turn-context.ts';
@@ -54,6 +57,49 @@ it('does not emit a tool-call round, then emits the next final round', async () 
   }, true);
   expect(result.message).toBe('已保存。');
   expect(deltas).toEqual(['已保存。']);
+});
+
+it('signals tool progress to clear transitional text and streams thinking plus tool steps', async () => {
+  const deltas: string[] = [];
+  const phases: string[] = [];
+  const activities: TeachingActivity[] = [];
+  const responses = [
+    sseResponse(
+      responseFrame({reasoning_content: '先核对讲义内容'}, providerModelPlaceholder) +
+      responseFrame({content: '我先查一下记录'}, providerModelPlaceholder) +
+      responseFrame({tool_calls: [{index: 0, id: 'call-1', type: 'function', function: {name: 'save_page', arguments: '{"title":"牛顿定律","content":"正文"}'}}]}, providerModelPlaceholder, 'tool_calls') +
+      'data: [DONE]\n\n',
+    ),
+    sseResponse(responseFrame({content: '最终回答。'}, providerModelPlaceholder, 'stop') + 'data: [DONE]\n\n'),
+  ];
+  watchFetch().mockImplementation(async () => responses.shift()!);
+  const result = await runStudyAgent([{role: 'user', content: '保存一页。'}], {
+    ...deps,
+    onProgress: async progress => {phases.push(progress.phase);},
+    onTextDelta: async delta => {deltas.push(delta);},
+    onActivity: async activity => {activities.push(activity);},
+    tools: {workspace: {narrowSaves: true, writes: () => [], execute: async () => JSON.stringify({state: 'done', id: 'page', rev: 1})}},
+  }, true);
+  expect(result.message).toBe('最终回答。');
+  expect(phases).toContain('checking');
+  expect(deltas.at(-1)).toBe('最终回答。');
+  expect(activities.some(a => a.kind === 'thinking' && a.delta.includes('先核对讲义内容'))).toBe(true);
+  expect(activities.some(a => a.kind === 'tool' && a.step.name === 'save_page' && a.step.label === '整理学习讲义' && a.step.status === 'running')).toBe(true);
+  expect(activities.some(a => a.kind === 'tool' && a.step.name === 'save_page' && a.step.summary === '牛顿定律' && a.step.status === 'done' && typeof a.step.durationMs === 'number')).toBe(true);
+});
+
+it('exposes mount_artifact as a resident tool for Generative UI turns', () => {
+  const artifact = {type: 'function', function: {name: 'mount_artifact', description: 'mount', parameters: {type: 'object', properties: {}}}};
+  const turn = createLearningTurn({
+    definitions: learningHostDefinitions(false, ['tutoring'], artifact),
+    execute: async () => ({ok: true, data: {}}),
+    writeKeys: () => [],
+    preparePython: async () => ({ok: true, values: []}),
+    authorizeHandles: async () => ({ok: true}),
+    writes: () => [],
+  }, studyToolResults(), deps.runEffect, model);
+  expect(turn.resident.map(t => t.function.name)).toContain('mount_artifact');
+  expect(turn.discoverable.map(t => t.function.name)).not.toContain('mount_artifact');
 });
 
 it('suppresses prepare output and replies hidden by companion turn guards', async () => {

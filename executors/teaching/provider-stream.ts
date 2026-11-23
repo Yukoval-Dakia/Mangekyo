@@ -17,6 +17,8 @@ export type ProviderHooks = {
   allowTools?: boolean;
   model?: (model: unknown) => void;
   content?: (text: string) => Promise<void>;
+  thinking?: (delta: string) => void | Promise<void>;
+  toolCallsStart?: (call?: { id: string; name: string }) => void | Promise<void>;
 };
 
 const maximumFrame = 512_000;
@@ -120,7 +122,7 @@ type ProviderChunk = {
   choices?: {
     index?: number;
     finish_reason?: string | null;
-    delta?: { role?: string; content?: unknown; tool_calls?: unknown; function_call?: unknown };
+    delta?: { role?: string; content?: unknown; reasoning_content?: unknown; reasoning?: unknown; tool_calls?: unknown; function_call?: unknown };
   }[];
 };
 
@@ -194,6 +196,8 @@ export async function readProviderCompletion(response: Response, hooks: Provider
   let usage: CompletionUsage | undefined;
   const calls: FunctionCall[] = [];
   let endedWithTools = false;
+  let notifiedToolCalls = false;
+  const notifiedCalls = new Set<number>();
 
   async function readLine(line: string) {
     if (line !== '') {
@@ -239,9 +243,27 @@ export async function readProviderCompletion(response: Response, hooks: Provider
     if ((!hooks.allowTools && delta?.tool_calls) || delta?.function_call || (delta?.role && delta.role !== 'assistant')) {
       throw new Error('Unexpected completion channel');
     }
+    const reasoning = typeof delta?.reasoning_content === 'string'
+      ? delta.reasoning_content
+      : typeof delta?.reasoning === 'string' ? delta.reasoning : '';
+    if (reasoning) await hooks.thinking?.(reasoning);
     if (delta?.tool_calls) {
       if (stopped) throw new Error('Tool call after completion');
       collectCalls(calls, delta.tool_calls, true);
+      let fired = false;
+      for (let i = 0; i < calls.length; i++) {
+        const call = calls[i];
+        if (call && call.id && call.function.name && !notifiedCalls.has(i)) {
+          notifiedCalls.add(i);
+          notifiedToolCalls = true;
+          fired = true;
+          await hooks.toolCallsStart?.({ id: call.id, name: call.function.name });
+        }
+      }
+      if (!notifiedToolCalls && !fired) {
+        notifiedToolCalls = true;
+        await hooks.toolCallsStart?.();
+      }
     }
     if (typeof delta?.content === 'string' && delta.content.length) {
       if (stopped) throw new Error('Content after completion');

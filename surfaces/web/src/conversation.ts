@@ -7,7 +7,8 @@ import { mountBatches, mountQuery } from "./presentation/mount-coverage.ts";
 import { editorDrafts } from "./presentation/editor-draft";
 import { useMountPermissions } from "./presentation/mount-permissions";
 import { authorizeMounts, refreshDraftBases, readSession, receiptSnapshot, streamSnapshot, type MountedSession, type ArtifactSnapshotV1 } from "./presentation/session-artifacts";
-import { applyDeltaChunk, parseDeltaEvent, progressDeltaState, reconcileProgressText, type DeltaState } from "./stream-delta";
+import { applyDeltaChunk, parseActivityEvent, parseDeltaEvent, progressDeltaState, reconcileProgressText, upsertToolStep, type DeltaState, type LiveToolStep } from "./stream-delta";
+export type { LiveToolStep } from "./stream-delta";
 
 type Operation = {allowBackgroundUnderstanding?: boolean | undefined; currentObject?: CurrentObject | undefined} & (
   | { kind: "create"; route?: Route | undefined; mcpGrants?: McpGrant[] | undefined; requestId: string; question?: string; attachment?: StudyAttachment }
@@ -118,6 +119,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
   }, [permissions, connection, uncertainKey, session?.id, refresh]);
 
   const [streamingReply, setStreamingReply] = useState<string>();
+  const [thinkingText, setThinkingText] = useState<string>();
+  const [liveToolSteps, setLiveToolSteps] = useState<readonly LiveToolStep[]>([]);
   const [progressLabel, setProgressLabel] = useState<string>();
   const [reconnecting, setReconnecting] = useState(false);
 
@@ -157,6 +160,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       setInvalidated(staleEvidence);
       if (staleEvidence) setSession(undefined);
       setStreamingReply(undefined);
+      setThinkingText(undefined);
+      setLiveToolSteps([]);
       setProgressLabel(undefined);
       setProblem({
         source: "read",
@@ -192,10 +197,18 @@ export function useConversation(caseId: string, active: boolean, initialSession?
         if (current.status !== "pending") {
           deltaState = undefined;
           setStreamingReply(undefined);
+          setThinkingText(undefined);
+          setLiveToolSteps([]);
           setProgressLabel(undefined);
+          if (mode === 'stream' && latest?.status === "pending") {
+            terminal = true;
+            source.close();
+          }
         }
         if (mode === 'complete') {
           setStreamingReply(undefined);
+          setThinkingText(undefined);
+          setLiveToolSteps([]);
           setProgressLabel(undefined);
         }
       } catch (error) {
@@ -235,8 +248,30 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const next = applyDeltaChunk(deltaState, chunk, previous.currentTurnId);
       if (next === deltaState) return;
       deltaState = next;
-      setProgressLabel(label => label ?? progressLabels.replying);
+      setProgressLabel(progressLabels.replying);
       setStreamingReply(next?.text);
+      if (!didHydrate) {
+        didHydrate = true;
+        void hydrate('stream');
+      }
+    });
+
+    source.addEventListener("activity", (event: MessageEvent<string>) => {
+      if (terminal || controller.signal.aborted) return;
+      const item = parseActivityEvent(event.data);
+      if (!item) return;
+      const previous = sessionRef.current;
+      if (retiredTurns.has(item.turnId) || !previous || previous.id !== sessionId ||
+          previous.status !== "pending" || previous.currentTurnId !== item.turnId ||
+          previous.turns.some(turn => turn.turnId === item.turnId)) return;
+      if (item.kind === "thinking") {
+        setThinkingText(current => {
+          const base = current ?? "";
+          return base.length >= 32_000 ? base : (base + item.delta).slice(0, 32_000);
+        });
+      } else {
+        setLiveToolSteps(current => upsertToolStep(current, item.step));
+      }
       if (!didHydrate) {
         didHydrate = true;
         void hydrate('stream');
@@ -251,7 +286,11 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       if (retiredTurns.has(turn)) return;
       if ((previous?.currentTurnId === update.session.currentTurnId && previous?.status !== "pending") ||
           previous?.turns.some(t => t.turnId === update.session.currentTurnId)) return;
-      if (previous?.currentTurnId && previous.currentTurnId !== turn) retiredTurns.add(previous.currentTurnId);
+      if (previous?.currentTurnId && previous.currentTurnId !== turn) {
+        retiredTurns.add(previous.currentTurnId);
+        setThinkingText(undefined);
+        setLiveToolSteps([]);
+      }
       const ids = update.authorizedMountIds;
       batch = { id: event.lastEventId, turn, frame: update };
       if (ids !== undefined) {
@@ -265,12 +304,15 @@ export function useConversation(caseId: string, active: boolean, initialSession?
         mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] };
       setSession(batch.order ? authorizeMounts(mounted, turn, batch.order, update, covered) : mounted);
       setProgressLabel(update.phase ? progressLabels[update.phase] : undefined);
-      deltaState = deltaState?.turnId === turn && update.message === undefined
-        ? deltaState
-        : deltaState?.turnId === turn
-          ? { ...deltaState, text: reconcileProgressText(deltaState, update.message) ?? deltaState.text }
-          : progressDeltaState(turn, update.message);
-      setStreamingReply(deltaState?.text);
+      const nonReplyingReset = update.message === undefined && update.phase !== undefined && update.phase !== "replying";
+      deltaState = nonReplyingReset
+        ? (deltaState?.turnId === turn ? { ...deltaState, text: "" } : undefined)
+        : deltaState?.turnId === turn && update.message === undefined
+          ? deltaState
+          : deltaState?.turnId === turn
+            ? { ...deltaState, text: reconcileProgressText(deltaState, update.message) ?? deltaState.text }
+            : progressDeltaState(turn, update.message);
+      setStreamingReply(deltaState?.text || undefined);
       // Restore prior turns for a remembered session while the current one streams.
       if (!didHydrate) {
         didHydrate = true;
@@ -299,6 +341,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       if (!refresh && !sessionRef.current?.mounts.length && baseline?.currentTurnId === update.session.currentTurnId && baseline?.status === update.session.status) {
         deltaState = undefined;
         setStreamingReply(undefined);
+        setThinkingText(undefined);
+        setLiveToolSteps([]);
         setProgressLabel(undefined);
         return;
       }
@@ -306,6 +350,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       // learner's authorized session view once. The stream never carries audit fields.
       deltaState = undefined;
       setStreamingReply(update.message);
+      setThinkingText(undefined);
+      setLiveToolSteps([]);
       setProgressLabel(undefined);
       void hydrate('complete', update.session);
     });
@@ -332,16 +378,26 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       }
     };
 
+    const pendingPollTimer = setInterval(() => {
+      if (terminal || controller.signal.aborted || reading) return;
+      if (sessionRef.current?.id === sessionId && sessionRef.current.status === "pending") {
+        void hydrate('stream');
+      }
+    }, 12_000);
+
     return () => {
       source.close();
       controller.abort();
       clearTimeout(reconnectTimer);
+      clearInterval(pendingPollTimer);
       readAssessment.current = undefined;
     };
   }, [active, busy, caseId, refresh, retryOperation, sessionId, sessionKey]);
 
   useEffect(() => {
     setStreamingReply(undefined);
+    setThinkingText(undefined);
+    setLiveToolSteps([]);
     setProgressLabel(undefined);
   }, [sessionId]);
 
@@ -368,6 +424,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     setBusy(true);
     setSendingAnswer(operation.kind === "answer" ? operation.answer : operation.question);
     setStreamingReply(undefined);
+    setThinkingText(undefined);
+    setLiveToolSteps([]);
     setProgressLabel(undefined);
     setReconnecting(false);
     setProblem(undefined);
@@ -468,6 +526,8 @@ export function useConversation(caseId: string, active: boolean, initialSession?
     busy,
     sendingAnswer,
     streamingReply,
+    thinkingText,
+    liveToolSteps,
     progressLabel,
     reconnecting,
     retryOperation,

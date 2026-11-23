@@ -4,7 +4,7 @@ import pg from 'pg';
 import { expect, it, vi } from 'vitest';
 import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learner-database.ts';
 import { stableId, studioLearner } from '../identity.ts';
-import { listenForSessionEvents, prepareSessionEvents, publishSessionDelta, serveSessionEvents } from '../stream.ts';
+import { listenForSessionEvents, prepareSessionEvents, publishSessionActivity, publishSessionDelta, serveSessionEvents } from '../stream.ts';
 
 it.skipIf(!testDatabaseUrl)('publishes transient PostgreSQL deltas to authorized SSE streams', {timeout: 30_000}, () =>
   withLearnerDatabase(studioLearner, async db => {
@@ -37,6 +37,12 @@ it.skipIf(!testDatabaseUrl)('publishes transient PostgreSQL deltas to authorized
       expect(await counts()).toEqual(before);
       expect(await publishSessionDelta(db, session, turn, 3, 'x'.repeat(6000))).toBe(9);
       await vi.waitFor(() => expect(frames.filter(frame => frame.includes('event: delta'))).toHaveLength(8));
+      await publishSessionActivity(db, session, turn, {kind: 'thinking', delta: '思考步骤'});
+      await publishSessionActivity(db, session, turn, {kind: 'tool', step: {id: '0:c1', name: 'mount_artifact', label: '生成交互图解组件', status: 'running'}});
+      await vi.waitFor(() => expect(frames.filter(frame => frame.includes('event: activity'))).toHaveLength(2));
+      expect(frames.filter(frame => frame.includes('event: activity')).map(frame => JSON.parse(frame.split('\ndata: ')[1]!)))
+        .toEqual([{turnId: turn, kind: 'thinking', delta: '思考步骤'}, {turnId: turn, kind: 'tool', step: {id: '0:c1', name: 'mount_artifact', label: '生成交互图解组件', status: 'running'}}]);
+      expect(await counts()).toEqual(before);
     } finally {
       await stop();
     }
