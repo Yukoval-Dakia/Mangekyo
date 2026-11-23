@@ -3,7 +3,7 @@ import type {FirstTurnJitContext} from './first-turn-jit.ts';
 import {learningToolError} from './tool-error.ts';
 import { isPhaticMessage } from './phatic-message.ts';
 import { createHash } from 'node:crypto';
-import type { TeachingDependencies, TeachingDispatch } from './index.ts';
+import type { TeachingActivity, TeachingDependencies, TeachingDispatch } from './index.ts';
 import { McpTurnConnections, type McpServer } from './mcp-client.ts';
 import { loadMcpTools, invokeMcpTool, remoteToolDefinition } from './mcp-tools.ts';
 import { findTools, studyToolDiscovery } from './study-tool-discovery.ts';
@@ -15,7 +15,7 @@ import {pythonAttemptSelection} from './python-attempt-selection.ts';
 import { createStudyTools, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
 import { type CompletionUsage, type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
-import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch, toolProgressPhase} from './learning-turn.ts';
+import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch, toolCallSummary, toolDisplayLabel, toolProgressPhase, toolResultStatus} from './learning-turn.ts';
 import {adaptWorkspaceResult, learningToolFallback, narrowWorkspaceDefinitions, saveBeliefDefinition, toolFailure,
   type LearningTools} from './learning-tools.ts';
 
@@ -72,6 +72,7 @@ const residentTaskHints: Record<string, readonly string[]> = {
   open_learning: ['打开', '原文', 'open'],
   read_context: ['上下文', '学情', 'context', 'radar', 'management'],
   manage_activity: ['挂载', '作品', 'artifact', 'mount'],
+  mount_artifact: ['挂载', '作品', '图解', '曲线', '受力', '交互', '滑块', '小测', 'artifact', 'mount', 'ui', 'diagram', 'chart'],
   run_calculation: ['计算', '验算', 'python', 'calculation'],
 };
 
@@ -188,6 +189,12 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const trace: string[] = [];
   const endpoint = providerEndpoint(options.provider);
   let emptyFindTools = 0;
+  let emittedThinking = 0;
+  const maxThinking = 32_000;
+  const toolStartTimes = new Map<string, number>();
+  const emitActivity = async (activity: TeachingActivity) => {
+    if (streamReply && options.onActivity) await options.onActivity(activity);
+  };
   for (let round = 0; round <= maxToolCalls; round++) {
     const definitions = discovery ? [...coreDefinitions, ...discovery.takeDefinitions()] : coreDefinitions;
     const available = trace.length < maxToolCalls && definitions.length > 0;
@@ -207,18 +214,50 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       let lastPush = 0;
       let emittedDeltaText = '';
       let sawToolCalls = false;
+      let thinkingBuf = '';
+      let lastThinkingPush = 0;
+      let roundThinking = false;
+      const flushThinking = async () => {
+        if (!thinkingBuf || !streamReply || !reportedModel || !options.onActivity) { thinkingBuf = ''; return; }
+        const remaining = maxThinking - emittedThinking;
+        const chunk = remaining > 0 ? thinkingBuf.slice(0, remaining) : '';
+        thinkingBuf = '';
+        if (!chunk) return;
+        emittedThinking += chunk.length;
+        lastThinkingPush = Date.now();
+        await options.onActivity({ kind: 'thinking', delta: chunk });
+      };
       const send = () => requestCompletion(endpoint, body, options.provider.apiKey, requestId, {
         allowTools: available,
         model(value) { reportedModel = verifyTeachingModel(value, options.provider.apiKey, model); },
-        async toolCallsStart() {
-          if (sawToolCalls) return;
-          sawToolCalls = true;
-          lastText = '';
-          emittedDeltaText = '';
-          await options.onProgress?.({ phase: 'reading' });
+        async thinking(delta) {
+          if (!delta || !streamReply || !reportedModel || !options.onActivity || emittedThinking >= maxThinking) return;
+          if (!roundThinking && emittedThinking > 0) thinkingBuf += '\n\n';
+          roundThinking = true;
+          thinkingBuf += delta;
+          if (thinkingBuf.length >= 48 || Date.now() - lastThinkingPush >= 80) await flushThinking();
+        },
+        async toolCallsStart(info) {
+          await flushThinking();
+          if (!sawToolCalls) {
+            sawToolCalls = true;
+            lastText = '';
+            emittedDeltaText = '';
+            const phase = info?.name ? toolProgressPhase([{ id: info.id, type: 'function', function: { name: info.name, arguments: '' } }]) : 'reading';
+            await options.onProgress?.({ phase });
+          }
+          if (info?.id && info?.name && reportedModel) {
+            const stepId = `${round}:${info.id}`;
+            if (!toolStartTimes.has(stepId)) {
+              toolStartTimes.set(stepId, Date.now());
+              await emitActivity({ kind: 'tool', step: { id: stepId, name: info.name, label: toolDisplayLabel(info.name), status: 'running' } });
+            }
+          }
         },
         async content(text) {
-          if (sawToolCalls || !streamReply || !reportedModel || (!options.onProgress && !options.onTextDelta)) return;
+          if (sawToolCalls || !streamReply || !reportedModel) return;
+          await flushThinking();
+          if (!options.onProgress && !options.onTextDelta) return;
           if (options.onProgress && Date.now() - lastPush >= 80) {
             const message = publicAssistantContent(text).trimStart();
             if (message !== lastText && message.trim() && message.length <= maxReply) {
@@ -245,6 +284,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         await options.onTextDelta(delta);
       };
       const reply = await (options.jitContext && dispatch ? dispatch(send) : send());
+      await flushThinking();
       if ('truncated' in reply) return JSON.stringify({
         ...reply,
         ...(reportedModel ? {reportedModel} : {}),
@@ -308,7 +348,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       if (saved.lostSession) throw new TeachingError('provider_unavailable', '本轮有状态 MCP 会话已中断，请重新发送，已完成的工具操作不会重复。');
       return saved;
     }
-    const executeCall = async (call: FunctionCall, position: number, priorRead?: Promise<unknown>) => {
+    const runCall = async (call: FunctionCall, position: number, priorRead?: Promise<unknown>) => {
       const name = call.function.name;
       if (!availableNames.has(name)) {
         if (learning) return {...learning.badArgs(name, '当前请求未开放此工具。'), summary:'工具不可用'};
@@ -437,6 +477,25 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       const summary = name === memoryRegionTool.function.name ? '展开记忆区域' : name === 'save_belief' ? '登记本轮记忆操作' : remote
         ? 'MCP · ' + remote.server.id + ' / ' + remote.tool.name + '\n' + output.slice(0, 600) : summarise(call, args, output);
       return {...result, summary, ...(image && {image})};
+    };
+    const executeCall = async (call: FunctionCall, position: number, priorRead?: Promise<unknown>) => {
+      const name = call.function.name;
+      const stepId = `${round}:${call.id}`;
+      const label = toolDisplayLabel(name);
+      const argSummary = toolCallSummary(name, learningArguments(call.function.arguments));
+      const startedAt = toolStartTimes.get(stepId) ?? Date.now();
+      toolStartTimes.set(stepId, startedAt);
+      await emitActivity({ kind: 'tool', step: { id: stepId, name, label, ...(argSummary ? { summary: argSummary } : {}), status: 'running' } });
+      try {
+        const result = await runCall(call, position, priorRead);
+        const status = toolResultStatus(result.content);
+        const doneSummary = argSummary ?? result.summary.split('\n')[0]?.trim().slice(0, 80);
+        await emitActivity({ kind: 'tool', step: { id: stepId, name, label, ...(doneSummary ? { summary: doneSummary } : {}), status, durationMs: Math.max(0, Date.now() - startedAt) } });
+        return result;
+      } catch (error) {
+        await emitActivity({ kind: 'tool', step: { id: stepId, name, label, ...(argSummary ? { summary: argSummary } : {}), status: 'error', durationMs: Math.max(0, Date.now() - startedAt) } });
+        throw error;
+      }
     };
     function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string; image?: StudyImage; delivery?: DeliveredToolRange}) {
       trace.push(result.summary);

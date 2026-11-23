@@ -1,3 +1,16 @@
+export type LiveToolStep = {
+  id: string;
+  name: string;
+  label: string;
+  summary?: string;
+  status: "running" | "done" | "error";
+  durationMs?: number;
+};
+
+export type ActivityEvent =
+  | { turnId: string; kind: "thinking"; delta: string }
+  | { turnId: string; kind: "tool"; step: LiveToolStep };
+
 export type DeltaEventChunk = {
   turnId: string;
   seq: number;
@@ -9,6 +22,42 @@ export type DeltaState = {
   lastSeq: number;
   text: string;
 };
+
+export function parseActivityEvent(data: string): ActivityEvent | undefined {
+  let value: unknown;
+  try { value = JSON.parse(data); } catch { return undefined; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.turnId !== "string" || !record.turnId) return undefined;
+  if (record.kind === "thinking" && typeof record.delta === "string" && record.delta) {
+    return { turnId: record.turnId, kind: "thinking", delta: record.delta };
+  }
+  if (record.kind === "tool" && record.step && typeof record.step === "object" && !Array.isArray(record.step)) {
+    const s = record.step as Record<string, unknown>;
+    if (typeof s.id !== "string" || !s.id || typeof s.name !== "string" || !s.name ||
+        typeof s.label !== "string" || !s.label ||
+        (s.status !== "running" && s.status !== "done" && s.status !== "error")) return undefined;
+    const step: LiveToolStep = {
+      id: s.id, name: s.name, label: s.label, status: s.status,
+      ...(typeof s.summary === "string" && s.summary ? { summary: s.summary } : {}),
+      ...(typeof s.durationMs === "number" && Number.isFinite(s.durationMs) && s.durationMs >= 0 ? { durationMs: s.durationMs } : {}),
+    };
+    return { turnId: record.turnId, kind: "tool", step };
+  }
+  return undefined;
+}
+
+export function upsertToolStep(steps: readonly LiveToolStep[], next: LiveToolStep): readonly LiveToolStep[] {
+  const index = steps.findIndex(item => item.id === next.id);
+  if (index === -1) return [...steps, next];
+  const prev = steps[index]!;
+  const merged: LiveToolStep = {
+    ...prev,
+    ...next,
+    ...(next.summary !== undefined ? { summary: next.summary } : prev.summary !== undefined ? { summary: prev.summary } : {}),
+  };
+  return [...steps.slice(0, index), merged, ...steps.slice(index + 1)];
+}
 
 export function parseDeltaEvent(data: string): DeltaEventChunk | undefined {
   let value: unknown;

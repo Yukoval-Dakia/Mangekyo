@@ -6,7 +6,7 @@ import type { Client } from 'pg';
 import { listenForNotifications } from '../../kernel/src/db/notifications.ts';
 import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
-import type { TeachingProgress } from '../../executors/teaching/index.ts';
+import type { TeachingActivity, TeachingProgress } from '../../executors/teaching/index.ts';
 import {
   createLearnerHost,
   type Db, type Manifest, type ReadTransaction,
@@ -54,18 +54,23 @@ export async function notifySession(tx: DbQuery, sessionId: string) {
 }
 
 type SessionDelta = { session: string; turnId: string; seq: number; delta: string };
+type SessionActivity = { session: string; turnId: string; activity: TeachingActivity };
+
+function utf8Chunks(text: string): string[] {
+  const chunks: string[] = []; let chunk = '';
+  for (const ch of text) chunk && new TextEncoder().encode(chunk + ch).length > 1000 ? (chunks.push(chunk), chunk = ch) : (chunk += ch);
+  return chunk ? [...chunks, chunk] : chunks;
+}
 
 export async function publishSessionDelta(db: Db, session: string, turnId: string, seq: number, delta: string): Promise<number> {
   if (!delta || !Number.isSafeInteger(seq) || seq < 0) return seq;
-  const chunks: string[] = [];
-  let chunk = '';
-  for (const character of delta) {
-    if (chunk && new TextEncoder().encode(chunk + character).length > 1000) (chunks.push(chunk), chunk = character);
-    else chunk += character;
-  }
-  chunks.push(chunk);
-  for (const part of chunks) await db.query(notifySql, [JSON.stringify({session, turnId, seq: seq++, delta: part})]);
+  for (const part of utf8Chunks(delta)) await db.query(notifySql, [JSON.stringify({session, turnId, seq: seq++, delta: part})]);
   return seq;
+}
+
+export async function publishSessionActivity(db: Db, session: string, turnId: string, activity: TeachingActivity): Promise<void> {
+  const items = activity.kind === 'thinking' ? utf8Chunks(activity.delta).map(delta => ({kind: 'thinking' as const, delta})) : [activity];
+  for (const item of items) await db.query(notifySql, [JSON.stringify({session, turnId, activity: item})]);
 }
 
 export async function publishTurnProgress(
@@ -103,7 +108,7 @@ export async function completeTurnStream(tx: ReadTransaction, turnId: string) {
   if (row?.sessionId) await notifySession(tx, row.sessionId);
 }
 
-type Subscriber = { sessionId: string; refresh: () => void; delta(chunk: SessionDelta): void; disconnect: () => void };
+type Subscriber = { sessionId: string; refresh: () => void; delta(chunk: SessionDelta): void; activity(item: SessionActivity): void; disconnect: () => void };
 const subscriptions = new WeakMap<Db, Set<Subscriber>>();
 
 export async function listenForSessionEvents(db: Db, createListener: () => Client): Promise<() => void> {
@@ -118,11 +123,15 @@ export async function listenForSessionEvents(db: Db, createListener: () => Clien
     message(payload) {
       let value: unknown;
       try { value = JSON.parse(payload ?? ''); } catch {}
-      const chunk = value as SessionDelta | undefined;
+      const chunk = value as (SessionDelta & Partial<SessionActivity>) | undefined;
       if (chunk && typeof chunk.session === 'string' && typeof chunk.turnId === 'string' &&
-          typeof chunk.seq === 'number' && typeof chunk.delta === 'string')
+          typeof chunk.seq === 'number' && typeof chunk.delta === 'string') {
         for (const subscriber of subscribers) if (subscriber.sessionId === chunk.session) subscriber.delta(chunk);
-      else for (const subscriber of subscribers) if (subscriber.sessionId === payload) subscriber.refresh();
+      } else if (chunk && typeof chunk.session === 'string' && typeof chunk.turnId === 'string' && chunk.activity) {
+        for (const subscriber of subscribers) if (subscriber.sessionId === chunk.session) subscriber.activity(chunk as SessionActivity);
+      } else {
+        for (const subscriber of subscribers) if (subscriber.sessionId === payload) subscriber.refresh();
+      }
     },
   });
 }
@@ -202,6 +211,9 @@ export async function serveSessionEvents(
     delta(chunk) {
       if (authorized && !closed) void writeFrame(event('delta', undefined,
         {turnId: chunk.turnId, seq: chunk.seq, delta: chunk.delta})).catch(() => {});
+    },
+    activity(item) {
+      if (authorized && !closed) void writeFrame(event('activity', undefined, {turnId: item.turnId, ...item.activity})).catch(() => {});
     },
     disconnect() { cleanup(); res.destroy(); },
   };

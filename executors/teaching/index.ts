@@ -7,7 +7,7 @@ import { runStudyAgent, type StudyAgentOptions } from './study-agent.ts';
 import { companionCrisisGuidance, evaluateCrisisSupport, type CarePauseSignal } from './crisis-support.ts';
 import { firstTurnJitMessages } from './first-turn-jit.ts';
 export type { FirstTurnJitContext, FirstTurnJitRoute, FirstTurnJitSlots, FirstTurnJitTokenizer, JitEvidence } from './first-turn-jit.ts';
-import { companionToolDiscipline, teachingPrompt } from './prompt.ts';
+import { companionGenerativeUiGuidance, companionToolDiscipline, teachingPrompt } from './prompt.ts';
 import {
   checkTwoLegVariant,
   readDiagnosticReasons,
@@ -66,12 +66,26 @@ export type TeachingProgress =
   | { phase: 'thinking' | 'reading' | 'checking' }
   | { phase: 'replying'; message: string };
 
+export type LiveToolStep = {
+  id: string;
+  name: string;
+  label: string;
+  summary?: string;
+  status: 'running' | 'done' | 'error';
+  durationMs?: number;
+};
+
+export type TeachingActivity =
+  | { kind: 'thinking'; delta: string }
+  | { kind: 'tool'; step: LiveToolStep };
+
 export type TeachingDispatch = <T>(send: () => Promise<T>) => Promise<T>;
 
 export type TeachingDependencies = {
   provider: TeachingProvider;
   onProgress?: (progress: TeachingProgress) => Promise<void>;
   onTextDelta?: (delta: string) => void | Promise<void>;
+  onActivity?: (activity: TeachingActivity) => void | Promise<void>;
   /** Authorize at read time and record successful reads in the host audit. */
   readEvidence: (id: string) => Promise<string | undefined>;
   /**
@@ -261,13 +275,17 @@ export async function runCompanionTurn(
       ...(unified ? [{role:'system' as const, content:
         '需要历史依据时用 search_learning，再用 open_learning 打开版本并引用原答和帮助条件。依据不足用 read_context 按任务查询。学习者明确表达记住、更正或撤回时用 save_belief。主权规则按原话保存，实证假设按实际证据保存。保存成功后用温暖自然的人话告诉学习者「已为你记下，稍后可在「我」页面随时查看、修改或撤回」；绝不向学习者输出拟保存、待本轮结束回执确认、pending、rev、receipt 等内部术语。工具失败时最多执行一次 next，恢复仍失败就说明缺什么依据。'}] : []),
       ...(unified ? [{role:'system' as const, content:
-        '工具使用要精炼：save_belief、save_page、search_learning、open_learning、read_context、find_tools 都是本轮常驻工具，优先直接调用，不要反复用 find_tools 查找它们；连续两次 find_tools 找不到就说明该工具不可用，立即用已开放工具答复。'}] : []),
+        '工具使用要精炼：save_belief、save_page、search_learning、open_learning、read_context、' +
+        (dependencies.learningTools?.definitions.mount_artifact ? 'mount_artifact、' : '') +
+        'find_tools 都是本轮常驻工具，优先直接调用，不要反复用 find_tools 查找它们；连续两次 find_tools 找不到就说明该工具不可用，立即用已开放工具答复。'}] : []),
       ...(workspace ? [{role:'system' as const, content:
         (workspace.narrowSaves
           ? '个人教材用 save_page，题面草稿用 save_question，知识图谱有向边用 save_edge。'
           : '个人教材用 save_page，知识图谱有向边用 save_relation。') +
         '先打开所用的来源及目标版本。proposed 表示等待学习者采纳，saved 表示已生效。只在读到与该边一致的既存核验证明时传 verification。'}] : []),
       ...(workspace || dependencies.memoryTools || unified ? [{role:'system' as const, content: companionToolDiscipline}] : []),
+      ...(dependencies.learningTools?.definitions.mount_artifact || workspace?.presentationTool
+        ? [{role:'system' as const, content: companionGenerativeUiGuidance}] : []),
       ...(workspace || dependencies.memoryTools || unified ? [{role:'system' as const, content:
         '工作区只认逻辑文件名或教材标题，绝不向学习者输出宿主机或本地文件系统的真实路径（如 /tmp、/private、盘符目录或 file:// 链接）。需要写入长期记忆或教材时，先确认工具返回成功再自然说明结果；绝不向学习者输出拟保存、待本轮结束回执确认、pending、rev、receipt 等内部术语。' +
         (dependencies.memoryTools || unified ? '' : '本轮没有长期记忆写入工具；学习者要求记住时诚实说明当前对话内有效、长期记忆需要开启相应权限。')}]

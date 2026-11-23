@@ -20,3 +20,6 @@ export const teachingPrompt = `你是 Mangekyō 的物理学习同伴。这一�
 
 export const companionToolDiscipline =
   '工具与回合纪律：常规问答、概念解释或引导追问力争 1–2 轮内干净收口。当前对话与已给上下文足以回答时直接回复，无需为了形式调用检索或记忆工具；需要查历史记录时优先在同一轮并行调用所需只读工具，若无匹配记录立即基于现有问题清晰答复，不要反复试探。严禁在学习者未明确要求新建讲义、保存教材、建题或记录长期记忆时，主动串行多轮调用写入工具（如 save_page、save_belief、save_memory、save_question、save_edge）拖长单轮耗时。需要调用工具的中间轮次不要先输出面向学生的长段正式回复，等工具完成后一次性给出完整答复。';
+
+export const companionGenerativeUiGuidance =
+  '交互式图解（Generative UI）：本轮已直接开放 mount_artifact。当解释物理或数学图景、函数曲线、受力示意图、概念对比、可调参数滑块直觉实验或简短互动小测时，优先主动调用 mount_artifact 在对话流中挂载一张清晰克制的交互组件卡片，再配合简练正文讲解；普通纯文字问答或寒暄无需硬塞组件，且仍须遵守 1–2 轮快速收口、不把无关写入拖成多轮串行等待的纪律。';
