@@ -53,16 +53,28 @@ describe('onboarding-agent', () => {
     };
     let tick = 1_700_000_000_000;
     const result = await proposeOnboardingWithAgent(sampleInput, {
-      provider: { baseUrl: 'https://api.example.test/v1', apiKey: 'sk-ant', protocol: 'anthropic', model: 'claude-sonnet-4-5' },
+      provider: { baseUrl: 'https://api.example.test/v1', apiKey: 'sk-ant', protocol: 'anthropic', model: 'claude-sonnet-4-5', reasoningEffort: 'high' },
       transport,
       now: () => new Date((tick += 250)),
     });
     expect(seenEndpoint).toBe('https://api.example.test/v1/messages');
+    const sent = JSON.parse(seenBody);
+    expect(sent.reasoning_effort).toBe('low');
+    expect(sent.max_tokens).toBe(8192);
+    expect(seenBody).toContain('8–12 个');
+    expect(seenBody).toContain('5–6 道');
     expect(seenBody).toContain('2026-11-23（星期一 / Monday）');
     expect(seenBody).toContain('Asia/Shanghai');
     expect(result.proposal.meta.model).toBe('claude-sonnet-4-5');
     expect(result.proposal.meta.source).toBe('llm');
     expect(result.usage).toEqual({ model: 'claude-sonnet-4-5', reportedModel: 'claude-sonnet-4-5', inputTokens: 420, outputTokens: 980, durationMs: 250 });
+
+    let defaultBody = '';
+    await proposeOnboardingWithAgent(sampleInput, {
+      provider: { ...provider, reasoningEffort: 'default' },
+      transport: async (_ep, body) => { defaultBody = body; return { model: provider.model, content: JSON.stringify(validDraft) }; },
+    });
+    expect(JSON.parse(defaultBody).reasoning_effort).toBeUndefined();
   });
 
   it('performs one targeted JSON repair retry on truncation or syntax error and accumulates tokens', async () => {

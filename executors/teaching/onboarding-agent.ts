@@ -155,10 +155,14 @@ export type OnboardingAgentOptions = {
   readonly transport?: OnboardingTransport;
 };
 
-const defaultTimeoutMs = 90_000;
-const defaultMaxTokens = 7_500;
+const defaultTimeoutMs = 150_000;
+const defaultMaxTokens = 8_192;
 const weekdaysZh = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'] as const;
 const weekdaysEn = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
+
+function cappedOnboardingEffort(effort: string): string {
+  return effort === 'default' || effort === 'low' ? effort : 'low';
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -188,8 +192,8 @@ function buildSystemPrompt(): string {
     '【高质量产出配额】',
     '- studyPlan：goalText 为清晰可执行的阶段目标；campaign 取 "steady"|"sprint"|"recovery"；dailyWindow 的 weekday 为 null（每天）或 0..6，start/end 为一天中的分钟数（0..1439，end > start）；progressTopics 为 3–6 个当前/预习主题；companionMemo 不超过 700 字，浓缩学习者身份、选科/方向、已考与待考状态、时间窗口与教学偏好。',
     '- disciplines：1–5 个核心学科/方向配置（key 用简短英文/拼音 slug，如 physics / chemistry / cs408）。',
-    '- knowledgeGraph：10–15 个紧扣当前学期与核心科目的高信号知识点（selected 均设为 true，key 用唯一 slug），以及 8–14 条高质量关系边（kind 仅取 "prereq_of" 或 "related_to"，fromKey 与 toKey 均须存在于 concepts.key 且不自环）。',
-    '- starterQuestions：6–8 道基础与诊断摸底题（selected 均设为 true，difficulty 取 "foundation"|"core"|"stretch"）；理科/数学/工程公式自然使用 $...$ LaTeX；每题包含明确标准答案 answer、可核对的评分要点 rubric，且 conceptKeys 引用上面 concepts 中的 key。',
+    '- knowledgeGraph：8–12 个紧扣当前学期与核心科目的高信号知识点（每条 summary 精炼为 1 句核心说明，selected 均设为 true，key 用唯一 slug），以及 6–10 条高质量关系边（kind 仅取 "prereq_of" 或 "related_to"，fromKey 与 toKey 均须存在于 concepts.key 且不自环）。',
+    '- starterQuestions：5–6 道基础与诊断摸底题（selected 均设为 true，difficulty 取 "foundation"|"core"|"stretch"）；理科/数学/工程公式自然使用 $...$ LaTeX；每题包含明确标准答案 answer、简洁可核对的评分要点 rubric，且 conceptKeys 引用上面 concepts 中的 key。',
     '',
     '【输出格式硬约束】',
     '只输出一个合法 JSON 对象，禁止在 JSON 外输出任何解释、标题或 Markdown 文本；所有反斜杠（如 LaTeX 的 \\frac）必须在 JSON 字符串内正确双转义。顶层键必须严格为：',
@@ -212,7 +216,7 @@ function buildRepairPrompt(rawOutput: string, reason: string, input: OnboardingA
   const snippet = rawOutput.length > 12_000 ? rawOutput.slice(0, 12_000) : rawOutput;
   return [
     `上一次输出未能通过 JSON 校验（原因：${reason}）。`,
-    '请仅返回一个完整、语法完全合法的 JSON 对象（不要输出任何 Markdown 围栏或额外说明）。若上次被截断，请适度精简每条 summary/rubric 文案以确保完整闭合，但仍需保留全部 7 个顶层字段（learnerSummary / examStatus / studyPlan / disciplines / knowledgeGraph / starterQuestions / meta）及 10–15 个知识点、6–8 道摸底题。',
+    '请仅返回一个完整、语法完全合法的 JSON 对象（不要输出任何 Markdown 围栏或额外说明）。若上次被截断，请适度精简每条 summary/rubric 文案以确保完整闭合，但仍需保留全部 7 个顶层字段（learnerSummary / examStatus / studyPlan / disciplines / knowledgeGraph / starterQuestions / meta）及 8–12 个知识点、5–6 道摸底题。',
     `当前日期：${describeDate(input.currentDate)}，时区：${input.timeZone}。`,
     snippet.trim() ? `上次残缺输出供修复参考：\n${snippet}` : '上次输出为空，请直接重新生成完整 JSON。',
   ].join('\n\n');
@@ -374,12 +378,13 @@ export async function proposeOnboardingWithAgent(
   let outputTokens: number | undefined;
   let reportedModel: string | undefined;
 
+  const reasoningEffort = cappedOnboardingEffort(profile.reasoningEffort);
   const invoke = async (messages: { role: 'system' | 'user' | 'assistant'; content: string }[], suffix: string) => {
     const body = JSON.stringify({
       model: profile.model,
       max_tokens: maxTokens,
       stream: true,
-      ...(profile.reasoningEffort !== 'default' ? { reasoning_effort: profile.reasoningEffort } : {}),
+      ...(reasoningEffort !== 'default' ? { reasoning_effort: reasoningEffort } : {}),
       messages,
     });
     let result: Completion | { rejectedHttpStatus: number };
