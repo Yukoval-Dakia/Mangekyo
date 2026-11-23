@@ -31,6 +31,7 @@ import type { openRetention } from './retention.ts';
 import type { openRetentionComparison } from './retention-comparison.ts';
 import type { openIqdb } from './iqdb.ts';
 import { openTransparency } from './transparency.ts';
+import type { openOnboarding } from './onboarding.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import type { CarePause } from './care-pause.ts';
@@ -135,6 +136,7 @@ type StudioDeps = {
   iqdb: ReturnType<typeof openIqdb>;
   transparency?: ReturnType<typeof openTransparency>;
   carePause: CarePause;
+  onboarding?: ReturnType<typeof openOnboarding>;
 };
 
 export function serve(
@@ -181,6 +183,11 @@ export function serve(
 
   get('/api/iqdb/questions', () => student.iqdb.questions());
   put('/api/iqdb/questions/:ulid/teaching', (input, [id]) => student.iqdb.setTeaching(id!, input));
+  if (student.onboarding) {
+    get('/api/onboarding/status', () => student.onboarding!.status());
+    post('/api/onboarding/propose', input => student.onboarding!.propose(input));
+    post('/api/onboarding/apply', input => student.onboarding!.apply(input));
+  }
   get('/api/ai/activity', () => transparency.aiActivity());
   get('/api/knowledge/graph', (_p, url) => transparency.knowledgeGraph(url.searchParams));
   raw('POST', '/api/knowledge/graph/:seg/quick-paper', async (req, res, [id]) => {
