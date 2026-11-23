@@ -11,6 +11,7 @@ import { purpose, studioLearner } from './identity.ts';
 import type { NotionReadScope } from './notion.ts';
 import { openRecall, recallItemId, RecallRequestError } from './recall.ts';
 import { displaySigner, parseDisplayBody, readMount, readRequestId, verifyDisplayReceipt } from '../../modules/activity/recall-http-support.ts';
+import { recallMounts, requireSessionTurnRows } from '../../modules/companion/facts/recall-practice-slice.ts';
 
 export { recallDisplayToken } from '../../modules/activity/recall-http-support.ts';
 
@@ -33,11 +34,9 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
         const read = createCommandReadContext(tx, purpose);
         const root = await read.fact(factId(sessionId), { mode: 'following' });
         const turn = sessionId === turnId ? root : await read.fact(factId(turnId), { mode: 'following' });
-        if (root.type !== 'activity.studyTurn' || turn.type !== root.type ||
-            studyTurn(root.value).sessionId !== sessionId || studyTurn(root.value).parentId !== null ||
-            studyTurn(turn.value).sessionId !== sessionId) {
-          throw new RecallRequestError(404, '回忆题不属于该会话。');
-        }
+        requireSessionTurnRows((status, message) => new RecallRequestError(status, message),
+          root.type, studyTurn(root.value).sessionId, studyTurn(root.value).parentId,
+          turn.type, studyTurn(turn.value).sessionId, sessionId, 'activity.studyTurn');
       });
     } catch (error) {
       if (isFactNotFound(error)) throw new RecallRequestError(404, '回忆题不属于该会话。');
@@ -53,8 +52,8 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
       if (!kit) throw new RecallRequestError(409, '此会话的回忆题格式无效。');
       await requireSessionTurn(sessionId, turnId);
       const items = [];
-      for (const index of kit.questions.keys()) {
-        const mount = { turnId, derivationId, itemId: recallItemId(turnId, derivationId, index) };
+      for (const mount of recallMounts(turnId, derivationId, kit.questions.length)) {
+        const index = items.length;
         try {
           items.push(await service.get(mount, notion));
         } catch (error) {

@@ -13,8 +13,10 @@ import { takeawayDisplay, takeawayFeedback, takeawayOpen, takeawaySave, takeaway
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
+import { wrapOrRethrow } from '../../modules/companion/facts/recall-practice-slice.ts';
 
 const reject = (status: number, message: string) => new RequestError(status, message);
+const isRequestError = (error: unknown) => error instanceof RequestError;
 
 export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
   const key = randomBytes(32);
@@ -47,8 +49,7 @@ export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks
           : takeawayDisplay(bound, factId(paperId), input);
       });
     } catch (error) {
-      if (error instanceof RequestError) throw error;
-      throw new RequestError(400, error instanceof Error ? error.message : '请求无效。');
+      wrapOrRethrow(reject, error, isRequestError);
     }
   };
   const read = async (paperId: string, attemptId: string, itemId: string) => {
@@ -56,8 +57,7 @@ export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks
       return await db.snapshot({ learner: studioLearner }, tx =>
         takeawayFeedback({ scope: tx, read: createCommandReadContext(tx, storagePurpose), handle: () => Promise.reject(new Error('feedback is read-only')), reject, sign, stable: stableId, unavailable: isFactUnavailable }, factId(paperId), factId(attemptId), itemId));
     } catch (error) {
-      if (error instanceof RequestError) throw error;
-      throw new RequestError(400, error instanceof Error ? error.message : '请求无效。');
+      wrapOrRethrow(reject, error, isRequestError);
     }
   };
   return { mutate, read };

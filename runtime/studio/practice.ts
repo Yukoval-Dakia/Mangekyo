@@ -20,6 +20,7 @@ import {
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { practiceAnswersMatch, practiceAttemptIds } from '../../modules/companion/facts/recall-practice-slice.ts';
 
 export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
   const handle = createCommandHandler(db, { modules: [activity], hooks });
@@ -67,7 +68,7 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
     } catch {
       throw new RequestError(409, '同一个提交标识已经用于不同的作答。');
     }
-    if (archived.feedback.some(({ questionId, answer }) => data.answers[questionId] !== answer))
+    if (!practiceAnswersMatch(archived.feedback, data.answers))
       throw new RequestError(409, '同一个提交标识已经用于不同的作答。');
     return read(attemptId);
   }
@@ -76,8 +77,8 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
     read: () => read(),
     async submit(input: unknown): Promise<PracticeView> {
       const request = clientRequest((input as { requestId?: unknown } | null)?.requestId);
-      const attemptId = factId(stableId('starter-practice', 'riding', request));
-      const submissionId = commandId(stableId('submit-starter-practice', attemptId));
+      const { attemptId, submissionId } = practiceAttemptIds(stableId, request);
+      const submissionCommand = commandId(submissionId);
       const prior = await replay(attemptId, input);
       if (prior) return prior;
       let data: PracticeInput;
@@ -95,7 +96,7 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
           purpose: ridingPracticePurpose,
           actor: 'learner',
           type: ridingPracticeCommand,
-          id: submissionId, deletionWatermark:submittedWatermark(input),
+          id: submissionCommand, deletionWatermark:submittedWatermark(input),
           input: { id: attemptId, data },
         });
       } catch (error) {
