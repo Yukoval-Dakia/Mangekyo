@@ -142,7 +142,7 @@ export function SettingsDialog({ onClose, onSave, textbookAccess = false }: {
   return (
     <dialog
       ref={dialog}
-      className="settings-dialog"
+      className="settings-dialog settings-dialog--structured"
       aria-labelledby="settings-title"
       onClose={onClose}
       onCancel={(event) => { if (saving) event.preventDefault(); }}
