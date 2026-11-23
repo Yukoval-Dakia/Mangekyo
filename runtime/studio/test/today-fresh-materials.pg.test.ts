@@ -36,19 +36,20 @@ it.skipIf(!testDatabaseUrl)('新材料按真实保存时间进入今天并在衍
         tolerance: 0, unit: null, explanation: null }] } }, 'paper');
     await send('activity.submitWorkbookAttempt', { id: stableId('wb-attempt', 'fresh-material'),
       data: { paperId, requestId: 'fresh-attempt', submittedAt: new Date().toISOString(), answers: { q1: '9' } } }, 'attempt');
-    const today = await organizer.today(new URLSearchParams());
+    const todayParams = () => new URLSearchParams({ timeZone: new Date().getUTCHours() >= 12 ? 'America/Los_Angeles' : 'Asia/Tokyo' });
+    const today = await organizer.today(todayParams());
     expect(today.items[0]?.candidate.id).toBe('correction:' + paperId + '@1');
     expect(today.items[1]?.candidate.id).toBe('material:' + materialId + '@1');
     expect(today.items.every(({candidate}) => candidate.id !== 'material:' + legacyId + '@1')).toBe(true);
     await expect(organizer.open(new URLSearchParams({ kind: 'material', id: materialId, rev: '1' })))
       .resolves.toEqual({ kind: 'material', id: materialId, rev: 1, href: '/materials/saved/' + materialId });
     await gate.pause('fresh-pause');
-    expect((await organizer.today(new URLSearchParams())).items.every(({candidate}) =>
+    expect((await organizer.today(todayParams())).items.every(({candidate}) =>
       !candidate.id.startsWith('material:') && !candidate.id.startsWith('correction:'))).toBe(true);
     await gate.resume();
     await send('activity.submitTurn', { id: stableId('turn', 'fresh-material'), data: { sessionId: materialId, caseId: 'companion',
       parentId: null, answer: '读这份材料', attachment: { id: materialId, title: 'fresh', text: 'fresh', mode: 'ask' },
       allowBackgroundUnderstanding: true, model: 'test', baseUrl: 'http://127.0.0.1:9/v1' } }, 'turn');
-    expect((await organizer.today(new URLSearchParams())).items.every(({candidate}) =>
+    expect((await organizer.today(todayParams())).items.every(({candidate}) =>
       candidate.id !== 'material:' + materialId + '@1')).toBe(true);
   }));

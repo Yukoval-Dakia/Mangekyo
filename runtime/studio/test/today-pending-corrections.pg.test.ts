@@ -20,7 +20,7 @@ it.skipIf(!testDatabaseUrl)('已提交试卷的未订正错题流向今天、订
     const handle = createCommandHandler(db, { modules: [activity, plan], hooks });
     const req = (type: string, input: unknown, id: string) =>
       ({ learner: studioLearner, type, input: input as never, actor: 'learner' as const, purpose: 'storage', id: commandId(id) });
-    const today = () => organizer.today(new URLSearchParams());
+    const today = () => organizer.today(new URLSearchParams({ timeZone: new Date().getUTCHours() >= 12 ? 'America/Los_Angeles' : 'Asia/Tokyo' }));
 
     const paperId = factId(stableId('wb-paper', 'pending-corrections'));
     await handle(req('activity.saveWorkbookPaper',

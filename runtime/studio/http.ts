@@ -346,20 +346,28 @@ export function serve(
     id!, input.parentId, input.answer, clientRequest(input.requestId), input.mcpGrants, input.route,
     input.currentObject, input.allowBackgroundUnderstanding), 202);
 
-  const hosts = new Set(['localhost', '127.0.0.1'].map(host => host + ':' + port));
+  const extraHosts = new Set(
+    (process.env.MANGEKYO_ALLOWED_HOSTS ?? '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean),
+  );
+  const hosts = new Set([...['localhost', '127.0.0.1', '[::1]'].map(host => host + ':' + port), ...extraHosts]);
   const server = createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Security-Policy',
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'");
     try {
-      const host = req.headers.host;
-      if (!host || !hosts.has(host) || (req.headers.origin && req.headers.origin !== 'http://' + host) ||
-          req.headers['sec-fetch-site'] === 'cross-site')
+      const host = req.headers.host?.toLowerCase();
+      const origin = req.headers.origin?.toLowerCase();
+      const allowedOrigin = !origin || origin === 'http://' + host || (Boolean(host) && extraHosts.has(host!) && origin === 'https://' + host);
+      if (!host || !hosts.has(host) || !allowedOrigin)
         throw new RequestError(403, '此入口仅供本机页面使用。');
       const url = new URL(req.url ?? '/', 'http://' + host);
       const path = url.pathname;
       const method = req.method;
+      const crossSiteNav = method === 'GET' && path !== '/api' && !path.startsWith('/api/') &&
+        req.headers['sec-fetch-mode'] === 'navigate' && req.headers['sec-fetch-dest'] === 'document';
+      if (req.headers['sec-fetch-site'] === 'cross-site' && !crossSiteNav)
+        throw new RequestError(403, '此入口仅供本机页面使用。');
 
       const reading = method === 'GET' ? readingPathRegex.exec(path) : null;
       if (reading?.[1]) return sendJson(res, 200, await library.reading(reading[1]));
