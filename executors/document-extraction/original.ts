@@ -1,7 +1,18 @@
 import { constants, type BigIntStats } from 'node:fs';
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { homedir, platform } from 'node:os';
+import { join, resolve } from 'node:path';
+
+export function resolveIntakeDataDir(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.MANGEKYO_INTAKE_DATA_DIR?.trim();
+  const home = homedir();
+  const base = override ? resolve(override)
+    : platform() === 'darwin' ? resolve(home, 'Library/Application Support/Mangekyō')
+    : platform() === 'win32' ? resolve(env.LOCALAPPDATA || home, 'Mangekyō')
+    : resolve(env.XDG_DATA_HOME || resolve(home, '.local/share'), 'mangekyo');
+  return join(base, 'intake');
+}
 
 type OriginalMetadata = {name: string; mediaType: string; size: number; sha256: string};
 export type OriginalWitness = {sha256: string; size?: number; name?: string; mediaType?: string};

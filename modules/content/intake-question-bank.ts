@@ -10,6 +10,7 @@ import {
 } from './knowledge-entity.ts';
 
 export const confirmIntakeQuestionsCommand = 'content.confirmIntakeQuestions';
+export class IntakeQuestionConfirmConflict extends Error {}
 export const materialType = 'activity.textMaterial';
 export const assetType = 'content.asset';
 export const intakeConceptScope = 'intake-confirmed';
@@ -134,6 +135,25 @@ export function parseConfirmIntakeQuestions(input: unknown): ConfirmIntakeQuesti
     ...(row.linkConcepts === undefined ? {} : { linkConcepts: row.linkConcepts }),
     items: parsed,
   };
+}
+
+export function parseBankConfirmRequest(materialId: string, value: Record<string, unknown>): ConfirmIntakeQuestionsInput {
+  if (value.confirmedByLearner !== true) throw new Error('加入题库需要学习者显式确认。');
+  return parseConfirmIntakeQuestions({
+    confirmedByLearner: true, materialId, expectedMaterialRev: value.expectedMaterialRev, items: value.items,
+    ...(value.purpose === undefined ? {} : { purpose: value.purpose }),
+    ...(value.linkConcepts === undefined ? {} : { linkConcepts: value.linkConcepts }),
+  });
+}
+
+export function classifyConfirmIntakeError(error: unknown, isUnavailable: boolean): { readonly status: 404 | 409; readonly message: string } | null {
+  if (isUnavailable) return { status: 404, message: '找不到这份拍卷材料。' };
+  if (error instanceof IntakeQuestionConfirmConflict) return { status: 409, message: error.message };
+  if (error instanceof Error && (error.message.startsWith('材料版本已变化') || error.message.startsWith('Fact revision conflict') ||
+      error.message === 'Command ID already used with a different command identity')) {
+    return { status: 409, message: '拍卷题目或材料版本已变化，请重新核对。' };
+  }
+  return null;
 }
 
 export function intakeQuestionFullPrompt(item: ConfirmIntakeQuestionsItem): string {

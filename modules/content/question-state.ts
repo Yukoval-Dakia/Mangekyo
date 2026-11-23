@@ -15,6 +15,13 @@ export const questionMetaDraftType = 'content.questionMetaDraft';
 export const questionKey = ({ id, rev }: { id: string; rev: number }) => `${id}:${rev}`;
 export const questionVerificationKey = (input: { id: string; rev: number; recheck?: number }) =>
   `${questionKey(input)}:${input.recheck ?? 0}:${questionVerificationMethodVersion}`;
+export function matchesQuestionVerificationSlot(
+  slotKey: string, basis: QuestionVerificationBasis | undefined,
+  inputs: readonly { readonly kind: string; readonly mode?: string; readonly id?: string; readonly rev?: number; readonly accessEpoch?: string }[],
+): boolean {
+  return Boolean(basis && questionVerificationKey(basis) === slotKey && inputs.some(i =>
+    i.kind === 'fact' && i.mode === 'following' && i.id === basis.id && i.rev === basis.rev && i.accessEpoch === basis.accessEpoch));
+}
 export function parseQuestionVerificationKey(key: string) {
   const [rawId, rawRev, rawRecheck] = key.split(':');
   try {
