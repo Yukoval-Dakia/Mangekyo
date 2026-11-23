@@ -2,7 +2,6 @@ export {
   TodaySurface,
   TodaySurface as default,
   kindLabel,
-  type BuiltinPackEntry,
   type CandidateKind,
   type CompanionCitation,
   type Confirmable,

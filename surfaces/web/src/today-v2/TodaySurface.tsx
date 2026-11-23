@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError, onboardingStatus, remember, remembered, requestId } from '../api';
-import { builtinPackPath, builtinPacks, defaultPracticePack } from '../builtin-packs';
 import { Icon } from '../icons';
 import { roomPath } from '../classroom-contract';
 import { openLink, todayParams, type ActivityRef, type Duration } from '../today-pack';
@@ -105,18 +104,24 @@ export type TodayPlanV2 = {
   pendingConfirmations?: readonly Confirmable[];
 };
 
-export type BuiltinPackEntry = {
-  title: string;
-  detail?: string;
-  minutes?: number;
-  href: string;
-};
-
 export type CompanionCitation = {
   title: string;
   text: string;
   topic?: string;
 };
+
+// 硬编码 demo pack 死链过滤：内置包已从「今天」移除，防止旧计划或旧数据再次露出。
+const BLOCKED_PACK_IDS = new Set(['pack/inference', 'pack/reading']);
+
+function isBlockedCandidate(candidate: TodayCandidate): boolean {
+  const ref = candidate.open;
+  if (!ref || ref.kind !== 'pack') return false;
+  return BLOCKED_PACK_IDS.has(ref.id);
+}
+
+function filterUsableCandidates<T extends { candidate: TodayCandidate }>(items: readonly T[]): T[] {
+  return items.filter((item) => !isBlockedCandidate(item.candidate));
+}
 
 function freshMaterialChip(candidate: TodayCandidate): string | null {
   const fresh = candidate.freshMaterial;
@@ -141,7 +146,6 @@ export type TodaySurfaceProps = {
   onOpenAiActivity?: () => void;
   onCiteToCompanion?: (citation: CompanionCitation) => void;
   confirmables?: readonly Confirmable[];
-  builtinPacks?: readonly BuiltinPackEntry[];
   emptyLibrary?: boolean;
   noModel?: boolean;
 };
@@ -183,13 +187,6 @@ type AiActivitySnapshot = {
     };
   }[];
 };
-
-const DEFAULT_BUILTIN_PACKS: readonly BuiltinPackEntry[] = builtinPacks.map(pack => ({
-  title: pack.title,
-  detail: pack.detail,
-  minutes: pack.minutes,
-  href: builtinPackPath(pack),
-}));
 
 const FREE_TIME_OPTIONS: readonly { value: Duration | undefined; label: string }[] = [
   { value: undefined, label: '不限' },
@@ -391,59 +388,6 @@ function HandoffStrip({
   );
 }
 
-function BuiltinPacks({
-  packs,
-  visible,
-  noModel,
-  onNavigate,
-}: {
-  packs?: readonly BuiltinPackEntry[] | undefined;
-  visible: boolean;
-  noModel?: boolean | undefined;
-  onNavigate?: ((href: string) => void) | undefined;
-}) {
-  if (!visible) return null;
-  const entries = packs && packs.length > 0 ? packs : DEFAULT_BUILTIN_PACKS;
-  return (
-    <section className="tv2-pack" aria-label="内置学习包">
-      <div className="tv2-pack-head">
-        <div className="tv2-pack-copy">
-          <div className="tv2-pack-kicker">
-            <Dot />
-            <strong>内置学习包 · 无需模型即可开练</strong>
-          </div>
-          <p>
-            {noModel
-              ? '未配置模型也能立刻开始。这些内容不设问卷、不设门槛，随时打开作答并查看解析。'
-              : '资料库还是空的也没关系，可以先用自带学习包热身，随时交入自己的材料。'}
-          </p>
-        </div>
-      </div>
-      <div className="tv2-pack-list">
-        {entries.map((entry) => (
-          <a
-            key={entry.href}
-            className="tv2-pack-item"
-            href={entry.href}
-            onClick={(event) => handleSpaNavigation(event, entry.href, onNavigate)}
-          >
-            <span className="tv2-pack-item-copy">
-              <strong>{entry.title}</strong>
-              {entry.detail && <small>{entry.detail}</small>}
-            </span>
-            <span className="tv2-pack-item-meta">
-              {typeof entry.minutes === 'number' && entry.minutes > 0 && (
-                <Chip tone="neutral">约 {entry.minutes} 分钟</Chip>
-              )}
-              <span className="tv2-btn tv2-btn--tonal tv2-btn--sm">打开</span>
-            </span>
-          </a>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 export function TodaySurface({
   mode = 'any',
   duration,
@@ -453,7 +397,6 @@ export function TodaySurface({
   onOpenAiActivity,
   onCiteToCompanion,
   confirmables,
-  builtinPacks,
   emptyLibrary,
   noModel,
 }: TodaySurfaceProps) {
@@ -701,7 +644,7 @@ export function TodaySurface({
         <div className="tv2-hero tv2-hero--calm">
           <h2>{offline ? '当前处于离线状态' : '暂时读不到今天的安排'}</h2>
           <p className="tv2-why">
-            {offline ? '连网后会自动刷新今天的组合，内置学习包仍可直接打开。' : error}
+            {offline ? '连网后会自动刷新今天的组合，也可以先交入一份讲义或试卷。' : error}
           </p>
           {!offline && (
             <div className="tv2-hero-actions">
@@ -715,21 +658,18 @@ export function TodaySurface({
             </div>
           )}
         </div>
-        <BuiltinPacks
-          packs={builtinPacks}
-          visible={Boolean(emptyLibrary || noModel || offline || error)}
-          noModel={noModel}
-          onNavigate={onNavigate}
-        />
       </section>
     );
   }
 
   const locked = busy || loading || !!pendingOperation;
   const restRule = plan.rules.find((rule) => rule.data.kind === 'rest' && rule.data.date === plan.day);
-  const activeProtected = plan.protectedItems.filter((candidate) => candidate.state !== 'completed');
-  const completedProtected = plan.protectedItems.filter((candidate) => candidate.state === 'completed');
-  const scheduledCandidates = [...plan.protectedItems, ...plan.items.map((item) => item.candidate)];
+  const usableProtected = plan.protectedItems.filter((candidate) => !isBlockedCandidate(candidate));
+  const usableItems = filterUsableCandidates(plan.items);
+  const usableAlternatives = plan.alternatives.filter((candidate) => !isBlockedCandidate(candidate));
+  const activeProtected = usableProtected.filter((candidate) => candidate.state !== 'completed');
+  const completedProtected = usableProtected.filter((candidate) => candidate.state === 'completed');
+  const scheduledCandidates = [...usableProtected, ...usableItems.map((item) => item.candidate)];
 
   let heroEntry: ScheduledEntry | null = null;
   let backupEntries: ScheduledEntry[] = [];
@@ -745,11 +685,11 @@ export function TodaySurface({
           actions: [] as RuleAction[],
           isProtected: true,
         })),
-        ...plan.items.map((item) => ({ ...item, isProtected: false })),
+        ...usableItems.map((item) => ({ ...item, isProtected: false })),
       ].slice(0, 2);
-    } else if (plan.items.length > 0) {
-      heroEntry = { ...plan.items[0]!, isProtected: false };
-      backupEntries = plan.items.slice(1, 3).map((item) => ({ ...item, isProtected: false }));
+    } else if (usableItems.length > 0) {
+      heroEntry = { ...usableItems[0]!, isProtected: false };
+      backupEntries = usableItems.slice(1, 3).map((item) => ({ ...item, isProtected: false }));
     }
   }
 
@@ -841,7 +781,7 @@ export function TodaySurface({
     const lockRule = plan!.rules.find(
       (rule) => rule.data.kind === 'lock' && rule.data.date === plan!.day && rule.data.activityId === candidate.id,
     );
-    const swapAlternatives = plan!.alternatives.filter(
+    const swapAlternatives = usableAlternatives.filter(
       (alternative) =>
         alternative.id !== candidate.id &&
         alternative.open &&
@@ -913,9 +853,40 @@ export function TodaySurface({
     }
 
     if (!heroEntry) {
-      const allDone = completedProtected.length > 0;
+    const allDone = completedProtected.length > 0;
+    const coldStart = emptyLibrary === true && scheduledCandidates.length === 0;
+    if (coldStart) {
       return (
-        <article className="tv2-hero tv2-hero--calm" aria-label={allDone ? '今日安排已完成' : '今天暂无待办活动'}>
+        <article className="tv2-hero tv2-hero--onboard" aria-label="30 秒配置学习画像">
+          <div className="tv2-hero-kicker">
+            <Chip tone="forest">30 秒起步</Chip>
+          </div>
+          <h2 className="m3e-display">告诉 Mangekyō 你在学什么</h2>
+          <p className="tv2-why">
+            用几句话介绍你的阶段与目标，自动配好考试日程、知识图谱与第一批摸底练习；也可以先随手交入一份试卷或笔记。
+          </p>
+          <div className="tv2-hero-actions">
+            <button
+              type="button"
+              className="tv2-btn tv2-btn--primary"
+              onClick={onOpenOnboarding}
+            >
+              <span>30 秒配置学习画像与考试日程</span>
+              <Icon name="arrow" />
+            </button>
+            <a
+              className="tv2-btn tv2-btn--tonal"
+              href="/intake"
+              onClick={(event) => handleSpaNavigation(event, '/intake', onNavigate)}
+            >
+              随手交入一份试卷或笔记
+            </a>
+          </div>
+        </article>
+      );
+    }
+    return (
+      <article className="tv2-hero tv2-hero--calm" aria-label={allDone ? '今日安排已完成' : '今天暂无待办活动'}>
           <div className="tv2-hero-kicker">
             <Chip tone={allDone ? 'forest' : 'neutral'}>{allDone ? '已完成今日组合' : '空白起步'}</Chip>
           </div>
@@ -923,7 +894,7 @@ export function TodaySurface({
           <p className="tv2-why">
             {allDone
               ? `今天完成了 ${completedProtected.length} 项学习任务，可以轻松收尾休息，或再挑一份材料练手。`
-              : '可以直接打开下方的内置学习包热身，或随手交入一份讲义、错题卷或一句话。'}
+            : '随手交入一份讲义、错题卷或一句话，今天的学习就会从这里开始。'}
           </p>
           <div className="tv2-hero-actions">
             <a
@@ -933,15 +904,6 @@ export function TodaySurface({
             >
               交入第一份材料
             </a>
-            {!allDone && defaultPracticePack && (
-              <a
-                className="tv2-btn tv2-btn--tonal"
-                href={builtinPackPath(defaultPracticePack)}
-                onClick={(event) => handleSpaNavigation(event, builtinPackPath(defaultPracticePack!), onNavigate)}
-              >
-                随手开练内置包
-              </a>
-            )}
           </div>
         </article>
       );
@@ -982,18 +944,36 @@ export function TodaySurface({
 
         <div className="tv2-hero-actions">
           {primaryHref ? (
-            <a
-              className="tv2-btn tv2-btn--primary"
-              href={primaryHref}
-              onClick={(event) => handleSpaNavigation(event, primaryHref, onNavigate)}
-            >
-              <span>{actionVerb(candidate)}</span>
-              <Icon name="arrow" />
-            </a>
+            <div className="m3e-split-btn">
+              <a
+                className="tv2-btn tv2-btn--primary"
+                href={primaryHref}
+                onClick={(event) => handleSpaNavigation(event, primaryHref, onNavigate)}
+              >
+                <span>{actionVerb(candidate)}</span>
+                <Icon name="arrow" />
+              </a>
+              {canCite && (
+                <button
+                  type="button"
+                  className="tv2-btn tv2-btn--primary tv2-btn--sm"
+                  title="带到同伴讨论"
+                  onClick={() =>
+                    onCiteToCompanion?.({
+                      title: candidate.title,
+                      text: leadWhy || candidate.title,
+                      ...(showTopic ? { topic: candidate.topic } : {}),
+                    })
+                  }
+                >
+                  <Icon name="chat" />
+                </button>
+              )}
+            </div>
           ) : (
             <Chip tone="neutral">材料准备中</Chip>
           )}
-          <div className="tv2-hero-secondary">
+          <div className="m3e-btn-group" role="group" aria-label="今日主推荐次操作">
             {lockRule ? (
               <button
                 type="button"
@@ -1036,21 +1016,6 @@ export function TodaySurface({
                 }
               >
                 推迟
-              </button>
-            )}
-            {canCite && (
-              <button
-                type="button"
-                className="tv2-btn tv2-btn--ghost tv2-btn--sm"
-                onClick={() =>
-                  onCiteToCompanion?.({
-                    title: candidate.title,
-                    text: leadWhy || candidate.title,
-                    ...(showTopic ? { topic: candidate.topic } : {}),
-                  })
-                }
-              >
-                带到同伴
               </button>
             )}
           </div>
@@ -1108,7 +1073,7 @@ export function TodaySurface({
     ].filter(Boolean);
 
     return (
-      <div className="tv2-queue-item" key={candidate.id}>
+      <li className="tv2-queue-item m3e-seg-item" key={candidate.id}>
         <div className="tv2-queue-card">
           <div className="tv2-queue-copy">
             <strong>{candidate.title}</strong>
@@ -1179,11 +1144,10 @@ export function TodaySurface({
             )}
           </div>
         )}
-      </div>
+      </li>
     );
   }
 
-  const showBuiltinPacks = Boolean(emptyLibrary || noModel || scheduledCandidates.length === 0);
   const undoableRules = plan.rules.filter(
     (rule) =>
       (rule.data.kind === 'defer' && Boolean(rule.data.until) && rule.data.until! > plan.day) ||
@@ -1229,15 +1193,11 @@ export function TodaySurface({
             {mode === 'voice' && ' · 语音模式'}
           </span>
         </div>
-        <div className="tv2-bar-actions">
-          <a
-            className="tv2-btn tv2-btn--ghost tv2-btn--sm"
-            href="/classroom"
-            onClick={(event) => handleSpaNavigation(event, '/classroom', onNavigate)}
-          >
-            开新课
-          </a>
-        </div>
+        {activeRoom && (
+          <div className="tv2-bar-actions">
+            <span className="tv2-muted" role="status">有进行中的课堂</span>
+          </div>
+        )}
       </header>
 
       {activeRoom && <ResumeRoomStrip room={activeRoom} onNavigate={onNavigate} />}
@@ -1384,7 +1344,7 @@ export function TodaySurface({
             <h3>接下来 · 备选</h3>
             <span className="tv2-muted">{backupEntries.length} 项</span>
           </div>
-          <div className="tv2-queue">{backupEntries.map((entry) => renderQueueCard(entry))}</div>
+          <ul className="m3e-seg-list">{backupEntries.map((entry) => renderQueueCard(entry))}</ul>
         </section>
       )}
 
@@ -1394,11 +1354,11 @@ export function TodaySurface({
             <h3>今日已完成</h3>
             <span className="tv2-muted">{completedProtected.length} 项</span>
           </div>
-          <div className="tv2-queue">
+          <ul className="m3e-seg-list">
             {completedProtected.map((candidate) =>
               renderQueueCard({ candidate, why: [], actions: [], isProtected: true }),
             )}
-          </div>
+          </ul>
         </section>
       )}
 
@@ -1480,13 +1440,6 @@ export function TodaySurface({
           </div>
         )}
       </section>
-
-      <BuiltinPacks
-        packs={builtinPacks}
-        visible={showBuiltinPacks}
-        noModel={noModel}
-        onNavigate={onNavigate}
-      />
 
       {(plan.conflicts.length > 0 || plan.goal || (plan.returning && plan.overview)) && (
         <div className="tv2-aux">

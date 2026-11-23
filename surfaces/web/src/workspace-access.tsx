@@ -1,6 +1,6 @@
 import { RecordQuestionLink, teachingPage } from './current-record';
 import { useEffect, useRef, useState } from 'react';
-import { api, ApiError } from './api';
+import { api, ApiError, type RecordFlowMasteryLevel, type WorkspaceRecordFlowSummary } from './api';
 import { Icon } from './icons';
 import './workspace-access.css';
 
@@ -18,7 +18,7 @@ type AccessItem = {
   teaching: boolean;
   eligible: boolean;
   purposes: string[];
-};
+} & Partial<WorkspaceRecordFlowSummary>;
 
 type AccessDetail = AccessItem & {
   text: string;
@@ -65,6 +65,13 @@ const categoryLabels: Record<string, string> = {
   entry: '生成条目',
 };
 
+const masteryLabels: Record<RecordFlowMasteryLevel, string> = {
+  unknown: '待摸底',
+  fragile: '待巩固',
+  developing: '进阶中',
+  solid: '稳固',
+};
+
 function authorLabel(author: AccessItem['author']) {
   if (author === 'companion') return '学习同伴生成';
   if (author === 'learner') return '本人保存';
@@ -75,6 +82,16 @@ function failureMessage(failure: unknown, fallback: string) {
   return failure instanceof ApiError && failure.message && !failure.message.startsWith('HTTP ')
     ? failure.message
     : fallback;
+}
+
+function MasteryBadge({ level }: { level: RecordFlowMasteryLevel | undefined }) {
+  const resolved = level ?? 'unknown';
+  return <span className={'access-mastery access-mastery--' + resolved} title={masteryLabels[resolved]} aria-label={masteryLabels[resolved]} />;
+}
+
+function FlowCountChip({ label, count }: { label: string; count: number }) {
+  if (!count) return null;
+  return <span className="m3e-tonal-chip m3e-tonal-chip--quiet">{label} {count}</span>;
 }
 
 export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false }: { disabled?: boolean; textbookAccess?: boolean }) {
@@ -94,8 +111,6 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
   const [search, setSearch] = useState('');
   const [version, setVersion] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [busyRecord, setBusyRecord] = useState<string>();
-  const [busyProvider, setBusyProvider] = useState<string>();
   const [detailBusy, setDetailBusy] = useState<string>();
   const [openId, setOpenId] = useState<string>();
   const [details, setDetails] = useState<Record<string, AccessDetail>>({});
@@ -150,74 +165,6 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
     setView((current) => ({ ...current, cursor: next.at(-1) }));
   }
 
-  async function toggleProvider(provider: Provider) {
-    if (disabled || busyProvider) return;
-    setBusyProvider(provider.id);
-    setError('');
-    setNotice('');
-    try {
-      const result = await api<{ providers: Provider[] }>(
-        '/workspace/access/providers/' + encodeURIComponent(provider.id),
-        {
-          method: 'PUT',
-          body: {
-            enabled: !provider.authorized,
-            baseUrl: provider.baseUrl,
-            protocol: provider.protocol,
-          },
-        },
-      );
-      setProviders(result.providers);
-      const updated = result.providers.find((item) => item.id === provider.id);
-      setNotice(updated?.authorized
-        ? '已允许这个模型配置读取你开放的学习记录。'
-        : '已撤销这个模型配置的学习记录访问。');
-    } catch (failure) {
-      setError(failureMessage(failure, '模型授权未能保存。'));
-    } finally {
-      setBusyProvider(undefined);
-    }
-  }
-
-  async function toggleRecord(item: AccessItem, purpose: 'teaching' | 'background-research' = 'teaching') {
-    if (disabled || busyRecord) return;
-    const background = purpose === 'background-research';
-    const enabled = background ? !item.purposes.includes(purpose) : !item.teaching;
-    setBusyRecord(item.id);
-    setError('');
-    setNotice('');
-    try {
-      const result = await api<{ id: string; rev: number; teaching: boolean; research?: boolean }>(
-        '/workspace/access/records/' + encodeURIComponent(item.id),
-        {
-          method: 'PUT',
-          body: { expectedRev: item.rev, enabled, ...(background ? {purpose} : {}) },
-        },
-      );
-      const allowed = background ? result.research === true : result.teaching;
-      setPage((current) => current && {
-        ...current,
-        items: current.items.map((entry) => entry.id === result.id
-          ? { ...entry, rev: result.rev, teaching: result.teaching, purposes: allowed
-            ? [...new Set([...entry.purposes, purpose])]
-            : entry.purposes.filter(value => value !== purpose) }
-          : entry),
-      });
-      setNotice(background
-        ? allowed ? '已允许后台从这页教材整理学习观察。' : '已撤回这页教材的后台用途。'
-        : result.teaching
-        ? '已开放这条记录。只有获授权的模型配置能读取它。'
-        : '已撤销这条记录的开放。原有用途保持不变。');
-    } catch (failure) {
-      setError(failureMessage(failure, '学习记录设置未能保存。'));
-      if (failure instanceof ApiError && failure.status === 409) {
-        setVersion((current) => current + 1);
-      }
-    } finally {
-      setBusyRecord(undefined);
-    }
-  }
-
   async function loadDetail(id: string, offset: number) {
     setDetailBusy(id);
     setError('');
@@ -262,8 +209,8 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
         <span className="settings-meta">{loading ? '读取中…' : currentPage + ' / 分页'}</span>
       </div>
       <p className="field-help">
-        这里显示你已有的练习、试卷、作答、笔记、材料和模型生成的学习条目。
-        「开放」表示允许获授权的模型读取这条记录；原有用途不会被替换。学习同伴生成的内容会标明作者，不会显示成你的话。
+        这里汇总你已有的练习、试卷、作答、笔记、材料和模型生成的学习条目。
+        学习同伴生成的内容会标明作者，不会显示成你的话。
       </p>
 
       <div className="access-providers" aria-label="模型配置授权">
@@ -274,31 +221,23 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
           </span>
         </div>
         <p className="field-help">
-          授权绑定到模型配置、当前服务地址和协议。新增配置、修改地址或协议后，需要在这里重新授权。
+          授权由后台按活跃模型配置统一处理。新增配置、修改地址或协议后，无需逐条点选。
         </p>
         {providers.length === 0 && <p className="settings-empty">还没有模型配置。</p>}
         <div className="access-provider-list">
           {providers.map((provider) => (
             <div className={'access-provider' + (provider.authorized ? ' authorized' : '')} key={provider.id}>
-              <label className="access-provider-choice">
-                <input
-                  type="checkbox"
-                  checked={provider.authorized}
-                  disabled={disabled || busyProvider === provider.id}
-                  onChange={() => void toggleProvider(provider)}
-                />
-                <span>
-                  <strong>{provider.label}</strong>
-                  <small>{provider.model} · {provider.protocol}</small>
-                </span>
-              </label>
+              <span>
+                <strong>{provider.label}</strong>
+                <small>{provider.model} · {provider.protocol}</small>
+              </span>
               <div className="access-provider-meta">
                 {provider.active && <span className="access-chip">当前</span>}
                 <span className={provider.authorized ? 'access-state open' : 'access-state'}>
                   {provider.authorized
                     ? '已授权'
                     : provider.authorizationStale
-                      ? '配置已变化，需重新授权'
+                      ? '配置已变化，待自动同步'
                       : '未授权'}
                 </span>
               </div>
@@ -370,12 +309,13 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
         </p>
       )}
 
-      <ul className="access-list" aria-busy={loading}>
+      <ul className="m3e-seg-list" aria-busy={loading}>
         {page?.items.map((item) => {
           const detail = details[item.id];
           const expanded = openId === item.id;
+          const hasFlow = typeof item.attemptCount === 'number' || typeof item.errorStageCount === 'number';
           return (
-            <li className="access-record" key={item.id}>
+            <li className="m3e-seg-item access-record" key={item.id}>
               <div className="access-record-head">
                 <div className="access-record-copy">
                   <div className="access-record-labels">
@@ -384,39 +324,34 @@ export function WorkspaceAccessPanel({ disabled = false, textbookAccess = false 
                     </span>
                     <span>{authorLabel(item.author)}</span>
                   </div>
-                  <strong>{item.title}</strong>
+                  <div className="access-record-title-row">
+                    <MasteryBadge level={item.masteryLevel} />
+                    <strong>{item.title}</strong>
+                  </div>
                   <p>{item.excerpt}</p>
+                  {hasFlow && (
+                    <div className="access-flow-chips" aria-label="结构化流动摘要">
+                      <FlowCountChip label="错因" count={item.errorStageCount ?? 0} />
+                      <FlowCountChip label="做题" count={item.attemptCount ?? 0} />
+                      <FlowCountChip label="对话" count={item.discussionCount ?? 0} />
+                      <FlowCountChip label="关联" count={item.neighborCount ?? 0} />
+                      {(item.conceptTags ?? []).slice(0, 3).map((tag) => (
+                        <span className="m3e-tonal-chip" key={tag}>{tag}</span>
+                      ))}
+                    </div>
+                  )}
                   <small className={item.teaching ? 'access-state open' : 'access-state'}>
                     {item.teaching
-                      ? authorized.length
-                        ? '已开放，可被获授权模型读取'
-                        : '已开放，但还没有获授权的模型'
+                      ? '已开放，可被获授权模型读取'
                       : item.purposes.includes('background-research') ? '允许后台使用 · 未开放同伴访问' : '仅本人可见'}
                   </small>
                 </div>
                 <div className="access-record-actions">
                   {teachingPage(item) && <RecordQuestionLink kind="page" record={item} />}
+                  <a className="text-button" href={'/materials/records/' + item.id}>查看工作台</a>
                   <button type="button" className="text-button" onClick={() => toggleDetail(item)}>
                     {expanded ? '收起' : '查看'}
                   </button>
-                  <label className="access-toggle">
-                    <input
-                      type="checkbox"
-                      checked={item.teaching}
-                      disabled={!item.eligible || disabled || busyRecord === item.id}
-                      onChange={() => void toggleRecord(item)}
-                    />
-                    <span>{!item.eligible ? '全部用途' : item.teaching ? '已开放' : '开放给获授权模型'}</span>
-                  </label>
-                  {item.category === 'textbook' && item.eligible && <label className="access-toggle">
-                    <input
-                      type="checkbox"
-                      checked={item.purposes.includes('background-research')}
-                      disabled={disabled || busyRecord === item.id}
-                      onChange={() => void toggleRecord(item, 'background-research')}
-                    />
-                    <span>允许后台整理学习观察</span>
-                  </label>}
                 </div>
               </div>
               {expanded && (

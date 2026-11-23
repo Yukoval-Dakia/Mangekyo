@@ -38,6 +38,7 @@ import { MaterialsPage } from './materials-page';
 import type { Duration } from './today-pack';
 import { WorkbookSurface, type CompanionCitation } from './workbook-v2';
 import './styles/tokens.css';
+import './styles/m3e.css';
 import './styles.css';
 import './shell.css';
 import './learning.css';
