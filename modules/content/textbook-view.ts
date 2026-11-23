@@ -1,4 +1,5 @@
 import type { CommandReceipt, FactSnapshot, LearnerId, ReadContext } from '@mangekyo/kernel';
+import { key } from './parse.ts';
 import { openTextbookReference, textbookPageFrom, type TextbookBlockBody } from './textbook-page.ts';
 
 export type TextbookReadInput = {
@@ -133,4 +134,41 @@ export function textbookWriteReceipt(receipt: CommandReceipt, requestId: string,
   if (!written) throw new Error('Textbook command receipt has no page write');
   return { ...receipt, requestId, clientEditSeq: edit.clientEditSeq, id: edit.id,
     expectedRev: edit.expectedRev, rev: written.rev };
+}
+
+export function classifyTextbookWriteError(error: unknown): { readonly status: 400 | 403 | 404 | 409; readonly message: string } | null {
+  if (!(error instanceof Error)) return null;
+  const { message } = error;
+  if (message === 'Command ID already used with a different command identity') return { status: 409, message: '同一个请求标识已经用于不同编辑。' };
+  if (message.startsWith('Fact already exists: ')) return { status: 409, message: '教材标识已经存在。' };
+  if (message.startsWith('Fact does not exist: ')) return { status: 404, message: '找不到要编辑的教材。' };
+  if (message.startsWith('Fact is retracted: ')) return { status: 409, message: '这份教材已经撤回。' };
+  if (message.startsWith('Fact purpose does not allow this write: ')) return { status: 403, message: '当前用途不能编辑这份教材。' };
+  if (message === '教材依据已变更。') return { status: 403, message: '教材来源已变更。' };
+  if (message === 'Proposal not found') return { status: 404, message: '找不到教材提议。' };
+  if (message === 'Proposal already decided' || message.startsWith('Fact revision conflict: ') ||
+      message === 'Only an unedited companion draft can be revised') return { status: 409, message: '教材或提议已变更，请刷新。' };
+  if (/^(教材|引用|插入位置|来源)/.test(message)) return { status: 400, message };
+  return null;
+}
+
+export function parseProposalBlockSelection(blockIds: unknown): string[] {
+  if (!Array.isArray(blockIds) || blockIds.length > 24) throw new Error('请选择教材块。');
+  const selected = blockIds.map(key).sort();
+  if (new Set(selected).size !== selected.length) throw new Error('请勿重复选择教材块。');
+  return selected;
+}
+
+export function projectTextbookProposalView<Base extends { readonly rev: number }, Item>(
+  proposal: { readonly id: string; readonly state: string }, base: Base, items: Item,
+  currentRev: number, receipt: CommandReceipt | undefined, undoToken: string,
+) {
+  const output = receipt?.output;
+  const blockIds = output && typeof output === 'object' && 'selection' in output && Array.isArray(output.selection)
+    ? output.selection as readonly string[] : [];
+  const written = receipt?.wrote[0];
+  const status = proposal.state === 'confirmed' ? 'applied' : proposal.state === 'rejected' ? 'rejected'
+    : proposal.state === 'conflict' || currentRev !== base.rev ? 'conflict' : 'proposed';
+  return { proposalId: proposal.id, status, base, items, blockIds,
+    result: written ? { id: written.id, rev: written.rev, undo_token: undoToken } : null };
 }

@@ -22,6 +22,33 @@ export function matchesQuestionVerificationSlot(
   return Boolean(basis && questionVerificationKey(basis) === slotKey && inputs.some(i =>
     i.kind === 'fact' && i.mode === 'following' && i.id === basis.id && i.rev === basis.rev && i.accessEpoch === basis.accessEpoch));
 }
+
+export function parseSetQuestionTeachingInput(id: string, raw: Record<string, unknown> | undefined) {
+  const input = raw ?? {};
+  const { requestId, expectedRev, allowed, includeSourceMaterial } = input;
+  if (typeof requestId !== 'string' || !requestId.trim() || typeof expectedRev !== 'number' || !Number.isSafeInteger(expectedRev) ||
+      expectedRev < 1 || typeof allowed !== 'boolean' || (includeSourceMaterial !== undefined && typeof includeSourceMaterial !== 'boolean')) {
+    throw new Error('题库教学授权请求无效。');
+  }
+  return { questionId: pageId(id), requestId, expectedRev, allowed, includeSourceMaterial };
+}
+
+export function classifySetQuestionTeachingError(
+  error: unknown, flags: { readonly notFound: boolean; readonly deniedReason?: string | undefined },
+): { readonly status: 404 | 409; readonly message: string } | null {
+  if (flags.notFound || (flags.deniedReason !== undefined && flags.deniedReason !== 'purpose'))
+    return { status: 404, message: '找不到这道题。' };
+  if (flags.deniedReason === 'purpose')
+    return { status: 409, message: '题目来源未授权教学用途，请先开放对应来源材料的教学权限。' };
+  if (!(error instanceof Error)) return null;
+  if (error.message.startsWith('Fact revision conflict') || error.message === '题目基版已变化。')
+    return { status: 409, message: '题目基版已变化，请刷新后再试。' };
+  if (error.message === 'Command ID already used with a different command identity')
+    return { status: 409, message: '同一个请求标识已经用于不同的教学授权。' };
+  if (error.message === '题目来源未授权教学用途或依据已变化。')
+    return { status: 409, message: '题目来源未授权教学用途，请先开放对应来源材料的教学权限。' };
+  return null;
+}
 export function parseQuestionVerificationKey(key: string) {
   const [rawId, rawRev, rawRecheck] = key.split(':');
   try {
