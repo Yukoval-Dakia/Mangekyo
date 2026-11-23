@@ -288,7 +288,7 @@ function FeedRow({
 
 function readStoredPurpose(): IntakePurpose {
   const saved = remembered(PURPOSE_STORAGE_KEY);
-  return saved === 'learning' ? 'learning' : 'save-only';
+  return saved === 'save-only' ? 'save-only' : 'learning';
 }
 
 export function IntakeSurface({

@@ -15,6 +15,14 @@ export const destinations: { path: string; text: string; icon: IconName }[] = [
   { path: "/me", text: "我", icon: "person" },
 ];
 
+export type CompanionCitationPayload = { title: string; text: string; topic?: string };
+
+export const CITE_TO_COMPANION_EVENT = "mangekyo:cite-to-companion";
+
+export function citeToCompanionDrawer(citation: CompanionCitationPayload) {
+  window.dispatchEvent(new CustomEvent<CompanionCitationPayload>(CITE_TO_COMPANION_EVENT, { detail: citation }));
+}
+
 function applyThemeToDocument(theme: "light" | "dark") {
   document.documentElement.dataset.theme = theme;
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -45,7 +53,7 @@ export function AppShell({
   onOpenSettings: () => void;
   onSavedMaterial: (href: string) => void;
   aiActivityRequest?: number | undefined;
-  companionCitation?: { title: string; text: string; topic?: string; seq: number } | undefined;
+  companionCitation?: (CompanionCitationPayload & { seq: number }) | undefined;
   children: ReactNode;
 }) {
   const [drawer, setDrawer] = useState<"none" | "ai" | "companion">("none");
@@ -53,6 +61,7 @@ export function AppShell({
   const [help, setHelp] = useState(false);
   const [running, setRunning] = useState(false);
   const lastAiRequest = useRef(0);
+  const [eventCitation, setEventCitation] = useState<(CompanionCitationPayload & { seq: number }) | undefined>(undefined);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const saved = remembered("theme");
     if (saved === "light" || saved === "dark") return saved;
@@ -68,6 +77,19 @@ export function AppShell({
   useEffect(() => {
     if (companionCitation) setDrawer("companion");
   }, [companionCitation]);
+
+  useEffect(() => {
+    function onCite(event: Event) {
+      const detail = (event as CustomEvent<CompanionCitationPayload>).detail;
+      if (!detail || typeof detail.title !== "string" || typeof detail.text !== "string") return;
+      setEventCitation((previous) => ({ ...detail, seq: (previous?.seq ?? 0) + 1 }));
+      setDrawer("companion");
+    }
+    window.addEventListener(CITE_TO_COMPANION_EVENT, onCite);
+    return () => window.removeEventListener(CITE_TO_COMPANION_EVENT, onCite);
+  }, []);
+
+  const effectiveCitation = eventCitation ?? companionCitation;
 
   useEffect(() => {
     applyThemeToDocument(theme);
@@ -275,7 +297,7 @@ export function AppShell({
           setDrawer("none");
           onOpenSettings();
         }}
-        pendingCitation={companionCitation}
+        pendingCitation={effectiveCitation}
       />
       {quickModal && (
         <QuickCaptureModal

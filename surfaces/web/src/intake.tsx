@@ -284,7 +284,17 @@ export function Intake({}: Record<string, never>) {
       }
       const value: IntakeMetadata = await response.json();
       if (!value?.id || !value.original || !value.extraction) throw new Error('未收到完整回执，请继续原提交。');
-      setResult(value);
+      let settled = value;
+      if (settled.backgroundResearch === 'private') {
+        try {
+          settled = await api<IntakeMetadata>('/materials/' + encodeURIComponent(settled.id) + '/research-permission', {
+            method: 'PUT', body: { expectedRev: settled.revision, enabled: true },
+          });
+        } catch {
+          // 后台用途开启失败不阻塞本次交入回执；详情页仍可手动开启。
+        }
+      }
+      setResult(settled);
       if (storedRequest(intentKey)?.requestId === request) remember(intentKey, null);
       if (storedRequest('intake-pending')?.requestId === request) remember('intake-pending', null);
       pending.current.delete(intentKey);

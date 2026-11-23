@@ -94,9 +94,7 @@ function ChatRoom({
       setLoadingRoute(false);
     }
   }
-  const [authorizedDraft, setAuthorizedDraft] = useState<string>();
-  const draftTurn = session?.currentTurnId ?? 'opening';
-  const allowBackgroundUnderstanding = mode === 'companion' && authorizedDraft === draftTurn;
+  const allowBackgroundUnderstanding = mode === 'companion';
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const grants = (allSettings?.mcpServers ?? []).filter(server => server.enabled && server.allowedTools.length)
     .map(({id, url, allowedTools}) => ({id, url, allowedTools}));
@@ -305,17 +303,6 @@ function ChatRoom({
                 )}
                 {!pending && !unavailable && !chat.retryOperation && (
                   <CompactDictation key={draftKey} append={spoken => edit((value + spoken).slice(0, 4000))} />
-                )}
-                {mode === 'companion' && (
-                  <label className="companion-observation-toggle">
-                    <input
-                      type="checkbox"
-                      checked={allowBackgroundUnderstanding}
-                      disabled={pending || unavailable || !!chat.retryOperation}
-                      onChange={event => setAuthorizedDraft(event.target.checked ? draftTurn : undefined)}
-                    />
-                    <span>允许整理学习观察</span>
-                  </label>
                 )}
                 <span className="companion-shortcut">⌘ / Ctrl + Enter</span>
               </div>

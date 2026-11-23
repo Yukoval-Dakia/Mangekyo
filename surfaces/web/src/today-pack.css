@@ -1,0 +1,471 @@
+/* Study Desk：沉浸式答题书桌，暖森编辑部基因。 */
+.study-desk {
+  width: min(100%, 880px);
+  margin-inline: auto;
+  padding: clamp(14px, 2.4vw, 26px) 0 48px;
+  line-height: 1.65;
+}
+
+/* ---------- 顶部专注条 ---------- */
+.study-desk-topbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-bottom: 18px;
+}
+.study-desk-back {
+  color: var(--muted);
+  font-size: 13.5px;
+  text-decoration: none;
+  padding: 6px 0;
+  border-radius: var(--radius-xs);
+}
+.study-desk-back:hover {
+  color: var(--forest);
+  text-decoration: underline;
+}
+.study-desk-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.study-desk-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 11px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-container);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 620;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.study-desk-chip--rev {
+  background: var(--surface);
+}
+.study-desk-tools {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.study-desk-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.study-desk-timer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pulse);
+}
+.study-desk-timer[aria-pressed="true"] .study-desk-timer-dot {
+  background: var(--muted);
+}
+.study-desk-companion {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--soft-green);
+  border-radius: var(--radius-pill);
+  background: var(--soft-green);
+  color: var(--on-soft-green);
+  font-size: 13px;
+  font-weight: 680;
+  cursor: pointer;
+}
+.study-desk-companion:hover {
+  background: var(--soft-green-hover);
+}
+
+/* ---------- 标题与题干 ---------- */
+.study-desk-title {
+  margin: 0 0 18px;
+  font-size: clamp(22px, 2.4vw, 27px);
+  line-height: 1.28;
+  letter-spacing: -0.02em;
+  font-weight: 720;
+}
+.study-desk-error {
+  color: var(--danger);
+  font-size: 14px;
+}
+.study-desk-loading {
+  color: var(--muted);
+}
+.study-desk-note {
+  font-size: 13.5px;
+  color: var(--muted);
+  background: var(--surface-container-low);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  margin: 10px 0;
+}
+.study-desk-prompt {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: clamp(18px, 3vw, 28px);
+  font-size: 17.5px;
+  line-height: 1.75;
+  margin-bottom: 16px;
+  max-width: 72ch;
+}
+.study-desk-prompt p {
+  margin: 0 0 10px;
+}
+.study-desk-prompt p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- A/B/C/D 选项卡 ---------- */
+.study-desk-choices {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.study-desk-choice {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 13px;
+  padding: 15px 16px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  font-size: 15.5px;
+  line-height: 1.6;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color var(--duration-short) var(--ease-standard), background-color var(--duration-short) var(--ease-standard), transform var(--duration-short) var(--ease-standard);
+}
+.study-desk-choice:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface-container-low);
+}
+.study-desk-choice:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.study-desk-choice:disabled {
+  cursor: default;
+}
+.study-desk-choice-letter {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-container);
+  border: 1px solid var(--line);
+  color: var(--forest);
+  font-size: 15px;
+  font-weight: 750;
+}
+.study-desk-choice-text {
+  min-width: 0;
+}
+.study-desk-choice-text p {
+  margin: 0;
+}
+.study-desk-choice-key {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-container-low);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 680;
+}
+.study-desk-choice--selected {
+  border-color: var(--forest);
+  background: var(--soft-green);
+}
+.study-desk-choice--selected .study-desk-choice-letter {
+  background: var(--forest);
+  border-color: var(--forest);
+  color: var(--primary-ink);
+}
+.study-desk-choice--selected .study-desk-choice-key {
+  background: var(--surface);
+  color: var(--on-soft-green);
+}
+.study-desk-choice--correct {
+  border-color: var(--forest);
+  background: var(--soft-green);
+}
+.study-desk-choice--correct .study-desk-choice-letter {
+  background: var(--forest);
+  border-color: var(--forest);
+  color: var(--primary-ink);
+}
+.study-desk-choice--wrong {
+  border-color: var(--danger);
+  background: var(--danger-container);
+}
+.study-desk-choice--wrong .study-desk-choice-letter {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--primary-ink);
+}
+.study-desk-choices[aria-disabled="true"] .study-desk-choice:not(.study-desk-choice--correct):not(.study-desk-choice--wrong):not(.study-desk-choice--selected) {
+  opacity: 0.72;
+}
+
+/* ---------- 盖住重做 ---------- */
+.study-desk-redo {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 13.5px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+/* ---------- 草稿区 ---------- */
+.study-desk-scratch {
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-low);
+  overflow: hidden;
+}
+.study-desk-scratch > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 15px;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--forest);
+}
+.study-desk-scratch > summary::-webkit-details-marker {
+  display: none;
+}
+.study-desk-scratch-badge {
+  margin-left: auto;
+  margin-right: 8px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--soft-green);
+  color: var(--on-soft-green);
+  font-size: 11.5px;
+  font-weight: 680;
+}
+.study-desk-scratch > summary::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform var(--duration-medium) var(--ease-standard);
+}
+.study-desk-scratch[open] > summary::after {
+  transform: rotate(225deg) translateY(-1px);
+}
+.study-desk-scratch-body {
+  padding: 0 15px 13px;
+}
+.study-desk-scratch-body textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 11px 13px;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.65;
+  resize: vertical;
+}
+.study-desk-scratch-body textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.study-desk-scratch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+.study-desk-scratch-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- 提交条 ---------- */
+.study-desk-submitbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+}
+.study-desk-submit {
+  min-height: 50px;
+  padding: 0 28px;
+  border-radius: var(--radius-pill);
+  font-size: 15.5px;
+  font-weight: 720;
+}
+.study-desk-submit-hint {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.study-desk-note {
+  width: 100%;
+}
+
+/* ---------- 交卷后核对 ---------- */
+.study-desk-result {
+  position: relative;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+.study-desk-result-band {
+  height: 6px;
+  background: var(--surface-container-high);
+}
+.study-desk-result--correct .study-desk-result-band {
+  background: var(--forest);
+}
+.study-desk-result--incorrect .study-desk-result-band {
+  background: var(--danger);
+}
+.study-desk-result-body {
+  padding: clamp(18px, 3vw, 26px);
+}
+.study-desk-result-title {
+  margin: 0 0 12px;
+  font-size: 19px;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+}
+.study-desk-result--correct .study-desk-result-title {
+  color: var(--forest);
+}
+.study-desk-result--incorrect .study-desk-result-title {
+  color: var(--danger);
+}
+.study-desk-result-explanation {
+  font-size: 15.5px;
+  line-height: 1.75;
+  max-width: 68ch;
+}
+.study-desk-result-explanation p {
+  margin: 0 0 10px;
+}
+.study-desk-result-explanation p:last-child {
+  margin-bottom: 0;
+}
+.study-desk-result-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+.study-desk-result-actions .primary-button,
+.study-desk-result-actions .tonal-button {
+  min-height: 46px;
+  padding: 0 20px;
+  border-radius: var(--radius-pill);
+  font-size: 14.5px;
+  font-weight: 700;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ---------- 390px 适配 ---------- */
+@media (max-width: 480px) {
+  .study-desk-topbar {
+    gap: 8px;
+  }
+  .study-desk-tools {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+  }
+  .study-desk-prompt {
+    font-size: 16.5px;
+    padding: 16px;
+  }
+  .study-desk-choice {
+    padding: 13px 13px;
+    gap: 11px;
+    font-size: 15px;
+  }
+  .study-desk-choice-letter {
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
+  }
+  .study-desk-choice-key {
+    display: none;
+  }
+  .study-desk-submitbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .study-desk-submit {
+    width: 100%;
+  }
+  .study-desk-result-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .study-desk-result-actions .primary-button,
+  .study-desk-result-actions .tonal-button {
+    justify-content: center;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .study-desk-choice {
+    transition: none;
+  }
+}
