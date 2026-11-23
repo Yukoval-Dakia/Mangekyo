@@ -1,10 +1,11 @@
+import type {Db, ReadTransaction, CommandHooks} from '../../kernel/src/index.ts';
 import { runPricedOutput } from '../../kernel/src/work/priced-output.ts';
 import type { WorkRef } from '../../kernel/src/work/index.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+
 import { workerOffers, workerAccount, workerPricing, workerStage, totalWorkerCost, ResearchDispatchDenied, type WorkerTariff } from '../../executors/teaching/research-worker.ts';
 import { loadSettings } from '../studio/settings.ts';
 import type { WorkerConsent } from '../../modules/companion/worker-consent.ts';
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
+
 import { comparisonWitness } from '../../modules/companion/worksheet-policy.ts';
 import { reviewAccess } from '../studio/research-sources.ts';
 import { RequestError } from '../studio/sessions.ts';

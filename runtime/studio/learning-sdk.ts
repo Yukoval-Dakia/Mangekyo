@@ -1,6 +1,7 @@
 import type { CanonicalEvidenceSliceV1, EvidenceEventV1 } from '../../kernel/src/pipeline-contracts.ts';
 import type { ReadContext } from '../../kernel/src/declarations/types.ts';
 import type { Tick } from '../../kernel/src/declarations/ids.ts';
+import type { ReadTransaction } from '../../kernel/src/index.ts';
 import { pythonAttemptsLimit } from '../../executors/teaching/agent-tools.ts';
 import { toolFailure, type LearningError } from '../../executors/teaching/learning-tools.ts';
 import { pythonPrerequisiteKinds, pythonPrerequisites, type PythonRead, type PythonReadValue } from '../../executors/teaching/python-sdk.ts';
@@ -8,7 +9,6 @@ import { activityEvidenceSlice, type ActivityEvidenceObservation } from '../../m
 import { posttestIssuanceType, posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
-import type { ReadTransaction } from '../../kernel/src/db/types.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import { isSourceFactId } from '../../modules/activity/source-values.ts';
 import { purpose } from './identity.ts';

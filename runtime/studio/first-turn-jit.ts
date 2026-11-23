@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+import type { Db, ReadTransaction } from '../../kernel/src/index.ts';
 import { factId } from '../../kernel/src/declarations/ids.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { firstTurnJitMessages, type FirstTurnJitRoute, type FirstTurnJitSlots, type FirstTurnJitTokenizer } from '../../executors/teaching/first-turn-jit.ts';
@@ -76,7 +76,6 @@ async function oldMistake(tx: ReadTransaction, turn: string, current: WorkspaceW
 
 export async function prepareFirstTurnJit(db: Db, learner: ReadTransaction['learner'], turn: string, submission: Turn,
   settings: RouteSettings, counter: StudioJitCounter, access: Access) {
-  const context = (slots: FirstTurnJitSlots) => ({version: 1 as const, slots, tokenizer: counter.tokenizer});
   let opened: Awaited<ReturnType<typeof collect>> | undefined;
   async function collect(tx: ReadTransaction) {
     const selection = submission.currentObject;
@@ -90,9 +89,9 @@ export async function prepareFirstTurnJit(db: Db, learner: ReadTransaction['lear
     };
     const basis = [...new Map([...(current?.basis ?? []), ...(older?.basis ?? [])]
       .map(item => [canonicalJsonString(workspaceInput(item)), item])).values()];
-    const frame = firstTurnJitMessages(context(slots), settings);
+    const frame = firstTurnJitMessages({version: 1 as const, slots, tokenizer: counter.tokenizer}, settings);
     const digest = createHash('sha256').update(canonicalJsonString(frame)).digest('hex');
-    return {context: context(slots), receipt: JSON.stringify({digest, basis}), basis, current};
+    return {context: {version: 1 as const, slots, tokenizer: counter.tokenizer}, receipt: JSON.stringify({digest, basis}), basis, current};
   }
   const receipt = await recordLocalRead(db, {
     learner, ownerKind: 'session', ownerId: turn, stepKey: 'jit-v1', label: 'local:first-turn-jit',

@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { scoutReceipt } from '../../../executors/temporal/src/research-scout.ts';
 import { researchDecision, reviewAction, noop, response } from '../../../modules/companion/research-triage-policy.ts';
 import { loadTriageFixtures, scoreTriageFixture, scoreTriageFixtures } from '../../../modules/companion/research-triage-fixtures.ts';
-import { parseTriageResponse, TriageResponseError } from '../research-triage/response.ts';
-import { parseTriageSnapshot } from '../research-triage/snapshot.ts';
-import { selectTriageCards, triageSkillCards, triagePromptBlock } from '../research-triage/skills.ts';
+import { parseTriageResponse, TriageResponseError } from '../../../modules/companion/research-triage-policy.ts';
+import { parseTriageSnapshot } from '../../../modules/companion/research-triage-snapshot.ts';
+import { selectTriageCards, triageSkillCards, triagePromptBlock } from '../../../modules/companion/research-triage-cards.ts';
 
-const fixtureUrl = new URL('../research-triage/fixtures.json', import.meta.url);
+const fixtureUrl = new URL('../../../modules/companion/research-triage-fixtures.json', import.meta.url);
 const validResponse = response(noop);
 
 const firstTodo = '01K7TRJAGE0000000000000001';

@@ -1,6 +1,7 @@
+import type {Db, DbTransaction, ReadTransaction} from '../../kernel/src/index.ts';
+import {withinLearnerTransaction, withLearnerLock} from '../../kernel/src/index.ts';
 import { createAuthorizedFactReader, createCommandReadContext, teachingRead } from './fact-read-helpers.ts';
-import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
-import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+
 import { factId, learnerId, type FactId, type Tick } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { BusWitness } from '../../kernel/src/pipeline-contracts.ts';
@@ -111,8 +112,7 @@ export async function eligibleCorrectionRetest(tx: ReadTransaction, spec: TodoSp
 export async function executeCorrectionRetest(db: Db, ref: WorkRef, todoId: FactId,
   settingsCurrent: (tx: ReadTransaction, revision: number) => Promise<boolean>, authority?: CorrectionRetestAuthority) {
   const learner = learnerId(ref.learner);
-  return db.tx({ learner }, async tx => {
-    await lockLearner(tx, learner);
+  return withLearnerLock(db, { learner }, async tx => {
     if ((await readReadyWork(tx, ref))?.deriver !== correctionRetestDeriver) return;
     const todo = await readTodo(tx, todoId);
     if (todo?.state !== 'dispatched') return;

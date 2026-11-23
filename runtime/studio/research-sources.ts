@@ -1,7 +1,8 @@
+import type {ReadTransaction} from '../../kernel/src/index.ts';
 import { projectWorksheet, type ReviewAccess } from '../../modules/companion/worksheet-policy.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { createCommandReadContext, isFactUnavailable, storageRead } from './fact-read-helpers.ts';
-import type { ReadTransaction } from '../../kernel/src/db/types.ts';
+
 import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';

@@ -1,20 +1,17 @@
-import { createResearchHost, researchReadSnapshot, researchSettingInput } from '../../modules/companion/research-host-support.ts';
+import type {ReadTransaction} from '../../kernel/src/index.ts';
+import {createCommandHandler, lockLearner, withinLearnerTransaction} from '../../kernel/src/index.ts';
+import { createResearchHost } from '../../modules/companion/research-host-support.ts';
 import { eligibleBasis, executeWorksheet, modelReviewSpec, worksheetView } from '../research/worksheet.ts';
 import { grantHooks, workerCap, workerOffer } from '../research/worker-dispatch.ts';
 import { workerConsent } from '../../modules/companion/worker-consent.ts';
 import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
-import type { Client } from '@temporalio/client';
 import { startOrWakeCoordinator } from '../../executors/temporal/src/index.ts';
-import type { AdvanceCoordinator } from '../../executors/temporal/src/worker.ts';
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
+
 import { consumePricedEffect, effectBudgetUsage } from '../../kernel/src/work/effects.ts';
-import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
-import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type Tick } from '../../kernel/src/declarations/ids.ts';
-import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { acknowledgeStartedWork, cancelWork, failWork, finishWork, readWork, type WorkRef } from '../../kernel/src/work/index.ts';
-import { cancelResearchTodos, checkTodoTriggers, emitTodo, enqueueWork, readTodo, recordTodoEvent, saveFactWatermark, todoSlot, type TodoSpec } from '../../kernel/src/work/todos.ts';
+
+import { commandId } from '../../kernel/src/declarations/ids.ts';
+import { acknowledgeStartedWork, cancelWork, failWork, finishWork, readWork } from '../../kernel/src/work/index.ts';
+import { cancelResearchTodos, checkTodoTriggers, emitTodo, enqueueWork, recordTodoEvent, saveFactWatermark, todoSlot } from '../../kernel/src/work/todos.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';

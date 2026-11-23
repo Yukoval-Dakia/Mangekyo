@@ -1,8 +1,8 @@
+import type {Db, ReadTransaction} from '../../kernel/src/index.ts';
+import {createCommandHandler, createPropagationHooks, withLearnerLock} from '../../kernel/src/index.ts';
 import { planReview, readEligibleReview, reviewDedupKey } from '../../modules/companion/worksheet-policy.ts';
 import { generateResearchDraft, ResearchDispatchDenied, type WorkerTariff } from '../../executors/teaching/research-worker.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { createPropagationHooks } from '../../kernel/src/derivations/propagation.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
+
 import { learnerId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -11,7 +11,7 @@ import { completeTodo, enqueueWork, readTodo, readLatestTodoUnavailable, remembe
 import type { FactRevisionBasis } from '../../kernel/src/declarations/fact-basis.ts';
 import { researchPurpose, ResearchBasisChanged, publishWorksheet, worksheetDraft } from '../../modules/companion/research.ts';
 import { readWorksheet, reviewAccess, worksheetPublication, whenAvailable } from '../studio/research-sources.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
+
 import { EffectBudgetExceeded } from '../../kernel/src/work/effects.ts';
 import { bindWorkPayload } from '../../kernel/src/work/payload.ts';
 import { workerCall, workerCap } from './worker-dispatch.ts';
@@ -42,8 +42,7 @@ function sameAttachmentBasis(left: readonly FactRevisionBasis[], right: readonly
 export async function executeWorksheet(db: Db, companion: LoadedModule, ref: WorkRef, todoId: FactId, settingsId: FactId,
   wake: WorkRequest, tariff: WorkerTariff | undefined, signal: AbortSignal) {
   const scope = {learner:learnerId(ref.learner)};
-  const prepared = await db.tx(scope, async tx => {
-    await lockLearner(tx, tx.learner);
+  const prepared = await withLearnerLock(db, scope, async tx => {
     if (!(await readReadyWork(tx, ref))) return null;
     const todo = await readTodo(tx, todoId);
     if (todo?.state !== 'dispatched') return null;
@@ -62,11 +61,14 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
   }
   const profile = prepared.todo.spec.workerProfile;
   const { factId: id, commandId } = prepared.publication;
-  const check = async (tx: ReadTransaction) => {
+  const liveStill = async (tx: ReadTransaction) => {
     const current = await readTodo(tx, todoId);
     const live = current && await eligibleBasis(tx, current.spec, settingsId, tariff);
-    if (current?.revision !== prepared.todo.revision || !await readReadyWork(tx, ref) ||
-        !live || !sameAttachmentBasis(live.attachmentBasis, prepared.attachmentBasis)) throw new ResearchBasisChanged('教研授权失效。');
+    return current && live && current.revision === prepared.todo.revision &&
+      sameAttachmentBasis(live.attachmentBasis, prepared.attachmentBasis) ? current : null;
+  };
+  const check = async (tx: ReadTransaction) => {
+    if (!await liveStill(tx) || !await readReadyWork(tx, ref)) throw new ResearchBasisChanged('教研授权失效。');
   };
   const { grant, todo, evidence, retention, comparison } = prepared;
   const unavailable = async () => {
@@ -89,10 +91,8 @@ export async function executeWorksheet(db: Db, companion: LoadedModule, ref: Wor
     modules: [companion],
     hooks: { async onFactsChanged(tx, tick, changes) {
       await propagation.onFactsChanged(tx, tick, changes);
-      const current = await readTodo(tx, todoId);
-      const live = current && await eligibleBasis(tx, current.spec, settingsId, tariff);
-      if (current?.revision !== prepared.todo.revision || !(await readReadyWork(tx, ref)) ||
-          !live || !sameAttachmentBasis(live.attachmentBasis, prepared.attachmentBasis) || !await completeTodo(tx, tick, ref, current, id))
+      const current = await liveStill(tx);
+      if (!current || !(await readReadyWork(tx, ref)) || !await completeTodo(tx, tick, ref, current, id))
         throw new ResearchBasisChanged('工作单已失效。');
       await enqueueWork(tx, tick, wake);
     } },
