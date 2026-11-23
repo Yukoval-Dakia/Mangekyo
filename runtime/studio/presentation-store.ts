@@ -3,13 +3,12 @@ import { assertClassroomAction } from './classroom.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { createCommandReadContext, isFactUnavailable } from './fact-read-helpers.ts';
-import { factId, commandId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { CommandReceipt } from '../../kernel/src/declarations/types.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
 
-import { type Manifest } from '../../kernel/src/derivations/manifest.ts';
+import {
+  commandId, createLearnerHost, factId, isKernelErrorKind,
+  type CommandReceipt, type Db, type Manifest, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import { NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { assessmentRelease } from '../../modules/activity/assessment-values.ts';
@@ -29,7 +28,6 @@ export { mountPermissionFields } from '../../modules/activity/artifact-action.ts
 const load = (name: string) =>
   loadModuleDirectory(fileURLToPath(new URL('../../modules/' + name, import.meta.url)));
 let content: ReturnType<typeof load>, activity: ReturnType<typeof load>;
-const scope = { learner: studioLearner };
 const conflict = (message: string) => new RequestError(409, message);
 
 export async function mountArtifact(
@@ -43,8 +41,7 @@ export async function mountArtifact(
   const checked = validateArtifact(args.view);
   if (!checked.ok) return learningToolError('invalid_args','view',checked.error);
   const prompt = args.predictionPrompt ?? null;
-  if (prompt !== null && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 160))
-    return learningToolError('invalid_args','predictionPrompt','预测提示应为 1–160 字。');
+  if (prompt !== null && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 160)) return learningToolError('invalid_args','predictionPrompt','预测提示应为 1–160 字。');
   const id = stableId('artifact-mount', turnId, String(step));
   const view = { ...checked.view, id: 'work-' + id.toLowerCase() };
   let assessment: ReturnType<typeof qualifyArtifactAssessment> | undefined;
@@ -56,7 +53,8 @@ export async function mountArtifact(
       return learningToolError('invalid_args','sentenceBreaks',error instanceof Error ? error.message : '正式断句无法发放。');
     }
   }
-  const data = await db.snapshot(scope, async (tx) => {
+  const host = createLearnerHost(db, studioLearner);
+  const data = await host.snapshot(async (tx) => {
     const manifest = await authorize(tx);
     const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
     // A replay keeps the original gather tick. The command compares all other inputs.
@@ -73,17 +71,13 @@ export async function mountArtifact(
       ...(assessment ? { assessment } : {}),
     };
   });
-  const handle = createCommandHandler(db, {
-    modules: [await (content ??= load('content'))],
-    hooks: createStudioCommandHooks({
+  const handle = host.boundHandler([await (content ??= load('content'))], createStudioCommandHooks({
       afterFactsChanged: async (tx) => {
         await authorize(tx);
         await notifySession(tx, data.sessionId);
       },
-    }),
-  });
+    }));
   const receipt = await handle({
-    ...scope,
     actor: 'companion',
     purpose,
     type: 'content.mountArtifact',
@@ -210,9 +204,9 @@ export async function readClassroomMountEvidence(tx: ReadTransaction, session: s
 }
 
 export async function actOnArtifact(db: Db, session: string, raw: Record<string, unknown>) {
+  const host = createLearnerHost(db, studioLearner);
   const requestId = clientRequest(raw.requestId);
-  if (typeof raw.mountId !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(raw.mountId))
-    throw new RequestError(400, '作品标识无效。');
+  if (typeof raw.mountId !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(raw.mountId)) throw new RequestError(400, '作品标识无效。');
   const mountId = raw.mountId;
   const notion = notionReadScope(db, studioLearner);
   const read = () => notion.read((tx, check) => readMount(tx, session, mountId, check));
@@ -224,24 +218,14 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
   }
   const existing = history.find((e) => e.requestId === requestId);
   if (existing) {
-    if (
-      canonicalJsonString(raw) !==
-      canonicalJsonString({
-        version: 1,
-        mountId,
-        requestId,
-        baseStateRev: existing.stateRev - 1,
-        action: existing.action,
-      })
-    )
-      throw conflict('同一操作身份的载荷不一致。');
+    const expected = canonicalJsonString({ version: 1, mountId, requestId, baseStateRev: existing.stateRev - 1, action: existing.action });
+    if (canonicalJsonString(raw) !== expected) throw conflict('同一操作身份的载荷不一致。');
     return confirmed(snapshot, existing.receipt);
   }
   const execute = async ({ input }: { input: { intent: ArtifactIntentV1 } }) => {
     const { action } = input.intent;
     const estimate = action.answers.estimate;
-    if (snapshot.predicting && (estimate?.kind !== 'text' || !estimate.text.trim()))
-      throw conflict('请先写下预测。');
+    if (snapshot.predicting && (estimate?.kind !== 'text' || !estimate.text.trim())) throw conflict('请先写下预测。');
     if (action.intent === 'submit' && action.trace.omitted) throw conflict('操作轨迹不完整。');
     const stateRev = mount.stateRev + 1;
     const id = stableId('artifact-action', mountId, String(stateRev));
@@ -258,23 +242,19 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
       predictionRef: snapshot.prediction?.id ?? null,
       ...(submission ? { submission, traceSource: 'learner-reported' } : {}),
     };
-    const handle = createCommandHandler(db, {
-      modules: [await (activity ??= load('activity'))],
-      hooks: createStudioCommandHooks({
+    const handle = host.boundHandler([await (activity ??= load('activity'))], createStudioCommandHooks({
         afterFactsChanged: async (tx, tick) => {
           await assertClassroomAction(tx,session,mount.turnId);
           const current = await readMount(tx, session, mountId, notion.check(tx));
           if (current.release && action.intent === 'submit') {
-            const submitted = await createCommandReadContext(tx, purpose).fact(factId(id), { mode: 'following' });
+            const submitted = await host.read(tx, purpose).fact(factId(id), { mode: 'following' });
             await registerFormalAssessment(tx, tick, artifactAssessmentPolicy, current.source, submitted);
           }
           await notifySession(tx, session);
         },
-      }),
-    });
+      }));
     try {
       return await handle({
-        ...scope,
         actor: 'learner',
         purpose,
         type: 'activity.recordArtifactAction',
@@ -282,8 +262,7 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
         input: { id, data },
       });
     } catch (error) {
-      if (error instanceof Error && /Fact already exists|different command identity/.test(error.message))
-        throw conflict('操作基版本或身份冲突。');
+      if (isKernelErrorKind(error, 'already_exists') || isKernelErrorKind(error, 'duplicate_command')) throw conflict('操作基版本或身份冲突。');
       throw error;
     }
   };

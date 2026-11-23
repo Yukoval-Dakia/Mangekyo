@@ -3,11 +3,11 @@ import { classroomCommand, classroomMutation, classroomPlan, classroomPrompt, cl
   type Classroom, type ClassroomOperation } from '../../modules/activity/classroom.ts';
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
 import { isFactUnavailable, teachingRead } from './fact-read-helpers.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { commandId, derivationId, factId, type DerivationId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import {
+  commandId, createLearnerHost, derivationId, factId, isKernelErrorKind,
+  type CommandHooks, type CommandRuntimeOptions, type Db, type DerivationId, type FactId, type Json, type ReadTransaction,
+} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { notionReadScope, notionSendBasis, NotionReadUnconfirmed, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { routeMatchesInput, sameRoute, workspaceGrantChecker, workspaceRouteRevision } from './harness.ts';
@@ -17,7 +17,6 @@ import { RequestError, clientRequest, readClassroomSession, type DisplayTurn } f
 import { classroomMountEvidence } from './presentation-store.ts';
 import { notionModelRecipient, stableId, studioLearner, purpose, slotType } from './identity.ts';
 
-const scope = {learner:studioLearner};
 const unavailable = () => new RequestError(404,'这次课堂不可读。');
 const conflict = (error: string) => new RequestError(409,error);
 const readTurn = async (tx: ReadTransaction, id: FactId) =>
@@ -92,14 +91,14 @@ async function handleErrors<T>(run: () => Promise<T>) {
   catch (error) {
     if (isFactUnavailable(error)) throw unavailable();
     if (error instanceof ClassroomConflict) throw conflict(error.message);
-    if (error instanceof Error && /different command identity/.test(error.message)) throw conflict('课堂请求标识已用于不同操作。');
+    if (isKernelErrorKind(error, 'duplicate_command')) throw conflict('课堂请求标识已用于不同操作。');
     throw error;
   }
 }
-function input<T>(parse: () => T) {
+const input = <T>(parse: () => T) => {
   try { return parse(); }
   catch (error) { throw new RequestError(400,error instanceof Error ? error.message : '课堂输入无效。'); }
-}
+};
 
 // Only identities leave this query. The classroom reader authorizes each current plan and step.
 async function activeClassroomIds(tx: ReadTransaction) {
@@ -114,6 +113,11 @@ async function activeClassroomIds(tx: ReadTransaction) {
 }
 
 export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHooks) {
+  const host = createLearnerHost(db, studioLearner);
+  const classroom = (bindCommandRead: NonNullable<CommandRuntimeOptions['bindCommandRead']>) =>
+    host.boundHandler([activity], hooks, undefined, { bindCommandRead });
+  const exec = (handle: ReturnType<typeof classroom>, requestId: string, input: Json) =>
+    handleErrors(() => handle({purpose, id: commandId(stableId('classroom-command',requestId)), type: classroomCommand, input}));
   const view = async (tx: ReadTransaction, id: FactId, check: CheckNotionRead) => {
     const {fact,state,generation,adjustmentFailed} = await readClassroom(tx,id,check);
     const {topic,minutes,sessionId,status,steps} = state;
@@ -123,28 +127,24 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
   const readView = (id: FactId, readOnly = false) =>
     handleErrors(() => notionReadScope(db,studioLearner,{readOnly}).read((tx,check) => view(tx,id,check)));
   const get = (id: FactId) => readView(id, true);
-  const listActive = () => notionReadScope(db, studioLearner, {readOnly: true}).read(async (tx, check) => {
+  const readOnlyScope = () => notionReadScope(db, studioLearner, {readOnly: true});
+  const listActive = () => readOnlyScope().read(async (tx, check) => {
     const items = [];
     let unconfirmed = false;
     for (const id of await activeClassroomIds(tx)) {
       try {
         const {fact, state, generation} = await readClassroom(tx, id, check);
         const step = activeClassroomStep(state);
-        if (state.status === 'active' && generation === 'ready' && step)
-          items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
+        if (state.status === 'active' && generation === 'ready' && step) items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
       } catch (error) {
-    if (isFactUnavailable(error)) continue;
-        if (error instanceof RequestError && error.status === 404) continue;
-        if (error instanceof RequestError && error.status === 503) {
-          unconfirmed = true;
-          continue;
-        }
+        if (isFactUnavailable(error) || (error instanceof RequestError && error.status === 404)) continue;
+        if (error instanceof RequestError && error.status === 503) { unconfirmed = true; continue; }
         throw error;
       }
     }
     return {items, ...(!items.length && unconfirmed ? {retryable:true as const} : {})};
   });
-  const print = (id: FactId) => handleErrors(() => notionReadScope(db,studioLearner,{readOnly:true}).read(async (tx,check) => {
+  const print = (id: FactId) => handleErrors(() => readOnlyScope().read(async (tx,check) => {
     const classroom = await view(tx,id,check);
     const session = await readClassroomSession(tx,classroom.sessionId,check);
     return {classroom,session};
@@ -157,16 +157,14 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     const id = classroomId(sessionId);
     const state = seedClassroom(start,sessionId);
     const route = input(() => classroomRoute(raw.route));
-    const handle = createCommandHandler(db,{modules:[activity],hooks,bindCommandRead:(tx,_request,base) =>
+    const handle = classroom((tx,_request,base) =>
       bindClassroomPreparation(base,async () => {
         const settings = start.currentObject ? await loadSettings('companion') : (await freezeProviderAccount(tx,'companion')).settings;
         const account = providerAccount(settings);
-        if (!routeMatchesInput(route,settings) || (route?.accountRevision !== undefined && route.accountRevision !== account?.accountRevision))
-          throw conflict('模型配置已变更，请重新确认。');
+        if (!routeMatchesInput(route,settings) || (route?.accountRevision !== undefined && route.accountRevision !== account?.accountRevision)) throw conflict('模型配置已变更，请重新确认。');
         const workspaceRevision = start.currentObject && await workspaceRouteRevision(settings);
         const recipient = workspaceRevision && notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,workspaceRevision);
-        if (start.currentObject && (!recipient || !account || route?.accountRevision !== account.accountRevision))
-          throw new RequestError(403,'请确认模型账户与工作区教学授权。');
+        if (start.currentObject && (!recipient || !account || route?.accountRevision !== account.accountRevision)) throw new RequestError(403,'请确认模型账户与工作区教学授权。');
         const source = start.currentObject && recipient && await readCurrentLearningObject(tx,start.currentObject,
           Object.assign(() => true,{notionRecipientId:recipient}));
         if (start.currentObject && !source) throw unavailable();
@@ -179,9 +177,8 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
           providerId:settings.activeProviderId, protocol:settings.protocol, model:settings.model,
           baseUrl:settings.baseUrl, reasoningEffort:settings.reasoningEffort,
         })}};
-      })});
-    await handleErrors(() => handle({...scope,actor:'learner',purpose,id:commandId(stableId('classroom-command',requestId)),
-      type:classroomCommand,input:{id,start,route:route ?? null}}));
+      }));
+    await exec(handle, requestId, {id,start,route:route ?? null});
     return readView(id);
   }
 
@@ -214,10 +211,9 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
             isFactUnavailable(error))) throw error;
       // Replay bypasses a now-stale expectedRev but still goes through the authorized view.
     }
-    const handle = createCommandHandler(db,{modules:[activity],hooks,bindCommandRead:(tx,_request,base) =>
-      bindClassroomPreparation(base,() => prepare(tx,notion.check(tx)))});
-    await handleErrors(() => handle({...scope,actor:'learner',purpose,id:commandId(stableId('classroom-command',requestId)),
-      type:classroomCommand,input:{id,op,...mutation}}));
+    const handle = classroom((tx,_request,base) =>
+      bindClassroomPreparation(base,() => prepare(tx,notion.check(tx))));
+    await exec(handle, requestId, {id,op,...mutation});
     return readView(id);
   }
   return {start,get,listActive,mutate,print};
