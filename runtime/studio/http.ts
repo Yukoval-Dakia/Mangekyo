@@ -198,6 +198,7 @@ export function serve(
   offline('/api/notion/sources/:ulid/(purpose|retract)', (input, _wm, [id, action]) => student.notion.mutate(action!, input, id!));
   raw('GET', '/api/notion/sources/:ulid', (_req, res, [id], url) => student.notion.read(id!, url.searchParams.get('view'), data => sendJson(res, 200, data)));
   get('/api/workspace/access', (_p, url) => student.workspace.list(url.searchParams));
+  get('/api/workspace/records/:ulid/flow', ([id]) => student.workspace.flow(id!));
   get('/api/workspace/access/providers', () => student.workspace.providers());
   get('/api/workspace/access/records/:ulid', ([id], url) => student.workspace.record(id!, url.searchParams));
   put('/api/workspace/access/records/:ulid', (input, [id]) => student.workspace.setTeaching(id!, input));

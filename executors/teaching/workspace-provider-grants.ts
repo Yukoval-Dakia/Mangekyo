@@ -80,3 +80,38 @@ export function providerViews(settings: ProviderSettings, stored: StoredAccess):
     };
   });
 }
+
+/**
+ * Automatically authorize the active model provider when settings are saved,
+ * unless the learner explicitly disabled the exact same endpoint/protocol/credential revision.
+ */
+export function autoAuthorizeActiveRoute(
+  settings: ProviderSettings,
+  stored: StoredAccess,
+  revision: string,
+): { readonly stored: StoredAccess; readonly changed: boolean } {
+  const active = settings.providers.find(provider => provider.id === settings.activeProviderId);
+  if (!active || !active.baseUrl || !active.credentialRevision) return { stored, changed: false };
+  if (workspaceGrantRevision(stored.routes, active)) return { stored, changed: false };
+  const existing = stored.routes[active.id];
+  if (
+    existing &&
+    !existing.enabled &&
+    existing.baseUrl === active.baseUrl &&
+    existing.protocol === active.protocol &&
+    existing.credentialRevision === active.credentialRevision
+  ) {
+    return { stored, changed: false };
+  }
+  const nextRoute: StoredRoute = {
+    enabled: true,
+    baseUrl: active.baseUrl,
+    protocol: active.protocol,
+    revision,
+    credentialRevision: active.credentialRevision,
+  };
+  return {
+    stored: { version: 1, routes: { ...stored.routes, [active.id]: nextRoute } },
+    changed: true,
+  };
+}
