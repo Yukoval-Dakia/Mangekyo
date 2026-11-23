@@ -59,7 +59,7 @@ export function knowledgeEndpointKind(fact: FactSnapshot): KnowledgeEndpointKind
     switch (kind) {
       case 'concept': case 'question': case 'method': case 'archetype': return kind;
       case 'textbook': return 'chapter';
-      case 'capture': return 'source';
+      case 'capture': case 'discipline': return 'source';
       case 'page': return 'note';
     }
     return undefined;

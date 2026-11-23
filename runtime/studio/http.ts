@@ -31,6 +31,7 @@ import type { openRetention } from './retention.ts';
 import type { openRetentionComparison } from './retention-comparison.ts';
 import type { openIqdb } from './iqdb.ts';
 import { openTransparency } from './transparency.ts';
+import type { openOnboarding } from './onboarding.ts';
 import { recallDisplayToken, type RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 import type { CarePause } from './care-pause.ts';
@@ -108,7 +109,7 @@ const types: Record<string, string> = {
   '.png': 'image/png', '.webp': 'image/webp', '.ico': 'image/x-icon',
 };
 const pages = new Set([
-  '/', '/today', '/papers', '/papers/new', '/papers/issued', '/plan', '/notes', '/review', '/intake',
+  '/', '/today', '/onboarding', '/papers', '/papers/new', '/papers/issued', '/plan', '/notes', '/review', '/intake',
   '/materials', '/materials/workspace', '/textbooks', '/textbooks/page', '/materials/riding',
   '/practice/riding', '/companion', '/me', '/classroom', '/classroom/first45',
 ]);
@@ -135,6 +136,7 @@ type StudioDeps = {
   iqdb: ReturnType<typeof openIqdb>;
   transparency?: ReturnType<typeof openTransparency>;
   carePause: CarePause;
+  onboarding?: ReturnType<typeof openOnboarding>;
 };
 
 export function serve(
@@ -181,6 +183,11 @@ export function serve(
 
   get('/api/iqdb/questions', () => student.iqdb.questions());
   put('/api/iqdb/questions/:ulid/teaching', (input, [id]) => student.iqdb.setTeaching(id!, input));
+  if (student.onboarding) {
+    get('/api/onboarding/status', () => student.onboarding!.status());
+    post('/api/onboarding/propose', input => student.onboarding!.propose(input));
+    post('/api/onboarding/apply', input => student.onboarding!.apply(input));
+  }
   get('/api/ai/activity', () => transparency.aiActivity());
   get('/api/knowledge/graph', (_p, url) => transparency.knowledgeGraph(url.searchParams));
   raw('POST', '/api/knowledge/graph/:seg/quick-paper', async (req, res, [id]) => {
@@ -402,6 +409,7 @@ export function serve(
       sendJson(res, expected ? error.status : 500, {
         error: expected ? error.message : '服务未能完成请求。',
         ...(error instanceof RequestError && error.responseCode ? { code: error.responseCode } : {}),
+        ...(error instanceof RequestError && error.responseCode === 'model_unavailable' ? { next: 'settings' } : {}),
       });
     }
   });

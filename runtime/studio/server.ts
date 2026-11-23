@@ -46,6 +46,7 @@ import { questionVerificationType } from '../../modules/content/question-verific
 import { openRecallHttp } from './recall-http.ts';
 import { isRetentionSlot, openRetention } from './retention.ts';
 import { openRetentionComparison, retentionComparisonWork } from './retention-comparison.ts';
+import { openOnboarding } from './onboarding.ts';
 import { openCarePause } from './care-pause.ts';
 import { listenForSessionEvents, prepareSessionEvents } from './stream.ts';
 import { confirmedTeachingMethod, learningToolsMethod } from './identity.ts';
@@ -133,7 +134,9 @@ async function openWeb() {
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
     research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db, pulseHost), carePause };
-  return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
+  const onboarding = openOnboarding(db, { plan, content, companion },
+    { hooks: createStudioCommandHooks({ afterFactsChanged: research.activityChanged }) });
+  return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), { ...student, onboarding }, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
 const server = mode === 'worker' ? undefined : await openWeb();
