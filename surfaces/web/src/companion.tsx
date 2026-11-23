@@ -1,4 +1,4 @@
-import { ReadReply } from './message';
+import { Message, ReadReply } from './message';
 import './companion.css';
 import { recordFromQuery, recordFromSession, recordLabel, type CurrentObject } from './current-record';
 import { builtinPackPath, findBuiltinPack } from './builtin-packs';
@@ -9,6 +9,8 @@ import { useConversation } from './conversation';
 import { Icon, Mark } from './icons';
 import { RecoveryGuide } from './recovery';
 import { TeachingTurn } from './demo';
+import { AgentThinkingSteps } from './shell/AgentThinkingSteps';
+import { TurnArtifacts } from './presentation/TurnArtifact';
 import { chatPath, materialPath, PageTitle, ReadState, useResource, type ChatLink, type Material, type Resource } from './workspace';
 
 function LinkedChat({ id, chats, settings }: { settings: Settings | undefined; id: string; chats: Resource<ChatLink[]> }) {
@@ -164,7 +166,6 @@ function ChatRoom({
     <>
       <PageTitle title="同伴">
         <div className="companion-title-actions">
-          <a className="tonal-button" href="/classroom">按主题开课</a>
           <a className="tonal-button" href="/companion">
             <Icon name="plus" /> 新对话
           </a>
@@ -207,11 +208,23 @@ function ChatRoom({
                       chat.editDraft('题目：' + question + '\n我的回答：' + answer + '\n请根据我的回答指出下一步。');
                       textarea.current?.focus();
                     }} /></ReadReply.Provider>),
-                pending && <TeachingTurn key={session?.status === 'pending' ? session.currentTurnId : 'sending'}
-                  answer={chat.sendingAnswer || session?.pendingAnswer} message={streamingReply}
-                  progress={reconnecting ? '正在重连…' : progressLabel || '正在连接同伴…'}
-                  mounts={session?.status === 'pending' ? session.mounts.filter(m => m.turnId === session.currentTurnId) : []}
-                  applySnapshot={chat.applySnapshot} />,
+                pending && <li key={session?.status === 'pending' ? session.currentTurnId : 'sending'} className="turn">
+                  {(chat.sendingAnswer || session?.pendingAnswer) && (
+                    <div className="learner-message">
+                      <span>你</span><p>{chat.sendingAnswer || session?.pendingAnswer}</p>
+                    </div>
+                  )}
+                  <article className="companion-turn">
+                    <AgentThinkingSteps
+                      chat={chat}
+                      progress={reconnecting ? '正在重连…' : progressLabel || '正在连接同伴…'}
+                    />
+                    {streamingReply && <Message text={streamingReply} streaming />}
+                    {session?.status === 'pending' && session.mounts.length > 0 && (
+                      <TurnArtifacts mounts={session.mounts.filter(m => m.turnId === session.currentTurnId)} apply={chat.applySnapshot} live />
+                    )}
+                  </article>
+                </li>,
               ]}
             </ol>
           )}

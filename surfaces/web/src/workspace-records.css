@@ -1,0 +1,189 @@
+/* 学习记录详情：M3E 双栏全域数据流动工作台 */
+.record-flow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 18px;
+  align-items: start;
+  width: 100%;
+  min-width: 0;
+}
+
+.record-flow-main {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.record-flow-side {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  position: sticky;
+  top: calc(var(--top-bar-height, 60px) + 12px);
+}
+
+.record-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-container-low);
+}
+
+.record-identity-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.record-identity-copy strong {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.record-identity-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.record-body {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+
+.record-body :where(p, ul, ol, pre) {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.record-body :where(img, table) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.record-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container-low);
+  min-width: 0;
+}
+
+.record-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.record-section-head strong {
+  font-size: 13.5px;
+}
+
+.record-section-head small {
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.record-mastery-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.record-mastery-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 140px;
+}
+
+.record-mastery-copy strong {
+  font-size: 14px;
+}
+
+.record-mastery-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.record-timeline {
+  list-style: none;
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0 0 0 10px;
+  border-inline-start: 2px solid var(--line);
+}
+
+.record-timeline li {
+  position: relative;
+  padding: 6px 0 6px 12px;
+}
+
+.record-timeline li::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: -6px;
+  top: 14px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--surface-container-highest);
+  border: 2px solid var(--line-strong);
+}
+
+.record-timeline li[data-verdict="correct"]::before {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.record-timeline li[data-verdict="incorrect"]::before {
+  background: var(--m3e-amber);
+  border-color: var(--m3e-amber);
+}
+
+.record-flow-actions {
+  position: sticky;
+  inset-block-end: 14px;
+  display: flex;
+  justify-content: center;
+  padding-block-start: 4px;
+}
+
+.record-related-list {
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+}
+
+.record-related-list a {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.record-related-list a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 880px) {
+  .record-flow {
+    grid-template-columns: 1fr;
+  }
+
+  .record-flow-side {
+    position: static;
+  }
+}

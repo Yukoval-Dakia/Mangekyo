@@ -44,7 +44,7 @@ const transport: Transport = {
   },
 };
 
-export default function StudioTextbooks({ editor, openAccess, embedded = false }: { editor: boolean; openAccess: () => void; embedded?: boolean }) {
+export default function StudioTextbooks({ editor, embedded = false }: { editor: boolean; openAccess?: () => void; embedded?: boolean }) {
   const index = useResource<{ pages: { id: string; title: string }[] }>('/textbooks');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -73,7 +73,7 @@ export default function StudioTextbooks({ editor, openAccess, embedded = false }
       initialPage={index.data.pages[0]?.id ?? ''} draftScope="studio" transport={transport} slots={{review: page => <PageProposals key={page.id} id={page.id} />, practice: page =>
         page.purpose?.some(value => value === 'teaching' || value === 'all')
           ? <RecordQuestionLink kind="page" record={page} />
-          : <button className="text-button" onClick={openAccess}>在学习记录访问中开放教材</button>}} />}
+          : <p className="field-help">尚未进入伴学范围。可在「学习设置 → 访问与授权」统一核对学习记录开放状态。</p>}} />}
   </>;
   return <>
     {!embedded && <PageTitle title="个人教材" />}

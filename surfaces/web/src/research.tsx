@@ -189,12 +189,26 @@ function Worksheet({ path, refresh }: { path: string; refresh: () => void }) {
   </div>;
 }
 
-export function AttemptResearch({ paperId, attemptId, onSaved }: { paperId: string; attemptId: string; onSaved: () => void }) {
+export function AttemptResearch({ paperId, attemptId }: { paperId: string; attemptId: string; onSaved?: () => void }) {
   const path = '/papers/' + encodeURIComponent(paperId) + '/attempts/' + encodeURIComponent(attemptId) + '/research';
-  return <ResearchChoice path={path + '-permission'} field="allowed" label="向后台教研开放本次作答" onSaved={onSaved}
-    help="开放后，后台教研可读取这份原答。如已另行授权付费前哨，该服务可收到卷名、提交时间与错题摘要。收回后，这次作答的复习单及其来源将不再可读。">
-    {(allowed, revision, refresh) => allowed && <Worksheet key={revision} path={path} refresh={refresh} />}
-  </ResearchChoice>;
+  return <AttemptResearchView path={path} />;
+}
+
+function AttemptResearchView({ path }: { path: string }) {
+  const resource = useResource<{ allowed: boolean; enabled: boolean; worksheet: Sheet | null; failure?: WorksheetFailure }>(path);
+  const view = resource.data;
+  if (!view) return <ReadState resource={resource} />;
+  return (
+    <section className="research-choice" aria-label="本次作答教研摘要">
+      {!view.enabled && <p className="field-help">后台教研当前处于关闭状态，可在「学习设置」中启用。</p>}
+      <div className="research-sheet">
+        {view.worksheet ? <>
+          <WorksheetContents sheet={view.worksheet} />
+          <WorksheetSource key={view.worksheet.id} href={view.worksheet.source.href} unavailable={resource.reload} />
+        </> : <p>{view.failure === 'model_unavailable' ? modelUnavailable : '暂未产出复习单。'} <button type="button" className="text-button" onClick={resource.reload}>重新查看</button></p>}
+      </div>
+    </section>
+  );
 }
 
 type ReconciliationResearchView = {
@@ -208,16 +222,13 @@ type ReconciliationResearchView = {
 export function ReconciliationResearch({ recordKey }: { recordKey: string }) {
   const path = '/retention/' + encodeURIComponent(recordKey) + '/research';
   const [view, setView] = useState<ReconciliationResearchView>();
-  const [message, setMessage] = useState('');
   const [readFailed, setReadFailed] = useState(false);
-  const [busy, setBusy] = useState(false);
   const activeRead = useRef<AbortController | null>(null);
-  const saving = useRef(false);
   const refresh = useCallback(() => {
     activeRead.current?.abort();
     setView(undefined);
     setReadFailed(false);
-    if (document.hidden || saving.current) return;
+    if (document.hidden) return;
     const controller = new AbortController();
     activeRead.current = controller;
     api<ReconciliationResearchView>(path, { signal: controller.signal }).then(result => {
@@ -241,39 +252,13 @@ export function ReconciliationResearch({ recordKey }: { recordKey: string }) {
     };
   }, [refresh]);
 
-  async function save() {
-    if (!view || saving.current) return;
-    saving.current = true;
-    setBusy(true);
-    setMessage('');
-    setView(undefined);
-    try {
-      await api<ReconciliationResearchView>(path, { method: 'PUT', body: {
-        requestId: requestId(), revision: view.revision, allowed: !view.allowed,
-      } });
-    } catch (error) {
-      setMessage(error instanceof ApiError && error.status === 409
-        ? '授权状态已变化，请核对后再操作。' : '未能确认保存结果，请核对当前状态。');
-    } finally {
-      saving.current = false;
-      setBusy(false);
-      if (activeRead.current) refresh();
-    }
-  }
-
   return <section className="research-choice" aria-label="后测复习单">
-    <p className="field-help">你可以授权后台使用此次对账摘要，在有适用模型及授权额度时生成复习单。授权可随时在这里撤回。</p>
-    {message && <p role="alert">{message}</p>}
+    <p className="field-help">当后台教研已启用时，本次对账摘要可用于生成复习单；授权状态在「学习设置」中管理。</p>
     {!view ? <div className="research-controls">
-      {busy || !readFailed ? <span role="status">{busy ? '正在保存…' : '正在读取授权…'}</span> :
-        <><span role="alert">暂时无法读取本次授权。</span> <button type="button" className="text-button" onClick={refresh}>重新读取</button></>}
+      {!readFailed ? <span role="status">正在读取…</span> :
+        <><span role="alert">暂时无法读取本次教研摘要。</span> <button type="button" className="text-button" onClick={refresh}>重新读取</button></>}
     </div> : <>
       {!view.enabled && <p>后台教研已关闭。可在「学习设置」中启用后台教研。</p>}
-      <div className="research-controls">
-        <span role="status">{view.allowed ? '此次摘要已授权' : '此次摘要未授权'}</span>
-        {(view.allowed || view.enabled) && <button type="button" className="text-button"
-          onClick={() => void save()}>{view.allowed ? '撤回此次授权' : '授权使用此次摘要'}</button>}
-      </div>
       {view.enabled && view.allowed && <div className="research-sheet">
         {view.worksheet ? <>
           <WorksheetContents sheet={view.worksheet} />

@@ -10,6 +10,7 @@ import { Icon, Mark } from "./icons";
 
 import { TurnArtifacts, type ApplySnapshot } from "./presentation/TurnArtifact";
 import type { ArtifactSnapshotV1 } from "./presentation/session-artifacts";
+import { AgentThinkingSteps } from "./shell/AgentThinkingSteps";
 
 const actionNames: Record<Turn["action"], string> = {
   companion_reply: "学习同伴",
@@ -131,7 +132,7 @@ function TurnResearchConsent({turnId, grant, reload}: {
   </div>;
 }
 
-export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, sessionId, materialId, discuss, reload }: {
+export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.message, progress, mounts, applySnapshot, sessionId, materialId, discuss, reload, chat }: {
   reload?: () => void;
   turn?: Turn | undefined;
   answer?: string | undefined;
@@ -142,6 +143,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
   sessionId?: string | undefined;
   materialId?: string | undefined;
   discuss?: ((question: string, answer: string) => void) | undefined;
+  chat?: unknown;
 }) {
   const item = useRef<HTMLLIElement>(null);
   const complete = Boolean(turn);
@@ -158,7 +160,8 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
       {answer && <div className="learner-message"><span>{!turn || turn.action === "companion_reply" ? "你" : "你的作答"}</span><p>{answer}</p></div>}
       <article className="companion-turn">
         {turn ? <header className="turn-heading"><Mark /><span>{actionNames[turn.action]}</span></header>
-          : <span className="live-status" role="status"><i />{progress}</span>}
+          : !progress && !chat ? <span className="live-status" role="status"><i />{progress}</span> : null}
+        <AgentThinkingSteps chat={chat} turn={turn} progress={!turn ? progress : undefined} />
         {message && <Message text={message} streaming={streaming} />}
         {applySnapshot && mounts && <TurnArtifacts mounts={mounts} apply={applySnapshot} live={!turn} />}
         {turn && <>
@@ -176,7 +179,6 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
             <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
             <div className="evidence-content">
               {rationale && <p>{rationale}</p>}
-              {turn.trace && turn.trace.length > 0 && <ol aria-label="本轮工具记录">{turn.trace.map((step, index) => <li key={index}>{step}</li>)}</ol>}
               {turn.reads.length > 0 && <ul className="read-list">{turn.reads.map((read) => (
                 <li key={read.id}>
                   <div className="read-heading"><strong>{read.title}</strong>{turn.evidenceIds.includes(read.id) && <span>本轮引用</span>}</div>
@@ -253,7 +255,7 @@ function Conversation({ teachingCase, active, settings, needsSetup, openSettings
           {(session || invalidated) && <button type="button" className="tonal-button" disabled={!settings || waiting || Boolean(retryOperation)} onClick={() => conversation.start(undefined, undefined, undefined, selectedRoute(settings))}><Icon name="plus" /> 新对话</button>}
         </header>
         <div className="feed" ref={feed} role="region" aria-label="对话记录" tabIndex={0}>
-          {turns.length > 0 && <ol className="turns">{turns.map((turn, index) => <TeachingTurn turn={turn} sessionId={session?.id} key={turn.turnId ?? index} mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={conversation.applySnapshot} />)}</ol>}
+          {turns.length > 0 && <ol className="turns">{turns.map((turn, index) => <TeachingTurn turn={turn} sessionId={session?.id} key={turn.turnId ?? index} mounts={session?.mounts.filter(m => m.turnId === turn.turnId)} applySnapshot={conversation.applySnapshot} chat={conversation} />)}</ol>}
           {pendingAnswer && <div className="learner-message pending-answer"><span>你的作答</span><p>{pendingAnswer}</p></div>}
           {!sessionId && !waiting && !problem && (
             <div className="start-state">

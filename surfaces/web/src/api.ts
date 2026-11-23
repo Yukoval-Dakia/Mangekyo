@@ -376,3 +376,91 @@ export function applyOnboarding(input: OnboardingApplyInput) {
     body: { requestId: input.requestId, proposal: input.proposal },
   });
 }
+
+export type RecordFlowMasteryLevel = 'unknown' | 'fragile' | 'developing' | 'solid';
+
+export interface RecordFlowIdentity {
+  id: string;
+  rev: number;
+  kind: string;
+  title: string;
+  subject?: string;
+  updatedAt: string | null;
+  author: string;
+}
+
+export interface RecordFlowMastery {
+  level: RecordFlowMasteryLevel;
+  score: number | null;
+  retrievability: number | null;
+  evidenceCount: number;
+}
+
+export interface RecordFlowMisconception {
+  id: string;
+  summary: string;
+  errorStage?: string;
+  status: string;
+  supportCount: number;
+  contradictCount: number;
+  evidenceHref?: string;
+}
+
+export interface RecordFlowAttempt {
+  paperId: string;
+  paperTitle: string;
+  attemptId: string;
+  itemId: string;
+  verdict: string;
+  errorStage?: string;
+  scoreText?: string;
+  occurredAt: string | null;
+  href: string;
+}
+
+export interface RecordFlowDiscussion {
+  sessionId: string;
+  turnId: string;
+  title: string;
+  excerpt: string;
+  occurredAt: string | null;
+  href: string;
+}
+
+export interface RecordFlowNeighbor {
+  id: string;
+  title: string;
+  kind: string;
+  relation: string;
+  direction: 'in' | 'out';
+  href: string;
+}
+
+export interface RecordFlowNextAction {
+  kind: 'practice' | 'review_mistake' | 'ask_companion' | 'open_graph';
+  label: string;
+  href: string;
+}
+
+export interface RecordFlowView {
+  identity: RecordFlowIdentity;
+  mastery: RecordFlowMastery;
+  misconceptions: readonly RecordFlowMisconception[];
+  attempts: readonly RecordFlowAttempt[];
+  discussions: readonly RecordFlowDiscussion[];
+  graphNeighbors: readonly RecordFlowNeighbor[];
+  nextActions: readonly RecordFlowNextAction[];
+}
+
+export interface WorkspaceRecordFlowSummary {
+  masteryLevel?: RecordFlowMasteryLevel;
+  errorStageCount: number;
+  attemptCount: number;
+  discussionCount: number;
+  neighborCount: number;
+  conceptTags: readonly string[];
+}
+
+export function workspaceRecordFlow(id: string, signal?: AbortSignal) {
+  return api<RecordFlowView>('/workspace/records/' + encodeURIComponent(id) + '/flow', signal ? { signal } : {});
+}

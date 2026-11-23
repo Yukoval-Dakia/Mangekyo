@@ -6,6 +6,8 @@ import { Message } from "../message";
 import { chatRoute } from "../model-route";
 import type { ChatLink, Resource } from "../workspace";
 import { RecoveryGuide } from "../recovery";
+import { AgentThinkingSteps } from "./AgentThinkingSteps";
+import { TurnArtifacts } from "../presentation/TurnArtifact";
 
 function TurnEvidence({ turn }: { turn: Turn }) {
   const rationale = turn.reads.reduce(
@@ -13,7 +15,7 @@ function TurnEvidence({ turn }: { turn: Turn }) {
     turn.rationale,
   );
   const hasDetails = Boolean(
-    rationale || (turn.trace && turn.trace.length > 0) || turn.reads.length > 0 || turn.model || turn.reportedModel,
+    rationale || turn.reads.length > 0 || turn.model || turn.reportedModel,
   );
   return (
     <details className="drawer-evidence">
@@ -23,11 +25,6 @@ function TurnEvidence({ turn }: { turn: Turn }) {
       </summary>
       <div className="drawer-evidence-body">
         {rationale && <p>{rationale}</p>}
-        {turn.trace && turn.trace.length > 0 && (
-          <ol aria-label="本轮操作步骤">
-            {turn.trace.map((step, index) => <li key={index}>{step}</li>)}
-          </ol>
-        )}
         {turn.reads.length > 0 && (
           <ul aria-label="本轮参考依据">
             {turn.reads.map(item => (
@@ -143,7 +140,15 @@ function DrawerThread({
                 <li className="drawer-turn" key={turn.turnId ?? index}>
                   {turn.answer && <div className="drawer-user-msg">{turn.answer}</div>}
                   <article className="drawer-reply">
+                    <AgentThinkingSteps chat={chat} turn={turn} />
                     <Message text={turn.message} />
+                    {chat.session && chat.session.mounts.length > 0 && (
+                      <TurnArtifacts
+                        mounts={chat.session.mounts.filter(m => m.turnId === turn.turnId)}
+                        apply={chat.applySnapshot}
+                        live={false}
+                      />
+                    )}
                     <TurnEvidence turn={turn} />
                   </article>
                 </li>
@@ -154,8 +159,21 @@ function DrawerThread({
           )}
           {pending && (
             <div className="drawer-note" role="status">
-              <p>{chat.progressLabel || "同伴正在处理…"}</p>
+              {(chat.sendingAnswer || chat.session?.pendingAnswer) && (
+                <div className="drawer-user-msg">{chat.sendingAnswer || chat.session?.pendingAnswer}</div>
+              )}
+              <AgentThinkingSteps
+                chat={chat}
+                progress={chat.reconnecting ? '正在重连…' : chat.progressLabel || '同伴正在处理…'}
+              />
               {chat.streamingReply && <Message text={chat.streamingReply} streaming />}
+              {chat.session?.status === 'pending' && chat.session.mounts.length > 0 && (
+                <TurnArtifacts
+                  mounts={chat.session.mounts.filter(m => m.turnId === chat.session!.currentTurnId)}
+                  apply={chat.applySnapshot}
+                  live
+                />
+              )}
             </div>
           )}
           {!pending && sessionDown && (

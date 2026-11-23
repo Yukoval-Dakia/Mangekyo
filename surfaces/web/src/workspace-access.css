@@ -32,7 +32,7 @@
 
 .access-status.open,
 .access-state.open {
-  color: #316f49;
+  color: var(--primary);
 }
 
 .access-provider-list {
@@ -51,43 +51,28 @@
   padding: 9px 11px;
   border: 1px solid var(--line);
   border-radius: 13px;
-  background: #f7f9f5;
+  background: var(--surface-container-low);
 }
 
 .access-provider.authorized {
-  border-color: #8ba893;
-  background: #f0f6ee;
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--line));
+  background: var(--surface-container);
 }
 
-.access-provider-choice {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  min-width: 0;
-  cursor: pointer;
-}
-
-.access-provider-choice input,
-.access-toggle input {
-  margin-top: 3px;
-  accent-color: var(--primary);
-  flex: none;
-}
-
-.access-provider-choice span {
+.access-provider span {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.access-provider-choice strong {
+.access-provider strong {
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.access-provider-choice small {
+.access-provider small {
   color: var(--muted);
   font-size: 11px;
   overflow: hidden;
@@ -105,8 +90,8 @@
 .access-chip {
   border-radius: 999px;
   padding: 2px 8px;
-  background: #d9e8d7;
-  color: #2d5b3c;
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
   font-size: 11px;
   font-weight: 650;
 }
@@ -128,7 +113,7 @@
   height: 40px;
   padding: 0 12px;
   border-radius: 999px;
-  background: #e9eee6;
+  background: var(--surface-container-high);
 }
 
 .access-search svg {
@@ -163,26 +148,15 @@
 .access-notice {
   margin-top: 10px;
   border-radius: 12px;
-  background: #eaf3e7;
-  color: #2f5c3f;
+  background: var(--surface-container);
+  color: var(--ink);
   padding: 8px 11px;
   font-size: 13px;
   line-height: 1.5;
 }
 
-.access-list {
-  list-style: none;
-  display: grid;
-  gap: 8px;
-  margin-top: 12px;
-  padding: 0;
-}
-
 .access-record {
-  border: 1px solid var(--line);
-  border-radius: 15px;
-  padding: 11px 12px;
-  background: #fbfcf9;
+  padding: 12px 14px;
   min-width: 0;
 }
 
@@ -206,17 +180,52 @@
 
 .access-kind {
   border-radius: 999px;
-  background: #e4ede1;
-  color: #315d40;
+  background: var(--surface-container-high);
+  color: var(--muted);
   padding: 2px 8px;
   font-weight: 650;
 }
 
-.access-record-copy strong {
-  display: block;
+.access-record-title-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   margin-top: 5px;
+  min-width: 0;
+}
+
+.access-record-title-row strong {
   font-size: 14px;
   overflow-wrap: anywhere;
+}
+
+.access-mastery {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--surface-container-highest);
+  border: 2px solid var(--line-strong);
+}
+
+.access-mastery--solid {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.access-mastery--developing {
+  background: var(--mark-color);
+  border-color: var(--mark-color);
+}
+
+.access-mastery--fragile {
+  background: var(--m3e-amber);
+  border-color: var(--m3e-amber);
+}
+
+.access-mastery--unknown {
+  background: var(--surface-container-highest);
+  border-color: var(--line-strong);
 }
 
 .access-record-copy p {
@@ -225,6 +234,13 @@
   font-size: 13px;
   line-height: 1.55;
   overflow-wrap: anywhere;
+}
+
+.access-flow-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
 }
 
 .access-record-copy small {
@@ -238,17 +254,6 @@
   gap: 4px;
   flex-wrap: wrap;
   flex: none;
-}
-
-.access-toggle {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  max-width: 138px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-  cursor: pointer;
 }
 
 .access-detail {
@@ -265,7 +270,7 @@
   overflow-wrap: anywhere;
   color: var(--ink);
   font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: #f3f6f1;
+  background: var(--surface-container-low);
   border-radius: 11px;
   padding: 10px;
 }
@@ -283,9 +288,5 @@
     width: 100%;
     justify-content: space-between;
     margin-top: 8px;
-  }
-
-  .access-toggle {
-    max-width: none;
   }
 }

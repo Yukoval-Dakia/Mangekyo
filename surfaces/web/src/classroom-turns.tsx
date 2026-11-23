@@ -68,7 +68,7 @@ function BoundTurns({room, initial, visible, onOpenAiActivity}: {room: Classroom
             }} />}
         {(turn || live || mounts.length > 0) && <fieldset className="classroom-work" disabled={!current}>
           <ol className="turns"><TeachingTurn answer="" turn={turn || undefined} message={turn ? turn.message : live ? chat.streamingReply : undefined}
-            progress={live ? chat.progressLabel : undefined} mounts={mounts} applySnapshot={chat.applySnapshot} /></ol>
+            progress={live ? chat.progressLabel : undefined} mounts={mounts} applySnapshot={chat.applySnapshot} chat={chat} /></ol>
         </fieldset>}
       </li>;
     })}</ol>
