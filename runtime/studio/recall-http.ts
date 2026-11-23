@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, isFactNotFound, isFactReadDenied } from './fact-read-helpers.ts';
-import type { Db } from '../../kernel/src/db/types.ts';
-import { factId } from '../../kernel/src/declarations/ids.ts';
+import {
+  createCommandReadContext, createLearnerHost, factId, matchKernelError,
+  type CommandHooks, type Db,
+} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
@@ -28,8 +28,9 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
   });
 
   async function requireSessionTurn(sessionId: string, turnId: string) {
+    const host = createLearnerHost(db, studioLearner);
     try {
-      await db.snapshot({ learner: studioLearner }, async tx => {
+      await host.snapshot(async tx => {
         const read = createCommandReadContext(tx, purpose);
         const root = await read.fact(factId(sessionId), { mode: 'following' });
         const turn = sessionId === turnId ? root : await read.fact(factId(turnId), { mode: 'following' });
@@ -40,9 +41,11 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
         }
       });
     } catch (error) {
-      if (isFactNotFound(error)) throw new RecallRequestError(404, '回忆题不属于该会话。');
-      if (isFactReadDenied(error)) throw new RecallRequestError(403, '回忆题依据已不可读。');
-      throw error;
+      throw matchKernelError(error, {
+        not_found: () => new RecallRequestError(404, '回忆题不属于该会话。'),
+        denied: () => new RecallRequestError(403, '回忆题依据已不可读。'),
+        otherwise: err => err.cause,
+      });
     }
   }
 

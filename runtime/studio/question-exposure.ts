@@ -1,6 +1,5 @@
+import { listCompletedEffects, type FactId, type ReadTransaction } from '../../kernel/src/index.ts';
 import { teachingRead } from './fact-read-helpers.ts';
-import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import type { FactId } from '../../kernel/src/declarations/ids.ts';
 import { preservesUnexposedPractice } from '../../modules/activity/arithmetic-practice-history.ts';
 import { helpExposureType } from '../../modules/activity/help-exposure-values.ts';
 import { readIndependentSealedPractice } from '../../modules/activity/sealed-practice.ts';
@@ -64,10 +63,8 @@ export async function questionNegativeCurrent(tx: ReadTransaction, id: FactId, t
 }
 
 export async function questionReceiptsCurrent(tx: ReadTransaction, turn: string, use: 'dispatch' | 'publish' | 'history') {
-  const { rows } = await tx.query<{ result: string }>(`SELECT result FROM effects
-    WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2 AND label=$3 AND state='done'`,
-  [tx.learner,turn,learningPythonReadLabel]);
-  const sources = questionNegativeRefs(rows.map(({result}) => result));
+  const { rows } = await listCompletedEffects(tx,{ownerKind:'session',ownerId:turn,label:learningPythonReadLabel});
+  const sources = questionNegativeRefs(rows.map(({result}) => result as string));
   if (!sources) return false;
   // Settlement verified the contemporaneous assertion. A later exposure
   // changes new reads, while the historical answer keeps its source authority.

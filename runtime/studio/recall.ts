@@ -1,10 +1,8 @@
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import type { CommandHandler, CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandReadContext, isFactNotFound, isFactReadDenied } from './fact-read-helpers.ts';
-import { withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
-import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { CommandReceipt, FactRef, Json } from '../../kernel/src/declarations/types.ts';
+import {
+  commandId, createCommandReadContext, createLearnerHost, factId, matchKernelError, readEffectiveDerivation,
+  type CommandHandler, type CommandHooks, type CommandReceipt, type Db, type DbTransaction,
+  type FactId, type FactRef, type Json, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -56,9 +54,11 @@ function itemFor(issuance: Parameters<typeof recallMountedItem>[0], mount: Recal
 async function authorized<T>(read: () => Promise<T>): Promise<T> {
   try { return await read(); }
   catch (error) {
-    if (isFactReadDenied(error)) throw new RecallRequestError(403, '回忆题依据已不可读。');
-    if (isFactNotFound(error)) throw new RecallRequestError(404, '找不到回忆题记录。');
-    throw error;
+    throw matchKernelError(error, {
+      denied: () => new RecallRequestError(403, '回忆题依据已不可读。'),
+      not_found: () => new RecallRequestError(404, '找不到回忆题记录。'),
+      otherwise: err => err.cause,
+    });
   }
 }
 
@@ -66,22 +66,14 @@ async function optionalPinned(tx: ReadTransaction, ref: HelpRef) {
   try {
     return await createCommandReadContext(tx, storagePurpose).fact(ref.id, { mode: 'pinned', rev: ref.rev });
   } catch (error) {
-    if (isFactNotFound(error)) return null;
-    throw error;
+    return matchKernelError(error, { not_found: () => null, otherwise: err => { throw err.cause; } });
   }
 }
 
 async function readSource(tx: ReadTransaction, mount: RecallMount, requireCurrent: boolean, check: CheckNotionRead) {
-  const { rows: [row] } = await tx.query<{ value: unknown; manifest: unknown }>(
-    `SELECT d.value, d.manifest FROM derivations d
-     WHERE d.learner_id=$1 AND d.slot_type=$2 AND d.slot_key=$3 AND d.id=$4
-       AND NOT d.is_shadow AND d.invalidated_tick IS NULL AND d.effective_tick IS NOT NULL
-       AND d.lifecycle IN ('effective', 'superseded')
-       AND (NOT $5::boolean OR (d.lifecycle='effective' AND EXISTS (
-         SELECT 1 FROM slot_state s WHERE s.learner_id=d.learner_id
-           AND s.slot_type=d.slot_type AND s.slot_key=d.slot_key AND s.current_id=d.id AND s.last_error IS NULL
-       )))`, [tx.learner, slotType, mount.turnId, mount.derivationId, requireCurrent],
-  );
+  const row = await readEffectiveDerivation(tx, {
+    slotType, slotKey: mount.turnId, id: mount.derivationId, requireCurrent,
+  });
   if (!row) throw new RecallRequestError(404, '此回合没有可用的回忆题版本。');
   const read = createCommandReadContext(tx,purpose);
   const turn = await read.fact(mount.turnId,{mode:'following'});
@@ -137,25 +129,25 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
   /** The host must authenticate the actual render event and correlate it to its mount and reveal grant. */
   verifyDisplay?: (receipt: unknown) => Promise<DisplayWitness | null>;
 } = {}) {
-  const scope = { learner: studioLearner };
+  const host = createLearnerHost(db, studioLearner);
   const hooks = options.hooks ?? createStudioCommandHooks();
 
   const notionRead = () => notionReadScope(db, studioLearner);
   function write<T>(mount: RecallMount, run: (tx: DbTransaction, handle: CommandHandler, check: CheckNotionRead) => Promise<T>, notion = notionRead()) {
     return authorized(() => notion.read((tx, check) => readSource(tx, mount, false, check), async (tx, check) => {
-      const handle = createCommandHandler(withinLearnerTransaction(db, tx), { modules: [activity], hooks });
+      const handle = host.commandHandler([activity], hooks, tx);
       try { return await run(tx, handle, check); }
       catch (error) {
-        if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-          throw new RecallRequestError(409, '同一请求标识已用于不同回忆题操作。');
-        }
-        throw error;
+        throw matchKernelError(error, {
+          duplicate_command: () => new RecallRequestError(409, '同一请求标识已用于不同回忆题操作。'),
+          otherwise: err => err.cause,
+        });
       }
     }));
   }
 
   const execute = (handle: CommandHandler, id: FactId, type: string, data: Json, allowed = storagePurpose) =>
-    handle({ ...scope, actor: 'learner', purpose: allowed, id: commandId(id), type, input: { id, data } });
+    host.runCommand(handle, {purpose: allowed, type, id: commandId(id), input: {id, data}});
 
   return {
     async mount(locator: unknown, notion = notionRead()) {
@@ -223,7 +215,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
           kind: 'opened', mount: recallTarget(ref, item.itemId), content: ref,
           step: { kind: 'solution', order: 1 }, alsoAppliesTo: [],
         });
-        writtenRef(await handle({ ...scope, actor: 'learner', ...request }));
+        writtenRef(await handle({ learner: host.learner, actor: 'learner', ...request }));
         return recallRevealView(revealId, item);
       });
     },
@@ -241,7 +233,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
         if (!display) throw new RecallRequestError(409, '显示回执与获准揭示的题项不匹配。');
         const displayId = factId(stableId('recall-display', revealId));
         const request = helpExposureRequest(displayId, display);
-        return { display: writtenRef(await handle({ ...scope, actor: 'learner', ...request })) };
+        return { display: writtenRef(await handle({ learner: host.learner, actor: 'learner', ...request })) };
       });
     },
 

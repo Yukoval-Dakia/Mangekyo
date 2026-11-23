@@ -1,9 +1,8 @@
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { isFactUnavailable, storageRead } from './fact-read-helpers.ts';
-import type { CommandHooks, CommandRequest } from '../../kernel/src/commands/contracts.ts';
-import { lockLearner, withinLearnerTransaction } from '../../kernel/src/db/learner.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import {
+  commandId, createCommandHandler, createLearnerHost, factId, isFactUnavailable, isKernelErrorKind,
+  type CommandHooks, type CommandRequest, type Db, type FactId, type ReadTransaction,
+} from '../../kernel/src/index.ts';
+import { storageRead } from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { assertUnburned } from '../../kernel/src/lifecycle.ts';
 import { arithmeticQuestionId, openArithmeticPractice } from '../../modules/content/arithmetic-practice.ts';
@@ -17,7 +16,6 @@ import { purpose, stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { parsePracticeAdmission, resolveStudioPracticeAdmission as resolvePracticeAdmission } from './generated-practice.ts';
 
-const scope = {learner:studioLearner};
 const unavailable = () => new RequestError(404,'找不到当前可用的封闭练习。');
 
 async function readPracticeTeaching(tx: ReadTransaction, paper: FactId) {
@@ -49,6 +47,7 @@ export async function sealedPracticePaper(tx: ReadTransaction, id: FactId) {
 }
 
 export function openPracticeAdmission(db: Db, content: LoadedModule, activity: LoadedModule, hooks: CommandHooks) {
+  const host = createLearnerHost(db, studioLearner);
   return {
     async admit(input: Record<string,unknown>, deletionWatermark: string) {
       const {requestId:raw,allowTeaching,deletionWatermark:_,...definition} = input;
@@ -62,8 +61,7 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
       }
       if (allowTeaching !== undefined && typeof allowTeaching !== 'boolean')
         throw new RequestError(400,'题面伴学用途无效。');
-      return db.tx(scope,async tx => {
-        await lockLearner(tx,tx.learner);
+      return host.lockedTx(async tx => {
         const command = commandId(stableId(sealedPracticePurpose,'source-command',requestId));
         await assertUnburned(tx,'command',[command]);
         const practice = await resolvePracticeAdmission(tx,command,requested);
@@ -71,43 +69,43 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
         const id = await arithmeticPracticePaperId(questionId);
         await assertUnburned(tx,'fact',[id,questionId,await practiceCustodyId(id)]);
         const read = storageRead(tx);
-        const handle = createCommandHandler(withinLearnerTransaction(db,tx),{
-          modules:[activity,content],hooks,
+        const bound = host.boundDb(tx);
+        const handle = createCommandHandler(bound,{modules:[activity,content],hooks,
           // Keep the existing identity for retries of a previously authorized admission.
-          bindCommandRead: (_tx, request, base) => request.type === saveQuestionCommand ? read : base,
-        });
+          bindCommandRead:(_tx,request,base) => request.type === saveQuestionCommand ? read : base});
+        const boundHandle = (command: Parameters<typeof host.runCommand>[1]) => host.runCommand(handle,command);
         const prior = await readPracticeCustody(read,await practiceCustodyId(id));
         try {
-          await handle({...scope,actor:'learner',purpose:allowTeaching ? purpose : 'storage',
-            deletionWatermark,type:saveQuestionCommand,id:command,
+          await boundHandle({purpose:allowTeaching ? purpose : 'storage',
+            type:saveQuestionCommand,id:command,deletionWatermark,
             input:{id:questionId,arithmeticPractice:practice,...(allowTeaching ? {} : {purpose:'storage'})}});
         } catch (error) {
-          if (error instanceof Error && error.message === 'Command ID already used with a different command identity')
+          if (isKernelErrorKind(error,'duplicate_command'))
             throw new RequestError(409,'同一个请求标识已经用于不同练习。');
           throw error;
         }
-        if (!prior) await handle({...scope,actor:'learner',purpose:'storage',deletionWatermark,type:saveWorkbookPaperCommand,
+        if (!prior) await boundHandle({purpose:'storage',type:saveWorkbookPaperCommand,
           id:commandId(stableId(sealedPracticePurpose,'reserve-paper',id)),
+          deletionWatermark,
           input:{id,questionId,savedAt:new Date().toISOString(),condition:sealedPracticePurpose}});
         if (!await openArithmeticPractice(read,questionId,undefined,'storage')) throw unavailable();
         return {id,questionRef:{id:questionId,rev:prior?.value.question.rev ?? 1},path:'/papers/'+id};
       });
     },
     getTeaching(id: string) {
-      return db.snapshot(scope,tx => readPracticeTeaching(tx,factId(id)));
+      return host.snapshot(tx => readPracticeTeaching(tx,factId(id)));
     },
     async teaching(id: string, input: Record<string,unknown>) {
       if (typeof input.allowed !== 'boolean' || !Number.isSafeInteger(input.expectedRev) || Number(input.expectedRev) < 1)
         throw new RequestError(400,'教学用途设置无效。');
       const {allowed,expectedRev} = input;
-      return db.tx(scope,async tx => {
-        await lockLearner(tx,tx.learner);
+      return host.lockedTx(async tx => {
         const current = await readPracticeTeaching(tx,factId(id));
         if (current.rev !== expectedRev) throw new RequestError(409,'题面权限已在别处更新。请刷新后再试。');
         if (current.teaching === allowed) return current;
         const questionId = current.id;
-        const handle = createCommandHandler(withinLearnerTransaction(db,tx),{modules:[content],hooks});
-        const result = await handle({...scope,actor:'learner',purpose:'storage',type:'content.setQuestionTeaching',
+        const boundHandle = host.boundHandler([content],hooks,tx);
+        const result = await boundHandle({purpose:'storage',type:'content.setQuestionTeaching',
           id:commandId(stableId(sealedPracticePurpose,'teaching',questionId,String(expectedRev),String(allowed))),
           input:{id:questionId,expectedRev:Number(expectedRev),allowed}});
         return {id:questionId,rev:result.wrote[0]?.rev ?? expectedRev,teaching:allowed};
@@ -119,18 +117,18 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
 /** Older servers see no Workbook fact until the first official submission and its release commit. */
 export function submitWithPracticeCustody(db: Db, activity: LoadedModule, hooks: CommandHooks,
   paperId: FactId, request: CommandRequest) {
-  return db.tx(scope,async tx => {
-    await lockLearner(tx,tx.learner);
+  const host = createLearnerHost(db, studioLearner);
+  return host.lockedTx(async tx => {
     const read = storageRead(tx);
     const custody = await readPracticeCustody(read,await practiceCustodyId(paperId));
-    const handle = createCommandHandler(withinLearnerTransaction(db,tx),{modules:[activity],hooks});
+    const boundHandle = host.boundHandler([activity],hooks,tx);
     if (custody?.value.kind === 'sealed') {
       if (!await sealedPracticePaper(tx,paperId)) throw unavailable();
-      await handle({...scope,actor:'learner',purpose:'storage',type:releasePracticeFeedbackCommand,
+      await boundHandle({purpose:'storage',type:releasePracticeFeedbackCommand,
         id:commandId(stableId(sealedPracticePurpose,'release-feedback',paperId)),
         ...(request.deletionWatermark === undefined ? {} : {deletionWatermark:request.deletionWatermark}),
         input:{custody:{id:custody.fact.ref.id,rev:custody.fact.ref.rev},paper:{id:paperId,rev:1}}});
     }
-    return handle(request);
+    return boundHandle(request);
   });
 }
