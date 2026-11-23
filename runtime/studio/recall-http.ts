@@ -17,6 +17,7 @@ export { recallDisplayToken } from '../../modules/activity/recall-http-support.t
 export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHooks) {
   const key = randomBytes(32);
   const sign = displaySigner(studioLearner, key);
+  const host = createLearnerHost(db, studioLearner);
 
   const service = openRecall(db, activity, {
     ...(hooks ? { hooks } : {}),
@@ -28,7 +29,6 @@ export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHo
   });
 
   async function requireSessionTurn(sessionId: string, turnId: string) {
-    const host = createLearnerHost(db, studioLearner);
     try {
       await host.snapshot(async tx => {
         const read = createCommandReadContext(tx, purpose);

@@ -1,7 +1,7 @@
-import { assertDeletionWatermark, assertUnburned, LifecycleError } from '../../kernel/src/lifecycle.ts';
+import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from '../../modules/capture/request.ts';
 import {
-  commandId, createCommandReadContext, createLearnerHost, factId, isFactReadDenied, matchKernelError,
+  commandId, createCommandReadContext, createLearnerHost, factId, isFactReadDenied, LifecycleError, matchKernelError,
   type CommandHooks, type Db, type FactId,
 } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';

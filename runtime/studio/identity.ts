@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { commandId, factId, learnerId } from '../../kernel/src/declarations/ids.ts';
+import { commandId, factId, learnerId } from '../../kernel/src/index.ts';
 
 export function stableId(...parts: string[]): string {
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 26).toUpperCase();

@@ -1,7 +1,6 @@
 import { classroomPath, factId as classroomFactId } from './classroom.ts';
 import type { ClassroomOperation } from '../../modules/activity/classroom.ts';
 import type { openStudioNotion } from './notion.ts';
-import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from '../../modules/capture/request.ts';
 import type { openMemoryManagement } from './memory-management.ts';
 import { browseMcpTools } from '../../executors/teaching/mcp-client.ts';
@@ -9,7 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Db } from '../../kernel/src/db/types.ts';
+import { LifecycleError, type Db } from '../../kernel/src/index.ts';
 import { cases, caseId, clientRequest, getSession, recentConversations, RequestError, type openStudio } from './sessions.ts';
 import { TextbookConflictError, type openTextbook } from './textbook.ts';
 import type { openRelationReview } from './workspace-relation.ts';
