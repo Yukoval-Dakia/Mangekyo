@@ -11,9 +11,11 @@
     "./node-practice": "./node-practice.ts",
     "./offline-pack": "./offline-pack.ts",
     "./rules": "./rules.ts",
-    "./tomorrow-warmup": "./tomorrow-warmup.ts"
-    ,"./facts/node-practice": "./node-practice.ts",
-    "./facts/organizer-slice": "./organizer-slice.ts"
+    "./onboarding": "./onboarding.ts",
+    "./tomorrow-warmup": "./tomorrow-warmup.ts",
+    "./facts/node-practice": "./node-practice.ts",
+    "./facts/organizer-slice": "./organizer-slice.ts",
+    "./facts/onboarding": "./onboarding.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*"
