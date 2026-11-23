@@ -5,6 +5,7 @@ import {
   confirmIntakeQuestionsCommand,
   intakeConceptId,
   intakeConceptScope,
+  IntakeQuestionConfirmConflict,
   intakeQuestionConceptEdgeId,
   intakeQuestionFullPrompt,
   intakeQuestionId,
@@ -42,7 +43,7 @@ export default defineCommand({
     if (material.ref.rev !== input.expectedMaterialRev) throw new Error('材料版本已变化，请重新核对拍卷题目。');
     materialFact.schema.parse(material.value);
     if (input.purpose === 'teaching' && !material.purpose.includes('teaching') && !material.purpose.includes('all')) {
-      throw new Error('这份材料未授权教学用途。');
+      throw new IntakeQuestionConfirmConflict('这份材料未授权教学用途。');
     }
     const purpose = input.purpose ?? 'storage';
     const allowedPurpose = purpose === 'teaching' ? ['storage', 'teaching'] : ['storage'];
@@ -61,8 +62,8 @@ export default defineCommand({
 
       const named = await openKnowledgeName(ctx.read, 'concept', canonicalName);
       if (named) {
-        if (named.entity.kind !== 'concept') throw new Error('规范概念类型不符。');
-        if (!allowsPurpose(named.snapshot.purpose, purpose)) throw new Error('已有概念节点未授权教学用途。');
+        if (named.entity.kind !== 'concept') throw new IntakeQuestionConfirmConflict('规范概念类型不符。');
+        if (!allowsPurpose(named.snapshot.purpose, purpose)) throw new IntakeQuestionConfirmConflict('已有概念节点未授权教学用途。');
         const resolved = {
           id: named.snapshot.ref.id,
           use: sourceUse({
@@ -82,8 +83,8 @@ export default defineCommand({
       }
       if (existingConcept) {
         const opened = await openKnowledgeEntity(ctx.read, cid);
-        if (opened.entity.kind !== 'concept') throw new Error('概念标识已被其他记录占用。');
-        if (!allowsPurpose(opened.snapshot.purpose, purpose)) throw new Error('已有概念节点未授权教学用途。');
+        if (opened.entity.kind !== 'concept') throw new IntakeQuestionConfirmConflict('概念标识已被其他记录占用。');
+        if (!allowsPurpose(opened.snapshot.purpose, purpose)) throw new IntakeQuestionConfirmConflict('已有概念节点未授权教学用途。');
         const resolved = {
           id: opened.snapshot.ref.id,
           use: sourceUse({
@@ -129,7 +130,7 @@ export default defineCommand({
       let questionUse: KnowledgeSourceUse;
       let questionPurpose: readonly string[];
       if (existing) {
-        if (existing.type !== assetType) throw new Error('题目标识已被其他记录占用。');
+        if (existing.type !== assetType) throw new IntakeQuestionConfirmConflict('题目标识已被其他记录占用。');
         const existingAsset = questionAsset(existing.value);
         if (input.linkConcepts === true && item.conceptTags?.length) {
           await checkTextbookBasis(ctx.read, existingAsset.basis ?? []);
@@ -160,7 +161,7 @@ export default defineCommand({
       }
 
       if (input.linkConcepts !== true || !item.conceptTags?.length) continue;
-      if (!allowsPurpose(questionPurpose, purpose)) throw new Error('已有题目未授权教学用途。');
+      if (!allowsPurpose(questionPurpose, purpose)) throw new IntakeQuestionConfirmConflict('已有题目未授权教学用途。');
 
       for (const tag of item.conceptTags) {
         const concept = await resolveOrCreateConcept(tag);
@@ -173,7 +174,7 @@ export default defineCommand({
           if (!(error instanceof FactNotFoundError)) throw error;
         }
         if (existingEdge) {
-          if (existingEdge.type !== knowledgeEdgeType) throw new Error('知识边标识已被其他记录占用。');
+          if (existingEdge.type !== knowledgeEdgeType) throw new IntakeQuestionConfirmConflict('知识边标识已被其他记录占用。');
           parseKnowledgeEdge(existingEdge.value);
           seenEdgeIds.add(edgeId);
           continue;

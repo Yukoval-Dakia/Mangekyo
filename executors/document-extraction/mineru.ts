@@ -331,3 +331,40 @@ export async function pollMineru(read: typeof readMineru, input: Pick<ReadInput,
   }
   return undefined;
 }
+
+export function mineruSubmissionFailure(
+  submission: { readonly kind: 'unverified' } | { readonly kind: 'unknown' } | { readonly kind: 'done'; readonly result: unknown },
+): string | null {
+  if (submission.kind === 'unverified') return '旧上传记录缺少核对删除范围的依据，已停止轮询和重传。';
+  if (submission.kind === 'unknown') return '无法确认 MinerU 是否收到原件，已停止自动重传。你可以查看原件或手动更正。';
+  if (submission.result === null) return '本地原件无法读取，未发送给 MinerU。';
+  if (submission.result === false) return '任务已中止，未向 MinerU 发送原件。';
+  return null;
+}
+
+export async function submitMineruChecked(
+  submit: typeof submitMineru,
+  input: {
+    readonly token: string;
+    readonly dataId: string;
+    readonly mediaType: MineruMediaType;
+    readonly readBytes: () => Promise<Buffer | null>;
+    readonly checkCurrent: () => Promise<void>;
+    readonly isStopped: (error: unknown) => boolean;
+  },
+): Promise<string | null | false> {
+  const bytes = await input.readBytes();
+  if (bytes === null) return null;
+  let stoppedBeforeUpload = false;
+  const beforeUpload = async () => {
+    try { await input.checkCurrent(); }
+    catch (error) { stoppedBeforeUpload = input.isStopped(error); throw error; }
+  };
+  try {
+    await beforeUpload();
+    return await submit({ token: input.token, dataId: input.dataId, bytes, mediaType: input.mediaType, beforeUpload, signal: AbortSignal.timeout(60_000) });
+  } catch (error) {
+    if (stoppedBeforeUpload) return false;
+    throw error;
+  }
+}

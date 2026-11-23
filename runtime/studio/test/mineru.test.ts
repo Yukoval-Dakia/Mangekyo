@@ -1,6 +1,6 @@
 import { zipSync, strToU8 } from 'fflate';
 import { expect, it } from 'vitest';
-import { readMineru, submitMineru } from '../mineru.ts';
+import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 
 const token = 'test-token';
 const dataId = 'intake-001';

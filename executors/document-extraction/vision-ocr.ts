@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { extractLocalDocument } from './local.ts';
 import {
   normalizeImageForVisionOcr,
@@ -325,7 +328,7 @@ export type LocalExtractionResult = Awaited<ReturnType<typeof extractLocalDocume
 
 export type PhotoVisionExtractionInput<TParsed = unknown> = {
   readonly bytes: Buffer;
-  readonly storedPath: string;
+  readonly storedPath?: string | undefined;
   readonly textLimit: number;
   readonly visionConfig?: VisionLlmConfig | null | undefined;
   readonly systemPrompt?: string | undefined;
@@ -561,7 +564,17 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
   input: PhotoVisionExtractionInput<TParsed>,
 ): Promise<PhotoVisionExtractionResult<TParsed>> {
   const localExtract = input.fallbackExtractLocal ?? extractLocalDocument;
-  const runLocal = () => localExtract('image', input.storedPath, input.bytes, input.textLimit);
+  const runLocal = async () => {
+    if (input.storedPath) return localExtract('image', input.storedPath, input.bytes, input.textLimit);
+    const directory = await mkdtemp(join(tmpdir(), 'mangekyo-vision-'));
+    try {
+      const path = join(directory, 'page');
+      await writeFile(path, input.bytes, { mode: 0o600 });
+      return await localExtract('image', path, input.bytes, input.textLimit);
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    }
+  };
 
   if (input.signal?.aborted) {
     throw input.signal.reason ?? new DOMException('Aborted', 'AbortError');
@@ -695,7 +708,7 @@ export async function extractPhotoWithVisionOrFallback<TParsed = unknown>(
 export type MultiPageVisionPageInput = {
   readonly page: number;
   readonly bytes: Buffer;
-  readonly storedPath: string;
+  readonly storedPath?: string | undefined;
   readonly systemPrompt?: string | undefined;
   readonly userPrompt?: string | undefined;
 };
@@ -798,4 +811,45 @@ export async function extractMultiPagePaperWithVisionOrFallback<TParsed = unknow
     throw externalSignal.reason ?? new DOMException('Aborted', 'AbortError');
   }
   return { pages: results, elapsedMs: Date.now() - startedAt };
+}
+
+export type VisionOcrCallTelemetry = {
+  readonly page: number;
+  readonly totalPages: number;
+  readonly route: string;
+  readonly requestedModel: string;
+  readonly reportedModel: string;
+  readonly elapsedMs: number;
+  readonly usage?: VisionPaperLlmCallResult['usage'];
+};
+
+export function collectVisionOcrTelemetry<TParsed>(
+  pages: readonly MultiPageVisionPageOutcome<TParsed>[],
+  meta: { readonly totalPages: number; readonly route: string; readonly requestedModel: string },
+): VisionOcrCallTelemetry[] {
+  return pages.flatMap(item => item.outcome.kind === 'vision_llm'
+    ? [{
+      page: item.page, totalPages: meta.totalPages, route: meta.route,
+      requestedModel: meta.requestedModel, reportedModel: item.outcome.model,
+      elapsedMs: item.outcome.elapsedMs, ...(item.outcome.usage ? { usage: item.outcome.usage } : {}),
+    }] : []);
+}
+
+export function mapVisionPageOutcomes<TParsed>(pages: readonly MultiPageVisionPageOutcome<TParsed>[]) {
+  return pages.map(item => item.outcome.kind === 'vision_llm'
+    ? { page: item.page, kind: 'vision_llm' as const, ocr: item.outcome.parsed }
+    : { page: item.page, kind: 'vision_fallback' as const, fallbackReason: item.outcome.fallbackReason, local: item.outcome.local });
+}
+
+export function visionOcrEffectRecords(
+  ownerId: string, documentRev: number, work: { readonly workId: string; readonly generation: string },
+  telemetry: readonly VisionOcrCallTelemetry[],
+) {
+  return telemetry.map(entry => ({
+    ownerKind: 'session' as const, ownerId,
+    stepKey: `vision-ocr:r${documentRev}:p${entry.page}`, label: 'vision-ocr',
+    providerEffectId: `vision-ocr:${work.workId}:g${work.generation}:p${entry.page}`,
+    input: { model: entry.requestedModel, page: entry.page, totalPages: entry.totalPages },
+    result: { reportedModel: entry.reportedModel, elapsedMs: entry.elapsedMs, route: entry.route, ...(entry.usage ? { usage: entry.usage } : {}) },
+  }));
 }

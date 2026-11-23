@@ -528,6 +528,27 @@ export function paperCollectionReceipt(data: ReturnType<typeof collectPaperInput
   return { issuanceId: data.issuanceId, runId, rev, page: data.page, independence: 'unknown' as const };
 }
 
+export function paperReturnCaptureInput(
+  id: FactId, assignment: Omit<ReturnType<typeof paperReturnSelection>, 'source' | 'purpose'>,
+  original: Record<string, unknown>, title: string, recordedAt: string | null, selectedPurpose: string,
+) {
+  return {
+    id, paperReturn: assignment,
+    envelope: {
+      kind: 'paper-return', retentionPolicy: 'retained', occurredAt: null, recordedAt,
+      originals: [{ ...original, blobRef: id }], unit: { kind: 'capture', title, blocks: [] },
+    },
+    purpose: selectedPurpose === 'storage' ? ['storage'] : ['storage', selectedPurpose],
+  };
+}
+
+export function paperReturnUploadReceipt(
+  receipt: ReturnType<typeof paperCollectionReceipt>, id: FactId, revision: number,
+  title: string, source: ReturnType<typeof captureRef>, created: boolean,
+) {
+  return { ...receipt, intent: 'paper-return' as const, id, revision, title, source, original: 0, created };
+}
+
 export function readPaperReprintInput(body: Record<string, unknown>) {
   if (Object.keys(body).length !== 1 || typeof body.issuanceId !== 'string') throw new Error('请选择已发放的纸卷。');
   return factId(body.issuanceId);

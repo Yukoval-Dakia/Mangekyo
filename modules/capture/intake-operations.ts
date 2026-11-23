@@ -1,10 +1,16 @@
 import { factId, FactNotFoundError, type FactId } from '@mangekyo/kernel';
 import materialFact from '@mangekyo/module-content/facts/material';
 import {
+  appendIntakePagesCommand,
   appendIntakePagesInput,
+  captureIntakeCommand,
+  completeCloudIntakeCommand,
+  completeVisionIntakeCommand,
+  correctIntakeCommand,
   correctIntakeInput,
   IntakeAppendPagesConflict,
   intakeDocument,
+  intakeFactType,
   intakeFileLimit,
   intakeFilename,
   intakeMultiPageBodyLimit,
@@ -14,17 +20,20 @@ import {
   IntakeVisionRetryConflict,
   intakeTextLimit,
   intakeTitle,
+  materialType,
   maxIntakePhotoPages,
+  retryVisionIntakeCommand,
+  retryVisionIntakeInput,
+  setIntakeResearchCommand,
   type IntakeOriginal,
   type IntakePageOriginal,
   type IntakeRequestedExtraction,
-  retryVisionIntakeInput,
 } from './intake-values.ts';
 import { projectIntakeMetadata, type IntakeMetadata } from './intake-view.ts';
 import { visionOcrSupports } from './vision-paper-ocr.ts';
 import { paperReturnSelection } from './paper.ts';
 import { clientRequest, RequestError } from './request.ts';
-import { captureSourceType, sourceEnvelope } from './source.ts';
+import { captureSourceCommand, captureSourceType, sourceEnvelope } from './source.ts';
 
 export type IntakeCaptureInput = {
   readonly requestId: unknown;
@@ -142,61 +151,31 @@ export function parseMultipartIntakeForm(
   const files = multipartFiles(form, options?.allowMultiple ?? true);
   const watermark = parseWatermark({ deletionWatermark: intakeFormText(form, 'deletionWatermark') });
   const intent = intakeFormText(form, 'intent');
+  const baseFields = {
+    deletionWatermark: watermark,
+    requestId: intakeFormText(form, 'requestId'),
+    title: intakeFormText(form, 'title'),
+    extraction: intakeFormText(form, 'extraction'),
+  };
   if (intent === 'paper-return' && hasPapers) {
     if (files.length !== 1) throw new RequestError(400, '纸卷拍回单次仅支持上传一个文件。');
     const file = files[0]!;
     return {
-      kind: 'paper-return' as const,
-      file,
-      watermark,
-      fields: {
-        deletionWatermark: watermark,
-        requestId: intakeFormText(form, 'requestId'),
-        title: intakeFormText(form, 'title'),
-        extraction: intakeFormText(form, 'extraction'),
-        filename: file.name,
-        declaredType: file.type,
-      },
+      kind: 'paper-return' as const, file, watermark,
+      fields: { ...baseFields, filename: file.name, declaredType: file.type },
       paperFields: {
-        issuanceId: intakeFormText(form, 'issuanceId'),
-        page: intakeFormText(form, 'page'),
-        purpose: intakeFormText(form, 'purpose'),
-        retryId: intakeFormText(form, 'retryId'),
+        issuanceId: intakeFormText(form, 'issuanceId'), page: intakeFormText(form, 'page'),
+        purpose: intakeFormText(form, 'purpose'), retryId: intakeFormText(form, 'retryId'),
       },
     };
   }
   if (intent === undefined) {
     if (files.length === 1) {
       const file = files[0]!;
-      return {
-        kind: 'capture' as const,
-        file,
-        files,
-        watermark,
-        fields: {
-          deletionWatermark: watermark,
-          requestId: intakeFormText(form, 'requestId'),
-          title: intakeFormText(form, 'title'),
-          extraction: intakeFormText(form, 'extraction'),
-          filename: file.name,
-          declaredType: file.type,
-        },
-      };
+      return { kind: 'capture' as const, file, files, watermark, fields: { ...baseFields, filename: file.name, declaredType: file.type } };
     }
-    if (files.length > maxIntakePhotoPages) {
-      throw new RequestError(400, `单次最多合并 ${maxIntakePhotoPages} 页试卷照片。`);
-    }
-    return {
-      kind: 'capture-pages' as const,
-      files,
-      watermark,
-      fields: {
-        deletionWatermark: watermark,
-        requestId: intakeFormText(form, 'requestId'),
-        title: intakeFormText(form, 'title'),
-        extraction: intakeFormText(form, 'extraction'),
-      },
-    };
+    if (files.length > maxIntakePhotoPages) throw new RequestError(400, `单次最多合并 ${maxIntakePhotoPages} 页试卷照片。`);
+    return { kind: 'capture-pages' as const, files, watermark, fields: baseFields };
   }
   throw new RequestError(400, '交入用途无效。');
 }
@@ -281,60 +260,74 @@ export function prepareIntakeCapture<Detected extends DetectedDocument>(
   return { requestId, materialId, deletionWatermark, detected, title, original };
 }
 
+type PhotoPageDeps<Detected extends DetectedDocument> = {
+  readonly isBuffer: (value: unknown) => boolean;
+  readonly identify: (bytes: Uint8Array, extension: string, declaredType: unknown) => Detected | null;
+  readonly sha256: (bytes: Uint8Array) => string;
+};
+
+function preparePhotoPages<Detected extends DetectedDocument, Bytes extends Uint8Array>(
+  entries: readonly IntakePageFileInput<Bytes>[],
+  deps: PhotoPageDeps<Detected>,
+  opts: {
+    readonly empty: (i: number) => string;
+    readonly overFile: (i: number) => string;
+    readonly overTotal: string;
+    readonly unsupported: string;
+    readonly invalid: string;
+    readonly fallbackName: (i: number) => string;
+    readonly requireVision: boolean;
+  },
+) {
+  let totalBytes = 0;
+  return entries.map((entry, index) => {
+    const page = index + 1;
+    if (!deps.isBuffer(entry.bytes) || entry.bytes.length === 0) throw new RequestError(400, opts.empty(page));
+    if (entry.bytes.length > intakeFileLimit) throw new RequestError(413, opts.overFile(page));
+    totalBytes += entry.bytes.length;
+    if (totalBytes > intakeMultiPageBodyLimit) throw new RequestError(413, opts.overTotal);
+    const filename = intakeFilename(entry.filename);
+    const detected = deps.identify(entry.bytes, extensionOf(filename), entry.declaredType);
+    if (!detected || (opts.requireVision && !visionOcrSupports(detected.mediaType))) {
+      throw new RequestError(415, opts.unsupported);
+    }
+    const name = filename || opts.fallbackName(page);
+    try {
+      const original = intakeOriginal({ name, mediaType: detected.mediaType, size: entry.bytes.length, sha256: deps.sha256(entry.bytes) });
+      return { page, bytes: entry.bytes, detected, original };
+    } catch (error) {
+      throw new RequestError(400, error instanceof Error ? error.message : opts.invalid);
+    }
+  });
+}
+
 export function prepareIntakeMultiPageCapture<Detected extends DetectedDocument, Bytes extends Uint8Array = Uint8Array>(
   input: IntakeMultiPageCaptureInput<Bytes>,
-  deps: {
-    readonly isBuffer: (value: unknown) => boolean;
+  deps: PhotoPageDeps<Detected> & {
     readonly materialIdFor: (requestId: string) => FactId;
     readonly parseWatermark: (input: { deletionWatermark?: unknown }) => string;
-    readonly identify: (bytes: Uint8Array, extension: string, declaredType: unknown) => Detected | null;
-    readonly sha256: (bytes: Uint8Array) => string;
   },
 ) {
   const requestId = clientRequest(input.requestId);
-  if (!Array.isArray(input.pages) || input.pages.length === 0) {
-    throw new RequestError(400, '请选择要交入的文件。');
-  }
-  if (input.pages.length > maxIntakePhotoPages) {
-    throw new RequestError(400, `单次最多合并 ${maxIntakePhotoPages} 页试卷照片。`);
-  }
+  if (!Array.isArray(input.pages) || input.pages.length === 0) throw new RequestError(400, '请选择要交入的文件。');
+  if (input.pages.length > maxIntakePhotoPages) throw new RequestError(400, `单次最多合并 ${maxIntakePhotoPages} 页试卷照片。`);
   if (input.pages.length > 1 && input.extraction !== undefined && input.extraction !== 'vision_llm') {
     throw new RequestError(400, '多页合并拍卷仅支持视觉模型识别。');
   }
   const materialId = deps.materialIdFor(requestId);
   const deletionWatermark = deps.parseWatermark(input);
-  let totalBytes = 0;
-  const pages: { readonly page: number; readonly bytes: Bytes; readonly detected: Detected; readonly original: IntakePageOriginal }[] = [];
-  for (let index = 0; index < input.pages.length; index += 1) {
-    const entry = input.pages[index]!;
-    if (!deps.isBuffer(entry.bytes) || entry.bytes.length === 0) {
-      throw new RequestError(400, `第 ${index + 1} 页文件为空。`);
-    }
-    if (entry.bytes.length > intakeFileLimit) {
-      throw new RequestError(413, `第 ${index + 1} 页文件超过 25 MB。`);
-    }
-    totalBytes += entry.bytes.length;
-    if (totalBytes > intakeMultiPageBodyLimit) {
-      throw new RequestError(413, '多页合并文件总大小超过 60 MB。');
-    }
-    const filename = intakeFilename(entry.filename);
-    const detected = deps.identify(entry.bytes, extensionOf(filename), entry.declaredType);
-    if (!detected || (input.pages.length > 1 && !visionOcrSupports(detected.mediaType))) {
-      throw new RequestError(415, '多页合并拍卷仅支持照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF/WebP）。');
-    }
-    const name = filename || `试卷第${index + 1}页`;
-    const sha256 = deps.sha256(entry.bytes);
-    try {
-      const base = intakeOriginal({ name, mediaType: detected.mediaType, size: entry.bytes.length, sha256 });
-      pages.push({ page: index + 1, bytes: entry.bytes, detected, original: { ...base, page: index + 1 } });
-    } catch (error) {
-      throw new RequestError(400, error instanceof Error ? error.message : '交入材料无效。');
-    }
-  }
+  const pages = preparePhotoPages(input.pages, deps, {
+    empty: i => `第 ${i} 页文件为空。`,
+    overFile: i => `第 ${i} 页文件超过 25 MB。`,
+    overTotal: '多页合并文件总大小超过 60 MB。',
+    unsupported: '多页合并拍卷仅支持照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF/WebP）。',
+    invalid: '交入材料无效。',
+    fallbackName: i => `试卷第${i}页`,
+    requireVision: input.pages.length > 1,
+  }).map(item => ({ ...item, original: { ...item.original, page: item.page } as IntakePageOriginal }));
   const firstOriginal = pages[0]!.original;
   const baseName = firstOriginal.name.replace(/\.[^.]+$/, '') || '多页试卷';
-  const fallbackTitle = pages.length > 1 ? `${baseName}（共 ${pages.length} 页）` : baseName;
-  const title = intakeTitle(input.title, fallbackTitle);
+  const title = intakeTitle(input.title, pages.length > 1 ? `${baseName}（共 ${pages.length} 页）` : baseName);
   try {
     materialFact.schema.parse({ title, text: '原件' });
   } catch (error) {
@@ -342,10 +335,7 @@ export function prepareIntakeMultiPageCapture<Detected extends DetectedDocument,
   }
   const { page: _firstPage, ...coverOriginal } = firstOriginal;
   return {
-    requestId,
-    materialId,
-    deletionWatermark,
-    title,
+    requestId, materialId, deletionWatermark, title,
     original: coverOriginal as IntakeOriginal,
     originals: pages.map(item => item.original),
     pages,
@@ -361,72 +351,38 @@ export function matchesMultiPageCaptureReplay(
   const priorPages: readonly IntakePageOriginal[] = prior.originals && prior.originals.length > 0
     ? prior.originals
     : [{ ...prior.original, mediaType: prior.original.mediaType as IntakeOriginal['mediaType'], page: 1 }];
-  if (prior.title !== title || (prior.requestedExtraction ?? 'local') !== requested) return false;
-  if (priorPages.length !== originals.length) return false;
+  if (prior.title !== title || (prior.requestedExtraction ?? 'local') !== requested || priorPages.length !== originals.length) return false;
   return originals.every((page, index) => {
     const existing = priorPages[index]!;
-    return existing.page === page.page &&
-      existing.sha256 === page.sha256 &&
-      existing.name === page.name &&
-      existing.mediaType === page.mediaType &&
-      existing.size === page.size;
+    return existing.page === page.page && existing.sha256 === page.sha256 &&
+      existing.name === page.name && existing.mediaType === page.mediaType && existing.size === page.size;
   });
 }
 
 export function prepareIntakeAppendPages<Detected extends DetectedDocument, Bytes extends Uint8Array = Uint8Array>(
   input: IntakeAppendPagesInput<Bytes>,
   intakeIdFor: (id: FactId) => FactId,
-  deps: {
-    readonly isBuffer: (value: unknown) => boolean;
-    readonly identify: (bytes: Uint8Array, extension: string, declaredType: unknown) => Detected | null;
-    readonly sha256: (bytes: Uint8Array) => string;
-  },
+  deps: PhotoPageDeps<Detected>,
 ) {
   const requestId = clientRequest(input.requestId);
   let materialId: FactId;
-  try {
-    materialId = factId(input.materialId as string);
-  } catch {
-    throw new RequestError(400, '材料标识无效。');
-  }
+  try { materialId = factId(input.materialId as string); }
+  catch { throw new RequestError(400, '材料标识无效。'); }
   if (!Array.isArray(input.pages) || input.pages.length === 0 || input.pages.length >= maxIntakePhotoPages) {
     throw new RequestError(400, `单次续拍可追加 1 到 ${maxIntakePhotoPages - 1} 页照片。`);
   }
-  let totalBytes = 0;
-  const prepared: { readonly bytes: Bytes; readonly original: IntakeOriginal }[] = [];
-  for (let index = 0; index < input.pages.length; index += 1) {
-    const entry = input.pages[index]!;
-    if (!deps.isBuffer(entry.bytes) || entry.bytes.length === 0) {
-      throw new RequestError(400, `第 ${index + 1} 张续拍照片为空。`);
-    }
-    if (entry.bytes.length > intakeFileLimit) {
-      throw new RequestError(413, `第 ${index + 1} 张续拍照片超过 25 MB。`);
-    }
-    totalBytes += entry.bytes.length;
-    if (totalBytes > intakeMultiPageBodyLimit) {
-      throw new RequestError(413, '续拍照片总大小超过 60 MB。');
-    }
-    const filename = intakeFilename(entry.filename);
-    const detected = deps.identify(entry.bytes, extensionOf(filename), entry.declaredType);
-    if (!detected || !visionOcrSupports(detected.mediaType)) {
-      throw new RequestError(415, '续拍加页仅支持照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF/WebP）。');
-    }
-    const name = filename || `续拍第${index + 1}页`;
-    const sha256 = deps.sha256(entry.bytes);
-    try {
-      prepared.push({
-        bytes: entry.bytes,
-        original: intakeOriginal({ name, mediaType: detected.mediaType, size: entry.bytes.length, sha256 }),
-      });
-    } catch (error) {
-      throw new RequestError(400, error instanceof Error ? error.message : '续拍照片无效。');
-    }
-  }
+  const prepared = preparePhotoPages(input.pages, deps, {
+    empty: i => `第 ${i} 张续拍照片为空。`,
+    overFile: i => `第 ${i} 张续拍照片超过 25 MB。`,
+    overTotal: '续拍照片总大小超过 60 MB。',
+    unsupported: '续拍加页仅支持照片（PNG/JPEG/HEIC/HEIF/AVIF/TIFF/WebP）。',
+    invalid: '续拍照片无效。',
+    fallbackName: i => `续拍第${i}页`,
+    requireVision: true,
+  }).map(({ bytes, original }) => ({ bytes, original }));
   try {
     const data = appendIntakePagesInput({
-      materialId,
-      intakeId: intakeIdFor(materialId),
-      expectedRev: input.expectedRev,
+      materialId, intakeId: intakeIdFor(materialId), expectedRev: input.expectedRev,
       ...(input.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: input.expectedMaterialRev }),
       pages: prepared.map(item => item.original),
     });
@@ -436,17 +392,33 @@ export function prepareIntakeAppendPages<Detected extends DetectedDocument, Byte
   }
 }
 
-export function translateIntakeAppendPagesError(error: unknown, isDenied: boolean): unknown {
-  if (error instanceof IntakeAppendPagesConflict) return new RequestError(409, error.message);
-  if (error instanceof Error && (error.message === 'Fact revision conflict' ||
-      error.message.startsWith('Fact revision conflict'))) {
-    return new RequestError(409, '原文版本已经变更，请刷新后再续拍加页。');
+function translateIntakeCommandError(
+  error: unknown,
+  isDenied: boolean,
+  opts: {
+    readonly conflict?: (error: unknown) => string | null;
+    readonly revConflict?: string;
+    readonly duplicateCommand?: string;
+  },
+): unknown {
+  const custom = opts.conflict?.(error);
+  if (custom) return new RequestError(409, custom);
+  if (opts.revConflict && error instanceof Error && error.message.startsWith('Fact revision conflict')) {
+    return new RequestError(409, opts.revConflict);
   }
   if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '找不到这份原件。');
-  if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-    return new RequestError(409, '同一个续拍标识已经用于不同照片。');
+  if (opts.duplicateCommand && error instanceof Error && error.message === 'Command ID already used with a different command identity') {
+    return new RequestError(409, opts.duplicateCommand);
   }
   return error;
+}
+
+export function translateIntakeAppendPagesError(error: unknown, isDenied: boolean): unknown {
+  return translateIntakeCommandError(error, isDenied, {
+    conflict: err => err instanceof IntakeAppendPagesConflict ? err.message : null,
+    revConflict: '原文版本已经变更，请刷新后再续拍加页。',
+    duplicateCommand: '同一个续拍标识已经用于不同照片。',
+  });
 }
 
 export function resolveCaptureExtraction(
@@ -516,6 +488,39 @@ export function projectIntakeFacts(
   return projectIntakeMetadata(document, material, documentRev, documentPurpose);
 }
 
+const intakeEraseCommands = [
+  captureIntakeCommand, correctIntakeCommand, completeCloudIntakeCommand, completeVisionIntakeCommand,
+  retryVisionIntakeCommand, appendIntakePagesCommand, setIntakeResearchCommand,
+];
+
+export function parseIntakeErasureRequest(id: string, input: Record<string, unknown>) {
+  const root = factId(id);
+  if (input.confirmation !== 'permanently-delete-original') throw new RequestError(403, '请明确确认永久删除原件和历次抽取。');
+  const rev = input.expectedRev;
+  if (typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 1) throw new RequestError(400, '材料版本无效。');
+  return { root, rev, requestKey: clientRequest(input.requestId) };
+}
+
+export function planIntakeErasureTarget(
+  root: FactId, rev: number,
+  material: { readonly type: string; readonly rev: number; readonly value: unknown },
+  document?: { readonly id: FactId; readonly type: string; readonly rev: number; readonly value: unknown },
+): { readonly kind: 'ok'; readonly ids: FactId[]; readonly commandTypes: string[] } | { readonly kind: 'conflict'; readonly message: string } {
+  if (material.type === captureSourceType) {
+    const source = sourceEnvelope(material.value);
+    if ((source.kind !== 'paper-return' && !source.workbookAttachment) || source.originals.length !== 1 || source.originals[0]?.blobRef !== root)
+      throw new RequestError(404, '找不到这份交入原件。');
+    return material.rev !== rev
+      ? { kind: 'conflict', message: '原件已有新版本。请重新查看后确认。' }
+      : { kind: 'ok', ids: [root], commandTypes: [captureSourceCommand] };
+  }
+  if (!document || material.type !== materialType || document.type !== intakeFactType || intakeDocument(document.value).materialId !== root)
+    throw new RequestError(404, '找不到这份交入原件。');
+  return document.rev !== rev
+    ? { kind: 'conflict', message: '材料已有新版本。请重新查看后确认。' }
+    : { kind: 'ok', ids: [root, document.id], commandTypes: intakeEraseCommands };
+}
+
 export function extractPaperReturnOriginal(source: { readonly type: string; readonly value: unknown }, id: FactId) {
   if (source.type !== captureSourceType) return null;
   const envelope = sourceEnvelope(source.value);
@@ -535,15 +540,7 @@ export function isExpectedCloudCompletion(
   );
 }
 
-export function isExpectedVisionCompletion(
-  work: { readonly slotType: string; readonly slotKey: string } | null | undefined,
-  expectedSlotType: string,
-  documentRef: { readonly id: string; readonly rev: number },
-  materialRef: { readonly id: string; readonly rev: number },
-  changes: readonly { readonly kind: string; readonly ref: { readonly id: string; readonly rev: number } }[],
-): boolean {
-  return isExpectedCloudCompletion(work, expectedSlotType, documentRef, materialRef, changes);
-}
+export const isExpectedVisionCompletion = isExpectedCloudCompletion;
 
 export function prepareIntakeCorrection(input: IntakeCorrectInput, intakeIdFor: (id: FactId) => FactId) {
   const materialId = factId(input.materialId as string);
@@ -595,32 +592,25 @@ export function translateIntakeReadError(error: unknown, isLifecycle: boolean, i
 }
 
 export function translateIntakeCorrectionError(error: unknown, isDenied: boolean): unknown {
-  if (error instanceof Error && (error.message === '原文版本已经变更。' || error.message.startsWith('Fact revision conflict'))) {
-    return new RequestError(409, '这份文字已有新版本，请打开原文核对后再保存。');
-  }
-  if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '找不到这份原件。');
-  if (error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-    return new RequestError(409, '同一个更正标识已经用于不同文字。');
-  }
-  return error;
+  return translateIntakeCommandError(error, isDenied, {
+    conflict: err => err instanceof Error && err.message === '原文版本已经变更。' ? '这份文字已有新版本，请打开原文核对后再保存。' : null,
+    revConflict: '这份文字已有新版本，请打开原文核对后再保存。',
+    duplicateCommand: '同一个更正标识已经用于不同文字。',
+  });
 }
 
 export function translateIntakeVisionRetryError(error: unknown, isDenied: boolean): unknown {
-  if (error instanceof IntakeVisionRetryConflict)
-    return new RequestError(409, error.message);
-  if (error instanceof Error && (error.message === 'Fact revision conflict' ||
-      error.message.startsWith('Fact revision conflict')))
-    return new RequestError(409, '原文版本已经变更，请刷新后再重试视觉识别。');
-  if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '找不到这份原件。');
-  if (error instanceof Error && error.message === 'Command ID already used with a different command identity')
-    return new RequestError(409, '同一个重试标识已经用于不同请求。');
-  return error;
+  return translateIntakeCommandError(error, isDenied, {
+    conflict: err => err instanceof IntakeVisionRetryConflict ? err.message : null,
+    revConflict: '原文版本已经变更，请刷新后再重试视觉识别。',
+    duplicateCommand: '同一个重试标识已经用于不同请求。',
+  });
 }
 
 export function translateIntakeResearchError(error: unknown, isDenied: boolean): unknown {
-  if (error instanceof IntakeResearchConflict) return new RequestError(409, error.message);
-  if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '找不到这份原件。');
-  return error;
+  return translateIntakeCommandError(error, isDenied, {
+    conflict: err => err instanceof IntakeResearchConflict ? err.message : null,
+  });
 }
 
 export type IntakeRoute =
@@ -640,63 +630,33 @@ export type IntakeRoute =
 const materialPathPattern = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})(?:\/(import|original|pages|correction|research-permission|retry-vision|erasure))?$/;
 const materialPageOriginalPattern = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/pages\/([1-9]\d*)\/original$/;
 
+const materialActions = {
+  '': { method: 'GET', kind: 'material-read', denied: '这个材料入口只接受读取。' },
+  import: { method: 'GET', kind: 'material-read', denied: '这份材料的元数据只接受读取。' },
+  original: { method: 'GET', kind: 'original', denied: '原件只接受下载。' },
+  pages: { method: 'POST', kind: 'append-pages', denied: '续拍加页只接受提交。' },
+  correction: { method: 'POST', kind: 'correction', denied: '更正只接受提交。' },
+  'research-permission': { method: 'PUT', kind: 'research-permission', denied: '这个入口只接受用途设置。' },
+  'retry-vision': { method: 'POST', kind: 'retry-vision', denied: '视觉重识别只接受提交。' },
+} as const;
+
 export function parseIntakeRoute(pathname: string, method: string | undefined): IntakeRoute | null {
   if (pathname === '/api/lifecycle' && method === 'GET') return { kind: 'lifecycle' };
   if (pathname === '/api/intake/options' && method === 'GET') return { kind: 'options' };
-  if (pathname === '/api/intake') {
-    return method === 'POST'
-      ? { kind: 'intake' }
-      : { kind: 'method-not-allowed', error: '这个入口只接受交入请求。' };
-  }
+  if (pathname === '/api/intake') return method === 'POST' ? { kind: 'intake' } : { kind: 'method-not-allowed', error: '这个入口只接受交入请求。' };
   const pageMatch = materialPageOriginalPattern.exec(pathname);
   if (pageMatch?.[1] && pageMatch[2]) {
     const page = Number(pageMatch[2]);
     if (!Number.isSafeInteger(page) || page < 1 || page > maxIntakePhotoPages) return null;
-    return method === 'GET'
-      ? { kind: 'original-page', id: pageMatch[1], page }
-      : { kind: 'method-not-allowed', error: '分页原件只接受下载。' };
+    return method === 'GET' ? { kind: 'original-page', id: pageMatch[1], page } : { kind: 'method-not-allowed', error: '分页原件只接受下载。' };
   }
   const match = materialPathPattern.exec(pathname);
   if (!match?.[1]) return null;
-  const id = match[1];
-  const action = match[2];
-  if (!action) {
-    return method === 'GET'
-      ? { kind: 'material-read', id }
-      : { kind: 'method-not-allowed', error: '这个材料入口只接受读取。' };
-  }
-  if (action === 'import') {
-    return method === 'GET'
-      ? { kind: 'material-read', id }
-      : { kind: 'method-not-allowed', error: '这份材料的元数据只接受读取。' };
-  }
+  const id = match[1], action = match[2] ?? '';
   if (action === 'erasure') return method === 'POST' ? { kind: 'erasure', id } : null;
-  if (action === 'original') {
-    return method === 'GET'
-      ? { kind: 'original', id }
-      : { kind: 'method-not-allowed', error: '原件只接受下载。' };
-  }
-  if (action === 'pages') {
-    return method === 'POST'
-      ? { kind: 'append-pages', id }
-      : { kind: 'method-not-allowed', error: '续拍加页只接受提交。' };
-  }
-  if (action === 'correction') {
-    return method === 'POST'
-      ? { kind: 'correction', id }
-      : { kind: 'method-not-allowed', error: '更正只接受提交。' };
-  }
-  if (action === 'research-permission') {
-    return method === 'PUT'
-      ? { kind: 'research-permission', id }
-      : { kind: 'method-not-allowed', error: '这个入口只接受用途设置。' };
-  }
-  if (action === 'retry-vision') {
-    return method === 'POST'
-      ? { kind: 'retry-vision', id }
-      : { kind: 'method-not-allowed', error: '视觉重识别只接受提交。' };
-  }
-  return null;
+  const entry = materialActions[action as keyof typeof materialActions];
+  if (!entry) return null;
+  return method === entry.method ? { kind: entry.kind, id } : { kind: 'method-not-allowed', error: entry.denied };
 }
 
 export function formatIntakeErrorResponse(
@@ -798,31 +758,44 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
         : { mineru: adapter.mineruEnabled(), visionOcr: vision },
     };
   }
+  const rawContentType = typeof adapter.headers['content-type'] === 'string' ? adapter.headers['content-type'] : '';
+  const mediaType = rawContentType.split(';')[0]?.toLowerCase() ?? '';
+  const readMultipart = async (limit: number, invalidMessage: string) => {
+    const bytes = await adapter.readBody(limit);
+    try { return await new Response(new Uint8Array(bytes), { headers: { 'Content-Type': rawContentType } }).formData(); }
+    catch { throw new RequestError(400, invalidMessage); }
+  };
+  const readPages = (files: readonly File[]) => Promise.all(files.map(async file => ({
+    filename: file.name, declaredType: file.type, bytes: adapter.fromArrayBuffer(await file.arrayBuffer()),
+  })));
+  const readJson = async (limit: number, requireObject?: string): Promise<Record<string, unknown>> => {
+    const value: unknown = JSON.parse(adapter.decodeUtf8Bytes(await adapter.readBody(limit)));
+    if (requireObject && (!value || typeof value !== 'object' || Array.isArray(value))) throw new RequestError(400, requireObject);
+    return value as Record<string, unknown>;
+  };
+  const sendOriginal = async (
+    load: () => Promise<{ readonly original: Pick<IntakeMetadata['original'], 'name' | 'mediaType'>; readonly bytes: Bytes }>,
+    fallback: string,
+  ): Promise<IntakeHttpResult<Bytes>> => {
+    try {
+      const { original, bytes } = await load();
+      return { kind: 'bytes', status: 200, headers: originalDownloadHeaders(original, bytes.length), bytes };
+    } catch (error) {
+      return fail(error, fallback);
+    }
+  };
   if (route.kind === 'intake') {
     try {
-      const rawContentType = typeof adapter.headers['content-type'] === 'string' ? adapter.headers['content-type'] : '';
-      const contentType = rawContentType.split(';')[0]?.toLowerCase() ?? '';
       let result: unknown;
       let watermark: string;
-      if (contentType === 'multipart/form-data') {
+      if (mediaType === 'multipart/form-data') {
         const allowMultiPage = Boolean(adapter.capturePages);
-        const bytes = await adapter.readBody((allowMultiPage ? intakeMultiPageBodyLimit : intakeFileLimit) + 512 * 1024);
-        let form: FormData;
-        try {
-          form = await new Response(new Uint8Array(bytes), { headers: { 'Content-Type': rawContentType } }).formData();
-        } catch {
-          throw new RequestError(400, '文件表单无法读取。');
-        }
+        const form = await readMultipart((allowMultiPage ? intakeMultiPageBodyLimit : intakeFileLimit) + 512 * 1024, '文件表单无法读取。');
         const parsed = parseMultipartIntakeForm(form, adapter.hasPapers, adapter.parseWatermark, { allowMultiple: allowMultiPage });
         watermark = parsed.watermark;
         if (parsed.kind === 'capture-pages') {
           if (!adapter.capturePages) throw new RequestError(400, '当前宿主尚未启用多页合并拍卷。');
-          const pages = await Promise.all(parsed.files.map(async file => ({
-            filename: file.name,
-            declaredType: file.type,
-            bytes: adapter.fromArrayBuffer(await file.arrayBuffer()),
-          })));
-          result = await adapter.capturePages({ ...parsed.fields, pages });
+          result = await adapter.capturePages({ ...parsed.fields, pages: await readPages(parsed.files) });
         } else {
           const upload = { ...parsed.fields, bytes: adapter.fromArrayBuffer(await parsed.file.arrayBuffer()) };
           result = parsed.kind === 'paper-return'
@@ -832,7 +805,7 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
       } else {
         const requestId = requireHeaderRequestId(adapter.headers);
         const bytes = await adapter.readBody(intakeFileLimit);
-        const parsed = buildHeaderIntakeInput(adapter.headers, requestId, contentType, adapter.parseWatermark);
+        const parsed = buildHeaderIntakeInput(adapter.headers, requestId, mediaType, adapter.parseWatermark);
         watermark = parsed.watermark;
         result = await adapter.capture({ ...parsed.fields, bytes });
       }
@@ -849,71 +822,33 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
     catch (error) { return fail(error, '这份材料的交入记录无法读取。'); }
   }
   if (route.kind === 'erasure') {
-    const rawContentType = typeof adapter.headers['content-type'] === 'string' ? adapter.headers['content-type'] : '';
-    if (rawContentType.split(';')[0] !== 'application/json') {
-      return { kind: 'json', status: 415, body: { error: '需要 JSON 请求。' } };
-    }
-    try {
-      const input = JSON.parse(adapter.decodeUtf8Bytes(await adapter.readBody(4096)));
-      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new RequestError(400, '删除请求格式无效。');
-      return { kind: 'json', status: 200, body: await adapter.erase(route.id, input as Record<string, unknown>) };
-    } catch (error) {
-      return fail(error, '删除未能完成。', { notFoundAs404: true });
-    }
+    if (rawContentType.split(';')[0] !== 'application/json') return { kind: 'json', status: 415, body: { error: '需要 JSON 请求。' } };
+    try { return { kind: 'json', status: 200, body: await adapter.erase(route.id, await readJson(4096, '删除请求格式无效。')) }; }
+    catch (error) { return fail(error, '删除未能完成。', { notFoundAs404: true }); }
   }
   if (route.kind === 'original') {
-    try {
+    return sendOriginal(async () => {
       const { metadata, bytes } = await adapter.original(route.id);
-      return { kind: 'bytes', status: 200, headers: originalDownloadHeaders(metadata.original, bytes.length), bytes };
-    } catch (error) {
-      return fail(error, '原件未能读取。');
-    }
+      return { original: metadata.original, bytes };
+    }, '原件未能读取。');
   }
   if (route.kind === 'original-page') {
-    if (!adapter.originalPage) {
-      if (route.page === 1) {
-        try {
-          const { metadata, bytes } = await adapter.original(route.id);
-          return { kind: 'bytes', status: 200, headers: originalDownloadHeaders(metadata.original, bytes.length), bytes };
-        } catch (error) {
-          return fail(error, '原件未能读取。');
-        }
-      }
-      return { kind: 'json', status: 404, body: { error: '找不到该页原件。' } };
-    }
-    try {
-      const { original, bytes } = await adapter.originalPage(route.id, route.page);
-      return { kind: 'bytes', status: 200, headers: originalDownloadHeaders(original, bytes.length), bytes };
-    } catch (error) {
-      return fail(error, '分页原件未能读取。');
-    }
+    if (adapter.originalPage) return sendOriginal(() => adapter.originalPage!(route.id, route.page), '分页原件未能读取。');
+    if (route.page !== 1) return { kind: 'json', status: 404, body: { error: '找不到该页原件。' } };
+    return sendOriginal(async () => {
+      const { metadata, bytes } = await adapter.original(route.id);
+      return { original: metadata.original, bytes };
+    }, '原件未能读取。');
   }
   if (route.kind === 'append-pages') {
     if (!adapter.appendPages) return { kind: 'json', status: 404, body: { error: '找不到这份原件。' } };
-    const rawContentType = typeof adapter.headers['content-type'] === 'string' ? adapter.headers['content-type'] : '';
-    if (rawContentType.split(';')[0]?.toLowerCase() !== 'multipart/form-data') {
-      return { kind: 'json', status: 415, body: { error: '续拍加页需要 multipart/form-data 表单。' } };
-    }
+    if (mediaType !== 'multipart/form-data') return { kind: 'json', status: 415, body: { error: '续拍加页需要 multipart/form-data 表单。' } };
     try {
-      const bytes = await adapter.readBody(intakeMultiPageBodyLimit + 512 * 1024);
-      let form: FormData;
-      try {
-        form = await new Response(new Uint8Array(bytes), { headers: { 'Content-Type': rawContentType } }).formData();
-      } catch {
-        throw new RequestError(400, '续拍表单无法读取。');
-      }
-      const parsed = parseMultipartAppendPagesForm(form);
-      const pages = await Promise.all(parsed.files.map(async file => ({
-        filename: file.name,
-        declaredType: file.type,
-        bytes: adapter.fromArrayBuffer(await file.arrayBuffer()),
-      })));
+      const parsed = parseMultipartAppendPagesForm(await readMultipart(intakeMultiPageBodyLimit + 512 * 1024, '续拍表单无法读取。'));
       const result = await adapter.appendPages({
-        materialId: route.id,
-        requestId: parsed.requestId,
-        expectedRev: parsed.expectedRev,
+        materialId: route.id, requestId: parsed.requestId, expectedRev: parsed.expectedRev,
         ...(parsed.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: parsed.expectedMaterialRev }),
-        pages,
+        pages: await readPages(parsed.files),
       });
       return { kind: 'json', status: 202, body: result };
     } catch (error) {
@@ -922,9 +857,8 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
   }
   if (route.kind === 'correction') {
     try {
-      const value = JSON.parse(adapter.decodeUtf8Bytes(await adapter.readBody(intakeTextLimit * 4 + 4096))) as Record<string, unknown>;
-      const result = await adapter.correct({ materialId: route.id, requestId: value.requestId, expectedRev: value.expectedRev, text: value.text });
-      return { kind: 'json', status: 200, body: result };
+      const value = await readJson(intakeTextLimit * 4 + 4096);
+      return { kind: 'json', status: 200, body: await adapter.correct({ materialId: route.id, requestId: value.requestId, expectedRev: value.expectedRev, text: value.text }) };
     } catch (error) {
       return fail(error, '更正未能保存。', { syntaxMessage: '更正请求格式无效。' });
     }
@@ -932,14 +866,9 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
   if (route.kind === 'retry-vision') {
     if (!adapter.retryVision) return { kind: 'json', status: 404, body: { error: '找不到这份原件。' } };
     try {
-      const value: unknown = JSON.parse(adapter.decodeUtf8Bytes(await adapter.readBody(4096)));
-      if (!value || typeof value !== 'object' || Array.isArray(value))
-        throw new RequestError(400, '视觉重识别请求格式无效。');
-      const body = value as Record<string, unknown>;
+      const body = await readJson(4096, '视觉重识别请求格式无效。');
       const result = await adapter.retryVision({
-        materialId: route.id,
-        requestId: body.requestId,
-        expectedRev: body.expectedRev,
+        materialId: route.id, requestId: body.requestId, expectedRev: body.expectedRev,
         ...(body.expectedMaterialRev === undefined ? {} : { expectedMaterialRev: body.expectedMaterialRev }),
         ...(body.pages === undefined ? {} : { pages: body.pages }),
       });
@@ -949,8 +878,7 @@ export async function dispatchIntakeHttp<Bytes extends Uint8Array>(
     }
   }
   try {
-    const value: unknown = JSON.parse(adapter.decodeUtf8Bytes(await adapter.readBody(4096)));
-    return { kind: 'json', status: 200, body: await adapter.setResearch(route.id, value) };
+    return { kind: 'json', status: 200, body: await adapter.setResearch(route.id, await readJson(4096)) };
   } catch (error) {
     return fail(error, '原件用途未能更新。', { syntaxMessage: '用途请求格式无效。' });
   }
