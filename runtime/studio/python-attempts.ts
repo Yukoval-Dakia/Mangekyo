@@ -1,13 +1,13 @@
 import { pythonAttemptsLimit, type PythonAttemptRow, type PythonAttemptsRead } from '../../executors/teaching/agent-tools.ts';
 import { parsePythonAttemptSelection } from '../../executors/teaching/python-attempt-selection.ts';
-import { factId, type EvidenceEventV1, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
+import { factId, isFactUnavailable, type EvidenceEventV1, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
 import { workbookExamPacingEvent, workbookExamPacingItems } from '../../modules/activity/evidence-slice.ts';
 import { readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { posttestSubmissionType, retentionPaperType } from '../../modules/activity/retention-posttest.ts';
 import { workbookAttemptView } from '../../modules/activity/workbook-assessment-values.ts';
 import { workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
 import { buildPythonAttemptsResult, checkPythonAttemptMeta, projectPythonAttemptRow } from '../../modules/learner/retention-slice.ts';
-import { isFactUnavailable, purposeReader, readAuthorizedFactOrNull } from './fact-read-helpers.ts';
+import { purposeReader, readAuthorizedFactOrNull } from './fact-read-helpers.ts';
 import { purpose } from './identity.ts';
 import { openControlledSubmission } from './retention-workbook.ts';
 import { RequestError } from './sessions.ts';
@@ -35,8 +35,7 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
     if ('code' in opened) { issues.push({ index, code: opened.code }); continue; }
     let attempt;
     try { attempt = workbookAttempt(opened.fact.value); } catch { issues.push({ index, code: 'unknown' }); continue; }
-    const controlled = opened.fact.type === posttestSubmissionType;
-    const metaError = checkPythonAttemptMeta(controlled, scope.paperId, attempt.paperId, ref.rev, opened.fact.ref.rev);
+    const controlled = opened.fact.type === posttestSubmissionType, metaError = checkPythonAttemptMeta(controlled, scope.paperId, attempt.paperId, ref.rev, opened.fact.ref.rev);
     if (metaError) { issues.push({ index, code: metaError }); continue; }
     const collected: Parameters<SourceTrack>[] = [], sources = { maySend: access.maySend, track: (...fact: Parameters<SourceTrack>) => collected.push(fact) };
     let paperId = attempt.paperId, formal: Awaited<ReturnType<typeof readReleasedAssessment>>;
@@ -47,17 +46,13 @@ export async function readPythonAttempts(tx: ReadTransaction, args: Record<strin
         const { source } = await openControlledSubmission(tx, { async fact(id, opts) { const f = await read.fact(id, opts); sources.track(f, opts.mode); return f; } }, attempt, birth.tick);
         paperId = source.ref.id;
         if (scope.paperId && paperId !== scope.paperId) { issues.push({ index, code: 'not_found' }); continue; }
-      } catch (error) {
-        if (!(isFactUnavailable(error) || error instanceof RequestError)) throw error;
-        issues.push({ index, code: deniedCode(ref.id) }); continue;
-      }
+      } catch (error) { if (!(isFactUnavailable(error) || error instanceof RequestError)) throw error; issues.push({ index, code: deniedCode(ref.id) }); continue; }
     } else {
       const frozen = await openWorkbookQuestionSources(tx, opened.fact, sources);
       if (!frozen) { issues.push({ index, code: deniedCode(ref.id) }); continue; }
       if (attempt.paper.assessmentRelease) formal = await readReleasedAssessment(tx, attempt, opened.fact, sources, access.cutoff);
       access.recordExam?.(workbookExamPacingEvent(opened.fact.ref, attempt, frozen.paper, formal));
-      if (access.includeExamItems && access.recordExam)
-        for (const item of workbookExamPacingItems(opened.fact.ref, attempt, frozen.paper, formal)) access.recordExam(item);
+      if (access.includeExamItems && access.recordExam) for (const item of workbookExamPacingItems(opened.fact.ref, attempt, frozen.paper, formal)) access.recordExam(item);
     }
     for (const fact of collected) access.track(...fact);
     access.track(opened.fact, 'following');

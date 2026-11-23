@@ -127,3 +127,26 @@ export function projectFormalAssessmentFallback<TRefs extends Record<string, unk
 export function mapDisplayedQuestionNumbers(questions: readonly { readonly id: string }[], displayedItemIds: readonly string[]): number[] {
   return questions.flatMap((item, index) => displayedItemIds.includes(item.id) ? [index + 1] : []);
 }
+
+export function extractProbabilisticForecastInputs<TFact>(
+  entries: readonly {
+    readonly view: { readonly kind: string; readonly effectiveTick?: string };
+    readonly forecast: {
+      readonly estimate: { readonly kind: string; readonly probability?: number; readonly crossingAt?: string; readonly bucket?: { readonly kcId?: string } };
+      readonly input: { readonly observedThrough: string; readonly target: { readonly paper: { readonly id: string }; readonly itemId: string } };
+    };
+    readonly facts: TFact;
+  }[],
+) {
+  return entries.flatMap(({ view, forecast, facts }) =>
+    view.kind === 'forecast' && forecast.estimate.kind === 'probabilistic' ? [{
+      effectiveTick: view.effectiveTick!,
+      observedThrough: forecast.input.observedThrough,
+      probability: forecast.estimate.probability!,
+      ...(forecast.estimate.crossingAt ? { crossingAt: forecast.estimate.crossingAt } : {}),
+      ...(forecast.estimate.bucket?.kcId ? { kcId: forecast.estimate.bucket.kcId } : {}),
+      paperId: forecast.input.target.paper.id,
+      itemId: forecast.input.target.itemId,
+      facts,
+    }] : []);
+}

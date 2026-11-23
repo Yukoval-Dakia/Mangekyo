@@ -3,14 +3,6 @@ import { checkPack, packCandidates } from './offline-pack.ts';
 import { organizerTaskDoneInput, organizerTaskDraft } from './organizer-task-values.ts';
 import { integer } from './validation.ts';
 
-export function classifyOrganizerCommandError(message: string): { readonly status: number; readonly message: string } | null {
-  if (message === 'Command ID already used with a different command identity') return { status: 409, message: '同一个请求标识已经用于不同内容。' };
-  if (message.startsWith('Fact revision conflict: ')) return { status: 409, message: '这条记录已在别处更新。请刷新后再试。' };
-  if (message.startsWith('Fact does not exist: ')) return { status: 404, message: '这条记录不存在。' };
-  if (message.startsWith('Fact is retracted: ')) return { status: 409, message: '这条记录已经撤回。' };
-  return null;
-}
-
 export function mergePackCandidatesWithCompletion(completed: ReadonlySet<string | null>, day: string) {
   return packCandidates().map(c => completed.has(`${c.id}@${c.open?.rev}`) ? { ...c, state: 'completed' as const, date: day } : c);
 }
