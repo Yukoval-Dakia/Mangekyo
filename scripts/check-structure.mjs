@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const MAX_SOURCE_LINES = 15_000;
-const MAX_RUNTIME_LINES = 12_000;
+const MAX_RUNTIME_LINES = 11_000;
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']);
 const TEST_FILE_PATTERN = /(?:^|[./_-])(?:test|spec|tests|specs)(?:[./_-]|$)|\.d\.ts$/i;
 const TEST_DIR_PATTERN = /(?:^|[./_-])(?:test|tests|spec|specs|__tests__|fixtures)(?:[./_-]|$)/i;
