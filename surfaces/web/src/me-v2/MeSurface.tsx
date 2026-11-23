@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Icon } from '../icons';
 import { ReadState } from '../workspace';
+import { handleSpaNavigation } from '../today-v2/shared';
 import { GoalsPanel } from './GoalsPanel';
 import { DataSovereigntyPanel } from './DataSovereigntyPanel';
 import { ModelBudgetPanel } from './ModelBudgetPanel';
@@ -91,6 +92,24 @@ export function MeSurface(props: MeSurfaceProps) {
       </div>
 
       <p className="me-v2-hint">{active.hint}</p>
+
+      <section className="me-v2-card me-v2-onboard" aria-labelledby="me-v2-onboarding">
+        <div className="me-v2-card-head">
+          <div>
+            <h2 id="me-v2-onboarding">学习画像与初始配置</h2>
+            <p className="me-v2-card-sub">
+              随时可重新运行或补充学段、考试节点、初始图谱与摸底题。
+            </p>
+          </div>
+        </div>
+        <a
+          className="me-v2-pill-button"
+          href="/onboarding"
+          onClick={event => handleSpaNavigation(event, '/onboarding', props.onNavigate)}
+        >
+          打开 Onboarding
+        </a>
+      </section>
 
       {section === 'memory' && <MemoryPanel render={props.renderMemoryOverview} />}
       {section === 'goals' && <GoalsPanel library={props.library} onOpenGoalEditor={props.onOpenGoalEditor} />}

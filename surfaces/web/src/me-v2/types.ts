@@ -25,6 +25,7 @@ export type MeSurfaceProps = {
   onSectionChange?: (section: MeSection) => void;
   library: Resource<Workspace>;
   settings?: Settings | undefined;
+  onNavigate?: ((href: string) => void) | undefined;
   onOpenGoalEditor?: (() => void) | undefined;
   onOpenSettings?: (() => void) | undefined;
   renderMemoryOverview?: (() => ReactNode) | undefined;

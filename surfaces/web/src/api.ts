@@ -135,7 +135,12 @@ export function sessionEvents(id: string, known: string[]) {
 }
 
 export class ApiError extends Error {
-  constructor(readonly status: number, message = `HTTP ${status}`, readonly code?: string) {
+  constructor(
+    readonly status: number,
+    message = `HTTP ${status}`,
+    readonly code?: string,
+    readonly next?: string,
+  ) {
     super(message);
   }
 }
@@ -166,7 +171,8 @@ export async function api<T>(
   if (!response.ok) {
     const failure = await response.json().catch(() => null);
     throw new ApiError(response.status, typeof failure?.error === 'string' ? failure.error : undefined,
-      typeof failure?.code === 'string' ? failure.code : undefined);
+      typeof failure?.code === 'string' ? failure.code : undefined,
+      typeof failure?.next === 'string' ? failure.next : undefined);
   }
   return response.json() as Promise<T>;
 }
@@ -205,4 +211,168 @@ export function submissionId() { return recordNewSubmission(requestId()); }
 
 export function deletedSubmission(error:unknown) {
   return error instanceof ApiError && (error.status === 410 || error.code === 'deletion_watermark_stale');
+}
+
+export interface OnboardingStatus {
+  completed: boolean;
+  hasGoal: boolean;
+  hasDisciplines: boolean;
+  hasConcepts: boolean;
+  hasQuestions: boolean;
+  hasMemory: boolean;
+  hasModel: boolean;
+  currentDate: string;
+  timeZone: string;
+  goalText: string;
+  disciplineCount: number;
+  conceptCount: number;
+  questionCount: number;
+  upcomingExamCount: number;
+}
+
+export interface OnboardingQuickPrefs {
+  stage?: string;
+  dailyMinutes?: number;
+  campaign?: 'steady' | 'sprint' | 'recovery';
+  teachingStyle?: string;
+}
+
+export interface OnboardingProposeInput {
+  profileText: string;
+  timeZone: string;
+  quickPrefs?: OnboardingQuickPrefs | undefined;
+  mode?: 'llm' | 'offline_manual' | undefined;
+}
+
+export interface OnboardingCompletedExam {
+  subject: string;
+  examName: string;
+  status: 'completed' | 'upcoming' | 'exempt';
+  confidence: 'high' | 'needs_confirm';
+  reason: string;
+}
+
+export interface OnboardingUpcomingExam {
+  id: string;
+  title: string;
+  date: string;
+  dateCertainty: 'exact' | 'estimated';
+  scope: string[];
+  weights: { topic: string; weight: number }[];
+  note: string;
+}
+
+export interface OnboardingProposal {
+  learnerSummary: {
+    headline: string;
+    stage: string;
+    regionOrSchool: string;
+    selectedSubjects: string[];
+    inferredPeriod: string;
+    dailyMinutes: number;
+    teachingStyle: string;
+  };
+  examStatus: {
+    completedExams: OnboardingCompletedExam[];
+    upcomingExams: OnboardingUpcomingExam[];
+  };
+  studyPlan: {
+    goalText: string;
+    campaign: 'steady' | 'sprint' | 'recovery';
+    dailyWindow: { weekday: number | null; start: number; end: number; label: string };
+    progressTopics: { topic: string; stage: 'current' | 'preview' }[];
+    companionMemo: string;
+    preferenceNotes: string[];
+  };
+  disciplines: {
+    key: string;
+    title: string;
+    learningScope: string;
+    mastery: string;
+    assessment: string[];
+    boundaries: string[];
+  }[];
+  knowledgeGraph: {
+    concepts: {
+      key: string;
+      subject: string;
+      title: string;
+      summary: string;
+      semesterTag: string;
+      selected: boolean;
+    }[];
+    edges: {
+      fromKey: string;
+      toKey: string;
+      kind: 'prereq_of' | 'related_to';
+      rationale: string;
+    }[];
+  };
+  starterQuestions: {
+    key: string;
+    subject: string;
+    title: string;
+    prompt: string;
+    answer: string;
+    rubric: string;
+    conceptKeys: string[];
+    difficulty: 'foundation' | 'core' | 'stretch';
+    selected: boolean;
+  }[];
+  meta: {
+    generatedAt: string;
+    currentDate: string;
+    timeZone: string;
+    source: 'llm' | 'offline_manual';
+    model?: string;
+    honestyNote: string;
+  };
+}
+
+export interface OnboardingProposeResponse {
+  proposal: OnboardingProposal;
+}
+
+export interface OnboardingApplyInput {
+  requestId: string;
+  proposal: OnboardingProposal;
+}
+
+export interface OnboardingApplyResponse {
+  applied: {
+    goalId: string;
+    ruleCount: number;
+    disciplineCount: number;
+    conceptCount: number;
+    edgeCount: number;
+    questionCount: number;
+    memoryUpdated: boolean;
+    skippedExistingConcepts: number;
+  };
+  links: {
+    today: string;
+    graph: string;
+    bank: string;
+    companion: string;
+    me: string;
+  };
+}
+
+export function onboardingStatus() {
+  return api<OnboardingStatus>('/onboarding/status', { cache: 'no-store' });
+}
+
+export function proposeOnboarding(input: OnboardingProposeInput, signal?: AbortSignal) {
+  return api<OnboardingProposeResponse>('/onboarding/propose', {
+    method: 'POST',
+    body: input,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+export function applyOnboarding(input: OnboardingApplyInput) {
+  return api<OnboardingApplyResponse>('/onboarding/apply', {
+    method: 'POST',
+    body: { requestId: input.requestId, proposal: input.proposal },
+  });
 }
