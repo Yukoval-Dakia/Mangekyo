@@ -19,9 +19,11 @@ import { openPack } from '../../modules/plan/offline-pack.ts';
 import { mergePackCandidatesWithCompletion, parseOfflinePackSubmit, parseOrganizerOpenRev, parseOrganizerTaskInput } from '../../modules/plan/organizer-slice.ts';
 import { createOrganizerTask, setOrganizerTaskDone } from '../../modules/plan/organizer-task-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
-import { projectFreshMaterialCandidates, projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
+import { projectFreshMaterialCandidates, projectGraphAndBankCandidates, projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
+import { collectGraphConceptSources } from '../../modules/learner/record-flow.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
+import { loadRecordFlowSnapshot } from './record-flow.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
 const validate = <Input, Value>(parse: (input: Input) => Value, input: Input): Value => {
@@ -87,6 +89,7 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
               ...mergePackCandidatesWithCompletion(completed, day),
               ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts, await allAssessments(tx))),
               ...projectFreshMaterialCandidates(collectFreshMaterialSources(pendingFacts), settings.now),
+              ...projectGraphAndBankCandidates(collectGraphConceptSources(await loadRecordFlowSnapshot(tx), goal?.id), rules.map(r => r.data)),
             ];
             return { ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? { goal } : {}), rules: rules.map(r => r.data), candidates, constraints: { budget_min: null, locks: [], deadlines: [] } };
           }));
@@ -107,6 +110,8 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
       if (kind !== 'activity') throw new RequestError(400, '活动类型无效。');
       const match = await readable(() => bus.resolve([{ id: validate(factId, id), mode: 'following', rev, type: workbookPaperType }], 'organizer'));
       if (match?.items[0]) return { kind, id, rev, href: '/papers/' + id };
+      const concept = await readable(() => bus.resolve([{ id: validate(factId, id), mode: 'following', rev }], 'organizer'));
+      if (concept?.items[0]) return { kind, id, rev, href: '/materials/records/' + encodeURIComponent(id) };
       throw new RequestError(404, '这份活动的冻结版本当前不可打开。');
     },
     rule(input: Record<string, unknown>) {

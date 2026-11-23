@@ -11,12 +11,14 @@ import { buildHypothesisRecallValue, buildUnderstandingRecallSpec, matchesMemory
 import { recallPacket, recallRegions, type MemoryIntent, type MemoryRegion, type RecallItem, type RecallRegions, type RegionPage, type SentWitness } from '../../modules/companion/recall-packet.ts';
 import { extractedUnderstanding, isExtractedUnderstanding, understandingProjection } from '../../modules/companion/understanding.ts';
 import { learnerPreferenceType } from '../../modules/learner/preference-values.ts';
+import { projectLearnerModelFlowSignals } from '../../modules/learner/record-flow.ts';
 import { openObjectiveCitations } from './belief-evidence.ts';
 import { readAuthorizedFactOrNull } from './fact-read-helpers.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
 import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory-claims.ts';
 import { textSlice } from './reading.ts';
+import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import { openUnderstandingCitations } from './research-understanding.ts';
 import { resolveSource, type WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
@@ -37,6 +39,14 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       add('goal', { value: { id: overview.goal.witness.id, text: textSlice(overview.goal.text, 0, 1200).content }, sent: [known.get(overview.goal.witness.id)!] });
     if (requested.includes('scheduled_tasks') && 'items' in overview.tasks)
       for (const item of overview.tasks.items) add('scheduled_tasks', { value: item, sent: [known.get(item.id)!] });
+  }
+  if (requested.includes('learner_model')) {
+    const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose, maySend });
+    const focusIds = [scope.attempt?.id, ...scope.links.map(l => l.id), isSourceFactId(scope.preference.context) ? scope.preference.context : undefined].filter((id): id is string => Boolean(id));
+    for (const { witnessFactIds, ...signal } of projectLearnerModelFlowSignals(focusIds, snap)) {
+      const sent = witnessFactIds.map(id => snapshots.get(id)).filter((f): f is FactSnapshot => Boolean(f)).map(witness);
+      if (sent.length) add('learner_model', { value: signal, sent });
+    }
   }
   const wantsMemory = requested.includes('memory'), wantsPreferences = requested.includes('preferences');
   const wantsCourse = requested.includes('course_knowledge'), wantsAnswer = requested.includes('current_answer');
