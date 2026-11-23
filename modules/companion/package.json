@@ -8,7 +8,8 @@
     "./facts/*": "./facts/*.ts",
     "./slots/*": "./slots/*.ts",
     "./memory-review": "./memory-review.ts",
-    "./facts/memory-overview": "./memory-overview.ts"
+    "./facts/memory-overview": "./memory-overview.ts",
+    "./facts/memory-slice": "./memory-slice.ts"
   },
   "dependencies": {
     "@mangekyo/kernel": "workspace:*",
