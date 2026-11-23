@@ -115,32 +115,34 @@ const pages = new Set([
 const appPageRegex = new RegExp(`^/(?:(?:classroom|papers)/${ulidPattern}(?:/print)?|materials/(?:saved|records)/${ulidPattern})$`);
 const readingPathRegex = new RegExp(`^/api/materials/(${ulidPattern})/reading$`);
 
+type StudioDeps = {
+  notion: ReturnType<typeof openStudioNotion>;
+  textbook: ReturnType<typeof openTextbook>;
+  relationReview: ReturnType<typeof openRelationReview>;
+  workbook: ReturnType<typeof openWorkbook>;
+  takeaways: ReturnType<typeof openTakeaway>;
+  practiceAdmission?: ReturnType<typeof openPracticeAdmission>;
+  organizer: ReturnType<typeof openOrganizer>;
+  memory: ReturnType<typeof openMemory>;
+  memoryManagement: ReturnType<typeof openMemoryManagement>;
+  intake: ReturnType<typeof openIntake>;
+  capturePapers: ReturnType<typeof openCapturePapers>;
+  workspace: ReturnType<typeof openWorkspaceAccess>;
+  research: ReturnType<typeof openResearch>;
+  recall: RecallHttp;
+  retention: ReturnType<typeof openRetention>;
+  retentionComparison: ReturnType<typeof openRetentionComparison>;
+  iqdb: ReturnType<typeof openIqdb>;
+  transparency?: ReturnType<typeof openTransparency>;
+  carePause: CarePause;
+};
+
 export function serve(
   db: Db,
   studio: Awaited<ReturnType<typeof openStudio>>,
   library: ReturnType<typeof openLibrary>,
   practice: ReturnType<typeof openPractice>,
-  student: {
-    notion: ReturnType<typeof openStudioNotion>;
-    textbook: ReturnType<typeof openTextbook>;
-    relationReview: ReturnType<typeof openRelationReview>;
-    workbook: ReturnType<typeof openWorkbook>;
-    takeaways: ReturnType<typeof openTakeaway>;
-    practiceAdmission?: ReturnType<typeof openPracticeAdmission>;
-    organizer: ReturnType<typeof openOrganizer>;
-    memory: ReturnType<typeof openMemory>;
-    memoryManagement: ReturnType<typeof openMemoryManagement>;
-    intake: ReturnType<typeof openIntake>;
-    capturePapers: ReturnType<typeof openCapturePapers>;
-    workspace: ReturnType<typeof openWorkspaceAccess>;
-    research: ReturnType<typeof openResearch>;
-    recall: RecallHttp;
-    retention: ReturnType<typeof openRetention>;
-    retentionComparison: ReturnType<typeof openRetentionComparison>;
-    iqdb: ReturnType<typeof openIqdb>;
-    transparency?: ReturnType<typeof openTransparency>;
-    carePause: CarePause;
-  },
+  student: StudioDeps,
   port: number,
 ) {
   const transparency = student.transparency ?? openTransparency(db);
