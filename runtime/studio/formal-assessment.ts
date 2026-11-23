@@ -1,38 +1,24 @@
-import type { DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import type { Tick } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
 import type { CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
-import { revalidateManifest } from '../../kernel/src/derivations/revalidate.ts';
+import { parseManifest, revalidateManifest, type DbTransaction, type FactSnapshot, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
 import { requestCatalogedWork } from '../../kernel/src/work/index.ts';
-import { settledAssessmentState, type FormalAssessmentValue, type AssessmentRevisionRef } from '../../modules/activity/assessment-values.ts';
+import { settledAssessmentState, type AssessmentRevisionRef, type FormalAssessmentValue } from '../../modules/activity/assessment-values.ts';
+import { manifestEpochsMatch, projectFormalAssessmentFallback } from '../../modules/learner/diagnosis-slice.ts';
 import { stableId } from './identity.ts';
 
 export const assessmentExecutionFailed = '自动评估执行失败。';
 export const assessmentInputsBlocked = '冻结依据已变化或不可读取。';
-
-export type AssessmentScope = {
-  releaseRef: AssessmentRevisionRef;
-  submissionRef: AssessmentRevisionRef;
-  releaseEpoch: string;
-  submissionEpoch: string;
-};
+export type AssessmentScope = { releaseRef: AssessmentRevisionRef; submissionRef: AssessmentRevisionRef; releaseEpoch: string; submissionEpoch: string };
 
 export function formalAssessmentSlotKey(type: string, release: AssessmentRevisionRef, submission: AssessmentRevisionRef) {
   return stableId(type, release.id, String(release.rev), submission.id, String(submission.rev));
 }
 
-export async function registerFormalAssessment(
-  tx: DbTransaction, tick: Tick, policy: CandidatePolicy, release: FactSnapshot, submission: FactSnapshot,
-) {
+export async function registerFormalAssessment(tx: DbTransaction, tick: Tick, policy: CandidatePolicy, release: FactSnapshot, submission: FactSnapshot) {
   const scope: AssessmentScope = {
-    releaseRef: { id: release.ref.id, rev: release.ref.rev },
-    submissionRef: { id: submission.ref.id, rev: submission.ref.rev },
+    releaseRef: { id: release.ref.id, rev: release.ref.rev }, submissionRef: { id: submission.ref.id, rev: submission.ref.rev },
     releaseEpoch: release.accessEpoch, submissionEpoch: submission.accessEpoch,
   };
-  const type = policy.slot.type;
-  const key = formalAssessmentSlotKey(type, scope.releaseRef, scope.submissionRef);
-  await requestCatalogedWork(tx, tick, {slotType:type, slotKey:key, deriver:policy.deriver}, JSON.stringify(scope));
+  await requestCatalogedWork(tx, tick, { slotType: policy.slot.type, slotKey: formalAssessmentSlotKey(policy.slot.type, scope.releaseRef, scope.submissionRef), deriver: policy.deriver }, JSON.stringify(scope));
 }
 
 export async function readFormalAssessment(
@@ -44,28 +30,18 @@ export async function readFormalAssessment(
     value: { kind: 'value'; value: FormalAssessmentValue } | null; manifest: unknown;
   }>(
     `SELECT s.current_id, s.last_error, d.value, d.manifest FROM slot_state s
-     LEFT JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id
-       AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
+     LEFT JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.current_id AND d.lifecycle='effective' AND d.invalidated_tick IS NULL
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=$3`,
     [tx.learner, type, formalAssessmentSlotKey(type, releaseRef, submissionRef)],
   );
   const refs = { releaseRef, submissionRef };
   if (slot?.value?.kind === 'value' && slot.current_id) {
     const manifest = parseManifest(slot.manifest);
-    const epochMatches = (id: string, expected: string | undefined) =>
-      expected === undefined || manifest.inputs.some(input => input.kind === 'fact' && input.id === id && input.accessEpoch === expected);
     if ((await revalidateManifest(tx, manifest)).kind !== 'valid' ||
         (purpose !== manifest.purpose && (await revalidateManifest(tx, manifest, purpose)).kind !== 'valid') ||
-        !epochMatches(releaseRef.id, expectedEpochs?.releaseEpoch) ||
-        !epochMatches(submissionRef.id, expectedEpochs?.submissionEpoch))
+        !manifestEpochsMatch(manifest, releaseRef.id, submissionRef.id, expectedEpochs))
       return { ...refs, state: 'blocked' as const, reason: assessmentInputsBlocked, score: null };
     return { ...refs, ...slot.value.value, state: settledAssessmentState(slot.value.value), derivationId: slot.current_id };
   }
-  if (slot?.last_error) return {
-    ...refs, state: slot.last_error.reason === assessmentExecutionFailed ? 'failed' as const : 'blocked' as const,
-    reason: slot.last_error.reason, score: null,
-  };
-  return slot
-    ? { ...refs, state: 'queued' as const, score: null }
-    : { ...refs, state: 'blocked' as const, reason: '缺少自动评估工作记录。', score: null };
+  return projectFormalAssessmentFallback(slot, refs, assessmentExecutionFailed);
 }

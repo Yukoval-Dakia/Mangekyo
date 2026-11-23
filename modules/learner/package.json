@@ -15,6 +15,7 @@
     "./facts/graph-mastery": "./graph-mastery.ts",
     "./facts/retention": "./retention.ts",
     "./facts/retention-slice": "./retention-slice.ts",
+    "./facts/diagnosis-slice": "./diagnosis-slice.ts",
     "./facts/memory-evidence": "./memory-evidence.ts",
     "./facts/pre-submit-process": "./pre-submit-process.ts",
     "./facts/textbook-mastery": "./textbook-mastery.ts",
