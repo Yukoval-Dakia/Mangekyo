@@ -3,8 +3,7 @@ import type { FactSnapshot, ReadTransaction } from '../../kernel/src/index.ts';
 import { projectWorkspaceSearchResult, runWorkspaceSearch, type SearchFilters, type SearchQuery, type WorkspaceCandidateChannel } from '../../modules/activity/workspace-search.ts';
 export {
   lexicalWorkspaceSql, parseWorkspaceSearch, queryStrings, trigramFunction, unappliedWorkspaceFilters,
-  workspaceOccurredAt, workspaceRecordKind, workspaceRecordKinds, WorkspaceSearchError,
-  type WorkspaceCandidate, type WorkspaceCandidateChannel,
+  workspaceOccurredAt, workspaceRecordKind, workspaceRecordKinds, WorkspaceSearchError, type WorkspaceCandidate, type WorkspaceCandidateChannel,
 } from '../../modules/activity/workspace-search.ts';
 import type { WorkspaceSource } from './knowledge-graph.ts';
 import { resolveSource, sourcePurpose, sourceSearchExcerpt, type SourceAccess, type SourceTrack } from './source-read.ts';
@@ -18,8 +17,7 @@ export function searchWorkspaceRecords(tx: ReadTransaction, criteria: SearchQuer
   return runWorkspaceSearch(tx, criteria, {
     purpose: sourcePurpose(access), recipient: access.recipient, syntheticIds: [...syntheticStudyRecords],
     async resolve(id) {
-      const opened: Parameters<SourceTrack>[] = [];
-      const source = await resolveSource(tx, id, { ...access, track: (...witness) => opened.push(witness) });
+      const opened: Parameters<SourceTrack>[] = [], source = await resolveSource(tx, id, { ...access, track: (...w) => opened.push(w) });
       if (!source) return undefined;
       const fact = opened.find(([witness]) => witness.ref.id === id)?.[0];
       return { source, ...(fact ? { fact } : {}), opened };

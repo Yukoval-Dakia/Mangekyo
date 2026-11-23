@@ -29,15 +29,6 @@ export function lookupTeachingFailure(reason: TeachingFailureReason): readonly [
   return teachingFailureTable[reason];
 }
 
-export function classifyWorkspaceAccessError(message: string): readonly [number, string] | null {
-  if (message.startsWith('Unknown command:')) return [503, '当前服务还不支持开放学习记录。'];
-  if (message === 'Command ID already used with a different command identity') return [409, '同一个请求已经用于不同内容。'];
-  if (message.startsWith('Fact revision conflict:')) return [409, '这条记录已在别处更新。请刷新后再试。'];
-  if (message.startsWith('Fact does not exist:')) return [404, '找不到这条学习记录。'];
-  if (message.startsWith('Fact is retracted:')) return [409, '这条记录已经撤回。'];
-  return null;
-}
-
 export function validateRouteGrantInput(input: unknown, providerPattern: RegExp):
   { readonly ok: true; readonly id: string; readonly enabled: boolean; readonly baseUrl: string; readonly protocol: string }
   | { readonly ok: false; readonly message: string } {
@@ -148,12 +139,6 @@ export function resolveOpenedRelationInputs<TWitness extends { readonly id: stri
   const proof = hasVerification ? uses.pop()! : undefined;
   for (const { id, rev, epoch } of modelBasis) uses.push(sourceUse({ id, rev, accessEpoch: epoch }));
   return { ok: true as const, picked, refs, uses, proof };
-}
-
-export function classifyRelationReviewError(message: string): readonly [number, string] | null {
-  if (message === 'Proposal not found') return [404, '找不到知识边提议。'];
-  if (message === 'Proposal already decided' || message.startsWith('Fact revision conflict:')) return [409, '知识边状态已变化。'];
-  return null;
 }
 
 export function projectConfirmedRelationState(

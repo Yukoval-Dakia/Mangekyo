@@ -1,23 +1,21 @@
 import { fileURLToPath } from 'node:url';
 import { learningToolError } from '../../executors/teaching/tool-error.ts';
 import { openLearningLimit, type WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { readCommandProposals } from '../../kernel/src/commands/handle.ts';
-import type { Db } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type ReadTransaction } from '../../kernel/src/index.ts';
+import { commandId, createLearnerHost, factId, FactReadDeniedError, isFactUnavailable, matchKernelError, type CommandHooks, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
 import { loadModuleDirectory, type LoadedModule } from '../../kernel/src/loader.ts';
 import { isSourceFactId, parseLearningReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import { createKnowledgeEdgeCommand, createVerifiedKnowledgeEdgeCommand, KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, KnowledgeEdgeEvidenceError, knowledgeEdgeType, knowledgeEndpointKind, knowledgeUseKey, parseEdgeClaim, parseEdgeWrite, withdrawKnowledgeEdgeCommand } from '../../modules/content/knowledge-edge.ts';
-import { buildSavedEdgeRef, classifyRelationReviewError, projectConfirmedRelationState, resolveOpenedRelationInputs } from '../../modules/content/workspace-slice.ts';
+import { buildSavedEdgeRef, projectConfirmedRelationState, resolveOpenedRelationInputs } from '../../modules/content/workspace-slice.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { createStudioCommand, FactReadDeniedError, isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
+import { purposeReader } from './fact-read-helpers.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { readKnowledgeSources } from './knowledge-graph.ts';
 import { RequestError } from './sessions.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
 
-const scope = { learner: studioLearner }, owner = { recipient: 'learner' } as const;
+const owner = { recipient: 'learner' } as const;
 let content: Promise<LoadedModule> | undefined;
 export type OpenedRelationSource = { ref: SourceRefV1; witness: WorkspaceWitness };
 const reopen = (refs: string | string[]) => ({ tool: 'open_learning' as const, args: { refs }, why: '打开并核对这次写入所用的固定来源。' });
@@ -29,7 +27,8 @@ export function openWorkspaceRelation(options: {
   modelBasis?(): readonly WorkspaceWitness[]; authorize(tx: ReadTransaction): Promise<void>;
   saved(key: string, receipt: WorkspaceWriteReceipt): void; afterFactsChanged?: CommandHooks['onFactsChanged'];
 }) {
-  const { db, opened } = options, access = { recipient: 'workspace', maySend: options.maySend } as const;
+  const { db, opened } = options, host = createLearnerHost(db, studioLearner, { actor: 'companion' });
+  const access = { recipient: 'workspace', maySend: options.maySend } as const, read = (tx: ReadTransaction) => purposeReader(tx, options.maySend);
   return async (args: Record<string, unknown>, step: number) => {
     const { kind, from, to, scope: relationScope, sources = [], verification, variant } = args;
     if (!Array.isArray(sources) || sources.length > openLearningLimit - 2)
@@ -40,10 +39,10 @@ export function openWorkspaceRelation(options: {
       rawInputs.map(([field, raw]) => ({ field, ref: typeof raw === 'string' && raw.length <= 4096 ? parseLearningReference(raw) : undefined })),
       opened, openLearningLimit, options.modelBasis?.() ?? [], verification !== undefined);
     if (!resolved.ok) return learningToolError(resolved.code, resolved.field, resolved.message, resolved.retryKind === 'reopen' ? reopen(resolved.reopenRefs) : retry);
-    const { picked, refs, uses, proof } = resolved, read = (tx: ReadTransaction) => purposeReader(tx, options.maySend);
+    const { picked, refs, uses, proof } = resolved;
     const id = factId(stableId('knowledge-edge', options.turn, String(step))), key = commandId(stableId('save-relation-command', options.turn, String(step)));
     try {
-      const endpoints = await db.snapshot(scope, tx => Promise.all([0, 1].map(async i =>
+      const endpoints = await host.snapshot(tx => Promise.all([0, 1].map(async i =>
         ({ kind: knowledgeEndpointKind(await read(tx).reopen({ ...uses[i]!, mode: 'pinned', type: picked[i]!.witness.type })), sourceUse: uses[i]! }))));
       let edge;
       try {
@@ -56,13 +55,10 @@ export function openWorkspaceRelation(options: {
         if (proof) await read(tx).reopen({ ...proof, mode: 'pinned', type: knowledgeEdgeEvidenceType });
         await options.authorize(tx);
       };
-      await db.snapshot(scope, authorize);
-      const handle = createStudioCommand(db, {
-        modules: [await (content ??= loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url))))],
-        hooks: { ...createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) { await authorize(tx); await options.afterFactsChanged?.(tx, tick, changes); } }), beforeProposal: authorize },
-      });
-      const receipt = await handle({ ...scope, actor: 'companion', purpose, id: key,
-        type: proof ? createVerifiedKnowledgeEdgeCommand : createKnowledgeEdgeCommand, input: { id, purpose, edge, ...(proof ? { verification: proof } : {}) } });
+      await host.snapshot(authorize);
+      const handle = host.boundHandler([await (content ??= loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url))))],
+        { ...createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) { await authorize(tx); await options.afterFactsChanged?.(tx, tick, changes); } }), beforeProposal: authorize });
+      const receipt = await handle({ purpose, id: key, type: proof ? createVerifiedKnowledgeEdgeCommand : createKnowledgeEdgeCommand, input: { id, purpose, edge, ...(proof ? { verification: proof } : {}) } });
       if (receipt.state === 'proposed') {
         options.saved(key, { id, rev: 1, title: '知识关系提议', relation: { status: 'proposed', proposalId: key } });
         return { ok: true, status: 'proposed', proposalId: key };
@@ -82,16 +78,20 @@ export function openWorkspaceRelation(options: {
 }
 
 export function openRelationReview(db: Db, contentModule: LoadedModule, afterFactsChanged?: CommandHooks['onFactsChanged']) {
-  const handle = createStudioCommand(db, { modules: [contentModule], hooks: createStudioCommandHooks(afterFactsChanged ? { afterFactsChanged } : {}) });
+  const host = createLearnerHost(db, studioLearner);
+  const handle = host.commandHandler([contentModule], createStudioCommandHooks(afterFactsChanged ? { afterFactsChanged } : {}));
   const unavailableBasis = (error: unknown) => isFactUnavailable(error) || error instanceof KnowledgeEdgeBasisError;
-  function translate(error: unknown): never {
+  const translate = (error: unknown): never => {
     if (unavailableBasis(error)) throw new RequestError(409, '知识边依据已变化或不可读。');
-    const mapped = error instanceof Error ? classifyRelationReviewError(error.message) : null;
-    if (mapped) throw new RequestError(mapped[0], mapped[1]);
-    throw error;
-  }
+    throw matchKernelError(error, {
+      proposal_not_found: () => new RequestError(404, '找不到知识边提议。'),
+      proposal_decided: () => new RequestError(409, '知识边状态已变化。'),
+      revision_conflict: () => new RequestError(409, '知识边状态已变化。'),
+      otherwise: () => error,
+    });
+  };
   return {
-    proposal: (id: string) => db.snapshot(scope, async tx => {
+    proposal: (id: string) => host.snapshot(async tx => {
       const [proposal] = await readCommandProposals(tx, createKnowledgeEdgeCommand, {}, commandId(id));
       if (!proposal) throw new RequestError(404, '找不到知识边提议。');
       if (proposal.state === 'rejected') return { proposalId: proposal.id, status: 'rejected' as const };
@@ -110,7 +110,7 @@ export function openRelationReview(db: Db, contentModule: LoadedModule, afterFac
     }).catch(translate),
     async accept(id: string) {
       const proposalId = commandId(id), key = commandId(stableId('accept-knowledge-edge', id));
-      const receipt = await handle.decideProposal({ ...scope, id: key, type: createKnowledgeEdgeCommand, purpose, proposalId, selection: 'accept' }, async (tx, input) => {
+      const receipt = await handle.decideProposal({ ...host.scope, id: key, type: createKnowledgeEdgeCommand, purpose, proposalId, selection: 'accept' }, async (tx, input) => {
         const { edge } = parseEdgeWrite(input);
         await readKnowledgeSources(tx, edge, { recipient: 'workspace', maySend: () => true });
         await readKnowledgeSources(tx, edge, owner);
@@ -121,7 +121,7 @@ export function openRelationReview(db: Db, contentModule: LoadedModule, afterFac
     },
     async reject(id: string) {
       const proposalId = commandId(id);
-      await handle.decideProposal({ ...scope, id: commandId(stableId('reject-knowledge-edge', id)), type: createKnowledgeEdgeCommand, purpose, proposalId, selection: 'reject' }, async () => null).catch(translate);
+      await handle.decideProposal({ ...host.scope, id: commandId(stableId('reject-knowledge-edge', id)), type: createKnowledgeEdgeCommand, purpose, proposalId, selection: 'reject' }, async () => null).catch(translate);
       return { status: 'rejected' as const, proposalId };
     },
     async undo(id: string, input: Record<string, unknown>) {
@@ -133,9 +133,7 @@ export function openRelationReview(db: Db, contentModule: LoadedModule, afterFac
            AND ((c.type=$5 AND r.author='companion') OR (c.type=$6 AND c.input->'input' ? 'proposalId'))`,
         [studioLearner, id, token, knowledgeEdgeType, createVerifiedKnowledgeEdgeCommand, createKnowledgeEdgeCommand]);
       if (!birth) throw new RequestError(404, '找不到可撤回的知识边。');
-      const receipt = await handle({ ...scope, id: commandId(stableId('withdraw-knowledge-edge', token)), actor: 'learner',
-        type: withdrawKnowledgeEdgeCommand, purpose: 'storage', input: { id, expectedRev: birth.rev } }).catch(translate);
-      const written = receipt.wrote[0]!;
+      const written = (await host.runCommand(handle, { id: commandId(stableId('withdraw-knowledge-edge', token)), type: withdrawKnowledgeEdgeCommand, purpose: 'storage', input: { id, expectedRev: birth.rev } }).catch(translate)).wrote[0]!;
       return { status: 'withdrawn', ref: { id: written.id, rev: written.rev } };
     },
   };

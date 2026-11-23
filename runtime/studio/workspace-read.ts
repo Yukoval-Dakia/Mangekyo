@@ -1,6 +1,5 @@
 import { learningToolError } from '../../executors/teaching/tool-error.ts';
-import { createBusScope } from '../../kernel/src/bus.ts';
-import { parseManifest, type FactSnapshot, type ManifestInput, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
+import { createBusScope, isFactUnavailable, parseManifest, type FactSnapshot, type ManifestInput, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
 import { readTeachingAttemptAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { readLearningOverview } from '../../modules/activity/learning-overview.ts';
 import { isSourceFactId, parseLearningReference, sourceRefV1 } from '../../modules/activity/source-values.ts';
@@ -8,7 +7,6 @@ import { workbookAttemptType, workbookFormalAssessmentType, workbookPaperType, w
 import { workspaceReadRecord } from '../../modules/activity/workspace-source-projection.ts';
 import { knowledgeEdgeEvidenceType, knowledgeEdgeKinds, knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { buildLearnerModelPayload, extractAssessmentManifestFacts, findUnsupportedWorkspaceQueryFields, validateWorkspaceGraphParams } from '../../modules/content/workspace-slice.ts';
-import { isFactUnavailable } from './fact-read-helpers.ts';
 import { purpose } from './identity.ts';
 import { openKnowledgeEdge, openKnowledgeEdgeEvidence, readKnowledgeGraph } from './knowledge-graph.ts';
 import { resolveSource, type SourceAccess, type SourceTrack, type WorkspaceSourceRecipient } from './source-read.ts';
@@ -16,9 +14,7 @@ import { syntheticStudyRecords } from './workspace-access.ts';
 import { parseWorkspaceSearch, queryStrings, searchWorkspaceRecords, unappliedWorkspaceFilters, WorkspaceSearchError, workspaceResult, type WorkspaceCandidateChannel } from './workspace-search.ts';
 
 type Arguments = Record<string, unknown>;
-const workspaceSourceUnavailable = JSON.stringify(learningToolError('not_found', 'id', '未找到当前可读的学习记录。', {
-  tool: 'search_workspace', args: {}, why: '查询当前已授权的学习记录。',
-}));
+const workspaceSourceUnavailable = JSON.stringify(learningToolError('not_found', 'id', '未找到当前可读的学习记录。', { tool: 'search_workspace', args: {}, why: '查询当前已授权的学习记录。' }));
 export type AssessmentSlot = Extract<ManifestInput, { kind: 'slot' }>;
 export type WorkspaceAssessmentBasis = { slot: AssessmentSlot; facts: Extract<ManifestInput, { kind: 'fact' }>[] };
 export function isWorkspaceAssessmentSlot(type: string) { return type === workbookRubricAssessmentType || type === workbookFormalAssessmentType; }
@@ -75,10 +71,7 @@ export async function workspaceQuery(tx: ReadTransaction, args: Arguments, acces
       return match ? { ...match, hop } : undefined;
     });
     if (graph) return { ...graph, unappliedFilters: unappliedWorkspaceFilters(criteria) };
-  } catch (error) {
-    if (error instanceof WorkspaceSearchError) return { error: error.message, code: error.code, field: error.field };
-    throw error;
-  }
+  } catch (error) { if (error instanceof WorkspaceSearchError) return { error: error.message, code: error.code, field: error.field }; throw error; }
   return undefined;
 }
 
