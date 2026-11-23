@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const MAX_SOURCE_LINES = 15_000;
+const MAX_RUNTIME_LINES = 12_000;
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']);
 const TEST_FILE_PATTERN = /(?:^|[./_-])(?:test|spec|tests|specs)(?:[./_-]|$)|\.d\.ts$/i;
 const TEST_DIR_PATTERN = /(?:^|[./_-])(?:test|tests|spec|specs|__tests__|fixtures)(?:[./_-]|$)/i;
@@ -274,8 +275,9 @@ export async function checkStructure(root) {
       }
     }
     if (group.kind === 'runtime') stats.runtimeLines = totalLines;
-    if (totalLines > MAX_SOURCE_LINES) {
-      violations.push(`${group.label}total ${totalLines} lines exceeds ${MAX_SOURCE_LINES} line limit`);
+    const limit = group.kind === 'runtime' ? MAX_RUNTIME_LINES : MAX_SOURCE_LINES;
+    if (totalLines > limit) {
+      violations.push(`${group.label}total ${totalLines} lines exceeds ${limit} line limit`);
     }
   }
 

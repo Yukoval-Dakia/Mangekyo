@@ -4,7 +4,7 @@ export { FactNotFoundError } from './declarations/read-errors.ts';
 export type * from './pipeline-contracts.ts';
 export type { FactChange } from './commands/contracts.ts';
 export { createCommandHandler } from './commands/handle.ts';
-export type { CommandHandler, CommandHooks, CommandRequest } from './commands/contracts.ts';
+export type { CommandHandler, CommandHooks, CommandRequest, CommandRuntimeOptions } from './commands/contracts.ts';
 export { createCommandReadContext, FactReadDeniedError } from './commands/reads.ts';
 export { createAuthorizedFactReader, snapshotFactReaders } from './commands/reads.ts';
 export { readable } from './commands/fact-collection.ts';

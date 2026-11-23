@@ -1,4 +1,4 @@
-import type { CommandHandler, CommandHooks, CommandRequest } from './commands/contracts.ts';
+import type { CommandHandler, CommandHooks, CommandRequest, CommandRuntimeOptions } from './commands/contracts.ts';
 import { createCommandHandler } from './commands/handle.ts';
 import { createAuthorizedFactReader, createCommandReadContext } from './commands/reads.ts';
 import type { Db, DbTransaction, ReadTransaction, SnapshotOptions } from './db/types.ts';
@@ -15,6 +15,8 @@ export type HostCommandInput = Pick<CommandRequest, 'type' | 'input' | 'purpose'
   readonly actor?: CommandRequest['actor'];
 };
 
+type CommandExtraOptions = Pick<CommandRuntimeOptions, 'bindCommandRead' | 'crossModuleWrites'>;
+
 /** Per-learner entrypoint; helpers stay domain-free (no purpose or module names baked in). */
 export function createLearnerHost(db: Db, learner: LearnerId, options: { actor?: CommandRequest['actor'] } = {}) {
   const scope = { learner } as const;
@@ -26,8 +28,9 @@ export function createLearnerHost(db: Db, learner: LearnerId, options: { actor?:
   const lockedTx = <T>(run: (tx: DbTransaction) => Promise<T>) => withLearnerLock(db, scope, run);
   const boundDb = (boundTx: DbTransaction) => withinLearnerTransaction(db, boundTx);
 
-  const commandHandler = (modules: readonly LoadedModule[], hooks: CommandHooks, boundTx?: DbTransaction) =>
-    createCommandHandler(boundTx ? boundDb(boundTx) : db, { modules, hooks });
+  const commandHandler = (
+    modules: readonly LoadedModule[], hooks: CommandHooks, boundTx?: DbTransaction, extra?: CommandExtraOptions,
+  ) => createCommandHandler(boundTx ? boundDb(boundTx) : db, { modules, hooks, ...extra });
 
   const runCommand = (handle: (request: CommandRequest) => Promise<CommandReceipt>, command: HostCommandInput) =>
     handle({
@@ -37,10 +40,12 @@ export function createLearnerHost(db: Db, learner: LearnerId, options: { actor?:
       ...(command.deletionWatermark === undefined ? {} : { deletionWatermark: command.deletionWatermark }),
     });
 
-  const boundHandler = (modules: readonly LoadedModule[], hooks: CommandHooks, boundTx?: DbTransaction) => {
-    const handle = commandHandler(modules, hooks, boundTx);
+  const boundHandler = (
+    modules: readonly LoadedModule[], hooks: CommandHooks, boundTx?: DbTransaction, extra?: CommandExtraOptions,
+  ) => {
+    const handle = commandHandler(modules, hooks, boundTx, extra);
     return (command: HostCommandInput | CommandRequest) => {
-      const { learner: _l, actor: _a, ...rest } = command as CommandRequest & HostCommandInput;
+      const { learner: _l, ...rest } = command as CommandRequest & HostCommandInput;
       return runCommand(handle, rest);
     };
   };
@@ -48,7 +53,8 @@ export function createLearnerHost(db: Db, learner: LearnerId, options: { actor?:
   const lockedCommand = <T>(
     modules: readonly LoadedModule[], hooks: CommandHooks,
     run: (tx: DbTransaction, handle: CommandHandler) => Promise<T>,
-  ) => lockedTx(boundTx => run(boundTx, commandHandler(modules, hooks, boundTx)));
+    extra?: CommandExtraOptions,
+  ) => lockedTx(boundTx => run(boundTx, commandHandler(modules, hooks, boundTx, extra)));
 
   const read = (boundTx: ReadTransaction, purpose: string) => createCommandReadContext(boundTx, purpose);
   const readOrNull = async (boundTx: ReadTransaction, purpose: string, id: FactId, readOptions: FactReadOptions) => {

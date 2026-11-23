@@ -4,15 +4,14 @@ export {
   isFactNotFound, isFactReadDenied, isFactUnavailable, snapshotFactReaders,
   createCommandHandler, createLearnerHost, lockLearner, withinLearnerTransaction, withLearnerLock,
 } from '../../kernel/src/index.ts';
-export type { CommandHandler, CommandHooks, CommandRequest } from '../../kernel/src/index.ts';
+export type { CommandHandler, CommandHooks, CommandRequest, CommandRuntimeOptions } from '../../kernel/src/index.ts';
 
 import {
-  createAuthorizedFactReader, createCommandReadContext, createLearnerHost,
+  createAuthorizedFactReader, createCommandHandler, createCommandReadContext,
   isFactNotFound, isFactReadDenied, isFactUnavailable,
 } from '../../kernel/src/index.ts';
-import type { CommandHooks, CommandRequest } from '../../kernel/src/index.ts';
+import type { CommandRequest, CommandRuntimeOptions } from '../../kernel/src/index.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { commandId, type FactId } from '../../kernel/src/declarations/ids.ts';
 import type { CommandReceipt, FactReadOptions, FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
 import { stableId, studioLearner } from './identity.ts';
@@ -36,8 +35,7 @@ export type StudioCommandInput = Pick<CommandRequest, 'type' | 'input' | 'purpos
   readonly requestId: string;
 };
 
-export const createStudioCommand = (db: Db, options: { modules: readonly LoadedModule[]; hooks: CommandHooks }) =>
-  createLearnerHost(db, studioLearner).commandHandler(options.modules, options.hooks);
+export const createStudioCommand = (db: Db, options: CommandRuntimeOptions) => createCommandHandler(db, options);
 
 export const runStudioCommand = (handle: (request: CommandRequest) => Promise<CommandReceipt>, command: StudioCommandInput) =>
   handle({

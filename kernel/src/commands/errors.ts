@@ -11,7 +11,7 @@ export type KernelError = { readonly kind: KernelErrorKind; readonly reason?: st
 
 const stringRules: readonly (readonly [RegExp, KernelErrorKind])[] = [
   [/^Command ID already used with a different command identity$/, 'duplicate_command'],
-  [/^Fact revision conflict:/, 'revision_conflict'],
+  [/^Fact revision conflict(?:$|:)/, 'revision_conflict'],
   [/^Fact already exists:/, 'already_exists'],
   [/^Fact is retracted:/, 'retracted'],
   [/^Fact purpose does not allow this write:/, 'purpose_write_denied'],
@@ -35,10 +35,7 @@ export function classifyKernelError(cause: unknown): KernelError {
 export const isKernelErrorKind = (cause: unknown, kind: KernelErrorKind) => classifyKernelError(cause).kind === kind;
 export const isFactNotFound = (cause: unknown): cause is FactNotFoundError => cause instanceof FactNotFoundError;
 export const isFactReadDenied = (cause: unknown): cause is FactReadDeniedError => cause instanceof FactReadDeniedError;
-export const isFactUnavailable = (cause: unknown) => {
-  const kind = classifyKernelError(cause).kind;
-  return kind === 'not_found' || kind === 'denied';
-};
+export const isFactUnavailable = (cause: unknown): boolean => isFactNotFound(cause) || isFactReadDenied(cause);
 
 /** Match a classified kernel error to a handler; `otherwise` catches unknown. */
 export function matchKernelError<T>(
