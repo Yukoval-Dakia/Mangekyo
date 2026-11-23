@@ -155,7 +155,6 @@ export function SettingsDialog({ onClose, onSave, textbookAccess = false }: {
         <button type="button" className="icon-button" aria-label="关闭学习设置" disabled={saving} onClick={() => dialog.current?.close()}><Icon name="close" /></button>
       </div>
       <div className="settings-dialog-body">
-        <ResearchSettings />
         {draft ? (
           <form id="settings-dialog-form" onSubmit={(event) => void save(event)}>
             <section className="settings-section" aria-labelledby="providers-title">
@@ -197,7 +196,6 @@ export function SettingsDialog({ onClose, onSave, textbookAccess = false }: {
                 </select>
               </label>)}
             </section>
-            <WorkspaceAccessPanel disabled={saving} textbookAccess={textbookAccess} />
             <section className="settings-section" aria-labelledby="mcp-title">
               <div className="settings-section-heading">
                 <h3 id="mcp-title">外部工具连接</h3>
@@ -278,6 +276,13 @@ export function SettingsDialog({ onClose, onSave, textbookAccess = false }: {
             正在读取设置…
           </div>
         )}
+        <details className="settings-advanced">
+          <summary>高级隐私与细粒度访问控制</summary>
+          <div className="settings-advanced-body">
+            <ResearchSettings />
+            {draft && <WorkspaceAccessPanel disabled={saving} textbookAccess={textbookAccess} />}
+          </div>
+        </details>
       </div>
       {draft && (
         <div className="dialog-actions settings-dialog-actions">

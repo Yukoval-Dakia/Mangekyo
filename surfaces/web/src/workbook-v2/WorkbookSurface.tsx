@@ -63,6 +63,7 @@ export function WorkbookSurface({
   const [error, setError] = useState('');
   const [submittedAttempt, setSubmittedAttempt] = useState<WorkbookV2Attempt | null>(null);
   const requestRef = useRef(submissionId());
+  const [flaggedItems, setFlaggedItems] = useState<Set<string>>(() => new Set());
   const [pitfalls, setPitfalls] = useState<readonly PreSubmitPitfall[]>([]);
   const [preSubmitCardOpen, setPreSubmitCardOpen] = useState(false);
   const [preSubmitAcknowledged, setPreSubmitAcknowledged] = useState(false);
@@ -132,6 +133,7 @@ export function WorkbookSurface({
     setOpenedHints({});
     setSavedTakeaways({});
     setSubmittedAttempt(null);
+    setFlaggedItems(new Set());
     requestRef.current = submissionId();
     setPitfalls([]);
     setPreSubmitCardOpen(false);
@@ -196,6 +198,15 @@ export function WorkbookSurface({
       ),
     [questions, items, attachments.summariesByQuestion],
   );
+
+  const toggleFlag = useCallback((itemId: string) => {
+    setFlaggedItems((previous) => {
+      const next = new Set(previous);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }, []);
 
   const go = useCallback(
     (next: number) => {
@@ -481,9 +492,11 @@ export function WorkbookSurface({
             const questionAssessment = assessmentByQuestion.get(question.id);
             const isCorrected = correctedItemIds.has(question.id);
             const navVerdict = questionAssessment?.verdict ?? questionFeedback?.result;
+            const flagged = flaggedItems.has(question.id);
             const classes = [
               'wbv2-num',
               answered.has(question.id) ? 'is-answered' : '',
+              flagged ? 'is-flagged' : '',
               summary?.failed ? 'is-upload-error' : summary?.uploading ? 'is-uploading' : '',
               isCorrected
                 ? 'is-correct'
@@ -506,6 +519,7 @@ export function WorkbookSurface({
                 aria-current={order === index ? 'step' : undefined}
                 className={classes}
                 onClick={() => go(order)}
+                title={flagged ? `第 ${order + 1} 题 · 已标记存疑` : `第 ${order + 1} 题`}
               >
                 {order + 1}
               </button>
@@ -635,7 +649,7 @@ export function WorkbookSurface({
       )}
 
       {!submittedAttempt && (
-        <div className="wbv2-submitbar">
+        <div className="wbv2-submitbar wbv2-submitbar--sticky">
           {attachments.lock.uploading > 0 && (
             <p className="lock-note" role="status">
               尚有 {attachments.lock.uploading} 张手写过程图正在上传，完成后即可交卷。
@@ -658,6 +672,51 @@ export function WorkbookSurface({
           )}
           {error && <p className="wbv2-error">{error}</p>}
           <div className="main">
+            <div className="wbv2-actionbar" role="toolbar" aria-label="本题操作">
+              <button
+                type="button"
+                className="wbv2-action"
+                disabled={index === 0}
+                onClick={() => go(index - 1)}
+              >
+                ‹ 上一题
+              </button>
+              {current && (
+                <button
+                  type="button"
+                  className="wbv2-action"
+                  aria-pressed={flaggedItems.has(current.id)}
+                  onClick={() => toggleFlag(current.id)}
+                >
+                  {flaggedItems.has(current.id) ? '取消存疑' : '标记存疑'}
+                </button>
+              )}
+              {current && onCiteToCompanion && (
+                <button
+                  type="button"
+                  className="wbv2-action wbv2-action--companion"
+                  onClick={() =>
+                    onCiteToCompanion({
+                      kind: 'question',
+                      paperId,
+                      itemId: current.id,
+                      title: `第 ${index + 1} 题`,
+                      excerpt: current.prompt.replace(/\s+/g, ' ').trim().slice(0, 240),
+                    })
+                  }
+                >
+                  问同伴
+                </button>
+              )}
+              <button
+                type="button"
+                className="wbv2-action"
+                disabled={index >= total - 1}
+                onClick={() => go(index + 1)}
+              >
+                下一题 ›
+              </button>
+            </div>
             <button
               type="button"
               className="wbv2-submit"

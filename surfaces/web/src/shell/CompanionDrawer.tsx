@@ -3,11 +3,9 @@ import { api, sessionPath, type Session, type Settings, type Turn } from "../api
 import { useConversation } from "../conversation";
 import { Icon } from "../icons";
 import { Message } from "../message";
-import { chatRoute, forTask } from "../model-route";
+import { chatRoute } from "../model-route";
 import type { ChatLink, Resource } from "../workspace";
 import { RecoveryGuide } from "../recovery";
-
-type Purpose = "daily" | "once";
 
 function TurnEvidence({ turn }: { turn: Turn }) {
   const rationale = turn.reads.reduce(
@@ -52,8 +50,6 @@ function DrawerThread({
   open,
   initial,
   settings,
-  purpose,
-  onPurposeChange,
   quote,
   onClearQuote,
   onOpenSettings,
@@ -65,8 +61,6 @@ function DrawerThread({
   open: boolean;
   initial?: Session | undefined;
   settings: Settings | undefined;
-  purpose: Purpose;
-  onPurposeChange: (next: Purpose) => void;
   quote: string;
   onClearQuote: () => void;
   onOpenSettings: () => void;
@@ -78,9 +72,8 @@ function DrawerThread({
   const chat = useConversation("companion", open, initial, false);
   const [opening, setOpening] = useState("");
   const [replyInput, setReplyInput] = useState("");
-  const taskSettings = settings ? forTask(settings, "companion") : undefined;
   const activeRoute = settings ? chatRoute(settings, "companion") : undefined;
-  const modelReady = Boolean(taskSettings?.hasKey && activeRoute);
+  const modelReady = Boolean(activeRoute);
   const turns = chat.session?.turns ?? [];
   const pending = chat.busy || chat.session?.status === "pending";
   const value = chat.sessionId ? replyInput : opening;
@@ -107,12 +100,11 @@ function DrawerThread({
     if (!modelReady || pending) return;
     const composed = [quote, value.trim()].filter(Boolean).join("\n\n");
     if (!composed) return;
-    const allowBackground = purpose === "daily";
     if (chat.sessionId) {
-      chat.send([], activeRoute, undefined, allowBackground);
+      chat.send([], activeRoute, undefined, true);
       setReplyInput("");
     } else {
-      chat.start(composed, undefined, [], activeRoute, undefined, allowBackground);
+      chat.start(composed, undefined, [], activeRoute, undefined, true);
       setOpening("");
     }
     if (quote) onClearQuote();
@@ -187,23 +179,6 @@ function DrawerThread({
 
       <footer className="drawer-footer">
         <form className="drawer-composer" onSubmit={handleSubmit}>
-          <div className="drawer-purpose-row">
-            <span className="drawer-purpose-label">本轮用途</span>
-            <div className="segmented-radio" role="radiogroup" aria-label="本轮用途">
-              {([["daily", "日常学习"], ["once", "仅本次回答"]] as const).map(([option, label]) => (
-                <label key={option}>
-                  <input
-                    type="radio"
-                    name="companion-purpose"
-                    checked={purpose === option}
-                    onChange={() => onPurposeChange(option)}
-                    disabled={!open}
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-          </div>
           <textarea
             className="drawer-textarea"
             rows={3}
@@ -218,9 +193,7 @@ function DrawerThread({
             disabled={!open || !modelReady || pending}
           />
           <div className="drawer-composer-actions">
-            <span className="drawer-hint">
-              {purpose === "daily" ? "本轮允许整理学习观察" : "仅本次回答，不整理学习观察"}
-            </span>
+            <span className="drawer-hint">⌘ / Ctrl + Enter 发送</span>
             <button
               className="primary-button drawer-send"
               type="submit"
@@ -256,7 +229,6 @@ export function CompanionDrawer({
   onOpenSettings: () => void;
   pendingCitation?: { title: string; text: string; topic?: string; seq: number } | undefined;
 }) {
-  const [purpose, setPurpose] = useState<Purpose>("daily");
   const [quote, setQuote] = useState("");
   const [contextTitle, setContextTitle] = useState(pageLabel);
   const [selectedText, setSelectedText] = useState("");
@@ -372,8 +344,6 @@ export function CompanionDrawer({
         open={open}
         initial={activeSession}
         settings={settings}
-        purpose={purpose}
-        onPurposeChange={setPurpose}
         quote={quote}
         onClearQuote={() => setQuote("")}
         onOpenSettings={onOpenSettings}

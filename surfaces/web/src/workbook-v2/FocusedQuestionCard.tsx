@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import MathText from '../math-text.tsx';
 import type {
   CompanionCitation,
@@ -150,6 +150,20 @@ export function FocusedQuestionCard({
   const shownAnswer = formatSubmittedAnswer(submittedAnswer ?? feedback?.answer, answer);
   const formattedExpected = showExpected(feedback?.expected) ? formatExpectedValue(feedback?.expected) : null;
 
+  const scratchKey = `wbv2-scratch:${paperId}:${question.id}`;
+  const [scratch, setScratch] = useState(() => {
+    try { return localStorage.getItem(scratchKey) ?? ''; } catch { return ''; }
+  });
+  function updateScratch(value: string) {
+    setScratch(value);
+    try {
+      if (value) localStorage.setItem(scratchKey, value);
+      else localStorage.removeItem(scratchKey);
+    } catch {
+      // localStorage 不可用时仅保留内存草稿。
+    }
+  }
+
   return (
     <article className="wbv2-card" tabIndex={-1} data-wbv2-question-id={question.id} aria-label={`第 ${index + 1} 题，共 ${total} 题`}>
       <header className="wbv2-qhead">
@@ -216,6 +230,31 @@ export function FocusedQuestionCard({
             initialOpened={openedHint}
             onOpenedChange={onOpenedHintChange ? (next) => onOpenedHintChange(question.id, next) : undefined}
           />
+
+          <details className="wbv2-scratch">
+            <summary>
+              草稿 / 解题思路
+              {scratch.trim() ? <span className="wbv2-scratch-badge">有草稿</span> : null}
+            </summary>
+            <div className="wbv2-scratch-body">
+              <textarea
+                rows={4}
+                maxLength={4000}
+                value={scratch}
+                disabled={disabled}
+                placeholder="在这里推演、列式、记疑点…（仅保存在这台电脑上）"
+                onChange={(event) => updateScratch(event.currentTarget.value)}
+              />
+              <div className="wbv2-scratch-foot">
+                <span className="wbv2-scratch-hint">
+                  {scratch.trim() ? `${scratch.trim().length} 字 · 本机自动保存` : '本机自动保存'}
+                </span>
+                <button type="button" className="wbv2-scratch-clear" disabled={disabled || !scratch} onClick={() => updateScratch('')}>
+                  清空草稿
+                </button>
+              </div>
+            </div>
+          </details>
         </>
       ) : (
         <>

@@ -2,6 +2,8 @@ import {useVisibleDocument} from './workbook-presentation';
 import {ResumeScratch, ScratchReentry, useCurrentDraft} from './activity-reentry';
 import { useDraftWatermark } from './draft-watermark';
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import MathText from './math-text';
+import { citeToCompanionDrawer } from './shell/AppShell';
 import { averageSpeed, ridingLesson } from '../../../modules/activity/starter.ts';
 import type { PracticeAnswers, PracticeView } from '../../../modules/activity/practice-values.ts';
 import { builtinCompanionPath, builtinPackPath, defaultLessonPack, defaultPracticePack, type BuiltinPack } from './builtin-packs';
@@ -297,17 +299,56 @@ export function StarterPractice({ pack }: { pack?: BuiltinPack | undefined }) {
               <h2 ref={reviewHeading} tabIndex={-1} className="starter-review-title">已交卷</h2>
               <button type="button" className="text-button" disabled={!draft && !watermark.ready} onClick={openDraft}>{draft ? '继续本轮' : '再做一轮'}</button>
             </div>
-            <ol className="starter-exercises">
+            <div className="starter-scorebar" role="status" aria-label="本次得分">
+              <span className="starter-scorebar-count">
+                答对 <strong>{submission.feedback.filter(row => row.result === 'correct').length}</strong> / {submission.feedback.length}
+              </span>
+              <span className="starter-scorebar-strip" aria-hidden="true">
+                {submission.feedback.map((row, index) => (
+                  <i key={index} className={`starter-scorebar-seg starter-scorebar-seg--${row.result}`} />
+                ))}
+              </span>
+              {submission.feedback.some(row => row.result !== 'correct') ? (
+                <button type="button" className="tonal-button starter-ask-companion" onClick={() => {
+                  const missed = submission.feedback
+                    .map((row, index) => ({ row, question: paper.questions[index]! }))
+                    .filter(({ row }) => row.result !== 'correct')
+                    .map(({ row, question }, index) =>
+                      `${index + 1}. ${question.prompt}\n   我的作答：${row.answer === null ? '未作答' : `${row.answer} ${question.unit}`}　参考答案：${row.expected} ${question.unit}\n   解析：${row.explanation}`,
+                    )
+                    .join('\n');
+                  citeToCompanionDrawer({
+                    title: `讲透《${paper.title}》错题`,
+                    topic: '骑行均速小卷',
+                    text: `以下是我刚交的《${paper.title}》里没答对的题：\n${missed}\n请帮我逐题找出卡点。`,
+                  });
+                }}>
+                  带错题问同伴
+                </button>
+              ) : (
+                <button type="button" className="tonal-button starter-ask-companion" onClick={() => citeToCompanionDrawer({
+                  title: `出进阶变式题`,
+                  topic: '骑行均速小卷',
+                  text: `我刚满分做完《${paper.title}》。请围绕平均速度的分母变化，出 2 道进阶变式题，难度略高于这份小卷。`,
+                })}>
+                  让同伴出进阶变式题
+                </button>
+              )}
+            </div>
+            <ol className="starter-exercises starter-exercises--review">
               {paper.questions.map((question, index) => {
                 const row = submission.feedback[index]!;
-                return <li key={question.id} className="starter-exercise">
-                  <p className="starter-prompt">{question.prompt}</p>
-                  <p className="starter-feedback-answer">
-                    <strong className={`starter-result starter-result-${row.result}`}>{resultLabels[row.result]}</strong>
-                    {row.answer !== null && <span>你的答案　{row.answer} {question.unit}</span>}
-                    <span>参考答案　{row.expected} {question.unit}</span>
-                  </p>
-                  <p className="starter-feedback-explanation">{row.explanation}</p>
+                return <li key={question.id} className={`starter-exercise starter-exercise--review starter-exercise--${row.result}`}>
+                  <div className="starter-exercise-head">
+                    <span className="starter-qnum">{String(index + 1).padStart(2, '0')}</span>
+                    <p className="starter-prompt"><MathText text={question.prompt} /></p>
+                  </div>
+                  <div className="starter-review-answer">
+                    <span className={`starter-result starter-result-${row.result}`}>{resultLabels[row.result]}</span>
+                    {row.answer !== null && <span>你的答案 <strong>{row.answer}</strong> {question.unit}</span>}
+                    <span>参考答案 <strong>{row.expected}</strong> {question.unit}</span>
+                  </div>
+                  <div className="starter-feedback-explanation"><MathText text={row.explanation} /></div>
                 </li>;
               })}
             </ol>
@@ -318,37 +359,40 @@ export function StarterPractice({ pack }: { pack?: BuiltinPack | undefined }) {
                 disabled={!watermark.ready} onClick={() => saveDraft(newDraft(view.paper.version))}>清除旧草稿并打开新版</button>}
             </div>}
             {!versionChanged && <ol className="starter-exercises">
-              {view.paper.questions.map(({ id, prompt, unit }) => (
+              {view.paper.questions.map(({ id, prompt, unit }, index) => (
                 <li key={id} className="starter-exercise" onFocusCapture={() => {
                   if (!watermark.ready || saving || coveredItem || draft?.pending || draft?.currentItem === id) return;
                   const stored = restoreDraft();
                   if (stored?.requestId !== draft?.requestId) return;
                   saveDraft({...(stored ?? newDraft(view.paper.version)), currentItem: id});
                 }}>
-                  <label className="starter-prompt" htmlFor={`riding-${id}`}>{prompt}</label>
+                  <div className="starter-exercise-head">
+                    <span className="starter-qnum" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+                    <label className="starter-prompt" htmlFor={`riding-${id}`}><MathText text={prompt} /></label>
+                  </div>
                   <ResumeScratch itemId={id} value={draft?.scratch?.[id] ?? ''} disabled={saving || (!!coveredItem && coveredItem !== id)}
                     covered={coveredItem === id} finish={() => coverItem(null)} change={value => {
                       const current = draft ?? newDraft(view.paper.version);
                       saveDraft({...current,currentItem:id,scratch:{...current.scratch,[id]:value}});
                     }}>
-                  <div className="starter-answer">
-                    <input id={`riding-${id}`} name={id} type="number" min="0" step="any"
-                      aria-describedby={`riding-${id}-unit`} autoComplete="off" disabled={saving || (!!coveredItem && coveredItem !== id) || (!draft && !watermark.ready)}
-                      value={draft?.answers[id] ?? ''} onChange={(event) => {
-                        const current = draft ?? newDraft(view.paper.version);
-                        saveDraft({ ...current, currentItem:id, answers: { ...current.answers, [id]: event.currentTarget.value } });
-                      }} />
-                    <span id={`riding-${id}-unit`}>{unit}</span>
-                  </div>
+                    <div className="starter-answer">
+                      <input id={`riding-${id}`} name={id} type="number" min="0" step="any"
+                        aria-describedby={`riding-${id}-unit`} autoComplete="off" disabled={saving || (!!coveredItem && coveredItem !== id) || (!draft && !watermark.ready)}
+                        value={draft?.answers[id] ?? ''} onChange={(event) => {
+                          const current = draft ?? newDraft(view.paper.version);
+                          saveDraft({ ...current, currentItem:id, answers: { ...current.answers, [id]: event.currentTarget.value } });
+                        }} />
+                      <span id={`riding-${id}-unit`} className="starter-answer-unit">{unit}</span>
+                    </div>
                   </ResumeScratch>
                 </li>
               ))}
             </ol>}
             <div className="starter-submit">
+              {!versionChanged && <span className="starter-progress" aria-live="polite">已答 <strong>{answered}</strong> / {view.paper.questions.length} 题</span>}
               <button className="primary-button" type="submit" disabled={saving || !!coveredItem || (!draft?.pending && (versionChanged || !answered))}>
                 {saving ? '正在交卷…' : draft?.pending ? '核对上次交卷' : '交卷并查看反馈'}
               </button>
-              {!versionChanged && <span aria-live="polite">已答 {answered} / {view.paper.questions.length} 题</span>}
             </div>
           </form>)}
         </div>

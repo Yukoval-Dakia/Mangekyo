@@ -164,6 +164,53 @@ dialog.settings-dialog.settings-dialog--structured .dialog-loading {
   min-height: 180px;
 }
 
+dialog.settings-dialog.settings-dialog--structured .settings-advanced {
+  margin: 18px -24px -24px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-container-low);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-advanced > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 24px;
+  font-size: 13px;
+  font-weight: 680;
+  color: var(--muted);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-advanced > summary::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform var(--duration-medium) var(--ease-standard);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-advanced[open] > summary::after {
+  transform: rotate(225deg) translateY(-1px);
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-advanced-body {
+  padding: 4px 24px 22px;
+}
+
+dialog.settings-dialog.settings-dialog--structured .settings-advanced-body .research-choice {
+  margin-block: 0;
+  border-bottom: 0;
+}
+
 @media (max-width: 520px) {
   dialog.settings-dialog.settings-dialog--structured {
     width: calc(100vw - 20px);
@@ -188,5 +235,14 @@ dialog.settings-dialog.settings-dialog--structured .dialog-loading {
 
   dialog.settings-dialog.settings-dialog--structured .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  dialog.settings-dialog.settings-dialog--structured .settings-advanced {
+    margin: 14px -18px -18px;
+  }
+
+  dialog.settings-dialog.settings-dialog--structured .settings-advanced > summary,
+  dialog.settings-dialog.settings-dialog--structured .settings-advanced-body {
+    padding-inline: 18px;
   }
 }

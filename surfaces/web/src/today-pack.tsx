@@ -4,6 +4,8 @@ import { answerKey, forgetPackDrafts, recoverDraft, selectDraft, pendingDraft, s
 import { useDraftWatermark } from './draft-watermark';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, ApiError, deletedSubmission, remember, remembered, submissionId } from './api';
+import MathText from './math-text';
+import { citeToCompanionDrawer } from './shell/AppShell';
 import {
   bindDeletionWatermark,
   latestKey,
@@ -11,6 +13,7 @@ import {
   verifyGenerationReceipt,
   validWatermark,
 } from './deletion-watermark';
+import './today-pack.css';
 
 export type ActivityRef = { kind: 'activity' | 'pack' | 'material'; id: string; rev: number };
 type Pack = {
@@ -95,19 +98,20 @@ export function TodayActivity({ refValue, mode, duration }: { refValue: Activity
   const [draft, setDraft] = useState<Draft | null>(() => kind === 'pack' ? recoverDraft(refValue, requested) : null);
   const currentGeneration = useCurrentDraft(draft?.requestId);
   const [redo, setRedo] = useState<{requestId: string; choice: number | null} | null>(null);
-  const choices = useRef<HTMLFieldSetElement>(null);
+  const choices = useRef<HTMLDivElement>(null);
   const covering = !!redo && redo.requestId === draft?.requestId && currentGeneration;
   const selectedId = useRef(draft?.requestId);
-  const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<Result | null>(null);
   const [reload, setReload] = useState(0);
+  const [scratch, setScratch] = useState(() => remembered(scratchKey(refValue)) ?? '');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [paused, setPaused] = useState(false);
   const resetForm = useCallback(() => {
     selectedId.current = undefined;
     setRedo(null);
     setDraft(null);
-    setConsent(false);
     setPack(null);
     setResult(null);
   }, []);
@@ -159,28 +163,59 @@ export function TodayActivity({ refValue, mode, duration }: { refValue: Activity
   }, [foreground, kind, id, rev, key, invalidatePack, reload]);
 
   useEffect(() => {
-    const reconfirm = () => setConsent(false);
     function invalidated(event: StorageEvent) {
       if (event.key !== 'mangekyo:' + key || event.newValue !== null) return;
       resetForm();
       setError('这份题包需要联网重新核对。');
     }
     window.addEventListener('storage', invalidated);
-    window.addEventListener('online', reconfirm);
-    window.addEventListener('offline', reconfirm);
     return () => {
       window.removeEventListener('storage', invalidated);
-      window.removeEventListener('online', reconfirm);
-      window.removeEventListener('offline', reconfirm);
     };
   }, [key, resetForm]);
+
+  useEffect(() => {
+    if (result || paused) return;
+    const timer = window.setInterval(() => setElapsedSeconds(value => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [result, paused]);
+
+  useEffect(() => {
+    setElapsedSeconds(0);
+    setPaused(false);
+    setScratch(remembered(scratchKey(refValue)) ?? '');
+  }, [key, id, rev]);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (!pack || result || busy) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const typing = tag === 'TEXTAREA' || tag === 'INPUT' || Boolean(target?.isContentEditable);
+      if (!typing && /^[1-9]$/.test(event.key)) {
+        const index = Number(event.key) - 1;
+        if (index < pack.choices.length) {
+          event.preventDefault();
+          if (covering) setRedo({ requestId: draft!.requestId, choice: index });
+          else choose(index);
+        }
+        return;
+      }
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        void submit();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   const clearStale = useCallback(
     (requestId: string) => {
       settleDraft(draftKey, requestId, true);
       if (selectedId.current !== requestId) return;
       selectedId.current = undefined;
       setDraft((current) => (current?.requestId === requestId ? null : current));
-      setConsent(false);
       setError('删除状态已变化，旧选择已清除。请重新作答。');
     },
     [draftKey],
@@ -219,20 +254,43 @@ export function TodayActivity({ refValue, mode, duration }: { refValue: Activity
       selectedId.current = next.requestId;
       setDraft(next);
       setRedo(null);
-      setConsent(false);
       setError('');
     } catch {
       setError('无法保存这次选择，请检查浏览器的本机存储。');
     }
   }
+
+  function updateScratch(value: string) {
+    setScratch(value);
+    remember(scratchKey(refValue), value || null);
+  }
+
+  function citePack() {
+    if (!pack) return;
+    citeToCompanionDrawer({
+      title: pack.title,
+      topic: pack.source,
+      text: `题目：${pack.prompt}\n选项：\n${pack.choices.map((label, index) => `${String.fromCharCode(65 + index)}. ${label}`).join('\n')}`,
+    });
+  }
+
+  function citeResult() {
+    if (!pack || !result) return;
+    const mine = draft?.choice !== null && draft?.choice !== undefined ? pack.choices[draft.choice] : '（未记录）';
+    citeToCompanionDrawer({
+      title: `讲透：${pack.title}`,
+      topic: pack.source,
+      text: `题目：${pack.prompt}\n选项：\n${pack.choices.map((label, index) => `${String.fromCharCode(65 + index)}. ${label}`).join('\n')}\n我的作答：${mine}\n判定：${result.result === 'correct' ? '答对' : '需要核对'}\n解析：${result.explanation}`,
+    });
+  }
+
   async function submit() {
-    if (!pack || !draft || !consent || busy || covering || !currentGeneration) return;
+    if (!pack || !draft || busy || covering || !currentGeneration) return;
     if (!navigator.onLine) {
       setError('选择已留在本机。联网后请核对并提交。');
       return;
     }
     setBusy(true);
-    setConsent(false);
     setError('');
     try {
       const deletionWatermark = draft.deletionWatermark ?? bindDeletionWatermark(draft.requestId);
@@ -311,80 +369,198 @@ export function TodayActivity({ refValue, mode, duration }: { refValue: Activity
       setBusy(false);
     }
   }
+
+  const answeredIndex = covering ? redo.choice : draft && currentGeneration && watermark.ready ? draft.choice : null;
+  const focusSeconds = `${String(Math.floor(elapsedSeconds / 60)).padStart(2, '0')}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
+
   return (
-    <section className="day-sheet">
-      <a className="back-link" href={'/today?' + todayParams(mode, duration)}>
-        ‹ 返回今天
-      </a>
-      <h1>{pack?.title ?? '打开活动'}</h1>
-      {error && <p role="status">{error}</p>}
+    <section className="study-desk" aria-label="答题书桌">
+      <div className="study-desk-topbar">
+        <a className="study-desk-back" href={'/today?' + todayParams(mode, duration)}>
+          ‹ 返回今天
+        </a>
+        {pack && (
+          <span className="study-desk-meta">
+            <span className="study-desk-chip">{pack.source}</span>
+            <span className="study-desk-chip study-desk-chip--rev">第 {rev} 版</span>
+          </span>
+        )}
+        {pack && !result && (
+          <div className="study-desk-tools">
+            <button
+              type="button"
+              className="study-desk-timer"
+              onClick={() => setPaused(value => !value)}
+              aria-pressed={paused}
+              title={paused ? '继续计时' : '暂停计时'}
+            >
+              <span className="study-desk-timer-dot" aria-hidden="true" />
+              {focusSeconds}
+            </button>
+            <button type="button" className="study-desk-companion" onClick={citePack}>
+              卡住了？问同伴
+            </button>
+          </div>
+        )}
+      </div>
+
+      <h1 className="study-desk-title">{pack?.title ?? '打开活动'}</h1>
+      {error && <p role="status" className="study-desk-error">{error}</p>}
       {!pack &&
         (error ? (
           <button className="tonal-button" onClick={() => setReload((n) => n + 1)}>
             重新打开
           </button>
         ) : (
-          <p>正在核对活动版本…</p>
+          <p className="study-desk-loading">正在核对活动版本…</p>
         ))}
       {pack && (
         <>
-          <small>
-            {pack.source} · 第 {rev} 版
-          </small>
           {watermark.notice}
-          {requested && !draft && !result && <p>这份本机作答已清除。 <a href={openLink(refValue, mode, duration)}>打开题包</a></p>}
-          {draft && !result && !draft.pending && watermark.ready && currentGeneration && <ActivityReentry
-            slot={'pack:' + id} binding={JSON.stringify([id,rev,draft.requestId])} itemId={id}
-            label="上次停在这道短练" onContinue={() => choices.current?.querySelector<HTMLInputElement>('input:checked')?.focus()}
-            onCover={() => {setConsent(false); setRedo({requestId:draft.requestId,choice:null});}}/>}
-          <fieldset ref={choices} disabled={busy || !!result || draft?.pending || (!!requested && !draft) || !watermark.ready}>
-            <legend>{pack.prompt}</legend>
-            {pack.choices.map((label, index) => (
-              <label key={index} className="today-choice">
-                <input
-                  type="radio"
-                  name="answer"
-                  checked={(covering ? redo.choice : draft && currentGeneration && watermark.ready ? draft.choice : null) === index}
-                  onChange={() => covering ? setRedo({...redo,choice:index}) : choose(index)}
-                />
-                {label}
-              </label>
-            ))}
-          </fieldset>
-          {covering && <>
-            <button type="button" className="text-button" onClick={() => setRedo(null)}>保留原选择</button>
-            <button type="button" className="tonal-button" disabled={redo.choice === null || !watermark.ready}
-              onClick={() => {if (redo.choice !== null) choose(redo.choice);}}>采用新选择</button>
-          </>}
-          {result ? (
-            <section aria-live="polite">
-              <h2>{result.result === 'correct' ? '答对了' : '一起核对'}</h2>
-              <p>{result.explanation}</p>
-            </section>
-          ) : (
-            <>
-              {draft?.pending && <p>上次提交有待核对，本次将沿用原请求。</p>}
-              <label className="today-choice">
-                <input
-                  type="checkbox"
-                  checked={consent}
-                  disabled={busy || !draft || covering || !currentGeneration}
-                  onChange={(e) => setConsent(e.target.checked)}
-                />
-                同意将这次作答用于教学
-              </label>
+          {requested && !draft && !result && (
+            <p className="study-desk-note">
+              这份本机作答已清除。 <a href={openLink(refValue, mode, duration)}>打开题包</a>
+            </p>
+          )}
+          {draft && !result && !draft.pending && watermark.ready && currentGeneration && (
+            <ActivityReentry
+              slot={'pack:' + id}
+              binding={JSON.stringify([id, rev, draft.requestId])}
+              itemId={id}
+              label="上次停在这道短练"
+              onContinue={() => choices.current?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus()}
+              onCover={() => setRedo({ requestId: draft.requestId, choice: null })}
+            />
+          )}
+
+          <section className="study-desk-prompt" aria-label="题干">
+            <MathText text={pack.prompt} />
+          </section>
+
+          <div
+            ref={choices}
+            className="study-desk-choices"
+            role="radiogroup"
+            aria-label="选项"
+            aria-disabled={busy || !!result || draft?.pending || (!!requested && !draft) || !watermark.ready}
+          >
+            {pack.choices.map((label, index) => {
+              const letter = String.fromCharCode(65 + index);
+              const selected = answeredIndex === index;
+              const isMine = draft?.choice === index;
+              const state = result
+                ? result.result === 'correct'
+                  ? isMine
+                    ? 'correct'
+                    : 'idle'
+                  : isMine
+                    ? 'wrong'
+                    : 'idle'
+                : selected
+                  ? 'selected'
+                  : 'idle';
+              return (
+                <button
+                  key={index}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={busy || !!result || draft?.pending || (!!requested && !draft) || !watermark.ready}
+                  className={`study-desk-choice study-desk-choice--${state}`}
+                  onClick={() => (covering ? setRedo({ requestId: draft!.requestId, choice: index }) : choose(index))}
+                >
+                  <span className="study-desk-choice-letter" aria-hidden="true">{letter}</span>
+                  <span className="study-desk-choice-text"><MathText text={label} /></span>
+                  <span className="study-desk-choice-key" aria-hidden="true">{index + 1}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {covering && (
+            <div className="study-desk-redo" role="status">
+              <span>正在盖住原选择。</span>
+              <button type="button" className="text-button" onClick={() => setRedo(null)}>保留原选择</button>
               <button
                 type="button"
-                className="primary-button"
-                disabled={!draft || !consent || busy || covering || !currentGeneration}
+                className="tonal-button"
+                disabled={redo.choice === null || !watermark.ready}
+                onClick={() => { if (redo.choice !== null) choose(redo.choice); }}
+              >
+                采用新选择
+              </button>
+            </div>
+          )}
+
+          {!result && (
+            <details className="study-desk-scratch">
+              <summary>
+                草稿区 / 解题思路
+                {scratch.trim() ? <span className="study-desk-scratch-badge">有草稿</span> : null}
+              </summary>
+              <div className="study-desk-scratch-body">
+                <textarea
+                  rows={5}
+                  value={scratch}
+                  maxLength={4000}
+                  placeholder="在这里推演、列式、记疑点…（仅保存在这台电脑上）"
+                  onChange={event => updateScratch(event.currentTarget.value)}
+                />
+                <div className="study-desk-scratch-actions">
+                  <span className="study-desk-scratch-hint">{scratch.trim() ? `${scratch.trim().length} 字 · 本机自动保存` : '本机自动保存'}</span>
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={!scratch}
+                    onClick={() => updateScratch('')}
+                  >
+                    清空草稿
+                  </button>
+                </div>
+              </div>
+            </details>
+          )}
+
+          {result ? (
+            <section className={`study-desk-result study-desk-result--${result.result}`} aria-live="polite" aria-label="核对结果">
+              <div className="study-desk-result-band" aria-hidden="true" />
+              <div className="study-desk-result-body">
+                <p className="study-desk-result-title">
+                  {result.result === 'correct' ? '答对了' : '再核对一下'}
+                </p>
+                <div className="study-desk-result-explanation">
+                  <MathText text={result.explanation} />
+                </div>
+                <div className="study-desk-result-actions">
+                  <button type="button" className="primary-button" onClick={citeResult}>
+                    让同伴深入讲透这道题
+                  </button>
+                  <a className="tonal-button" href={'/today?' + todayParams(mode, duration)}>
+                    返回今天继续下一项
+                  </a>
+                </div>
+              </div>
+            </section>
+          ) : (
+            <div className="study-desk-submitbar">
+              {draft?.pending && <p className="study-desk-note">上次提交有待核对，本次将沿用原请求。</p>}
+              <button
+                type="button"
+                className="primary-button study-desk-submit"
+                disabled={!draft || draft.choice === null || busy || covering || !currentGeneration}
                 onClick={() => void submit()}
               >
                 {busy ? '正在提交…' : '提交并核对'}
               </button>
-            </>
+              <span className="study-desk-submit-hint">⌘ / Ctrl + Enter 提交 · 1–{pack.choices.length} 快选</span>
+            </div>
           )}
         </>
       )}
     </section>
   );
+}
+
+function scratchKey(ref: ActivityRef) {
+  return 'today-pack-scratch:' + encodeURIComponent(ref.id) + '@' + ref.rev;
 }
