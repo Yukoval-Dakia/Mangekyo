@@ -1,18 +1,18 @@
 import { openClassrooms } from './classroom.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
-import { notionReadScope, teachingResultAuthority, type CheckNotionRead, type NotionRecipient } from './notion.ts';
+import { notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { projectStaleWorkspaceWrite, revokedReplyWriteReceipts, workspaceWriteNeedsCurrentFact,
   type WorkspaceWriteReceipt, type WorkspaceWriteView } from '../../executors/teaching/workspace-tools.ts';
 import { projectTeachingFeedback, unavailableReply, type TeachingFeedback } from '../../executors/teaching/session-feedback.ts';
 export type { WorkspaceWriteView } from '../../executors/teaching/workspace-tools.ts';
 export { unconfirmedReplyMessage, unavailableReplyMessage } from '../../executors/teaching/session-feedback.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { createCommandHandler, readRecordedCommand } from '../../kernel/src/commands/handle.ts';
-import { createCommandReadContext, isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
+import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
+import { isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import { factId, commandId } from '../../kernel/src/declarations/ids.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
+import {
+  commandId, createLearnerHost, parseManifest,
+  type Db, type ReadTransaction,
+} from '../../kernel/src/index.ts';
 import { first45Histories, introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 export { introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
@@ -70,8 +70,7 @@ type TurnRequest = StudyTurnReplay & {
   requestedRoute: unknown;
 };
 export function caseId(value: unknown): CaseId {
-  if (!isStudyCaseId(value))
-    throw new RequestError(400, '对话类型无效。');
+  if (!isStudyCaseId(value)) throw new RequestError(400, '对话类型无效。');
   return value;
 }
 export { clientRequest } from '../../modules/capture/request.ts';
@@ -94,11 +93,9 @@ type TurnView = {
   error?: string;
 };
 export async function requireSessionTurn(tx: ReadTransaction, id: string) {
-  try {
-    return await readOwnStudyTurn(tx, id);
-  } catch (error) {
-    if (isFactUnavailable(error))
-      throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
+  try { return await readOwnStudyTurn(tx, id); }
+  catch (error) {
+    if (isFactUnavailable(error)) throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     throw error;
   }
 }
@@ -126,8 +123,7 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
   for (const row of rows) {
     const snapshot = await requireSessionTurn(tx, row.id);
     const stored = studyTurn(snapshot.value);
-    if (!stored.parentId && stored.attachment)
-      materialAvailable = await attachmentCurrent(tx,stored) && await grantCurrent(stored);
+    if (!stored.parentId && stored.attachment) materialAvailable = await attachmentCurrent(tx,stored) && await grantCurrent(stored);
     const {attachment: _attachment, ...withoutAttachment} = stored;
     const submission = stored.classroom ? {...withoutAttachment,answer:null} : materialAvailable ? stored : withoutAttachment;
     let authority: 'authorized' | 'unconfirmed' | 'withdrawn' = 'withdrawn';
@@ -150,10 +146,10 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
   return result;
 }
 export const loadHistory = (db: Db, session: string) =>
-  db.snapshot({ learner: studioLearner }, (tx) => history(tx, session));
+  createLearnerHost(db, studioLearner).snapshot((tx) => history(tx, session));
 
 export function recentConversations(db: Db) {
-  return db.snapshot({ learner: studioLearner }, async (tx) => {
+  return createLearnerHost(db, studioLearner).snapshot(async (tx) => {
     const { rows } = await tx.query<{ id: string }>(
       `SELECT r.data->>'sessionId' AS id FROM facts f
        JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
@@ -276,8 +272,7 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
     projectRecall && ((turn,derivation,kit) => projectRecall(session,turn,derivation,kit,notion)));
 }
 async function fenceTeachingCutover(db: Db) {
-  await db.tx({learner:studioLearner}, async tx => {
-    await lockLearner(tx,tx.learner);
+  await createLearnerHost(db, studioLearner).lockedTx(async tx => {
     const gate = await tx.query(`SELECT 1 FROM pg_trigger
       WHERE tgrelid='fact_revs'::regclass AND tgname='studio_confirmed_teaching'`);
     if (!gate.rowCount) {
@@ -321,14 +316,16 @@ async function fenceTeachingCutover(db: Db) {
 export async function openStudio(db: Db, activity: LoadedModule, {projectRecall, jitCounters = [], enableJit = false}: {
   projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[]; enableJit?: boolean;
 } = {}) {
+  const host = createLearnerHost(db, studioLearner);
   const hooks = createStudioCommandHooks({
       async afterFactsChanged(tx, tick, changes) {
         for (const change of changes) {
           if (change.factType !== 'activity.studyTurn' || change.kind !== 'create') continue;
           const { id } = change.ref;
-          const submission = studyTurn((await createCommandReadContext(tx,purpose).fact(id,{mode:'following'})).value);
-          const origin = submission.parentId && submission.accountRevision ? studyTurn((await createCommandReadContext(tx,purpose)
-              .fact(submission.sessionId,{mode:'following'})).value) : submission;
+          const read = host.read(tx, purpose);
+          const submission = studyTurn((await read.fact(id,{mode:'following'})).value);
+          const origin = submission.parentId && submission.accountRevision
+            ? studyTurn((await read.fact(submission.sessionId,{mode:'following'})).value) : submission;
           if (submission.accountRevision) {
             const settings = await checkProviderAccount(tx,{providerId:submission.providerId ?? 'default',accountRevision:submission.accountRevision},
               turnTask(submission.caseId,origin.attachment?.mode === 'prepare'));
@@ -336,8 +333,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
                 (submission.workspaceRevision && await workspaceRouteRevision(settings) !== submission.workspaceRevision))
               throw confirmAccount();
           }
-          if (origin.attachment && !await attachmentCurrent(tx, origin))
-            throw new RequestError(409, '选段的原件或版本已经变化，请重新打开原文。');
+          if (origin.attachment && !await attachmentCurrent(tx, origin)) throw new RequestError(409, '选段的原件或版本已经变化，请重新打开原文。');
           await tx.insert('slot_state', {
             learner_id: tx.learner,
             slot_type: slotType,
@@ -351,15 +347,13 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
         }
       },
   });
-  const handle = createCommandHandler(db, {modules:[activity],hooks});
+  const handle = host.boundHandler([activity], hooks);
   await db.query('INSERT INTO learners(id) VALUES($1) ON CONFLICT DO NOTHING', [studioLearner]);
   await fenceTeachingCutover(db);
   for (const studyCase of cases)
     for (const evidence of first45Histories[studyCase.id]) {
       const id = sourceId(studyCase.id, evidence.id);
       await handle({
-        learner: studioLearner,
-        actor: 'learner',
         purpose,
         type: 'activity.recordEvidence',
         id: commandId(stableId('seed-record', id)),
@@ -368,22 +362,20 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     }
   async function submit(request: TurnRequest, selected: CaseId) {
     const {session, parent, answer, req, grants, requestedRoute, currentObject, allowBackgroundUnderstanding} = request;
-    if (allowBackgroundUnderstanding === true && selected !== 'companion')
-      throw new RequestError(400, '本轮后台理解授权仅用于普通同伴对话。');
+    if (allowBackgroundUnderstanding === true && selected !== 'companion') throw new RequestError(400, '本轮后台理解授权仅用于普通同伴对话。');
     const id = parent ? nextTurn(session, parent) : firstTurn(req);
-    const origin = parent ? await db.snapshot({learner: studioLearner}, async tx =>
+    const origin = parent ? await host.snapshot(async tx =>
       studyTurn((await readOwnStudyTurn(tx, session)).value)) : undefined;
     const requested = request.attachment;
     const attachment: Extract<NonNullable<typeof requested>, {text: string}> | undefined = requested === undefined ? undefined
-      : 'text' in requested ? requested : await db.snapshot({learner: studioLearner}, async tx => {
+      : 'text' in requested ? requested : await host.snapshot(async tx => {
         const source = await readMaterialText(tx, requested.id);
         if (!source) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
         return {id: requested.id, title: source.title,
           text: textSlice(source.text, 0, 16_000).content, mode: requested.mode};
       });
     if (requested && !('text' in requested)) request.attachment = attachment;
-    const attachmentBasis = attachment &&
-      await db.snapshot({learner:studioLearner}, tx => attachmentSources(tx, attachment));
+    const attachmentBasis = attachment && await host.snapshot(tx => attachmentSources(tx, attachment));
     if (attachment && !attachmentBasis) throw new RequestError(400, '选段须出自所选材料，请重新打开原文。');
     const task = turnTask(selected, (origin?.attachment ?? attachment)?.mode === 'prepare');
     const settings = await loadSettings(task);
@@ -411,10 +403,9 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     }
     let boundObject;
     if (currentObject) {
-      if (selected !== 'companion' || origin?.attachment || attachment)
-        throw new RequestError(400, '当前学习对象只用于未附选段的自由对话。');
+      if (selected !== 'companion' || origin?.attachment || attachment) throw new RequestError(400, '当前学习对象只用于未附选段的自由对话。');
       if (!workspaceRevision) throw new RequestError(403, '此模型未获准访问学习工作区。');
-      const opened = await db.snapshot({learner: studioLearner}, tx => readCurrentLearningObject(tx, currentObject, Object.assign(() => true,
+      const opened = await host.snapshot(tx => readCurrentLearningObject(tx, currentObject, Object.assign(() => true,
         {notionRecipientId:notionModelRecipient(settings.activeProviderId,settings.baseUrl,settings.protocol,settings.model,workspaceRevision)})));
       if (!opened) throw new RequestError(403, '无法为本轮打开该版本及所需依据。请核对教学用途和版本。');
       boundObject = {...currentObject, basisDigest: opened.basisDigest};
@@ -438,9 +429,7 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
       baseUrl: settings.baseUrl,
     };
     await handle({
-      learner: studioLearner,
       purpose,
-      actor: 'learner',
       id: requestCommand(req),
       type: 'activity.submitTurn',
       input: { id, data },
@@ -472,34 +461,25 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
     } catch (error) {
       const prior = await replay(request);
       if (prior) return prior;
-      if (request.parent && (await loadHistory(db, request.session)).at(-1)?.id !== request.parent)
-        throw new RequestError(409, '另一份回答已提交，请刷新会话。');
+      if (request.parent && (await loadHistory(db, request.session)).at(-1)?.id !== request.parent) throw new RequestError(409, '另一份回答已提交，请刷新会话。');
       throw error;
     }
   }
-  function requestedGrants(value: unknown) {
-    try { return studyMcpGrants(value); }
+  const controls = (requestedMcp: unknown, requestedObject: unknown, requestedBackground: unknown) => {
+    let grants;
+    try { grants = studyMcpGrants(requestedMcp); }
     catch { throw new RequestError(400, '本轮 MCP 工具选择无效。'); }
-  }
-  function requestedCurrentObject(value: unknown) {
-    const selection = studyCurrentObjectRequest(value);
-    if (selection !== null) return selection;
-    throw new RequestError(400, '当前学习对象须包含类型、ID 和版本。');
-  }
-  function requestedBackgroundUnderstanding(value: unknown) {
-    if (value !== undefined && typeof value !== 'boolean') throw new RequestError(400, '本轮后台理解授权无效。');
-    return requestedStudyBackgroundUnderstanding(value);
-  }
+    const currentObject = studyCurrentObjectRequest(requestedObject);
+    if (currentObject === null) throw new RequestError(400, '当前学习对象须包含类型、ID 和版本。');
+    if (requestedBackground !== undefined && typeof requestedBackground !== 'boolean') throw new RequestError(400, '本轮后台理解授权无效。');
+    return { grants, currentObject, allowBackgroundUnderstanding: requestedStudyBackgroundUnderstanding(requestedBackground) };
+  };
   return {
     classrooms: openClassrooms(db,activity,hooks),
     async start(selected: CaseId, requestId: string, question?: unknown, shared?: unknown, requestedMcp?: unknown,
       requestedRoute?: unknown, requestedObject?: unknown, requestedBackground?: unknown) {
-      const grants = requestedGrants(requestedMcp);
-      const currentObject = requestedCurrentObject(requestedObject);
-      const allowBackgroundUnderstanding = requestedBackgroundUnderstanding(requestedBackground);
       const personal = selected === 'companion' || selected === 'riding';
-      if (personal && (typeof question !== 'string' || !question.trim() || question.length > 4000))
-        throw new RequestError(400, '请输入 1 至 4000 字的问题。');
+      if (personal && (typeof question !== 'string' || !question.trim() || question.length > 4000)) throw new RequestError(400, '请输入 1 至 4000 字的问题。');
       const firstAnswer = personal && typeof question === 'string' ? question.trim() : null;
       let attachment;
       if (shared !== undefined) {
@@ -508,20 +488,15 @@ export async function openStudio(db: Db, activity: LoadedModule, {projectRecall,
         catch { throw new RequestError(400, '请选择材料或其片段。'); }
       }
       const request: TurnRequest = {req:requestId, session:firstTurn(requestId), selected, parent:null, answer:firstAnswer,
-        attachment, grants, requestedRoute, currentObject, allowBackgroundUnderstanding};
+        attachment, requestedRoute, ...controls(requestedMcp, requestedObject, requestedBackground)};
       return await replay(request) ?? submitOrReplay(request, selected);
     },
     async answer(session: string, parent: unknown, input: unknown, requestId: string, requestedMcp?: unknown,
       requestedRoute?: unknown, requestedObject?: unknown, requestedBackground?: unknown) {
-      const grants = requestedGrants(requestedMcp);
-      const currentObject = requestedCurrentObject(requestedObject);
-      const allowBackgroundUnderstanding = requestedBackgroundUnderstanding(requestedBackground);
-      if (typeof input !== 'string' || !input.trim() || input.length > 4000)
-        throw new RequestError(400, '请输入 1 至 4000 字的回答。');
-      if (typeof parent !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(parent))
-        throw new RequestError(400, '提交时须指明当前问题。');
+      if (typeof input !== 'string' || !input.trim() || input.length > 4000) throw new RequestError(400, '请输入 1 至 4000 字的回答。');
+      if (typeof parent !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(parent)) throw new RequestError(400, '提交时须指明当前问题。');
       const request: TurnRequest = {req:requestId, session, parent, answer:input.trim(),
-        grants, requestedRoute, currentObject, allowBackgroundUnderstanding};
+        requestedRoute, ...controls(requestedMcp, requestedObject, requestedBackground)};
       const prior = await replay(request);
       if (prior) return prior;
       const last = (await loadHistory(db, session)).at(-1);

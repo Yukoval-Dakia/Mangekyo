@@ -1,15 +1,17 @@
 import { teachingTurnAllowed } from './reading.ts';
 import type { ServerResponse } from 'node:http';
-import type { Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { notionReadScope, teachingResultAuthority, type NotionReadScope } from './notion.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import type { Client } from 'pg';
 import { listenForNotifications } from '../../kernel/src/db/notifications.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, DbQuery, ReadTransaction } from '../../kernel/src/db/types.ts';
 import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingProgress } from '../../executors/teaching/index.ts';
+import {
+  createLearnerHost,
+  type Db, type Manifest, type ReadTransaction,
+} from '../../kernel/src/index.ts';
+import type { DbQuery } from '../../kernel/src/db/types.ts';
 import { slotType, studioLearner } from './identity.ts';
 import { requireSessionTurn, RequestError, sessionMountPermissions, unconfirmedReplyMessage, unavailableReplyMessage } from './sessions.ts';
 import { workspaceGrantChecker } from './harness.ts';
@@ -26,6 +28,9 @@ type StreamSession = {
   status: 'pending' | 'ready' | 'failed' | 'unknown';
   pendingAnswer?: string;
 };
+
+const notifySql =
+  `SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton`;
 
 export async function prepareSessionEvents(db: Db): Promise<void> {
   await db.schemaTransaction(async (tx) => {
@@ -45,10 +50,7 @@ export async function prepareSessionEvents(db: Db): Promise<void> {
 }
 
 export async function notifySession(tx: DbQuery, sessionId: string) {
-  await tx.query(
-    `SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton`,
-    [sessionId],
-  );
+  await tx.query(notifySql, [sessionId]);
 }
 
 type SessionDelta = { session: string; turnId: string; seq: number; delta: string };
@@ -62,10 +64,7 @@ export async function publishSessionDelta(db: Db, session: string, turnId: strin
     else chunk += character;
   }
   chunks.push(chunk);
-  for (const part of chunks) await db.query(
-    `SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton`,
-    [JSON.stringify({session, turnId, seq: seq++, delta: part})],
-  );
+  for (const part of chunks) await db.query(notifySql, [JSON.stringify({session, turnId, seq: seq++, delta: part})]);
   return seq;
 }
 
@@ -77,8 +76,7 @@ export async function publishTurnProgress(
   progress: TeachingProgress,
   validate: (tx: ReadTransaction) => Promise<Manifest>,
 ): Promise<void> {
-  await db.tx({ learner: studioLearner }, async (tx) => {
-    await lockLearner(tx, studioLearner);
+  await createLearnerHost(db, studioLearner).lockedTx(async (tx) => {
     if ((await readReadyWork(tx, ref))?.slotKey !== turnId) return;
     const manifest = await validate(tx);
     const written = await tx.query(
@@ -163,8 +161,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
     const status = row.status ?? (row.settled || row.message !== null ? 'ready' : 'pending');
     const manifest = status === 'pending' ? row.draftManifest : row.manifest;
     const allowed = await teachingTurnAllowed(tx, submission, grantCurrent);
-    if (!allowed && status === 'pending')
-      throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
+    if (!allowed && status === 'pending') throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     const authority = !allowed ? 'withdrawn' : manifest
       ? (await teachingResultAuthority(tx, row.turnId, submission, manifest, grantCurrent, check, undefined, status === 'ready' ? 'history' : 'publish')).state : 'authorized';
     if (authority !== 'authorized') row.draft = null;
@@ -201,18 +198,12 @@ export async function serveSessionEvents(
   let authorized = false;
   const subscriber: Subscriber = {
     sessionId,
-    refresh() {
-      notifiedSinceHeartbeat = true;
-      scheduleRead();
-    },
+    refresh() { notifiedSinceHeartbeat = true; scheduleRead(); },
     delta(chunk) {
       if (authorized && !closed) void writeFrame(event('delta', undefined,
         {turnId: chunk.turnId, seq: chunk.seq, delta: chunk.delta})).catch(() => {});
     },
-    disconnect() {
-      cleanup();
-      res.destroy();
-    },
+    disconnect() { cleanup(); res.destroy(); },
   };
   function scheduleRead() {
     dirty = true;
@@ -229,16 +220,11 @@ export async function serveSessionEvents(
   async function writeFrame(frame: string) {
     if (res.write(frame)) return;
     await new Promise<void>(resolve => {
-      const ready = () => {
-        res.off('drain', ready);
-        res.off('close', ready);
-        resolve();
-      };
+      const ready = () => { res.off('drain', ready); res.off('close', ready); resolve(); };
       res.once('drain', ready);
       res.once('close', ready);
     });
   }
-
   async function deliver() {
     writing = true;
     try {
