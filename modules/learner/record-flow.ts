@@ -82,6 +82,41 @@ export type WorkspaceRecordFlowSummary = {
   readonly conceptTags: readonly string[];
 };
 
+export type AgentRecordFlow = {
+  readonly mastery: RecordFlowMastery;
+  readonly misconceptions: readonly RecordFlowMisconception[];
+  readonly recentAttempts: readonly RecordFlowAttempt[];
+  readonly graphNeighbors: readonly RecordFlowNeighbor[];
+  readonly relatedDiscussions: readonly RecordFlowDiscussion[];
+};
+
+export type LearnerModelFlowSignal = {
+  readonly id: string;
+  readonly kind: string;
+  readonly title: string;
+  readonly subject?: string;
+  readonly mastery: RecordFlowMastery;
+  readonly misconceptions: readonly RecordFlowMisconception[];
+  readonly recentAttempts: readonly RecordFlowAttempt[];
+  readonly graphNeighbors: readonly RecordFlowNeighbor[];
+  readonly relatedDiscussions: readonly RecordFlowDiscussion[];
+  readonly witnessFactIds: readonly string[];
+};
+
+export type GraphConceptFlowSource = {
+  readonly id: string;
+  readonly rev: number;
+  readonly title: string;
+  readonly subject?: string;
+  readonly semesterTag?: string;
+  readonly masteryLevel: RecordFlowMasteryLevel;
+  readonly retrievability: number | null;
+  readonly errorStageCount: number;
+  readonly linkedQuestionCount: number;
+  readonly linkedAttemptCount: number;
+  readonly goalId?: string;
+};
+
 export type RawFlowFact = {
   readonly id: string;
   readonly type: string;
@@ -891,4 +926,144 @@ export function summarizeRecordFlowForList(
     };
   }
   return summaries;
+}
+
+const AGENT_FLOW_KINDS = new Set(['concept', 'method', 'archetype', 'question', 'textbook', 'material', 'paper', 'attempt']);
+
+/**
+ * Compact high-signal `flow` block returned to the teaching agent via `open_learning`.
+ */
+export function projectAgentRecordFlow(targetId: string, snap: FlowGraphSnapshot): AgentRecordFlow | null {
+  const flow = projectRecordFlow(targetId, snap);
+  if (!flow || !AGENT_FLOW_KINDS.has(flow.identity.kind)) return null;
+  return {
+    mastery: flow.mastery,
+    misconceptions: flow.misconceptions.slice(0, 4),
+    recentAttempts: flow.attempts.slice(0, 3),
+    graphNeighbors: flow.graphNeighbors.slice(0, 8),
+    relatedDiscussions: flow.discussions.slice(0, 3),
+  };
+}
+
+function flowSignalStrength(flow: RecordFlowView): number {
+  let score = 0;
+  if (flow.mastery.level === 'fragile') score += 50;
+  else if (flow.mastery.level === 'developing') score += 20;
+  score += flow.misconceptions.length * 18;
+  score += flow.attempts.length * 8;
+  score += flow.discussions.length * 6;
+  score += flow.graphNeighbors.length * 2;
+  return score;
+}
+
+/**
+ * High-signal `learner_model` entries for `read_context` (tutoring / planning),
+ * prioritizing explicit focus objects and falling back to fragile/active concepts.
+ */
+export function projectLearnerModelFlowSignals(
+  focusIds: readonly string[],
+  snap: FlowGraphSnapshot,
+  limit = 3,
+): readonly LearnerModelFlowSignal[] {
+  const orderedIds: string[] = [];
+  const seen = new Set<string>();
+  for (const id of focusIds) {
+    if (id && !seen.has(id) && snap.factsById.has(id)) {
+      seen.add(id);
+      orderedIds.push(id);
+    }
+  }
+
+  if (orderedIds.length < limit) {
+    const rankedConcepts: { id: string; strength: number }[] = [];
+    for (const fact of snap.factsById.values()) {
+      if (seen.has(fact.id)) continue;
+      const kind = factKind(fact);
+      if (kind !== 'concept' && kind !== 'method' && kind !== 'archetype') continue;
+      const flow = projectRecordFlow(fact.id, snap);
+      if (!flow) continue;
+      const strength = flowSignalStrength(flow);
+      if (strength > 0) rankedConcepts.push({ id: fact.id, strength });
+    }
+    rankedConcepts.sort((a, b) => b.strength - a.strength || a.id.localeCompare(b.id));
+    for (const entry of rankedConcepts) {
+      if (orderedIds.length >= limit) break;
+      seen.add(entry.id);
+      orderedIds.push(entry.id);
+    }
+  }
+
+  const signals: LearnerModelFlowSignal[] = [];
+  for (const id of orderedIds) {
+    const flow = projectRecordFlow(id, snap);
+    if (!flow) continue;
+    const hasSignal =
+      flow.mastery.evidenceCount > 0 ||
+      flow.misconceptions.length > 0 ||
+      flow.attempts.length > 0 ||
+      flow.graphNeighbors.length > 0 ||
+      flow.discussions.length > 0;
+    if (!hasSignal) continue;
+    const witnessFactIds = new Set<string>([flow.identity.id]);
+    for (const m of flow.misconceptions.slice(0, 2)) {
+      if (snap.factsById.has(m.id)) witnessFactIds.add(m.id);
+    }
+    for (const a of flow.attempts.slice(0, 2)) {
+      if (snap.factsById.has(a.attemptId)) witnessFactIds.add(a.attemptId);
+    }
+    for (const n of flow.graphNeighbors.slice(0, 4)) {
+      if (snap.factsById.has(n.id)) witnessFactIds.add(n.id);
+    }
+    for (const d of flow.discussions.slice(0, 2)) {
+      if (snap.factsById.has(d.turnId)) witnessFactIds.add(d.turnId);
+    }
+    signals.push({
+      id: flow.identity.id,
+      kind: flow.identity.kind,
+      title: flow.identity.title,
+      ...(flow.identity.subject ? { subject: flow.identity.subject } : {}),
+      mastery: flow.mastery,
+      misconceptions: flow.misconceptions.slice(0, 2),
+      recentAttempts: flow.attempts.slice(0, 2),
+      graphNeighbors: flow.graphNeighbors.slice(0, 4),
+      relatedDiscussions: flow.discussions.slice(0, 2),
+      witnessFactIds: [...witnessFactIds],
+    });
+    if (signals.length >= limit) break;
+  }
+  return signals;
+}
+
+/**
+ * Extract concept entities + their flow mastery & linked question counts
+ * for `/today` graph-and-bank candidate scheduling.
+ */
+export function collectGraphConceptSources(snap: FlowGraphSnapshot, goalId?: string): readonly GraphConceptFlowSource[] {
+  const sources: GraphConceptFlowSource[] = [];
+  for (const fact of snap.factsById.values()) {
+    if (fact.type !== 'content.asset' && fact.type !== 'activity.workspaceEntry') continue;
+    if (factKind(fact) !== 'concept') continue;
+    const flow = projectRecordFlow(fact.id, snap);
+    if (!flow) continue;
+    const data = rec(fact.data);
+    const semesterTag = str(data.semesterTag);
+    const linkedQuestionCount = flow.graphNeighbors.filter((n) => n.kind === 'question').length;
+    const errorStageCount = flow.misconceptions.filter(
+      (m) => Boolean(m.errorStage) || m.status === 'active' || m.status === 'observed',
+    ).length;
+    sources.push({
+      id: fact.id,
+      rev: fact.rev,
+      title: flow.identity.title,
+      ...(flow.identity.subject ? { subject: flow.identity.subject } : {}),
+      ...(semesterTag ? { semesterTag } : {}),
+      masteryLevel: flow.mastery.level,
+      retrievability: flow.mastery.retrievability,
+      errorStageCount,
+      linkedQuestionCount,
+      linkedAttemptCount: flow.attempts.length,
+      ...(goalId ? { goalId } : {}),
+    });
+  }
+  return sources;
 }

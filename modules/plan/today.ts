@@ -9,6 +9,8 @@ import { instant, integer, oneOf } from './validation.ts';
 
 export { freshMaterialWindowDays, projectFreshMaterialCandidates } from './fresh-materials.ts';
 export type { FreshMaterialSource, FreshMaterialSummary } from './fresh-materials.ts';
+export { projectGraphAndBankCandidates } from './graph-candidates.ts';
+export type { GraphConceptCandidateSource } from './graph-candidates.ts';
 export { projectPendingCorrectionCandidates } from './pending-corrections.ts';
 export type { PendingCorrectionItem, PendingCorrectionSource, PendingCorrectionSummary } from './pending-corrections.ts';
 

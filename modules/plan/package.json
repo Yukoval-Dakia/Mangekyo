@@ -12,6 +12,7 @@
     "./offline-pack": "./offline-pack.ts",
     "./rules": "./rules.ts",
     "./onboarding": "./onboarding.ts",
+    "./graph-candidates": "./graph-candidates.ts",
     "./tomorrow-warmup": "./tomorrow-warmup.ts",
     "./facts/node-practice": "./node-practice.ts",
     "./facts/organizer-slice": "./organizer-slice.ts",

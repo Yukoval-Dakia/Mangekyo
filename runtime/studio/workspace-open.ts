@@ -5,7 +5,9 @@ import { parseLearningReference, type SourceRefV1 } from '../../modules/activity
 import { projectOpenedLearning, type OpenedLearningRecord } from '../../modules/activity/workspace-source-projection.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { pickOpenLearningBatchFailure } from '../../modules/content/workspace-slice.ts';
+import { projectAgentRecordFlow } from '../../modules/learner/record-flow.ts';
 import { purpose } from './identity.ts';
+import { loadAuthorizedRecordFlowSnapshot } from './record-flow.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { readWorkbookDiagnosis } from './workbook-diagnosis.ts';
 import type { WorkspaceAssessmentBasis } from './workspace-read.ts';
@@ -25,6 +27,8 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
   trackAssessment?: ((basis: WorkspaceAssessmentBasis) => void) | undefined;
 }, read: (id: string, track: SourceTrack) => Promise<string>) {
   const items = [];
+  let flowSnapPromise: ReturnType<typeof loadAuthorizedRecordFlowSnapshot> | undefined;
+  const getFlowSnap = () => (flowSnapPromise ??= loadAuthorizedRecordFlowSnapshot(tx, { purpose, maySend: access.maySend }));
   for (const input of args.refs) {
     const alias = input === 'current_attempt' || input === 'current_page';
     const current = access.currentObject?.alias === input ? access.currentObject.sourceRef : undefined;
@@ -42,8 +46,11 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
     if (value.error || !value.sourceRef) { items.push(await unreadable(tx, id, access.known(id), access.maySend)); continue; }
     const root = witnesses.find(([fact]) => fact.ref.id === id && fact.ref.rev === value.sourceRef?.fact.rev)?.[0];
     const result = root ? projectOpenedLearning(value, root, args.part) ?? learningToolError('not_found', 'part', args.part.kind === 'block' ? '未找到所选教材块。' : '没有找到所选题项。', openLearningSearchNext) : value;
-    if (result.ok !== false) for (const [fact, mode] of witnesses) access.track(fact, fact === root && fact.type === textbookPageType ? 'pinned' : mode);
-    items.push(result);
+    if (result.ok !== false) {
+      for (const [fact, mode] of witnesses) access.track(fact, fact === root && fact.type === textbookPageType ? 'pinned' : mode);
+      const flow = projectAgentRecordFlow(id, (await getFlowSnap()).snap);
+      items.push(flow ? { ...result, flow } : result);
+    } else items.push(result);
   }
   const failureCode = pickOpenLearningBatchFailure(items);
   return { items, ...(failureCode ? learningToolError(failureCode as Parameters<typeof learningToolError>[0], 'refs', '部分或全部引用未打开，详见逐项结果。') : { ok: true }) };
