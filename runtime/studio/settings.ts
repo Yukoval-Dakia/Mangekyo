@@ -1,5 +1,4 @@
-import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, DbTransaction } from '../../kernel/src/db/types.ts';
+import { createLearnerHost, lockLearner, type Db, type DbTransaction } from '../../kernel/src/index.ts';
 import { studioLearner } from './identity.ts';
 import type { ModelTask } from '../../executors/teaching/model-routes.ts';
 import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
@@ -44,10 +43,7 @@ export function saveSettings(input: Record<string, unknown>) {
 }
 
 export function saveLearnerSettings(db: Db, input: Record<string, unknown>) {
-  return db.tx({learner: studioLearner}, async tx => {
-    await lockLearner(tx, tx.learner);
-    return saveSettings(input);
-  });
+  return createLearnerHost(db, studioLearner).lockedTx(() => saveSettings(input));
 }
 
 /** Bind a fresh explicitly authorized send to the current account, including legacy settings. */

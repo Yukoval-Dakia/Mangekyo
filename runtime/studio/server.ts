@@ -56,26 +56,28 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MANGEK
 const connectionString = process.env.MANGEKYO_DATABASE_URL;
 if (!connectionString)
   throw new Error('请通过 MANGEKYO_DATABASE_URL 指定 Mangekyō 的本地 PostgreSQL 数据库。');
-const schema = process.env.MANGEKYO_DATABASE_SCHEMA || 'mangekyo_studio';
-if (!/^[a-z][a-z0-9_]{0,62}$/.test(schema)) throw new Error('数据库 schema 名称无效');
-const mode = process.env.MANGEKYO_PROCESS || 'studio';
-if (!['studio', 'web', 'worker'].includes(mode))
-  throw new Error('MANGEKYO_PROCESS 必须是 studio、web 或 worker');
+const envOr = (name: string, fallback: string, valid: (v: string) => boolean, message: string) => {
+  const value = process.env[name] || fallback;
+  if (!valid(value)) throw new Error(message);
+  return value;
+};
+const schema = envOr('MANGEKYO_DATABASE_SCHEMA', 'mangekyo_studio', v => /^[a-z][a-z0-9_]{0,62}$/.test(v), '数据库 schema 名称无效');
+const mode = envOr('MANGEKYO_PROCESS', 'studio', v => ['studio', 'web', 'worker'].includes(v), 'MANGEKYO_PROCESS 必须是 studio、web 或 worker');
 const pool = new pg.Pool({ connectionString });
-if (mode !== 'worker') await pool.query('CREATE SCHEMA IF NOT EXISTS ' + schema);
 const db = createPgDb(pool, { schema });
 if (mode !== 'worker') {
+  await pool.query('CREATE SCHEMA IF NOT EXISTS ' + schema);
   await applyKernelSchema(db);
   await prepareSessionEvents(db);
 }
 const storeId = await workerStorage(db);
 const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, () => new pg.Client({connectionString})) : undefined;
 const loadStudioModule = (name: string) => loadModuleDirectory(fileURLToPath(new URL(`../../modules/${name}`, import.meta.url)));
-const loadHostModule = async <T>(envName: string, exportName: string, errorMessage?: string): Promise<T | undefined> => {
+const loadHostModule = async <T>(envName: string, exportName: string, errorMessage?: string, check?: (loaded: T) => boolean): Promise<T | undefined> => {
   const module = process.env[envName];
   if (!module) return undefined;
   const loaded = (await import(pathToFileURL(module).href))[exportName] as T | undefined;
-  if (errorMessage && loaded === undefined) throw new Error(errorMessage);
+  if (errorMessage && (loaded === undefined || (check && !check(loaded)))) throw new Error(errorMessage);
   return loaded;
 };
 
@@ -101,12 +103,10 @@ const pythonHost = createPythonDeriverHost();
 const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
 const retentionComparison = openRetentionComparison(db, pythonHost);
 const iqdbHost = await openLocalQuestionEffects(process.env.MANGEKYO_IQDB_LOCAL_WASM);
-const artifactWitness = mode === 'web' ? undefined : await loadHostModule<ReadArtifactAssessmentWitness>('MANGEKYO_ARTIFACT_ASSESSMENT_MODULE', 'readArtifactAssessmentWitness');
-if (process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE && mode !== 'web' && typeof artifactWitness !== 'function') throw new Error('作品评估宿主模块须导出 readArtifactAssessmentWitness');
+const artifactWitness = mode === 'web' ? undefined : await loadHostModule<ReadArtifactAssessmentWitness>('MANGEKYO_ARTIFACT_ASSESSMENT_MODULE', 'readArtifactAssessmentWitness', '作品评估宿主模块须导出 readArtifactAssessmentWitness', v => typeof v === 'function');
 const jitCounters: readonly StudioJitCounter[] = process.env.MANGEKYO_STUDIO_JIT_MODULE
-  ? (await loadHostModule<readonly StudioJitCounter[]>('MANGEKYO_STUDIO_JIT_MODULE', 'studioJitCounters')) as readonly StudioJitCounter[]
+  ? (await loadHostModule<readonly StudioJitCounter[]>('MANGEKYO_STUDIO_JIT_MODULE', 'studioJitCounters', '首轮计数模块须导出 studioJitCounters', Array.isArray)) as readonly StudioJitCounter[]
   : [];
-if (!Array.isArray(jitCounters)) throw new Error('首轮计数模块须导出 studioJitCounters');
 
 async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());

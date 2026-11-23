@@ -1,5 +1,5 @@
 import {
-  commandId, createCommandHandler, createLearnerHost, factId, isFactUnavailable, isKernelErrorKind,
+  commandId, createLearnerHost, factId, isFactUnavailable, isKernelErrorKind,
   type CommandHooks, type CommandRequest, type Db, type FactId, type ReadTransaction,
 } from '../../kernel/src/index.ts';
 import { storageRead } from './fact-read-helpers.ts';
@@ -69,11 +69,9 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
         const id = await arithmeticPracticePaperId(questionId);
         await assertUnburned(tx,'fact',[id,questionId,await practiceCustodyId(id)]);
         const read = storageRead(tx);
-        const bound = host.boundDb(tx);
-        const handle = createCommandHandler(bound,{modules:[activity,content],hooks,
+        const boundHandle = host.boundHandler([activity,content],hooks,tx,{
           // Keep the existing identity for retries of a previously authorized admission.
           bindCommandRead:(_tx,request,base) => request.type === saveQuestionCommand ? read : base});
-        const boundHandle = (command: Parameters<typeof host.runCommand>[1]) => host.runCommand(handle,command);
         const prior = await readPracticeCustody(read,await practiceCustodyId(id));
         try {
           await boundHandle({purpose:allowTeaching ? purpose : 'storage',

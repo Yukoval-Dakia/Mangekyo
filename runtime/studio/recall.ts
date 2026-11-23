@@ -1,9 +1,8 @@
 import {
-  commandId, createCommandReadContext, createLearnerHost, factId, matchKernelError, readEffectiveDerivation,
-  type CommandHandler, type CommandHooks, type CommandReceipt, type Db, type DbTransaction,
-  type FactId, type FactRef, type Json, type ReadTransaction, type Revision,
+  commandId, createCommandReadContext, createLearnerHost, factId, matchKernelError, parseManifest, readEffectiveDerivation,
+  type CommandHooks, type CommandReceipt, type Db, type DbTransaction,
+  type FactId, type FactRef, type ReadTransaction, type Revision,
 } from '../../kernel/src/index.ts';
-import { parseManifest } from '../../kernel/src/derivations/manifest.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
@@ -29,7 +28,6 @@ type Issuance = ReturnType<typeof recallIssuance>;
 type Item = Issuance['items'][number];
 type Submission = ReturnType<typeof recallSubmission>;
 const firstRevision = 1 as Revision;
-
 
 /** Existing StudyKits have positional questions. A position is meaningful only in its frozen version. */
 export function recallItemId(turnId: string, version: string, position: number): FactId {
@@ -133,9 +131,9 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
   const hooks = options.hooks ?? createStudioCommandHooks();
 
   const notionRead = () => notionReadScope(db, studioLearner);
-  function write<T>(mount: RecallMount, run: (tx: DbTransaction, handle: CommandHandler, check: CheckNotionRead) => Promise<T>, notion = notionRead()) {
+  function write<T>(mount: RecallMount, run: (tx: DbTransaction, handle: ReturnType<typeof host.boundHandler>, check: CheckNotionRead) => Promise<T>, notion = notionRead()) {
     return authorized(() => notion.read((tx, check) => readSource(tx, mount, false, check), async (tx, check) => {
-      const handle = host.commandHandler([activity], hooks, tx);
+      const handle = host.boundHandler([activity], hooks, tx);
       try { return await run(tx, handle, check); }
       catch (error) {
         throw matchKernelError(error, {
@@ -145,9 +143,8 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
       }
     }));
   }
-
-  const execute = (handle: CommandHandler, id: FactId, type: string, data: Json, allowed = storagePurpose) =>
-    host.runCommand(handle, {purpose: allowed, type, id: commandId(id), input: {id, data}});
+  const writeMounted = <T>(mount: RecallMount, run: (tx: DbTransaction, handle: ReturnType<typeof host.boundHandler>, check: CheckNotionRead, mounted: { ref: HelpRef; item: Item }) => Promise<T>) =>
+    write(mount, async (tx, handle, check) => run(tx, handle, check, await mounted(tx, mount, check)));
 
   return {
     async mount(locator: unknown, notion = notionRead()) {
@@ -172,7 +169,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
           items: kit.questions.map((item, index) => ({ ...item, itemId: recallItemId(mount.turnId, mount.derivationId, index) })),
         };
         const item = itemFor(data, mount);
-        writtenRef(await execute(handle, ref.id, issueRecallCommand, data, purpose));
+        writtenRef(await handle({purpose, type: issueRecallCommand, id: commandId(ref.id), input: {id: ref.id, data}}));
         return recallItemView(mount, ref, item);
       }, notion);
     },
@@ -208,14 +205,13 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
 
     async requestReveal(body: unknown) {
       const { mount, requestId } = input(() => recallRevealInput(body));
-      return write(mount, async (tx, handle, check) => {
-        const { ref, item } = await mounted(tx, mount, check);
+      return writeMounted(mount, async (tx, handle, _check, { ref, item }) => {
         const revealId = factId(stableId('recall-reveal', requestId));
         const request = helpExposureRequest(revealId, {
           kind: 'opened', mount: recallTarget(ref, item.itemId), content: ref,
           step: { kind: 'solution', order: 1 }, alsoAppliesTo: [],
         });
-        writtenRef(await handle({ learner: host.learner, actor: 'learner', ...request }));
+        writtenRef(await handle(request));
         return recallRevealView(revealId, item);
       });
     },
@@ -225,30 +221,28 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
       if (!witness) throw new RecallRequestError(403, '缺少可信的回忆题显示回执。');
       const mount = input(() => parseRecallMount(witness.mount));
       const revealId = input(() => factId(witness.revealId));
-      return write(mount, async (tx, handle, check) => {
-        const { ref, item } = await mounted(tx, mount, check);
+      return writeMounted(mount, async (tx, handle, _check, { ref, item }) => {
         const fact = await optionalPinned(tx, { id: revealId, rev: firstRevision });
         const reveal = fact?.type === helpExposureType ? helpExposure(fact.value) : null;
         const display = recallDisplayEvent(reveal, ref, item);
         if (!display) throw new RecallRequestError(409, '显示回执与获准揭示的题项不匹配。');
         const displayId = factId(stableId('recall-display', revealId));
         const request = helpExposureRequest(displayId, display);
-        return { display: writtenRef(await handle({ learner: host.learner, actor: 'learner', ...request })) };
+        return { display: writtenRef(await handle(request)) };
       });
     },
 
     /** Only the server host can attest complete coverage. Preserve its first admission on retries. */
     async submit(body: unknown, observation: Submission['observation'] = 'unknown') {
       const { mount, requestId, answer } = input(() => recallSubmitInput(body));
-      return write(mount, async (tx, handle, check) => {
-        const { ref, item } = await mounted(tx, mount, check);
+      return writeMounted(mount, async (tx, handle, _check, { ref, item }) => {
         const id = factId(stableId('recall-submission', requestId));
         const existing = await optionalPinned(tx, { id, rev: firstRevision });
         const data = {
           issuance: ref, itemId: item.itemId, responseId: recallResponseId, answer,
           observation: existing?.type === recallSubmissionType ? recallSubmission(existing.value).observation : observation,
         };
-        const receipt = await execute(handle, id, submitRecallCommand, data);
+        const receipt = await handle({purpose: storagePurpose, type: submitRecallCommand, id: commandId(id), input: {id, data}});
         return resultFor(tx, data, writtenRef(receipt), item);
       });
     },
