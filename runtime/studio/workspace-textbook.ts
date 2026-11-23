@@ -3,22 +3,21 @@ import { learningToolError } from '../../executors/teaching/tool-error.ts';
 import { openLearningLimit, type WorkspaceWriteReceipt } from '../../executors/teaching/workspace-tools.ts';
 import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { isUneditedCompanionDraft } from '../../kernel/src/commands/writes.ts';
-import type { Db } from '../../kernel/src/db/types.ts';
-import { commandId, factId, type ReadTransaction } from '../../kernel/src/index.ts';
+import { commandId, createLearnerHost, factId, isFactUnavailable, isKernelErrorKind, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { parseLearningReference } from '../../modules/activity/source-values.ts';
 import { parseSavePage, parseTextbookRevision, previewTextbookRevision } from '../../modules/content/textbook-edits.ts';
 import { checkTextbookBasis, parseTextbookBasis, textbookPageFrom, textbookPageType } from '../../modules/content/textbook-page.ts';
 import { classifyTextbookWriteError, findTextbookPreviewFailure, findUnopenedTextbookLink, violatesTextbookBlockAnchor } from '../../modules/content/workspace-slice.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { createStudioCommand, isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
+import { purposeReader } from './fact-read-helpers.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import type { WorkspaceSourceRecipient } from './source-read.ts';
 import type { WorkspaceWitness } from './workspace-agent.ts';
 
 export const createTextbookCommand = 'content.createTextbookPage', reviseTextbookDraftCommand = 'content.reviseTextbookDraft';
 export const reviseTextbookCommand = 'content.reviseTextbookPage', undoTextbookCommand = 'content.undoTextbookWrite';
-const scope = { learner: studioLearner }, following = { mode: 'following' } as const;
+const following = { mode: 'following' } as const;
 const loadContent = () => loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
 let content: ReturnType<typeof loadContent> | undefined;
 
@@ -27,15 +26,16 @@ export function openWorkspaceTextbook(options: {
   opened: ReadonlyMap<string, WorkspaceWitness>; basis(): readonly WorkspaceWitness[];
   currentPage?: { id: string; rev: number } | undefined; saved(receipt: WorkspaceWriteReceipt, witness?: WorkspaceWitness): void;
 }) {
-  const { db, turn, opened } = options, reader = (tx: ReadTransaction) => purposeReader(tx, options.maySend);
-  const createHandler = async () => createStudioCommand(db, {
-    modules: [await (content ??= loadContent())],
-    hooks: { ...createStudioCommandHooks({ afterFactsChanged: options.authorize }), async beforeProposal(tx, request) {
+  const { db, turn, opened } = options, host = createLearnerHost(db, studioLearner, { actor: 'companion' });
+  const reader = (tx: ReadTransaction) => purposeReader(tx, options.maySend);
+  const createHandler = async () => host.boundHandler([await (content ??= loadContent())], {
+    ...createStudioCommandHooks({ afterFactsChanged: options.authorize }),
+    async beforeProposal(tx, request) {
       await options.authorize(tx);
       const input = parseTextbookRevision(request.input), read = reader(tx);
       if ((await read.fact(input.id, following)).ref.rev !== input.expectedRev) throw new Error(`Fact revision conflict: ${input.id}`);
       await checkTextbookBasis(read, input.basis ?? []);
-    } },
+    },
   });
   const correct = { tool: 'save_page' as const, args: {}, why: '按工具声明提供新建字段或局部修改。' };
   const error = (code: Parameters<typeof learningToolError>[0], field: string, message: string, next = correct as Parameters<typeof learningToolError>[3]) => learningToolError(code, field, message, next);
@@ -65,8 +65,7 @@ export function openWorkspaceTextbook(options: {
       const basis = parseTextbookBasis(options.basis().filter(w => w.id !== id).map(({ id: wId, rev, epoch, type }) => ({ id: wId, rev, epoch, type })));
       const handle = await createHandler();
       if (parsed.kind === 'create') {
-        const receipt = await handle({ ...scope, actor: 'companion', purpose, id: key, type: createTextbookCommand,
-          input: { id, clientEditSeq: step, purpose: ['storage', purpose], page: { ...parsed.page, basis } } });
+        const receipt = await handle({ purpose, id: key, type: createTextbookCommand, input: { id, clientEditSeq: step, purpose: ['storage', purpose], page: { ...parsed.page, basis } } });
         return finishSaved(receipt.wrote[0]!.rev, parsed.page.title, '0');
       }
       const pinned = base && typeof base !== 'string' ? ('fact' in base ? base.fact.rev : base.rev) : undefined;
@@ -74,7 +73,7 @@ export function openWorkspaceTextbook(options: {
       if (!openedHead) return error('evidence_not_opened', 'ref', '本轮尚未打开这份教材版本。', reopen(id));
       if (parsed.expectedRev !== undefined && parsed.expectedRev !== openedHead.rev) return error('version_conflict', 'expected_rev', '预期版本和已打开版本不一致。', reopen(id));
       const input = parseTextbookRevision({ id, expectedRev: openedHead.rev, clientEditSeq: step, edits: parsed.edits, basis });
-      const plan = await db.snapshot(scope, async tx => {
+      const plan = await host.snapshot(async tx => {
         const read = reader(tx), current = await read.fact(id, following), existing = await readRecordedCommand(tx, key);
         if (!existing && current.ref.rev !== input.expectedRev) throw new Error(`Fact revision conflict: ${id}`);
         await checkTextbookBasis(read, input.basis ?? []);
@@ -86,7 +85,7 @@ export function openWorkspaceTextbook(options: {
       });
       const previewFailure = findTextbookPreviewFailure(plan.draft, plan.preview.items);
       if (previewFailure) return error('invalid_args', 'patch', previewFailure, reopen(id));
-      const receipt = await handle({ ...scope, actor: 'companion', purpose, id: key, type: plan.draft ? reviseTextbookDraftCommand : reviseTextbookCommand, input });
+      const receipt = await handle({ purpose, id: key, type: plan.draft ? reviseTextbookDraftCommand : reviseTextbookCommand, input });
       if (receipt.state === 'proposed') {
         options.saved({ id, rev: input.expectedRev, title: plan.title, page: { status: 'proposed', proposalId: key } });
         return { ok: true, status: 'proposed', ref: id, rev: input.expectedRev, proposalId: key, base: plan.preview.base, items: plan.preview.items };
@@ -94,6 +93,7 @@ export function openWorkspaceTextbook(options: {
       return finishSaved(receipt.wrote[0]!.rev, plan.title, plan.epoch);
     } catch (cause) {
       if (isFactUnavailable(cause)) return error('access_revoked', 'ref', '本轮打开的教材或来源已不可用。', reopen(selectedId ?? links as string[]));
+      if (isKernelErrorKind(cause, 'revision_conflict')) return error('version_conflict', 'expected_rev', '教材版本已变更，请重新打开。', reopen(id));
       const classified = cause instanceof Error ? classifyTextbookWriteError(cause.message) : null;
       if (classified) return error(classified.code, classified.field, classified.message, classified.reopen ? reopen(classified.code === 'basis_stale' ? (selectedId ?? links as string[]) : id) : correct);
       throw cause;

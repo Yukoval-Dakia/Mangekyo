@@ -1,11 +1,10 @@
 import { learningToolError } from '../../executors/teaching/tool-error.ts';
 import { openLearningSearchNext, type OpenLearningArgs } from '../../executors/teaching/workspace-tools.ts';
-import { factId, readable, type ReadTransaction } from '../../kernel/src/index.ts';
+import { createCommandReadContext, factId, readable, type ReadTransaction } from '../../kernel/src/index.ts';
 import { parseLearningReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import { projectOpenedLearning, type OpenedLearningRecord } from '../../modules/activity/workspace-source-projection.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { pickOpenLearningBatchFailure } from '../../modules/content/workspace-slice.ts';
-import { createCommandReadContext } from './fact-read-helpers.ts';
 import { purpose } from './identity.ts';
 import type { SourceTrack, WorkspaceSourceRecipient } from './source-read.ts';
 import { readWorkbookDiagnosis } from './workbook-diagnosis.ts';
@@ -32,8 +31,7 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
     if (alias && !current) { items.push(learningToolError('not_found', 'refs', '本轮没有绑定这个当前学习对象。', openLearningSearchNext)); continue; }
     const ref = current ?? parseLearningReference(input);
     if (!ref) { items.push(learningToolError('invalid_args', 'refs', '请使用 id 或 sourceRef。', openLearningSearchNext)); continue; }
-    const id = typeof ref === 'string' ? ref : ref.fact.id, witnesses: Parameters<SourceTrack>[] = [];
-    const track: SourceTrack = (...witness) => { witnesses.push(witness); };
+    const id = typeof ref === 'string' ? ref : ref.fact.id, witnesses: Parameters<SourceTrack>[] = [], track: SourceTrack = (...w) => { witnesses.push(w); };
     if (args.lens === 'diagnose') {
       const diagnosis = await readWorkbookDiagnosis(tx, ref, { maySend: access.maySend, track, ...(access.trackAssessment ? { trackAssessment: access.trackAssessment } : {}) });
       if (diagnosis) { for (const witness of witnesses) access.track(...witness); items.push({ ok: true as const, ...diagnosis }); }
@@ -43,10 +41,8 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
     const value = JSON.parse(await read(current ? JSON.stringify(current) : input, track)) as OpenedLearningRecord;
     if (value.error || !value.sourceRef) { items.push(await unreadable(tx, id, access.known(id), access.maySend)); continue; }
     const root = witnesses.find(([fact]) => fact.ref.id === id && fact.ref.rev === value.sourceRef?.fact.rev)?.[0];
-    const result = root ? projectOpenedLearning(value, root, args.part) ?? learningToolError('not_found', 'part',
-      args.part.kind === 'block' ? '未找到所选教材块。' : '没有找到所选题项。', openLearningSearchNext) : value;
-    if (result.ok !== false) for (const [fact, mode] of witnesses)
-      access.track(fact, fact === root && fact.type === textbookPageType ? 'pinned' : mode);
+    const result = root ? projectOpenedLearning(value, root, args.part) ?? learningToolError('not_found', 'part', args.part.kind === 'block' ? '未找到所选教材块。' : '没有找到所选题项。', openLearningSearchNext) : value;
+    if (result.ok !== false) for (const [fact, mode] of witnesses) access.track(fact, fact === root && fact.type === textbookPageType ? 'pinned' : mode);
     items.push(result);
   }
   const failureCode = pickOpenLearningBatchFailure(items);

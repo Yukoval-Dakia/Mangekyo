@@ -9,17 +9,15 @@ import { openRetentionTarget, readItemConceptLinks, retentionPurpose, retentionW
 import { RequestError } from './sessions.ts';
 
 let cachedDeps: StudioBacktraceDeps | undefined;
-function getDeps(): StudioBacktraceDeps {
-  return cachedDeps ??= {
-    retentionPurpose, isRequestError: error => error instanceof RequestError, ...factReadChecks,
-    openRetentionTarget: openRetentionTarget as StudioBacktraceDeps['openRetentionTarget'],
-    readItemConceptLinks: readItemConceptLinks as StudioBacktraceDeps['readItemConceptLinks'],
-    readWorkbookEvidence: retentionWorkbookEvidence(readPosttestIssuance).readWorkbookEvidence as StudioBacktraceDeps['readWorkbookEvidence'],
-    scopedKnowledgeEdges: scopedKnowledgeEdges as unknown as StudioBacktraceDeps['scopedKnowledgeEdges'],
-    retentionHistoryValid: retentionHistoryValid as StudioBacktraceDeps['retentionHistoryValid'],
-    backtrace: backtrace as unknown as StudioBacktraceDeps['backtrace'],
-  };
-}
+const getDeps = (): StudioBacktraceDeps => cachedDeps ??= {
+  retentionPurpose, isRequestError: error => error instanceof RequestError, ...factReadChecks,
+  openRetentionTarget: openRetentionTarget as StudioBacktraceDeps['openRetentionTarget'],
+  readItemConceptLinks: readItemConceptLinks as StudioBacktraceDeps['readItemConceptLinks'],
+  readWorkbookEvidence: retentionWorkbookEvidence(readPosttestIssuance).readWorkbookEvidence as StudioBacktraceDeps['readWorkbookEvidence'],
+  scopedKnowledgeEdges: scopedKnowledgeEdges as unknown as StudioBacktraceDeps['scopedKnowledgeEdges'],
+  retentionHistoryValid: retentionHistoryValid as StudioBacktraceDeps['retentionHistoryValid'],
+  backtrace: backtrace as unknown as StudioBacktraceDeps['backtrace'],
+};
 export function workbookBacktrace(tx: ReadTransaction, reader: Pick<ReadContext, 'fact'>, facts: Parameters<typeof scopedKnowledgeEdges>[2]) {
   return (input: StudioBacktraceInput) => studioWorkbookBacktrace(getDeps(), tx, reader, facts)(input);
 }
