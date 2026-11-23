@@ -1,8 +1,7 @@
 import { readDocumentImage } from '@mangekyo/executor-document-extraction/image';
 import { learningToolError } from '../../executors/teaching/tool-error.ts';
 import type { ImageCrop, StudyImage } from '../../executors/teaching/workspace-tools.ts';
-import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import type { Db, FactSnapshot, ReadTransaction } from '../../kernel/src/index.ts';
 import { materialType } from '../../modules/activity/library-values.ts';
 import { parseLearningReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import { intakeFactType, type IntakeOriginal } from '../../modules/capture/intake-values.ts';
@@ -25,7 +24,7 @@ export async function planIntakeImage(tx: ReadTransaction, input: string, crop: 
   if (sourceRef.fact.type !== materialType || !document) return learningToolError('image_unavailable', 'refs', '请使用带 PNG 或 JPEG 原件的交入材料。');
   const { mediaType, size, sha256 } = intakeTextOf(document).original;
   if (mediaType !== 'image/png' && mediaType !== 'image/jpeg') return learningToolError('image_unavailable', 'refs', '原图裁剪目前支持 PNG 和 JPEG。');
-  for (const witness of witnesses) access.track(witness, 'pinned');
+  witnesses.forEach(w => access.track(w, 'pinned'));
   return { sourceRef, title, original: { mediaType, size, sha256 }, ...(crop && { crop }) } satisfies IntakeImage;
 }
 
@@ -42,6 +41,6 @@ export async function cropIntakeImage(db: Db, { sourceRef, title, original, crop
       { tool: 'open_learning', args: { refs: JSON.stringify(sourceRef), part: 'image_crop' }, why: '先确认原图尺寸再选择区域。' }) };
     const item = { id: sourceRef.fact.id, rev: sourceRef.fact.rev, title, sourceRef, part: { kind: 'image_crop', ...(crop && { crop }) },
       width, height, content: crop ? '所选区域见本次工具结果配套的图像。' : '请用原件编码像素坐标选择要读取的矩形区域。' };
-    return decoded.image ? { value: { ok: true, items: [item] }, image: decoded.image } : { value: { ok: true, items: [item] } };
+    return { value: { ok: true, items: [item] }, ...(decoded.image ? { image: decoded.image } : {}) };
   } catch { return unavailable(); }
 }

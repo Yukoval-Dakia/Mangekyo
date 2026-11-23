@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
-import { readable } from '../../kernel/src/commands/fact-collection.ts';
-import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, type FactId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { FactReadOptions, FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import {
+  createCommandReadContext, factId, FactNotFoundError, isFactReadDenied, readable,
+  type FactId, type FactReadOptions, type FactSnapshot, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { isSourceFactId, sourceReference, type SourceAnchorV1 } from '../../modules/activity/source-values.ts';
 import { studyTurn, type studyAttachment } from '../../modules/activity/values.ts';
 import { intakeTextOf, materialTextOf } from '../../modules/activity/workspace-source-projection.ts';
 import { intakeDocument, intakeFactType } from '../../modules/capture/intake-values.ts';
-import { createCommandReadContext, FactNotFoundError, isFactReadDenied, storageRead, teachingRead } from './fact-read-helpers.ts';
+import { storageRead, teachingRead } from './fact-read-helpers.ts';
 import { purpose } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 export { intakeTextOf, materialTextOf, textSlice } from '../../modules/activity/workspace-source-projection.ts';
@@ -21,14 +21,9 @@ async function readStudyTurn(tx: ReadTransaction, id: string, use: string, optio
 }
 
 export const readTeachingTurn = (tx: ReadTransaction, id: string) => readStudyTurn(tx, id, purpose, { mode: 'following' });
-
-export async function readOwnStudyTurn(tx: ReadTransaction, id: string, options: FactReadOptions = { mode: 'following' }) {
-  try { return await readStudyTurn(tx, id, storagePurpose, options); }
-  catch (error) {
-    if (isFactReadDenied(error) && error.reason === 'purpose') return readStudyTurn(tx, id, purpose, options);
-    throw error;
-  }
-}
+export const readOwnStudyTurn = (tx: ReadTransaction, id: string, options: FactReadOptions = { mode: 'following' }) =>
+  readStudyTurn(tx, id, storagePurpose, options).catch(error =>
+    isFactReadDenied(error) && error.reason === 'purpose' ? readStudyTurn(tx, id, purpose, options) : Promise.reject(error));
 
 export async function readMaterialText(tx: ReadTransaction, id: string) {
   if (!isSourceFactId(id)) return null;
@@ -37,15 +32,11 @@ export async function readMaterialText(tx: ReadTransaction, id: string) {
     const snapshot = await read.fact(factId(id), { mode: 'following' });
     if (snapshot.type !== materialType) return null;
     const link = await materialIntakeLink(tx, snapshot.ref.id);
-    if (!link) {
-      const material = materialTextOf(snapshot);
-      return { id, title: material.title, text: material.text, sourceRef: sourceReference(snapshot, { kind: 'whole' }) };
-    }
+    if (!link) return { id, ...materialTextOf(snapshot), sourceRef: sourceReference(snapshot, { kind: 'whole' }) };
     if (!link.matches) return null;
     const source = await read.fact(link.id, { mode: 'following' });
-    if (!isMaterialIntakePair(snapshot.ref.id, source)) return null;
-    const document = intakeTextOf(source);
-    return { id, title: document.title, text: document.text, sourceRef: materialIntakeReference(snapshot, source, { kind: 'whole' }) };
+    return isMaterialIntakePair(snapshot.ref.id, source)
+      ? { id, ...intakeTextOf(source), sourceRef: materialIntakeReference(snapshot, source, { kind: 'whole' }) } : null;
   }) ?? null;
 }
 
@@ -66,7 +57,6 @@ export async function attachmentCurrent(tx: ReadTransaction, origin: ReturnType<
   const opened = await attachmentSources(tx, origin.attachment);
   if (!opened) return false;
   if (origin.attachmentBasis !== undefined) return opened.digest === origin.attachmentBasis;
-  // Older turns carry the excerpt but no basis. Only reuse it if every currently selected source revision existed then.
   const { rows: [row] } = await tx.query<{ count: number }>(
     `SELECT count(*)::int AS count FROM fact_revs source JOIN facts turn ON turn.learner_id=source.learner_id AND turn.id=$2
      JOIN jsonb_to_recordset($3::jsonb) AS ref(id text, rev integer) ON (source.fact_id,source.rev)=(ref.id,ref.rev)
@@ -75,9 +65,8 @@ export async function attachmentCurrent(tx: ReadTransaction, origin: ReturnType<
   return row?.count === opened.witnesses.length;
 }
 
-export async function teachingOrigin(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>) {
-  return turn.parentId ? studyTurn((await teachingRead(tx).fact(turn.sessionId, { mode: 'following' })).value) : turn;
-}
+export const teachingOrigin = async (tx: ReadTransaction, turn: ReturnType<typeof studyTurn>) =>
+  turn.parentId ? studyTurn((await teachingRead(tx).fact(turn.sessionId, { mode: 'following' })).value) : turn;
 
 export async function teachingTurnAllowed(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
   grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, origin?: ReturnType<typeof studyTurn>) {
@@ -92,8 +81,7 @@ export async function materialIntakeLink(tx: ReadTransaction, materialId: FactId
     `SELECT f.type, f.purpose, f.retracted_rev IS NOT NULL AS retracted, r.data->>'materialId' AS "materialId"
      FROM facts f LEFT JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
      WHERE f.learner_id=$1 AND f.id=$2`, [tx.learner, id]);
-  if (!row) return;
-  return { id, purpose: row.purpose, matches: row.type === intakeFactType && !row.retracted && row.materialId === materialId };
+  return row && { id, purpose: row.purpose, matches: row.type === intakeFactType && !row.retracted && row.materialId === materialId };
 }
 
 export const relatedMaterialId = (document: FactSnapshot) => intakeDocument(document.value).materialId;

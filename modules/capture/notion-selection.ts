@@ -391,3 +391,25 @@ export function commitNotionSelectionCursor(current: NotionSelection, dispatch: 
   const position = advanceNotionCursor(resumeNotionSelectionCursor(current, previous), committed);
   return position ? { ...scope, position } : null;
 }
+
+export const notionLearningReader = { id: 'studio:learning-reader', purpose: 'learning', label: '本机学习阅读器' } as const;
+
+export function buildNotionPresets(teachingRecipients: readonly { readonly id: string; readonly purpose: string; readonly label: string }[]) {
+  return [
+    { id: 'storage', available: true, allowedRecipients: [] },
+    { id: 'learning', available: true, allowedRecipients: [notionLearningReader, ...teachingRecipients] },
+    { id: 'turn-only', available: false, allowedRecipients: [], reason: '当前会话尚无能复验本轮接收人和留存策略的出口。' },
+    { id: 'temporary', available: false, allowedRecipients: [], reason: '临时材料尚无独立密钥、到期销毁和接收人复核出口。' },
+  ] as const;
+}
+
+export function checkNotionPresetGrant(
+  presets: ReturnType<typeof buildNotionPresets>,
+  settings: { readonly preset: string; readonly recipients: readonly NotionRecipientUse[] },
+): { readonly status: 400 | 422; readonly message: string } | null {
+  const preset = presets.find(p => p.id === settings.preset)!;
+  if (!preset.available) return { status: 422, message: preset.reason };
+  if (settings.recipients.some(use => !preset.allowedRecipients.some(r => r.id === use.id && r.purpose === use.purpose)))
+    return { status: 400, message: '接收人或用途未在此宿主启用。' };
+  return null;
+}

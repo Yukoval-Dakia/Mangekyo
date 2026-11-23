@@ -1,4 +1,4 @@
-import { factId, FactNotFoundError, type FactId } from '@mangekyo/kernel';
+import { classifyKernelError, factId, isFactNotFound, isFactUnavailable, LifecycleError, type FactId } from '@mangekyo/kernel';
 import materialFact from '@mangekyo/module-content/facts/material';
 import {
   appendIntakePagesCommand,
@@ -393,27 +393,19 @@ export function prepareIntakeAppendPages<Detected extends DetectedDocument, Byte
 }
 
 function translateIntakeCommandError(
-  error: unknown,
-  isDenied: boolean,
-  opts: {
-    readonly conflict?: (error: unknown) => string | null;
-    readonly revConflict?: string;
-    readonly duplicateCommand?: string;
-  },
+  error: unknown, isDenied: boolean,
+  opts: { readonly conflict?: (error: unknown) => string | null; readonly revConflict?: string; readonly duplicateCommand?: string },
 ): unknown {
   const custom = opts.conflict?.(error);
   if (custom) return new RequestError(409, custom);
-  if (opts.revConflict && error instanceof Error && error.message.startsWith('Fact revision conflict')) {
-    return new RequestError(409, opts.revConflict);
-  }
-  if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '找不到这份原件。');
-  if (opts.duplicateCommand && error instanceof Error && error.message === 'Command ID already used with a different command identity') {
-    return new RequestError(409, opts.duplicateCommand);
-  }
+  const { kind } = classifyKernelError(error);
+  if (opts.revConflict && kind === 'revision_conflict') return new RequestError(409, opts.revConflict);
+  if (isDenied || kind === 'not_found' || kind === 'denied') return new RequestError(404, '找不到这份原件。');
+  if (opts.duplicateCommand && kind === 'duplicate_command') return new RequestError(409, opts.duplicateCommand);
   return error;
 }
 
-export function translateIntakeAppendPagesError(error: unknown, isDenied: boolean): unknown {
+export function translateIntakeAppendPagesError(error: unknown, isDenied = false): unknown {
   return translateIntakeCommandError(error, isDenied, {
     conflict: err => err instanceof IntakeAppendPagesConflict ? err.message : null,
     revConflict: '原文版本已经变更，请刷新后再续拍加页。',
@@ -585,13 +577,13 @@ export function prepareIntakeResearchPermission(materialId: string, input: unkno
   }
 }
 
-export function translateIntakeReadError(error: unknown, isLifecycle: boolean, isDenied: boolean): Error {
+export function translateIntakeReadError(error: unknown, isLifecycle = error instanceof LifecycleError, isDenied = false): Error {
   if (isLifecycle || error instanceof RequestError) return error as Error;
-  if (error instanceof FactNotFoundError || isDenied) return new RequestError(404, '这份材料或它的交入记录不存在。');
+  if (isDenied || isFactUnavailable(error)) return new RequestError(404, '这份材料或它的交入记录不存在。');
   return new RequestError(500, '这份材料的交入记录无法读取。');
 }
 
-export function translateIntakeCorrectionError(error: unknown, isDenied: boolean): unknown {
+export function translateIntakeCorrectionError(error: unknown, isDenied = false): unknown {
   return translateIntakeCommandError(error, isDenied, {
     conflict: err => err instanceof Error && err.message === '原文版本已经变更。' ? '这份文字已有新版本，请打开原文核对后再保存。' : null,
     revConflict: '这份文字已有新版本，请打开原文核对后再保存。',
@@ -599,7 +591,7 @@ export function translateIntakeCorrectionError(error: unknown, isDenied: boolean
   });
 }
 
-export function translateIntakeVisionRetryError(error: unknown, isDenied: boolean): unknown {
+export function translateIntakeVisionRetryError(error: unknown, isDenied = false): unknown {
   return translateIntakeCommandError(error, isDenied, {
     conflict: err => err instanceof IntakeVisionRetryConflict ? err.message : null,
     revConflict: '原文版本已经变更，请刷新后再重试视觉识别。',
@@ -607,7 +599,7 @@ export function translateIntakeVisionRetryError(error: unknown, isDenied: boolea
   });
 }
 
-export function translateIntakeResearchError(error: unknown, isDenied: boolean): unknown {
+export function translateIntakeResearchError(error: unknown, isDenied = false): unknown {
   return translateIntakeCommandError(error, isDenied, {
     conflict: err => err instanceof IntakeResearchConflict ? err.message : null,
   });
@@ -685,7 +677,7 @@ export function formatIntakeErrorResponse(
   }
   if (options?.notFoundAs404) {
     if (error instanceof SyntaxError) return { status: 400, body: { error: error.message } };
-    if (error instanceof FactNotFoundError) return { status: 404, body: { error: error.message } };
+    if (isFactNotFound(error) || (error instanceof Error && error.name === 'FactNotFoundError')) return { status: 404, body: { error: error.message } };
   }
   return { status: 500, body: { error: fallback } };
 }

@@ -1,4 +1,4 @@
-import { type FactId, type FactSnapshot, type Json, type ReadContext, type Revision } from '@mangekyo/kernel';
+import { classifyKernelError, type FactId, type FactSnapshot, type Json, type ReadContext, type Revision } from '@mangekyo/kernel';
 import { assetType, checkQuestionTeachingSources, checkTextbookBasis, freezeQuestionAssessment, parseTextbookBasis, questionAsset, type AssetReadContext } from './asset.ts';
 import { contentStableId, normalizeKnowledgeName } from './knowledge-entity.ts';
 import { fields, list, pageId, record, revision, text } from './parse.ts';
@@ -34,18 +34,18 @@ export function parseSetQuestionTeachingInput(id: string, raw: Record<string, un
 }
 
 export function classifySetQuestionTeachingError(
-  error: unknown, flags: { readonly notFound: boolean; readonly deniedReason?: string | undefined },
+  error: unknown, flags?: { readonly notFound?: boolean; readonly deniedReason?: string | undefined },
 ): { readonly status: 404 | 409; readonly message: string } | null {
-  if (flags.notFound || (flags.deniedReason !== undefined && flags.deniedReason !== 'purpose'))
+  const { kind, reason } = classifyKernelError(error);
+  const deniedReason = flags?.deniedReason ?? (kind === 'denied' ? reason : undefined);
+  if (flags?.notFound || kind === 'not_found' || (deniedReason !== undefined && deniedReason !== 'purpose'))
     return { status: 404, message: '找不到这道题。' };
-  if (flags.deniedReason === 'purpose')
+  if (deniedReason === 'purpose')
     return { status: 409, message: '题目来源未授权教学用途，请先开放对应来源材料的教学权限。' };
-  if (!(error instanceof Error)) return null;
-  if (error.message.startsWith('Fact revision conflict') || error.message === '题目基版已变化。')
+  if (kind === 'revision_conflict' || (error instanceof Error && error.message === '题目基版已变化。'))
     return { status: 409, message: '题目基版已变化，请刷新后再试。' };
-  if (error.message === 'Command ID already used with a different command identity')
-    return { status: 409, message: '同一个请求标识已经用于不同的教学授权。' };
-  if (error.message === '题目来源未授权教学用途或依据已变化。')
+  if (kind === 'duplicate_command') return { status: 409, message: '同一个请求标识已经用于不同的教学授权。' };
+  if (error instanceof Error && error.message === '题目来源未授权教学用途或依据已变化。')
     return { status: 409, message: '题目来源未授权教学用途，请先开放对应来源材料的教学权限。' };
   return null;
 }
