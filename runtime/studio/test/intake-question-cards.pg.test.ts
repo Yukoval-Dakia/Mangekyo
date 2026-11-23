@@ -131,7 +131,7 @@ describe.skipIf(!testDatabaseUrl)('intake question cards in PostgreSQL', () => {
 
   it('passes red-pen hints into today candidates', async () => {
     const material = await finish('fresh', completeVisionExtraction(ocr(true)));
-    const today = await organizer.today(new URLSearchParams());
+    const today = await organizer.today(new URLSearchParams({ timeZone: new Date().getUTCHours() >= 12 ? 'America/Los_Angeles' : 'Asia/Tokyo' }));
     const candidate = [...today.alternatives, ...today.items.map(item => item.candidate)]
       .find(item => item.id === `material:${material.id}@2`);
     expect(candidate?.freshMaterial).toMatchObject({ questionCount: 1, redPenErrorCount: 1 });
