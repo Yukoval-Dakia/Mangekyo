@@ -56,6 +56,30 @@ it('does not emit a tool-call round, then emits the next final round', async () 
   expect(deltas).toEqual(['已保存。']);
 });
 
+it('signals tool progress to clear transitional text when a round switches into tool_calls', async () => {
+  const deltas: string[] = [];
+  const phases: string[] = [];
+  const responses = [
+    sseResponse(
+      responseFrame({content: '我先查一下记录'}, providerModelPlaceholder) +
+      responseFrame({tool_calls: [{index: 0, id: 'call-1', type: 'function', function: {name: 'save_page', arguments: '{"title":"页","content":"正文"}'}}]}, providerModelPlaceholder, 'tool_calls') +
+      'data: [DONE]\n\n',
+    ),
+    sseResponse(responseFrame({content: '最终回答。'}, providerModelPlaceholder, 'stop') + 'data: [DONE]\n\n'),
+  ];
+  watchFetch().mockImplementation(async () => responses.shift()!);
+  const result = await runStudyAgent([{role: 'user', content: '保存一页。'}], {
+    ...deps,
+    onProgress: async progress => {phases.push(progress.phase);},
+    onTextDelta: async delta => {deltas.push(delta);},
+    tools: {workspace: {narrowSaves: true, writes: () => [], execute: async () => JSON.stringify({state: 'done', id: 'page', rev: 1})}},
+  }, true);
+  expect(result.message).toBe('最终回答。');
+  expect(phases).toContain('reading');
+  expect(phases).toContain('checking');
+  expect(deltas.at(-1)).toBe('最终回答。');
+});
+
 it('suppresses prepare output and replies hidden by companion turn guards', async () => {
   const kit = JSON.stringify({title: '主题', lesson: '讲义', questions: [
     {prompt: '一？', answer: '一'}, {prompt: '二？', answer: '二'},

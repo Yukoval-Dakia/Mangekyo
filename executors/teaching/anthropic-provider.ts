@@ -355,7 +355,10 @@ export async function readAnthropicCompletion(response: Response, hooks: Provide
           }
           blocks[index] = { type: 'tool_use', id: callId, name, initial, json: '', complete: false };
           rawContent[index] = { ...block, input: initial };
-          sawToolBlock = true;
+          if (!sawToolBlock) {
+            sawToolBlock = true;
+            await hooks.toolCallsStart?.();
+          }
         } else if (block.type === 'thinking') {
           const thinking = typeof block.thinking === 'string' ? block.thinking : '';
           blocks[index] = { type: 'thinking', thinking, signature: '' };

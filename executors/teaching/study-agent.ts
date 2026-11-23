@@ -15,7 +15,7 @@ import {pythonAttemptSelection} from './python-attempt-selection.ts';
 import { createStudyTools, pythonCodeError, type PythonAttemptsRead } from './agent-tools.ts';
 import { type CompletionUsage, type FunctionCall, type ProviderTurn, publicAssistantContent } from './provider-stream.ts';
 import { checkProviderOutcome, providerEndpoint, providerProtocol, requestCompletion, TeachingError, profileFor, verifyTeachingModel } from './provider.ts';
-import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch} from './learning-turn.ts';
+import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch, toolProgressPhase} from './learning-turn.ts';
 import {adaptWorkspaceResult, learningToolFallback, narrowWorkspaceDefinitions, saveBeliefDefinition, toolFailure,
   type LearningTools} from './learning-tools.ts';
 
@@ -206,11 +206,19 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       let lastText = '';
       let lastPush = 0;
       let emittedDeltaText = '';
+      let sawToolCalls = false;
       const send = () => requestCompletion(endpoint, body, options.provider.apiKey, requestId, {
         allowTools: available,
         model(value) { reportedModel = verifyTeachingModel(value, options.provider.apiKey, model); },
+        async toolCallsStart() {
+          if (sawToolCalls) return;
+          sawToolCalls = true;
+          lastText = '';
+          emittedDeltaText = '';
+          await options.onProgress?.({ phase: 'reading' });
+        },
         async content(text) {
-          if (!streamReply || !reportedModel || (!options.onProgress && !options.onTextDelta)) return;
+          if (sawToolCalls || !streamReply || !reportedModel || (!options.onProgress && !options.onTextDelta)) return;
           if (options.onProgress && Date.now() - lastPush >= 80) {
             const message = publicAssistantContent(text).trimStart();
             if (message !== lastText && message.trim() && message.length <= maxReply) {
@@ -243,6 +251,9 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         ...(reply.usage ? {usage: reply.usage} : {}),
       });
       if ('rejectedHttpStatus' in reply) return JSON.stringify(reply);
+      if (reply.toolCalls?.length) {
+        await options.onProgress?.({ phase: toolProgressPhase(reply.toolCalls) });
+      }
       const message = publicAssistantContent(reply.content ?? '').trim();
       // Only exchanges made entirely of recognized greeting and courtesy phrases can
       // exclude answer delivery. Tool, remote and JIT input remains unclassified.
@@ -308,7 +319,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
         })), summary: '工具不可用'};
         throw new TeachingError('evidence_scope', '模型请求了本轮未开放的工具。');
       }
-      await options.onProgress?.({phase: name === 'python' || name === 'run_calculation' ? 'checking' : 'reading'});
+      await options.onProgress?.({phase: toolProgressPhase([call])});
       if (learning) {
         const args = learningArguments(call.function.arguments);
         const summary = name === 'run_calculation' ? '完成 Python 计算' : '学习工具 · ' + name;

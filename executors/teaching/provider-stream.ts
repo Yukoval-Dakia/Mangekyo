@@ -17,6 +17,7 @@ export type ProviderHooks = {
   allowTools?: boolean;
   model?: (model: unknown) => void;
   content?: (text: string) => Promise<void>;
+  toolCallsStart?: () => void | Promise<void>;
 };
 
 const maximumFrame = 512_000;
@@ -194,6 +195,7 @@ export async function readProviderCompletion(response: Response, hooks: Provider
   let usage: CompletionUsage | undefined;
   const calls: FunctionCall[] = [];
   let endedWithTools = false;
+  let notifiedToolCalls = false;
 
   async function readLine(line: string) {
     if (line !== '') {
@@ -242,6 +244,10 @@ export async function readProviderCompletion(response: Response, hooks: Provider
     if (delta?.tool_calls) {
       if (stopped) throw new Error('Tool call after completion');
       collectCalls(calls, delta.tool_calls, true);
+      if (!notifiedToolCalls) {
+        notifiedToolCalls = true;
+        await hooks.toolCallsStart?.();
+      }
     }
     if (typeof delta?.content === 'string' && delta.content.length) {
       if (stopped) throw new Error('Content after completion');

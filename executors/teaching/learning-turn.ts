@@ -22,6 +22,13 @@ export function learningArguments(raw: string): ToolArgs | undefined {
 const schemaLookup = (name: string) => ({tool: 'find_tools', args: {query: name}});
 const readNames = new Set<string>([...hostedReads, 'find_tools']);
 const writeNames = new Set<string>([...hostedWrites, ...onDemandTools, 'mount_artifact']);
+const checkingNames = new Set<string>([
+  'python', 'run_calculation', 'save_memory', 'save_workspace', 'save_relation', 'record_observation', ...writeNames,
+]);
+
+export function toolProgressPhase(calls: readonly FunctionCall[]): 'reading' | 'checking' {
+  return calls.some(call => checkingNames.has(call.function.name)) ? 'checking' : 'reading';
+}
 
 export function createLearningTurn(host: LearningTools, results: ReturnType<typeof studyToolResults>,
   runEffect: TeachingDependencies['runEffect'], model: string) {

@@ -7,7 +7,7 @@ import { runStudyAgent, type StudyAgentOptions } from './study-agent.ts';
 import { companionCrisisGuidance, evaluateCrisisSupport, type CarePauseSignal } from './crisis-support.ts';
 import { firstTurnJitMessages } from './first-turn-jit.ts';
 export type { FirstTurnJitContext, FirstTurnJitRoute, FirstTurnJitSlots, FirstTurnJitTokenizer, JitEvidence } from './first-turn-jit.ts';
-import { teachingPrompt } from './prompt.ts';
+import { companionToolDiscipline, teachingPrompt } from './prompt.ts';
 import {
   checkTwoLegVariant,
   readDiagnosticReasons,
@@ -267,6 +267,7 @@ export async function runCompanionTurn(
           ? '个人教材用 save_page，题面草稿用 save_question，知识图谱有向边用 save_edge。'
           : '个人教材用 save_page，知识图谱有向边用 save_relation。') +
         '先打开所用的来源及目标版本。proposed 表示等待学习者采纳，saved 表示已生效。只在读到与该边一致的既存核验证明时传 verification。'}] : []),
+      ...(workspace || dependencies.memoryTools || unified ? [{role:'system' as const, content: companionToolDiscipline}] : []),
       ...(workspace || dependencies.memoryTools || unified ? [{role:'system' as const, content:
         '工作区只认逻辑文件名或教材标题，绝不向学习者输出宿主机或本地文件系统的真实路径（如 /tmp、/private、盘符目录或 file:// 链接）。需要写入长期记忆或教材时，先确认工具返回成功再自然说明结果；绝不向学习者输出拟保存、待本轮结束回执确认、pending、rev、receipt 等内部术语。' +
         (dependencies.memoryTools || unified ? '' : '本轮没有长期记忆写入工具；学习者要求记住时诚实说明当前对话内有效、长期记忆需要开启相应权限。')}]

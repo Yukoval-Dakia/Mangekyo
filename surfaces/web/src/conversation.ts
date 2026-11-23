@@ -193,6 +193,10 @@ export function useConversation(caseId: string, active: boolean, initialSession?
           deltaState = undefined;
           setStreamingReply(undefined);
           setProgressLabel(undefined);
+          if (mode === 'stream' && latest?.status === "pending") {
+            terminal = true;
+            source.close();
+          }
         }
         if (mode === 'complete') {
           setStreamingReply(undefined);
@@ -235,7 +239,7 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       const next = applyDeltaChunk(deltaState, chunk, previous.currentTurnId);
       if (next === deltaState) return;
       deltaState = next;
-      setProgressLabel(label => label ?? progressLabels.replying);
+      setProgressLabel(progressLabels.replying);
       setStreamingReply(next?.text);
       if (!didHydrate) {
         didHydrate = true;
@@ -265,12 +269,15 @@ export function useConversation(caseId: string, active: boolean, initialSession?
         mounts: previous?.mounts.filter(m => m.turnId === update.session.currentTurnId || previous.turns.some(t => t.turnId === m.turnId)) ?? [] };
       setSession(batch.order ? authorizeMounts(mounted, turn, batch.order, update, covered) : mounted);
       setProgressLabel(update.phase ? progressLabels[update.phase] : undefined);
-      deltaState = deltaState?.turnId === turn && update.message === undefined
-        ? deltaState
-        : deltaState?.turnId === turn
-          ? { ...deltaState, text: reconcileProgressText(deltaState, update.message) ?? deltaState.text }
-          : progressDeltaState(turn, update.message);
-      setStreamingReply(deltaState?.text);
+      const nonReplyingReset = update.message === undefined && update.phase !== undefined && update.phase !== "replying";
+      deltaState = nonReplyingReset
+        ? (deltaState?.turnId === turn ? { ...deltaState, text: "" } : undefined)
+        : deltaState?.turnId === turn && update.message === undefined
+          ? deltaState
+          : deltaState?.turnId === turn
+            ? { ...deltaState, text: reconcileProgressText(deltaState, update.message) ?? deltaState.text }
+            : progressDeltaState(turn, update.message);
+      setStreamingReply(deltaState?.text || undefined);
       // Restore prior turns for a remembered session while the current one streams.
       if (!didHydrate) {
         didHydrate = true;
@@ -332,10 +339,18 @@ export function useConversation(caseId: string, active: boolean, initialSession?
       }
     };
 
+    const pendingPollTimer = setInterval(() => {
+      if (terminal || controller.signal.aborted || reading) return;
+      if (sessionRef.current?.id === sessionId && sessionRef.current.status === "pending") {
+        void hydrate('stream');
+      }
+    }, 12_000);
+
     return () => {
       source.close();
       controller.abort();
       clearTimeout(reconnectTimer);
+      clearInterval(pendingPollTimer);
       readAssessment.current = undefined;
     };
   }, [active, busy, caseId, refresh, retryOperation, sessionId, sessionKey]);
