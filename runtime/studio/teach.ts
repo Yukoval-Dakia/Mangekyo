@@ -2,7 +2,6 @@ import { classroomReply } from '../../modules/activity/classroom.ts';
 import { readClassroomMountEvidence } from './presentation-store.ts';
 import { openLearningTools } from './learning-tools.ts';
 import { attachmentCurrent } from './reading.ts';
-import { LifecycleError } from '../../kernel/src/lifecycle.ts';
 import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAuthority,
   type CheckNotionRead, type NotionRecipient, type openStudioNotion } from './notion.ts';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
@@ -13,13 +12,10 @@ import { isMemoryConflict, openTurnMemory } from './turn-memory.ts';
 import { turnClaimWitness } from '../../modules/companion/claim.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createCommandReadContext, isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
-import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
+import { isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
+import { createLearnerHost, derivationId, factId, learnerId, LifecycleError, parseManifest,
+  storeSettledValue, type Db, type DbTransaction, type FactSnapshot, type Json, type Manifest, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
-import { factId, learnerId, type Tick } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
-import { parseManifest, type Manifest } from '../../kernel/src/derivations/manifest.ts';
 import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
 import { bindSessionPayloadSources } from '../../kernel/src/work/payload.ts';
 import { failWork, finishWork, readWork, readReadyWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
@@ -44,8 +40,11 @@ import { completeTurnStream, publishSessionDelta, publishTurnProgress } from './
 import { companionReplyStartedLabel, companionReplyTrackingLabel, questionReceiptsCurrent } from './question-exposure.ts';
 import { confirmedTeachingMethod, learningToolsMethod, notionModelRecipient, methodName, purpose, slotType, sourceId, stableId, studioLearner } from './identity.ts';
 
-const hasTeachingModelEffect = async (tx: ReadTransaction, learner: ReturnType<typeof learnerId>, slotKey: string) =>
-  Boolean((await tx.query(`SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2 AND label='teaching-model' LIMIT 1`, [learner, slotKey])).rowCount);
+const hasTeachingModelEffect = async (tx: ReadTransaction, slotKey: string) =>
+  Boolean((await tx.query(`SELECT 1 FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2 AND label='teaching-model' LIMIT 1`,
+    [tx.learner, slotKey])).rowCount);
+/** Teaching turns own their publication path; downstream propagation stays with declared slot triggers. */
+const noopSettledHooks = { async onSlotChanged() {} };
 
 export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness,
   jitCounters: readonly StudioJitCounter[] = [],
@@ -57,7 +56,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   if (!job) return;
   if (job.slotType !== slotType || ![methodName,confirmedTeachingMethod,learningToolsMethod].includes(job.deriver)) throw new Error('Unknown teaching method');
   const learner = learnerId(ref.learner), {slotKey} = job;
-  const scope = { learner };
+  const host = createLearnerHost(db, learner);
+  const scope = host.scope;
   let currentObject: OpenedCurrentLearningObject | undefined;
   let jit: Awaited<ReturnType<typeof prepareFirstTurnJit>>;
   let liveMemoryRevision: number | undefined;
@@ -75,13 +75,16 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
   >({ slotType, toInput: workspaceInput, proofKey: workspaceProofKey, canonicalKey: canonicalJsonString });
   const { inputs, assessments, retention, notionWitnesses, learningReadBasis, trackNotion, trackRetention, trackFact, trackFeedback, trackWorkspace, trackMemory, keepLearningBasis } = ledger;
   const maySend: NotionRecipient = (fact: FactSnapshot) => fact.type !== 'companion.memory' || fact.ref.rev === liveMemoryRevision;
+  const localRead = (stepKey: string, label: string, input: unknown, read: (tx: ReadTransaction) => Promise<string>,
+    authorize: (tx: DbTransaction) => Promise<void>) =>
+    recordLocalRead(db, { ...scope, ownerKind: 'session', ownerId: slotKey, stepKey, label, input: input as Json }, read, authorize);
   async function readFact(tx: ReadTransaction, id: string, mode?: 'pinned' | 'following') {
-    const fact = await createCommandReadContext(tx, purpose).fact(factId(id), {mode: 'following'});
+    const fact = await host.read(tx, purpose).fact(factId(id), {mode: 'following'});
     trackFact(id, fact, mode);
     return fact.value;
   }
-  const read = (id: string) => db.snapshot(scope, (tx) => readFact(tx, id));
-  const priorTurn = (id: string) => db.snapshot(scope, async tx => {
+  const read = (id: string) => host.snapshot(tx => readFact(tx, id));
+  const priorTurn = (id: string) => host.snapshot(async tx => {
     const fact = await readOwnStudyTurn(tx, id);
     const teaching = fact.purpose.includes(purpose) || fact.purpose.includes('all');
     if (teaching) trackFact(id, fact);
@@ -106,61 +109,56 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     if (authority.state !== 'authorized') return;
     return {...row, manifest, memoryBasis: authority.memoryBasis};
   }
+  const stale = (): never => { throw new ChangedEvidence(); };
   async function checkWorkspaceRecipient() {
     if (!authorizeWorkspaceRecipient) throw new ChangedEvidence();
     await authorizeWorkspaceRecipient();
   }
   async function revalidateInputs(tx: ReadTransaction, use: 'publish' | 'dispatch' = 'publish') {
-    if ((checkTurnAccount && !await checkTurnAccount()) || (attachmentOrigin && !await attachmentCurrent(tx, attachmentOrigin)))
-      throw new ChangedEvidence();
-    const pages = await notionSendBasis(tx,notionWitnesses.values(),maySend).catch(() => { throw new ChangedEvidence(); });
-    if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) throw new ChangedEvidence();
-    if (ledger.hasExpiredMemory(new Date().toISOString())) throw new ChangedEvidence();
+    if ((checkTurnAccount && !await checkTurnAccount()) || (attachmentOrigin && !await attachmentCurrent(tx, attachmentOrigin))) stale();
+    const pages = await notionSendBasis(tx,notionWitnesses.values(),maySend).catch(stale);
+    if (liveMemoryRevision !== undefined && (await currentMemory(tx)).revision !== liveMemoryRevision) stale();
+    if (ledger.hasExpiredMemory(new Date().toISOString())) stale();
     if (jit) {
       await checkWorkspaceRecipient();
-      if (!await jitWitnessesCurrent(tx, jit.basis, maySend)) throw new ChangedEvidence();
+      if (!await jitWitnessesCurrent(tx, jit.basis, maySend)) stale();
     }
     if (currentObject || assessments.size || retention.size) {
       await checkWorkspaceRecipient();
-      for (const {slot} of assessments.values()) if (!await workspaceAssessmentBasis(tx, slot, maySend)) throw new ChangedEvidence();
+      for (const {slot} of assessments.values()) if (!await workspaceAssessmentBasis(tx, slot, maySend)) stale();
       for (const basis of retention.values()) {
         const actual = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend});
-        if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) throw new ChangedEvidence();
+        if (!actual || canonicalJsonString(actual) !== canonicalJsonString(basis)) stale();
       }
     }
     const { rows: [clock] } = await tx.query<{ tick: string }>('SELECT clock::text AS tick FROM learners WHERE id=$1', [learner]);
     const manifest = parseManifest({ version: 1, learner, purpose, gatherTick: clock?.tick, inputs: [...inputs.values()] });
     const evidence = await teachingMemoryBasis(tx, manifest, slotKey, maySend);
-    if (!evidence || !await questionReceiptsCurrent(tx,slotKey,use))
-      throw new ChangedEvidence();
+    if (!evidence) throw new ChangedEvidence();
+    if (!await questionReceiptsCurrent(tx,slotKey,use)) stale();
     return {manifest, pages, usesRadarTodo:evidence.usesRadarTodo};
   }
   const validInputs = async (tx: ReadTransaction) => (await revalidateInputs(tx)).manifest;
-  async function validWorkInputs(tx: ReadTransaction, use?: 'publish' | 'dispatch') {
-    if (!await readReadyWork(tx, ref)) throw new ChangedEvidence();
+  const validWorkInputs = async (tx: ReadTransaction, use?: 'publish' | 'dispatch') => {
+    if (!await readReadyWork(tx, ref)) stale();
     return revalidateInputs(tx, use);
-  }
+  };
   const settle = (feedback: DisplayTurn, optedIn: boolean) => finishWork(db, ref, async (tx, tick) => {
     const manifest = await validInputs(tx);
-    const id = stableId('feedback', ref.learner, ref.workId, ref.generation);
+    const id = derivationId(stableId('feedback', ref.learner, ref.workId, ref.generation));
     const sourceIds = ledger.sourceIdsForDigest(feedback.workspaceBasis, memoryId);
     const summary = companionForegroundSummary(feedback, sourceIds.length);
     const digest = summary ? foregroundDigest(job.slotKey, manifest, sourceIds, summary) : undefined;
-    await tx.insert('derivations', {
-      learner_id: learner, id, slot_type: slotType, slot_key: job.slotKey, deriver: job.deriver, scope_keys: '{}',
-      value: JSON.stringify(digest ? { ...feedback, foregroundDigest: digest } : feedback),
-      lifecycle: 'effective', freshness: 'current', gather_tick: manifest.gatherTick, effective_tick: tick,
-      manifest: JSON.stringify(manifest), is_shadow: false,
-    });
-    await tx.query(
-      'UPDATE slot_state SET current_id=$4,last_id=$4,changed_tick=$5,last_error=NULL WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
-      [learner, slotType, job.slotKey, id, tick],
-    );
+    await storeSettledValue(tx, tick, {
+      slotType, key: job.slotKey, id, deriver: job.deriver, scope: {},
+      value: (digest ? { ...feedback, foregroundDigest: digest } : feedback) as Json,
+      manifest, kind: 'carry',
+    }, noopSettledHooks);
     await completeTurnStream(tx, job.slotKey);
     if (optedIn) await onTurnCompleted?.(tx, tick, job.slotKey);
   });
   try {
-    const turn = await db.snapshot(scope, tx => readTeachingTurn(tx, slotKey));
+    const turn = await host.snapshot(tx => readTeachingTurn(tx, slotKey));
     trackFact(turn.ref.id, turn);
     const submission = studyTurn(turn.value);
     if (submission.memoryVersion === 1) memoryTurn = job.slotKey;
@@ -168,7 +166,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       { submission, deriver: job.deriver, methodName, learningToolsMethod },
       {
         loadPriorTurn: priorTurn, requiresAccountConfirmation, resolveTask: turnTask,
-        checkAttachmentCurrent: origin => db.snapshot(scope, tx => attachmentCurrent(tx, origin)),
+        checkAttachmentCurrent: origin => host.snapshot(tx => attachmentCurrent(tx, origin)),
         loadSettings, workspaceRouteRevision,
       },
     );
@@ -181,12 +179,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     }
     const onProgress = createTurnProgressHandler({
       learningV1,
-      recordReplyStarted: async () => {
-        await recordLocalRead(db, { ...scope, ownerKind: 'session', ownerId: slotKey, stepKey: 'replying',
-          label: companionReplyStartedLabel, input: {} }, async () => 'possible', async tx => {
-          if (!(await readReadyWork(tx, ref))) throw new ChangedEvidence();
-        });
-      },
+      recordReplyStarted: async () => { await localRead('replying', companionReplyStartedLabel, {},
+        async () => 'possible', async tx => { if (!(await readReadyWork(tx, ref))) stale(); }); },
       publishProgress: progress => publishTurnProgress(db, ref, job.slotKey, submission.sessionId, progress, validInputs),
     });
     let deltaSeq = 0;
@@ -195,11 +189,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       notionRecipientId: () => maySend.notionRecipientId,
       getJit: () => jit,
       getLearningMemoryContext: () => learningMemory?.context,
-      loadSelected: () => db.snapshot(scope, tx => notionSendBasis(tx, notionWitnesses.values(), maySend)),
-      confirmPages: async pages => {
-        try { await confirmNotionDispatch(db, pages as Awaited<ReturnType<typeof notionSendBasis>>); }
-        catch { throw new ChangedEvidence(); }
-      },
+      loadSelected: () => host.snapshot(tx => notionSendBasis(tx, notionWitnesses.values(), maySend)),
+      confirmPages: async pages => { await confirmNotionDispatch(db, pages as Awaited<ReturnType<typeof notionSendBasis>>).catch(stale); },
       validWorkInputs,
       loadSettings: () => loadSettings(task),
       jitCounterFor: current => studioJitCounter(jitCounters, current),
@@ -209,8 +200,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }, task),
       runEffect: (request, execute, authorize) =>
         runEffect(db, { learner, ownerKind: 'session', ownerId: slotKey, ...request }, execute, authorize),
-      runDispatchTx: fn => db.tx(scope, async tx => { await lockLearner(tx, learner); return fn(tx); }),
-      checkFreshEvidence: async () => { await db.snapshot(scope, validInputs); },
+      runDispatchTx: fn => host.lockedTx(fn),
+      checkFreshEvidence: () => host.snapshot(validInputs).then(() => {}),
       isLifecycleError: error => error instanceof LifecycleError,
       bindSources: async (tx, manifest) => {
         const sources = (await manifestFactInputs(tx, manifest.inputs as Manifest['inputs'])).map(input => input.id);
@@ -232,6 +223,13 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
       }
       const memoryRequest = () => ({ db, scope: memoryScopeForObject(currentObject), intent: 'tutoring' as const, maySend,
         ...(memoryTurn ? { ownTurn: memoryTurn } : {}), authorize: authorizeMemory });
+      const memoryGateway = async (overrides: Pick<Parameters<typeof readMemoryGateway>[0], 'owner' | 'maxBytes'>
+          & Partial<Parameters<typeof readMemoryGateway>[0]>, required = true) => {
+        const packet = await readMemoryGateway({ ...memoryRequest(), ...overrides });
+        if (!packet && required) throw new ChangedEvidence();
+        if (packet) trackMemory(packet);
+        return packet;
+      };
       feedback = await executeCompanionTurn(
         {
           slotKey: job.slotKey, slotType, submission, learningV1, memoryTurn, ledger,
@@ -255,20 +253,22 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
               }
               return result;
             });
-            const items = [];
-            for (const item of observed) {
-              const basis = parseManifest(item.manifest).inputs;
-              const notion = await db.snapshot(scope, tx => savedNotionWitnesses(tx, basis));
-              let assessmentSlot: { slot_type: string; slot_key: string; derivationId: string } | undefined;
-              if (item.assessment && 'derivationId' in item.assessment) {
-                const { rows: [slot] } = await db.query<{ slot_type: string; slot_key: string }>(
-                  'SELECT slot_type,slot_key FROM derivations WHERE learner_id=$1 AND id=$2', [learner, item.assessment.derivationId]);
-                if (!slot) throw new ChangedEvidence();
-                assessmentSlot = { ...slot, derivationId: item.assessment.derivationId };
+            return host.snapshot(async tx => {
+              const items = [];
+              for (const item of observed) {
+                const basis = parseManifest(item.manifest).inputs;
+                const notion = await savedNotionWitnesses(tx, basis);
+                let assessmentSlot: { slot_type: string; slot_key: string; derivationId: string } | undefined;
+                if (item.assessment && 'derivationId' in item.assessment) {
+                  const { rows: [slot] } = await tx.query<{ slot_type: string; slot_key: string }>(
+                    'SELECT slot_type,slot_key FROM derivations WHERE learner_id=$1 AND id=$2', [tx.learner, item.assessment.derivationId]);
+                  if (!slot) throw new ChangedEvidence();
+                  assessmentSlot = { ...slot, derivationId: item.assessment.derivationId };
+                }
+                items.push({ ...item, basis, notionWitnesses: notion, ...(assessmentSlot ? { assessmentSlot } : {}) });
               }
-              items.push({ ...item, basis, notionWitnesses: notion, ...(assessmentSlot ? { assessmentSlot } : {}) });
-            }
-            return items;
+              return items;
+            });
           },
           getJitCounter: () => studioJitCounter(jitCounters, settings),
           prepareJit: async counter => {
@@ -278,11 +278,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           },
           loadCurrentObject: async () => {
             await authorizeWorkspace();
-            currentObject = await db.snapshot(scope, tx => readCurrentLearningObject(tx, submission.currentObject!, maySend));
+            currentObject = await host.snapshot(tx => readCurrentLearningObject(tx, submission.currentObject!, maySend));
             currentObject?.basis.forEach(trackNotion);
             return currentObject;
           },
-          loadPreference: () => db.snapshot(scope, async tx => {
+          loadPreference: () => host.snapshot(async tx => {
             const value = await currentMemory(tx);
             if (!value.text || value.endpoint !== settings.baseUrl || value.providerId !== settings.activeProviderId || value.protocol !== settings.protocol) return;
             await readFact(tx, memoryId, 'pinned');
@@ -291,18 +291,15 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             return { text: value.text, witness: mem?.kind === 'fact' ? { id: memoryId, rev: mem.rev, epoch: mem.accessEpoch, type: 'companion.memory' } : undefined };
           }),
           loadLearningMemory: async () => {
-            const { rows: [prior] } = await db.query<{ has_sample: boolean; has_memory: boolean }>(
+            const { rows: [prior] } = await host.snapshot(tx => tx.query<{ has_sample: boolean; has_memory: boolean }>(
               `SELECT bool_or(label='teaching-model') AS has_sample, bool_or(label='local:learning-memory') AS has_memory
-               FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2`, [learner, job.slotKey]);
+               FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2`, [tx.learner, job.slotKey]));
             if (prior?.has_sample && !prior.has_memory) return undefined;
-            learningMemory = await readMemoryGateway({ ...memoryRequest(), maxBytes: 8192, owner: { kind: 'session', id: job.slotKey, step: 'memory' } });
-            if (!learningMemory) throw new ChangedEvidence();
-            trackMemory(learningMemory);
+            learningMemory = await memoryGateway({ maxBytes: 8192, owner: { kind: 'session', id: job.slotKey, step: 'memory' } });
             return learningMemory;
           },
           expandLearningMemory: async (expand, step) => {
-            expandedMemory = await readMemoryGateway({ ...memoryRequest(), maxBytes: 16_384, expand, owner: { kind: 'session', id: job.slotKey, step: `memory-region:${step}` } });
-            if (expandedMemory) trackMemory(expandedMemory);
+            expandedMemory = await memoryGateway({ maxBytes: 16_384, expand, owner: { kind: 'session', id: job.slotKey, step: `memory-region:${step}` } }, false);
             return expandedMemory;
           },
           withHistoryRead: fn => confirmNotionRead(db, learner, (tx, check) => fn({
@@ -323,10 +320,8 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
           isAssessmentSlot: isWorkspaceAssessmentSlot,
           isRetentionSlot: isRadarRetentionSlot,
           proofKey: workspaceProofKey,
-          readToolContract: (stepKey, tool, version) => recordLocalRead(db, { learner, ownerKind: 'session', ownerId: slotKey, stepKey,
-            label: 'local:tool-contract', input: { tool } }, async tx => {
-            return await hasTeachingModelEffect(tx, learner, slotKey) ? 'legacy' : version;
-          }, authorizeMemory),
+          readToolContract: (stepKey, tool, version) => localRead(stepKey, 'local:tool-contract', { tool },
+            async tx => await hasTeachingModelEffect(tx, slotKey) ? 'legacy' : version, authorizeMemory),
           openWorkspace: ({ prior, beliefTools, jitBasis, learningMemoryBasis }) => openWorkspaceTools({
             db, turn: job.slotKey, presentationManifest: validInputs, readArtifactAssessmentWitness, prior, currentObject,
             maySend, beliefTools, ...(submission.agentVersion === 2 && { narrowSaves: true }),
@@ -339,18 +334,13 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             db, turn: memoryTurn!, answer, source: turnClaimWitness(turn), ...(currentObject ? { currentObject } : {}), authorize: authorizeMemory,
             ...(beliefTools ? { belief: { maySend, opened: citation => workspace?.openedBeliefEvidence(citation) ?? false } } : {}),
             async retrieve(query, step) {
-              const packet = await readMemoryGateway({ ...memoryRequest(), intent: 'management', maxBytes: 8192,
-                ...(beliefTools ? { beliefTools } : {}), ...(query ? { query } : {}), owner: { kind: 'session', id: job.slotKey, step: 'retrieve-memory:' + step } });
-              if (!packet) throw new ChangedEvidence();
-              trackMemory(packet);
-              return packet;
+              return memoryGateway({ intent: 'management', maxBytes: 8192, ...(beliefTools ? { beliefTools } : {}),
+                ...(query ? { query } : {}), owner: { kind: 'session', id: job.slotKey, step: 'retrieve-memory:' + step } })
+                .then(packet => packet!);
             },
           }),
-          recordLearningTracking: async () => {
-            await recordLocalRead(db, { ...scope, ownerKind: 'session', ownerId: slotKey,
-              stepKey: 'replying', label: companionReplyTrackingLabel, input: {} },
-              async tx => await hasTeachingModelEffect(tx, tx.learner, slotKey) ? 'unknown' : 'tracked', authorizeLearning);
-          },
+          recordLearningTracking: async () => { await localRead('replying', companionReplyTrackingLabel, {},
+            async tx => await hasTeachingModelEffect(tx, slotKey) ? 'unknown' : 'tracked', authorizeLearning); },
           openLearningTools: ({ workspace, turnMemory, manageBeliefs }) => openLearningTools({
             db, turn: slotKey, workspace, maySend, manageBeliefs, authorize: authorizeLearning, trackRetention,
             ...(notion ? { notion } : {}),
@@ -371,12 +361,11 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
             onDelivered: turnMemory.onDelivered,
             saveBelief: (args, step) => turnMemory.execute('save_belief', args, step),
             async readContext(intent, step, expand, query) {
-              const packet = await readMemoryGateway({ ...memoryRequest(), intent, maxBytes: expand ? 16_384 : 8192, beliefTools: true,
-                ...(expand ? { expand } : {}), ...(query ? { query } : {}), owner: { kind: 'session', id: slotKey, step: 'context-v1:' + String(step) } });
+              const packet = await memoryGateway({ intent, maxBytes: expand ? 16_384 : 8192, beliefTools: true,
+                ...(expand ? { expand } : {}), ...(query ? { query } : {}), owner: { kind: 'session', id: slotKey, step: 'context-v1:' + String(step) } }, false);
               if (!packet) return;
               if (intent === 'management') turnMemory.offerManagement(step, packet);
               packet.receipt.basis.forEach(keepLearningBasis);
-              trackMemory(packet);
               return packet.bundle;
             },
           }),
