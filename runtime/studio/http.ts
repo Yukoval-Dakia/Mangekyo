@@ -109,7 +109,7 @@ const types: Record<string, string> = {
   '.png': 'image/png', '.webp': 'image/webp', '.ico': 'image/x-icon',
 };
 const pages = new Set([
-  '/', '/today', '/papers', '/papers/new', '/papers/issued', '/plan', '/notes', '/review', '/intake',
+  '/', '/today', '/onboarding', '/papers', '/papers/new', '/papers/issued', '/plan', '/notes', '/review', '/intake',
   '/materials', '/materials/workspace', '/textbooks', '/textbooks/page', '/materials/riding',
   '/practice/riding', '/companion', '/me', '/classroom', '/classroom/first45',
 ]);
@@ -409,6 +409,7 @@ export function serve(
       sendJson(res, expected ? error.status : 500, {
         error: expected ? error.message : '服务未能完成请求。',
         ...(error instanceof RequestError && error.responseCode ? { code: error.responseCode } : {}),
+        ...(error instanceof RequestError && error.responseCode === 'model_unavailable' ? { next: 'settings' } : {}),
       });
     }
   });

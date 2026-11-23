@@ -45,12 +45,14 @@ const proposal = {
 it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and records transparency evidence on PostgreSQL', () =>
   withLearnerDatabase(studioLearner, async db => {
     const [plan, content, companion] = await Promise.all(['plan', 'content', 'companion'].map(loadStudioTestModule));
+    let modelEnabled = true, authorizedCalls = 0;
     const onboarding = openOnboarding(db, { plan: plan!, content: content!, companion: companion! }, {
-      loadProvider: async () => ({ baseUrl: 'http://127.0.0.1:3425/v1', model: 'mock-model', protocol: 'openai',
+      loadProvider: async () => ({ baseUrl: modelEnabled ? 'http://127.0.0.1:3425/v1' : '', model: 'mock-model', protocol: 'openai',
         reasoningEffort: 'low', apiKey: '', activeProviderId: 'mock', providers: [], mcpServers: [], exaApiKey: '', allowSearch: false }),
       agent: async () => ({ proposal, usage: { model: 'requested-model', reportedModel: 'served-model',
         inputTokens: 1200, outputTokens: 420, durationMs: 321 } }),
       now: () => new Date('2026-11-24T08:00:00+08:00'),
+      authorizeModel: async () => { authorizedCalls += 1; },
     });
     const free = await port(), server = serve(db, {} as never, {} as never, {} as never, { onboarding } as never, free);
     await new Promise<void>(resolve => server.listen(free, '127.0.0.1', resolve));
@@ -62,8 +64,12 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
 
     try {
       expect((await call('/api/onboarding/status')).body).toMatchObject({ completed: false, hasModel: true,
-        counts: { goals: 0, disciplines: 0, concepts: 0, questions: 0, memories: 0 } });
-      const proposed = await call('/api/onboarding/propose', { requestId: 'onboard-req-1', profileText: '高二物理化学', mode: 'llm' });
+        disciplineCount: 0, conceptCount: 0, questionCount: 0, hasMemory: false });
+      modelEnabled = false;
+      expect(await call('/api/onboarding/propose', { profileText: '高二物理化学', timeZone: 'Asia/Shanghai', mode: 'llm' })).toMatchObject({
+        status: 503, body: { code: 'model_unavailable', next: 'settings' } });
+      modelEnabled = true;
+      const proposed = await call('/api/onboarding/propose', { profileText: '高二物理化学', timeZone: 'Asia/Shanghai', mode: 'llm' });
       expect(proposed.status).toBe(200);
       expect(proposed.body).toMatchObject({ proposal: { meta: { model: 'mock-onboarding' } } });
       const applied = await call('/api/onboarding/apply', { requestId: 'onboard-apply-1', proposal: proposed.body.proposal });
@@ -71,20 +77,26 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
       expect(applied.body.applied).toMatchObject({ ruleCount: 4, disciplineCount: 1, conceptCount: 2,
         skippedExistingConcepts: 0, edgeCount: 1, questionCount: 1, memoryUpdated: true });
       expect(applied.body.links.graph).toBe('/materials?tab=graph');
+      expect(authorizedCalls).toBe(1);
 
       const replay = await call('/api/onboarding/apply', { requestId: 'onboard-apply-1', proposal: proposed.body.proposal });
       expect(replay.status).toBe(200);
       expect(replay.body.applied).toMatchObject(applied.body.applied);
       const after = await call('/api/onboarding/status');
-      expect(after.body).toMatchObject({ completed: true, goalText: '期中进入年级前 15%', upcomingExamCount: 1,
-        counts: { goals: 1, disciplines: 1, concepts: 2, questions: 1, memories: 1 } });
+      expect(after.body).toMatchObject({ completed: true, hasGoal: true, hasDisciplines: true, hasConcepts: true, hasQuestions: true,
+        hasMemory: true, goalText: '期中进入年级前 15%', disciplineCount: 1, conceptCount: 2, questionCount: 1, upcomingExamCount: 1 });
       const effects = await db.snapshot({ learner: studioLearner }, tx => tx.query(
         `SELECT label,state,result FROM effects WHERE learner_id=$1 AND owner_kind='session' ORDER BY label`, [studioLearner]));
       expect(effects.rows).toEqual([expect.objectContaining({ label: 'onboarding-setup', state: 'done',
         result: expect.objectContaining({ reportedModel: 'served-model', route: 'onboarding-setup' }) })]);
       const memory = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ value: { text?: string } }>(
-        `SELECT value FROM facts WHERE learner_id=$1 AND type='companion.memory'`, [studioLearner]));
+        `SELECT r.data AS value FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+         WHERE f.learner_id=$1 AND f.type='companion.memory' AND f.retracted_rev IS NULL AND r.kind='value'`, [studioLearner]));
       expect(memory.rows[0]?.value.text).toContain('当前目标：期中进入年级前 15%');
+      const research = await db.snapshot({ learner: studioLearner }, tx => tx.query<{ enabled: boolean }>(
+        `SELECT (r.data->>'enabled')::boolean AS enabled FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+         WHERE f.learner_id=$1 AND f.type='companion.researchSettings' AND f.retracted_rev IS NULL AND r.kind='value'`, [studioLearner]));
+      expect(research.rows[0]?.enabled).toBe(true);
       await expect(openTransparency(db).aiActivity()).resolves.toMatchObject({
         usage: { recentCalls: [expect.objectContaining({ label: 'onboarding-setup', model: 'served-model' })] } });
     } finally {
