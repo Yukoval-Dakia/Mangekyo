@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Db } from '../../kernel/src/db/types.ts';
-import { factId, type FactSnapshot, type ReadTransaction } from '../../kernel/src/index.ts';
+import { createLearnerHost, factId, type Db, type FactSnapshot, type ReadTransaction } from '../../kernel/src/index.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { type StudioMemoryScope } from '../../modules/activity/current-object-basis.ts';
 import { readLearningOverview } from '../../modules/activity/learning-overview.ts';
@@ -13,7 +12,7 @@ import { recallPacket, recallRegions, type MemoryIntent, type MemoryRegion, type
 import { extractedUnderstanding, isExtractedUnderstanding, understandingProjection } from '../../modules/companion/understanding.ts';
 import { learnerPreferenceType } from '../../modules/learner/preference-values.ts';
 import { openObjectiveCitations } from './belief-evidence.ts';
-import { isFactUnavailable, purposeReader } from './fact-read-helpers.ts';
+import { readAuthorizedFactOrNull } from './fact-read-helpers.ts';
 import { openHypothesisObject } from './hypothesis-object.ts';
 import { purpose, slotType, studioLearner } from './identity.ts';
 import { currentMemoryClaims, openClaimEvidence, readClaimValue } from './memory-claims.ts';
@@ -29,13 +28,10 @@ const witness = (fact: FactSnapshot): WorkspaceWitness => ({ id: fact.ref.id, re
 async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: WorkspaceSourceRecipient, at: string,
   requested: readonly MemoryRegion[], options: { ownTurn?: string; management?: boolean; query?: string; beliefTools?: boolean }) {
   const results: RecallRegions<WorkspaceWitness> = new Map();
-  const add = (region: MemoryRegion, entry: RecallItem<WorkspaceWitness>) => {
-    const items = results.get(region) ?? [];
-    items.push(entry);
-    results.set(region, items);
-  };
+  const add = (region: MemoryRegion, entry: RecallItem<WorkspaceWitness>) => { const list = results.get(region) ?? []; list.push(entry); results.set(region, list); };
+  const open = (id: string) => readAuthorizedFactOrNull(tx, purpose, maySend, factId(id), { mode: 'following' });
   if (requested.includes('goal') || requested.includes('scheduled_tasks')) {
-    const overview = await readLearningOverview(tx, { callerPurpose: purpose, maySend: (_projection, fact) => maySend(fact) });
+    const overview = await readLearningOverview(tx, { callerPurpose: purpose, maySend: (_p, fact) => maySend(fact) });
     const known = new Map(overview.witnesses.map(w => [w.id, { id: w.id, rev: w.rev, epoch: w.accessEpoch, type: w.type, mode: 'following' as const }]));
     if (requested.includes('goal') && overview.goal.state === 'set' && overview.goal.text !== null)
       add('goal', { value: { id: overview.goal.witness.id, text: textSlice(overview.goal.text, 0, 1200).content }, sent: [known.get(overview.goal.witness.id)!] });
@@ -44,11 +40,6 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
   }
   const wantsMemory = requested.includes('memory'), wantsPreferences = requested.includes('preferences');
   const wantsCourse = requested.includes('course_knowledge'), wantsAnswer = requested.includes('current_answer');
-  const reader = purposeReader(tx, maySend);
-  const open = async (id: string) => {
-    try { return await reader.fact(factId(id), { mode: 'following' }); }
-    catch (error) { if (isFactUnavailable(error)) return; throw error; }
-  };
 
   if (requested.includes('experience') && isSourceFactId(scope.experienceTurn)) {
     const turn = await open(scope.experienceTurn);
@@ -88,10 +79,8 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       const fact = await open(id);
       if (!fact) continue;
       const data = extractedUnderstanding(fact.value), sources = await openObjectiveCitations(tx, data.evidence_refs, purpose, maySend);
-      if (sources.length !== data.evidence_refs.length) continue;
-      const objectBasis = await openHypothesisObject(tx, data, maySend);
-      if (!objectBasis) continue;
-      add('claims', { value: buildHypothesisRecallValue(fact, data, sources, purpose), sent: [witness(fact), ...sources.map(s => witness(s.fact))], basis: objectBasis });
+      const objectBasis = sources.length === data.evidence_refs.length ? await openHypothesisObject(tx, data, maySend) : undefined;
+      if (objectBasis) add('claims', { value: buildHypothesisRecallValue(fact, data, sources, purpose), sent: [witness(fact), ...sources.map(s => witness(s.fact))], basis: objectBasis });
     }
   }
   if (wantsMemory || wantsPreferences || requested.includes('verified_playbooks')) {
@@ -100,16 +89,11 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
         AND r.data->>'version'='2' AND NOT (r.data ? 'belief') AND (r.data->'scope'->>'kind'='general' OR r.data->'scope'->>'object'=$3)
       ORDER BY f.changed_tick DESC,f.id LIMIT 24`, [tx.learner, memoryAssertionType, scope.preference.context ?? null]);
     for (const { id } of rows) {
-      const fact = await open(id);
-      if (!fact) continue;
-      const value = extractedUnderstanding(fact.value);
-      if (value.ttl && value.ttl <= at) continue;
+      const fact = await open(id), value = fact && extractedUnderstanding(fact.value);
+      if (!fact || !value || (value.ttl && value.ttl <= at)) continue;
       const sources = await openUnderstandingCitations(tx, value.evidence_refs, purpose, maySend);
-      if (sources.length !== value.evidence_refs.length) continue;
-      const spec = buildUnderstandingRecallSpec(fact, value, sources, requested);
-      if (!spec) continue;
-      add(spec.region, { value: spec.value, sent: [witness(fact), ...sources.map(s => s.basis[0]!)],
-        basis: sources.flatMap(s => s.basis.slice(1)), ...(value.ttl ? { expiresAt: value.ttl } : {}) });
+      const spec = sources.length === value.evidence_refs.length ? buildUnderstandingRecallSpec(fact, value, sources, requested) : null;
+      if (spec) add(spec.region, { value: spec.value, sent: [witness(fact), ...sources.map(s => s.basis[0]!)], basis: sources.flatMap(s => s.basis.slice(1)), ...(value.ttl ? { expiresAt: value.ttl } : {}) });
     }
   }
   if (!wantsMemory && !wantsPreferences && !wantsCourse && !wantsAnswer) return results;
@@ -117,8 +101,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
   async function openAnswer(source: { id: string; itemId: string }) {
     const fact = await open(source.id);
     if (fact?.type !== workbookAttemptType) return;
-    const { submittedAt, gradingVersion } = workbookAttempt(fact.value);
-    const ref = sourceReference(fact, { kind: 'answer-slot', itemId: source.itemId, slotId: 'answer' });
+    const { submittedAt, gradingVersion } = workbookAttempt(fact.value), ref = sourceReference(fact, { kind: 'answer-slot', itemId: source.itemId, slotId: 'answer' });
     const projection = await resolveSource(tx, ref, { recipient: 'workspace', maySend }, 'following');
     if (!projection || projection.content === null || projection.content === '') return;
     const content = typeof projection.content === 'string' ? textSlice(projection.content, 0, 600).content : projection.content;
@@ -135,8 +118,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
   if (current && wantsMemory) matched.set(`source:${current.fact.ref.id}`, { link: { kind: 'source', id: current.fact.ref.id }, basis: [current.witness] });
   for (const link of (wantsMemory || wantsCourse) ? scope.links : []) {
     if (matched.has(`${link.kind}:${link.id}`)) continue;
-    const basis: WorkspaceWitness[] = [];
-    const source = await resolveSource(tx, link.id, { recipient: 'workspace', maySend, track: fact => basis.push(witness(fact)) });
+    const basis: WorkspaceWitness[] = [], source = await resolveSource(tx, link.id, { recipient: 'workspace', maySend, track: fact => basis.push(witness(fact)) });
     if (!source || (link.kind === 'concept' && source.kind !== 'concept') || (link.kind === 'family' && !source.tags?.includes('question-family'))) continue;
     matched.set(`${link.kind}:${link.id}`, { link, basis });
     if (wantsCourse && link.kind === 'concept' && typeof source.content === 'string') {
@@ -150,10 +132,9 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       row_number() OVER (PARTITION BY f.type ORDER BY f.changed_tick DESC,f.id) AS position
     FROM facts f JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
     WHERE f.learner_id=$1 AND f.retracted_rev IS NULL AND 'teaching'=ANY(f.purpose) AND 'teaching'=ANY(r.purpose)
-      AND ((f.type=$2 AND $4::jsonb @> (r.data->'scope'))
-        OR (f.type=$3 AND r.data->'scope'->>'subject'=$4::jsonb->>'subject'
-          AND (r.data->'scope'->>'activity' IS NULL OR r.data->'scope'->>'activity'=$4::jsonb->>'activity')
-          AND EXISTS (SELECT 1 FROM jsonb_array_elements($5::jsonb) AS matched(link) WHERE r.data->'links' @> jsonb_build_array(matched.link))))
+      AND ((f.type=$2 AND $4::jsonb @> (r.data->'scope')) OR (f.type=$3 AND r.data->'scope'->>'subject'=$4::jsonb->>'subject'
+        AND (r.data->'scope'->>'activity' IS NULL OR r.data->'scope'->>'activity'=$4::jsonb->>'activity')
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements($5::jsonb) AS matched(link) WHERE r.data->'links' @> jsonb_build_array(matched.link))))
     ) eligible WHERE position<=24 ORDER BY changed_tick DESC,id`,
     [tx.learner, wantsPreferences ? learnerPreferenceType : null, wantsMemory ? memoryAssertionType : null, JSON.stringify(scope.preference), JSON.stringify([...matched.values()].map(({ link }) => link))]);
 
@@ -166,9 +147,8 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       continue;
     }
     if (isExtractedUnderstanding(fact.value)) continue;
-    const memory = memoryAssertion(fact.value);
-    if (!matchesMemoryAssertionScope(memory, at, scope.preference.context, scope.conditions)) continue;
-    const link = memory.links.map(l => matched.get(`${l.kind}:${l.id}`)).find(Boolean);
+    const memory = memoryAssertion(fact.value), link = matchesMemoryAssertionScope(memory, at, scope.preference.context, scope.conditions)
+      ? memory.links.map(l => matched.get(`${l.kind}:${l.id}`)).find(Boolean) : undefined;
     if (!link) continue;
     const opened = await Promise.all(memory.evidence.map(item => openAnswer(item)));
     if (!opened.every((item, i) => item && item.fact.ref.rev === memory.evidence[i]?.rev && item.fact.accessEpoch === memory.evidence[i]?.accessEpoch)) continue;
@@ -179,8 +159,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
        JOIN unnest($2::text[], $3::int[]) chosen(id,rev) ON (source.fact_id,source.rev)=(chosen.id,chosen.rev) WHERE source.learner_id=$1`,
       [tx.learner, originals.map(item => item.fact.ref.id), originals.map(item => item.fact.ref.rev)]);
     const value = workbookRecallValue(fact, memory, originals, provenance);
-    if (!value) continue;
-    add('memory', { value, sent: [witness(fact), ...originals.map(item => item.witness)], basis: link.basis, ...(memory.scope.validUntil ? { expiresAt: memory.scope.validUntil } : {}) });
+    if (value) add('memory', { value, sent: [witness(fact), ...originals.map(item => item.witness)], basis: link.basis, ...(memory.scope.validUntil ? { expiresAt: memory.scope.validUntil } : {}) });
   }
   return results;
 }
@@ -191,7 +170,7 @@ export async function readMemoryGateway(options: {
   authorize: (tx: ReadTransaction) => Promise<void>; ownTurn?: string; query?: string; beliefTools?: boolean;
 }) {
   const { db, owner, scope, intent, maxBytes, expand, maySend, authorize, ownTurn, query } = options;
-  const regions = recallRegions(intent, maxBytes, expand);
+  const host = createLearnerHost(db, studioLearner), regions = recallRegions(intent, maxBytes, expand);
   const queryOpts = { ...(options.beliefTools ? { beliefTools: true } : {}), ...(ownTurn ? { ownTurn } : {}), ...(query ? { query } : {}) };
   const collect = async (tx: ReadTransaction) => recallPacket(intent, regions,
     await collectRecall(tx, scope, maySend, new Date().toISOString(), regions, { management: intent === 'management', ...queryOpts }),
@@ -200,6 +179,6 @@ export async function readMemoryGateway(options: {
   const receipt = await recordLocalRead(db, { learner: studioLearner, ownerKind: owner.kind, ownerId: owner.id, stepKey: owner.step,
     label: 'local:learning-memory', input: { purpose, intent, maxBytes, scope, ...queryOpts, ...(expand ? { expand } : {}) } },
     async tx => { recall = await collect(tx); return JSON.stringify(recall.receipt); }, authorize);
-  recall ??= await db.snapshot({ learner: studioLearner }, async tx => { await authorize(tx); return collect(tx); });
+  recall ??= await host.snapshot(async tx => { await authorize(tx); return collect(tx); });
   return JSON.stringify(recall.receipt) === receipt ? recall : undefined;
 }

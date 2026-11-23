@@ -8,7 +8,6 @@ import type { MemoryRegion } from './recall-packet.ts';
 import { reviewUnderstanding, teachingCitation, understandingPresentation, type ExtractedUnderstanding } from './understanding.ts';
 
 const undoTokenPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const companionMemoryConflictPattern = /Fact revision conflict|Fact already exists|Command ID already used/;
 
 export function isUndoToken(value: unknown): value is string {
   return typeof value === 'string' && undoTokenPattern.test(value);
@@ -18,10 +17,6 @@ export function validateCompanionMemoryInput(input: Record<string, unknown>): { 
   if (typeof input.text !== 'string' || input.text.length > 800 || !input.text.isWellFormed() || input.text.includes('\0') ||
       typeof input.revision !== 'number' || !Number.isSafeInteger(input.revision) || input.revision < 0) return null;
   return { text: input.text, revision: input.revision };
-}
-
-export function isCompanionMemoryConflict(error: unknown): boolean {
-  return error instanceof Error && companionMemoryConflictPattern.test(error.message);
 }
 
 export function mergeDeliveredRanges(existing: readonly [number, number][], next: [number, number]): [number, number][] {

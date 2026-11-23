@@ -1,10 +1,6 @@
-import { createBusScope } from '../../kernel/src/bus.ts';
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
 import { readFactCollection, readValueRevisions } from '../../kernel/src/commands/fact-collection.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import type { Db } from '../../kernel/src/db/types.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
-import { commandId, factId, readable, type FactSnapshot, type Json, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
+import { commandId, createBusScope, createLearnerHost, factId, isFactNotFound, isFactReadDenied, matchKernelError, readable, type CommandHooks, type Db, type FactSnapshot, type Json, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { allAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { readGoal, readTasks } from '../../modules/activity/learning-overview.ts';
@@ -20,61 +16,49 @@ import setGoalStatus from '../../modules/plan/commands/set-goal-status.ts';
 import todayDeriver from '../../modules/plan/derivers/today.ts';
 import type { GoalStatus } from '../../modules/plan/goal-values.ts';
 import { openPack } from '../../modules/plan/offline-pack.ts';
-import { classifyOrganizerCommandError, mergePackCandidatesWithCompletion, parseOfflinePackSubmit, parseOrganizerOpenRev, parseOrganizerTaskInput } from '../../modules/plan/organizer-slice.ts';
+import { mergePackCandidatesWithCompletion, parseOfflinePackSubmit, parseOrganizerOpenRev, parseOrganizerTaskInput } from '../../modules/plan/organizer-slice.ts';
 import { createOrganizerTask, setOrganizerTaskDone } from '../../modules/plan/organizer-task-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
 import { projectFreshMaterialCandidates, projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { createCommandReadContext, isFactNotFound, isFactReadDenied } from './fact-read-helpers.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 
-function validate<Input, Value>(parse: (input: Input) => Value, input: Input): Value {
+const validate = <Input, Value>(parse: (input: Input) => Value, input: Input): Value => {
   try { return parse(input); }
   catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '内容格式无效。'); }
-}
-
-function translate(error: unknown): Error {
+};
+const translate = (error: unknown): Error => {
   if (error instanceof RequestError) return error;
   if (isFactNotFound(error)) return new RequestError(400, '链接的材料或要恢复的版本不存在。');
   if (isFactReadDenied(error)) return new RequestError(403, '这份材料当前无法链接。');
-  if (error instanceof Error) {
-    const mapped = classifyOrganizerCommandError(error.message);
-    if (mapped) return new RequestError(mapped.status, mapped.message);
-    return error;
-  }
-  return new Error('安排保存失败。');
-}
-
-const todayFactTypes = [
-  planRuleType, materialType, intakeFactType, studyTurnType, workbookPaperType,
-  workbookAttemptType, workbookRubricAssessmentType, workbookCorrectionType, studyRecordType,
-];
+  return matchKernelError<Error>(error, {
+    duplicate_command: () => new RequestError(409, '同一个请求标识已经用于不同内容。'),
+    revision_conflict: () => new RequestError(409, '这条记录已在别处更新。请刷新后再试。'),
+    not_found: () => new RequestError(404, '这条记录不存在。'),
+    retracted: () => new RequestError(409, '这条记录已经撤回。'),
+    otherwise: () => (error instanceof Error ? error : new Error('安排保存失败。')),
+  });
+};
+const todayFactTypes = [planRuleType, materialType, intakeFactType, studyTurnType, workbookPaperType, workbookAttemptType, workbookRubricAssessmentType, workbookCorrectionType, studyRecordType];
+const requestOf = (input: unknown) => clientRequest(input && typeof input === 'object' ? (input as Record<string, unknown>).requestId : undefined);
 
 export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule,
-  hooks: CommandHooks = createStudioCommandHooks(),
-  carePause?: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> }) {
-  const handle = createCommandHandler(db, { modules: [activity, plan], hooks });
-  const learner = studioLearner, access = { callerPurpose: storagePurpose, maySend: () => true };
-  const bus = createBusScope({ db, learner }, {
-    actor: 'learner', purpose: storagePurpose, maySend: access.maySend,
-    defaultPreset: 'organizer', presets: new Map([['organizer', (fact: FactSnapshot) => fact]]),
-  }, handle);
-
+  hooks: CommandHooks = createStudioCommandHooks(), carePause?: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> }) {
+  const host = createLearnerHost(db, studioLearner), access = { callerPurpose: storagePurpose, maySend: () => true };
+  const bus = createBusScope({ db, learner: studioLearner }, {
+    actor: 'learner', purpose: storagePurpose, maySend: access.maySend, defaultPreset: 'organizer', presets: new Map([['organizer', (fact: FactSnapshot) => fact]]),
+  }, host.commandHandler([activity, plan], hooks));
   async function write(type: string, requestId: string, input: unknown, deletionWatermark?: string) {
     try {
-      const { wrote: [ref] } = await bus.mutate({
-        ...(deletionWatermark === undefined ? {} : { deletionWatermark }),
-        type, id: commandId(stableId('organizer-command', type, requestId)), input: input as Json,
-      });
+      const { wrote: [ref] } = await bus.mutate({ ...(deletionWatermark === undefined ? {} : { deletionWatermark }), type, id: commandId(stableId('organizer-command', type, requestId)), input: input as Json });
       if (!ref) throw new RequestError(500, '这次写入没有返回记录。');
       return { id: ref.id, rev: ref.rev };
     } catch (error) { throw translate(error); }
   }
-
   return {
-    snapshot: (includeHistory = true) => db.snapshot({ learner }, async tx => {
-      const read = createCommandReadContext(tx, storagePurpose), taskOverview = await readTasks(tx, access, null);
+    snapshot: (includeHistory = true) => host.snapshot(async tx => {
+      const read = host.read(tx, storagePurpose), taskOverview = await readTasks(tx, access, null);
       const tasks = 'items' in taskOverview ? taskOverview.items : [], notes = [];
       for await (const current of readFactCollection(tx, read, [organizerNoteType], { newestFirst: true }))
         notes.push(organizerNoteView(current, includeHistory ? await readValueRevisions(tx, read, current.ref.id) : []));
@@ -82,8 +66,8 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
     }),
     today(params: URLSearchParams) {
       const { dayOf, ...settings } = validate(p => todaySettings(p, new Date().toISOString()), params);
-      const scope = { learner, purpose: storagePurpose };
-      return db.snapshot({ learner }, async tx => {
+      const scope = { learner: studioLearner, purpose: storagePurpose };
+      return host.snapshot(async tx => {
         const paused = (await carePause?.paused(tx)) === true;
         let goal: { id: string; rev: number; text: string | null; status: GoalStatus } | null = null;
         const rules: { id: string; rev: Revision; data: PlanRule }[] = [];
@@ -104,15 +88,12 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
               ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts, await allAssessments(tx))),
               ...projectFreshMaterialCandidates(collectFreshMaterialSources(pendingFacts), settings.now),
             ];
-            return { ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? { goal } : {}),
-              rules: rules.map(r => r.data), candidates, constraints: { budget_min: null, locks: [], deadlines: [] } };
+            return { ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? { goal } : {}), rules: rules.map(r => r.data), candidates, constraints: { budget_min: null, locks: [], deadlines: [] } };
           }));
         if (gathered.plan.kind !== 'input') throw new Error('今天的输入未就绪。');
-        const input = gathered.plan.data as Parameters<typeof todayDeriver.derive>[0];
-        const outcome = await todayDeriver.derive(input);
+        const input = gathered.plan.data as Parameters<typeof todayDeriver.derive>[0], outcome = await todayDeriver.derive(input);
         if (outcome.kind !== 'value') throw new Error(outcome.reason);
-        const alternatives = input.candidates.filter(c => outcome.value.shortlist.includes(c.id));
-        return { ...outcome.value, alternatives, rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, ...(paused ? { paused: true as const } : {}) };
+        return { ...outcome.value, alternatives: input.candidates.filter(c => outcome.value.shortlist.includes(c.id)), rules, goal, observedThrough: input.observedThrough, openedAt: settings.now, ...(paused ? { paused: true as const } : {}) };
       });
     },
     async open(params: URLSearchParams) {
@@ -134,21 +115,18 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
     },
     goal: (input: Record<string, unknown>) => write(setGoalStatus.type, clientRequest(input.requestId), validate(setGoalStatus.schema.parse, input)),
     async submit(input: Record<string, unknown>, deletionWatermark?: string) {
-      const { record, explanation, ...pack } = validate(parseOfflinePackSubmit, input);
-      const requestId = clientRequest(input.requestId), id = factId(stableId('offline-pack-submission', requestId));
-      const ref = await write(submitOfflinePack, requestId, { id, data: { consent: input.consent, pack, record } }, deletionWatermark);
+      const { record, explanation, ...pack } = validate(parseOfflinePackSubmit, input), requestId = clientRequest(input.requestId);
+      const ref = await write(submitOfflinePack, requestId, { id: factId(stableId('offline-pack-submission', requestId)), data: { consent: input.consent, pack, record } }, deletionWatermark);
       return { ...ref, result: pack.result, explanation };
     },
     task(input: unknown) {
-      const requestId = clientRequest(input && typeof input === 'object' ? (input as Record<string, unknown>).requestId : undefined);
-      const parsed = validate(parseOrganizerTaskInput, input);
+      const requestId = requestOf(input), parsed = validate(parseOrganizerTaskInput, input);
       return parsed.kind === 'done'
         ? write(setOrganizerTaskDone, requestId, parsed.commandInput)
         : write(createOrganizerTask, requestId, { id: factId(stableId('organizer-task', requestId)), data: parsed.data });
     },
     note(input: unknown) {
-      const requestId = clientRequest(input && typeof input === 'object' ? (input as Record<string, unknown>).requestId : undefined);
-      const command = validate(data => prepareOrganizerNote(data, factId(stableId('organizer-note', requestId))), input);
+      const requestId = requestOf(input), command = validate(data => prepareOrganizerNote(data, factId(stableId('organizer-note', requestId))), input);
       return write(command.type, requestId, command.input);
     },
   };

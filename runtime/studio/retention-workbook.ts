@@ -1,4 +1,4 @@
-import type { ReadTransaction } from '../../kernel/src/index.ts';
+import { createCommandReadContext, FactReadDeniedError, isFactUnavailable, type ReadTransaction } from '../../kernel/src/index.ts';
 import { reopenControlledHelpBasis } from '../../modules/activity/help-exposure-values.ts';
 import { retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
 import type { SourceRefV1 } from '../../modules/activity/source-values.ts';
@@ -7,7 +7,6 @@ import type { SelectedNotionAccess } from '../../modules/capture/notion-source.t
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { knowledgeEdgeType, workspaceEntryType } from '../../modules/content/knowledge-edge.ts';
-import { createCommandReadContext, FactReadDeniedError, isFactUnavailable } from './fact-read-helpers.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
 import { readStudioNotionSource, type CheckNotionRead } from './notion.ts';
 import { readPosttestIssuance, type PosttestFactReader } from './retention-posttest.ts';
@@ -35,8 +34,7 @@ export function selectedWorkbookRead(tx: ReadTransaction, purpose: string, sourc
   } };
 }
 async function trackSource(tx: ReadTransaction, read: PosttestFactReader, reference: string | SourceRefV1, as: string, maySend: WorkspaceSourceRecipient) {
-  const opened: Parameters<SourceTrack>[] = [];
-  const source = await resolveSource(tx, reference, { recipient: 'workspace', purpose: as, maySend, track: (...w) => opened.push(w) });
+  const opened: Parameters<SourceTrack>[] = [], source = await resolveSource(tx, reference, { recipient: 'workspace', purpose: as, maySend, track: (...w) => opened.push(w) });
   if (!source) throw new FactReadDeniedError('changed', '冻结题项的来源当前不可用。');
   for (const [fact, mode] of opened) await read.fact(fact.ref.id, mode === 'following' ? { mode } : { mode: 'pinned', rev: fact.ref.rev });
   return source;

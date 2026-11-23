@@ -1,13 +1,13 @@
-import type { ReadTransaction, Tick } from '../../kernel/src/index.ts';
+import { toolFailure } from '../../executors/teaching/learning-tools.ts';
+import type { PythonRead } from '../../executors/teaching/python-sdk.ts';
+import { questionScope } from '../../executors/teaching/question-read-receipts.ts';
+import { createAuthorizedFactReader, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
 import { practiceCustodyType } from '../../modules/activity/sealed-practice.ts';
 import { pythonQuestionsScanLimit, readStudioPythonQuestions, type PythonQuestionsArgs, type PythonQuestionsMaySend, type PythonQuestionsTrack, type StudioPythonQuestionsDeps } from '../../modules/activity/studio-python-questions-host.ts';
 import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
-import { toolFailure } from '../../executors/teaching/learning-tools.ts';
-import type { PythonRead } from '../../executors/teaching/python-sdk.ts';
-import { questionScope } from '../../executors/teaching/question-read-receipts.ts';
-import { createAuthorizedFactReader, factReadChecks } from './fact-read-helpers.ts';
+import { factReadChecks } from './fact-read-helpers.ts';
 import { purpose } from './identity.ts';
 import { openKnowledgeEdge } from './knowledge-graph.ts';
 import { checkStudioNotionFact } from './notion.ts';
@@ -28,16 +28,13 @@ export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead[
   maySend: PythonQuestionsMaySend; track: PythonQuestionsTrack; known(id: string): boolean; turn: string; trackNegative(id: string): void;
 }) {
   return readStudioPythonQuestions({
-    purpose, questionScope, ...factReadChecks,
-    toolFailure: toolFailure as StudioPythonQuestionsDeps['toolFailure'],
+    purpose, questionScope, ...factReadChecks, toolFailure: toolFailure as StudioPythonQuestionsDeps['toolFailure'],
     createAuthorizedFactReader: createAuthorizedFactReader as StudioPythonQuestionsDeps['createAuthorizedFactReader'],
     resolveSource: resolveSource as StudioPythonQuestionsDeps['resolveSource'],
     openKnowledgeEdge: (innerTx, input, accessArg) => openKnowledgeEdge(innerTx, input, accessArg as never),
     checkStudioNotionFact: checkStudioNotionFact as StudioPythonQuestionsDeps['checkStudioNotionFact'],
     questionNegativeCurrent: questionNegativeCurrent as StudioPythonQuestionsDeps['questionNegativeCurrent'],
-    queryCandidates: async concepts => (await tx.query<{ id: string }>(CANDIDATE_SQL,
-      [tx.learner, [workspaceEntryType, assetType], purpose, through, knowledgeEdgeType, JSON.stringify(concepts), !concepts.length, pythonQuestionsScanLimit + 1, assetType, practiceCustodyType])).rows,
-    queryEdges: async (questionId, questionRev, concepts) => (await tx.query<{ id: string }>(EDGE_SQL,
-      [tx.learner, knowledgeEdgeType, questionId, questionRev, JSON.stringify(concepts), purpose, through, pythonQuestionsScanLimit + 1])).rows,
+    queryCandidates: async concepts => (await tx.query<{ id: string }>(CANDIDATE_SQL, [tx.learner, [workspaceEntryType, assetType], purpose, through, knowledgeEdgeType, JSON.stringify(concepts), !concepts.length, pythonQuestionsScanLimit + 1, assetType, practiceCustodyType])).rows,
+    queryEdges: async (questionId, questionRev, concepts) => (await tx.query<{ id: string }>(EDGE_SQL, [tx.learner, knowledgeEdgeType, questionId, questionRev, JSON.stringify(concepts), purpose, through, pythonQuestionsScanLimit + 1])).rows,
   }, tx, args as PythonQuestionsArgs, through, access) as never;
 }
