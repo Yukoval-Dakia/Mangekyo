@@ -15,6 +15,7 @@ const staticTargets = [
   { label: "教材", detail: "自建与阅读教材", href: "/textbooks" },
   { label: "错题回看", detail: "历史错题复盘", href: "/review" },
   { label: "笔记", detail: "整理过的学习笔记", href: "/notes" },
+  { label: "快速设置学习画像（Onboarding）", detail: "30 秒推演学情、考试日程、知识图谱与摸底题库", href: "/onboarding" },
 ];
 
 export function QuickCaptureModal({

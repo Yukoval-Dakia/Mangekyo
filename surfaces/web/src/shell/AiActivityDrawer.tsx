@@ -108,6 +108,7 @@ const USAGE_CALL_LABELS: Readonly<Record<string, string>> = {
   "question-meta-gardening": "题库元信息整理",
   "notion-access-denial": "Notion 访问拦截",
   "notion-request": "Notion 请求",
+  "onboarding-setup": "学习画像与初始配置",
 };
 
 function usageCallLabel(call: AiUsageCallItem) {

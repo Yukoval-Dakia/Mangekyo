@@ -283,7 +283,7 @@
   font-weight: 680;
 }
 
-/* 夜链·交班条 */
+/* 后台教研条 */
 .tv2-handoff {
   display: flex;
   align-items: center;
@@ -1412,4 +1412,34 @@
   .tv2-drop {
     transition: none;
   }
+}
+
+/* 冷启动 Onboarding 引导条 */
+.tv2-onboard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-radius: var(--radius-lg, 22px);
+  background: var(--tv2-hero-calm);
+  border: 1px solid var(--tv2-line);
+}
+.tv2-onboard-copy {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--tv2-ink-2);
+}
+.tv2-onboard-copy strong {
+  color: var(--tv2-ink-3);
+  font-weight: 680;
+}
+.tv2-onboard-sep { margin: 0 6px; }
+.tv2-onboard-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+  flex-wrap: wrap;
 }

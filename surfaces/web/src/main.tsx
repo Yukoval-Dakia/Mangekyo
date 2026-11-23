@@ -29,6 +29,7 @@ import {
 import { MeSurface } from './me-v2';
 import { MemoryOverviewPanel } from './memory-overview';
 import { NotionSettings } from './notion-settings';
+import { OnboardingSurface } from './onboarding';
 import { pendingErasures } from './erasure';
 import { Today } from './today';
 import { AppShell, destinations } from './shell/AppShell';
@@ -64,6 +65,7 @@ function readRoute() {
 
 function resolveBreadcrumb(path: string, search: string): string[] {
   if (path === '/today' || path === '/plan') return ['今天'];
+  if (path === '/onboarding') return ['快速设置'];
   if (path === '/companion') return ['同伴'];
   if (path === '/me') return ['我'];
   if (path === '/materials') {
@@ -223,12 +225,21 @@ function App() {
           emptyLibrary={library.data !== undefined && (library.data.materials ?? []).length === 0}
           noModel={Boolean(settings.error)}
           onNavigate={navigate}
+          onOpenOnboarding={() => navigate('/onboarding')}
           onOpenAiActivity={() => setAiActivityRequest(Date.now())}
           onCiteToCompanion={citeToCompanion}
         />
       );
     }
   }
+  else if (path === '/onboarding') content = (
+    <OnboardingSurface
+      key={routeKey}
+      onNavigate={navigate}
+      onOpenSettings={() => open('settings')}
+      onApplied={() => library.reload()}
+    />
+  );
   else if (catalogOnly) content = <QuestionBank />;
   else if (builtinPack) content = builtinPack.kind === 'practice' ? <StarterPractice pack={builtinPack} /> : <StarterLesson pack={builtinPack} />;
   else if (path === '/materials') content = (
@@ -307,6 +318,7 @@ function App() {
         key={routeKey}
         library={library}
         settings={settings.data && forTask(settings.data, 'companion')}
+        onNavigate={navigate}
         onOpenGoalEditor={() => open('goal')}
         onOpenSettings={() => open('settings')}
         renderMemoryOverview={() => (

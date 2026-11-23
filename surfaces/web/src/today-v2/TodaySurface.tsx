@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, ApiError, remember, remembered, requestId } from '../api';
+import { api, ApiError, onboardingStatus, remember, remembered, requestId } from '../api';
 import { builtinPackPath, builtinPacks, defaultPracticePack } from '../builtin-packs';
 import { Icon } from '../icons';
 import { roomPath } from '../classroom-contract';
@@ -137,6 +137,7 @@ export type TodaySurfaceProps = {
   duration?: Duration;
   handoff?: NightHandoff | null;
   onNavigate?: (href: string) => void;
+  onOpenOnboarding?: () => void;
   onOpenAiActivity?: () => void;
   onCiteToCompanion?: (citation: CompanionCitation) => void;
   confirmables?: readonly Confirmable[];
@@ -363,7 +364,7 @@ function HandoffStrip({
     <>
       {handoff.active ? <BreathDot /> : <Dot />}
       <span className="tv2-handoff-copy">
-        <strong>夜链·交班</strong>
+        <strong>后台教研</strong>
         <span className="tv2-handoff-sep" aria-hidden="true">·</span>
         <span>{headline}{previewTail}</span>
       </span>
@@ -448,6 +449,7 @@ export function TodaySurface({
   duration,
   handoff,
   onNavigate,
+  onOpenOnboarding,
   onOpenAiActivity,
   onCiteToCompanion,
   confirmables,
@@ -455,6 +457,7 @@ export function TodaySurface({
   emptyLibrary,
   noModel,
 }: TodaySurfaceProps) {
+  const [onboardingNudge, setOnboardingNudge] = useState<'hidden' | 'checking' | 'show'>('checking');
   const [plan, setPlan] = useState<TodayPlanV2 | null>(null);
   const [aiActivity, setAiActivity] = useState<AiActivitySnapshot | null>(null);
   const [error, setError] = useState('');
@@ -497,6 +500,27 @@ export function TodaySurface({
       window.removeEventListener('online', refreshOnResume);
       document.removeEventListener('visibilitychange', refreshOnResume);
     };
+  }, []);
+
+  useEffect(() => {
+    if (!navigator.onLine) {
+      setOnboardingNudge('hidden');
+      return;
+    }
+    if (sessionStorage.getItem('mangekyo:onboarding-dismissed') === '1') {
+      setOnboardingNudge('hidden');
+      return;
+    }
+    const controller = new AbortController();
+    onboardingStatus()
+      .then(value => {
+        if (controller.signal.aborted) return;
+        setOnboardingNudge(value.completed ? 'hidden' : 'show');
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setOnboardingNudge('hidden');
+      });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -1169,6 +1193,31 @@ export function TodaySurface({
   return (
     <section className="tv2" aria-busy={loading} aria-label="今天">
       {activeHandoff && <HandoffStrip handoff={activeHandoff} onOpenAiActivity={onOpenAiActivity} />}
+
+      {onboardingNudge === 'show' && (
+        <div className="tv2-onboard" role="status">
+          <span className="tv2-onboard-copy">
+            <strong>30 秒告诉 Mangekyō 你在学什么</strong>
+            <span className="tv2-onboard-sep" aria-hidden="true">·</span>
+            <span>自动配好考试日程、知识图谱与摸底题库</span>
+          </span>
+          <span className="tv2-onboard-actions">
+            <button type="button" className="tv2-btn tv2-btn--primary tv2-btn--sm" onClick={onOpenOnboarding}>
+              开始配置
+            </button>
+            <button
+              type="button"
+              className="tv2-btn tv2-btn--ghost tv2-btn--sm"
+              onClick={() => {
+                try { sessionStorage.setItem('mangekyo:onboarding-dismissed', '1'); } catch {}
+                setOnboardingNudge('hidden');
+              }}
+            >
+              先自己逛逛
+            </button>
+          </span>
+        </div>
+      )}
 
       <header className="tv2-bar">
         <div className="tv2-bar-title">
