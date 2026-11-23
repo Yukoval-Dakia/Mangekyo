@@ -1,4 +1,4 @@
-import { FactNotFoundError, factId, type FactId } from '@mangekyo/kernel';
+import { classifyKernelError, FactNotFoundError, factId, type FactId } from '@mangekyo/kernel';
 import type { AssetReadContext } from './asset.ts';
 import { knowledgeEdgeType } from './knowledge-edge.ts';
 import {
@@ -146,13 +146,12 @@ export function parseBankConfirmRequest(materialId: string, value: Record<string
   });
 }
 
-export function classifyConfirmIntakeError(error: unknown, isUnavailable: boolean): { readonly status: 404 | 409; readonly message: string } | null {
-  if (isUnavailable) return { status: 404, message: '找不到这份拍卷材料。' };
+export function classifyConfirmIntakeError(error: unknown, isUnavailable?: boolean): { readonly status: 404 | 409; readonly message: string } | null {
+  const { kind } = classifyKernelError(error);
+  if (isUnavailable ?? (kind === 'not_found' || kind === 'denied')) return { status: 404, message: '找不到这份拍卷材料。' };
   if (error instanceof IntakeQuestionConfirmConflict) return { status: 409, message: error.message };
-  if (error instanceof Error && (error.message.startsWith('材料版本已变化') || error.message.startsWith('Fact revision conflict') ||
-      error.message === 'Command ID already used with a different command identity')) {
+  if (kind === 'revision_conflict' || kind === 'duplicate_command' || (error instanceof Error && error.message.startsWith('材料版本已变化')))
     return { status: 409, message: '拍卷题目或材料版本已变化，请重新核对。' };
-  }
   return null;
 }
 

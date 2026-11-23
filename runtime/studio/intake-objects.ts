@@ -1,15 +1,13 @@
 import { openOwnedOriginalFiles, resolveIntakeDataDir } from '@mangekyo/executor-document-extraction/original';
 import { join } from 'node:path';
-import type { Db } from '../../kernel/src/db/types.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
-import { factId } from '../../kernel/src/declarations/ids.ts';
+import { createLearnerHost, factId, type Db } from '../../kernel/src/index.ts';
 import { workerStorage } from '../../kernel/src/schema.ts';
 import { intakeFileLimit, intakeOriginal } from '../../modules/capture/intake-values.ts';
 import { studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 export { digest } from '@mangekyo/executor-document-extraction/original';
 export function openIntakeObjects(db: Db) {
-  const root = resolveIntakeDataDir();
+  const root = resolveIntakeDataDir(), host = createLearnerHost(db, studioLearner);
   return openOwnedOriginalFiles(root, {
     decode: intakeOriginal, maximumSize: intakeFileLimit,
     unavailable: () => new RequestError(404, '原件暂不可读取。'),
@@ -19,8 +17,7 @@ export function openIntakeObjects(db: Db) {
       const id = factId(materialId), store = factId(await workerStorage(db));
       return { owner: `${store}:${id}`, scoped: join(root, `${store}.${id}`), legacy: join(root, id) };
     },
-    whenUncommitted: (id, undo) => db.tx({ learner: studioLearner }, async tx => {
-      await lockLearner(tx, tx.learner);
+    whenUncommitted: (id, undo) => host.lockedTx(async tx => {
       const { rowCount } = await tx.query(`SELECT id FROM facts WHERE learner_id=$1 AND id=$2 UNION ALL SELECT id FROM tombstones WHERE learner_id=$1 AND kind='fact' AND id=$2`, [tx.learner, id]);
       if (!rowCount) await undo();
     }),

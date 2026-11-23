@@ -1,17 +1,18 @@
-import type { ReadTransaction } from '../../kernel/src/db/types.ts';
-import { factId, type Revision } from '../../kernel/src/declarations/ids.ts';
-import type { FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import {
+  createAuthorizedFactReader, factId, isFactUnavailable, listFactRevisions, snapshotFactReaders,
+  type FactSnapshot, type ReadTransaction, type Revision,
+} from '../../kernel/src/index.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import { memoWorkbookRead } from '../../modules/activity/workbook-context-read.ts';
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, knowledgeEdgeType, knowledgeUseKey, matchingKnowledgeEdgeEvidence, parseEdgeEvidence, parseKnowledgeEdge, workspaceEntryType, type KnowledgeEdge, type KnowledgeEdgeKind } from '../../modules/content/knowledge-edge.ts';
 import { traverseKnowledgeGraph, type Traversed } from '../../modules/content/knowledge-traversal.ts';
-import { createAuthorizedFactReader, isFactUnavailable, snapshotFactReaders } from './fact-read-helpers.ts';
 import { resolveSource, sourceMaySend, sourcePurpose, type SourceAccess, type SourceTrack } from './source-read.ts';
 
 const whole = { kind: 'whole' } as const;
 const isEndpointType = (type: string) => type === workspaceEntryType || type === assetType;
+const graphReadUnavailable = (error: unknown) => isFactUnavailable(error) || error instanceof KnowledgeEdgeBasisError;
 export type WorkspaceSource = NonNullable<Awaited<ReturnType<typeof resolveSource>>>;
 export type GraphQuery = { conceptId: string; hops: number; direction: 'inbound' | 'outbound' | 'both'; edgeKinds: readonly KnowledgeEdgeKind[]; conceptsOnly?: boolean };
 
@@ -23,6 +24,13 @@ function graphReads(tx: ReadTransaction, access: SourceAccess, scoped?: ReturnTy
     return { source: await resolveSource(tx, ref, { ...access, track: (...w) => opened.push(w) }, 'pinned', reader), opened };
   };
   return { reader, source: scoped ? memoWorkbookRead(source) : source };
+}
+
+async function openTypedFact(reader: ReturnType<typeof createAuthorizedFactReader>, input: string | SourceRefV1, expectedType: string) {
+  if (typeof input !== 'string' && (input.fact.type !== expectedType || input.anchor.kind !== 'whole' || input.textFact)) return;
+  const id = factId(typeof input === 'string' ? input : input.fact.id);
+  const fact = await reader.fact(id, typeof input === 'string' ? { mode: 'following' } : { mode: 'pinned', rev: input.fact.rev as Revision });
+  return fact.type === expectedType ? { id, fact } : undefined;
 }
 
 export const scopedKnowledgeEdges = (tx: ReadTransaction, access: SourceAccess, facts: ReturnType<typeof snapshotFactReaders>) => {
@@ -54,18 +62,14 @@ export async function readKnowledgeSources(tx: ReadTransaction, edge: KnowledgeE
   return { from, to, sources: [...[...sources.values()].map(s => s.sourceRef), ...external], opened };
 }
 
-const graphReadUnavailable = (error: unknown) => isFactUnavailable(error) || error instanceof KnowledgeEdgeBasisError;
-
 export async function openKnowledgeEdgeEvidence(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess) {
-  if (typeof input !== 'string' && (input.fact.type !== knowledgeEdgeEvidenceType || input.anchor.kind !== 'whole' || input.textFact)) return;
-  const id = factId(typeof input === 'string' ? input : input.fact.id);
   const reader = createAuthorizedFactReader(tx, sourcePurpose(access), fact => sourceMaySend(access, fact));
   try {
-    const proof = await reader.fact(id, typeof input === 'string' ? { mode: 'following' } : { mode: 'pinned', rev: input.fact.rev as Revision });
-    if (proof.type !== knowledgeEdgeEvidenceType) return;
-    const { method, edge } = parseEdgeEvidence(proof.value);
+    const openedFact = await openTypedFact(reader, input, knowledgeEdgeEvidenceType);
+    if (!openedFact) return;
+    const { id, fact: proof } = openedFact, { method, edge } = parseEdgeEvidence(proof.value);
     const { from, to, sources, opened } = await readKnowledgeSources(tx, edge, access);
-    for (const witness of opened) access.track?.(...witness);
+    opened.forEach(w => access.track?.(...w));
     access.track?.(proof, 'pinned');
     return { id, rev: proof.ref.rev, sourceRef: sourceReference(proof, whole), title: '有向边核验证明', method,
       kind: edge.kind, scope: edge.scope, from: from.sourceRef, to: to.sourceRef, sources, ...(edge.variant ? { variant: edge.variant } : {}) };
@@ -73,17 +77,16 @@ export async function openKnowledgeEdgeEvidence(tx: ReadTransaction, input: stri
 }
 
 export async function openKnowledgeEdge(tx: ReadTransaction, input: string | SourceRefV1, access: SourceAccess, reads = graphReads(tx, access)) {
-  if (typeof input !== 'string' && (input.fact.type !== knowledgeEdgeType || input.anchor.kind !== 'whole' || input.textFact)) return;
-  const { reader } = reads, id = factId(typeof input === 'string' ? input : input.fact.id);
   try {
-    const fact = await reader.fact(id, typeof input === 'string' ? { mode: 'following' } : { mode: 'pinned', rev: input.fact.rev as Revision });
-    if (fact.type !== knowledgeEdgeType) return;
+    const openedFact = await openTypedFact(reads.reader, input, knowledgeEdgeType);
+    if (!openedFact) return;
+    const { id, fact } = openedFact;
     let edge;
     try { edge = parseKnowledgeEdge(fact.value); } catch { return; }
     const { from, to, sources, opened } = await readKnowledgeSources(tx, edge, access, reads);
     let verification;
     if (edge.verification) {
-      const proof = await reader.reopen({ ...edge.verification, mode: 'pinned', type: knowledgeEdgeEvidenceType });
+      const proof = await reads.reader.reopen({ ...edge.verification, mode: 'pinned', type: knowledgeEdgeEvidenceType });
       const { verification: _, ...claim } = edge;
       let evidence;
       try { evidence = matchingKnowledgeEdgeEvidence(proof, claim); } catch { return; }
@@ -91,7 +94,7 @@ export async function openKnowledgeEdge(tx: ReadTransaction, input: string | Sou
       verification = { method: evidence.method, sourceRef: sourceReference(proof, whole) };
       opened.push([proof, 'pinned']);
     }
-    const { rows: [birth] } = await tx.query<{ author: string }>('SELECT author FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1', [tx.learner, id]);
+    const [birth] = await listFactRevisions(tx, { factIds: [id], limit: 1 });
     opened.push([fact, typeof input === 'string' ? 'following' : 'pinned']);
     return {
       value: { id, rev: fact.ref.rev, sourceRef: sourceReference(fact, whole), kind: edge.kind, scope: edge.scope,
@@ -114,7 +117,7 @@ export async function readKnowledgeGraph<Result>(
   const concept = await resolveSource(tx, query.conceptId, { ...access, track: (...w) => rootWitnesses.push(w) });
   const root = rootWitnesses.find(([fact]) => fact.ref.id === query.conceptId)?.[0];
   if (concept?.kind !== 'concept' || !root || !isEndpointType(root.type)) return;
-  for (const witness of rootWitnesses) access.track?.(...witness);
+  rootWitnesses.forEach(w => access.track?.(...w));
   return traverseKnowledgeGraph<WorkspaceSource, OpenedEdgeValue, Parameters<SourceTrack>, Result>(query, concept, root, {
     async candidates(endpoints) {
       const { rows } = await tx.query<{ id: string }>(

@@ -1,8 +1,7 @@
-import type { CommandHooks } from '../../kernel/src/commands/contracts.ts';
-import { createCommandHandler } from '../../kernel/src/commands/handle.ts';
-import { lockLearner } from '../../kernel/src/db/learner.ts';
-import type { Db, DbTransaction, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, type FactId } from '../../kernel/src/declarations/ids.ts';
+import {
+  commandId, createCommandReadContext, createLearnerHost, isFactNotFound, isFactReadDenied, listCompletedEffects,
+  type CommandHooks, type Db, type DbTransaction, type FactId, type ReadTransaction,
+} from '../../kernel/src/index.ts';
 import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
@@ -12,15 +11,14 @@ import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { materialType } from '../../modules/content/intake-question-bank.ts';
 import { classifySetQuestionTeachingError, parseSetQuestionTeachingInput, questionMetaDraftId } from '../../modules/content/question-state.ts';
-import { createCommandReadContext, isFactNotFound, isFactReadDenied, isFactUnavailable, storageRead } from './fact-read-helpers.ts';
+import { storageRead } from './fact-read-helpers.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { enqueueQuestionVerification, readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { RequestError } from './sessions.ts';
 
 export type IssueBank = (tx: DbTransaction, input: { requestId: string; questionRefs: readonly QuestionRef[]; deletionWatermark: string }) => Promise<{ id: FactId }>;
-const scope = { learner: studioLearner }, proposalLabel = 'iqdb-proposal';
-const blocked = () => new RequestError(409, '请重新选择当前获准且已独立验收的固定题版。');
+const proposalLabel = 'iqdb-proposal';
 const validated = <Result>(parse: () => Result) => {
   try { return parse(); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '题库请求无效。'); }
 };
@@ -35,30 +33,25 @@ async function listQuestions(tx: ReadTransaction, { teachingOnly = false }: { te
   const questions = [];
   for (const { id, purpose: purposes } of rows) {
     const strict = (purposes.includes('teaching') || purposes.includes('all')) ? await inspectQuestion(tx, id) : undefined;
-    const opened = strict ? { view: strict, teachingAuthorized: true }
-      : await storedIqdbQuestionView(tx, { id, purposes, teachingOnly, teachingPurpose: purpose });
+    const opened = strict ? { view: strict, teachingAuthorized: true } : await storedIqdbQuestionView(tx, { id, purposes, teachingOnly, teachingPurpose: purpose });
     if (opened) questions.push({ ...opened.view.public, teachingAuthorized: opened.teachingAuthorized });
   }
   return questions;
 }
 
 export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank, content?: LoadedModule, hooks?: CommandHooks, activity?: LoadedModule, capture?: LoadedModule) {
-  const modules = [content, activity, capture].filter((m): m is LoadedModule => Boolean(m));
-  const handle = modules.length && hooks ? createCommandHandler(db, {
-    modules, hooks, ...(activity ? { crossModuleWrites: { [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType] } } } : {}),
-  }) : undefined;
+  const host = createLearnerHost(db, studioLearner), modules = [content, activity, capture].filter((m): m is LoadedModule => Boolean(m));
+  const exec = modules.length && hooks ? host.boundHandler(modules, hooks, undefined,
+    activity ? { crossModuleWrites: { [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType] } } } : undefined) : undefined;
   return {
-    questions: () => db.snapshot(scope, async tx => ({ questions: await listQuestions(tx) })),
+    questions: () => host.snapshot(async tx => ({ questions: await listQuestions(tx) })),
     async proposals({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
       const input = validated(() => parseProposal(raw)), proposalId = stableId(proposalLabel, input.requestId);
-      const saved = await recordLocalRead(db, { ...scope, ownerKind: 'session', ownerId: proposalId, stepKey: 'plan', label: proposalLabel, input },
+      const saved = await recordLocalRead(db, { ...host.scope, ownerKind: 'session', ownerId: proposalId, stepKey: 'plan', label: proposalLabel, input },
         async tx => JSON.stringify({ ...input, questionRefs: input.questionRefs.length ? input.questionRefs : selectBankQuestions(input, await listQuestions(tx, { teachingOnly: true })) }),
-        tx => assertDeletionWatermark(tx, watermark)).catch(error => {
-          if (error instanceof Error && error.message === 'Workspace read receipt does not match the request') throw new RequestError(409, '这个请求标识已经用于另一份提案。');
-          throw error;
-        });
-      return db.tx(scope, async tx => {
-        await lockLearner(tx, tx.learner);
+        tx => assertDeletionWatermark(tx, watermark))
+        .catch(error => Promise.reject(error instanceof Error && error.message === 'Workspace read receipt does not match the request' ? new RequestError(409, '这个请求标识已经用于另一份提案。') : error));
+      return host.lockedTx(async tx => {
         await assertDeletionWatermark(tx, watermark);
         const requested = recordedReferences(saved), selected: NonNullable<Awaited<ReturnType<typeof inspectQuestion>>>[] = [];
         for (const ref of requested) {
@@ -72,52 +65,35 @@ export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: Iss
     },
     async papers({ deletionWatermark: _, ...raw }: Record<string, unknown>, watermark: string) {
       const input = validated(() => parsePaper(raw));
-      return db.tx(scope, async tx => {
-        await lockLearner(tx, tx.learner);
+      return host.lockedTx(async tx => {
         await assertDeletionWatermark(tx, watermark);
-        let refs;
-        if (input.sourceRef) refs = [input.sourceRef];
-        else {
-          const { rows: [saved] } = await tx.query<{ result: string }>(
-            `SELECT result FROM effects WHERE learner_id=$1 AND owner_kind='session' AND owner_id=$2 AND step_key='plan' AND label=$3 AND state='done'`,
-            [tx.learner, input.proposalId, proposalLabel]);
-          if (!saved) throw new RequestError(404, '找不到这份题库提案。');
-          refs = recordedReferences(saved.result);
-        }
-        if (!refs.length) throw blocked();
+        const refs = input.sourceRef ? [input.sourceRef] : await listCompletedEffects(tx, { ownerKind: 'session', ownerId: input.proposalId!, label: proposalLabel })
+          .then(({ rows: [saved] }) => { if (!saved) throw new RequestError(404, '找不到这份题库提案。'); return recordedReferences(saved.result as string); });
+        if (!refs.length) throw new RequestError(409, '请重新选择当前获准且已独立验收的固定题版。');
         return issueBank(tx, { requestId: input.requestId, questionRefs: refs, deletionWatermark: watermark });
       });
     },
     async setTeaching(id: string, raw: Record<string, unknown>) {
-      if (!handle) throw new RequestError(503, '当前服务不支持题库教学授权。');
+      if (!exec) throw new RequestError(503, '当前服务不支持题库教学授权。');
       const { questionId, requestId, expectedRev, allowed, includeSourceMaterial } = validated(() => parseSetQuestionTeachingInput(id, raw));
       try {
-        let sources: readonly { id: FactId; rev: number; intakeId?: FactId; teaching: boolean }[] = [];
-        if (allowed && includeSourceMaterial) {
-          sources = await db.snapshot(scope, async tx => {
-            const read = storageRead(tx), question = await read.fact(questionId, { mode: 'following' });
-            if (question.type !== assetType || question.ref.rev !== expectedRev) throw new RequestError(409, '题目基版已变化，请刷新后再试。');
-            const metadata = await read.fact(await questionMetaDraftId(question.ref), { mode: 'following' });
-            return Promise.all([...questionSourceMaterialIds(question, metadata)].map(async materialId => {
-              const material = await read.fact(materialId, { mode: 'following' });
-              const intakeId = await read.fact(intakeIdFor(materialId), { mode: 'following' }).then(f => f.ref.id)
-                .catch(e => isFactUnavailable(e) ? undefined : Promise.reject(e));
-              return { id: materialId, rev: material.ref.rev, ...(intakeId ? { intakeId } : {}), teaching: material.purpose.includes('teaching') || material.purpose.includes('all') };
-            }));
-          });
-          if (sources.some(s => !s.teaching) && (!activity || !capture)) throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
-        }
-        for (const s of sources) if (!s.teaching) await handle({
-          learner: studioLearner, actor: 'learner', purpose: 'storage', type: setWorkspaceTeachingCommand,
-          id: commandId(stableId('iqdb-question-source-teaching', questionId, s.id, requestId)),
+        const sources = allowed && includeSourceMaterial ? await host.snapshot(async tx => {
+          const read = host.read(tx, 'storage'), question = await read.fact(questionId, { mode: 'following' });
+          if (question.type !== assetType || question.ref.rev !== expectedRev) throw new RequestError(409, '题目基版已变化，请刷新后再试。');
+          const metadata = await read.fact(await questionMetaDraftId(question.ref), { mode: 'following' });
+          return Promise.all([...questionSourceMaterialIds(question, metadata)].map(async materialId => {
+            const material = await read.fact(materialId, { mode: 'following' });
+            const intakeId = await host.readOrNull(tx, 'storage', intakeIdFor(materialId), { mode: 'following' }).then(f => f?.ref.id);
+            return { id: materialId, rev: material.ref.rev, ...(intakeId ? { intakeId } : {}), teaching: material.purpose.includes('teaching') || material.purpose.includes('all') };
+          }));
+        }) : [];
+        if (sources.some(s => !s.teaching) && (!activity || !capture)) throw new RequestError(409, '题目来源未授权教学用途，请先开放对应来源材料的教学权限。');
+        for (const s of sources) if (!s.teaching) await exec({
+          purpose: 'storage', type: setWorkspaceTeachingCommand, id: commandId(stableId('iqdb-question-source-teaching', questionId, s.id, requestId)),
           input: { id: s.id, expectedRev: s.rev, enabled: true, ...(s.intakeId ? { intakeId: s.intakeId } : {}) },
         });
-        const receipt = await handle({
-          learner: studioLearner, actor: 'learner', purpose: 'storage', type: 'content.setQuestionTeaching',
-          id: commandId(stableId('iqdb-question-teaching', questionId, requestId)), input: { id: questionId, expectedRev, allowed },
-        });
-        const rev = receipt.wrote.find(w => w.id === questionId)?.rev ?? expectedRev;
-        return { id: questionId, rev, teachingAuthorized: allowed, changed: receipt.wrote.length > 0, sourceMaterialAuthorized: allowed };
+        const receipt = await exec({ purpose: 'storage', type: 'content.setQuestionTeaching', id: commandId(stableId('iqdb-question-teaching', questionId, requestId)), input: { id: questionId, expectedRev, allowed } });
+        return { id: questionId, rev: receipt.wrote.find(w => w.id === questionId)?.rev ?? expectedRev, teachingAuthorized: allowed, changed: receipt.wrote.length > 0, sourceMaterialAuthorized: allowed };
       } catch (error) {
         const mapped = classifySetQuestionTeachingError(error, { notFound: isFactNotFound(error), deniedReason: isFactReadDenied(error) ? error.reason : undefined });
         if (mapped) throw new RequestError(mapped.status, mapped.message);

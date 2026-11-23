@@ -1,4 +1,4 @@
-import type { CommandReceipt, FactSnapshot, LearnerId, ReadContext } from '@mangekyo/kernel';
+import { matchKernelError, type CommandReceipt, type FactSnapshot, type LearnerId, type ReadContext } from '@mangekyo/kernel';
 import { key } from './parse.ts';
 import { openTextbookReference, textbookPageFrom, type TextbookBlockBody } from './textbook-page.ts';
 
@@ -137,19 +137,22 @@ export function textbookWriteReceipt(receipt: CommandReceipt, requestId: string,
 }
 
 export function classifyTextbookWriteError(error: unknown): { readonly status: 400 | 403 | 404 | 409; readonly message: string } | null {
-  if (!(error instanceof Error)) return null;
-  const { message } = error;
-  if (message === 'Command ID already used with a different command identity') return { status: 409, message: '同一个请求标识已经用于不同编辑。' };
-  if (message.startsWith('Fact already exists: ')) return { status: 409, message: '教材标识已经存在。' };
-  if (message.startsWith('Fact does not exist: ')) return { status: 404, message: '找不到要编辑的教材。' };
-  if (message.startsWith('Fact is retracted: ')) return { status: 409, message: '这份教材已经撤回。' };
-  if (message.startsWith('Fact purpose does not allow this write: ')) return { status: 403, message: '当前用途不能编辑这份教材。' };
-  if (message === '教材依据已变更。') return { status: 403, message: '教材来源已变更。' };
-  if (message === 'Proposal not found') return { status: 404, message: '找不到教材提议。' };
-  if (message === 'Proposal already decided' || message.startsWith('Fact revision conflict: ') ||
-      message === 'Only an unedited companion draft can be revised') return { status: 409, message: '教材或提议已变更，请刷新。' };
-  if (/^(教材|引用|插入位置|来源)/.test(message)) return { status: 400, message };
-  return null;
+  return matchKernelError<{ readonly status: 400 | 403 | 404 | 409; readonly message: string } | null>(error, {
+    duplicate_command: () => ({ status: 409, message: '同一个请求标识已经用于不同编辑。' }),
+    already_exists: () => ({ status: 409, message: '教材标识已经存在。' }),
+    not_found: () => ({ status: 404, message: '找不到要编辑的教材。' }),
+    retracted: () => ({ status: 409, message: '这份教材已经撤回。' }),
+    purpose_write_denied: () => ({ status: 403, message: '当前用途不能编辑这份教材。' }),
+    proposal_not_found: () => ({ status: 404, message: '找不到教材提议。' }),
+    proposal_decided: () => ({ status: 409, message: '教材或提议已变更，请刷新。' }),
+    revision_conflict: () => ({ status: 409, message: '教材或提议已变更，请刷新。' }),
+    otherwise: ({ cause }) => {
+      if (!(cause instanceof Error)) return null;
+      if (cause.message === '教材依据已变更。') return { status: 403, message: '教材来源已变更。' };
+      if (cause.message === 'Only an unedited companion draft can be revised') return { status: 409, message: '教材或提议已变更，请刷新。' };
+      return /^(教材|引用|插入位置|来源)/.test(cause.message) ? { status: 400, message: cause.message } : null;
+    },
+  });
 }
 
 export function parseProposalBlockSelection(blockIds: unknown): string[] {
