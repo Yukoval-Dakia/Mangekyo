@@ -25,11 +25,13 @@ import { textbookPageType } from '../../modules/content/textbook-page.ts';
 import { buildUpdatedRouteEntry, buildWorkspaceTeachingCommand, isPlainObject, lookupTeachingFailure, parseAdvancedWorkspaceListParams, projectWorkspacePreview, ulidFactPattern, validateRouteGrantInput, type TeachingFailureReason } from '../../modules/content/workspace-slice.ts';
 import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
+import { summarizeRecordFlowForList } from '../../modules/learner/record-flow.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { notionModelRecipient, sourceId, stableId, studioLearner } from './identity.ts';
 import { openKnowledgeEdge, openKnowledgeEdgeEvidence } from './knowledge-graph.ts';
 import { confirmNotionRead, type CheckNotionRead } from './notion.ts';
 import { materialIntakeLink } from './reading.ts';
+import { loadRecordFlowSnapshot, readWorkspaceRecordFlow } from './record-flow.ts';
 import { RequestError } from './sessions.ts';
 import { loadSettings, saveSettings } from './settings.ts';
 import { resolveSource } from './source-read.ts';
@@ -150,15 +152,21 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
              WHERE ${where.join(' AND ')} ORDER BY f.created_tick DESC, f.id DESC LIMIT $${values.length}`, values);
           const visible: { row: AccessRow; read: AccessDisplay }[] = [];
           for (const row of rows.slice(0, limit)) { const read = await readDisplay(tx, row, check); if (read) visible.push({ row, read }); }
-          return { rows: visible, last: rows.slice(0, limit).at(-1), hasMore: rows.length > limit, trigramUnavailable: Boolean(query && !trigram) };
+          const flowSummaries = visible.length ? summarizeRecordFlowForList(visible.map(v => v.row.id), await loadRecordFlowSnapshot(tx, syntheticStudyRecords)) : {};
+          return { rows: visible, flowSummaries, last: rows.slice(0, limit).at(-1), hasMore: rows.length > limit, trigramUnavailable: Boolean(query && !trigram) };
         }),
         providerList(),
       ]);
       return {
-        items: result.rows.map(({ row, read }) => itemOf(row, read)), unappliedFilters: [],
+        items: result.rows.map(({ row, read }) => ({ ...itemOf(row, read), ...result.flowSummaries[row.id] })), unappliedFilters: [],
         ...(result.trigramUnavailable ? { retrievalWarnings: ['pg_trgm_unavailable'] } : {}),
         nextCursor: result.hasMore && result.last ? encodeCursor(result.last) : null, categories: categoryList, ...providers,
       };
+    },
+    async flow(id: string) {
+      const flow = await host.snapshot(tx => readWorkspaceRecordFlow(tx, requireFactId(id), syntheticStudyRecords));
+      if (!flow) throw new RequestError(404, '找不到这条学习记录。');
+      return flow;
     },
     async record(id: string, params: URLSearchParams) {
       const itemId = requireFactId(id), rawRef = params.get('ref');

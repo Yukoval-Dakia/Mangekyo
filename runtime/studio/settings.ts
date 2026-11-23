@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { createLearnerHost, lockLearner, type Db, type DbTransaction } from '../../kernel/src/index.ts';
 import { studioLearner } from './identity.ts';
 import type { ModelTask } from '../../executors/teaching/model-routes.ts';
 import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
+import { autoAuthorizeActiveRoute, defaultStored as defaultWorkspaceAccess, normalizeStored as normalizeWorkspaceAccess } from '../../executors/teaching/workspace-provider-grants.ts';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -43,7 +45,14 @@ export function saveSettings(input: Record<string, unknown>) {
 }
 
 export function saveLearnerSettings(db: Db, input: Record<string, unknown>) {
-  return createLearnerHost(db, studioLearner).lockedTx(() => saveSettings(input));
+  return createLearnerHost(db, studioLearner).lockedTx(async () => {
+    const saved = await saveSettings(input);
+    const accessPath = process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
+    const [full, stored] = await Promise.all([loadSettings(), readJsonConfig(accessPath, defaultWorkspaceAccess, normalizeWorkspaceAccess)]);
+    const next = autoAuthorizeActiveRoute(full, stored, randomUUID());
+    if (next.changed) await writeJsonConfig(accessPath, next.stored);
+    return saved;
+  });
 }
 
 /** Bind a fresh explicitly authorized send to the current account, including legacy settings. */

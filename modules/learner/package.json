@@ -20,6 +20,8 @@
     "./facts/pre-submit-process": "./pre-submit-process.ts",
     "./facts/textbook-mastery": "./textbook-mastery.ts",
     "./facts/weakness-error-summary": "./weakness-error-summary.ts",
-    "./facts/widened-rev": "./widened-rev.ts"
+    "./facts/widened-rev": "./widened-rev.ts",
+    "./record-flow": "./record-flow.ts",
+    "./facts/record-flow": "./record-flow.ts"
   }
 }
