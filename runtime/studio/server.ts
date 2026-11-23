@@ -20,6 +20,7 @@ import { openCapturePapers } from './capture-papers.ts';
 import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } from './intake-cloud.ts';
 import { openVisionIntakeWork, visionIntakeRoute, visionIntakeSlot } from './intake-vision.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
+import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
 import { openWorkbook } from './workbook.ts';
 import { openTakeaway } from './takeaway.ts';
 import { workbookBacktrace } from './workbook-backtrace.ts';
@@ -34,8 +35,9 @@ import { openLibrary } from './library.ts';
 import { openWorkspaceAccess } from './workspace-access.ts';
 import { openRelationReview } from './workspace-relation.ts';
 import { openResearch } from './research.ts';
+import type { UnderstandingTransport } from './research-understanding.ts';
 import { correctionRetestDeriver } from './research-correction.ts';
-import { validateResearchScoutHost } from './research-scout.ts';
+import { validateResearchScoutHost, type ResearchScoutHost } from './research-scout.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { openIqdb } from './iqdb.ts';
 import { openTransparency } from './transparency.ts';
@@ -68,21 +70,24 @@ if (mode !== 'worker') {
 }
 const storeId = await workerStorage(db);
 const stopEvents = mode !== 'worker' ? await listenForSessionEvents(db, () => new pg.Client({connectionString})) : undefined;
-const activity = await loadModuleDirectory(fileURLToPath(new URL('../../modules/activity', import.meta.url)));
-const capture = await loadModuleDirectory(fileURLToPath(new URL('../../modules/capture', import.meta.url)));
-const content = await loadModuleDirectory(fileURLToPath(new URL('../../modules/content', import.meta.url)));
-const companion = await loadModuleDirectory(fileURLToPath(new URL('../../modules/companion', import.meta.url)));
-const understandingModule = process.env.MANGEKYO_UNDERSTANDING_MODULE;
-const understandingTransport = understandingModule
-  ? (await import(pathToFileURL(understandingModule).href)).understandingTransport
+const loadStudioModule = (name: string) => loadModuleDirectory(fileURLToPath(new URL(`../../modules/${name}`, import.meta.url)));
+const loadHostModule = async <T>(envName: string, exportName: string, errorMessage?: string): Promise<T | undefined> => {
+  const module = process.env[envName];
+  if (!module) return undefined;
+  const loaded = (await import(pathToFileURL(module).href))[exportName] as T | undefined;
+  if (errorMessage && loaded === undefined) throw new Error(errorMessage);
+  return loaded;
+};
+
+const activity = await loadStudioModule('activity');
+const capture = await loadStudioModule('capture');
+const content = await loadStudioModule('content');
+const companion = await loadStudioModule('companion');
+const understandingTransport = await loadHostModule<UnderstandingTransport>('MANGEKYO_UNDERSTANDING_MODULE', 'understandingTransport', '宿主模块须导出 understandingTransport');
+const scoutHost = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE
+  ? validateResearchScoutHost((await loadHostModule<ResearchScoutHost>('MANGEKYO_RESEARCH_SCOUT_MODULE', 'researchScoutHost')) as ResearchScoutHost)
   : undefined;
-if (understandingModule && !understandingTransport) throw new Error('宿主模块须导出 understandingTransport');
-const scoutModule = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE;
-const scoutHost = scoutModule
-  ? validateResearchScoutHost((await import(pathToFileURL(scoutModule).href)).researchScoutHost)
-  : undefined;
-const tariffModule = process.env.MANGEKYO_RESEARCH_WORKER_TARIFF;
-const tariff = tariffModule ? (await import(pathToFileURL(tariffModule).href)).workerTariff : undefined;
+const tariff = await loadHostModule<WorkerTariff>('MANGEKYO_RESEARCH_WORKER_TARIFF', 'workerTariff');
 const carePause = openCarePause(db, companion);
 const research = openResearch(db, activity, companion, scoutHost, understandingTransport, undefined, tariff, carePause);
 const captureHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
@@ -90,25 +95,16 @@ const intake = openIntake(db, capture, content, captureHooks);
 const cloudIntake = openCloudIntakeWork(db, intake, { submit: submitMineru, read: readMineru });
 const visionIntake = openVisionIntakeWork(db, intake);
 // This module is trusted deployment configuration, shared by the HTTP and Worker processes.
-const assessmentModule = process.env.MANGEKYO_WORKBOOK_ASSESSMENT_MODULE;
-const assessmentHost: WorkbookAssessmentHost | undefined = assessmentModule
-  ? (await import(pathToFileURL(assessmentModule).href)).workbookAssessmentHost
-  : undefined;
-if (assessmentModule && !assessmentHost) throw new Error('自动评估宿主模块须导出 workbookAssessmentHost');
+const assessmentHost = await loadHostModule<WorkbookAssessmentHost>('MANGEKYO_WORKBOOK_ASSESSMENT_MODULE', 'workbookAssessmentHost', '自动评估宿主模块须导出 workbookAssessmentHost');
 const workbookAssessment = openWorkbookAssessment(db, assessmentHost);
 const pythonHost = createPythonDeriverHost();
 const retention = openRetention(db, activity, process.env.MANGEKYO_RETENTION_METHOD, pythonHost);
 const retentionComparison = openRetentionComparison(db, pythonHost);
 const iqdbHost = await openLocalQuestionEffects(process.env.MANGEKYO_IQDB_LOCAL_WASM);
-const artifactAssessmentModule = process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE;
-const readArtifactAssessmentWitness: ReadArtifactAssessmentWitness | undefined = artifactAssessmentModule && mode !== 'web'
-  ? (await import(pathToFileURL(artifactAssessmentModule).href)).readArtifactAssessmentWitness
-  : undefined;
-if (artifactAssessmentModule && mode !== 'web' && typeof readArtifactAssessmentWitness !== 'function')
-  throw new Error('作品评估宿主模块须导出 readArtifactAssessmentWitness');
-const jitModule = process.env.MANGEKYO_STUDIO_JIT_MODULE;
-const jitCounters: readonly StudioJitCounter[] = jitModule
-  ? (await import(pathToFileURL(jitModule).href)).studioJitCounters
+const artifactWitness = mode === 'web' ? undefined : await loadHostModule<ReadArtifactAssessmentWitness>('MANGEKYO_ARTIFACT_ASSESSMENT_MODULE', 'readArtifactAssessmentWitness');
+if (process.env.MANGEKYO_ARTIFACT_ASSESSMENT_MODULE && mode !== 'web' && typeof artifactWitness !== 'function') throw new Error('作品评估宿主模块须导出 readArtifactAssessmentWitness');
+const jitCounters: readonly StudioJitCounter[] = process.env.MANGEKYO_STUDIO_JIT_MODULE
+  ? (await loadHostModule<readonly StudioJitCounter[]>('MANGEKYO_STUDIO_JIT_MODULE', 'studioJitCounters')) as readonly StudioJitCounter[]
   : [];
 if (!Array.isArray(jitCounters)) throw new Error('首轮计数模块须导出 studioJitCounters');
 
@@ -116,7 +112,7 @@ async function openWeb() {
   const recall = openRecallHttp(db, activity, createStudioCommandHooks());
   const studio = await openStudio(db, activity, {projectRecall:recall.project,jitCounters,
     enableJit:process.env.MANGEKYO_STUDIO_ENABLE_JIT === '1'});
-  const plan = await loadModuleDirectory(fileURLToPath(new URL('../../modules/plan', import.meta.url)));
+  const plan = await loadStudioModule('plan');
   const workbook = openWorkbook(db, activity, {
     capture,
     assessment: workbookAssessment,
@@ -126,10 +122,8 @@ async function openWeb() {
   });
   const activityHooks = createStudioCommandHooks({afterFactsChanged: research.activityChanged});
   const takeaways = openTakeaway(db, activity, activityHooks);
-  const textbook = openTextbook(db, content, activityHooks,
-    { python: pythonHost,
-      backtrace: (tx, read, facts) => workbookBacktrace(tx, read as never, facts) as never },
-    workbook.issueBank);
+  const pulseHost = { python: pythonHost, backtrace: (tx: unknown, read: unknown, facts: unknown) => workbookBacktrace(tx as never, read as never, facts as never) as never };
+  const textbook = openTextbook(db, content, activityHooks, pulseHost, workbook.issueBank);
   const iqdb = openIqdb(db, Boolean(iqdbHost), workbook.issueBank, content, activityHooks, activity, capture);
   const student = { notion:openStudioNotion(db,capture,research.activityChanged), textbook,
     relationReview:openRelationReview(db,content,research.activityChanged),
@@ -138,8 +132,7 @@ async function openWeb() {
     memoryManagement: openMemoryManagement(db, activity, companion),
     intake, capturePapers: openCapturePapers(db, capture, activity, captureHooks),
     workspace: openWorkspaceAccess(db, activity, content, capture, plan, research.activityChanged),
-    research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db, {python: pythonHost,
-      backtrace: (tx, read, facts) => workbookBacktrace(tx, read as never, facts) as never}), carePause };
+    research, recall, retention, retentionComparison, iqdb, transparency: openTransparency(db, pulseHost), carePause };
   return serve(db, studio, openLibrary(db, capture, content, plan), openPractice(db, activity), student, port)
     .listen(port, '127.0.0.1', () => console.log('Mangekyō http://127.0.0.1:' + port));
 }
@@ -195,44 +188,54 @@ async function closeRound(round: WorkerRound | undefined) {
   await round.connection.close().catch(() => {});
 }
 
+let offlineLogged = false;
+let attempt = 0;
+const reconnectBackoff = (error: unknown, message: string, signal: AbortSignal) => {
+  if (!offlineLogged) {
+    if (error !== undefined) console.error(message, error instanceof Error ? error.name : 'error');
+    else console.error(message);
+    offlineLogged = true;
+  }
+  return interruptibleDelay(Math.min(30_000, 2_000 * 2 ** attempt++), signal);
+};
+
 async function runWorkerLoop(storeId: string, signal: AbortSignal) {
   await research.reconcile();
   const queue = (process.env.MANGEKYO_TASK_QUEUE || 'mangekyo-studio') + '-' + storeId;
   const executeResearch = (ref: WorkRef, terminal: boolean) => research.execute(ref, terminal, workCancellationSignal());
   const notion = openStudioNotion(db, capture, research.activityChanged);
+  const teachWork = (ref: WorkRef) => teach(db, ref, artifactWitness, jitCounters, research.turnCompleted, carePause, notion);
   async function executeDefault(ref: WorkRef, terminal: boolean) {
     if (await executeResearch(ref, terminal)) return;
     const work = await readWork(db, ref);
     if (!work || [confirmedTeachingMethod,learningToolsMethod].includes(work.deriver)) return;
-    if (work.slotType === cloudIntakeSlot) await cloudIntake.execute(ref, terminal);
-    else if (work.slotType === visionIntakeSlot) await visionIntake.execute(ref, terminal, workCancellationSignal());
-    else if (work.slotType === workbookAssessmentSlot) await workbookAssessment.execute(ref, terminal);
-    else if (work.slotType === questionVerificationType) await executeQuestionVerification(db, ref, iqdbHost, terminal);
-    else if (work.slotType === artifactAssessmentSlot) await executeArtifactAssessment(db, ref, terminal);
-    else if (work.slotType === retentionComparisonWork) await retentionComparison.execute(ref, work.slotKey, terminal);
-    else if (isRetentionSlot(work.slotType)) await retention.execute(ref, terminal);
-    else if (terminal) await recordTerminalFailure(db, ref);
-    else await teach(db, ref, readArtifactAssessmentWitness, jitCounters, research.turnCompleted, carePause,
-      notion);
+    const run = work.slotType === cloudIntakeSlot ? () => cloudIntake.execute(ref, terminal)
+      : work.slotType === visionIntakeSlot ? () => visionIntake.execute(ref, terminal, workCancellationSignal())
+      : work.slotType === workbookAssessmentSlot ? () => workbookAssessment.execute(ref, terminal)
+      : work.slotType === questionVerificationType ? () => executeQuestionVerification(db, ref, iqdbHost, terminal)
+      : work.slotType === artifactAssessmentSlot ? () => executeArtifactAssessment(db, ref, terminal)
+      : work.slotType === retentionComparisonWork ? () => retentionComparison.execute(ref, work.slotKey, terminal)
+      : isRetentionSlot(work.slotType) ? () => retention.execute(ref, terminal)
+      : terminal ? () => recordTerminalFailure(db, ref) : () => teachWork(ref);
+    await run();
   }
   const workerConfig = {
     address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
     namespace: process.env.TEMPORAL_NAMESPACE || 'default',
     buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
   };
-  const protectedMethods = [
-    {deriver:confirmedTeachingMethod, lane:'teaching-confirmed-v1'},
-    {deriver:learningToolsMethod, lane:'learning-tools-v1'},
-  ];
+  const protectedLanes = [
+    [confirmedTeachingMethod, 'teaching-confirmed-v1'],
+    [learningToolsMethod, 'learning-tools-v1'],
+  ] as const;
   const lanes = [
     { queue, route: undefined, run: executeDefault },
     { queue: capabilityTaskQueue(queue, 'correction-retest-v1'), route: { deriver: correctionRetestDeriver }, run: executeResearch },
-    ...protectedMethods.map(({deriver,lane}) => ({queue:capabilityTaskQueue(queue,lane),route:{deriver},
+    ...protectedLanes.map(([deriver,lane]) => ({queue: capabilityTaskQueue(queue,lane), route: {deriver},
       async run(ref: WorkRef, terminal: boolean) {
         if ((await readWork(db,ref))?.deriver !== deriver) return;
         if (terminal) await recordTerminalFailure(db,ref);
-        else await teach(db,ref,readArtifactAssessmentWitness,jitCounters,research.turnCompleted,carePause,
-          notion);
+        else await teachWork(ref);
       },
     })),
     { queue: capabilityTaskQueue(queue, 'notion-block-v1'), route: notionBlockRoute,
@@ -257,7 +260,7 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
           ...workerConfig, taskQueue: lane.queue, deploymentName: lane.queue,
           ...(lane.route ? {} : { advanceCoordinator: research.advance }),
           onTerminalFailure: (id, cause) => run(id, true, cause),
-          ...(lane.route === notionBlockRoute ? { isRemoteUnavailable: (error: unknown) => error instanceof NotionReadTemporaryFailure } : {}),
+          ...(lane.route === notionBlockRoute ? { isRemoteUnavailable: (error: unknown): error is unknown => error instanceof NotionReadTemporaryFailure } : {}),
         });
       }));
     } catch (error) {
@@ -301,8 +304,6 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
     return { connection, client, workers, runs, relaying, roundFailed: () => failed };
   }
 
-  let attempt = 0;
-  let offlineLogged = false;
   let round: WorkerRound | undefined;
   const aborted = new Promise<'aborted'>(resolve => {
     if (signal.aborted) resolve('aborted');
@@ -323,13 +324,7 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
         await closeRound(round);
         round = undefined;
         if (signal.aborted) break;
-        if (!offlineLogged) {
-          console.error('Temporal 暂不可达，后台将持续重连；本地界面不受影响。',
-            error instanceof Error ? error.name : 'error');
-          offlineLogged = true;
-        }
-        if (!await interruptibleDelay(Math.min(30_000, 2_000 * 2 ** attempt), signal)) break;
-        attempt += 1;
+        if (!await reconnectBackoff(error, 'Temporal 暂不可达，后台将持续重连；本地界面不受影响。', signal)) break;
         continue;
       }
       attempt = 0;
@@ -344,12 +339,7 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
       await closeRound(finished);
       if (signal.aborted || outcome === 'aborted') break;
       if (outcome === 'failed' || finished.roundFailed()) {
-        if (!offlineLogged) {
-          console.error('Temporal 连接中断，后台将持续重连。');
-          offlineLogged = true;
-        }
-        if (!await interruptibleDelay(Math.min(30_000, 2_000 * 2 ** attempt), signal)) break;
-        attempt += 1;
+        if (!await reconnectBackoff(undefined, 'Temporal 连接中断，后台将持续重连。', signal)) break;
       } else break;
     }
   } finally {
