@@ -74,7 +74,7 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
       expect(proposed.body).toMatchObject({ proposal: { meta: { model: 'mock-onboarding' } } });
       const applied = await call('/api/onboarding/apply', { requestId: 'onboard-apply-1', proposal: proposed.body.proposal });
       expect(applied.status).toBe(200);
-      expect(applied.body.applied).toMatchObject({ ruleCount: 4, disciplineCount: 1, conceptCount: 2,
+      expect(applied.body.applied).toMatchObject({ ruleCount: 5, disciplineCount: 1, conceptCount: 2,
         skippedExistingConcepts: 0, edgeCount: 1, questionCount: 1, memoryUpdated: true });
       expect(applied.body.links.graph).toBe('/materials?tab=graph');
       expect(authorizedCalls).toBe(1);
