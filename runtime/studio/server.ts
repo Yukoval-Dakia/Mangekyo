@@ -21,6 +21,8 @@ import { cloudIntakeRoute, cloudIntakeSlot, mineruToken, openCloudIntakeWork } f
 import { openVisionIntakeWork, visionIntakeRoute, visionIntakeSlot } from './intake-vision.ts';
 import { readMineru, submitMineru } from '@mangekyo/executor-document-extraction/mineru';
 import type { WorkerTariff } from '../../executors/teaching/research-worker.ts';
+import { createSettingsUnderstandingTransport } from '../../executors/teaching/background-llm.ts';
+import { loadSettings } from './settings.ts';
 import { openWorkbook } from './workbook.ts';
 import { openTakeaway } from './takeaway.ts';
 import { workbookBacktrace } from './workbook-backtrace.ts';
@@ -82,7 +84,7 @@ const activity = await loadStudioModule('activity');
 const capture = await loadStudioModule('capture');
 const content = await loadStudioModule('content');
 const companion = await loadStudioModule('companion');
-const understandingTransport = await loadHostModule<UnderstandingTransport>('MANGEKYO_UNDERSTANDING_MODULE', 'understandingTransport', '宿主模块须导出 understandingTransport');
+const understandingTransport = (await loadHostModule<UnderstandingTransport>('MANGEKYO_UNDERSTANDING_MODULE', 'understandingTransport', '宿主模块须导出 understandingTransport')) ?? createSettingsUnderstandingTransport(() => loadSettings());
 const scoutHost = process.env.MANGEKYO_RESEARCH_SCOUT_MODULE
   ? validateResearchScoutHost((await loadHostModule<ResearchScoutHost>('MANGEKYO_RESEARCH_SCOUT_MODULE', 'researchScoutHost')) as ResearchScoutHost)
   : undefined;
