@@ -803,17 +803,25 @@ function buildNextActions(
     href: directPaperId ? `/papers/${directPaperId}` : `/papers?focus=${identity.id}`,
   });
 
+  const companionHref =
+    identity.kind === 'material'
+      ? `/companion?material=${identity.id}`
+      : identity.kind === 'attempt'
+        ? `/companion?record=attempt&id=${identity.id}&rev=${identity.rev}`
+        : identity.kind === 'textbook' || identity.kind === 'note' || identity.kind === 'page'
+          ? `/companion?record=page&id=${identity.id}&rev=${identity.rev}`
+          : `/companion?about=${identity.id}`;
   actions.push({
     kind: 'ask_companion',
     label: '带这条记录问同伴',
-    href: `/companion?about=${identity.id}`,
+    href: companionHref,
   });
 
   if (neighbors.length > 0 || identity.kind === 'concept' || identity.kind === 'method' || identity.kind === 'archetype') {
     actions.push({
       kind: 'open_graph',
       label: '在知识图谱中展开',
-      href: `/materials?view=graph&focus=${identity.id}`,
+      href: `/materials?tab=graph&focus=${identity.id}`,
     });
   }
 

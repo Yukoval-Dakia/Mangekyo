@@ -75,6 +75,10 @@ describe('modules/learner/record-flow (Track FLOW-1)', () => {
       'in:targets_concept:斜面受力加速度',
     ]);
     expect(flow!.nextActions.map((a) => a.kind)).toEqual(['review_mistake', 'practice', 'ask_companion', 'open_graph']);
+    expect(flow!.nextActions.find((a) => a.kind === 'open_graph')?.href).toBe(`/materials?tab=graph&focus=${ID_CONCEPT}`);
+    expect(flow!.nextActions.find((a) => a.kind === 'ask_companion')?.href).toBe(`/companion?about=${ID_CONCEPT}`);
+    expect(projectRecordFlow(ID_ATTEMPT, snap)?.nextActions.find((a) => a.kind === 'ask_companion')?.href).toBe(`/companion?record=attempt&id=${ID_ATTEMPT}&rev=1`);
+    expect(projectRecordFlow(ID_ISOLATED, snap)?.nextActions.find((a) => a.kind === 'ask_companion')?.href).toBe(`/companion?record=page&id=${ID_ISOLATED}&rev=1`);
   });
 
   it('stays honest with unknown/null mastery when no graded evidence exists and produces list summaries', () => {

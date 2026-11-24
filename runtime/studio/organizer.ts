@@ -16,7 +16,7 @@ import setGoalStatus from '../../modules/plan/commands/set-goal-status.ts';
 import todayDeriver from '../../modules/plan/derivers/today.ts';
 import type { GoalStatus } from '../../modules/plan/goal-values.ts';
 import { openPack } from '../../modules/plan/offline-pack.ts';
-import { mergePackCandidatesWithCompletion, parseOfflinePackSubmit, parseOrganizerOpenRev, parseOrganizerTaskInput } from '../../modules/plan/organizer-slice.ts';
+import { parseOfflinePackSubmit, parseOrganizerOpenRev, parseOrganizerTaskInput } from '../../modules/plan/organizer-slice.ts';
 import { createOrganizerTask, setOrganizerTaskDone } from '../../modules/plan/organizer-task-values.ts';
 import { planRule, planRuleType, type PlanRule } from '../../modules/plan/rules.ts';
 import { projectFreshMaterialCandidates, projectGraphAndBankCandidates, projectPendingCorrectionCandidates, todayDuration } from '../../modules/plan/today.ts';
@@ -86,12 +86,11 @@ export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule
             }
             const candidates = paused ? [] : [
               ...papers.flatMap(fact => todayPaper(fact, completed, day) ?? []),
-              ...mergePackCandidatesWithCompletion(completed, day),
               ...projectPendingCorrectionCandidates(collectPendingCorrectionSources(pendingFacts, await allAssessments(tx))),
               ...projectFreshMaterialCandidates(collectFreshMaterialSources(pendingFacts), settings.now),
               ...projectGraphAndBankCandidates(collectGraphConceptSources(await loadRecordFlowSnapshot(tx), goal?.id), rules.map(r => r.data)),
             ];
-            return { ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? { goal } : {}), rules: rules.map(r => r.data), candidates, constraints: { budget_min: null, locks: [], deadlines: [] } };
+            return { ...settings, ...validate(todayDuration, params.get('duration')), ...(goal ? { goal } : {}), rules: rules.map(r => r.data), candidates, includeBuiltinPacks: false, constraints: { budget_min: null, locks: [], deadlines: [] } };
           }));
         if (gathered.plan.kind !== 'input') throw new Error('今天的输入未就绪。');
         const input = gathered.plan.data as Parameters<typeof todayDeriver.derive>[0], outcome = await todayDeriver.derive(input);
