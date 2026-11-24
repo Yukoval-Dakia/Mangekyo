@@ -121,7 +121,7 @@ const defaultTimeoutMs = 60_000;
 const defaultMaxTokens = 4_096;
 const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
-function isLocalZeroCostProvider(provider: TeachingProvider): boolean {
+export function isLocalZeroCostProvider(provider: Pick<TeachingProvider, 'baseUrl' | 'apiKey'>): boolean {
   if (provider.apiKey?.trim()) return false;
   try {
     return loopbackHosts.has(new URL(provider.baseUrl).hostname.toLowerCase());

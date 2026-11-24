@@ -143,6 +143,8 @@ export type MaintenanceActionPlan = {
 export type PlanMaintenanceOptions = {
   readonly conceptUses?: ReadonlyMap<string, MaintenanceConceptUse>;
   readonly purpose?: 'storage' | 'teaching';
+  /** 命令载荷用途（边/备忘写入），与授权读取用途解耦。 */
+  readonly writePurpose?: 'storage' | 'teaching';
   readonly maxEdges?: number;
 };
 
@@ -536,7 +538,7 @@ export function planMaintenanceActions(
 
   const validConceptIds = new Set(context.concepts.map((c) => c.id));
   const existingEdgeSigs = new Set(context.edges.map((e) => `${e.fromId}\0${e.toId}\0${e.kind}`));
-  const purpose = options.purpose ?? 'teaching';
+  const purpose = options.writePurpose ?? options.purpose ?? 'teaching';
   const maxEdges = Math.max(0, Math.min(MAX_MAINTENANCE_EDGE_PROPOSALS, options.maxEdges ?? MAX_MAINTENANCE_EDGE_PROPOSALS));
   const useOf = (id: string): MaintenanceConceptUse =>
     options.conceptUses?.get(id) ?? { id, rev: 1, accessEpoch: '0' };
