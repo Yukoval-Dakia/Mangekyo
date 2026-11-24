@@ -31,10 +31,7 @@ export { TextbookConflictError };
 
 function invalid(message: string): never { throw new RequestError(400, message); }
 const parseInput = <T>(parse: () => T): T => { try { return parse(); } catch (e) { return invalid(e instanceof Error ? e.message : '教材数据无效。'); } };
-const scopedLearner = (value: unknown): LearnerId => {
-  if (typeof value !== 'string') return invalid('学习者标识无效。');
-  try { return learnerId(value); } catch { return invalid('学习者标识无效。'); }
-};
+const scopedLearner = (value: unknown): LearnerId => { if (typeof value !== 'string') return invalid('学习者标识无效。'); try { return learnerId(value); } catch { return invalid('学习者标识无效。'); } };
 const scopedRead = (input: TextbookReadInput) => ({ learner: scopedLearner(input.learner), purpose: parseInput(() => accessPurpose(input.purpose)) });
 
 const translateError = (mode: 'read' | 'write') => (error: unknown): never => {

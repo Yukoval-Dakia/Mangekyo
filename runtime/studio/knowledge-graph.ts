@@ -1,7 +1,4 @@
-import {
-  createAuthorizedFactReader, factId, isFactUnavailable, listFactRevisions, snapshotFactReaders,
-  type FactSnapshot, type ReadTransaction, type Revision,
-} from '../../kernel/src/index.ts';
+import {createAuthorizedFactReader, factId, isFactUnavailable, listFactRevisions, snapshotFactReaders, type FactSnapshot, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
 import { sourceReference, type SourceRefV1 } from '../../modules/activity/source-values.ts';
 import { memoWorkbookRead } from '../../modules/activity/workbook-context-read.ts';
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
@@ -19,10 +16,7 @@ export type GraphQuery = { conceptId: string; hops: number; direction: 'inbound'
 function graphReads(tx: ReadTransaction, access: SourceAccess, scoped?: ReturnType<typeof snapshotFactReaders>) {
   const purpose = sourcePurpose(access), recipient = (fact: FactSnapshot) => sourceMaySend(access, fact);
   const reader = scoped ? scoped(purpose, recipient) : createAuthorizedFactReader(tx, purpose, recipient);
-  const source = async (ref: SourceRefV1) => {
-    const opened: Parameters<SourceTrack>[] = [];
-    return { source: await resolveSource(tx, ref, { ...access, track: (...w) => opened.push(w) }, 'pinned', reader), opened };
-  };
+  const source = async (ref: SourceRefV1) => { const opened: Parameters<SourceTrack>[] = []; return { source: await resolveSource(tx, ref, { ...access, track: (...w) => opened.push(w) }, 'pinned', reader), opened }; };
   return { reader, source: scoped ? memoWorkbookRead(source) : source };
 }
 

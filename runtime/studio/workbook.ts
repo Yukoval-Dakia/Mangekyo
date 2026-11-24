@@ -3,7 +3,7 @@ import { assessWithAgent } from '../../executors/teaching/assessment-agent.ts';
 import { TeachingError, type TeachingDependencies } from '../../executors/teaching/index.ts';
 import { readFactType as factType } from '../../kernel/src/commands/fact-collection.ts';
 import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
-import { commandId, createLearnerHost, factId, isFactReadDenied, isFactUnavailable, LifecycleError, parseManifest, revalidateManifest, storeSettledValue, type CommandHooks, type Db, type DbTransaction, type FactId, type Json, type ReadContext, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
+import { commandId, factId, isFactReadDenied, isFactUnavailable, LifecycleError, parseManifest, revalidateManifest, storeSettledValue, type CommandHooks, type Db, type DbTransaction, type FactId, type Json, type ReadContext, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
 import { assertDeletionWatermark, assertUnburned, deletionWatermark as readDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { newUlid } from '../../kernel/src/work/identity.ts';
@@ -22,7 +22,7 @@ import { projectWorkbookReview, readWorkbookAttempts, readWorkbookSummaries, typ
 import { submittedWatermark } from '../../modules/capture/request.ts';
 import { captureSourceCommand } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { storageRead } from './fact-read-helpers.ts';
+import { storageRead, studioHost} from './fact-read-helpers.ts';
 import { routeMatchesInput, sameActiveProvider } from './harness.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { digest, openIntakeObjects } from './intake-objects.ts';
@@ -65,7 +65,7 @@ export function openWorkbook(db: Db, activity: LoadedModule, {
   capture?: LoadedModule; context?: WorkbookContextAuthority; preSubmit?: WorkbookPreSubmitAuthority;
   pythonHost?: PythonDeriverHost; assessment?: ReturnType<typeof openWorkbookAssessment>; onResearchFactsChanged?: CommandHooks['onFactsChanged'];
 } = {}) {
-  const host = createLearnerHost(db, studioLearner), objects = openIntakeObjects(db);
+  const host = studioHost(db), objects = openIntakeObjects(db);
   const hooks = createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
     await assessment.afterFactsChanged(tx, tick, changes);
     await onResearchFactsChanged?.(tx, tick, changes);

@@ -2,10 +2,7 @@ import { openLocalQuestionVerifiers } from '../../executors/teaching/iqdb-local-
 import { sealCandidate, submitCandidate, type CandidatePolicy } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { readCurrentSlotOutcome } from '../../kernel/src/derivations/revalidate.ts';
-import {
-  createLearnerHost, createPropagationHooks, FactNotFoundError, guardAccess, learnerId, revalidateManifest,
-  type Db, type DbTransaction, type ReadContext, type ReadTransaction,
-} from '../../kernel/src/index.ts';
+import {createLearnerHost, createPropagationHooks, FactNotFoundError, guardAccess, learnerId, revalidateManifest, type Db, type DbTransaction, type ReadContext, type ReadTransaction} from '../../kernel/src/index.ts';
 import { failWork, readReadyWork, requestCatalogedWork, runEffect, type WorkRef } from '../../kernel/src/work/index.ts';
 import deriver from '../../modules/content/derivers/question-verification.ts';
 import { bindQuestionExecution, independentQuestionExecutions, matchesQuestionExecution, verificationSteps } from '../../modules/content/question-effects.ts';

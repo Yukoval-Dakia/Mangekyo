@@ -1,27 +1,25 @@
 import type { PythonDeriverHost } from '../../executors/python-deriver/host.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createLearnerHost, derivationId, factId, parseManifest, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
+import { derivationId, factId, parseManifest, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
 import { failWork, finishWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { frozenInputs, frozenValue, readComparisonPlan, selectPair, validComparisonPlan, type RetentionComparisonDeps, type RetentionComparisonPlan } from '../../modules/activity/retention-host-support.ts';
 import { retentionTeachingPurpose as retentionPurpose } from '../../modules/activity/retention-posttest.ts';
 import { forecastType, readAnyRetentionMethod, reconciliationType, type RetentionForecast } from '../../modules/learner/retention.ts';
 import { matchesRetentionComparisonPlan, parseRetentionComparisonStart, projectRetentionComparisonState } from '../../modules/learner/retention-slice.ts';
 import { retentionComparisonCase, retentionComparisonReport, type RetentionReconciliation } from '../../modules/learner/retention-view.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId } from './identity.ts';
 import { evaluateStudioRetention, retentionHistoryValid } from './retention.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 export const retentionComparisonWork = 'studio.retentionComparisonWork';
 const retentionComparisonType = 'predict.retentionComparison', comparisonDeriver = 'learner/retention-comparison@1';
-const deps: RetentionComparisonDeps = {
-  RequestError, retentionPurpose, forecastType, reconciliationType, retentionComparisonWork,
-  retentionHistoryValid: (tx, id, obs) => retentionHistoryValid(tx, id, obs),
-};
+const deps: RetentionComparisonDeps = { RequestError, retentionPurpose, forecastType, reconciliationType, retentionComparisonWork, retentionHistoryValid: (tx, id, obs) => retentionHistoryValid(tx, id, obs), };
 const validPlan = (tx: ReadTransaction, plan: RetentionComparisonPlan, manifest = parseManifest(plan.manifest)) =>
   validComparisonPlan(deps, tx, plan, manifest);
 
 export function openRetentionComparison(db: Db, pythonHost?: PythonDeriverHost) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const get = (key: string) => host.snapshot(async tx => {
     const job = await readComparisonPlan(deps, tx, key);
     if (!job) throw new RequestError(404, '找不到保持方法对照。');

@@ -1,13 +1,8 @@
-import { classroomCommand, classroomMutation, classroomPlan, classroomPrompt, classroomStart, classroomRoute, classroomFact,
-  activeClassroomStep, classroomType, recoverClassroomAdjustment, seedClassroom, transitionClassroom, ClassroomConflict,
-  type Classroom, type ClassroomOperation } from '../../modules/activity/classroom.ts';
+import {classroomCommand, classroomMutation, classroomPlan, classroomPrompt, classroomStart, classroomRoute, classroomFact, activeClassroomStep, classroomType, recoverClassroomAdjustment, seedClassroom, transitionClassroom, ClassroomConflict, type Classroom, type ClassroomOperation} from '../../modules/activity/classroom.ts';
 import { bindClassroomPreparation } from '../../modules/activity/classroom-command-read.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
-import { isFactUnavailable, teachingRead } from './fact-read-helpers.ts';
-import {
-  commandId, createLearnerHost, derivationId, factId, isKernelErrorKind,
-  type CommandHooks, type CommandRuntimeOptions, type Db, type DerivationId, type FactId, type Json, type ReadTransaction,
-} from '../../kernel/src/index.ts';
+import { isFactUnavailable, teachingRead, studioHost} from './fact-read-helpers.ts';
+import {commandId, derivationId, factId, isKernelErrorKind, type CommandHooks, type CommandRuntimeOptions, type Db, type DerivationId, type FactId, type Json, type ReadTransaction} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { notionReadScope, notionSendBasis, NotionReadUnconfirmed, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { routeMatchesInput, sameRoute, workspaceGrantChecker, workspaceRouteRevision } from './harness.ts';
@@ -95,10 +90,7 @@ async function handleErrors<T>(run: () => Promise<T>) {
     throw error;
   }
 }
-const input = <T>(parse: () => T) => {
-  try { return parse(); }
-  catch (error) { throw new RequestError(400,error instanceof Error ? error.message : '课堂输入无效。'); }
-};
+const input = <T>(parse: () => T) => { try { return parse(); } catch (error) { throw new RequestError(400,error instanceof Error ? error.message : '课堂输入无效。'); } };
 
 // Only identities leave this query. The classroom reader authorizes each current plan and step.
 async function activeClassroomIds(tx: ReadTransaction) {
@@ -113,7 +105,7 @@ async function activeClassroomIds(tx: ReadTransaction) {
 }
 
 export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHooks) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const classroom = (bindCommandRead: NonNullable<CommandRuntimeOptions['bindCommandRead']>) =>
     host.boundHandler([activity], hooks, undefined, { bindCommandRead });
   const exec = (handle: ReturnType<typeof classroom>, requestId: string, input: Json) =>

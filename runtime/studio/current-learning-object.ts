@@ -43,10 +43,7 @@ export function readCurrentLearningObject(tx: ReadTransaction, selection: StudyC
     const root = witnesses.get(`${id}:${rev}`);
     if (!root) return;
     const basis = sortStudyObjectBasis(witnesses.values()), basisDigest = await studyObjectBasisDigest(basis), { content, nextOffset } = textSlice(original, 0, 3000);
-    return {
-      root, basis, basisDigest, answerSlot, openedAnswer: hasAnswer && nextOffset === null,
-      view: { alias: currentObjectAlias(kind), sourceRef, title, content, truncated: nextOffset !== null },
-    };
+    return { root, basis, basisDigest, answerSlot, openedAnswer: hasAnswer && nextOffset === null, view: { alias: currentObjectAlias(kind), sourceRef, title, content, truncated: nextOffset !== null }, };
   });
 }
 export type OpenedCurrentLearningObject = NonNullable<Awaited<ReturnType<typeof readCurrentLearningObject>>>;

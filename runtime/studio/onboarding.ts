@@ -1,27 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { commandId, createCommandReadContext, createLearnerHost, factId, isFactNotFound, listActiveFactsByTypes, stableId,
-  type CommandHooks, type CommandReceipt, type Db, type FactId, type FactReadOptions, type Json, type ReadTransaction,
-  type Revision } from '../../kernel/src/index.ts';
+import {commandId, createCommandReadContext, factId, isFactNotFound, listActiveFactsByTypes, stableId, type CommandHooks, type CommandReceipt, type Db, type FactId, type FactReadOptions, type Json, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordCompletedEffect } from '../../kernel/src/work/index.ts';
-import { buildManualOnboardingProposal, buildOnboardingCompanionMemo, parseOnboardingInput,
-  parseOnboardingProposal, planRulePayloadsFromProposal, type OnboardingConcept,
-  type OnboardingDiscipline } from '../../modules/plan/onboarding.ts';
+import {buildManualOnboardingProposal, buildOnboardingCompanionMemo, parseOnboardingInput, parseOnboardingProposal, planRulePayloadsFromProposal, type OnboardingConcept, type OnboardingDiscipline} from '../../modules/plan/onboarding.ts';
 import { setStudyGoal } from '../../modules/plan/goal-values.ts';
 import { openKnowledgeName } from '../../modules/content/knowledge-entity.ts';
 import { configureResearch, researchPurpose } from '../../modules/companion/research.ts';
 import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-config.ts';
-import { autoAuthorizeActiveRoute, defaultStored as defaultWorkspaceAccess,
-  normalizeStored as normalizeWorkspaceAccess } from '../../executors/teaching/workspace-provider-grants.ts';
+import {autoAuthorizeActiveRoute, defaultStored as defaultWorkspaceAccess, normalizeStored as normalizeWorkspaceAccess} from '../../executors/teaching/workspace-provider-grants.ts';
 import { OnboardingAgentError, proposeOnboardingWithAgent, type OnboardingAgentResult } from '../../executors/teaching/onboarding-agent.ts';
-import { purpose, studioLearner } from './identity.ts';
+import { purpose } from './identity.ts';
 import { memoryId } from './memory.ts';
 import { settingsId as researchSettingsId } from './research-sources.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { loadSettings, type ProviderSettings } from './settings.ts';
+import { studioHost } from './fact-read-helpers.ts';
 type Options = { hooks?: CommandHooks; loadProvider?: () => Promise<ProviderSettings>; agent?: typeof proposeOnboardingWithAgent;
   now?: () => Date; authorizeModel?: () => Promise<void> };
 type Modules = { plan: LoadedModule; content: LoadedModule; companion: LoadedModule };
@@ -37,10 +33,7 @@ const parseInput = (raw: unknown, date: string, zoneName: string) => {
   try { return parseOnboardingInput(raw, date, zoneName); }
   catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '冷启动配置无效。'); }
 };
-const parseProposal = (raw: unknown) => {
-  try { return parseOnboardingProposal(raw); }
-  catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '冷启动配置无效。'); }
-};
+const parseProposal = (raw: unknown) => { try { return parseOnboardingProposal(raw); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '冷启动配置无效。'); } };
 const readFact = (tx: ReadTransaction, fact: FactId, options: FactReadOptions, asPurpose = purpose) =>
   createCommandReadContext(tx, asPurpose).fact(fact, options);
 const defaultAuthorizeModel = (loadProvider: () => Promise<ProviderSettings>) => async () => {
@@ -52,7 +45,7 @@ const defaultAuthorizeModel = (loadProvider: () => Promise<ProviderSettings>) =>
   if (next.changed) await writeJsonConfig(accessPath, next.stored);
 };
 export function openOnboarding(db: Db, modules: Modules, options: Options = {}) {
-  const host = createLearnerHost(db, studioLearner), hooks = options.hooks ?? createStudioCommandHooks(),
+  const host = studioHost(db), hooks = options.hooks ?? createStudioCommandHooks(),
     send = host.boundHandler([modules.plan, modules.content, modules.companion], hooks);
   const loadProvider = options.loadProvider ?? (() => loadSettings()), agent = options.agent ?? proposeOnboardingWithAgent,
     now = options.now ?? (() => new Date()), authorizeModel = options.authorizeModel ?? defaultAuthorizeModel(loadProvider);

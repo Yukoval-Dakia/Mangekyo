@@ -3,12 +3,9 @@ import { assertClassroomAction } from './classroom.ts';
 import {learningToolError} from '../../executors/teaching/tool-error.ts';
 import { fileURLToPath } from 'node:url';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import { createCommandReadContext, isFactUnavailable } from './fact-read-helpers.ts';
+import { createCommandReadContext, isFactUnavailable, studioHost} from './fact-read-helpers.ts';
 
-import {
-  commandId, createLearnerHost, factId, isKernelErrorKind,
-  type CommandReceipt, type Db, type Manifest, type ReadTransaction, type Revision,
-} from '../../kernel/src/index.ts';
+import {commandId, factId, isKernelErrorKind, type CommandReceipt, type Db, type Manifest, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
 import { NotionReadUnconfirmed, notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import { loadModuleDirectory } from '../../kernel/src/loader.ts';
 import { assessmentRelease } from '../../modules/activity/assessment-values.ts';
@@ -53,7 +50,7 @@ export async function mountArtifact(
       return learningToolError('invalid_args','sentenceBreaks',error instanceof Error ? error.message : '正式断句无法发放。');
     }
   }
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const data = await host.snapshot(async (tx) => {
     const manifest = await authorize(tx);
     const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
@@ -62,14 +59,7 @@ export async function mountArtifact(
       "SELECT data->'manifest'->>'gatherTick' AS tick FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1",
       [tx.learner, id],
     );
-    return {
-      turnId,
-      sessionId: turn.sessionId,
-      manifest: { ...manifest, gatherTick: existing.rows[0]?.tick ?? manifest.gatherTick },
-      view,
-      predictionPrompt: prompt,
-      ...(assessment ? { assessment } : {}),
-    };
+    return { turnId, sessionId: turn.sessionId, manifest: { ...manifest, gatherTick: existing.rows[0]?.tick ?? manifest.gatherTick }, view, predictionPrompt: prompt, ...(assessment ? { assessment } : { }), };
   });
   const handle = host.boundHandler([await (content ??= load('content'))], createStudioCommandHooks({
       afterFactsChanged: async (tx) => {
@@ -204,7 +194,7 @@ export async function readClassroomMountEvidence(tx: ReadTransaction, session: s
 }
 
 export async function actOnArtifact(db: Db, session: string, raw: Record<string, unknown>) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const requestId = clientRequest(raw.requestId);
   if (typeof raw.mountId !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(raw.mountId)) throw new RequestError(400, '作品标识无效。');
   const mountId = raw.mountId;

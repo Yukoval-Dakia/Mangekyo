@@ -7,10 +7,7 @@ import { listenForNotifications } from '../../kernel/src/db/notifications.ts';
 import { workerStorage } from '../../kernel/src/schema.ts';
 import { readReadyWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import type { TeachingActivity, TeachingProgress } from '../../executors/teaching/index.ts';
-import {
-  createLearnerHost,
-  type Db, type Manifest, type ReadTransaction,
-} from '../../kernel/src/index.ts';
+import {type Db, type Manifest, type ReadTransaction} from '../../kernel/src/index.ts';
 import type { DbQuery } from '../../kernel/src/db/types.ts';
 import { slotType, studioLearner } from './identity.ts';
 import { requireSessionTurn, RequestError, sessionMountPermissions, unconfirmedReplyMessage, unavailableReplyMessage } from './sessions.ts';
@@ -19,15 +16,10 @@ import type { RecallHttp } from './recall-http.ts';
 import { RecallRequestError } from './recall.ts';
 
 import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 type Phase = TeachingProgress['phase'];
-type StreamSession = {
-  id: string;
-  caseId: string;
-  currentTurnId: string;
-  status: 'pending' | 'ready' | 'failed' | 'unknown';
-  pendingAnswer?: string;
-};
+type StreamSession = { id: string; caseId: string; currentTurnId: string; status: 'pending' | 'ready' | 'failed' | 'unknown'; pendingAnswer?: string; };
 
 const notifySql =
   `SELECT pg_notify('studio_teaching_' || lower(store_id), $1) FROM kernel_runtime_identity WHERE singleton`;
@@ -81,7 +73,7 @@ export async function publishTurnProgress(
   progress: TeachingProgress,
   validate: (tx: ReadTransaction) => Promise<Manifest>,
 ): Promise<void> {
-  await createLearnerHost(db, studioLearner).lockedTx(async (tx) => {
+  await studioHost(db).lockedTx(async (tx) => {
     if ((await readReadyWork(tx, ref))?.slotKey !== turnId) return;
     const manifest = await validate(tx);
     const written = await tx.query(
@@ -178,10 +170,7 @@ async function readSessionEvent(notion: NotionReadScope, sessionId: string) {
       row.message = authority === 'unconfirmed' ? unconfirmedReplyMessage : unavailableReplyMessage;
       row.hasStudyKit = false;
     }
-    const session: StreamSession = {
-      id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status,
-      ...(status !== 'ready' && !submission.classroom && submission.answer ? { pendingAnswer: submission.answer } : {}),
-    };
+    const session: StreamSession = { id: sessionId, caseId: submission.caseId, currentTurnId: row.turnId, status, ...(status !== 'ready' && !submission.classroom && submission.answer ? { pendingAnswer: submission.answer } : { }), };
     const mounts = status === 'pending' ? await turnArtifacts(tx,sessionId,row.turnId,check) : {snapshots: [], unconfirmed: []};
     return {session,row,mounts};
   });
@@ -279,13 +268,7 @@ export async function serveSessionEvents(
         if (eventId === lastEventId) continue;
         lastEventId = eventId;
         // Each event carries cumulative state, including on Last-Event-ID reattachment.
-        const data = {
-          session,
-          phase: row.phase ?? 'queued',
-          authorizedMountIds: artifacts.map(artifact => artifact.mountId),
-          ...partial,
-          ...(row.draft ? { message: row.draft } : {}),
-        };
+        const data = { session, phase: row.phase ?? 'queued', authorizedMountIds: artifacts.map(artifact => artifact.mountId), ...partial, ...(row.draft ? { message: row.draft } : { }), };
         data.authorizedMountIds.forEach(id => seen.add(id));
         await writeFrame(event('progress', eventId, data) +
           artifacts.map(artifact => event('artifact-snapshot', eventId, artifact)).join(''));
@@ -321,11 +304,7 @@ export async function serveSessionEvents(
   scheduleRead();
 }
 
-const eventHeaders = {
-  'Content-Type': 'text/event-stream; charset=utf-8',
-  'Cache-Control': 'no-store, no-transform',
-  'X-Accel-Buffering': 'no',
-};
+const eventHeaders = { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no', };
 function event(name: string, id: string | undefined, payload: object) {
   return (id ? 'id: ' + id + '\n' : '') + 'event: ' + name + '\ndata: ' + JSON.stringify(payload) + '\n\n';
 }

@@ -1,7 +1,4 @@
-import {
-  collectVisionOcrTelemetry, extractMultiPagePaperWithVisionOrFallback, isWeakVisionModel, mapVisionPageOutcomes,
-  readVisionLlmConfigFromEnv, visionOcrEffectRecords, type LocalExtractionResult, type VisionLlmConfig, type VisionOcrCallTelemetry,
-} from '@mangekyo/executor-document-extraction/vision-ocr';
+import {collectVisionOcrTelemetry, extractMultiPagePaperWithVisionOrFallback, isWeakVisionModel, mapVisionPageOutcomes, readVisionLlmConfigFromEnv, visionOcrEffectRecords, type LocalExtractionResult, type VisionLlmConfig, type VisionOcrCallTelemetry} from '@mangekyo/executor-document-extraction/vision-ocr';
 import type { CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
 import type { CommandHooks, Db, DbTransaction, ReadTransaction, Tick } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';

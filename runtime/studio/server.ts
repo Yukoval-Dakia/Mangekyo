@@ -57,11 +57,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MANGEK
 const connectionString = process.env.MANGEKYO_DATABASE_URL;
 if (!connectionString)
   throw new Error('请通过 MANGEKYO_DATABASE_URL 指定 Mangekyō 的本地 PostgreSQL 数据库。');
-const envOr = (name: string, fallback: string, valid: (v: string) => boolean, message: string) => {
-  const value = process.env[name] || fallback;
-  if (!valid(value)) throw new Error(message);
-  return value;
-};
+const envOr = (name: string, fallback: string, valid: (v: string) => boolean, message: string) => { const value = process.env[name] || fallback; if (!valid(value)) throw new Error(message); return value; };
 const schema = envOr('MANGEKYO_DATABASE_SCHEMA', 'mangekyo_studio', v => /^[a-z][a-z0-9_]{0,62}$/.test(v), '数据库 schema 名称无效');
 const mode = envOr('MANGEKYO_PROCESS', 'studio', v => ['studio', 'web', 'worker'].includes(v), 'MANGEKYO_PROCESS 必须是 studio、web 或 worker');
 const pool = new pg.Pool({ connectionString });
@@ -142,30 +138,17 @@ async function openWeb() {
 const server = mode === 'worker' ? undefined : await openWeb();
 
 async function interruptibleDelay(ms: number, signal: AbortSignal) {
-  try {
-    await delay(ms, undefined, { signal });
-    return true;
-  } catch {
-    return false;
-  }
+  try { await delay(ms, undefined, { signal }); return true; } catch { return false; }
 }
 
 if (mode === 'web') {
-  const stop = () => {
-    stopEvents?.();
-    server?.close(() => {
-      void db.close();
-    });
-  };
+  const stop = () => { stopEvents?.(); server?.close(() => { void db.close(); }); };
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
 } else {
   const controller = new AbortController();
   const worker = runWorkerLoop(storeId, controller.signal);
-  const stop = () => {
-    controller.abort();
-    void worker;
-  };
+  const stop = () => { controller.abort(); void worker; };
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);
   // In studio mode the HTTP server is the product surface: the worker loop runs
@@ -222,15 +205,8 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
       : terminal ? () => recordTerminalFailure(db, ref) : () => teachWork(ref);
     await run();
   }
-  const workerConfig = {
-    address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423',
-    namespace: process.env.TEMPORAL_NAMESPACE || 'default',
-    buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()),
-  };
-  const protectedLanes = [
-    [confirmedTeachingMethod, 'teaching-confirmed-v1'],
-    [learningToolsMethod, 'learning-tools-v1'],
-  ] as const;
+  const workerConfig = { address: process.env.TEMPORAL_ADDRESS || '127.0.0.1:7423', namespace: process.env.TEMPORAL_NAMESPACE || 'default', buildId: process.env.MANGEKYO_BUILD_ID || (await sourceBuildId()), };
+  const protectedLanes = [ [ confirmedTeachingMethod, 'teaching-confirmed-v1' ], [ learningToolsMethod, 'learning-tools-v1' ], ] as const;
   const lanes = [
     { queue, route: undefined, run: executeDefault },
     { queue: capabilityTaskQueue(queue, 'correction-retest-v1'), route: { deriver: correctionRetestDeriver }, run: executeResearch },
@@ -312,13 +288,7 @@ async function runWorkerLoop(storeId: string, signal: AbortSignal) {
     if (signal.aborted) resolve('aborted');
     else signal.addEventListener('abort', () => resolve('aborted'), { once: true });
   });
-  const stop = async () => {
-    stopEvents?.();
-    server?.close();
-    await closeRound(round);
-    await pythonHost.close();
-    await db.close();
-  };
+  const stop = async () => { stopEvents?.(); server?.close(); await closeRound(round); await pythonHost.close(); await db.close(); };
   try {
     while (!signal.aborted) {
       try {

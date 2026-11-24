@@ -16,18 +16,12 @@ import { workspaceEntryType } from '../../modules/activity/workspace-values.ts';
 import { workbookCorrectionType } from '../../modules/activity/workbook-correction.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { setWorkbookResearchUse, workbookAttempt, workbookAttemptType, workbookPaperType } from '../../modules/activity/workbook-values.ts';
-import {
-  allowRetentionReview, configureResearch,
-  researchPurpose, researchScoutBudget, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType,
-} from '../../modules/companion/research.ts';
+import {allowRetentionReview, configureResearch, researchPurpose, researchScoutBudget, researchSettingsType, retentionReviewPermission, retentionReviewPermissionType} from '../../modules/companion/research.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { readMissedPosttest } from './learner-radar.ts';
 import { newResearchWatermark } from './research-foreground.ts';
-import {
-  activeRetentionReview, comparisonAttempts, independentScoutSource, readWorksheet, researchReader,
-  currentResearchSettings as settings, settingsId, retentionReviewPermissionId, whenAvailable, workbookSource,
-} from './research-sources.ts';
+import {activeRetentionReview, comparisonAttempts, independentScoutSource, readWorksheet, researchReader, currentResearchSettings as settings, settingsId, retentionReviewPermissionId, whenAvailable, workbookSource} from './research-sources.ts';
 import { preparePaidResearchTriage, prepareResearchTriage, researchDecision, scoutEffectIdentity } from './research-triage-host.ts';
 import { sampleResearchScout, ScoutAuthorizationChanged, type ResearchScoutHost } from './research-scout.ts';
 import { discoverUnderstandingTodos, eligibleExtraction, openUnderstandingExtraction, paidExtractionRecipient, type UnderstandingTransport } from './research-understanding.ts';

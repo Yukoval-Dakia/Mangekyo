@@ -4,11 +4,7 @@ import type { WorkFailureCause } from '../../executors/temporal/src/work-failure
 import { sealCandidate, submitCandidate } from '../../kernel/src/derivations/candidate.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
 import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
-import {
-  classifyKernelError, commandId, createAuthorizedFactReader, createLearnerHost, factId, FactReadDeniedError,
-  isFactUnavailable, LifecycleError, parseManifest, type CommandHooks, type Db, type DbTransaction, type FactId,
-  type FactSnapshot, type Json, type LearnerId, type Manifest, type ReadTransaction,
-} from '../../kernel/src/index.ts';
+import {classifyKernelError, commandId, createAuthorizedFactReader, createLearnerHost, factId, FactReadDeniedError, isFactUnavailable, LifecycleError, parseManifest, type CommandHooks, type Db, type DbTransaction, type FactId, type FactSnapshot, type Json, type LearnerId, type Manifest, type ReadTransaction} from '../../kernel/src/index.ts';
 import { assertDeletionWatermark, deletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
@@ -25,7 +21,7 @@ import { NotionSelectionUnavailable, notionSourceTarget, openSelectedNotionSourc
 import { submittedWatermark } from '../../modules/capture/request.ts';
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { purposeReader, storageRead } from './fact-read-helpers.ts';
+import { purposeReader, storageRead, studioHost} from './fact-read-helpers.ts';
 import { notionModelRecipient, purpose as teaching, slotType as teachingSlotType, stableId, studioLearner } from './identity.ts';
 import { teachingMemoryBasis } from './memory-claims.ts';
 import { questionReceiptsCurrent } from './question-exposure.ts';
@@ -200,7 +196,7 @@ const createNotionHooks = (afterFactsChanged?: CommandHooks['onFactsChanged']) =
 const notionHooks = createNotionHooks();
 
 export async function executeNotionBlockWork(db: Db, ref: WorkRef, terminal: boolean, cause?: WorkFailureCause) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   await notionReadScope(db, studioLearner).publishAfterChecks(async (tx, check) => {
     const work = await readReadyWork(tx, ref);
     if (!work || work.slotType !== notionBlockSlot || work.deriver !== notionBlockDeriver) return;

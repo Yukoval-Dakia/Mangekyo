@@ -34,11 +34,7 @@ async function readCorrection(tx: ReadTransaction, id: FactId) {
   return whenAvailable(async () => {
     const erasureBasis = new Set<FactId>();
     const storage = createCommandReadContext(tx, storagePurpose);
-    const read = { ...storage, ...memoWorkbookFacts(async (id, options) => {
-      const fact = await storage.fact(id, options);
-      erasureBasis.add(id);
-      return fact;
-    }) };
+    const read = { ...storage, ...memoWorkbookFacts(async (id, options) => { const fact = await storage.fact(id, options); erasureBasis.add(id); return fact; }) };
     const source = await read.fact(id, { mode: 'following' });
     if (source.type !== workbookCorrectionType || source.ref.rev !== 1) return null;
     const correction = workbookCorrection(source.value);

@@ -1,34 +1,20 @@
 import { openClassrooms } from './classroom.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
-import { projectStaleWorkspaceWrite, revokedReplyWriteReceipts, workspaceWriteNeedsCurrentFact,
-  type WorkspaceWriteReceipt, type WorkspaceWriteView } from '../../executors/teaching/workspace-tools.ts';
+import {projectStaleWorkspaceWrite, revokedReplyWriteReceipts, workspaceWriteNeedsCurrentFact, type WorkspaceWriteReceipt, type WorkspaceWriteView} from '../../executors/teaching/workspace-tools.ts';
 import { projectTeachingFeedback, unavailableReply, type TeachingFeedback } from '../../executors/teaching/session-feedback.ts';
 export type { WorkspaceWriteView } from '../../executors/teaching/workspace-tools.ts';
 export { unconfirmedReplyMessage, unavailableReplyMessage } from '../../executors/teaching/session-feedback.ts';
 import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
-import { isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
+import { isFactReadDenied, isFactUnavailable, studioHost} from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { requestWork } from '../../kernel/src/work/index.ts';
-import {
-  commandId, createLearnerHost, parseManifest,
-  type Db, type ReadTransaction,
-} from '../../kernel/src/index.ts';
+import {commandId, parseManifest, type Db, type ReadTransaction} from '../../kernel/src/index.ts';
 import { first45Histories, introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 export { introductoryStudyCases as cases } from '../../executors/teaching/examples.ts';
 import type {WorkspaceWitness} from './workspace-agent.ts';
 import { turnTask } from '../../executors/teaching/model-routes.ts';
 import { sameRoute, resolveMcpGrants, workspaceRouteRevision, workspaceGrantChecker, requiresAccountConfirmation, routeMatchesInput, mcpRevision } from './harness.ts';
-import {
-  isStudyCaseId,
-  matchesStudyTurnReplay,
-  requestedStudyBackgroundUnderstanding,
-  studyAttachmentRequest,
-  studyCurrentObjectRequest,
-  studyMcpGrants,
-  studyTurn,
-  turnResearchAccess,
-  type StudyTurnReplay,
-} from '../../modules/activity/values.ts';
+import {isStudyCaseId, matchesStudyTurnReplay, requestedStudyBackgroundUnderstanding, studyAttachmentRequest, studyCurrentObjectRequest, studyMcpGrants, studyTurn, turnResearchAccess, type StudyTurnReplay} from '../../modules/activity/values.ts';
 import { attachmentCurrent, attachmentSources, readMaterialText, readOwnStudyTurn, textSlice } from './reading.ts';
 export { readOwnStudyTurn, readTeachingTurn } from './reading.ts';
 import type { StudyKit } from '../../executors/teaching/study-kit.ts';
@@ -39,20 +25,7 @@ import type { ForegroundDigest } from './foreground-digest.ts';
 import { areMemoryClaimsCurrent, recoverTurnMemoryReceipts, teachingMemoryBasis } from './memory-claims.ts';
 import { currentObjectAlias, readCurrentLearningObject } from './current-learning-object.ts';
 import { studioJitCounter, type StudioJitCounter } from './first-turn-jit.ts';
-import {
-  stableId,
-  sourceId,
-  studioLearner,
-  firstTurn,
-  nextTurn,
-  requestCommand,
-  purpose,
-  methodName,
-  confirmedTeachingMethod, learningToolsMethod,
-  slotType,
-  textbookUndoId,
-  notionModelRecipient,
-} from './identity.ts';
+import {stableId, sourceId, studioLearner, firstTurn, nextTurn, requestCommand, purpose, methodName, confirmedTeachingMethod, learningToolsMethod, slotType, textbookUndoId, notionModelRecipient} from './identity.ts';
 
 import {mountPermissionFields, turnArtifacts} from './presentation-store.ts';
 
@@ -146,10 +119,10 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
   return result;
 }
 export const loadHistory = (db: Db, session: string) =>
-  createLearnerHost(db, studioLearner).snapshot((tx) => history(tx, session));
+  studioHost(db).snapshot((tx) => history(tx, session));
 
 export function recentConversations(db: Db) {
-  return createLearnerHost(db, studioLearner).snapshot(async (tx) => {
+  return studioHost(db).snapshot(async (tx) => {
     const { rows } = await tx.query<{ id: string }>(
       `SELECT r.data->>'sessionId' AS id FROM facts f
        JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
@@ -209,10 +182,7 @@ export function sessionMountPermissions(db: Db, session: string) {
   return notionReadScope(db, studioLearner).read(async (tx, check) => {
     const mounts = await readableTurnMounts(tx, session, await history(tx, session, check), check);
     const turns = [...mounts.values()];
-    return {
-      authorizedMountIds: turns.flatMap(turn => turn.snapshots.map(artifact => artifact.mountId)),
-      unconfirmed: turns.flatMap(turn => turn.unconfirmed),
-    };
+    return { authorizedMountIds: turns.flatMap(turn => turn.snapshots.map(artifact => artifact.mountId)), unconfirmed: turns.flatMap(turn => turn.unconfirmed), };
   });
 }
 
@@ -272,7 +242,7 @@ export async function getSession(db: Db, session: string, projectRecall?: Recall
     projectRecall && ((turn,derivation,kit) => projectRecall(session,turn,derivation,kit,notion)));
 }
 async function fenceTeachingCutover(db: Db) {
-  await createLearnerHost(db, studioLearner).lockedTx(async tx => {
+  await studioHost(db).lockedTx(async tx => {
     const gate = await tx.query(`SELECT 1 FROM pg_trigger
       WHERE tgrelid='fact_revs'::regclass AND tgname='studio_confirmed_teaching'`);
     if (!gate.rowCount) {
@@ -316,7 +286,7 @@ async function fenceTeachingCutover(db: Db) {
 export async function openStudio(db: Db, activity: LoadedModule, {projectRecall, jitCounters = [], enableJit = false}: {
   projectRecall?: RecallHttp['project']; jitCounters?: readonly StudioJitCounter[]; enableJit?: boolean;
 } = {}) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const hooks = createStudioCommandHooks({
       async afterFactsChanged(tx, tick, changes) {
         for (const change of changes) {

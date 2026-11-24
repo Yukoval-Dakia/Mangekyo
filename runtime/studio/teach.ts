@@ -2,8 +2,7 @@ import { classroomReply } from '../../modules/activity/classroom.ts';
 import { readClassroomMountEvidence } from './presentation-store.ts';
 import { openLearningTools } from './learning-tools.ts';
 import { attachmentCurrent } from './reading.ts';
-import { confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAuthority,
-  type CheckNotionRead, type NotionRecipient, type openStudioNotion } from './notion.ts';
+import {confirmNotionDispatch, confirmNotionRead, notionSendBasis, savedNotionWitnesses, teachingResultAuthority, type CheckNotionRead, type NotionRecipient, type openStudioNotion} from './notion.ts';
 import { ridingLesson, averageSpeed } from '../../modules/activity/starter.ts';
 import { currentMemory, memoryId } from './memory.ts';
 import { memoryScopeForObject, readMemoryGateway } from './memory-gateway.ts';
@@ -13,8 +12,7 @@ import { turnClaimWitness } from '../../modules/companion/claim.ts';
 import { foregroundDigest } from './foreground-digest.ts';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { isFactReadDenied, isFactUnavailable } from './fact-read-helpers.ts';
-import { createLearnerHost, derivationId, factId, learnerId, LifecycleError, parseManifest,
-  storeSettledValue, type Db, type DbTransaction, type FactSnapshot, type Json, type Manifest, type ReadTransaction, type Tick } from '../../kernel/src/index.ts';
+import {createLearnerHost, derivationId, factId, learnerId, LifecycleError, parseManifest, storeSettledValue, type Db, type DbTransaction, type FactSnapshot, type Json, type Manifest, type ReadTransaction, type Tick} from '../../kernel/src/index.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
 import { manifestFactInputs } from '../../kernel/src/derivations/revalidate.ts';
 import { bindSessionPayloadSources } from '../../kernel/src/work/payload.ts';
@@ -139,10 +137,7 @@ export async function teach(db: Db, ref: WorkRef, readArtifactAssessmentWitness?
     return {manifest, pages, usesRadarTodo:evidence.usesRadarTodo};
   }
   const validInputs = async (tx: ReadTransaction) => (await revalidateInputs(tx)).manifest;
-  const validWorkInputs = async (tx: ReadTransaction, use?: 'publish' | 'dispatch') => {
-    if (!await readReadyWork(tx, ref)) stale();
-    return revalidateInputs(tx, use);
-  };
+  const validWorkInputs = async (tx: ReadTransaction, use?: 'publish' | 'dispatch') => { if (!await readReadyWork(tx, ref)) stale(); return revalidateInputs(tx, use); };
   const settle = (feedback: DisplayTurn, optedIn: boolean) => finishWork(db, ref, async (tx, tick) => {
     const manifest = await validInputs(tx);
     const id = derivationId(stableId('feedback', ref.learner, ref.workId, ref.generation));

@@ -1,9 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
-import {
-  createCommandReadContext, createLearnerHost, factId, matchKernelError,
-  type CommandHooks, type Db,
-} from '../../kernel/src/index.ts';
+import {createCommandReadContext, factId, matchKernelError, type CommandHooks, type Db} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
@@ -11,13 +8,14 @@ import { purpose, studioLearner } from './identity.ts';
 import type { NotionReadScope } from './notion.ts';
 import { openRecall, recallItemId, RecallRequestError } from './recall.ts';
 import { displaySigner, parseDisplayBody, readMount, readRequestId, verifyDisplayReceipt } from '../../modules/activity/recall-http-support.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 export { recallDisplayToken } from '../../modules/activity/recall-http-support.ts';
 
 export function openRecallHttp(db: Db, activity: LoadedModule, hooks?: CommandHooks) {
   const key = randomBytes(32);
   const sign = displaySigner(studioLearner, key);
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
 
   const service = openRecall(db, activity, {
     ...(hooks ? { hooks } : {}),

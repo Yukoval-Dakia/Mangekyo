@@ -149,9 +149,7 @@ export function serve(
 ) {
   const transparency = student.transparency ?? openTransparency(db);
   const routes: CompiledRoute[] = [];
-  const raw = (method: string, path: string, action: RouteAction) => {
-    routes.push({ method, match: compilePattern(path).match, action });
-  };
+  const raw = (method: string, path: string, action: RouteAction) => { routes.push({ method, match: compilePattern(path).match, action }); };
   const get = (path: string, run: (params: readonly string[], url: URL) => Promise<unknown> | unknown) =>
     raw('GET', path, async (_req, res, params, url) => sendJson(res, 200, await run(params, url)));
   const write = (method: 'POST' | 'PUT', path: string,
@@ -175,10 +173,7 @@ export function serve(
       sendJson(res, status, result);
     });
   const pendingStatus = (result: unknown) => (result as { state?: string }).state === 'pending' ? 202 : 200;
-  const requireAdmission = () => {
-    if (!student.practiceAdmission) throw new RequestError(404, '这个入口不存在。');
-    return student.practiceAdmission;
-  };
+  const requireAdmission = () => { if (!student.practiceAdmission) throw new RequestError(404, '这个入口不存在。'); return student.practiceAdmission; };
   const tb = (id: string) => ({ learner: studioLearner, id });
 
   get('/api/iqdb/questions', () => student.iqdb.questions());

@@ -55,11 +55,7 @@ export async function readResearchForeground(tx: ReadTransaction, reviewed: Tick
         typeof digest.summary !== 'string' || !digest.summary.trim() || digest.summary.length > 160 ||
         !Array.isArray(digest.sourceRefs)) continue;
     let manifest;
-    try {
-      manifest = parseManifest(row.manifest);
-    } catch {
-      continue;
-    }
+    try { manifest = parseManifest(row.manifest); } catch { continue; }
     const inputs = manifest.inputs.filter(input => input.kind === 'fact');
     const turn = inputs.find(input => input.id === row.turn_id && input.mode === 'following');
     if (manifest.purpose !== purpose || inputs.length !== manifest.inputs.length || !turn ||

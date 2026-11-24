@@ -1,11 +1,7 @@
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
 import { readRecordedCommand } from '../../kernel/src/commands/handle.ts';
 import { readEffectiveSlotVersion } from '../../kernel/src/derivations/revalidate.ts';
-import {
-  commandId, createCommandReadContext, createLearnerHost, isFactUnavailable, LifecycleError,
-  type CommandHooks, type CommandId, type Db, type DerivationSnapshot, type FactId, type FactSnapshot,
-  type Json, type ReadContext, type ReadTransaction, type SlotRef,
-} from '../../kernel/src/index.ts';
+import {commandId, createCommandReadContext, isFactUnavailable, LifecycleError, type CommandHooks, type CommandId, type Db, type DerivationSnapshot, type FactId, type FactSnapshot, type Json, type ReadContext, type ReadTransaction, type SlotRef} from '../../kernel/src/index.ts';
 import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { issuedPosttestPaper, posttestIssuanceType, retentionPaperType, retentionTeachingPurpose } from '../../modules/activity/retention-posttest.ts';
@@ -17,9 +13,10 @@ import { bindPaperCommandRead, checkedPaperIssuance, collectPaperInput, collectP
 import { captureSourceCommand, captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
 import { AssetBasisError, assetType, textbookPageType } from '../../modules/content/asset.ts';
 import { matchesQuestionVerificationSlot, questionVerificationType, type QuestionVerification } from '../../modules/content/question-state.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId } from './identity.ts';
 import { readPosttestIssuance } from './retention-posttest.ts';
 import { RequestError } from './sessions.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 const purpose = 'storage', conflict = '卷面、题目发放状态或回收依据已变化。', previewLayout = { lines: 60, columns: 80 };
 const stale = () => new RequestError(409, conflict);
@@ -140,7 +137,7 @@ async function present(tx: ReadTransaction, read: ReadContext, command: PaperCom
 }
 
 export function openCapturePapers(db: Db, capture: LoadedModule, activity: LoadedModule, hooks: CommandHooks) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const write = <T>(run: (read: ReadContext, command: PaperCommand, tx: ReadTransaction) => Promise<T>) =>
     paperRequest(() => host.lockedCommand([capture, activity], hooks, (tx, handle) =>
       run(learnerRead(tx), async (type, data, id = commandId(stableId(type, canonicalJsonString(data))), deletionWatermark) => {
