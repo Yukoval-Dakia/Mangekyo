@@ -16,45 +16,33 @@ export const examTimeValueMethod = 'plan/exam-pacing@2' as const;
 export type ExamTimeValueRef = { readonly id: FactId; readonly rev: Revision };
 export type ExamTimeValueState = 'steady' | 'fast-slip' | 'time-sink' | 'recovered-skip' | 'unknown';
 export type ExamTimeValueItem = {
-  readonly item_id: string;
-  readonly position: number;
-  readonly effective_duration_ms: number;
-  readonly state: ExamTimeValueState;
+  readonly item_id: string; readonly position: number;
+  readonly effective_duration_ms: number; readonly state: ExamTimeValueState;
 };
 export type ExamTimeValueView = {
-  readonly paper: ExamTimeValueRef;
-  readonly attempt_ref: ExamTimeValueRef;
+  readonly paper: ExamTimeValueRef; readonly attempt_ref: ExamTimeValueRef;
   readonly method_version: typeof examTimeValueMethod;
 } & (
   | { readonly kind: 'unknown' }
   | {
-      readonly kind: 'observed';
-      readonly total_duration_ms: number;
-      readonly items: readonly ExamTimeValueItem[];
-      readonly summary: string;
+      readonly kind: 'observed'; readonly total_duration_ms: number;
+      readonly items: readonly ExamTimeValueItem[]; readonly summary: string;
     }
 );
 
 export type ExamTimeValueEstimate = {
-  readonly itemId: string;
-  readonly estimatedDurationMs: number;
-  readonly ref: string;
-  readonly rev: Revision;
+  readonly itemId: string; readonly estimatedDurationMs: number; readonly ref: string; readonly rev: Revision;
   readonly occurredAt: string;
 };
 
 export type ExamTimeValueFormalInput = {
-  readonly state: string;
-  readonly derivationId?: string;
-  readonly releaseRef: AssessmentRevisionRef;
-  readonly score: FormalAssessmentValue['score'];
-  readonly result?: AssessmentResult;
-  readonly assessedAt?: string;
+  readonly state: string; readonly derivationId?: string;
+  readonly releaseRef: AssessmentRevisionRef; readonly score: FormalAssessmentValue['score'];
+  readonly result?: AssessmentResult; readonly assessedAt?: string;
 };
 
 export type ExamTimeValueSliceRequest = {
-  readonly attempt_ref: ExamTimeValueRef;
-  readonly slice: CanonicalEvidenceSliceV1;
+  readonly attempt_ref: ExamTimeValueRef; readonly slice: CanonicalEvidenceSliceV1;
 };
 
 const validStates = new Set<ExamTimeValueState>(['steady', 'fast-slip', 'time-sink', 'recovered-skip', 'unknown']);
@@ -99,7 +87,8 @@ function settledItemScore(
       if (outcome!.state !== 'qualitative') return undefined;
       continue;
     }
-    if (outcome!.state !== 'scored' || !Number.isFinite(outcome!.earned) || outcome!.earned < 0 || outcome!.earned > criterion.maximum) {
+    if (outcome!.state !== 'scored' || !Number.isFinite(outcome!.earned) ||
+        outcome!.earned < 0 || outcome!.earned > criterion.maximum) {
       return undefined;
     }
     earned += outcome!.earned;
@@ -109,11 +98,13 @@ function settledItemScore(
   return { earned, maximum };
 }
 
+const blankExamEvent = () => ({
+  concept_ids: [], item_novelty: 'same', help_level: 'unknown', outcome: 'unknown', claim_ids: [],
+} as const);
+
 export function buildWorkbookExamTimeValueInput(params: ExamTimeValueTarget & {
-  readonly learner: FactId | string;
-  readonly watermark: Tick;
-  readonly asOfAt: string;
-  readonly formal?: ExamTimeValueFormalInput;
+  readonly learner: FactId | string; readonly watermark: Tick;
+  readonly asOfAt: string; readonly formal?: ExamTimeValueFormalInput;
   readonly estimates?: readonly ExamTimeValueEstimate[];
   readonly errorStages?: Readonly<Record<string, NonNullable<EvidenceEventV1['error_stage']>>>;
 }): { readonly request: ExamTimeValueSliceRequest; readonly recordedDurationMs: number } | undefined {
@@ -155,7 +146,7 @@ export function buildWorkbookExamTimeValueInput(params: ExamTimeValueTarget & {
     const errorStage = errorStages?.[item.itemId];
     formalEvents.push({
       ref, rev: 1 as Revision, occurred_at: formalOccurredAt,
-      concept_ids: [], item_novelty: 'same', help_level: 'unknown', outcome: 'unknown', claim_ids: [],
+      ...blankExamEvent(),
       ...(errorStage ? { error_stage: errorStage } : {}),
       exam_pacing_item: {
         attempt_ref: attemptRef, paper_key: paperKey, item_id: item.itemId,
@@ -176,7 +167,7 @@ export function buildWorkbookExamTimeValueInput(params: ExamTimeValueTarget & {
     seenEstimateItems.add(entry.itemId);
     estimateEvents.push({
       ref: entry.ref, rev: entry.rev, occurred_at: entry.occurredAt,
-      concept_ids: [], item_novelty: 'same', help_level: 'unknown', outcome: 'unknown', claim_ids: [],
+      ...blankExamEvent(),
       exam_pacing_item: {
         attempt_ref: attemptRef, paper_key: paperKey, item_id: entry.itemId,
         position, item_count: attempt.paper.questions.length, estimated_duration_ms: entry.estimatedDurationMs,
@@ -191,7 +182,7 @@ export function buildWorkbookExamTimeValueInput(params: ExamTimeValueTarget & {
     ? { earned: formal.score.earned, maximum: formal.score.maximum } : undefined;
   const attemptEvent: EvidenceEventV1 = {
     ref: attemptRef.id, rev: attemptRef.rev, occurred_at: attempt.submittedAt,
-    concept_ids: [], item_novelty: 'same', help_level: 'unknown', outcome: 'unknown', claim_ids: [],
+    ...blankExamEvent(),
     effective_duration_ms: timing.total,
     exam_pacing: { paper_key: paperKey, scale_key: scaleKey, ...(wholeScore ? { score: wholeScore } : {}) },
   };
@@ -231,17 +222,12 @@ export function projectWorkbookExamTimeValue(params: ExamTimeValueTarget & {
       return fallback;
     }
     items.push({
-      item_id: question.id,
-      position: index + 1,
-      effective_duration_ms: row.effective_duration_ms as number,
+      item_id: question.id, position: index + 1, effective_duration_ms: row.effective_duration_ms as number,
       state: row.state as ExamTimeValueState,
     });
   }
   return {
-    method_version: examTimeValueMethod,
-    paper: paperRef,
-    attempt_ref: attemptRef,
-    kind: 'observed',
+    method_version: examTimeValueMethod, paper: paperRef, attempt_ref: attemptRef, kind: 'observed',
     total_duration_ms: timing.recorded,
     items,
     summary: candidate.summary,
@@ -250,36 +236,26 @@ export function projectWorkbookExamTimeValue(params: ExamTimeValueTarget & {
 
 type FactReader = { fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot> };
 type ExamTimeValueTarget = {
-  readonly paperRef: ExamTimeValueRef;
-  readonly attemptRef: ExamTimeValueRef;
-  readonly attempt: WorkbookAttempt;
+  readonly paperRef: ExamTimeValueRef; readonly attemptRef: ExamTimeValueRef; readonly attempt: WorkbookAttempt;
 };
 type ExamTimeValueChecks<TFormal> = {
-  readonly isUnavailable: (error: unknown) => boolean;
-  readonly isPurposeDenied: (error: unknown) => boolean;
+  readonly isUnavailable: (error: unknown) => boolean; readonly isPurposeDenied: (error: unknown) => boolean;
   readonly onlyGrantsChanged: (id: FactId, before: Revision, after: Revision) => Promise<boolean>;
   readonly readFormal: (
-    release: NonNullable<WorkbookAttempt['paper']['assessmentRelease']>,
-    attemptRef: ExamTimeValueRef,
+    release: NonNullable<WorkbookAttempt['paper']['assessmentRelease']>, attemptRef: ExamTimeValueRef,
     epochs: { releaseEpoch: string; submissionEpoch: string },
   ) => Promise<TFormal>;
 };
 
 export type AuthorizedExamTimeValueBundle = {
-  readonly paperRef: ExamTimeValueRef;
-  readonly attemptRef: ExamTimeValueRef;
-  readonly paperEpoch: string;
-  readonly submissionEpoch: string;
-  readonly attempt: WorkbookAttempt;
-  readonly request: ExamTimeValueSliceRequest;
-  readonly purpose: string;
+  readonly paperRef: ExamTimeValueRef; readonly attemptRef: ExamTimeValueRef;
+  readonly paperEpoch: string; readonly submissionEpoch: string;
+  readonly attempt: WorkbookAttempt; readonly request: ExamTimeValueSliceRequest; readonly purpose: string;
 };
 
 async function openFrozenPaperForTimeValue(params: {
-  readonly read: FactReader;
-  readonly paperId: FactId;
-  readonly paperRev: Revision;
-  readonly attemptPaper: WorkbookAttempt['paper'];
+  readonly read: FactReader; readonly paperId: FactId;
+  readonly paperRev: Revision; readonly attemptPaper: WorkbookAttempt['paper'];
   readonly isPurposeDenied: (error: unknown) => boolean;
   readonly onlyGrantsChanged: (id: FactId, before: Revision, after: Revision) => Promise<boolean>;
 }) {
@@ -296,12 +272,8 @@ async function openFrozenPaperForTimeValue(params: {
 }
 
 export async function gatherAuthorizedExamTimeValueBundle(ports: ExamTimeValueChecks<ExamTimeValueFormalInput> & {
-  readonly tx: ActivityEvidenceReadScope;
-  readonly read: FactReader;
-  readonly paperId: FactId;
-  readonly attemptId: FactId;
-  readonly purpose: string;
-  readonly asOfAt: string;
+  readonly tx: ActivityEvidenceReadScope; readonly read: FactReader;
+  readonly paperId: FactId; readonly attemptId: FactId; readonly purpose: string; readonly asOfAt: string;
   readonly estimates?: readonly ExamTimeValueEstimate[];
   readonly errorStages?: Readonly<Record<string, NonNullable<EvidenceEventV1['error_stage']>>>;
 }): Promise<AuthorizedExamTimeValueBundle | undefined> {
@@ -344,8 +316,7 @@ export async function gatherAuthorizedExamTimeValueBundle(ports: ExamTimeValueCh
 export async function revalidateAuthorizedExamTimeValueBundle(ports: ExamTimeValueChecks<
   Pick<ExamTimeValueFormalInput, 'state' | 'derivationId'>
 > & {
-  readonly read: FactReader;
-  readonly bundle: AuthorizedExamTimeValueBundle;
+  readonly read: FactReader; readonly bundle: AuthorizedExamTimeValueBundle;
 }): Promise<boolean> {
   const { bundle } = ports;
   try {

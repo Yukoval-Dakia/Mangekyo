@@ -32,23 +32,16 @@ import type { FactReadChecks } from './evidence-read.ts';
 export const workbookAssessmentSlot = 'activity.workbookFormalAssessment';
 export { workbookTextEvaluator, frozenWorkbookSubmission as frozenSubmission };
 type RouteCharge = {
-  readonly learner: string;
-  readonly providerEffectId: string;
-  readonly maxOutputTokens: number;
-  readonly inputBytes: number;
+  readonly learner: string; readonly providerEffectId: string;
+  readonly maxOutputTokens: number; readonly inputBytes: number;
 };
 export type WorkbookAssessmentRoute = {
   readonly id: string;
   reserve(tx: DbTransaction, charge: RouteCharge): Promise<boolean>;
   score(input: {
-    readonly providerEffectId: string;
-    readonly prompt: string;
-    readonly rubric: string;
-    readonly criterionId: string;
-    readonly maximum: number | null;
-    readonly answer: string;
-    readonly attachments?: readonly WorkbookAttachmentEvidence[];
-    readonly maxOutputTokens: number;
+    readonly providerEffectId: string; readonly prompt: string; readonly rubric: string; readonly criterionId: string;
+    readonly maximum: number | null; readonly answer: string;
+    readonly attachments?: readonly WorkbookAttachmentEvidence[]; readonly maxOutputTokens: number;
   }): Promise<Json>;
 };
 export type WorkbookAssessmentHost = {
@@ -62,8 +55,7 @@ export type StudioWorkbookAssessmentDeps = FactReadChecks & {
   readonly gatherSnapshot: (db: any, scope: { learner: unknown; purpose: string }, gather: (ctx: { read: Pick<ReadContext, 'fact'> }) => Promise<unknown>) => Promise<unknown>;
   readonly sealCandidate: (db: any, ref: unknown, policy: unknown, snapshot: unknown) => Promise<any>;
   readonly submitCandidate: (db: any, ref: unknown, policy: unknown, id: unknown, outcome: unknown, propagation: unknown) => Promise<unknown>;
-  readonly revalidateManifestTx: typeof revalidateManifest;
-  readonly readWork: (db: any, ref: unknown) => Promise<any>;
+  readonly revalidateManifestTx: typeof revalidateManifest; readonly readWork: (db: any, ref: unknown) => Promise<any>;
   readonly queryScopeKeys: (db: any, learner: unknown, slotKey: string) => Promise<{ scope_keys: AssessmentScope } | undefined>;
   readonly readReadyWork: (tx: ReadTransaction, ref: unknown) => Promise<unknown>;
   readonly runEffect: (db: any, desc: unknown, invoke: (providerEffectId: string) => Promise<any>, authorize?: (tx: ReadTransaction) => Promise<void>, manifest?: unknown) => Promise<any>;
@@ -77,15 +69,12 @@ export type StudioWorkbookAssessmentDeps = FactReadChecks & {
   readonly readFormalAssessment: (tx: ReadTransaction, slotType: string, releaseRef: AssessmentRevisionRef,
     submissionRef: AssessmentRevisionRef, purpose: string, epochs?: { releaseEpoch?: string; submissionEpoch?: string }) => Promise<any>;
   readonly registerFormalAssessment: (tx: DbTransaction, tick: Tick, policy: unknown, paper: FactSnapshot, fact: FactSnapshot) => Promise<unknown>;
-  readonly assessmentExecutionFailed: string;
-  readonly assessmentInputsBlocked: string;
+  readonly assessmentExecutionFailed: string; readonly assessmentInputsBlocked: string;
   readonly assessmentScopeType: string;
 };
 export type AssessmentScope = {
-  releaseRef: AssessmentRevisionRef;
-  submissionRef: AssessmentRevisionRef;
-  releaseEpoch: string;
-  submissionEpoch: string;
+  releaseRef: AssessmentRevisionRef; submissionRef: AssessmentRevisionRef;
+  releaseEpoch: string; submissionEpoch: string;
 };
 export function sha256DigestText(createHash: (algorithm: string) => { update(text: string): { digest(encoding: string): string } }, text: string) {
   return createHash('sha256').update(text).digest('hex');
@@ -261,10 +250,8 @@ export async function readSavedWorkbookAssessment(deps: StudioWorkbookAssessment
     releaseRef, submissionRef, state: settledAssessmentState(value), derivationId: row.id };
 }
 export type WorkbookAssessmentReadAccess = {
-  readonly purpose?: string;
-  readonly maySend?: (fact: FactSnapshot) => boolean;
-  readonly releaseEpoch?: string;
-  readonly submissionEpoch?: string;
+  readonly purpose?: string; readonly maySend?: (fact: FactSnapshot) => boolean;
+  readonly releaseEpoch?: string; readonly submissionEpoch?: string;
 };
 export async function readWorkbookAssessment(deps: StudioWorkbookAssessmentDeps, tx: ReadTransaction,
   release: AssessmentRelease, submissionRef: AssessmentRevisionRef,
@@ -273,12 +260,13 @@ export async function readWorkbookAssessment(deps: StudioWorkbookAssessmentDeps,
   const use = access?.purpose ?? storagePurpose;
   const maySend = access?.maySend;
   const bank = release.items.some(item => item.criteria.some(isLocalQuestionCriterion));
+  const blocked = () => ({ releaseRef: release.releaseRef, submissionRef,
+    state: 'blocked' as const, reason: deps.assessmentInputsBlocked, score: null });
   if (bank) {
     try { await authorizeBankBasis(deps, tx, release.releaseRef, use, maySend); }
     catch (error) {
       if (!workbookAssessmentReadFailure(deps, error)) throw error;
-      return { releaseRef: release.releaseRef, submissionRef, state: 'blocked' as const,
-        reason: deps.assessmentInputsBlocked, score: null };
+      return blocked();
     }
   }
   let opened: { submission: FactSnapshot; paper: FactSnapshot } | undefined;
@@ -290,14 +278,12 @@ export async function readWorkbookAssessment(deps: StudioWorkbookAssessmentDeps,
       if (!sameRef(submission.ref, submissionRef) ||
           (access.releaseEpoch !== undefined && paper.accessEpoch !== access.releaseEpoch) ||
           (access.submissionEpoch !== undefined && submission.accessEpoch !== access.submissionEpoch)) {
-        return { releaseRef: release.releaseRef, submissionRef, state: 'blocked' as const,
-          reason: deps.assessmentInputsBlocked, score: null };
+        return blocked();
       }
       opened = { submission, paper };
     } catch (error) {
       if (!workbookAssessmentReadFailure(deps, error)) throw error;
-      return { releaseRef: release.releaseRef, submissionRef, state: 'blocked' as const,
-        reason: deps.assessmentInputsBlocked, score: null };
+      return blocked();
     }
   }
   const result = await deps.readFormalAssessment(tx, workbookAssessmentSlot, release.releaseRef, submissionRef, use,

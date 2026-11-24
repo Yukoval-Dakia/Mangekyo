@@ -13,9 +13,7 @@ import {
 const teachingPurpose = 'teaching';
 
 export default defineCommand({
-  type: saveWorkspaceEntryCommand,
-  destructive: false,
-  schema: { parse: saveWorkspaceEntryInput },
+  type: saveWorkspaceEntryCommand, destructive: false, schema: { parse: saveWorkspaceEntryInput },
   write: async (ctx, input): Promise<readonly FactWrite[]> => {
     const data: WorkspaceEntry = { ...input.entry, basis: input.basis };
     if (input.expectedRev !== undefined) {
@@ -29,17 +27,13 @@ export default defineCommand({
     await verifyWorkspaceEntry(ctx, input.id, input.entry, input.basis);
     if (input.expectedRev === undefined) {
       return [{
-        kind: 'create',
-        id: input.id,
-        factType: workspaceEntryType,
+        kind: 'create', id: input.id, factType: workspaceEntryType,
         data,
         purpose: [storagePurpose, teachingPurpose],
       }];
     }
     return [{
-      kind: 'revise',
-      id: input.id,
-      expectedRev: input.expectedRev,
+      kind: 'revise', id: input.id, expectedRev: input.expectedRev,
       data,
     }];
   },

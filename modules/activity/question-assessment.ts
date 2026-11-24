@@ -97,9 +97,7 @@ function bankAnswers(item: Item, raw: string) {
 }
 
 export function frozenWorkbookSubmission(
-  release: AssessmentRelease,
-  submissionRef: AssessmentRevisionRef,
-  answers: Record<string, WorkbookAnswer>,
+  release: AssessmentRelease, submissionRef: AssessmentRevisionRef, answers: Record<string, WorkbookAnswer>,
   questionAttachments?: Record<string, readonly { originalId: FactId; rev: Revision }[]>,
 ) {
   const submission = assessmentSubmission({

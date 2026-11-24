@@ -9,16 +9,12 @@ import {
 import { creation } from '../values.ts';
 
 export default defineCommand({
-  type: ridingPracticeCommand,
-  destructive: false,
-  schema: creation(practiceInput),
+  type: ridingPracticeCommand, destructive: false, schema: creation(practiceInput),
   write: (_ctx, { id, data }) => [
     {
       kind: 'create',
       id,
-      factType: ridingPracticeType,
-      data: gradePractice(data),
-      purpose: [ridingPracticePurpose],
+      factType: ridingPracticeType, data: gradePractice(data), purpose: [ridingPracticePurpose],
     },
   ],
 });

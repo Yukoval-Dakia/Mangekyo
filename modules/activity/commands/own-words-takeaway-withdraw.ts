@@ -4,9 +4,7 @@ import {
 } from '../takeaway-values.ts';
 
 export default defineCommand({
-  type: withdrawOwnWordsTakeawayCommand,
-  destructive: true,
-  schema: {parse: withdrawOwnWordsTakeawayInput},
+  type: withdrawOwnWordsTakeawayCommand, destructive: true, schema: {parse: withdrawOwnWordsTakeawayInput},
   async write(ctx, {id}) {
     const current = await ctx.read.fact(id, {mode: 'following'});
     if (current.type !== ownWordsClaimType || !isOwnWordsClaim(current.value)) {

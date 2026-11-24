@@ -23,8 +23,7 @@ import {
 } from '../workbook-values.ts';
 
 export default defineCommand({
-  type: submitWorkbookAttemptCommand,
-  destructive: false,
+  type: submitWorkbookAttemptCommand, destructive: false,
   schema: { parse(input: unknown) {
     return { ...creation(workbookAttemptRequest).parse(input), controlled: object(input).condition === closedPosttest };
   } },
@@ -59,8 +58,7 @@ export default defineCommand({
     );
     if (paper.assessmentRelease) frozenWorkbookSubmission(paper.assessmentRelease, { id, rev: 1 as Revision }, graded.answers, data.questionAttachments);
     const preSubmitRevised = await resolveWorkbookPreSubmitRevised(ctx.read, {
-      paperId: fact.ref.id,
-      paperRev: fact.ref.rev,
+      paperId: fact.ref.id, paperRev: fact.ref.rev,
       paper,
       attemptId: id,
       data,
@@ -73,9 +71,7 @@ export default defineCommand({
         id,
         factType: controlled ? posttestSubmissionType : workbookAttemptType,
         data: {
-          paperId: data.paperId,
-          requestId: data.requestId,
-          submittedAt: data.submittedAt,
+          paperId: data.paperId, requestId: data.requestId, submittedAt: data.submittedAt,
           gradingVersion: paper.questions.some((question) => question.kind === 'rubric')
             ? workbookRubricGradingVersion
             : workbookGradingVersion,

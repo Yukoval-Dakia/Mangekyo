@@ -31,12 +31,9 @@ export async function collectRedPenQuestionIds(intakeDocuments: readonly unknown
 }
 
 export function buildNodePracticeInput(input: {
-  graph: Pick<AuthorizedKnowledgeGraph, 'nodes' | 'edges' | 'questionConceptLinks'>;
-  nodeId: FactId;
+  graph: Pick<AuthorizedKnowledgeGraph, 'nodes' | 'edges' | 'questionConceptLinks'>; nodeId: FactId;
   masteryByConcept: ReadonlyMap<FactId, { status: string }>;
-  attempts: readonly ConceptEvidenceRow[];
-  readableQuestions: readonly NodePracticeQuestion[];
-  count?: number;
+  attempts: readonly ConceptEvidenceRow[]; readableQuestions: readonly NodePracticeQuestion[]; count?: number;
 }): SelectNodePracticeInput {
   const node = input.graph.nodes.find(node => node.id === input.nodeId)!;
   const directPrerequisiteIds = input.graph.edges
@@ -54,9 +51,7 @@ export function buildNodePracticeInput(input: {
     .map(link => {
       const attempt = latestByQuestion.get(link.questionId);
       return {
-        questionRef: link.questionId,
-        conceptId: link.conceptId,
-        lastOutcome: attempt?.outcome ?? null,
+        questionRef: link.questionId, conceptId: link.conceptId, lastOutcome: attempt?.outcome ?? null,
         helpLevel: attempt ? (attempt.exposure === 'independent' ? 'independent' : attempt.exposure === 'exposed' ? 'hinted' : 'unknown') : null,
         lastAttemptedAt: attempt?.occurredAt ?? null,
         isRedPenError: Boolean(input.readableQuestions.find(question => question.id === link.questionId)?.isRedPenError),
@@ -65,8 +60,7 @@ export function buildNodePracticeInput(input: {
     });
   return {
     node: {
-      id: node.id,
-      title: node.title,
+      id: node.id, title: node.title,
       masteryState: masteryStates[input.masteryByConcept.get(input.nodeId)?.status ?? 'unknown'] ?? 'unknown',
       directPrerequisiteIds,
     },

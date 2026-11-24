@@ -2,12 +2,12 @@ import { FactNotFoundError, factId, parseManifest, type FactId, type FactSnapsho
 import type { QuestionConceptLink } from '@mangekyo/module-content/facts/knowledge-graph-overview';
 import { widenedRevOr } from '@mangekyo/module-learner/facts/widened-rev';
 import {
-  readActivityHelpEvents, readActivitySubmissionBirth, readEarlierControlledPosttests, readWorkbookPreSubmitObservation,
-  workbookItemHistory, type ActivityEvidenceReadScope,
+  factBirthTick, mountedWorkbookItemProcess, readActivityHelpEvents, readActivitySubmissionBirth,
+  readEarlierControlledPosttests, readWorkbookPreSubmitObservation,
+  workbookItemHistory, type ActivityEvidenceReadScope, type WorkbookItemHelpProcess,
 } from './evidence-read.ts';
-import { activityHelpProcess, controlledWorkbookHelp, type ActivityEvidenceObservation } from './evidence-slice.ts';
-import { reopenControlledHelpBasis, helpAppliesTo, type HelpTarget } from './help-exposure-values.ts';
-import { projectHelpExposure } from './help-exposure.ts';
+import { controlledWorkbookHelp, type ActivityEvidenceObservation } from './evidence-slice.ts';
+import { reopenControlledHelpBasis, type HelpTarget } from './help-exposure-values.ts';
 import {
   issuedPosttestPaper, posttestIssuance, posttestIssuanceType, posttestSubmissionType,
   retentionPaperType, workbookRetentionTarget,
@@ -16,16 +16,13 @@ import {
   sameWorkbookJson, workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType,
   workbookRubricAssessment, workbookRubricAssessmentType, type WorkbookQuestion,
 } from './workbook-values.ts';
+import { matchingRubricAssessment } from './workbook-assessment-values.ts';
 
 export type ConceptEvidenceRow = {
   readonly conceptId: FactId;
   readonly submission: { readonly id: FactId; readonly rev: Revision; readonly type: string };
-  readonly questionId: FactId;
-  readonly questionRev: Revision;
-  readonly occurredAt: string;
-  readonly recordedTick: Tick;
-  readonly outcome: 'correct' | 'incorrect' | 'unknown';
-  readonly exposure: 'independent' | 'exposed' | 'unknown';
+  readonly questionId: FactId; readonly questionRev: Revision; readonly occurredAt: string; readonly recordedTick: Tick;
+  readonly outcome: 'correct' | 'incorrect' | 'unknown'; readonly exposure: 'independent' | 'exposed' | 'unknown';
   readonly helpLevel: ActivityEvidenceObservation['helpLevel'];
   readonly basisRefs: readonly { readonly id: FactId; readonly rev: Revision; readonly type: string }[];
 };
@@ -36,9 +33,7 @@ export type ConceptEvidenceRow = {
  * can establish `exposure: 'independent'`.
  */
 export async function readConceptAttemptEvidence(
-  tx: ActivityEvidenceReadScope,
-  read: ReadContext,
-  links: readonly QuestionConceptLink[],
+  tx: ActivityEvidenceReadScope, read: ReadContext, links: readonly QuestionConceptLink[],
   isUnavailable: (error: unknown) => boolean,
 ): Promise<{ readonly attempts: readonly ConceptEvidenceRow[]; readonly incompleteConceptIds: ReadonlySet<string> }> {
   const unavailable = (error: unknown) => error instanceof FactNotFoundError || isUnavailable(error) ||
@@ -92,6 +87,17 @@ export async function readConceptAttemptEvidence(
       }
       continue;
     }
+    const pushRows = (matched: QuestionConceptLink[], process: WorkbookItemHelpProcess,
+        outcome: ConceptEvidenceRow['outcome'], ...prefix: ConceptEvidenceRow['basisRefs']) => {
+      const exposure = process.exposure.kind === 'independent' ? 'independent'
+        : process.exposure.kind === 'exposed' ? 'exposed' : 'unknown';
+      for (const link of matched) attempts.push({
+        conceptId: link.conceptId, questionId: link.questionId, questionRev: link.questionRev,
+        submission: { id: submission.ref.id, rev: submission.ref.rev, type: submission.type },
+        occurredAt: attempt.submittedAt, recordedTick: birth.tick, outcome, exposure,
+        helpLevel: process.helpLevel, basisRefs: [...prefix, link.edgeRef],
+      });
+    };
 
     if (submission.type === posttestSubmissionType) {
       let issuanceFact: FactSnapshot;
@@ -120,16 +126,13 @@ export async function readConceptAttemptEvidence(
       if (!targetMatch) continue;
       const { question, matched } = targetMatch;
       const target = workbookRetentionTarget(paper, { id: paperFact.ref.id, rev: issuance.paper.rev }, issuance.itemId);
-      const { rows: [issuedBirth] } = await tx.query<{ tick: Tick }>(
-        `SELECT tick::text FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1`,
-        [tx.learner, issuanceFact.ref.id],
-      );
+      const issuedBirth = await factBirthTick(tx, issuanceFact.ref.id);
       if (!issuedBirth) {
         for (const link of matched) incompleteConceptIds.add(link.conceptId);
         continue;
       }
 
-      const releases = await readEarlierControlledPosttests(tx, target.paper.id, issuedBirth.tick, birth.tick);
+      const releases = await readEarlierControlledPosttests(tx, target.paper.id, issuedBirth, birth.tick);
       const visible: { id: FactId; rev: Revision }[] = [];
       for (const releaseRow of releases) {
         try {
@@ -157,33 +160,14 @@ export async function readConceptAttemptEvidence(
         releases.some(release => release.competing_submission),
       );
       if (process.helpLevel === 'independent' &&
-          (await workbookItemHistory(tx, target, birth.tick, issuanceFact.ref.id, issuedBirth.tick)).cross_help) {
+          (await workbookItemHistory(tx, target, birth.tick, issuanceFact.ref.id, issuedBirth)).cross_help) {
         process = { ...process, exposure: { kind: 'unknown', reason: 'incomplete-observation' }, helpLevel: 'unknown' };
       }
 
       const rawResult = attempt.feedback.find(item => item.questionId === question.id)?.result;
       const outcome = rawResult === 'correct' || rawResult === 'incorrect' ? rawResult : 'unknown';
-      const exposure = process.exposure.kind === 'independent' ? 'independent'
-        : process.exposure.kind === 'exposed' ? 'exposed' : 'unknown';
-
-      for (const link of matched) {
-        attempts.push({
-          conceptId: link.conceptId,
-          submission: { id: submission.ref.id, rev: submission.ref.rev, type: submission.type },
-          questionId: link.questionId,
-          questionRev: link.questionRev,
-          occurredAt: attempt.submittedAt,
-          recordedTick: birth.tick,
-          outcome,
-          exposure,
-          helpLevel: process.helpLevel,
-          basisRefs: [
-            { id: issuanceFact.ref.id, rev: issuanceFact.ref.rev, type: issuanceFact.type },
-            { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type },
-            link.edgeRef,
-          ],
-        });
-      }
+      pushRows(matched, process, outcome, { id: issuanceFact.ref.id, rev: issuanceFact.ref.rev, type: issuanceFact.type },
+        { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
       continue;
     }
 
@@ -196,43 +180,15 @@ export async function readConceptAttemptEvidence(
       throw error;
     }
 
-    const { rows: [paperBirth] } = await tx.query<{ tick: Tick }>(
-      `SELECT tick::text FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1`,
-      [tx.learner, paperFact.ref.id],
-    );
+    const paperBirth = await factBirthTick(tx, paperFact.ref.id);
     if (!paperBirth) continue;
 
     for (const { question, matched } of matchedQuestions) {
       const target = { paper: { id: paperFact.ref.id, rev: paperFact.ref.rev }, itemId: question.id };
       const observed = await readWorkbookPreSubmitObservation(tx, target.paper, question.id, birth.tick);
-      const { events, omitted } = await readActivityHelpEvents(tx, read, {
-        activities: [paperFact.ref.id], cutoff: birth.tick, mode: 'pinned', includeOpens: true,
-      }, undefined, unavailable);
-      const revs = new Set<Revision>([paperFact.ref.rev, 1 as Revision]);
-      for (const { value } of events) {
-        if ((value.kind === 'opened' || value.kind === 'displayed') && value.mount.issuance.id === paperFact.ref.id) {
-          revs.add(value.mount.issuance.rev);
-        }
-      }
-      const mounts: HelpTarget[] = [...revs].map(rev => ({
-        activityId: paperFact.ref.id, issuance: { id: paperFact.ref.id, rev }, item: { itemId: question.id },
-      }));
-      const relevant = events.filter(({ value }) =>
-        (value.kind === 'opened' || value.kind === 'displayed') && mounts.some(mount => helpAppliesTo(value, mount)));
-      const hasOpen = relevant.some(({ value }) => value.kind === 'opened');
-      const history = await workbookItemHistory(tx, target, birth.tick, undefined, paperBirth.tick);
-      const complete = observed.question_displayed && !observed.printed && !observed.solution_presented &&
-        !observed.prior_attempt_feedback && !omitted && !hasOpen && !history.cross_help;
-      const results = mounts.map(mount => projectHelpExposure({
-        submission: { ref: submission.ref, target: mount, cutoff: birth.tick },
-        events: relevant,
-        coverage: complete ? { submission: submission.ref, target: mount, through: birth.tick } : null,
-      }));
-      const evidenceRefs = results.flatMap(result => result.evidenceRefs).sort((first, second) => first.id.localeCompare(second.id));
-      const exposure = evidenceRefs.length ? { kind: 'exposed' as const, evidenceRefs }
-        : results.find(result => result.kind === 'unknown') ?? results[0]!;
-      const process = activityHelpProcess(exposure, relevant);
-      if (process.exposure.kind === 'unknown' && !evidenceRefs.length) continue;
+      const { process } = await mountedWorkbookItemProcess(
+        tx, read, submission.ref, target.paper, question.id, birth.tick, observed, unavailable, undefined, paperBirth);
+      if (process.exposure.kind === 'unknown') continue;
       const rawResult = attempt.feedback.find(item => item.questionId === question.id)?.result;
       let outcome: 'correct' | 'incorrect' | 'unknown' = rawResult === 'correct' || rawResult === 'incorrect' ? rawResult : 'unknown';
       if (outcome === 'unknown' && question.kind === 'rubric') {
@@ -250,12 +206,7 @@ export async function readConceptAttemptEvidence(
           } catch {
             continue;
           }
-          if (assessment.attemptId !== submission.ref.id || assessment.paperId !== attempt.paperId ||
-              assessment.questionId !== question.id || assessment.verdict === 'pending' ||
-              question.rubricVersion !== assessment.rubricVersion || question.rubric !== assessment.rubric) continue;
-          const answer = attempt.answers[question.id];
-          if (typeof answer !== 'string' || !assessment.evidence.length ||
-              !assessment.evidence.every(quote => answer.includes(quote))) continue;
+          if (!matchingRubricAssessment(attempt, question, assessment, submission.ref.id)) continue;
           let manifest;
           try {
             manifest = parseManifest(row.manifest);
@@ -280,24 +231,7 @@ export async function readConceptAttemptEvidence(
         }
       }
       if (outcome === 'unknown') continue;
-      for (const link of matched) {
-        attempts.push({
-          conceptId: link.conceptId,
-          submission: { id: submission.ref.id, rev: submission.ref.rev, type: submission.type },
-          questionId: link.questionId,
-          questionRev: link.questionRev,
-          occurredAt: attempt.submittedAt,
-          recordedTick: birth.tick,
-          outcome,
-          exposure: process.exposure.kind === 'independent' ? 'independent'
-            : process.exposure.kind === 'exposed' ? 'exposed' : 'unknown',
-          helpLevel: process.helpLevel,
-          basisRefs: [
-            { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type },
-            link.edgeRef,
-          ],
-        });
-      }
+      pushRows(matched, process, outcome, { id: paperFact.ref.id, rev: paperFact.ref.rev, type: paperFact.type });
     }
   }
   return { attempts, incompleteConceptIds };
@@ -305,13 +239,9 @@ export async function readConceptAttemptEvidence(
 
 export function mapConceptForecastInputs(
   forecasts: readonly {
-    readonly effectiveTick: Tick;
-    readonly observedThrough: Tick;
-    readonly probability: number;
-    readonly crossingAt?: string;
-    readonly kcId?: string;
-    readonly paperId: FactId;
-    readonly itemId: string;
+    readonly effectiveTick: Tick; readonly observedThrough: Tick;
+    readonly probability: number; readonly crossingAt?: string;
+    readonly kcId?: string; readonly paperId: FactId; readonly itemId: string;
     readonly facts: readonly { readonly fact: FactSnapshot }[];
   }[],
   links: readonly QuestionConceptLink[],
@@ -328,8 +258,7 @@ export function mapConceptForecastInputs(
     const question = paperFact ? workbookPaper(paperFact.value).questions.find(q => q.id === entry.itemId) : undefined;
     const paperQuestionIds = question?.sourceQuestionRef ? [`${question.sourceQuestionRef.id}:${question.sourceQuestionRef.rev}`] : [];
     return {
-      effectiveTick: entry.effectiveTick,
-      observedThrough: entry.observedThrough,
+      effectiveTick: entry.effectiveTick, observedThrough: entry.observedThrough,
       probability: entry.probability,
       ...(entry.crossingAt ? { crossingAt: entry.crossingAt } : {}),
       ...(entry.kcId ? { kcId: entry.kcId } : {}),

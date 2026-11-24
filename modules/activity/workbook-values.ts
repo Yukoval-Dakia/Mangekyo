@@ -33,40 +33,24 @@ const questionIdPattern = /^[A-Za-z0-9_-]{1,40}$/;
 const rubricVersionPattern = /^rubric-v[1-9][0-9]{0,3}$/;
 const maxQuestions = 100;
 export type WorkbookSourceQuestionRef = {
-  readonly id: string;
-  readonly rev: Revision;
+  readonly id: string; readonly rev: Revision;
 };
 type WorkbookQuestionCore = {
-  id: string;
-  prompt: string;
-  explanation: string | null;
-  sourceQuestionRef?: WorkbookSourceQuestionRef;
+  id: string; prompt: string; explanation: string | null; sourceQuestionRef?: WorkbookSourceQuestionRef;
 };
 export type WorkbookNumericQuestion = WorkbookQuestionCore & {
-  kind: 'numeric';
-  answer: number;
-  tolerance: number;
-  unit: string | null;
+  kind: 'numeric'; answer: number; tolerance: number; unit: string | null;
 };
 export type WorkbookExactQuestion = WorkbookQuestionCore & {
-  kind: 'exact';
-  answers: string[];
-  selfCheck: boolean;
+  kind: 'exact'; answers: string[]; selfCheck: boolean;
 };
 export type WorkbookRubricQuestion = WorkbookQuestionCore & {
-  kind: 'rubric';
-  rubric: string;
-  rubricVersion: string;
+  kind: 'rubric'; rubric: string; rubricVersion: string;
 };
 export type WorkbookBankQuestion = WorkbookQuestionCore & {
-  kind: 'bank';
-  sourceQuestionRef: WorkbookSourceQuestionRef;
-  sourceAccessEpoch: string;
-  interaction?: JsonObject;
-  sharedMaterials: readonly JsonObject[];
-  sourceBasis: readonly TextbookBasis[];
-  verification: JsonObject;
-  explanation: null;
+  kind: 'bank'; sourceQuestionRef: WorkbookSourceQuestionRef; sourceAccessEpoch: string; interaction?: JsonObject;
+  sharedMaterials: readonly JsonObject[]; sourceBasis: readonly TextbookBasis[];
+  verification: JsonObject; explanation: null;
 };
 export type WorkbookQuestion =
   | WorkbookNumericQuestion
@@ -97,10 +81,7 @@ export function workbookBankReference(value: unknown) {
   return Object.keys(row).length === 1 ? sourceQuestionRef(row.sourceQuestionRef) : undefined;
 }
 export type WorkbookPaper = {
-  title: string;
-  materialId: string | null;
-  savedAt: string;
-  questions: WorkbookQuestion[];
+  title: string; materialId: string | null; savedAt: string; questions: WorkbookQuestion[];
   assessmentRelease?: AssessmentRelease;
 };
 export function independentlyAuthoredPaper(paper: WorkbookPaper): boolean {
@@ -113,156 +94,77 @@ export type WorkbookExpected =
   | { kind: 'exact'; values: string[] }
   | { kind: 'rubric'; rubric: string; rubricVersion: string };
 export type WorkbookFeedback = {
-  questionId: string;
-  result: 'correct' | 'incorrect' | 'partial' | 'pending' | 'unanswered' | 'self-check';
-  answer: WorkbookAnswer;
-  expected: WorkbookExpected;
-  explanation: string | null;
+  questionId: string; result: 'correct' | 'incorrect' | 'partial' | 'pending' | 'unanswered' | 'self-check';
+  answer: WorkbookAnswer; expected: WorkbookExpected; explanation: string | null;
 };
 type WorkbookAttemptFeedback = Omit<WorkbookFeedback, 'expected'> & { expected: WorkbookExpected | null; errorStage?: WorkbookErrorStage };
 export type WorkbookPacingV1 = {
   version: 1;
   items: ({
-    questionId: string;
-    effectiveDurationMs: number;
+    questionId: string; effectiveDurationMs: number;
   } & ({ skipped: false; returned: false } | { skipped: true; returned: boolean }))[];
 };
 type WorkbookPacingFields = {
-  paperRev?: Revision;
-  pacing?: WorkbookPacingV1;
+  paperRev?: Revision; pacing?: WorkbookPacingV1;
 };
 export type WorkbookPreSubmitRevisionClaim = {
-  readonly draftRequestId: string;
-  readonly paperRev: Revision;
-  readonly itemId: string;
-  readonly originalAnswer: string | readonly Json[] | null;
+  readonly draftRequestId: string; readonly paperRev: Revision;
+  readonly itemId: string; readonly originalAnswer: string | readonly Json[] | null;
 };
 export type WorkbookAttempt = {
-  paperId: string;
-  requestId: string;
-  submittedAt: string;
-  gradingVersion: string;
-  paper: WorkbookPaper;
-  answers: Record<string, WorkbookAnswer>;
-  questionAttachments?: WorkbookQuestionAttachments;
-  basis?: readonly FactRevisionBasis[];
-  feedback: WorkbookAttemptFeedback[];
-  effectiveDurationMs?: number;
-  assessmentConsent?: typeof workbookAssessmentConsent;
-  preSubmitRevised?: true;
+  paperId: string; requestId: string; submittedAt: string; gradingVersion: string;
+  paper: WorkbookPaper; answers: Record<string, WorkbookAnswer>;
+  questionAttachments?: WorkbookQuestionAttachments; basis?: readonly FactRevisionBasis[];
+  feedback: WorkbookAttemptFeedback[]; effectiveDurationMs?: number;
+  assessmentConsent?: typeof workbookAssessmentConsent; preSubmitRevised?: true;
 } & WorkbookPacingFields;
 export type WorkbookAttemptRequest = {
-  paperId: string;
-  requestId: string;
-  submittedAt: string;
-  answers: Record<string, string | readonly Json[] | null>;
-  questionAttachments?: WorkbookQuestionAttachments;
-  effectiveDurationMs?: number;
-  assessmentConsent?: typeof workbookAssessmentConsent;
-  preSubmitRevisions?: readonly WorkbookPreSubmitRevisionClaim[];
+  paperId: string; requestId: string; submittedAt: string; answers: Record<string, string | readonly Json[] | null>;
+  questionAttachments?: WorkbookQuestionAttachments; effectiveDurationMs?: number;
+  assessmentConsent?: typeof workbookAssessmentConsent; preSubmitRevisions?: readonly WorkbookPreSubmitRevisionClaim[];
 } & WorkbookPacingFields;
 export type WorkbookQuestionView =
-  | {
-    id: string;
-    kind: 'numeric';
-    prompt: string;
-    unit: string | null;
-    sourceQuestionRef?: WorkbookSourceQuestionRef;
-  }
-  | {
-    id: string;
-    kind: 'exact';
-    prompt: string;
-    selfCheck: boolean;
-    sourceQuestionRef?: WorkbookSourceQuestionRef;
-  }
-  | {
-    id: string;
-    kind: 'rubric';
-    prompt: string;
-    rubricVersion: string;
-    sourceQuestionRef?: WorkbookSourceQuestionRef;
-  }
-  | {
-    id: string;
-    kind: 'bank';
-    prompt: string;
-    selfCheck: false;
-    sourceQuestionRef: WorkbookSourceQuestionRef;
-    responseSchema: AssessmentRelease['items'][number]['slots'];
-    sharedMaterials: readonly JsonObject[];
-    interaction?: JsonObject;
-  };
+  | { id: string; kind: 'numeric'; prompt: string; unit: string | null
+      sourceQuestionRef?: WorkbookSourceQuestionRef }
+  | { id: string; kind: 'exact'; prompt: string; selfCheck: boolean
+      sourceQuestionRef?: WorkbookSourceQuestionRef }
+  | { id: string; kind: 'rubric'; prompt: string; rubricVersion: string
+      sourceQuestionRef?: WorkbookSourceQuestionRef }
+  | { id: string; kind: 'bank'; prompt: string; selfCheck: false
+      sourceQuestionRef: WorkbookSourceQuestionRef
+      responseSchema: AssessmentRelease['items'][number]['slots']
+      sharedMaterials: readonly JsonObject[]
+      interaction?: JsonObject };
 export type WorkbookSourceView = {
-  id: string;
-  title: string | null;
-  available: boolean;
+  id: string; title: string | null; available: boolean;
 };
 export type WorkbookSummary = {
-  id: string;
-  title: string;
-  questionCount: number;
-  savedAt: string;
-  sourceId: string | null;
-  sourceTitle: string | null;
-  attemptCount: number;
-  lastAttemptAt: string | null;
+  id: string; title: string; questionCount: number; savedAt: string;
+  sourceId: string | null; sourceTitle: string | null; attemptCount: number; lastAttemptAt: string | null;
 };
 export type WorkbookAttemptView = {
-  id: string;
-  rev?: Revision;
-  correctionItemIds?: string[];
-  correctedItemIds?: string[];
-  requestId: string;
-  submittedAt: string;
-  gradingVersion: string;
-  answers: Record<string, WorkbookAnswer>;
-  questionAttachments?: WorkbookQuestionAttachmentViews;
-  effectiveDurationMs?: number;
-  feedback: WorkbookAttemptFeedback[];
-  assessments: WorkbookRubricAssessmentView[];
-  correctCount: number;
-  total: number;
-  preSubmitRevised?: true;
+  id: string; rev?: Revision; correctionItemIds?: string[]; correctedItemIds?: string[];
+  requestId: string; submittedAt: string; gradingVersion: string; answers: Record<string, WorkbookAnswer>;
+  questionAttachments?: WorkbookQuestionAttachmentViews; effectiveDurationMs?: number;
+  feedback: WorkbookAttemptFeedback[]; assessments: WorkbookRubricAssessmentView[];
+  correctCount: number; total: number; preSubmitRevised?: true;
 } & WorkbookPacingFields;
 export type WorkbookAssessmentVerdict = 'correct' | 'partial' | 'incorrect' | 'pending';
 export type WorkbookErrorStage = AssessmentErrorStage;
 export type WorkbookRubricAssessment = {
-  attemptId: string;
-  paperId: string;
-  questionId: string;
-  requestId: string;
-  assessedAt: string;
-  assessmentVersion: string;
-  consent?: typeof workbookAssessmentConsent;
-  publicSearchQuery?: string;
-  rubricVersion: string;
-  rubric: string;
-  providerBaseUrl: string;
-  requestedModel?: string;
-  providerId?: string;
-  providerProtocol?: string;
-  verdict: WorkbookAssessmentVerdict;
-  score?: { earned: number; maximum: number };
-  errorStage?: WorkbookErrorStage;
-  feedback: string;
-  evidence: string[];
-  trace: string[];
-  reportedModel?: string;
+  attemptId: string; paperId: string; questionId: string; requestId: string;
+  assessedAt: string; assessmentVersion: string; consent?: typeof workbookAssessmentConsent; publicSearchQuery?: string;
+  rubricVersion: string; rubric: string; providerBaseUrl: string;
+  requestedModel?: string; providerId?: string; providerProtocol?: string; verdict: WorkbookAssessmentVerdict;
+  score?: { earned: number; maximum: number }; errorStage?: WorkbookErrorStage;
+  feedback: string; evidence: string[]; trace: string[]; reportedModel?: string;
 };
 export type WorkbookRubricAssessmentView = WorkbookRubricAssessment & { id: string };
 export type WorkbookAssessmentRequest = Pick<WorkbookRubricAssessment,
   'requestId' | 'questionId' | 'publicSearchQuery' | 'providerBaseUrl'> & { consent: typeof workbookAssessmentConsent };
 export type WorkbookDetail = {
-  id: string;
-  revision?: Revision;
-  pacingVersion?: 1;
-  sealedPractice?: true;
-  title: string;
-  savedAt: string;
-  source: WorkbookSourceView | null;
-  questions: WorkbookQuestionView[];
-  attempts: WorkbookAttemptView[];
+  id: string; revision?: Revision; pacingVersion?: 1; sealedPractice?: true; title: string; savedAt: string;
+  source: WorkbookSourceView | null; questions: WorkbookQuestionView[]; attempts: WorkbookAttemptView[];
 };
 const record = recordParser(() => new Error('试卷记录格式无效。'));
 const text = (value: unknown, label: string, limit: number, preserveWhitespace = false): string =>
@@ -383,35 +285,29 @@ function storedQuestion(value: unknown, index: number): WorkbookQuestion {
   const parsed = draftQuestion({...row, id: undefined}, index, true);
   return { ...parsed, id };
 }
+function questionList(value: unknown, error: string): unknown[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maxQuestions) throw new Error(error);
+  return value;
+}
 export function workbookDraft(input: unknown, bank?: ReadonlyMap<number, WorkbookBankQuestion>): WorkbookDraft {
   const row = record(input);
-  const questions = row.questions;
-  if (!Array.isArray(questions) || questions.length === 0 || questions.length > maxQuestions) {
-    throw new Error('一份试卷需要 1 到 100 道题。');
-  }
   return {
-    title: text(row.title, '试卷标题', 240),
-    materialId: materialReference(row.materialId),
-    questions: questions.map((question, index) => bank?.get(index) ?? draftQuestion(question, index)),
+    title: text(row.title, '试卷标题', 240), materialId: materialReference(row.materialId),
+    questions: questionList(row.questions, '一份试卷需要 1 到 100 道题。')
+      .map((question, index) => bank?.get(index) ?? draftQuestion(question, index)),
   };
 }
 export function workbookPaper(input: unknown): WorkbookPaper {
   const row = record(input);
-  const questions = row.questions;
-  if (!Array.isArray(questions) || questions.length === 0 || questions.length > maxQuestions) {
-    throw new Error('试卷题目数量无效。');
-  }
-  const parsed = questions.map(storedQuestion);
+  const parsed = questionList(row.questions, '试卷题目数量无效。').map(storedQuestion);
   const ids = new Set(parsed.map(({ id }) => id));
   if (ids.size !== parsed.length) throw new Error('试卷题目标识重复。');
   const release = row.assessmentRelease === undefined ? undefined : assessmentRelease(row.assessmentRelease);
   if (parsed.some(item => item.kind === 'bank' && !release?.items.some(({ itemId }) => itemId === item.id)))
     throw new Error('题库题项缺少冻结评估契约。');
   return {
-    title: text(row.title, '试卷标题', 240),
-    materialId: materialReference(row.materialId),
-    savedAt: timestamp(row.savedAt, '保存时间'),
-    questions: parsed,
+    title: text(row.title, '试卷标题', 240), materialId: materialReference(row.materialId),
+    savedAt: timestamp(row.savedAt, '保存时间'), questions: parsed,
     ...(release === undefined ? {} : { assessmentRelease: release }),
   };
 }
@@ -433,10 +329,8 @@ export function workbookAttemptRequest(input: unknown, mounted?: { paperId: Fact
   }
   const questionAttachments = parseWorkbookQuestionAttachments(row.questionAttachments);
   return {
-    paperId: mounted?.paperId ?? factId(String(row.paperId)),
-    requestId: workbookRequestId(row.requestId),
-    submittedAt: timestamp(mounted?.submittedAt ?? row.submittedAt, '提交时间'),
-    answers: given,
+    paperId: mounted?.paperId ?? factId(String(row.paperId)), requestId: workbookRequestId(row.requestId),
+    submittedAt: timestamp(mounted?.submittedAt ?? row.submittedAt, '提交时间'), answers: given,
     ...(questionAttachments === undefined ? {} : { questionAttachments }),
     ...workbookPacingFields(row),
     ...assessmentConsent(row.assessmentConsent),
@@ -577,10 +471,7 @@ export function sameWorkbookJson(left: unknown, right: unknown): boolean {
   return canonical(left) === canonical(right);
 }
 export function normalizeWorkbookAnswer(
-  paper: WorkbookPaper,
-  question: WorkbookQuestion,
-  supplied: unknown,
-  index: number,
+  paper: WorkbookPaper, question: WorkbookQuestion, supplied: unknown, index: number,
 ): WorkbookAnswer {
   const item = question.kind === 'bank' ? paper.assessmentRelease?.items.find(entry => entry.itemId === question.id) : undefined;
   const slot = item?.slots.length === 1 ? item.slots[0] : undefined;
@@ -597,9 +488,7 @@ export function normalizeWorkbookAnswer(
   return trimmed;
 }
 export function gradeWorkbook(
-  paper: WorkbookPaper,
-  input: unknown,
-  questionAttachments?: WorkbookQuestionAttachments,
+  paper: WorkbookPaper, input: unknown, questionAttachments?: WorkbookQuestionAttachments,
 ): { answers: Record<string, WorkbookAnswer>; feedback: WorkbookAttemptFeedback[] } {
   const row = record(input);
   const byId = new Map(paper.questions.map((question) => [question.id, question]));
@@ -613,42 +502,25 @@ export function gradeWorkbook(
     const supplied = row[question.id] ?? null;
     const hasAttachment = (questionAttachments?.[question.id]?.length ?? 0) > 0;
     const normalized = normalizeWorkbookAnswer(paper, question, supplied, index);
+    const entry = (result: WorkbookAttemptFeedback['result'], answer: WorkbookAnswer, expected: WorkbookExpected | null) => {
+      answers[question.id] = answer;
+      feedback.push({ questionId: question.id, result, answer, expected, explanation: question.explanation });
+    };
     if (question.kind === 'numeric') {
       const answer = normalized as number | null;
       const result = answer === null
         ? (hasAttachment ? 'pending' : 'unanswered')
-        : Math.abs(answer - question.answer) <= question.tolerance
-          ? 'correct'
-          : 'incorrect';
-      answers[question.id] = answer;
-      feedback.push({
-        questionId: question.id,
-        result,
-        answer,
-        expected: {
-          kind: 'numeric',
-          value: question.answer,
-          tolerance: question.tolerance,
-          unit: question.unit,
-        },
-        explanation: question.explanation,
+        : Math.abs(answer - question.answer) <= question.tolerance ? 'correct' : 'incorrect';
+      entry(result, answer, {
+        kind: 'numeric', value: question.answer, tolerance: question.tolerance, unit: question.unit,
       });
       return;
     }
     if (question.kind === 'rubric' || question.kind === 'bank') {
       const answer = normalized as string | null;
-      answers[question.id] = answer;
-      feedback.push({
-        questionId: question.id,
-        result: answer === null && !hasAttachment ? 'unanswered' : 'pending',
-        answer,
-        expected: question.kind === 'bank' ? null : {
-          kind: 'rubric',
-          rubric: question.rubric,
-          rubricVersion: question.rubricVersion,
-        },
-        explanation: question.explanation,
-      });
+      entry(answer === null && !hasAttachment ? 'unanswered' : 'pending', answer,
+        question.kind === 'bank' ? null
+          : { kind: 'rubric', rubric: question.rubric, rubricVersion: question.rubricVersion });
       return;
     }
     const answer = normalized as string | null;
@@ -659,14 +531,7 @@ export function gradeWorkbook(
         : question.answers.some((expected) => normalizeExact(expected) === normalizeExact(answer))
           ? 'correct'
           : 'incorrect';
-    answers[question.id] = answer;
-    feedback.push({
-      questionId: question.id,
-      result,
-      answer,
-      expected: { kind: 'exact', values: [...question.answers] },
-      explanation: question.explanation,
-    });
+    entry(result, answer, { kind: 'exact', values: [...question.answers] });
   });
   if (feedback.every(({ result }) => result === 'unanswered')) {
     throw new Error('请至少作答一题再交卷。');
@@ -685,45 +550,31 @@ function parsedAnswer(question: WorkbookQuestion, value: unknown, index: number)
   return value;
 }
 function storedExpected(
-  question: WorkbookQuestion,
-  value: unknown,
-  index: number,
+  question: WorkbookQuestion, value: unknown, index: number,
 ): WorkbookExpected | null {
+  const invalid = () => new Error(`第 ${index + 1} 题归档参考答案无效。`);
   if (question.kind === 'bank') {
     if (value !== null) throw new Error('题库的私有规则保存在冻结评估契约中。');
     return null;
   }
   const row = record(value);
   if (question.kind === 'numeric') {
-    if (
-      row.kind !== 'numeric' ||
-      typeof row.value !== 'number' ||
-      !Number.isFinite(row.value) ||
-      typeof row.tolerance !== 'number' ||
-      !Number.isFinite(row.tolerance) ||
-      row.tolerance < 0
-    ) {
-      throw new Error(`第 ${index + 1} 题归档参考答案无效。`);
+    if (row.kind !== 'numeric' || typeof row.value !== 'number' || !Number.isFinite(row.value) ||
+        typeof row.tolerance !== 'number' || !Number.isFinite(row.tolerance) || row.tolerance < 0) {
+      throw invalid();
     }
     return {
-      kind: 'numeric',
-      value: row.value,
-      tolerance: row.tolerance,
+      kind: 'numeric', value: row.value, tolerance: row.tolerance,
       unit: optionalText(row.unit, `第 ${index + 1} 题归档单位`, 40),
     };
   }
   if (row.kind !== 'exact' || !Array.isArray(row.values) || row.values.length === 0) {
-    if (
-      row.kind !== 'rubric' ||
-      typeof row.rubric !== 'string' ||
-      typeof row.rubricVersion !== 'string' ||
-      !rubricVersionPattern.test(row.rubricVersion)
-    ) {
-      throw new Error(`第 ${index + 1} 题归档参考答案无效。`);
+    if (row.kind !== 'rubric' || typeof row.rubric !== 'string' ||
+        typeof row.rubricVersion !== 'string' || !rubricVersionPattern.test(row.rubricVersion)) {
+      throw invalid();
     }
     return {
-      kind: 'rubric',
-      rubric: text(row.rubric, `第 ${index + 1} 题归档评分标准`, 8000),
+      kind: 'rubric', rubric: text(row.rubric, `第 ${index + 1} 题归档评分标准`, 8000),
       rubricVersion: row.rubricVersion,
     };
   }
@@ -740,18 +591,12 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
   const paperId = factId(String(row.paperId));
   const requestId = workbookRequestId(row.requestId);
   const submittedAt = timestamp(row.submittedAt, '提交时间');
-  if (
-    row.gradingVersion !== workbookGradingVersion &&
-    row.gradingVersion !== workbookRubricGradingVersion
-  ) {
+  if (row.gradingVersion !== workbookGradingVersion && row.gradingVersion !== workbookRubricGradingVersion) {
     throw new Error('这份作答的判分版本不被识别。');
   }
   const storedAnswers = record(row.answers);
   const storedKeys = new Set(Object.keys(storedAnswers));
-  if (
-    storedKeys.size !== pap.questions.length ||
-    !pap.questions.every((question) => storedKeys.has(question.id))
-  ) {
+  if (storedKeys.size !== pap.questions.length || !pap.questions.every(question => storedKeys.has(question.id))) {
     throw new Error('归档作答与试卷不匹配。');
   }
   const answers = Object.fromEntries(pap.questions.map((question, index) => [
@@ -786,14 +631,9 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     const answer = parsedAnswer(question, item.answer, index);
     const hasAttachment = (questionAttachments?.[question.id]?.length ?? 0) > 0;
     const answered = answer !== null || hasAttachment;
-    if (!sameWorkbookJson(answer, answers[question.id])) {
-      throw new Error('归档反馈与作答不匹配。');
-    }
-    if (!answered && result !== 'unanswered') {
-      throw new Error('归档反馈与作答不匹配。');
-    }
-    if (answered && result === 'unanswered') {
-      throw new Error('归档反馈与作答不匹配。');
+    const mismatch = () => new Error('归档反馈与作答不匹配。');
+    if (!sameWorkbookJson(answer, answers[question.id]) || answered !== (result !== 'unanswered')) {
+      throw mismatch();
     }
     if (question.kind === 'exact' && question.selfCheck && answered && result !== 'self-check') {
       throw new Error('归档自评题不应被系统判分。');
@@ -812,10 +652,7 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
     const expected = storedExpected(question, item.expected, index);
     if (feedbackById.has(questionId)) throw new Error('归档反馈题目重复。');
     feedbackById.set(questionId, {
-      questionId,
-      result,
-      answer,
-      expected,
+      questionId, result, answer, expected,
       explanation: optionalText(item.explanation, `第 ${index + 1} 题归档解析`, 4000),
     });
   });
@@ -827,16 +664,11 @@ export function workbookAttempt(input: unknown): WorkbookAttempt {
   const pacing = workbookPacingFields(row);
   checkWorkbookPacingItems(pap, pacing.pacing);
   return {
-    paperId,
-    requestId,
-    submittedAt,
-    gradingVersion: row.gradingVersion,
-    paper: pap,
-    answers,
+    paperId, requestId, submittedAt,
+    gradingVersion: row.gradingVersion, paper: pap, answers,
     ...(questionAttachments === undefined ? {} : { questionAttachments }),
     ...(basis === undefined ? {} : { basis }),
-    feedback,
-    ...pacing,
+    feedback, ...pacing,
     ...assessmentConsent(row.assessmentConsent),
     ...storedPreSubmitRevised(row.preSubmitRevised),
   };
@@ -866,24 +698,19 @@ export function workbookQuestionsView(paper: WorkbookPaper): WorkbookQuestionVie
 export function workbookCorrectCount(feedback: readonly Pick<WorkbookFeedback, 'result'>[]): number {
   return feedback.filter(({ result }) => result === 'correct').length;
 }
+const assessmentVerdicts = ['correct', 'partial', 'incorrect', 'pending'] as const;
 function verdict(value: unknown): WorkbookAssessmentVerdict {
-  if (value === 'correct' || value === 'partial' || value === 'incorrect' || value === 'pending') {
-    return value;
-  }
-  throw new Error('评分标准批改结果无效。');
+  const match = assessmentVerdicts.find(option => option === value);
+  if (match === undefined) throw new Error('评分标准批改结果无效。');
+  return match;
 }
 function stringList(value: unknown, label: string, limit = 40, length = 4000): string[] {
   if (!Array.isArray(value) || value.length > limit) throw new Error(`${label}格式无效。`);
   return value.map((entry, index) => text(entry, `${label}第 ${index + 1} 项`, length));
 }
 export function workbookAssessmentResult(input: unknown): {
-  verdict: WorkbookAssessmentVerdict;
-  score?: { earned: number; maximum: number };
-  errorStage?: WorkbookErrorStage;
-  feedback: string;
-  evidence: string[];
-  trace: string[];
-  reportedModel?: string;
+  verdict: WorkbookAssessmentVerdict; score?: { earned: number; maximum: number };
+  errorStage?: WorkbookErrorStage; feedback: string; evidence: string[]; trace: string[]; reportedModel?: string;
 } {
   const row = record(input);
   const reportedModel = optionalText(row.reportedModel, '模型标识', 240);
@@ -921,14 +748,10 @@ export function workbookRubricAssessment(input: unknown): WorkbookRubricAssessme
     throw new Error('评分标准版本无效。');
   }
   return {
-    attemptId: factId(String(row.attemptId)),
-    paperId: factId(String(row.paperId)),
-    questionId: text(row.questionId, '题目标识', 40),
-    requestId: workbookRequestId(row.requestId),
-    assessedAt: timestamp(row.assessedAt, '批改时间'),
-    assessmentVersion: workbookRubricAssessmentVersion,
-    rubricVersion: row.rubricVersion,
-    rubric: text(row.rubric, '评分标准', 8000),
+    attemptId: factId(String(row.attemptId)), paperId: factId(String(row.paperId)),
+    questionId: text(row.questionId, '题目标识', 40), requestId: workbookRequestId(row.requestId),
+    assessedAt: timestamp(row.assessedAt, '批改时间'), assessmentVersion: workbookRubricAssessmentVersion,
+    rubricVersion: row.rubricVersion, rubric: text(row.rubric, '评分标准', 8000),
     providerBaseUrl: text(row.providerBaseUrl, '模型端点', 2000),
     ...(row.requestedModel ? {requestedModel: text(row.requestedModel, '请求模型', 256)} : {}),
     ...(row.providerId ? {providerId: text(row.providerId, '模型配置', 160)} : {}),

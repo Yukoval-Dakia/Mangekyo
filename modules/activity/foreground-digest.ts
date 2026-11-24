@@ -5,17 +5,13 @@ import type { WorkspaceFactInput } from './workspace-values.ts';
 export type DigestSourceRef = WorkspaceFactInput;
 
 export type ForegroundDigest = {
-  id: string;
-  kind: 'companion_completed';
-  summary: string;
-  sourceRefs: DigestSourceRef[];
+  id: string; kind: 'companion_completed'; summary: string; sourceRefs: DigestSourceRef[];
 };
 
 export function buildForegroundDigest(
   id: string,
   inputs: readonly { readonly kind: string; readonly id?: FactId; readonly rev?: number; readonly accessEpoch?: Tick; readonly mode?: string }[],
-  sourceIds: readonly string[],
-  summary: string,
+  sourceIds: readonly string[], summary: string,
 ): ForegroundDigest {
   const allowed = new Set([id, ...sourceIds]);
   const sourceRefs = inputs.filter((entry): entry is DigestSourceRef =>
@@ -30,14 +26,10 @@ export function buildForegroundDigest(
 }
 
 export async function readAuthorizedForegroundDigests(
-  tx: ActivityEvidenceReadScope,
-  slotType: string,
-  afterTick: string,
+  tx: ActivityEvidenceReadScope, slotType: string, afterTick: string,
   ports: {
-    readonly read: Pick<ReadContext, 'fact'>;
-    readonly maySend: (fact: FactSnapshot) => boolean;
-    readonly authorize: () => Promise<void>;
-    readonly isManifestValid: (manifest: unknown) => Promise<boolean>;
+    readonly read: Pick<ReadContext, 'fact'>; readonly maySend: (fact: FactSnapshot) => boolean;
+    readonly authorize: () => Promise<void>; readonly isManifestValid: (manifest: unknown) => Promise<boolean>;
     readonly isUnavailable: (error: unknown) => boolean;
   },
 ) {

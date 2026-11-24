@@ -14,8 +14,7 @@ export const readTasks = (tx: ReadTransaction & ActivityEvidenceReadScope, acces
   readTasksOverview(tx, access, createCommandReadContext(tx, access.callerPurpose), readable, limit);
 
 export type LearningOverviewAccess = {
-  readonly callerPurpose: string;
-  readonly maySend: (fact: LearningOverviewFact, snapshot: FactSnapshot) => boolean;
+  readonly callerPurpose: string; readonly maySend: (fact: LearningOverviewFact, snapshot: FactSnapshot) => boolean;
   readonly track?: (snapshot: FactSnapshot) => void;
 };
 

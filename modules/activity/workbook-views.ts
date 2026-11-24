@@ -16,14 +16,8 @@ import {
 } from './workbook-values.ts';
 
 export type ReviewEntry = {
-  paperId: string;
-  title: string;
-  questionId: string;
-  prompt: string;
-  answer: string;
-  expected: string;
-  explanation: string | null;
-  errorStage?: AssessmentErrorStage;
+  paperId: string; title: string; questionId: string; prompt: string; answer: string; expected: string;
+  explanation: string | null; errorStage?: AssessmentErrorStage;
 };
 
 export function ridingReview(practice: PracticeView): ReviewEntry[] {
@@ -94,8 +88,7 @@ export async function projectWorkbookDetail<Question extends WorkbookQuestionVie
   id: FactId, revision: Revision, paper: WorkbookPaper, source: WorkbookSourceView | null, sealedPractice: boolean,
   reads: {
     attempts: Awaited<ReturnType<typeof readWorkbookAttempts>>;
-    assessments: ReadonlyMap<string, WorkbookRubricAssessmentView[]>;
-    read: ReadContext;
+    assessments: ReadonlyMap<string, WorkbookRubricAssessmentView[]>; read: ReadContext;
     unavailable(error: unknown): boolean;
     corrections: Awaited<ReturnType<typeof readWorkbookCorrections>>;
     frozenAttempt(fact: FactSnapshot, attempt: WorkbookAttempt): Promise<{questions: Question[]; paperRev?: Revision} | undefined>;
@@ -156,8 +149,7 @@ export async function projectWorkbookReview(attempts: readonly {id: FactId; rev?
 }
 
 export function formalDiagnosisSummary<Score>(
-  formal: { state: string; score: Score; result?: AssessmentResult } | undefined,
-  hasRelease: boolean,
+  formal: { state: string; score: Score; result?: AssessmentResult } | undefined, hasRelease: boolean,
 ) {
   if (!formal) return hasRelease ? { state: 'unavailable' as const } : undefined;
   const errorStages = (formal.result?.outcomes ?? []).flatMap(outcome =>

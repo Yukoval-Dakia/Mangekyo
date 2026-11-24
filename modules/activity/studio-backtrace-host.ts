@@ -16,8 +16,7 @@ import { workbookAttempt, type WorkbookSourceQuestionRef } from './workbook-valu
 import { posttestAttemptFor, posttestIdFor, readPosttestIssuance } from './retention-host-support.ts';
 type Reader = Pick<ReadContext, 'fact'>;
 export type StudioBacktraceDeps = FactReadChecks & {
-  readonly retentionPurpose: string;
-  readonly isRequestError: (error: unknown) => boolean;
+  readonly retentionPurpose: string; readonly isRequestError: (error: unknown) => boolean;
   readonly openRetentionTarget: (tx: ReadTransaction, read: Reader, paper: unknown, itemId: string) => Promise<any>;
   readonly readItemConceptLinks: (tx: ReadTransaction, ref: unknown, through: unknown, open: unknown) => Promise<readonly any[]>;
   readonly readWorkbookEvidence: (tx: ReadTransaction, read: Reader, old: any, attemptId: FactId) => Promise<any>;
@@ -33,8 +32,7 @@ function unavailable(deps: StudioBacktraceDeps, error: unknown) {
 type Opened = {
   source: { ref: { id: string; rev: number } };
   question: { sourceQuestionRef?: WorkbookSourceQuestionRef; prompt: string };
-  target: { paper: { id: string; rev: number } };
-  paper: { savedAt: string };
+  target: { paper: { id: string; rev: number } }; paper: { savedAt: string };
 };
 async function delayedSitting(deps: StudioBacktraceDeps, tx: ReadTransaction, read: Reader, earlier: any, later: any,
   readIssuance: typeof readPosttestIssuance) {

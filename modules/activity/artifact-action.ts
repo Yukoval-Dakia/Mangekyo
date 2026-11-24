@@ -20,16 +20,13 @@ export function artifactActionRecord(input: unknown) {
     throw new Error('作品操作记录无效。');
   return {
     ...input,
-    mountId: factId(input.mountId),
-    turnId: factId(input.turnId),
-    sessionId: factId(input.sessionId),
+    mountId: factId(input.mountId), turnId: factId(input.turnId), sessionId: factId(input.sessionId),
     ...(input.submission === undefined ? {} : { submission: input.submission }),
   };
 }
 
 export function mountPermissionFields(unconfirmed: readonly string[], known: ReadonlySet<string>) {
   return unconfirmed.length ? {
-    mountPermissionsPartial: true as const,
-    unconfirmedMountIds: unconfirmed.filter(id => known.has(id)),
+    mountPermissionsPartial: true as const, unconfirmedMountIds: unconfirmed.filter(id => known.has(id)),
   } : {};
 }

@@ -46,26 +46,18 @@ export function workbookAttachmentErrorStatus(error: unknown): number | null {
 }
 
 export type WorkbookAttachmentRef = {
-  readonly originalId: FactId;
-  readonly rev: Revision;
+  readonly originalId: FactId; readonly rev: Revision;
 };
 
 export type WorkbookQuestionAttachments = Record<string, readonly WorkbookAttachmentRef[]>;
 
 export type WorkbookAttachmentUploadInput<TBytes extends Uint8Array = Uint8Array> = {
-  readonly bytes: TBytes;
-  readonly filename?: unknown;
-  readonly declaredType?: unknown;
-  readonly itemId?: unknown;
-  readonly requestId?: unknown;
-  readonly scope?: unknown;
+  readonly bytes: TBytes; readonly filename?: unknown; readonly declaredType?: unknown; readonly itemId?: unknown;
+  readonly requestId?: unknown; readonly scope?: unknown;
 };
 
 export type WorkbookAttachmentView = {
-  readonly originalId: FactId;
-  readonly rev: Revision;
-  readonly url: string;
-  readonly available: boolean;
+  readonly originalId: FactId; readonly rev: Revision; readonly url: string; readonly available: boolean;
 };
 
 export type WorkbookQuestionAttachmentViews = Record<string, readonly WorkbookAttachmentView[]>;
@@ -79,14 +71,9 @@ export type WorkbookAttachmentUploadReceipt = WorkbookAttachmentEvidence & {
 };
 
 export type PreparedWorkbookAttachmentUpload = {
-  readonly requestId: string;
-  readonly itemId?: string;
-  readonly scope: WorkbookAttachmentScope;
-  readonly mimeType: WorkbookAttachmentMimeType;
-  readonly name: string;
-  readonly title: string;
-  readonly size: number;
-  readonly purpose: readonly string[];
+  readonly requestId: string; readonly itemId?: string;
+  readonly scope: WorkbookAttachmentScope; readonly mimeType: WorkbookAttachmentMimeType;
+  readonly name: string; readonly title: string; readonly size: number; readonly purpose: readonly string[];
 };
 
 export function workbookAttachmentUrl(originalId: FactId): string {
@@ -105,17 +92,18 @@ function matchesBytes(bytes: Uint8Array, offset: number, signature: readonly num
   return true;
 }
 
+const attachmentSignatures: readonly (readonly [WorkbookAttachmentMimeType, readonly number[]])[] = [
+  ['image/png', [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+  ['image/jpeg', [0xff, 0xd8, 0xff]],
+  ['image/webp', [0x52, 0x49, 0x46, 0x46]],
+];
+
 export function detectWorkbookAttachmentMimeType(bytes: Uint8Array, declaredType?: unknown): WorkbookAttachmentMimeType {
   if (bytes.byteLength === 0) throw new WorkbookAttachmentInputError('请选择要上传的图片。');
   if (bytes.byteLength > workbookAttachmentFileLimit) throw new WorkbookAttachmentSizeError('单题图片不能超过 10 MB。');
-  let detected: WorkbookAttachmentMimeType | null = null;
-  if (matchesBytes(bytes, 0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
-    detected = 'image/png';
-  } else if (matchesBytes(bytes, 0, [0xff, 0xd8, 0xff])) {
-    detected = 'image/jpeg';
-  } else if (matchesBytes(bytes, 0, [0x52, 0x49, 0x46, 0x46]) && matchesBytes(bytes, 8, [0x57, 0x45, 0x50, 0x50])) {
-    detected = 'image/webp';
-  }
+  const detected = attachmentSignatures.find(([mimeType, signature]) =>
+    matchesBytes(bytes, 0, signature) &&
+    (mimeType !== 'image/webp' || matchesBytes(bytes, 8, [0x57, 0x45, 0x50, 0x50])))?.[0];
   if (!detected) throw new WorkbookAttachmentMediaError('只支持 PNG、JPEG 或 WebP 图片。');
   if (typeof declaredType === 'string') {
     const normalized = declaredType.split(';')[0]!.trim().toLowerCase();
@@ -171,35 +159,22 @@ export function prepareWorkbookAttachmentUpload(input: WorkbookAttachmentUploadI
     ...(itemId === undefined ? {} : { itemId }),
     scope,
     mimeType,
-    name: safeAttachmentName(input.filename, mimeType),
-    title: itemId ? `单题作答照片 ${itemId}` : '单题作答照片',
-    size: input.bytes.byteLength,
-    purpose: workbookAttachmentPurposes(scope),
+    name: safeAttachmentName(input.filename, mimeType), title: itemId ? `单题作答照片 ${itemId}` : '单题作答照片',
+    size: input.bytes.byteLength, purpose: workbookAttachmentPurposes(scope),
   };
 }
 
 export function buildWorkbookAttachmentSourceEnvelope(input: {
-  readonly originalId: FactId;
-  readonly paperId: FactId;
-  readonly itemId?: string;
-  readonly scope: WorkbookAttachmentScope;
-  readonly name: string;
-  readonly title: string;
-  readonly mimeType: WorkbookAttachmentMimeType;
-  readonly size: number;
-  readonly sha256: string;
-  readonly recordedAt: string;
+  readonly originalId: FactId; readonly paperId: FactId;
+  readonly itemId?: string; readonly scope: WorkbookAttachmentScope; readonly name: string; readonly title: string;
+  readonly mimeType: WorkbookAttachmentMimeType; readonly size: number;
+  readonly sha256: string; readonly recordedAt: string;
 }) {
   return {
-    kind: 'photo' as const,
-    retentionPolicy: 'retained' as const,
-    occurredAt: null,
+    kind: 'photo' as const, retentionPolicy: 'retained' as const, occurredAt: null,
     recordedAt: input.recordedAt,
     originals: [{
-      blobRef: input.originalId,
-      name: input.name,
-      mediaType: input.mimeType,
-      size: input.size,
+      blobRef: input.originalId, name: input.name, mediaType: input.mimeType, size: input.size,
       sha256: input.sha256,
     }],
     unit: { kind: 'capture' as const, title: input.title, blocks: [] },
@@ -275,8 +250,7 @@ export function parseWorkbookAttemptBasis(value: unknown): readonly FactRevision
 }
 
 export function checkWorkbookQuestionAttachments(
-  questionIds: ReadonlySet<string>,
-  attachments: WorkbookQuestionAttachments | undefined,
+  questionIds: ReadonlySet<string>, attachments: WorkbookQuestionAttachments | undefined,
 ): void {
   if (!attachments) return;
   for (const questionId of Object.keys(attachments)) {
@@ -287,8 +261,7 @@ export function checkWorkbookQuestionAttachments(
 }
 
 export function checkWorkbookAttachmentsBasis(
-  attachments: WorkbookQuestionAttachments | undefined,
-  basis: readonly FactRevisionBasis[] | undefined,
+  attachments: WorkbookQuestionAttachments | undefined, basis: readonly FactRevisionBasis[] | undefined,
 ): void {
   if (!attachments) return;
   const byId = new Map((basis ?? []).map(entry => [entry.id, entry]));
@@ -321,9 +294,7 @@ export function matchesWorkbookAttachmentBasis(fact: FactSnapshot, basis: FactRe
 }
 
 export function parseWorkbookAttachmentSource(
-  fact: FactSnapshot,
-  paperId: string,
-  questionId?: string,
+  fact: FactSnapshot, paperId: string, questionId?: string,
 ): { readonly mimeType: WorkbookAttachmentMimeType; readonly scope: WorkbookAttachmentScope } | null {
   if (fact.type !== sourceFact.type) return null;
   let envelope;
@@ -346,10 +317,8 @@ export function parseWorkbookAttachmentSource(
 }
 
 export async function authorizeWorkbookSubmissionAttachments(
-  ctx: { readonly learner: string; readonly read: Pick<ReadContext, 'fact'> },
-  paperId: FactId,
-  attachments: WorkbookQuestionAttachments | undefined,
-  requiredPurposes: readonly string[],
+  ctx: { readonly learner: string; readonly read: Pick<ReadContext, 'fact'> }, paperId: FactId,
+  attachments: WorkbookQuestionAttachments | undefined, requiredPurposes: readonly string[],
 ): Promise<readonly FactRevisionBasis[] | undefined> {
   if (!attachments) return undefined;
   const basisById = new Map<FactId, FactRevisionBasis>();
@@ -372,13 +341,11 @@ export async function authorizeWorkbookSubmissionAttachments(
         }
       }
       const existing = basisById.get(entry.originalId);
-      if (existing && (existing.rev !== snapshot.ref.rev || existing.epoch !== snapshot.accessEpoch)) {
+      if (existing && (existing.rev !== entry.rev || existing.epoch !== snapshot.accessEpoch)) {
         throw new WorkbookAttachmentStateError('同一原件在本次提交中的版本不一致。');
       }
       basisById.set(entry.originalId, {
-        id: snapshot.ref.id,
-        rev: snapshot.ref.rev,
-        epoch: snapshot.accessEpoch,
+        id: entry.originalId, rev: entry.rev, epoch: snapshot.accessEpoch,
       });
     }
   }
@@ -386,15 +353,12 @@ export async function authorizeWorkbookSubmissionAttachments(
 }
 
 type AttachmentAttemptLike = {
-  readonly paperId: string;
-  readonly questionAttachments?: WorkbookQuestionAttachments;
+  readonly paperId: string; readonly questionAttachments?: WorkbookQuestionAttachments;
   readonly basis?: readonly FactRevisionBasis[];
 };
 
 export async function readWorkbookQuestionAttachments(
-  open: (id: FactId) => Promise<FactSnapshot | null>,
-  attempt: AttachmentAttemptLike,
-  questionId: string,
+  open: (id: FactId) => Promise<FactSnapshot | null>, attempt: AttachmentAttemptLike, questionId: string,
 ): Promise<readonly (WorkbookAttachmentEvidence & { readonly basis: FactRevisionBasis })[]> {
   const refs = attempt.questionAttachments?.[questionId];
   if (!refs?.length) return [];
@@ -408,9 +372,7 @@ export async function readWorkbookQuestionAttachments(
     const parsed = parseWorkbookAttachmentSource(snapshot, attempt.paperId, questionId);
     if (!parsed) continue;
     results.push({
-      originalId: entry.originalId,
-      rev: entry.rev,
-      url: workbookAttachmentUrl(entry.originalId),
+      originalId: entry.originalId, rev: entry.rev, url: workbookAttachmentUrl(entry.originalId),
       mimeType: parsed.mimeType,
       basis,
     });
@@ -419,9 +381,7 @@ export async function readWorkbookQuestionAttachments(
 }
 
 export async function projectWorkbookAttemptAttachments(
-  read: Pick<ReadContext, 'fact'>,
-  attempt: AttachmentAttemptLike,
-  unavailable: (error: unknown) => boolean,
+  read: Pick<ReadContext, 'fact'>, attempt: AttachmentAttemptLike, unavailable: (error: unknown) => boolean,
 ): Promise<WorkbookQuestionAttachmentViews | undefined> {
   if (!attempt.questionAttachments) return undefined;
   const cache = new Map<FactId, Promise<FactSnapshot | null>>();
@@ -461,17 +421,10 @@ function formTextField(form: FormData, field: string): string | undefined {
 }
 
 export async function parseWorkbookAttachmentMultipart(
-  rawBody: Uint8Array,
-  contentType: string | undefined,
-  headerWatermark?: string,
+  rawBody: Uint8Array, contentType: string | undefined, headerWatermark?: string,
 ): Promise<{
-  readonly bytes: Uint8Array;
-  readonly filename: string;
-  readonly declaredType: string;
-  readonly itemId?: string;
-  readonly requestId?: string;
-  readonly scope?: string;
-  readonly deletionWatermark?: string;
+  readonly bytes: Uint8Array; readonly filename: string; readonly declaredType: string; readonly itemId?: string;
+  readonly requestId?: string; readonly scope?: string; readonly deletionWatermark?: string;
 }> {
   if (contentType?.split(';')[0]?.trim().toLowerCase() !== 'multipart/form-data') {
     throw new WorkbookAttachmentMediaError('需要 multipart/form-data 请求。');
@@ -491,9 +444,7 @@ export async function parseWorkbookAttachmentMultipart(
   const scope = formTextField(form, 'scope');
   const deletionWatermark = formTextField(form, 'deletionWatermark') ?? headerWatermark;
   return {
-    bytes: new Uint8Array(await file.arrayBuffer()),
-    filename: file.name,
-    declaredType: file.type,
+    bytes: new Uint8Array(await file.arrayBuffer()), filename: file.name, declaredType: file.type,
     ...(itemId === undefined ? {} : { itemId }),
     ...(requestId === undefined ? {} : { requestId }),
     ...(scope === undefined ? {} : { scope }),

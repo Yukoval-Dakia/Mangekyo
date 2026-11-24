@@ -20,22 +20,18 @@ export type WorkspaceCandidate = {
   learner: string;
 } & LearningOverviewWitness;
 export type WorkspaceCandidateChannel = {
-  matched: 'semantic';
-  candidates: readonly WorkspaceCandidate[];
+  matched: 'semantic'; candidates: readonly WorkspaceCandidate[];
 };
 type LexicalCandidate = WorkspaceCandidate & { fts: boolean; trgm: boolean };
 type Match = 'fts' | 'trgm' | 'semantic';
 export type SearchFilters = {
-  kinds: readonly string[];
-  tags: readonly string[];
-  since: string | null;
-  exposureFilter: 'exposed' | 'unexposed' | 'unknown' | null;
+  kinds: readonly string[]; tags: readonly string[];
+  since: string | null; exposureFilter: 'exposed' | 'unexposed' | 'unknown' | null;
 };
 export type SearchQuery = SearchFilters & { query: string; related?: string; cursor?: string };
 
 export class WorkspaceSearchError extends Error {
-  readonly code: 'invalid_args' | 'basis_stale';
-  readonly field: string | undefined;
+  readonly code: 'invalid_args' | 'basis_stale'; readonly field: string | undefined;
   constructor(message: string, field?: string, code: 'invalid_args' | 'basis_stale' = 'invalid_args') {
     super(message);
     this.code = code;
@@ -193,18 +189,13 @@ export function fuseWorkspaceCandidates(lexical: readonly LexicalCandidate[], se
 }
 
 export type SearchableWorkspaceSource<Ref> = {
-  readonly kind?: string | undefined;
-  readonly title: string;
-  readonly content: string | number | null;
-  readonly tags?: readonly string[] | undefined;
-  readonly links?: readonly string[] | undefined;
-  readonly sourceRef: Ref;
+  readonly kind?: string | undefined; readonly title: string;
+  readonly content: string | number | null; readonly tags?: readonly string[] | undefined;
+  readonly links?: readonly string[] | undefined; readonly sourceRef: Ref;
 };
 
 export function projectWorkspaceSearchResult<Ref>(
-  source: SearchableWorkspaceSource<Ref>,
-  fact: FactSnapshot,
-  filters: SearchFilters,
+  source: SearchableWorkspaceSource<Ref>, fact: FactSnapshot, filters: SearchFilters,
   excerptOf: (fact: FactSnapshot, content: string | number | null) => string,
 ) {
   const kind = source.kind ?? workspaceRecordKind(fact.type) ?? fact.type;
@@ -221,17 +212,13 @@ export function projectWorkspaceSearchResult<Ref>(
 }
 
 export async function runWorkspaceSearch<Source extends SearchableWorkspaceSource<Source['sourceRef']>, Witness>(
-  tx: ActivityEvidenceReadScope,
-  criteria: SearchQuery,
+  tx: ActivityEvidenceReadScope, criteria: SearchQuery,
   ports: {
-    readonly purpose: string;
-    readonly recipient: string;
-    readonly syntheticIds: readonly string[];
+    readonly purpose: string; readonly recipient: string; readonly syntheticIds: readonly string[];
     readonly resolve: (id: string) => Promise<{ readonly source: Source; readonly fact?: FactSnapshot; readonly opened: readonly Witness[] } | undefined>;
     readonly track: (witness: Witness) => void;
     readonly excerpt: (fact: FactSnapshot, content: string | number | null) => string;
-    readonly shortHash: (value: string) => string;
-    readonly pageSize?: number;
+    readonly shortHash: (value: string) => string; readonly pageSize?: number;
   },
   semantic?: WorkspaceCandidateChannel,
 ) {
@@ -280,8 +267,7 @@ export async function runWorkspaceSearch<Source extends SearchableWorkspaceSourc
   if (!afterCursor) throw new WorkspaceSearchError('查询或记录已变化，请去掉 cursor 重查。', 'cursor', 'basis_stale');
   return {
     results, ...(nextCursor ? { cursor: nextCursor } : {}),
-    candidateWindow: candidateLimit,
-    unappliedFilters: unappliedWorkspaceFilters(criteria),
+    candidateWindow: candidateLimit, unappliedFilters: unappliedWorkspaceFilters(criteria),
     ...(trigramUnavailable ? { retrievalWarnings: ['pg_trgm_unavailable'] } : {}),
   };
 }

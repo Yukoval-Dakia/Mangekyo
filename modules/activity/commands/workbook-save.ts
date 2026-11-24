@@ -21,8 +21,7 @@ import {
 } from '../workbook-values.ts';
 
 function matchesWorkspaceQuestion(
-  entry: ReturnType<typeof workspaceEntry>,
-  question: WorkbookQuestion,
+  entry: ReturnType<typeof workspaceEntry>, question: WorkbookQuestion,
 ): boolean {
   if (entry.kind !== 'question' || question.kind === 'bank') return false;
   if (entry.body !== question.prompt) return false;
@@ -38,8 +37,7 @@ function matchesWorkspaceQuestion(
 }
 
 export default defineCommand({
-  type: saveWorkbookPaperCommand,
-  destructive: false,
+  type: saveWorkbookPaperCommand, destructive: false,
   schema: { parse(input: unknown) {
     const row = object(input);
     if (row.condition === sealedPracticePurpose) return {

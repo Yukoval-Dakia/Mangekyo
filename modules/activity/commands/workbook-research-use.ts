@@ -2,8 +2,7 @@ import { defineCommand, factId, type FactWrite, type Revision } from '@mangekyo/
 import { setWorkbookResearchUse, workbookAttempt, workbookResearchPurpose } from '../workbook-values.ts';
 
 export default defineCommand({
-  type: setWorkbookResearchUse,
-  destructive: true,
+  type: setWorkbookResearchUse, destructive: true,
   schema: { parse(value: unknown) {
     const { paperId, attemptId, revision, allowed } = value as Record<string, unknown>;
     if (typeof allowed !== 'boolean' || typeof revision !== 'number' ||

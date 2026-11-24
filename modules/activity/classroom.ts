@@ -8,11 +8,8 @@ export const classroomOperations = ['adjust', 'advance', 'skip', 'finish', 'arch
 export type ClassroomOperation = typeof classroomOperations[number];
 type Step = {id: string; title: string; status: 'pending' | 'active' | 'presented' | 'skipped'; turnId?: FactId};
 export type Classroom = {
-  topic: string; minutes: number; sessionId: FactId;
-  status: 'active' | 'finished' | 'archived';
-  steps: Step[];
-  plans: {turnId: FactId; derivationId: DerivationId}[];
-  lastTurnId: FactId;
+  topic: string; minutes: number; sessionId: FactId; status: 'active' | 'finished' | 'archived'; steps: Step[];
+  plans: {turnId: FactId; derivationId: DerivationId}[]; lastTurnId: FactId;
   pending?: {turnId: FactId; kind: 'start' | 'adjust'};
 };
 export type ClassroomEvidence = {mountId: FactId; stateRev: number; assessmentId?: DerivationId | null};

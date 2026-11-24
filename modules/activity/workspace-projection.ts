@@ -8,12 +8,8 @@ import { workspaceEntry, workspaceEntryType, type WorkspaceEntryKind } from './w
 import { workbookAttempt, workbookAttemptType, workbookPaper, workbookPaperType, type WorkbookAttempt, type WorkbookExpected } from './workbook-values.ts';
 
 export type WorkspaceDisplay = {
-  readonly title: string;
-  readonly excerpt: string;
-  readonly text: string;
-  readonly kind?: string;
-  readonly links?: readonly string[];
-  readonly tags?: readonly string[];
+  readonly title: string; readonly excerpt: string; readonly text: string; readonly kind?: string;
+  readonly links?: readonly string[]; readonly tags?: readonly string[];
   readonly question?: {prompt:string; answer?:string; rubric?:string};
 };
 
@@ -97,8 +93,7 @@ function entryDisplay(value: unknown): WorkspaceDisplay {
   ].filter(Boolean).join('\n\n');
   return {
     title,
-    excerpt: summary(body || details || kind),
-    text: cleanText(title + '\n类型：' + kind + '\n\n' + details),
+    excerpt: summary(body || details || kind), text: cleanText(title + '\n类型：' + kind + '\n\n' + details),
     kind,
     links,
     tags,

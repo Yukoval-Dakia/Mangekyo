@@ -3,12 +3,9 @@ import { factId, type FactId, type Revision } from '@mangekyo/kernel';
 type ErrorFactory = () => Error;
 type TextErrorFactory = (reason: 'type' | 'invalid' | 'storage' | 'length') => Error;
 type TextOptions = {
-  readonly limit?: number;
-  readonly requireNonempty?: boolean;
-  readonly preserveWhitespace?: boolean;
-  readonly trimBeforeStorage?: boolean;
-  readonly storable?: boolean;
-  readonly storageBeforeLength?: boolean;
+  readonly limit?: number; readonly requireNonempty?: boolean;
+  readonly preserveWhitespace?: boolean; readonly trimBeforeStorage?: boolean;
+  readonly storable?: boolean; readonly storageBeforeLength?: boolean;
 };
 
 export const isPlainObject = (value: unknown): value is Record<string, unknown> =>

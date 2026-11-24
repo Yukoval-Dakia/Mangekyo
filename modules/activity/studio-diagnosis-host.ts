@@ -29,10 +29,7 @@ export type StudioDiagnosisDeps = FactReadChecks & {
   readonly diagnosisContext: (tx: ReadTransaction, input: { readonly attempt: WorkbookAttempt; readonly access: StudioDiagnosisAccess }) => Promise<WorkbookDiagnosisContext>;
 };
 export type StudioDiagnosisAccess = {
-  purpose?: string;
-  ownerNotionRead?: true;
-  maySend: DiagnosisMaySend;
-  track: DiagnosisTrack;
+  purpose?: string; ownerNotionRead?: true; maySend: DiagnosisMaySend; track: DiagnosisTrack;
   trackAssessment?: (basis: any) => void;
 };
 export const studioDiagnosisSourceUnavailable = (deps: Pick<StudioDiagnosisDeps, 'isFactNotFound' | 'isFactReadDenied'>, error: unknown) =>

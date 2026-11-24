@@ -17,14 +17,10 @@ import {
 } from './workbook-values.ts';
 
 export type PreSubmitRevisionCheck = PreSubmitPaperTarget & {
-  readonly attemptId: FactId;
-  readonly submittedAt: string;
-  readonly candidateItemIds: readonly string[];
+  readonly attemptId: FactId; readonly submittedAt: string; readonly candidateItemIds: readonly string[];
 };
 type PreSubmitPaperTarget = {
-  readonly paperId: FactId;
-  readonly paperRev: Revision;
-  readonly paper: WorkbookPaper;
+  readonly paperId: FactId; readonly paperRev: Revision; readonly paper: WorkbookPaper;
 };
 
 export type PreSubmitRevisionWitness = {
@@ -45,10 +41,8 @@ function samePreSubmitAnswer(question: WorkbookQuestion, original: WorkbookAnswe
 }
 
 export function candidatePreSubmitRevisedItems(params: {
-  readonly paper: WorkbookPaper;
-  readonly paperRev: Revision;
-  readonly data: WorkbookAttemptRequest;
-  readonly gradedAnswers: Readonly<Record<string, WorkbookAnswer>>;
+  readonly paper: WorkbookPaper; readonly paperRev: Revision;
+  readonly data: WorkbookAttemptRequest; readonly gradedAnswers: Readonly<Record<string, WorkbookAnswer>>;
 }): string[] {
   const { paper, paperRev, data, gradedAnswers } = params;
   if (!data.preSubmitRevisions?.length) return [];
@@ -74,10 +68,8 @@ export function candidatePreSubmitRevisedItems(params: {
 }
 
 export async function resolveWorkbookPreSubmitRevised(read: ReadContext, params: PreSubmitPaperTarget & {
-  readonly attemptId: FactId;
-  readonly data: WorkbookAttemptRequest;
-  readonly gradedAnswers: Readonly<Record<string, WorkbookAnswer>>;
-  readonly sealed: boolean;
+  readonly attemptId: FactId; readonly data: WorkbookAttemptRequest;
+  readonly gradedAnswers: Readonly<Record<string, WorkbookAnswer>>; readonly sealed: boolean;
 }): Promise<boolean> {
   if (params.sealed) return false;
   const candidateItemIds = candidatePreSubmitRevisedItems(params);
@@ -85,10 +77,7 @@ export async function resolveWorkbookPreSubmitRevised(read: ReadContext, params:
   const witness = (read as ReadContext & { [preSubmitRevisionWitnessKey]?: PreSubmitRevisionWitness })[preSubmitRevisionWitnessKey];
   if (!witness) return false;
   return Boolean(await witness.verify({
-    paperId: params.paperId,
-    paperRev: params.paperRev,
-    paper: params.paper,
-    attemptId: params.attemptId,
+    paperId: params.paperId, paperRev: params.paperRev, paper: params.paper, attemptId: params.attemptId,
     submittedAt: params.data.submittedAt,
     candidateItemIds,
   }));
@@ -114,10 +103,8 @@ async function openSafe<T>(run: () => Promise<T>, isDenied: (error: unknown) => 
 }
 
 export async function collectPreSubmitRuleBasis(params: {
-  readonly read: FactReader;
-  readonly isDenied: (error: unknown) => boolean;
-  readonly kind: 'sticky' | 'misconception' | 'metacognitive_habit';
-  readonly id: FactId;
+  readonly read: FactReader; readonly isDenied: (error: unknown) => boolean;
+  readonly kind: 'sticky' | 'misconception' | 'metacognitive_habit'; readonly id: FactId;
   readonly extraBasis?: readonly BusWitness[];
 }): Promise<{ readonly ref: BusWitness; readonly basis: readonly BusWitness[] } | undefined> {
   const fact = await openSafe(() => params.read.fact(params.id, { mode: 'following' }), params.isDenied);
@@ -151,11 +138,8 @@ export async function collectPreSubmitRuleBasis(params: {
 }
 
 export async function openFrozenPreSubmitPaper(params: {
-  readonly tx: ActivityEvidenceReadScope;
-  readonly read: FactReader;
-  readonly purpose: string;
-  readonly observedThrough: Tick;
-  readonly witness: BusWitness;
+  readonly tx: ActivityEvidenceReadScope; readonly read: FactReader;
+  readonly purpose: string; readonly observedThrough: Tick; readonly witness: BusWitness;
   readonly isDenied: (error: unknown) => boolean;
   readonly readConceptLinks: (
     source: WorkbookPaper['questions'][number]['sourceQuestionRef'],

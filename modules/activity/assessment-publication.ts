@@ -9,8 +9,7 @@ import { sameWorkbookJson } from './workbook-values.ts';
 type AssessmentItem = AssessmentRelease['items'][number];
 
 export type AssessmentPublicationTarget = {
-  readonly releaseRef: AssessmentRevisionRef;
-  readonly itemId: string;
+  readonly releaseRef: AssessmentRevisionRef; readonly itemId: string;
 };
 
 // The trusted registry freezes which sample revision must demonstrate each required coverage kind.
@@ -20,16 +19,12 @@ export type RequiredCoverageKind = (typeof REQUIRED_COVERAGE_KINDS)[number];
 // demonstration; `criterionId` scopes it to one criterion. `applies: false` records an
 // independent disposition that the kind was judged not applicable to that criterion.
 export type RequiredCoverage = {
-  readonly kind: RequiredCoverageKind;
-  readonly criterionId: string;
-  readonly applies?: boolean | undefined;
+  readonly kind: RequiredCoverageKind; readonly criterionId: string; readonly applies?: boolean | undefined;
 };
 
 export type AssessmentPublicationWitness = {
-  readonly ref: AssessmentRevisionRef;
-  readonly origin: 'independent-solution' | 'trusted-gold';
-  readonly releaseRef: AssessmentRevisionRef;
-  readonly frozenItem: AssessmentItem;
+  readonly ref: AssessmentRevisionRef; readonly origin: 'independent-solution' | 'trusted-gold';
+  readonly releaseRef: AssessmentRevisionRef; readonly frozenItem: AssessmentItem;
   readonly requiredSampleRefs: readonly AssessmentRevisionRef[];
   // The trusted registry's frozen coverage contract, fixed before publication. Each
   // entry pins which trusted sample revision must demonstrate a coverage kind for a
@@ -38,18 +33,14 @@ export type AssessmentPublicationWitness = {
 };
 
 export type TrustedAssessmentPublicationSample = {
-  readonly sampleRef: AssessmentRevisionRef;
-  readonly submission: unknown;
-  readonly expected: unknown;
+  readonly sampleRef: AssessmentRevisionRef; readonly submission: unknown; readonly expected: unknown;
 };
 
 export type AssessmentPublicationRun =
   | { readonly state: 'pending' | 'failed'; readonly reason: string }
   | {
-      readonly state: 'completed';
-      readonly witnessRef: AssessmentRevisionRef;
-      readonly sampleRef: AssessmentRevisionRef;
-      readonly receiptRef: AssessmentRevisionRef;
+      readonly state: 'completed'; readonly witnessRef: AssessmentRevisionRef;
+      readonly sampleRef: AssessmentRevisionRef; readonly receiptRef: AssessmentRevisionRef;
       readonly evaluators: readonly { readonly criterionId: string; readonly evaluator: AssessmentEvaluatorRef }[];
       readonly actual: unknown;
     };
@@ -57,8 +48,7 @@ export type AssessmentPublicationRun =
 export type VerifiedAssessmentPublicationEvidence = {
   readonly witness: AssessmentPublicationWitness;
   readonly samples: readonly {
-    readonly sample: TrustedAssessmentPublicationSample;
-    readonly run?: AssessmentPublicationRun;
+    readonly sample: TrustedAssessmentPublicationSample; readonly run?: AssessmentPublicationRun;
   }[];
 };
 
@@ -68,15 +58,12 @@ export type ReadVerifiedAssessmentPublicationEvidence = (
 
 export type AssessmentPublicationIssue = {
   readonly stage: 'release' | 'witness' | 'contract' | 'coverage' | 'plan' | 'submission' | 'expected' | 'run' | 'evaluator' | 'actual' | 'outcome';
-  readonly reason: string;
-  readonly itemId?: string;
-  readonly sampleRef?: AssessmentRevisionRef;
-  readonly criterionId?: string;
+  readonly reason: string; readonly itemId?: string;
+  readonly sampleRef?: AssessmentRevisionRef; readonly criterionId?: string;
 };
 
 type SampleEvidence = {
-  readonly sampleRef: AssessmentRevisionRef;
-  readonly submissionRef: AssessmentRevisionRef;
+  readonly sampleRef: AssessmentRevisionRef; readonly submissionRef: AssessmentRevisionRef;
   readonly receiptRef: AssessmentRevisionRef;
 };
 
@@ -89,13 +76,11 @@ export type AssessmentPublicationQualification = AssessmentPublicationTarget &
 
 export type AssessmentPublicationDecision =
   | {
-      readonly state: 'eligible';
-      readonly releaseRef: AssessmentRevisionRef;
+      readonly state: 'eligible'; readonly releaseRef: AssessmentRevisionRef;
       readonly items: readonly AssessmentPublicationQualification[];
     }
   | {
-      readonly state: 'needs-review';
-      readonly releaseRef?: AssessmentRevisionRef;
+      readonly state: 'needs-review'; readonly releaseRef?: AssessmentRevisionRef;
       readonly issues: readonly AssessmentPublicationIssue[];
     };
 
@@ -171,20 +156,18 @@ function outcomeDifference(expected: AssessmentCriterionOutcome, actual: Assessm
   if ('errorStage' in expected && (!('errorStage' in actual) || expected.errorStage !== actual.errorStage)) {
     return '实际错步分类与可信样例约定的结论不符。';
   }
-  if ('evidence' in expected && 'evidence' in actual &&
-    (expected.evidence.length !== actual.evidence.length ||
-      !expected.evidence.every(expectedAddress => actual.evidence.some(actualAddress =>
-        actualAddress.slotId === expectedAddress.slotId && actualAddress.path === expectedAddress.path,
-      )))) {
+  const addressesMatch = 'evidence' in expected && 'evidence' in actual &&
+    expected.evidence.length === actual.evidence.length &&
+    expected.evidence.every(wanted => actual.evidence.some(given =>
+      given.slotId === wanted.slotId && given.path === wanted.path));
+  if ('evidence' in expected && 'evidence' in actual && !addressesMatch) {
     return '实际作答证据位置与可信样例不符。';
   }
   return undefined;
 }
 
 function checkSample(
-  release: AssessmentRelease,
-  item: AssessmentItem,
-  witnessRef: AssessmentRevisionRef,
+  release: AssessmentRelease, item: AssessmentItem, witnessRef: AssessmentRevisionRef,
   { sample, run }: VerifiedAssessmentPublicationEvidence['samples'][number],
 ): (SampleEvidence & { readonly kinds: ReadonlyMap<string, Demonstration> }) | AssessmentPublicationIssue {
   const { sampleRef } = sample;
@@ -238,8 +221,7 @@ function checkSample(
 }
 
 function checkItem(
-  releaseRef: AssessmentRevisionRef,
-  item: AssessmentItem,
+  releaseRef: AssessmentRevisionRef, item: AssessmentItem,
   readVerifiedEvidence: ReadVerifiedAssessmentPublicationEvidence,
 ): AssessmentPublicationQualification | { readonly issues: readonly AssessmentPublicationIssue[] } {
   const { itemId, promptRef, workRef } = item;
@@ -359,8 +341,7 @@ function checkItem(
 }
 
 export function checkAssessmentPublication(
-  candidate: unknown,
-  registered: readonly AssessmentEvaluatorRef[],
+  candidate: unknown, registered: readonly AssessmentEvaluatorRef[],
   readVerifiedEvidence: ReadVerifiedAssessmentPublicationEvidence,
 ): AssessmentPublicationDecision {
   let release: AssessmentRelease;

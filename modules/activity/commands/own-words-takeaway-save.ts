@@ -7,9 +7,7 @@ import {
 import { sameWorkbookJson, workbookAttempt, workbookPaper, workbookPaperType } from '../workbook-values.ts';
 
 export default defineCommand({
-  type: saveOwnWordsTakeawayCommand,
-  destructive: false,
-  schema: {parse: saveOwnWordsTakeawayInput},
+  type: saveOwnWordsTakeawayCommand, destructive: false, schema: {parse: saveOwnWordsTakeawayInput},
   async write(ctx, {id, binding, concept}) {
     const paperFact = await ctx.read.fact(binding.paperId, {mode: 'following'});
     if (paperFact.type !== workbookPaperType) throw new Error('口诀只能绑定普通练习卷。');
@@ -31,8 +29,7 @@ export default defineCommand({
     return [{
       kind: 'create',
       id,
-      factType: ownWordsClaimType,
-      data: ownWordsClaim(binding, concept, attemptFact.accessEpoch),
+      factType: ownWordsClaimType, data: ownWordsClaim(binding, concept, attemptFact.accessEpoch),
       purpose: [storagePurpose],
     }];
   },

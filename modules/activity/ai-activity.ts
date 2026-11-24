@@ -10,131 +10,87 @@ export type AiRunningKind = 'teaching' | 'research' | 'retention' | 'intake' | '
 export type AiRunningState = 'queued' | 'running' | 'waiting' | 'blocked';
 
 export type AiRunningTask = {
-  readonly id: string;
-  readonly kind: AiRunningKind;
-  readonly slotType: string;
-  readonly slotKey: string;
-  readonly deriver: string;
-  readonly state: AiRunningState;
-  readonly title: string;
-  readonly requestedTick: Tick;
-  readonly generation: number;
-  readonly workerProfile: string | null;
-  readonly chainId: string | null;
-  readonly hopCount: number | null;
+  readonly id: string; readonly kind: AiRunningKind; readonly slotType: string; readonly slotKey: string;
+  readonly deriver: string; readonly state: AiRunningState; readonly title: string; readonly requestedTick: Tick;
+  readonly generation: number; readonly workerProfile: string | null;
+  readonly chainId: string | null; readonly hopCount: number | null;
 };
 
 export type AiHandoffChannel = 'night_chain' | 'research' | 'retention' | 'notion';
 
 type AiSummaryItem = {
-  readonly id: string;
-  readonly title: string;
-  readonly summary: string;
+  readonly id: string; readonly title: string; readonly summary: string;
 };
 
 export type AiHandoffItem = AiSummaryItem & {
-  readonly channel: AiHandoffChannel;
-  readonly status: string;
-  readonly tick: Tick;
-  readonly basisCount: number;
-  readonly href: string | null;
+  readonly channel: AiHandoffChannel; readonly status: string;
+  readonly tick: Tick; readonly basisCount: number; readonly href: string | null;
 };
 
 export type AiRecentToolTurn = AiTurnIdentity & {
-  readonly tick: Tick;
-  readonly model: string;
-  readonly tools: readonly string[];
-  readonly toolCount: number;
-  readonly basisCount: number;
-  readonly writeCount: number;
-  readonly href: string;
+  readonly tick: Tick; readonly model: string; readonly tools: readonly string[]; readonly toolCount: number;
+  readonly basisCount: number; readonly writeCount: number; readonly href: string;
 };
 
 type AiTurnIdentity = {
-  readonly turnId: FactId;
-  readonly sessionId: FactId;
-  readonly caseId: string;
+  readonly turnId: FactId; readonly sessionId: FactId; readonly caseId: string;
 };
 
 export type AiUsageCall = {
-  readonly id: string;
-  readonly ownerKind: 'derivation' | 'session';
-  readonly ownerId: string;
-  readonly stepKey: string;
-  readonly label: string;
-  readonly state: 'started' | 'done' | 'unknown';
-  readonly model: string | null;
-  readonly route: string | null;
-  readonly promptTokens: number | null;
-  readonly completionTokens: number | null;
-  readonly totalTokens: number | null;
-  readonly reservedMicros: number | null;
-  readonly actualMicros: number | null;
-  readonly startedTick: Tick;
-  readonly endedTick: Tick | null;
+  readonly id: string; readonly ownerKind: 'derivation' | 'session'; readonly ownerId: string; readonly stepKey: string;
+  readonly label: string; readonly state: 'started' | 'done' | 'unknown';
+  readonly model: string | null; readonly route: string | null;
+  readonly promptTokens: number | null; readonly completionTokens: number | null; readonly totalTokens: number | null;
+  readonly reservedMicros: number | null; readonly actualMicros: number | null;
+  readonly startedTick: Tick; readonly endedTick: Tick | null;
 };
 
 export type AiUsageSummary = {
-  readonly currency: 'USD_MICROS';
-  readonly spentMicros: number;
-  readonly settledMicros: number;
-  readonly heldMicros: number;
-  readonly limitMicros: number | null;
-  readonly recentCalls: readonly AiUsageCall[];
+  readonly currency: 'USD_MICROS'; readonly spentMicros: number;
+  readonly settledMicros: number; readonly heldMicros: number;
+  readonly limitMicros: number | null; readonly recentCalls: readonly AiUsageCall[];
 };
 
 export type AiPendingProposalKind = 'knowledge_edge' | 'graph_evolution' | 'knowledge_entity' | 'textbook_patch' | 'question_draft' | 'question_meta' | 'other';
 
 export type AiProposalAction = {
-  readonly method: 'POST';
-  readonly path: string;
-  readonly body?: Record<string, unknown>;
+  readonly method: 'POST'; readonly path: string; readonly body?: Record<string, unknown>;
 };
 
 export type AiPendingProposal = AiSummaryItem & {
-  readonly kind: AiPendingProposalKind;
-  readonly commandType: string;
-  readonly status: 'pending';
-  readonly targetId: FactId | null;
-  readonly createdTick: Tick;
+  readonly kind: AiPendingProposalKind; readonly commandType: string;
+  readonly status: 'pending'; readonly targetId: FactId | null; readonly createdTick: Tick;
   readonly actions: {
-    readonly accept?: AiProposalAction;
-    readonly reject?: AiProposalAction;
+    readonly accept?: AiProposalAction; readonly reject?: AiProposalAction;
     readonly inspect?: { readonly method: 'GET'; readonly path: string };
   };
 };
 
 export type AiActivityResponse = {
-  readonly asOf: string;
-  readonly running: readonly AiRunningTask[];
-  readonly handoffs: readonly AiHandoffItem[];
-  readonly recentTools: readonly AiRecentToolTurn[];
-  readonly usage: AiUsageSummary;
-  readonly pendingProposals: readonly AiPendingProposal[];
+  readonly asOf: string; readonly running: readonly AiRunningTask[];
+  readonly handoffs: readonly AiHandoffItem[]; readonly recentTools: readonly AiRecentToolTurn[];
+  readonly usage: AiUsageSummary; readonly pendingProposals: readonly AiPendingProposal[];
 };
 
 export type AuthorizedTurnToolView = Omit<AiRecentToolTurn, 'tick'>;
 
 export type AiActivityPorts = {
-  readonly feedbackSlotType: string;
-  readonly readStorage: Pick<ReadContext, 'fact'>;
-  readonly readTeaching: Pick<ReadContext, 'fact'>;
-  readonly readBankQuestion: ReadContext;
+  readonly feedbackSlotType: string; readonly readStorage: Pick<ReadContext, 'fact'>;
+  readonly readTeaching: Pick<ReadContext, 'fact'>; readonly readBankQuestion: ReadContext;
   readonly isUnavailable: (error: unknown) => boolean;
   readonly authorizeTodo: (spec: unknown) => Promise<{ readonly goal: string; readonly workerProfile: string } | undefined>;
   readonly validateTurnManifest: (rawManifest: unknown) => Promise<readonly string[] | undefined>;
   readonly projectTrace: (entry: string) => string;
-  readonly openResearchWorksheet: (id: FactId) => Promise<{ readonly title: string; readonly summary: string; readonly basisCount: number; readonly href: string | null } | undefined>;
+  readonly openResearchWorksheet: (id: FactId) => Promise<
+    { readonly title: string; readonly summary: string; readonly basisCount: number; readonly href: string | null } | undefined>;
   readonly readRetentionHandoffs: () => Promise<readonly AiHandoffItem[]>;
-  readonly openNotionSelection: (selectionId: string) => Promise<{ readonly title: string; readonly summary: string; readonly sourceCount: number } | undefined>;
+  readonly openNotionSelection: (selectionId: string) => Promise<
+    { readonly title: string; readonly summary: string; readonly sourceCount: number } | undefined>;
   readonly readBudgetUsage: () => Promise<{ readonly settled: bigint; readonly held: bigint }>;
   readonly readBudgetLimit: () => Promise<number | null>;
   readonly readGraphProposals: () => Promise<readonly KnowledgeGraphProposal[]>;
-  readonly openTextbookProposal: (proposalId: string, input: unknown) => Promise<{
-    readonly pageId: FactId;
-    readonly title: string;
-    readonly blockCount: number;
-  } | undefined>;
+  readonly openTextbookProposal: (proposalId: string, input: unknown) => Promise<
+    { readonly pageId: FactId; readonly title: string; readonly blockCount: number } | undefined>;
 };
 
 const ulidPattern = /^[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -143,6 +99,12 @@ const proposeQuestionMetaCommand = 'content.proposeQuestionMeta';
 const questionMetaDraftType = 'content.questionMetaDraft';
 const researchWorksheetType = 'companion.researchWorksheet';
 const notionSelectionType = 'capture.notionSelection';
+
+/** Live, unerased current-revision rows of one fact type, newest first. */
+const liveFactsSql = (select: string) => `SELECT ${select} FROM facts f
+  JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
+  WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
+    AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)`;
 
 function classifySlot(slotType: string): { kind: AiRunningKind; label: string } {
   if (slotType === 'activity.studyFeedback' || slotType === 'activity.teachingFeedback') return { kind: 'teaching', label: '同伴对话' };
@@ -218,9 +180,7 @@ function effectTokens(result: Record<string, unknown> | undefined): {
 }
 
 export async function readAiActivity(
-  tx: ActivityEvidenceReadScope,
-  asOf: string,
-  ports: AiActivityPorts,
+  tx: ActivityEvidenceReadScope, asOf: string, ports: AiActivityPorts,
 ): Promise<AiActivityResponse> {
   const unavailable = (error: unknown) => error instanceof FactNotFoundError || ports.isUnavailable(error);
   const factVisible = async (read: Pick<ReadContext, 'fact'>, id: FactId) => {
@@ -285,30 +245,21 @@ export async function readAiActivity(
     JOIN commands c ON (c.learner_id,c.id)=(p.learner_id,p.command_id)
     WHERE p.learner_id=$1 AND p.state='pending'
     ORDER BY p.created_tick DESC, p.command_id LIMIT 128`, [tx.learner]);
-  const questionRows = await tx.query<{ id: string; created_tick: Tick }>(`
-    SELECT f.id, f.created_tick::text FROM facts f
-    JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'kind'='question'
-      AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
-    ORDER BY f.changed_tick DESC, f.id LIMIT 64`, [tx.learner, assetType]);
-  const metaDraftRows = await tx.query<{ id: string; created_tick: Tick; question_id: string | null }>(`
-    SELECT f.id, f.created_tick::text, r.data->>'id' AS question_id FROM facts f
-    JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
-      AND COALESCE((r.data->>'sticky')::boolean, false)=false
-      AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
-    ORDER BY f.changed_tick DESC, f.id LIMIT 32`, [tx.learner, questionMetaDraftType]);
+  const questionRows = await tx.query<{ id: string; created_tick: Tick }>(
+    `${liveFactsSql("f.id, f.created_tick::text")} AND r.data->>'kind'='question'
+     ORDER BY f.changed_tick DESC, f.id LIMIT 64`, [tx.learner, assetType]);
+  const metaDraftRows = await tx.query<{ id: string; created_tick: Tick; question_id: string | null }>(
+    `${liveFactsSql("f.id, f.created_tick::text, r.data->>'id' AS question_id")}
+       AND COALESCE((r.data->>'sticky')::boolean, false)=false
+     ORDER BY f.changed_tick DESC, f.id LIMIT 32`, [tx.learner, questionMetaDraftType]);
   const worksheetRows = await tx.query<{ id: string; tick: Tick }>(`
     SELECT f.id, f.changed_tick::text AS tick FROM facts f
     WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
       AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
     ORDER BY f.changed_tick DESC, f.id LIMIT 12`, [tx.learner, researchWorksheetType]);
-  const notionRows = await tx.query<{ id: string; selection_id: string | null; tick: Tick }>(`
-    SELECT f.id, r.data->>'id' AS selection_id, f.changed_tick::text AS tick FROM facts f
-    JOIN fact_revs r ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
-    WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL
-      AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.learner_id=f.learner_id AND t.kind='fact' AND t.id=f.id)
-    ORDER BY f.changed_tick DESC, f.id LIMIT 16`, [tx.learner, notionSelectionType]);
+  const notionRows = await tx.query<{ id: string; selection_id: string | null; tick: Tick }>(
+    `${liveFactsSql("f.id, r.data->>'id' AS selection_id, f.changed_tick::text AS tick")}
+     ORDER BY f.changed_tick DESC, f.id LIMIT 16`, [tx.learner, notionSelectionType]);
   const digestResult = await readAuthorizedForegroundDigests(tx, ports.feedbackSlotType, '0', {
     read: ports.readTeaching, maySend: () => true, authorize: async () => {},
     isManifestValid: async raw => Boolean(await ports.validateTurnManifest(raw)),
@@ -356,44 +307,51 @@ export async function readAiActivity(
     });
   }
 
-  const todoHandoffs: AiHandoffItem[] = [];
-  for (const row of completedTodoRows.rows) {
+  const collectHandoffs = async <Row>(
+    rows: readonly Row[], item: (row: Row) => Promise<AiHandoffItem | undefined>,
+  ) => {
+    const handoffs: AiHandoffItem[] = [];
+    for (const row of rows) {
+      const projected = await item(row);
+      if (projected) handoffs.push(projected);
+    }
+    return handoffs;
+  };
+
+  const todoHandoffs = await collectHandoffs(completedTodoRows.rows, async row => {
     const authorized = await ports.authorizeTodo(row.spec);
-    if (!authorized) continue;
+    if (!authorized) return;
     const channel: AiHandoffChannel = authorized.workerProfile === 'deep_analyst' ? 'research' : 'night_chain';
-    todoHandoffs.push({
+    return {
       id: row.id, channel, status: row.state === 'satisfied' ? 'completed' : 'failed',
       title: channel === 'research' ? '教研任务交班' : '夜链任务交班',
       summary: authorized.goal, tick: row.registered_tick, basisCount: 1, href: null,
-    });
-  }
+    };
+  });
 
-  const researchHandoffs: AiHandoffItem[] = [];
-  for (const row of worksheetRows.rows) {
-    if (!ulidPattern.test(row.id)) continue;
+  const researchHandoffs = await collectHandoffs(worksheetRows.rows, async row => {
+    if (!ulidPattern.test(row.id)) return;
     const opened = await ports.openResearchWorksheet(factId(row.id));
-    if (!opened) continue;
-    researchHandoffs.push({
+    if (!opened) return;
+    return {
       id: row.id, channel: 'research', status: 'ready',
       title: opened.title, summary: opened.summary, tick: row.tick,
       basisCount: opened.basisCount, href: opened.href,
-    });
-  }
+    };
+  });
 
-  const notionHandoffs: AiHandoffItem[] = [];
-  for (const row of notionRows.rows) {
-    if (!row.selection_id) continue;
+  const notionHandoffs = await collectHandoffs(notionRows.rows, async row => {
+    if (!row.selection_id) return;
     const opened = await ports.openNotionSelection(row.selection_id);
-    if (!opened) continue;
-    notionHandoffs.push({
+    if (!opened) return;
+    return {
       id: row.id, channel: 'notion', status: 'synced',
       title: opened.title, summary: opened.summary, tick: row.tick,
       basisCount: opened.sourceCount, href: '/materials',
-    });
-  }
+    };
+  });
 
-  const foregroundHandoffs: AiHandoffItem[] = [];
-  for (const item of digestResult.digests) {
+  const foregroundHandoffs = await collectHandoffs(digestResult.digests, async item => {
     let href = '/companion';
     if (ulidPattern.test(item.id)) {
       const turnFact = await openFact(ports.readTeaching, factId(item.id));
@@ -404,11 +362,11 @@ export async function readAiActivity(
         } catch { /* keep the default companion link */ }
       }
     }
-    foregroundHandoffs.push({
+    return {
       id: item.id, channel: 'night_chain', status: 'completed', title: '前台学习交班',
       summary: item.summary, tick: item.tick, basisCount: item.sourceRefs.length, href,
-    });
-  }
+    };
+  });
 
   const handoffs = [
     ...foregroundHandoffs,
@@ -442,52 +400,40 @@ export async function readAiActivity(
     const result = parseEffectResult(row.result);
     recentCalls.push({
       id: `${row.owner_kind}:${row.owner_id}:${row.step_key}:${row.label}`,
-      ownerKind: row.owner_kind,
-      ownerId: row.owner_id,
-      stepKey: row.step_key,
-      label: row.label,
-      state: row.state,
-      model: effectModel(result, row.input_model),
-      route: row.budget_route,
+      ownerKind: row.owner_kind, ownerId: row.owner_id,
+      stepKey: row.step_key, label: row.label, state: row.state,
+      model: effectModel(result, row.input_model), route: row.budget_route,
       ...effectTokens(result),
       reservedMicros: row.reserved_usd_micros === null ? null : Number(row.reserved_usd_micros),
       actualMicros: row.actual_usd_micros === null ? null : Number(row.actual_usd_micros),
-      startedTick: row.started_tick,
-      endedTick: row.ended_tick,
+      startedTick: row.started_tick, endedTick: row.ended_tick,
     });
   }
 
   const settledMicros = Number(budgetUsage.settled);
   const heldMicros = Number(budgetUsage.held);
   const usage: AiUsageSummary = {
-    currency: 'USD_MICROS',
-    spentMicros: settledMicros + heldMicros,
-    settledMicros,
-    heldMicros,
-    limitMicros,
-    recentCalls: recentCalls.slice(0, 20),
+    currency: 'USD_MICROS', spentMicros: settledMicros + heldMicros,
+    settledMicros, heldMicros, limitMicros, recentCalls: recentCalls.slice(0, 20),
   };
 
   const pendingProposals: AiPendingProposal[] = [];
+  const proposal = (
+    id: FactId | string, kind: AiPendingProposalKind, commandType: string,
+    title: string, summary: string, targetId: FactId | null, createdTick: Tick,
+    actions: AiPendingProposal['actions'] = {},
+  ) => pendingProposals.push({ id, kind, commandType, status: 'pending', title, summary, targetId, createdTick, actions });
   const graphCommandSet = new Set<string>(graphProposalCommands);
 
-  for (const proposal of graphProposals) {
-    pendingProposals.push({
-      id: proposal.proposalId,
-      kind: graphProposalKind(proposal.commandType),
-      commandType: proposal.commandType,
-      status: 'pending',
-      title: proposal.commandType === 'content.createKnowledgeEdge' ? '图谱边提议' : '知识图谱演化提议',
-      summary: proposal.summary,
-      targetId: proposal.targetId ?? proposal.toId ?? null,
-      createdTick: proposal.createdTick,
-      actions: {
-        ...(proposal.actions?.accept ? { accept: proposal.actions.accept } : {}),
-        ...(proposal.actions?.reject ? { reject: proposal.actions.reject } : {}),
-        ...(proposal.commandType === 'content.createKnowledgeEdge'
-          ? { inspect: { method: 'GET', path: `/api/workspace/relations/proposals/${proposal.proposalId}` } } : {}),
-      },
-    });
+  for (const entry of graphProposals) {
+    proposal(entry.proposalId, graphProposalKind(entry.commandType), entry.commandType,
+      entry.commandType === 'content.createKnowledgeEdge' ? '图谱边提议' : '知识图谱演化提议',
+      entry.summary, entry.targetId ?? entry.toId ?? null, entry.createdTick, {
+        ...(entry.actions?.accept ? { accept: entry.actions.accept } : {}),
+        ...(entry.actions?.reject ? { reject: entry.actions.reject } : {}),
+        ...(entry.commandType === 'content.createKnowledgeEdge'
+          ? { inspect: { method: 'GET' as const, path: `/api/workspace/relations/proposals/${entry.proposalId}` } } : {}),
+      });
   }
 
   for (const row of proposalRows.rows) {
@@ -495,21 +441,12 @@ export async function readAiActivity(
     if (row.type === reviseTextbookCommand) {
       const opened = await ports.openTextbookProposal(row.id, row.input);
       if (!opened) continue;
-      pendingProposals.push({
-        id: row.id,
-        kind: 'textbook_patch',
-        commandType: row.type,
-        status: 'pending',
-        title: `教材修订提议 · ${opened.title}`,
-        summary: `涉及 ${opened.blockCount} 处教材块修订`,
-        targetId: opened.pageId,
-        createdTick: row.created_tick,
-        actions: {
+      proposal(row.id, 'textbook_patch', row.type, `教材修订提议 · ${opened.title}`,
+        `涉及 ${opened.blockCount} 处教材块修订`, opened.pageId, row.created_tick, {
           inspect: { method: 'GET', path: `/api/textbooks/${opened.pageId}/proposals/${row.id}` },
           accept: { method: 'POST', path: `/api/textbooks/${opened.pageId}/proposals/${row.id}` },
           reject: { method: 'POST', path: `/api/textbooks/${opened.pageId}/proposals/${row.id}`, body: { blockIds: [] } },
-        },
-      });
+        });
       continue;
     }
     if (row.type === proposeQuestionMetaCommand) {
@@ -518,33 +455,15 @@ export async function readAiActivity(
       const target = await openFact(ports.readStorage, factId(targetRaw));
       if (!target) continue;
       const title = isObject(target.value) && typeof target.value.title === 'string' ? target.value.title : target.ref.id;
-      pendingProposals.push({
-        id: row.id,
-        kind: 'question_meta',
-        commandType: row.type,
-        status: 'pending',
-        title: `题目元数据提议 · ${title}`,
-        summary: '待确认题目附加标签、解析或提示阶梯',
-        targetId: target.ref.id,
-        createdTick: row.created_tick,
-        actions: {},
-      });
+      proposal(row.id, 'question_meta', row.type, `题目元数据提议 · ${title}`,
+        '待确认题目附加标签、解析或提示阶梯', target.ref.id, row.created_tick);
       continue;
     }
     const rawTarget = isObject(row.input) && typeof row.input.id === 'string' && ulidPattern.test(row.input.id)
       ? factId(row.input.id) : null;
     if (rawTarget && !await factVisible(ports.readStorage, rawTarget) && !await factVisible(ports.readTeaching, rawTarget)) continue;
-    pendingProposals.push({
-      id: row.id,
-      kind: 'other',
-      commandType: row.type,
-      status: 'pending',
-      title: `待裁决提议 · ${row.type}`,
-      summary: '等待学习者确认或拒绝',
-      targetId: rawTarget,
-      createdTick: row.created_tick,
-      actions: {},
-    });
+    proposal(row.id, 'other', row.type, `待裁决提议 · ${row.type}`,
+      '等待学习者确认或拒绝', rawTarget, row.created_tick);
   }
 
   for (const row of questionRows.rows) {
@@ -553,17 +472,9 @@ export async function readAiActivity(
       const inspected = await inspectBankQuestion(ports.readBankQuestion, id);
       if (!inspected) continue;
       if (inspected.public.status !== 'draft' && inspected.public.status !== 'needs_verification') continue;
-      pendingProposals.push({
-        id: inspected.public.id,
-        kind: 'question_draft',
-        commandType: 'content.questionDraft',
-        status: 'pending',
-        title: `题库草稿 · ${inspected.public.title}`,
-        summary: inspected.public.status === 'draft' ? '题目尚未补齐作答与评阅契约' : '题目待独立验收后方可入卷',
-        targetId: inspected.public.id,
-        createdTick: row.created_tick,
-        actions: { inspect: { method: 'GET', path: '/api/iqdb/questions' } },
-      });
+      proposal(inspected.public.id, 'question_draft', 'content.questionDraft', `题库草稿 · ${inspected.public.title}`,
+        inspected.public.status === 'draft' ? '题目尚未补齐作答与评阅契约' : '题目待独立验收后方可入卷',
+        inspected.public.id, row.created_tick, { inspect: { method: 'GET', path: '/api/iqdb/questions' } });
     } catch (error) {
       if (!unavailable(error) && !(error instanceof Error && error.message === '题目来源未授权教学用途或依据已变化。')) throw error;
     }
@@ -575,17 +486,8 @@ export async function readAiActivity(
     const question = draft ? await openFact(ports.readStorage, factId(row.question_id)) : undefined;
     if (!draft || !question) continue;
     const title = isObject(question.value) && typeof question.value.title === 'string' ? question.value.title : question.ref.id;
-    pendingProposals.push({
-      id: draft.ref.id,
-      kind: 'question_meta',
-      commandType: questionMetaDraftType,
-      status: 'pending',
-      title: `题目草稿元数据 · ${title}`,
-      summary: '待学习者确认题目元数据草稿',
-      targetId: question.ref.id,
-      createdTick: row.created_tick,
-      actions: {},
-    });
+    proposal(draft.ref.id, 'question_meta', questionMetaDraftType, `题目草稿元数据 · ${title}`,
+      '待学习者确认题目元数据草稿', question.ref.id, row.created_tick);
   }
 
   pendingProposals.sort((left, right) => compareTickDesc(left.createdTick, right.createdTick) || right.id.localeCompare(left.id));
@@ -593,9 +495,7 @@ export async function readAiActivity(
 }
 
 export function projectTurnToolSummary(input: AiTurnIdentity & {
-  readonly classroom?: boolean;
-  readonly value: unknown;
-  readonly manifestFactIds: readonly string[];
+  readonly classroom?: boolean; readonly value: unknown; readonly manifestFactIds: readonly string[];
   readonly projectTrace: (entry: string) => string;
 }): AuthorizedTurnToolView | undefined {
   if (!isObject(input.value)) return undefined;
@@ -610,36 +510,24 @@ export function projectTurnToolSummary(input: AiTurnIdentity & {
   if (Array.isArray(workspaceBasis)) for (const item of workspaceBasis) if (isObject(item) && typeof item.id === 'string') basisSet.add(item.id);
   const writeCount = Array.isArray(writes) ? writes.length : 0;
   return {
-    turnId: input.turnId,
-    sessionId: input.sessionId,
-    caseId: input.caseId,
+    turnId: input.turnId, sessionId: input.sessionId, caseId: input.caseId,
     model: typeof reportedModel === 'string' && reportedModel ? reportedModel : typeof model === 'string' ? model : 'unknown',
     tools,
-    toolCount: tools.length,
-    basisCount: basisSet.size,
+    toolCount: tools.length, basisCount: basisSet.size,
     writeCount,
     href: input.classroom ? `/classroom/${input.sessionId}` : `/companion?session=${input.sessionId}`,
   };
 }
 
 export function projectRetentionHandoff(item: {
-  readonly id: string;
-  readonly kind: 'forecast' | 'reconciliation';
-  readonly status?: string;
-  readonly itemId: string;
-  readonly effectiveTick: Tick;
-  readonly evidence: readonly unknown[];
-  readonly href: string;
+  readonly id: string; readonly kind: 'forecast' | 'reconciliation'; readonly status?: string; readonly itemId: string;
+  readonly effectiveTick: Tick; readonly evidence: readonly unknown[]; readonly href: string;
 }): AiHandoffItem {
   const isReconciliation = item.kind === 'reconciliation';
   return {
-    id: item.id,
-    channel: 'retention',
-    status: isReconciliation ? item.status ?? 'observed' : 'ready',
+    id: item.id, channel: 'retention', status: isReconciliation ? item.status ?? 'observed' : 'ready',
     title: isReconciliation ? `保持对账 · ${item.itemId}` : `保持预测 · ${item.itemId}`,
     summary: isReconciliation ? `对账状态：${item.status ?? 'observed'}` : '已冻结保持预测等待后测验证',
-    tick: item.effectiveTick,
-    basisCount: item.evidence.length,
-    href: item.href,
+    tick: item.effectiveTick, basisCount: item.evidence.length, href: item.href,
   };
 }

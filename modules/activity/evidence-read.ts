@@ -8,6 +8,9 @@ import { closedPosttest, issuePosttestCommand, posttestIssuanceType, posttestSub
 import { saveWorkbookPaperCommand, submitWorkbookAttemptCommand, workbookAttemptType, workbookPaperType, type WorkbookSourceQuestionRef } from './workbook-values.ts';
 import { recordWorkbookPresentationCommand, workbookPresentationType } from './workbook-presentation.ts';
 import { releasePracticeFeedbackCommand } from './sealed-practice.ts';
+import { projectHelpExposure } from './help-exposure.ts';
+import { helpAppliesTo, type HelpTarget } from './help-exposure-values.ts';
+import { activityHelpProcess } from './evidence-slice.ts';
 
 export type ActivityEvidenceReadScope = {
   learner: LearnerId;
@@ -15,9 +18,17 @@ export type ActivityEvidenceReadScope = {
     Promise<{ rows: readonly Row[] }>;
 };
 
+/** The fact's first-revision tick, when it exists. */
+export async function factBirthTick(tx: ActivityEvidenceReadScope, id: FactId) {
+  const { rows: [row] } = await tx.query<{ tick: Tick }>(
+    `SELECT tick::text FROM fact_revs WHERE learner_id=$1 AND fact_id=$2 AND rev=1`,
+    [tx.learner, id],
+  );
+  return row?.tick;
+}
+
 export type FactReadChecks = {
-  readonly isFactNotFound: (error: unknown) => boolean;
-  readonly isFactReadDenied: (error: unknown) => boolean;
+  readonly isFactNotFound: (error: unknown) => boolean; readonly isFactReadDenied: (error: unknown) => boolean;
 };
 
 const submissionCommands = {
@@ -74,14 +85,13 @@ export async function readActivitySubmissionBirth(
     : undefined;
 }
 
+export type HelpEventQuery = {
+  activities: readonly FactId[]; cutoff: Tick; mode: 'pinned' | 'following'; issuance?: HelpRef; includeOpens?: boolean;
+};
+
 export async function readActivityHelpEvents(
-  tx: ActivityEvidenceReadScope, read: {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>}, query: {
-    activities: readonly FactId[];
-    cutoff: Tick;
-    mode: 'pinned' | 'following';
-    issuance?: HelpRef;
-    includeOpens?: boolean;
-  },
+  tx: ActivityEvidenceReadScope, read: {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>},
+  query: HelpEventQuery,
   admit: ((fact: FactSnapshot, event: HelpPresentation) => Promise<boolean>) | undefined,
   unavailable: (error: unknown) => boolean,
 ) {
@@ -323,18 +333,52 @@ export async function validatesWorkbookHistory(
   return !(target.condition === 'variant' && seen) && !(independent && cross_help);
 }
 
-export async function readWorkbookPreSubmitObservation(
+export type WorkbookItemHelpProcess = ReturnType<typeof activityHelpProcess>;
+export type PreSubmitObservation = {
+  question_displayed: boolean; printed: boolean; solution_presented: boolean; prior_attempt_feedback: boolean;
+};
+
+/** Pre-submit exposure process for one ordinary-workbook item: expands the witnessed
+ * issuance mounts, separates on-topic display events, and vets independence
+ * against display coverage, item history and event completeness. */
+export async function mountedWorkbookItemProcess(
   tx: ActivityEvidenceReadScope,
-  paper: HelpRef,
-  itemId: string,
-  cutoff: Tick,
+  read: {fact(...args: Parameters<ReadContext['fact']>): Promise<FactSnapshot>},
+  submission: FactRef, paper: HelpRef, itemId: string, cutoff: Tick, observed: PreSubmitObservation,
+  unavailable: (error: unknown) => boolean, ownIssuance?: FactId, windowStart?: Tick,
+): Promise<{ process: WorkbookItemHelpProcess; relevant: AdmittedHelpEvent[] }> {
+  const { events, omitted } = await readActivityHelpEvents(tx, read, {
+    activities: [paper.id], cutoff, mode: 'pinned', includeOpens: true,
+  }, undefined, unavailable);
+  const revs = new Set<Revision>([paper.rev, 1 as Revision]);
+  for (const { value } of events) {
+    if (value.kind === 'opened' || value.kind === 'displayed') {
+      if (value.mount.issuance.id === paper.id) revs.add(value.mount.issuance.rev);
+    }
+  }
+  const mounts: HelpTarget[] = [...revs].map(rev => ({
+    activityId: paper.id, issuance: { id: paper.id, rev }, item: { itemId },
+  }));
+  const relevant = events.filter(({ value }) =>
+    (value.kind === 'opened' || value.kind === 'displayed') && mounts.some(mount => helpAppliesTo(value, mount)));
+  const history = await workbookItemHistory(tx, { paper, itemId }, cutoff, ownIssuance, windowStart);
+  const complete = observed.question_displayed && !observed.printed && !observed.solution_presented &&
+    !observed.prior_attempt_feedback && !omitted &&
+    !relevant.some(({ value }) => value.kind === 'opened') && !history.cross_help;
+  const results = mounts.map(target => projectHelpExposure({
+    submission: { ref: submission, target, cutoff }, events: relevant,
+    coverage: complete ? { submission, target, through: cutoff } : null,
+  }));
+  const evidenceRefs = results.flatMap(result => result.evidenceRefs).sort((a, b) => a.id.localeCompare(b.id));
+  const exposure = evidenceRefs.length ? { kind: 'exposed' as const, evidenceRefs }
+    : results.find(result => result.kind === 'unknown') ?? results[0]!;
+  return { process: activityHelpProcess(exposure, relevant), relevant };
+}
+
+export async function readWorkbookPreSubmitObservation(
+  tx: ActivityEvidenceReadScope, paper: HelpRef, itemId: string, cutoff: Tick,
 ) {
-  const { rows: [row] } = await tx.query<{
-    question_displayed: boolean;
-    printed: boolean;
-    solution_presented: boolean;
-    prior_attempt_feedback: boolean;
-  }>(
+  const { rows: [row] } = await tx.query<PreSubmitObservation>(
     `SELECT
       EXISTS (
         SELECT 1 FROM facts f

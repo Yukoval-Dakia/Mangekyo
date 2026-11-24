@@ -15,8 +15,7 @@ import { isWorkbookAnswerDisplay, workbookPresentationType } from '../workbook-p
  * stored as a proposal instead of escalating its own teaching purpose.
  */
 export default defineCommand({
-  type: setWorkspaceTeachingCommand,
-  destructive: true,
+  type: setWorkspaceTeachingCommand, destructive: true,
   schema: {
     parse(value: unknown) {
       const parsed = setWorkspaceTeachingInput(value);
@@ -59,9 +58,7 @@ export default defineCommand({
         ? [...fact.purpose, use]
         : fact.purpose.filter((item) => item !== use);
       return [{
-        kind: 'set_purpose',
-        id: fact.ref.id,
-        expectedRev: fact.ref.rev,
+        kind: 'set_purpose', id: fact.ref.id, expectedRev: fact.ref.rev,
         purpose: purpose.length ? purpose : [storagePurpose],
         ...(revokingTurn && use === turnResearchPurpose ? { scopedPurpose: use } : {}),
       }];

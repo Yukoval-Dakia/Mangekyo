@@ -81,8 +81,7 @@ export function evaluateSentenceBreaks(release: AssessmentRelease, submission: A
 }
 
 export type SentenceBreakPublicationEvidence = {
-  witness: AssessmentPublicationWitness;
-  samples: readonly TrustedAssessmentPublicationSample[];
+  witness: AssessmentPublicationWitness; samples: readonly TrustedAssessmentPublicationSample[];
 };
 
 export function qualifySentenceBreakAssessment(

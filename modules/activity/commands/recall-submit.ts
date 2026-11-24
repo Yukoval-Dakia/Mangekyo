@@ -4,9 +4,7 @@ import { recallIssuance, recallIssuanceType, recallSubmission, recallSubmissionT
 import { creation } from '../values.ts';
 
 export default defineCommand({
-  type: submitRecallCommand,
-  destructive: false,
-  schema: creation(recallSubmission),
+  type: submitRecallCommand, destructive: false, schema: creation(recallSubmission),
   write: async (ctx, { id, data }) => {
     const issuance = await ctx.read.fact(data.issuance.id, { mode: 'pinned', rev: data.issuance.rev });
     if (issuance.type !== recallIssuanceType || !recallIssuance(issuance.value).items.some(item => item.itemId === data.itemId)) {
