@@ -125,4 +125,50 @@ describe('modules/learner/record-flow (Track FLOW-1)', () => {
     expect(filteredFlow?.witnessFactIds).not.toContain(ID_ASSERTION);
     expect(filteredFlow?.witnessFactIds).not.toContain(ID_PREREQ);
   });
+
+  it('traces 1-2 hop upstream provenance, downstream derived assets, onboarding honesty, originLabel & witnessFactIds', () => {
+    const ID_MATERIAL = '01ARZ3NDEKTSV4RRFFQ69G5FC1';
+    const ID_DISCIPLINE = '01ARZ3NDEKTSV4RRFFQ69G5FC2';
+    const ID_ONBOARD_CONCEPT = '01ARZ3NDEKTSV4RRFFQ69G5FC3';
+    const ID_PAPER2 = '01ARZ3NDEKTSV4RRFFQ69G5FC4';
+    const ID_ATTEMPT2 = '01ARZ3NDEKTSV4RRFFQ69G5FC5';
+    const ID_NOTION = '01ARZ3NDEKTSV4RRFFQ69G5FC6';
+    const ID_NOTE = '01ARZ3NDEKTSV4RRFFQ69G5FC7';
+
+    const snap = indexRecordFlowSnapshot([
+      { id: ID_MATERIAL, type: 'activity.textMaterial', rev: 1, author: 'learner', createdTick: '1', data: { title: '高二物理月考原件' } },
+      { id: ID_DISCIPLINE, type: 'content.asset', rev: 1, author: 'companion', createdTick: '2', data: { kind: 'discipline', title: '高中物理', discipline_context: { learningScope: '力学与电磁学' } } },
+      { id: ID_ONBOARD_CONCEPT, type: 'content.asset', rev: 1, author: 'companion', createdTick: '3', data: { kind: 'concept', title: '动量守恒', basis: [{ id: ID_DISCIPLINE, rev: 1, type: 'content.asset' }] } },
+      { id: ID_PAPER2, type: 'activity.workbookPaper', rev: 1, author: 'learner', createdTick: '4', data: { title: '月考真题卷', materialId: ID_MATERIAL, questions: [{ id: 'q1', prompt: '求速度' }] } },
+      { id: ID_ATTEMPT2, type: 'activity.workbookAttempt', rev: 1, author: 'learner', createdTick: '5', data: { paperId: ID_PAPER2, submittedAt: '2026-11-24T01:00:00Z', feedback: [{ questionId: 'q1', result: 'correct' }] } },
+      { id: ID_NOTION, type: 'capture.source', rev: 1, author: 'learner', createdTick: '6', data: { kind: 'notion', title: 'Notion 错题本' } },
+      { id: ID_NOTE, type: 'activity.organizerNote', rev: 1, author: 'learner', createdTick: '7', data: { title: 'Notion 摘录笔记', basis: [{ id: ID_NOTION, rev: 1, type: 'capture.source' }] } },
+    ], []);
+
+    // 2-hop upstream trace: attempt -> paper -> material
+    const attemptFlow = projectRecordFlow(ID_ATTEMPT2, snap)!;
+    expect(attemptFlow.provenance.map((p) => [p.id, p.relation, p.originBadge, p.href])).toEqual([
+      [ID_PAPER2, '对应试卷', '试卷', `/papers/${ID_PAPER2}`],
+      [ID_MATERIAL, '来自原件', '原件', `/materials/saved/${ID_MATERIAL}`],
+    ]);
+
+    // Reverse downstream derived index: material -> derived paper
+    const matFlow = projectRecordFlow(ID_MATERIAL, snap)!;
+    expect(matFlow.derived).toMatchObject([{ id: ID_PAPER2, relation: '派生试卷', originBadge: '试卷', href: `/papers/${ID_PAPER2}` }]);
+
+    // Onboarding concept honestly reports discipline + synthetic onboarding entry, and never leaks 'onboarding' into witnessFactIds.
+    const onboardAgent = projectAgentRecordFlow(ID_ONBOARD_CONCEPT, snap)!;
+    expect(onboardAgent.provenance.map((p) => [p.id, p.originBadge, p.href])).toEqual([
+      [ID_DISCIPLINE, '学科', `/materials/records/${ID_DISCIPLINE}`],
+      ['onboarding', '冷启动', '/onboarding'],
+    ]);
+    expect(onboardAgent.witnessFactIds).toContain(ID_DISCIPLINE);
+    expect(onboardAgent.witnessFactIds).not.toContain('onboarding');
+
+    // Notion provenance and list originLabel
+    const summaries = summarizeRecordFlowForList([ID_PAPER2, ID_ONBOARD_CONCEPT, ID_NOTE], snap);
+    expect(summaries[ID_PAPER2]?.originLabel).toBe('来自原件：高二物理月考原件');
+    expect(summaries[ID_ONBOARD_CONCEPT]?.originLabel).toBe('所属学科：高中物理');
+    expect(summaries[ID_NOTE]?.originLabel).toBe('来自 Notion：Notion 错题本');
+  });
 });

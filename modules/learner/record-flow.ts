@@ -63,6 +63,17 @@ export type RecordFlowNextAction = {
   readonly href: string;
 };
 
+export type RecordFlowProvenance = {
+  readonly id: string;
+  readonly rev?: number;
+  readonly kind: string;
+  readonly title: string;
+  readonly relation: string;
+  readonly originBadge: string;
+  readonly excerpt?: string;
+  readonly href: string | null;
+};
+
 export type RecordFlowView = {
   readonly identity: RecordFlowIdentity;
   readonly mastery: RecordFlowMastery;
@@ -70,6 +81,8 @@ export type RecordFlowView = {
   readonly attempts: readonly RecordFlowAttempt[];
   readonly discussions: readonly RecordFlowDiscussion[];
   readonly graphNeighbors: readonly RecordFlowNeighbor[];
+  readonly provenance: readonly RecordFlowProvenance[];
+  readonly derived: readonly RecordFlowProvenance[];
   readonly nextActions: readonly RecordFlowNextAction[];
 };
 
@@ -80,6 +93,7 @@ export type WorkspaceRecordFlowSummary = {
   readonly discussionCount: number;
   readonly neighborCount: number;
   readonly conceptTags: readonly string[];
+  readonly originLabel?: string;
 };
 
 export type AgentRecordFlow = {
@@ -88,6 +102,7 @@ export type AgentRecordFlow = {
   readonly recentAttempts: readonly RecordFlowAttempt[];
   readonly graphNeighbors: readonly RecordFlowNeighbor[];
   readonly relatedDiscussions: readonly RecordFlowDiscussion[];
+  readonly provenance: readonly RecordFlowProvenance[];
   readonly witnessFactIds: readonly string[];
 };
 
@@ -101,6 +116,7 @@ export type LearnerModelFlowSignal = {
   readonly recentAttempts: readonly RecordFlowAttempt[];
   readonly graphNeighbors: readonly RecordFlowNeighbor[];
   readonly relatedDiscussions: readonly RecordFlowDiscussion[];
+  readonly provenance: readonly RecordFlowProvenance[];
   readonly witnessFactIds: readonly string[];
 };
 
@@ -186,11 +202,23 @@ type IndexedFeedback = {
   readonly turnId: string;
   readonly message: string;
   readonly referencedIds: readonly string[];
+  readonly writtenIds: readonly string[];
+};
+
+type IndexedProvenanceLink = {
+  readonly targetId: string;
+  readonly rev?: number;
+  readonly relation?: string;
+  readonly excerpt?: string;
+  readonly edgeFactId?: string;
 };
 
 export type FlowGraphSnapshot = {
   readonly factsById: ReadonlyMap<string, RawFlowFact>;
   readonly neighborsById: ReadonlyMap<string, readonly IndexedNeighbor[]>;
+  readonly upstreamById: ReadonlyMap<string, readonly IndexedProvenanceLink[]>;
+  readonly downstreamById: ReadonlyMap<string, readonly IndexedProvenanceLink[]>;
+  readonly onboardingTaggedIds: ReadonlySet<string>;
   readonly attemptsByFact: ReadonlyMap<string, readonly RawFlowFact[]>;
   readonly assessmentsByKey: ReadonlyMap<string, IndexedAssessment>;
   readonly assertionsByRef: ReadonlyMap<string, readonly RawFlowFact[]>;
@@ -242,7 +270,7 @@ function factKind(fact: RawFlowFact): string {
     case 'plan.organizerTask': return 'task';
     case 'activity.studyTurn': return 'discussion';
     case 'companion.memoryAssertion': return 'misconception';
-    case 'capture.source': return 'source';
+    case 'capture.source': return str(data.kind) === 'notion' ? 'notion' : 'material';
     default: return 'record';
   }
 }
@@ -357,6 +385,9 @@ export function indexRecordFlowSnapshot(
 ): FlowGraphSnapshot {
   const factsById = new Map<string, RawFlowFact>();
   const neighborsById = new Map<string, IndexedNeighbor[]>();
+  const upstreamById = new Map<string, IndexedProvenanceLink[]>();
+  const downstreamById = new Map<string, IndexedProvenanceLink[]>();
+  const onboardingTaggedIds = new Set<string>();
   const attemptsByFact = new Map<string, RawFlowFact[]>();
   const assessmentsByKey = new Map<string, IndexedAssessment>();
   const assertionsByRef = new Map<string, RawFlowFact[]>();
@@ -367,6 +398,27 @@ export function indexRecordFlowSnapshot(
   const paperIdsByQuestion = new Map<string, string[]>();
   const paperIdsByMaterial = new Map<string, string[]>();
 
+  const linkProvenance = (
+    childId: string,
+    parentId: string,
+    meta?: { rev?: number; upstreamRelation?: string; derivedRelation?: string; excerpt?: string; edgeFactId?: string },
+  ) => {
+    if (!childId || !parentId || childId === parentId) return;
+    addToMap(upstreamById, childId, {
+      targetId: parentId,
+      ...(meta?.rev !== undefined ? { rev: meta.rev } : {}),
+      ...(meta?.upstreamRelation ? { relation: meta.upstreamRelation } : {}),
+      ...(meta?.excerpt ? { excerpt: meta.excerpt } : {}),
+      ...(meta?.edgeFactId ? { edgeFactId: meta.edgeFactId } : {}),
+    });
+    addToMap(downstreamById, parentId, {
+      targetId: childId,
+      ...(meta?.derivedRelation ? { relation: meta.derivedRelation } : {}),
+      ...(meta?.excerpt ? { excerpt: meta.excerpt } : {}),
+      ...(meta?.edgeFactId ? { edgeFactId: meta.edgeFactId } : {}),
+    });
+  };
+
   for (const fact of facts) factsById.set(fact.id, fact);
 
   // Index effective derivations first so turns and attempts can enrich from them.
@@ -376,10 +428,17 @@ export function indexRecordFlowSnapshot(
       const refs = new Set<string>();
       extractRefIdsFromValue(deriv.manifest, refs);
       extractRefIdsFromValue(val, refs);
+      const writtenIds = new Set<string>();
+      for (const w of arr(val.writes)) {
+        const wRec = rec(w);
+        const wId = str(wRec.id) || str(rec(wRec.ref).id);
+        if (wId && wId !== deriv.slotKey) writtenIds.add(wId);
+      }
       feedbackByTurnId.set(deriv.slotKey, {
         turnId: deriv.slotKey,
         message: clip(str(val.message) || str(val.rationale), 180),
         referencedIds: [...refs],
+        writtenIds: [...writtenIds],
       });
       continue;
     }
@@ -451,7 +510,17 @@ export function indexRecordFlowSnapshot(
       const fromId = str(rec(rec(data.from).sourceUse).id);
       const toId = str(rec(rec(data.to).sourceUse).id);
       const relation = str(data.kind) || 'related_to';
+      const scope = str(data.scope);
       addNeighbor(neighborsById, fromId, toId, relation, fact.id);
+      if (scope.startsWith('冷启动')) {
+        if (fromId) onboardingTaggedIds.add(fromId);
+        if (toId) onboardingTaggedIds.add(toId);
+      }
+      if (relation === 'derived_from') {
+        linkProvenance(fromId, toId, { edgeFactId: fact.id });
+      } else if (relation === 'maps_to_chapter') {
+        linkProvenance(fromId, toId, { upstreamRelation: '源自教材', edgeFactId: fact.id });
+      }
       continue;
     }
 
@@ -460,13 +529,21 @@ export function indexRecordFlowSnapshot(
       if (materialId) {
         addToMap(paperIdsByMaterial, materialId, fact.id);
         addNeighbor(neighborsById, fact.id, materialId, 'derived_from');
+        linkProvenance(fact.id, materialId, { upstreamRelation: '来自原件', derivedRelation: '派生试卷' });
       }
       for (const rawQ of arr(data.questions)) {
         const q = rec(rawQ);
-        const sourceQId = str(rec(q.sourceQuestionRef).id);
+        const srcRef = rec(q.sourceQuestionRef);
+        const sourceQId = str(srcRef.id);
+        const sourceQRev = num(srcRef.rev);
         if (sourceQId) {
           addToMap(paperIdsByQuestion, sourceQId, fact.id);
           addNeighbor(neighborsById, fact.id, sourceQId, 'contains_question');
+          linkProvenance(fact.id, sourceQId, {
+            ...(sourceQRev !== null ? { rev: sourceQRev } : {}),
+            upstreamRelation: '源于源题',
+            derivedRelation: '派生试卷',
+          });
         }
       }
       continue;
@@ -478,6 +555,7 @@ export function indexRecordFlowSnapshot(
       if (paperId) {
         addToMap(attemptsByFact, paperId, fact);
         addNeighbor(neighborsById, fact.id, paperId, 'attempt_of');
+        linkProvenance(fact.id, paperId, { upstreamRelation: '对应试卷', derivedRelation: '派生作答' });
         const paper = factsById.get(paperId);
         if (paper) {
           const paperData = rec(paper.data);
@@ -494,13 +572,71 @@ export function indexRecordFlowSnapshot(
 
     if (fact.type === 'companion.memoryAssertion') {
       const refs = new Set<string>();
+      const quoteExcerpt = clip(str(data.quote_excerpt), 160);
       for (const link of arr(data.links)) {
         const id = str(rec(link).id);
-        if (id) refs.add(id);
+        if (id) {
+          refs.add(id);
+          addToMap(downstreamById, id, { targetId: fact.id, relation: '派生错因' });
+        }
       }
       for (const ev of arr(data.evidence)) {
-        const id = str(rec(ev).id);
-        if (id) refs.add(id);
+        const evRec = rec(ev);
+        const id = str(evRec.id);
+        const rev = num(evRec.rev);
+        if (id) {
+          refs.add(id);
+          linkProvenance(fact.id, id, {
+            ...(rev !== null ? { rev } : {}),
+            upstreamRelation: '证据依据',
+            derivedRelation: '派生错因',
+            ...(quoteExcerpt ? { excerpt: quoteExcerpt } : {}),
+          });
+        }
+      }
+      for (const ev of arr(data.evidence_refs)) {
+        const evRec = rec(ev);
+        const id = str(evRec.id);
+        const rev = num(evRec.rev);
+        const excerpt = clip(str(evRec.excerpt) || quoteExcerpt, 160);
+        if (id) {
+          refs.add(id);
+          linkProvenance(fact.id, id, {
+            ...(rev !== null ? { rev } : {}),
+            upstreamRelation: '证据依据',
+            derivedRelation: '派生错因',
+            ...(excerpt ? { excerpt } : {}),
+          });
+        }
+      }
+      const sourceRef = rec(data.sourceRef);
+      const sourceRefId = str(sourceRef.id) || str(rec(sourceRef.fact).id);
+      if (sourceRefId) {
+        const sourceRefRev = num(sourceRef.rev) ?? num(rec(sourceRef.fact).rev);
+        refs.add(sourceRefId);
+        linkProvenance(fact.id, sourceRefId, {
+          ...(sourceRefRev !== null ? { rev: sourceRefRev } : {}),
+          upstreamRelation: '证据依据',
+          derivedRelation: '派生错因',
+          ...(quoteExcerpt ? { excerpt: quoteExcerpt } : {}),
+        });
+      }
+      const belief = rec(data.belief);
+      const beliefTurn = str(belief.turn);
+      if (beliefTurn) {
+        linkProvenance(fact.id, beliefTurn, { upstreamRelation: '由同伴对话提取', derivedRelation: '派生错因' });
+      }
+      for (const ob of arr(belief.objectBasis)) {
+        const obRec = rec(ob);
+        const obId = str(obRec.id);
+        const obRev = num(obRec.rev);
+        if (obId) {
+          linkProvenance(fact.id, obId, {
+            ...(obRev !== null ? { rev: obRev } : {}),
+            upstreamRelation: '证据依据',
+            derivedRelation: '派生错因',
+          });
+        }
       }
       for (const refId of refs) addToMap(assertionsByRef, refId, fact);
       continue;
@@ -517,6 +653,9 @@ export function indexRecordFlowSnapshot(
         for (const id of fb.referencedIds) {
           if (id !== fact.id) refs.add(id);
         }
+        for (const writtenId of fb.writtenIds) {
+          linkProvenance(writtenId, fact.id, { upstreamRelation: '由同伴对话提取' });
+        }
       }
       for (const refId of refs) addToMap(turnsByRef, refId, fact);
       continue;
@@ -528,14 +667,27 @@ export function indexRecordFlowSnapshot(
       if (linkId) addNeighbor(neighborsById, fact.id, linkId, 'references');
     }
     for (const rawBasis of arr(data.basis)) {
-      const basisId = str(rec(rawBasis).id) || str(rec(rec(rawBasis).fact).id);
-      if (basisId) addNeighbor(neighborsById, fact.id, basisId, 'based_on');
+      const bRec = rec(rawBasis);
+      const bFact = rec(bRec.fact);
+      const basisId = str(bRec.id) || str(bFact.id);
+      const basisRev = num(bRec.rev) ?? num(bFact.rev);
+      const excerpt = clip(str(bRec.excerpt) || str(bRec.quote), 160);
+      if (basisId) {
+        addNeighbor(neighborsById, fact.id, basisId, 'based_on');
+        linkProvenance(fact.id, basisId, {
+          ...(basisRev !== null ? { rev: basisRev } : {}),
+          ...(excerpt ? { excerpt } : {}),
+        });
+      }
     }
   }
 
   return {
     factsById,
     neighborsById,
+    upstreamById,
+    downstreamById,
+    onboardingTaggedIds,
     attemptsByFact,
     assessmentsByKey,
     assertionsByRef,
@@ -828,6 +980,178 @@ function buildNextActions(
   return actions;
 }
 
+const ORIGIN_BADGE_BY_KIND: Readonly<Record<string, string>> = {
+  material: '原件',
+  onboarding: '冷启动',
+  textbook: '教材',
+  question: '题库',
+  paper: '试卷',
+  attempt: '作答',
+  discussion: '对话',
+  notion: 'Notion',
+  discipline: '学科',
+  concept: '概念',
+  method: '概念',
+  archetype: '概念',
+  misconception: '错因',
+  note: '笔记',
+  page: '笔记',
+};
+
+function originBadgeOf(kind: string): string {
+  return ORIGIN_BADGE_BY_KIND[kind] ?? '记录';
+}
+
+function defaultUpstreamRelation(fact: RawFlowFact, kind: string): string {
+  if (kind === 'notion') return '来自 Notion';
+  if (fact.type === 'capture.source') return '来自交入原件';
+  switch (kind) {
+    case 'material': return '来自原件';
+    case 'discipline': return '所属学科语境';
+    case 'textbook': return '源自教材';
+    case 'question': return '源于源题';
+    case 'paper': return '对应试卷';
+    case 'attempt': return '证据依据';
+    case 'discussion': return '由同伴对话提取';
+    case 'misconception': return '证据依据';
+    case 'concept':
+    case 'method':
+    case 'archetype': return '源自概念';
+    default: return '证据依据';
+  }
+}
+
+function defaultDerivedRelation(kind: string): string {
+  switch (kind) {
+    case 'paper': return '派生试卷';
+    case 'question': return '派生题目';
+    case 'concept':
+    case 'method':
+    case 'archetype': return '派生概念';
+    case 'misconception': return '派生错因';
+    case 'attempt': return '派生作答';
+    case 'textbook': return '派生教材';
+    default: return '派生记录';
+  }
+}
+
+function provenanceHref(fact: RawFlowFact, factsById: ReadonlyMap<string, RawFlowFact>): string | null {
+  const kind = factKind(fact);
+  if (kind === 'notion') return null;
+  return recordHref(fact, factsById);
+}
+
+function factExcerpt(fact: RawFlowFact): string | undefined {
+  const data = rec(fact.data);
+  const raw = str(data.summary) || str(data.excerpt) || str(rec(data.discipline_context).learningScope) || str(data.text);
+  return raw ? clip(raw, 120) : undefined;
+}
+
+const UPLOADED_ORIGIN_KINDS = new Set(['material', 'notion', 'textbook', 'discussion']);
+
+const ONBOARDING_PROVENANCE_ENTRY: RecordFlowProvenance = {
+  id: 'onboarding',
+  kind: 'onboarding',
+  title: '初始学习画像建档',
+  relation: '来自冷启动建档',
+  originBadge: '冷启动',
+  href: '/onboarding',
+};
+
+function collectProvenance(target: RawFlowFact, snap: FlowGraphSnapshot): RecordFlowProvenance[] {
+  const out: RecordFlowProvenance[] = [];
+  const visited = new Set<string>([target.id]);
+  const queue: { id: string; depth: number }[] = [{ id: target.id, depth: 0 }];
+
+  while (queue.length > 0 && out.length < 10) {
+    const current = queue.shift()!;
+    if (current.depth >= 2) continue;
+    for (const link of snap.upstreamById.get(current.id) ?? []) {
+      if (visited.has(link.targetId)) continue;
+      const upstream = snap.factsById.get(link.targetId);
+      if (!upstream) continue;
+      visited.add(upstream.id);
+      const kind = factKind(upstream);
+      const excerpt = link.excerpt || factExcerpt(upstream);
+      out.push({
+        id: upstream.id,
+        rev: link.rev ?? upstream.rev,
+        kind,
+        title: factTitle(upstream),
+        relation: link.relation ?? defaultUpstreamRelation(upstream, kind),
+        originBadge: originBadgeOf(kind),
+        ...(excerpt ? { excerpt } : {}),
+        href: provenanceHref(upstream, snap.factsById),
+      });
+      if (out.length >= 10) break;
+      queue.push({ id: upstream.id, depth: current.depth + 1 });
+    }
+  }
+
+  const targetKind = factKind(target);
+  const hasUploadedOrigin = out.some((item) => UPLOADED_ORIGIN_KINDS.has(item.kind));
+  const hasDisciplineOrigin = out.some((item) => item.kind === 'discipline');
+  const isOnboardingAsset =
+    !hasUploadedOrigin &&
+    (targetKind === 'discipline' ||
+      snap.onboardingTaggedIds.has(target.id) ||
+      ((targetKind === 'concept' || targetKind === 'question' || targetKind === 'method' || targetKind === 'archetype') &&
+        hasDisciplineOrigin));
+  if (isOnboardingAsset && out.length < 10) {
+    out.push(ONBOARDING_PROVENANCE_ENTRY);
+  }
+
+  return out;
+}
+
+const DERIVED_PRIORITY: Readonly<Record<string, number>> = {
+  paper: 50,
+  misconception: 45,
+  attempt: 40,
+  question: 35,
+  concept: 30,
+  method: 28,
+  archetype: 28,
+  textbook: 25,
+};
+
+function collectDerived(target: RawFlowFact, snap: FlowGraphSnapshot): RecordFlowProvenance[] {
+  const seen = new Map<string, { item: RecordFlowProvenance; priority: number; tick: bigint }>();
+  for (const link of snap.downstreamById.get(target.id) ?? []) {
+    if (link.targetId === target.id || seen.has(link.targetId)) continue;
+    const child = snap.factsById.get(link.targetId);
+    if (!child) continue;
+    const kind = factKind(child);
+    const excerpt = link.excerpt || factExcerpt(child);
+    seen.set(child.id, {
+      item: {
+        id: child.id,
+        rev: child.rev,
+        kind,
+        title: factTitle(child),
+        relation: link.relation ?? defaultDerivedRelation(kind),
+        originBadge: originBadgeOf(kind),
+        ...(excerpt ? { excerpt } : {}),
+        href: provenanceHref(child, snap.factsById),
+      },
+      priority: DERIVED_PRIORITY[kind] ?? 10,
+      tick: parseTick(child.createdTick),
+    });
+  }
+  return [...seen.values()]
+    .sort((a, b) => b.priority - a.priority || (b.tick > a.tick ? 1 : b.tick < a.tick ? -1 : a.item.id.localeCompare(b.item.id)))
+    .slice(0, 12)
+    .map((entry) => entry.item);
+}
+
+function buildOriginLabel(provenance: readonly RecordFlowProvenance[]): string | undefined {
+  const first = provenance[0];
+  if (!first) return undefined;
+  if (first.kind === 'onboarding') return '来自冷启动建档';
+  if (first.relation === '所属学科语境') return `所属学科：${clip(first.title, 24)}`;
+  return `${first.relation}：${clip(first.title, 24)}`;
+}
+
 /**
  * Project a full structured `RecordFlowView` for any learning record, concept,
  * question, paper, attempt, textbook page, or source material.
@@ -878,6 +1202,8 @@ export function projectRecordFlow(targetId: string, snap: FlowGraphSnapshot): Re
   const misconceptions = collectMisconceptions(relatedIds, attempts, snap);
   const discussions = collectDiscussions(relatedIds, snap);
   const mastery = computeMastery(relatedIds, attempts, misconceptions, snap);
+  const provenance = collectProvenance(target, snap);
+  const derived = collectDerived(target, snap);
   const nextActions = buildNextActions(identity, attempts, misconceptions, graphNeighbors, snap);
 
   return {
@@ -887,6 +1213,8 @@ export function projectRecordFlow(targetId: string, snap: FlowGraphSnapshot): Re
     attempts,
     discussions,
     graphNeighbors,
+    provenance,
+    derived,
     nextActions,
   };
 }
@@ -927,6 +1255,7 @@ export function summarizeRecordFlowForList(
     }
     const errorStageCount =
       flow.misconceptions.filter((m) => Boolean(m.errorStage) || m.status === 'active' || m.status === 'observed').length;
+    const originLabel = buildOriginLabel(flow.provenance);
     summaries[id] = {
       ...(flow.mastery.level !== 'unknown' ? { masteryLevel: flow.mastery.level } : {}),
       errorStageCount,
@@ -934,6 +1263,7 @@ export function summarizeRecordFlowForList(
       discussionCount: flow.discussions.length,
       neighborCount: flow.graphNeighbors.length,
       conceptTags,
+      ...(originLabel ? { originLabel } : {}),
     };
   }
   return summaries;
@@ -947,6 +1277,7 @@ function collectFlowWitnessFactIds(
   attempts: readonly RecordFlowAttempt[],
   neighbors: readonly RecordFlowNeighbor[],
   discussions: readonly RecordFlowDiscussion[],
+  provenance: readonly RecordFlowProvenance[],
   snap: FlowGraphSnapshot,
 ): string[] {
   const ids = new Set<string>([flow.identity.id]);
@@ -976,6 +1307,21 @@ function collectFlowWitnessFactIds(
   for (const d of discussions) {
     if (snap.factsById.has(d.turnId)) ids.add(d.turnId);
   }
+  const provenanceIds = new Set<string>();
+  for (const p of provenance) {
+    // Never register synthetic virtual entries (e.g. 'onboarding') as DB fact witnesses.
+    if (p.id !== 'onboarding' && snap.factsById.has(p.id)) {
+      ids.add(p.id);
+      provenanceIds.add(p.id);
+    }
+  }
+  for (const sourceId of [flow.identity.id, ...provenanceIds]) {
+    for (const link of snap.upstreamById.get(sourceId) ?? []) {
+      if (link.edgeFactId && provenanceIds.has(link.targetId) && snap.factsById.has(link.edgeFactId)) {
+        ids.add(link.edgeFactId);
+      }
+    }
+  }
   // Include all attempts & misconceptions that contributed to mastery level/score.
   for (const a of flow.attempts) {
     if (snap.factsById.has(a.attemptId)) ids.add(a.attemptId);
@@ -998,13 +1344,15 @@ export function projectAgentRecordFlow(targetId: string, snap: FlowGraphSnapshot
   const recentAttempts = flow.attempts.slice(0, 3);
   const graphNeighbors = flow.graphNeighbors.slice(0, 8);
   const relatedDiscussions = flow.discussions.slice(0, 3);
+  const provenance = flow.provenance.slice(0, 5);
   return {
     mastery: flow.mastery,
     misconceptions,
     recentAttempts,
     graphNeighbors,
     relatedDiscussions,
-    witnessFactIds: collectFlowWitnessFactIds(flow, misconceptions, recentAttempts, graphNeighbors, relatedDiscussions, snap),
+    provenance,
+    witnessFactIds: collectFlowWitnessFactIds(flow, misconceptions, recentAttempts, graphNeighbors, relatedDiscussions, provenance, snap),
   };
 }
 
@@ -1065,12 +1413,14 @@ export function projectLearnerModelFlowSignals(
       flow.misconceptions.length > 0 ||
       flow.attempts.length > 0 ||
       flow.graphNeighbors.length > 0 ||
-      flow.discussions.length > 0;
+      flow.discussions.length > 0 ||
+      flow.provenance.length > 0;
     if (!hasSignal) continue;
     const misconceptions = flow.misconceptions.slice(0, 2);
     const recentAttempts = flow.attempts.slice(0, 2);
     const graphNeighbors = flow.graphNeighbors.slice(0, 4);
     const relatedDiscussions = flow.discussions.slice(0, 2);
+    const provenance = flow.provenance.slice(0, 3);
     signals.push({
       id: flow.identity.id,
       kind: flow.identity.kind,
@@ -1081,7 +1431,8 @@ export function projectLearnerModelFlowSignals(
       recentAttempts,
       graphNeighbors,
       relatedDiscussions,
-      witnessFactIds: collectFlowWitnessFactIds(flow, misconceptions, recentAttempts, graphNeighbors, relatedDiscussions, snap),
+      provenance,
+      witnessFactIds: collectFlowWitnessFactIds(flow, misconceptions, recentAttempts, graphNeighbors, relatedDiscussions, provenance, snap),
     });
     if (signals.length >= limit) break;
   }
