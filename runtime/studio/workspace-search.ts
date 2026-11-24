@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { FactSnapshot, ReadTransaction } from '../../kernel/src/index.ts';
 import { projectWorkspaceSearchResult, runWorkspaceSearch, type SearchFilters, type SearchQuery, type WorkspaceCandidateChannel } from '../../modules/activity/workspace-search.ts';
-export {
-  lexicalWorkspaceSql, parseWorkspaceSearch, queryStrings, trigramFunction, unappliedWorkspaceFilters,
+export {lexicalWorkspaceSql, parseWorkspaceSearch, queryStrings, trigramFunction, unappliedWorkspaceFilters,
   workspaceOccurredAt, workspaceRecordKind, workspaceRecordKinds, WorkspaceSearchError, type WorkspaceCandidate, type WorkspaceCandidateChannel,
 } from '../../modules/activity/workspace-search.ts';
 import type { WorkspaceSource } from './knowledge-graph.ts';
@@ -20,8 +19,7 @@ export function searchWorkspaceRecords(tx: ReadTransaction, criteria: SearchQuer
       const opened: Parameters<SourceTrack>[] = [], source = await resolveSource(tx, id, { ...access, track: (...w) => opened.push(w) });
       if (!source) return undefined;
       const fact = opened.find(([witness]) => witness.ref.id === id)?.[0];
-      return { source, ...(fact ? { fact } : {}), opened };
-    },
+      return { source, ...(fact ? { fact } : {}), opened };},
     track: witness => access.track?.(...witness), excerpt: sourceSearchExcerpt, shortHash,
   }, semantic);
 }

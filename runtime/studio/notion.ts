@@ -29,8 +29,7 @@ import { teachingTurnAllowed } from './reading.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { notionTeachingRecipients } from './workspace-access.ts';
 
-function notionConnection() {
-  const local = process.env.MANGEKYO_NOTION_TEST_ORIGIN;
+function notionConnection() { const local = process.env.MANGEKYO_NOTION_TEST_ORIGIN;
   if (local && !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(local)) throw new Error('Invalid local Notion test origin');
   return openNotionReadTransport(local || 'https://api.notion.com', local ? 'isolated-notion-fixture' : process.env.MANGEKYO_NOTION_TOKEN,
     notionVersion, (status, message) => status === 502 ? new NotionTemporaryFailure(status) : new RequestError(status, message));
@@ -60,8 +59,7 @@ export type NotionRecipient = ((fact: FactSnapshot) => boolean) & { notionRecipi
 export async function checkStudioNotionFact(tx: ReadTransaction, fact: FactSnapshot, purpose: string, recipient: NotionRecipient | 'learner', reopen?: (fact: FactSnapshot) => Promise<FactSnapshot>) {
   if (fact.type !== captureSourceType || sourceEnvelope(fact.value).kind !== 'notion') return;
   if (reopen) return reopen(fact);
-  try {
-    return await readStudioNotionSource(tx, fact.ref.id, { mode: 'pinned', rev: fact.ref.rev },
+  try { return await readStudioNotionSource(tx, fact.ref.id, { mode: 'pinned', rev: fact.ref.rev },
       recipient === 'learner' ? { purpose, recipientId: tx.learner, maySend: () => true } : { purpose, recipientId: recipient.notionRecipientId ?? '', maySend: recipient });
   } catch { throw new FactReadDeniedError('recipient', 'Notion 来源或选源对当前接收人已不可用。'); }
 }
@@ -85,13 +83,10 @@ function notionHost(db: Db, learner: LearnerId = studioLearner) {
     page?: string, signal?: AbortSignal, rememberDenial = true, preserveTemporary = false) {
     const { id, selectionEpoch: epoch } = selection;
     try { return await connection.read(stream, () => host.snapshot(tx => live(tx, id, epoch, watermark, page)), signal); }
-    catch (error) {
-      signal?.throwIfAborted();
-      if (error instanceof NotionSourceUnavailable && error.invalidated) {
-        if (!rememberDenial) throw error;
+    catch (error) {signal?.throwIfAborted();
+      if (error instanceof NotionSourceUnavailable && error.invalidated) { if (!rememberDenial) throw error;
         const key = error.invalidated.kind === 'selection' ? 'root' : error.invalidated.pageId;
-        await host.lockedTx(async tx => {
-          await live(tx, id, epoch, watermark);
+        await host.lockedTx(async tx => { await live(tx, id, epoch, watermark);
           await recordLocalRead(host.boundDb(tx), { learner: tx.learner, ownerKind: 'session',
             ownerId: denialOwner(id, epoch), stepKey: key, label: 'notion-access-denial', input: {} }, async () => 'denied', async () => {});
         });

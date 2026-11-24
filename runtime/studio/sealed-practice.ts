@@ -13,16 +13,13 @@ import { parsePracticeAdmission, resolveStudioPracticeAdmission as resolvePracti
 
 const unavailable = () => new RequestError(404,'找不到当前可用的封闭练习。');
 
-async function readPracticeTeaching(tx: ReadTransaction, paper: FactId) {
-  try {
-    const read = storageRead(tx);
+async function readPracticeTeaching(tx: ReadTransaction, paper: FactId) { try { const read = storageRead(tx);
     const custody = await readPracticeCustody(read,await practiceCustodyId(paper));
     if (!custody || custody.value.paper.id !== paper) throw unavailable();
     const source = await read.fact(custody.value.question.id,{mode:'following'});
     if (source.type !== assetType) throw unavailable();
     return {id:source.ref.id,rev:source.ref.rev,teaching:source.purpose.includes('teaching') || source.purpose.includes('all')};
-  } catch (error) {
-    if (isFactUnavailable(error)) throw unavailable();
+  } catch (error) { if (isFactUnavailable(error)) throw unavailable();
     throw error;
   }
 }
@@ -32,10 +29,8 @@ export async function isPracticeWorkbook(tx: ReadTransaction, paper: FactId) {
   return found?.value.paper.id === paper;
 }
 
-export async function sealedPracticePaper(tx: ReadTransaction, id: FactId) {
-  try {
-    return await openSealedPractice(storageRead(tx),id);
-  } catch (error) {
+export async function sealedPracticePaper(tx: ReadTransaction, id: FactId) { try {
+    return await openSealedPractice(storageRead(tx),id);} catch (error) {
     if (!isFactUnavailable(error)) throw error;
     return undefined;
   }
@@ -43,15 +38,12 @@ export async function sealedPracticePaper(tx: ReadTransaction, id: FactId) {
 
 export function openPracticeAdmission(db: Db, content: LoadedModule, activity: LoadedModule, hooks: CommandHooks) {
   const host = studioHost(db);
-  return {
-    async admit(input: Record<string,unknown>, deletionWatermark: string) {
+  return { async admit(input: Record<string,unknown>, deletionWatermark: string) {
       const {requestId:raw,allowTeaching,deletionWatermark:_,...definition} = input;
       let requestId;
       let requested;
-      try {
-        requestId = workbookRequestId(raw);
-        requested = parsePracticeAdmission(definition);
-      } catch (error) {
+      try {requestId = workbookRequestId(raw);
+        requested = parsePracticeAdmission(definition);} catch (error) {
         throw new RequestError(400,error instanceof Error ? error.message : '练习参数无效。');
       }
       if (allowTeaching !== undefined && typeof allowTeaching !== 'boolean')
@@ -68,32 +60,24 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
           // Keep the existing identity for retries of a previously authorized admission.
           bindCommandRead:(_tx,request,base) => request.type === saveQuestionCommand ? read : base});
         const prior = await readPracticeCustody(read,await practiceCustodyId(id));
-        try {
-          await boundHandle({purpose:allowTeaching ? purpose : 'storage',
+        try { await boundHandle({purpose:allowTeaching ? purpose : 'storage',
             type:saveQuestionCommand,id:command,deletionWatermark,
             input:{id:questionId,arithmeticPractice:practice,...(allowTeaching ? {} : {purpose:'storage'})}});
-        } catch (error) {
-          if (isKernelErrorKind(error,'duplicate_command'))
+        } catch (error) { if (isKernelErrorKind(error,'duplicate_command'))
             throw new RequestError(409,'同一个请求标识已经用于不同练习。');
           throw error;
         }
         if (!prior) await boundHandle({purpose:'storage',type:saveWorkbookPaperCommand,
-          id:commandId(stableId(sealedPracticePurpose,'reserve-paper',id)),
-          deletionWatermark,
+          id:commandId(stableId(sealedPracticePurpose,'reserve-paper',id)), deletionWatermark,
           input:{id,questionId,savedAt:new Date().toISOString(),condition:sealedPracticePurpose}});
         if (!await openArithmeticPractice(read,questionId,undefined,'storage')) throw unavailable();
-        return {id,questionRef:{id:questionId,rev:prior?.value.question.rev ?? 1},path:'/papers/'+id};
-      });
-    },
-    getTeaching(id: string) {
-      return host.snapshot(tx => readPracticeTeaching(tx,factId(id)));
-    },
+        return {id,questionRef:{id:questionId,rev:prior?.value.question.rev ?? 1},path:'/papers/'+id};});
+    }, getTeaching(id: string) { return host.snapshot(tx => readPracticeTeaching(tx,factId(id)));},
     async teaching(id: string, input: Record<string,unknown>) {
       if (typeof input.allowed !== 'boolean' || !Number.isSafeInteger(input.expectedRev) || Number(input.expectedRev) < 1)
         throw new RequestError(400,'教学用途设置无效。');
       const {allowed,expectedRev} = input;
-      return host.lockedTx(async tx => {
-        const current = await readPracticeTeaching(tx,factId(id));
+      return host.lockedTx(async tx => { const current = await readPracticeTeaching(tx,factId(id));
         if (current.rev !== expectedRev) throw new RequestError(409,'题面权限已在别处更新。请刷新后再试。');
         if (current.teaching === allowed) return current;
         const questionId = current.id;
@@ -101,27 +85,21 @@ export function openPracticeAdmission(db: Db, content: LoadedModule, activity: L
         const result = await boundHandle({purpose:'storage',type:'content.setQuestionTeaching',
           id:commandId(stableId(sealedPracticePurpose,'teaching',questionId,String(expectedRev),String(allowed))),
           input:{id:questionId,expectedRev:Number(expectedRev),allowed}});
-        return {id:questionId,rev:result.wrote[0]?.rev ?? expectedRev,teaching:allowed};
-      });
-    },
+        return {id:questionId,rev:result.wrote[0]?.rev ?? expectedRev,teaching:allowed};});},
   };
 }
 
 /** Older servers see no Workbook fact until the first official submission and its release commit. */
 export function submitWithPracticeCustody(db: Db, activity: LoadedModule, hooks: CommandHooks,
-  paperId: FactId, request: CommandRequest) {
-  const host = studioHost(db);
-  return host.lockedTx(async tx => {
-    const read = storageRead(tx);
+  paperId: FactId, request: CommandRequest) { const host = studioHost(db);
+  return host.lockedTx(async tx => { const read = storageRead(tx);
     const custody = await readPracticeCustody(read,await practiceCustodyId(paperId));
     const boundHandle = host.boundHandler([activity],hooks,tx);
-    if (custody?.value.kind === 'sealed') {
-      if (!await sealedPracticePaper(tx,paperId)) throw unavailable();
+    if (custody?.value.kind === 'sealed') { if (!await sealedPracticePaper(tx,paperId)) throw unavailable();
       await boundHandle({purpose:'storage',type:releasePracticeFeedbackCommand,
         id:commandId(stableId(sealedPracticePurpose,'release-feedback',paperId)),
         ...(request.deletionWatermark === undefined ? {} : {deletionWatermark:request.deletionWatermark}),
         input:{custody:{id:custody.fact.ref.id,rev:custody.fact.ref.rev},paper:{id:paperId,rev:1}}});
     }
-    return boundHandle(request);
-  });
+    return boundHandle(request);});
 }

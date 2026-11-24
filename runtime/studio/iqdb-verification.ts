@@ -13,13 +13,11 @@ import { purpose } from './identity.ts';
 const policy: CandidatePolicy = { slot: { type: questionVerificationType }, deriver: deriver.name, purpose }, propagation = createPropagationHooks([]);
 type QuestionVersion = NonNullable<ReturnType<typeof parseQuestionVerificationKey>>;
 
-export async function openLocalQuestionEffects(setting?: string) {
-  if (!setting) return undefined;
+export async function openLocalQuestionEffects(setting?: string) { if (!setting) return undefined;
   try {
     const targets = await openLocalQuestionVerifiers(setting, verificationSteps.map(step => step.stepKey));
     if (!independentQuestionExecutions([...targets.values()].map(target => target.execution))) throw new Error('多个核验步骤使用了同一可执行模块。');
-    return targets;
-  } catch { console.error('题库独立核验不可用。请为三次求解和契约验收分别配置本机核验模块。'); return undefined; }
+    return targets;} catch { console.error('题库独立核验不可用。请为三次求解和契约验收分别配置本机核验模块。'); return undefined; }
 }
 
 export function readCurrentQuestionVerification(tx: ReadTransaction): ReadContext['slot'] {
@@ -27,8 +25,7 @@ export function readCurrentQuestionVerification(tx: ReadTransaction): ReadContex
     if (mode !== 'following' || slot.type !== questionVerificationType || slot.learner !== tx.learner) throw new FactNotFoundError('核验槽不可用。');
     const outcome = await readCurrentSlotOutcome<Value>(tx, slot, policy.deriver, purpose);
     if (!outcome) throw new FactNotFoundError('需要当前有效的独立核验。');
-    return outcome;
-  };
+    return outcome;};
 }
 
 export async function enqueueQuestionVerification(tx: DbTransaction, version: QuestionVersion) {
@@ -56,20 +53,15 @@ export async function executeQuestionVerification(db: Db, ref: WorkRef, host: Aw
   if (targets.some(({ request, target }) => !target || !matchesQuestionExecution(request, target.execution)))
     return void await failCandidate('已封存的核验模块已变更，请重新核验。');
   const receipts: QuestionVerificationEffectReceipt[] = [];
-  for (const { request, target } of targets) {
-    if (!target) throw new Error('缺少已封存的核验模块。');
+  for (const { request, target } of targets) { if (!target) throw new Error('缺少已封存的核验模块。');
     const authorize = async (tx: ReadTransaction) => {
       if (!await readReadyWork(tx, ref) || (await revalidateManifest(tx, sealed.manifest)).kind !== 'valid') throw new FactNotFoundError('核验依据已变化。');
       for (const input of sealed.manifest.inputs) {
         if (input.kind !== 'fact') throw new Error('核验依据必须是已打开的事实。');
-        await guardAccess(tx, input, { purpose, maySend: () => true });
-      }
-    };
+        await guardAccess(tx, input, { purpose, maySend: () => true });}};
     const receipt = await runEffect(db, { ...scope, ownerKind: 'derivation', ownerId: sealed.id, ...request }, async invocationId => {
-      const { result } = await learnerHost.lockedTx(async tx => {
-        await authorize(tx);
-        return { result: target.invoke(request, invocationId).then(value => ({ value }), () => null) };
-      });
+      const { result } = await learnerHost.lockedTx(async tx => { await authorize(tx);
+        return { result: target.invoke(request, invocationId).then(value => ({ value }), () => null) };});
       const reply = await result;
       if (!reply) throw new Error('核验接收方未给出确定回执。');
       return questionVerificationEffectResult(invocationId, reply.value, target.execution);

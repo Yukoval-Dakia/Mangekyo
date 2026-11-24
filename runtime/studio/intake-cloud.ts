@@ -23,8 +23,7 @@ const intakeStopped = (error: unknown) =>
 export function openCloudIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
   completeCloud(ref: WorkRef, input: CloudIntakeInput, extraction: IntakeExtraction): Promise<void>;
-}, client: MineruClient, pollIntervalMs = 2500) {
-  return {
+}, client: MineruClient, pollIntervalMs = 2500) { return {
     execute: (ref: WorkRef, terminalFailure = false) => runPendingIntakeWork(db, ref, async tx => {
       const original = await cloudInput(tx, ref);
       if (!original) return null;

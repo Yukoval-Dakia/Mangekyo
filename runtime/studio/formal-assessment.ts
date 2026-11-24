@@ -25,8 +25,7 @@ export async function readFormalAssessment(
     [tx.learner, type, formalAssessmentSlotKey(type, releaseRef, submissionRef)],
   );
   const refs = { releaseRef, submissionRef };
-  if (slot?.value?.kind === 'value' && slot.current_id) {
-    const manifest = parseManifest(slot.manifest);
+  if (slot?.value?.kind === 'value' && slot.current_id) { const manifest = parseManifest(slot.manifest);
     if ((await revalidateManifest(tx, manifest)).kind !== 'valid' ||
         (purpose !== manifest.purpose && (await revalidateManifest(tx, manifest, purpose)).kind !== 'valid') ||
         !manifestEpochsMatch(manifest, releaseRef.id, submissionRef.id, expectedEpochs))

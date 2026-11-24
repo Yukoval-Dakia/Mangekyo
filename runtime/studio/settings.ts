@@ -16,8 +16,7 @@ function settingsFile() {
   return process.env.MANGEKYO_SETTINGS_FILE || join(homedir(), '.config', 'mangekyo', 'provider.json');
 }
 
-function environmentExaApiKey() {
-  return process.env.MANGEKYO_EXA_API_KEY || process.env.EXA_API_KEY || '';
+function environmentExaApiKey() { return process.env.MANGEKYO_EXA_API_KEY || process.env.EXA_API_KEY || '';
 }
 
 const readStored = () => readJsonConfig(settingsFile(), defaultStored, normalizeSaved);
@@ -27,37 +26,29 @@ export async function loadSettings(task?: ModelTask): Promise<ProviderSettings> 
 }
 
 let updating: Promise<unknown> = Promise.resolve();
-export function saveSettings(input: Record<string, unknown>) {
-  const update = updating.then(async () => {
-    const prior = await readStored().catch((error) => {
-      if (!completeReplacement(input)) throw error;
-      return defaultStored();
-    });
-    const next = mergeSettings(prior, input);
-    await writeJsonConfig(settingsFile(), { version: 2, ...next });
-    return publicSettings(flatten(next, undefined, environmentExaApiKey()));
-  });
+export function saveSettings(input: Record<string, unknown>) { const update = updating.then(async () => {
+    const prior = await readStored().catch((error) => { if (!completeReplacement(input)) throw error;
+      return defaultStored();});
+    const next = mergeSettings(prior, input); await writeJsonConfig(settingsFile(), { version: 2, ...next });
+    return publicSettings(flatten(next, undefined, environmentExaApiKey()));});
   updating = update.catch(() => {});
   return update;
 }
 
 export function saveLearnerSettings(db: Db, input: Record<string, unknown>) {
-  return studioHost(db).lockedTx(async () => {
-    const saved = await saveSettings(input);
+  return studioHost(db).lockedTx(async () => { const saved = await saveSettings(input);
     const accessPath = process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
     const [full, stored] = await Promise.all([loadSettings(), readJsonConfig(accessPath, defaultWorkspaceAccess, normalizeWorkspaceAccess)]);
     const next = autoAuthorizeActiveRoute(full, stored, randomUUID());
     if (next.changed) await writeJsonConfig(accessPath, next.stored);
-    return saved;
-  });
+    return saved;});
 }
 
 /** Bind a fresh explicitly authorized send to the current account, including legacy settings. */
 export async function freezeProviderAccount(tx: DbTransaction, task?: ModelTask) {
   await lockLearner(tx, tx.learner);
   let settings = await loadSettings(task);
-  if (settings.providers.some(provider => !provider.credentialRevision)) {
-    await saveSettings({});
+  if (settings.providers.some(provider => !provider.credentialRevision)) { await saveSettings({});
     settings = await loadSettings(task);
   }
   return {settings, account: providerAccount(settings)!};

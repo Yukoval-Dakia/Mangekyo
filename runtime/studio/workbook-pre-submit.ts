@@ -48,8 +48,7 @@ export async function readWorkbookPreSubmitPitfalls(tx: ReadTransaction, paperId
   const rules = (await Promise.all(candidates.map(candidate => buildPreSubmitPitfallRule(tx, scope, maySend, candidate)))).filter((rule): rule is PitfallRule => rule !== undefined);
   if (!rules.length) return [];
   const history = options.history ?? (await options.loadHistory?.(tx, scope, paperId)) ?? [], authorized = createAuthorizedFactReader(tx, use, maySend), evidence = studioWorkbookEvidence(use, maySend);
-  const reader: PreSubmitPitfallRead = {
-    scope,
+  const reader: PreSubmitPitfallRead = {scope,
     reopen: (_scope, ref) => readAuthorizedFactOrNull(tx, use, maySend, ref.id, ref.mode === 'following' ? { mode: 'following' } : { mode: 'pinned', rev: ref.rev }),
     openItem: options.openItem ?? (async () => undefined),
     ...(options.observeDiscipline ? { observeDiscipline: options.observeDiscipline } : {}),

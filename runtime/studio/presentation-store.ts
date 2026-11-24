@@ -27,15 +27,10 @@ const load = (name: string) =>
 let content: ReturnType<typeof load>, activity: ReturnType<typeof load>;
 const conflict = (message: string) => new RequestError(409, message);
 
-export async function mountArtifact(
-  db: Db,
-  turnId: string,
-  step: number,
-  args: Record<string, unknown>,
-  authorize: (tx: ReadTransaction) => Promise<Manifest>,
+export async function mountArtifact(db: Db, turnId: string, step: number,
+  args: Record<string, unknown>, authorize: (tx: ReadTransaction) => Promise<Manifest>,
   readWitness?: ReadArtifactAssessmentWitness,
-) {
-  const checked = validateArtifact(args.view);
+) { const checked = validateArtifact(args.view);
   if (!checked.ok) return learningToolError('invalid_args','view',checked.error);
   const prompt = args.predictionPrompt ?? null;
   if (prompt !== null && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 160)) return learningToolError('invalid_args','predictionPrompt','预测提示应为 1–160 字。');
@@ -51,8 +46,7 @@ export async function mountArtifact(
     }
   }
   const host = studioHost(db);
-  const data = await host.snapshot(async (tx) => {
-    const manifest = await authorize(tx);
+  const data = await host.snapshot(async (tx) => { const manifest = await authorize(tx);
     const turn = studyTurn((await readTeachingTurn(tx, turnId)).value);
     // A replay keeps the original gather tick. The command compares all other inputs.
     const existing = await tx.query<{ tick: string }>(
@@ -62,17 +56,10 @@ export async function mountArtifact(
     return { turnId, sessionId: turn.sessionId, manifest: { ...manifest, gatherTick: existing.rows[0]?.tick ?? manifest.gatherTick }, view, predictionPrompt: prompt, ...(assessment ? { assessment } : { }), };
   });
   const handle = host.boundHandler([await (content ??= load('content'))], createStudioCommandHooks({
-      afterFactsChanged: async (tx) => {
-        await authorize(tx);
-        await notifySession(tx, data.sessionId);
-      },
+      afterFactsChanged: async (tx) => { await authorize(tx); await notifySession(tx, data.sessionId);},
     }));
-  const receipt = await handle({
-    actor: 'companion',
-    purpose,
-    type: 'content.mountArtifact',
-    id: commandId(stableId('mount-command', id)),
-    input: { id, data },
+  const receipt = await handle({actor: 'companion', purpose, type: 'content.mountArtifact',
+    id: commandId(stableId('mount-command', id)), input: { id, data },
   });
   return { mountId: id, revision: view.revision, commandId: receipt.commandId, state: receipt.state };
 }
@@ -85,8 +72,7 @@ function unavailableMount(error: unknown) {
 }
 
 async function readMount(tx: ReadTransaction, sessionId: string, mountId: string, check: CheckNotionRead, through?: number) {
-  try {
-    return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(tx), check, through);
+  try { return await projectMount(tx, sessionId, mountId, workspaceGrantChecker(tx), check, through);
   } catch (error) {
     if (error instanceof NotionReadUnconfirmed) throw new RequestError(503, '暂时无法核对作品来源，请重试。');
     if (unavailableMount(error)) throw conflict(error instanceof MountUnavailable ? error.message : '作品或依据已不可读。');
@@ -96,8 +82,7 @@ async function readMount(tx: ReadTransaction, sessionId: string, mountId: string
 
 async function projectMount(
   tx: ReadTransaction, sessionId: string, mountId: string, grantCurrent: ReturnType<typeof workspaceGrantChecker>, check: CheckNotionRead, through?: number,
-) {
-  const reader = createCommandReadContext(tx, purpose);
+) { const reader = createCommandReadContext(tx, purpose);
   const source = await reader.fact(factId(mountId), { mode: 'following' });
   if (source.type !== 'content.mountedArtifact' || source.ref.rev !== 1) throw new MountUnavailable('作品不可用。');
   const data = artifactMount(source.value);
@@ -105,10 +90,8 @@ async function projectMount(
   const turn = await readTeachingTurn(tx, data.turnId);
   const submission = studyTurn(turn.value);
   if (submission.sessionId !== sessionId) throw new MountUnavailable('作品不属于本次对话。');
-  const {
-    rows: [work],
-  } = await tx.query<{ failed: boolean }>(
-    `SELECT last_error IS NOT NULL AS failed
+  const {rows: [work],
+  } = await tx.query<{ failed: boolean }>(`SELECT last_error IS NOT NULL AS failed
     FROM slot_state WHERE learner_id=$1 AND slot_key=$2 AND slot_type=$3`,
     [tx.learner, data.turnId, slotType],
   );
@@ -137,19 +120,11 @@ async function projectMount(
   const release = data.assessment ? assessmentRelease(data.assessment.release) : undefined;
   if (!projected.ok) throw new MountUnavailable(projected.code);
   const latest = history.at(-1);
-  const snapshot = {
-    ...projected.snapshot,
-    hostState,
-    submitted,
-    predicting,
-    unavailable,
+  const snapshot = {...projected.snapshot, hostState, submitted, predicting, unavailable,
     prediction: prediction ? { id: prediction.id, ...(release ? { rev: 1 } : {}), answer: prediction.action.answers.estimate } : null,
-    ...(release ? { questionRef: release.releaseRef } : {}),
-    ...(release && submissionEvent ? {
+    ...(release ? { questionRef: release.releaseRef } : {}), ...(release && submissionEvent ? {
       assessment: await readArtifactAssessment(tx, release.releaseRef, { id: factId(submissionEvent.id), rev: 1 as Revision }),
-    } : {}),
-    saved: savedArtifactCheckpoints(history),
-    commandId: latest?.receipt?.commandId ?? null,
+    } : {}), saved: savedArtifactCheckpoints(history), commandId: latest?.receipt?.commandId ?? null,
   };
   return { mount, grant, history, snapshot, release, source, manifest:data.manifest };
 }
@@ -164,10 +139,8 @@ export async function turnArtifacts(tx: ReadTransaction, session: string, turn: 
   const grantCurrent = workspaceGrantChecker(tx);
   const snapshots = [];
   const unconfirmed: string[] = [];
-  for (const { id } of rows.rows) {
-    try {
-      snapshots.push((await projectMount(tx, session, id, grantCurrent, check)).snapshot);
-    } catch (error) {
+  for (const { id } of rows.rows) { try {
+      snapshots.push((await projectMount(tx, session, id, grantCurrent, check)).snapshot);} catch (error) {
       if (error instanceof NotionReadUnconfirmed) unconfirmed.push(id);
       else if (!unavailableMount(error)) throw error;
     }
@@ -221,43 +194,26 @@ export async function actOnArtifact(db: Db, session: string, raw: Record<string,
     const id = stableId('artifact-action', mountId, String(stateRev));
     const submission = action.intent === 'submit' ? projectArtifactSubmission(mountId, snapshot.view, id, action, release) : undefined;
     if (action.intent === 'submit' && !submission) throw conflict('提交动作未声明。');
-    const data = {
-      stateRev,
-      mountId,
-      sessionId: session,
-      turnId: mount.turnId,
-      requestId,
-      action: { ...action },
-      prediction: snapshot.predicting,
+    const data = {stateRev, mountId, sessionId: session,
+      turnId: mount.turnId, requestId, action: { ...action }, prediction: snapshot.predicting,
       predictionRef: snapshot.prediction?.id ?? null,
       ...(submission ? { submission, traceSource: 'learner-reported' } : {}),
     };
     const handle = host.boundHandler([await (activity ??= load('activity'))], createStudioCommandHooks({
-        afterFactsChanged: async (tx, tick) => {
-          await assertClassroomAction(tx,session,mount.turnId);
+        afterFactsChanged: async (tx, tick) => { await assertClassroomAction(tx,session,mount.turnId);
           const current = await readMount(tx, session, mountId, notion.check(tx));
           if (current.release && action.intent === 'submit') {
             const submitted = await host.read(tx, purpose).fact(factId(id), { mode: 'following' });
             await registerFormalAssessment(tx, tick, artifactAssessmentPolicy, current.source, submitted);
           }
-          await notifySession(tx, session);
-        },
+          await notifySession(tx, session);},
       }));
-    try {
-      return await handle({
-        actor: 'learner',
-        purpose,
-        type: 'activity.recordArtifactAction',
-        id: key,
-        input: { id, data },
-      });
-    } catch (error) {
+    try { return await handle({actor: 'learner', purpose,
+        type: 'activity.recordArtifactAction', id: key, input: { id, data },
+      });} catch (error) {
       if (isKernelErrorKind(error, 'already_exists') || isKernelErrorKind(error, 'duplicate_command')) throw conflict('操作基版本或身份冲突。');
-      throw error;
-    }
-  };
-  const checked = await handleArtifactIntent(mount, grant, raw, {
-    readInput: async () => null,
+      throw error;}};
+  const checked = await handleArtifactIntent(mount, grant, raw, {readInput: async () => null,
     execute: { submit: execute },
   });
   if (!checked.ok) throw conflict(checked.code);

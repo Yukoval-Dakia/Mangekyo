@@ -16,20 +16,15 @@ import { RequestError } from './sessions.ts';
 export const researchReader = (tx: ReadTransaction) => createCommandReadContext(tx, researchPurpose);
 export const settingsId = factId(stableId('research-settings', studioLearner));
 
-export function currentResearchSettings(tx: ReadTransaction) {
-  return whenAvailable(async () => {
+export function currentResearchSettings(tx: ReadTransaction) { return whenAvailable(async () => {
     const {ref, accessEpoch, value} = await researchReader(tx).fact(settingsId, {mode:'following'});
     const {enabled, coordinatorRef, scoutConsent, workerGrant} = researchSettings(value);
-    return {enabled, coordinatorRef, workerGrant, scoutBudget:scoutConsent, revision:ref.rev, accessEpoch};
-  });
+    return {enabled, coordinatorRef, workerGrant, scoutBudget:scoutConsent, revision:ref.rev, accessEpoch};});
 }
 
-export async function whenAvailable<T>(read: () => Promise<T>): Promise<T | null> {
-  try {
-    return await read();
-  } catch (error) {
-    if (isFactUnavailable(error) || error instanceof ResearchBasisChanged)
-      return null;
+export async function whenAvailable<T>(read: () => Promise<T>): Promise<T | null> { try {
+    return await read();} catch (error) {
+    if (isFactUnavailable(error) || error instanceof ResearchBasisChanged) return null;
     throw error;
   }
 }
@@ -81,8 +76,7 @@ export async function activeRetentionReview(tx: ReadTransaction, fact: FactSnaps
   return permission;
 }
 
-export function reviewAccess(tx: ReadTransaction): ReviewAccess {
-  const read = researchReader(tx);
+export function reviewAccess(tx: ReadTransaction): ReviewAccess { const read = researchReader(tx);
   return {read, open:id => whenAvailable(() => read.fact(id,{mode:'following'})),
     independent:source => independentScoutSource(tx,source), retention:source => activeRetentionReview(tx,source),
     material:paper => reviewMaterialAvailable(tx,paper)};

@@ -25,13 +25,11 @@ export type CorrectionRetestAuthority = {
   // Both calls use the locked learner transaction. No external I/O or payload is handed to Temporal.
   probe(tx: ReadTransaction, input: ScheduledCorrection): Promise<'ready' | NotDispatched>;
   // Return a formal Activity issuance committed through this transaction, or a reason without writing an issuance.
-  issue(tx: DbTransaction, input: ScheduledCorrection): Promise<{ issuanceId: FactId } | NotDispatched>;
-};
+  issue(tx: DbTransaction, input: ScheduledCorrection): Promise<{ issuanceId: FactId } | NotDispatched>;};
 const explicitResearch = (fact: FactSnapshot) => fact.purpose.includes(researchPurpose);
 const witness = ({ ref, type, accessEpoch }: FactSnapshot, mode: BusWitness['mode']): BusWitness => ({ ...ref, type, accessEpoch, mode });
 
-async function readCorrection(tx: ReadTransaction, id: FactId) {
-  return whenAvailable(async () => {
+async function readCorrection(tx: ReadTransaction, id: FactId) { return whenAvailable(async () => {
     const erasureBasis = new Set<FactId>();
     const storage = createCommandReadContext(tx, storagePurpose);
     const read = { ...storage, ...memoWorkbookFacts(async (id, options) => { const fact = await storage.fact(id, options); erasureBasis.add(id); return fact; }) };
@@ -65,11 +63,9 @@ async function readCorrection(tx: ReadTransaction, id: FactId) {
     // Reuse authorized snapshots only within this locked read. The worker opens a fresh set.
     const reopen: CorrectionReopen = async (ref, purpose) => purpose === researchPurpose ? grant
       : purpose === 'teaching' ? question : ref.id === id ? source : paper;
-    return { recorded, reopen, erasureBasis: [...erasureBasis] };
-  }).catch(error => {
+    return { recorded, reopen, erasureBasis: [...erasureBasis] };}).catch(error => {
     if (error instanceof WorkbookSourceMismatch) return null;
-    throw error;
-  });
+    throw error;});
 }
 
 export async function registerCorrectionRetest(tx: DbTransaction, tick: Tick, id: FactId, settingsRevision: number, settingsFactId: FactId) {
@@ -98,8 +94,7 @@ async function unavailablePool(tx: ReadTransaction, { originalQuestion: { id, re
 }
 
 export async function eligibleCorrectionRetest(tx: ReadTransaction, spec: TodoSpec, settingsRevision: number, now: number,
-  authority?: CorrectionRetestAuthority) {
-  const input = await dueCorrection(tx, spec, settingsRevision, now);
+  authority?: CorrectionRetestAuthority) { const input = await dueCorrection(tx, spec, settingsRevision, now);
   if (!input) return false;
   const outcome = authority ? await authority.probe(tx, input) : await unavailablePool(tx, input.correction);
   return outcome === 'ready' ? true : deferred(outcome, now);
@@ -115,8 +110,7 @@ export async function executeCorrectionRetest(db: Db, ref: WorkRef, todoId: Fact
     const now = Date.now();
     const { spec } = todo;
     const input = await settingsCurrent(tx, spec.settingsRevision) && await dueCorrection(tx, spec, spec.settingsRevision, now);
-    if (!input) {
-      await cancelWork(withinLearnerTransaction(db, tx), ref);
+    if (!input) { await cancelWork(withinLearnerTransaction(db, tx), ref);
       return;
     }
     const result = await authority?.issue(tx, input) ?? 'coverage_unknown';
@@ -125,7 +119,5 @@ export async function executeCorrectionRetest(db: Db, ref: WorkRef, todoId: Fact
     } else if ((await createCommandReadContext(tx, storagePurpose).fact(result.issuanceId, { mode: 'following' })).type !== posttestIssuanceType ||
         Date.now() >= spec.expiresAtMs ||
         !await tx.withLearnerWrite(tick => completeTodo(tx, tick, ref, todo, result.issuanceId))) {
-      throw new Error('订正后测发放已失效。');
-    }
-  });
+      throw new Error('订正后测发放已失效。');}});
 }

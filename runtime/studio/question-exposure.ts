@@ -69,8 +69,7 @@ export async function questionReceiptsCurrent(tx: ReadTransaction, turn: string,
   // Settlement verified the contemporaneous assertion. A later exposure
   // changes new reads, while the historical answer keeps its source authority.
   if (use === 'history') return true;
-  for (const id of sources) {
-    if (!await questionNegativeCurrent(tx,id,turn,use === 'dispatch')) return false;
+  for (const id of sources) { if (!await questionNegativeCurrent(tx,id,turn,use === 'dispatch')) return false;
   }
   return true;
 }

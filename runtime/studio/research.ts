@@ -35,10 +35,7 @@ const wakeSlot = 'companion.researchWake';
 const wake = { slotType: wakeSlot, slotKey: settingsId, deriver: 'studio/research-wake-v1' };
 const idleRecheckMs = 60_000;
 
-async function updateSettings<T>(action: () => Promise<T>) {
-  try {
-    return await action();
-  } catch (error) {
+async function updateSettings<T>(action: () => Promise<T>) { try { return await action();} catch (error) {
     if (error instanceof Error && /Fact revision conflict|Fact already exists|Command ID already used/.test(error.message))
       throw new RequestError(409, '教研设置或原作用途已更新，请重新核对。');
     throw error;

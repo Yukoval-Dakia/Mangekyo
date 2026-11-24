@@ -10,11 +10,9 @@ import { loadSettings } from './settings.ts';
 import { studioHost } from './fact-read-helpers.ts';
 
 export const memoryId = factId(stableId('companion-memory', studioLearner));
-export async function currentMemory(tx: ReadTransaction) {
-  try {
+export async function currentMemory(tx: ReadTransaction) { try {
     const fact = await createCommandReadContext(tx, purpose).fact(memoryId, { mode: 'following' });
-    return { ...memoryValue(fact.value), revision: fact.ref.rev };
-  } catch (error) {
+    return { ...memoryValue(fact.value), revision: fact.ref.rev };} catch (error) {
     if (!isFactNotFound(error)) throw error;
     return { text: '', endpoint: '', providerId: 'default', protocol: 'openai', revision: 0 };
   }
@@ -29,11 +27,9 @@ export function openMemory(db: Db, module: LoadedModule, hooks: CommandHooks = c
     try {
       await handle({ purpose, type: 'companion.saveMemory', id: commandId(stableId('companion-memory-save', request)),
         input: { id: memoryId, revision: parsed.revision, data: { text: parsed.text, endpoint, providerId: settings.activeProviderId, protocol: settings.protocol } } });
-    } catch (error) {
-      const kind = classifyKernelError(error).kind;
+    } catch (error) { const kind = classifyKernelError(error).kind;
       if (kind === 'revision_conflict' || kind === 'already_exists' || kind === 'duplicate_command') throw new RequestError(409, '备忘已经有更新，请重新核对。');
       throw error;
     }
-    return read();
-  } };
+    return read();} };
 }

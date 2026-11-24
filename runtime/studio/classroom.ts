@@ -56,8 +56,7 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
       origin.protocol,origin.model,origin.workspaceRevision)});
     const opened = await readCurrentLearningObject(tx,origin.currentObject,recipient);
     if (!opened || opened.basisDigest !== origin.currentObject.basisDigest) throw unavailable();
-    try { await notionSendBasis(tx,opened.basis,recipient,check); }
-    catch (error) {
+    try { await notionSendBasis(tx,opened.basis,recipient,check); } catch (error) {
       if (error instanceof NotionReadUnconfirmed) throw new RequestError(503,'暂时无法核对课堂依据。');
       if (isFactUnavailable(error)) throw unavailable();
       throw error;
@@ -66,13 +65,11 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
   const request = state.pending;
   const pending = request && await authorizedReply(tx,request.turnId,check);
   const adjustmentFailed = request?.kind === 'adjust' && pending?.status === 'failed';
-  if (adjustmentFailed) {
-    const rejected = await readTurn(tx,request.turnId);
+  if (adjustmentFailed) { const rejected = await readTurn(tx,request.turnId);
     if (rejected.sessionId !== state.sessionId || rejected.classroom?.mode !== 'adjust' || !rejected.parentId) throw unavailable();
     state = recoverClassroomAdjustment(state,rejected.parentId);
   }
-  if (pending?.status === 'ready') {
-    if (!pending.steps) throw unavailable();
+  if (pending?.status === 'ready') { if (!pending.steps) throw unavailable();
     state = classroomPlan(state,pending.steps,pending.derivationId);
   }
   const active = activeClassroomStep(state);
@@ -81,10 +78,8 @@ async function readClassroom(tx: ReadTransaction, id: FactId, check: CheckNotion
   return {fact,state,origin,generation,adjustmentFailed};
 }
 
-async function handleErrors<T>(run: () => Promise<T>) {
-  try { return await run(); }
-  catch (error) {
-    if (isFactUnavailable(error)) throw unavailable();
+async function handleErrors<T>(run: () => Promise<T>) { try { return await run(); }
+  catch (error) { if (isFactUnavailable(error)) throw unavailable();
     if (error instanceof ClassroomConflict) throw conflict(error.message);
     if (isKernelErrorKind(error, 'duplicate_command')) throw conflict('课堂请求标识已用于不同操作。');
     throw error;
@@ -93,13 +88,11 @@ async function handleErrors<T>(run: () => Promise<T>) {
 const input = <T>(parse: () => T) => { try { return parse(); } catch (error) { throw new RequestError(400,error instanceof Error ? error.message : '课堂输入无效。'); } };
 
 // Only identities leave this query. The classroom reader authorizes each current plan and step.
-async function activeClassroomIds(tx: ReadTransaction) {
-  const {rows} = await tx.query<{id: string}>(
+async function activeClassroomIds(tx: ReadTransaction) { const {rows} = await tx.query<{id: string}>(
     `SELECT f.id FROM facts f JOIN fact_revs r
        ON (r.learner_id,r.fact_id,r.rev)=(f.learner_id,f.id,f.current_rev)
      WHERE f.learner_id=$1 AND f.type=$2 AND f.retracted_rev IS NULL AND r.data->>'status'='active'
-     ORDER BY f.changed_tick DESC, f.id`,
-    [tx.learner, classroomType],
+     ORDER BY f.changed_tick DESC, f.id`, [tx.learner, classroomType],
   );
   return rows.map(row => factId(row.id));
 }
@@ -114,17 +107,14 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
     const {fact,state,generation,adjustmentFailed} = await readClassroom(tx,id,check);
     const {topic,minutes,sessionId,status,steps} = state;
     return {id,rev:fact.ref.rev,topic,minutes,sessionId,status,steps,activeStepId:activeClassroomStep(state)?.id ?? null,
-      ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {})};
-  };
+      ...(generation ? {generation} : {}),...(adjustmentFailed ? {adjustmentFailed:true as const} : {})};};
   const readView = (id: FactId, readOnly = false) =>
     handleErrors(() => notionReadScope(db,studioLearner,{readOnly}).read((tx,check) => view(tx,id,check)));
   const get = (id: FactId) => readView(id, true);
   const readOnlyScope = () => notionReadScope(db, studioLearner, {readOnly: true});
-  const listActive = () => readOnlyScope().read(async (tx, check) => {
-    const items = [];
+  const listActive = () => readOnlyScope().read(async (tx, check) => { const items = [];
     let unconfirmed = false;
-    for (const id of await activeClassroomIds(tx)) {
-      try {
+    for (const id of await activeClassroomIds(tx)) { try {
         const {fact, state, generation} = await readClassroom(tx, id, check);
         const step = activeClassroomStep(state);
         if (state.status === 'active' && generation === 'ready' && step) items.push({id, rev: fact.ref.rev, topic: state.topic, activeStepTitle: step.title});
@@ -134,23 +124,19 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
         throw error;
       }
     }
-    return {items, ...(!items.length && unconfirmed ? {retryable:true as const} : {})};
-  });
+    return {items, ...(!items.length && unconfirmed ? {retryable:true as const} : {})};});
   const print = (id: FactId) => handleErrors(() => readOnlyScope().read(async (tx,check) => {
     const classroom = await view(tx,id,check);
     const session = await readClassroomSession(tx,classroom.sessionId,check);
-    return {classroom,session};
-  }));
+    return {classroom,session};}));
 
-  async function start(raw: Record<string, unknown>) {
-    const requestId = clientRequest(raw.requestId);
+  async function start(raw: Record<string, unknown>) { const requestId = clientRequest(raw.requestId);
     const start = input(() => classroomStart(raw));
     const sessionId = factId(stableId('classroom-session',requestId));
     const id = classroomId(sessionId);
     const state = seedClassroom(start,sessionId);
     const route = input(() => classroomRoute(raw.route));
-    const handle = classroom((tx,_request,base) =>
-      bindClassroomPreparation(base,async () => {
+    const handle = classroom((tx,_request,base) => bindClassroomPreparation(base,async () => {
         const settings = start.currentObject ? await loadSettings('companion') : (await freezeProviderAccount(tx,'companion')).settings;
         const account = providerAccount(settings);
         if (!routeMatchesInput(route,settings) || (route?.accountRevision !== undefined && route.accountRevision !== account?.accountRevision)) throw conflict('模型配置已变更，请重新确认。');
@@ -168,9 +154,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
           ...(account && account.accountRevision ? {accountRevision:account.accountRevision,accountConfirmation:1} : {}),
           providerId:settings.activeProviderId, protocol:settings.protocol, model:settings.model,
           baseUrl:settings.baseUrl, reasoningEffort:settings.reasoningEffort,
-        })}};
-      }));
-    await exec(handle, requestId, {id,start,route:route ?? null});
+        })}};})); await exec(handle, requestId, {id,start,route:route ?? null});
     return readView(id);
   }
 
@@ -197,8 +181,7 @@ export function openClassrooms(db: Db, activity: LoadedModule, hooks: CommandHoo
         answer:classroomPrompt(mode,mode === 'adjust' ? state : next,mutation.note),classroom:{mode,evidence,...(noteOnly ? {noteOnly} : {}),...(mode === 'adjust' ? {evidenceTurn:active?.turnId} : {})}})}};
     };
     // Probe remotely outside the learner lock. The command repeats all local checks under the lock.
-    try { await notion.read(prepare); }
-    catch (error) {
+    try { await notion.read(prepare); } catch (error) {
       if (!(error instanceof RequestError || error instanceof ClassroomConflict ||
             isFactUnavailable(error))) throw error;
       // Replay bypasses a now-stale expectedRev but still goes through the authorized view.

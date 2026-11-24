@@ -39,8 +39,7 @@ export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFa
   const { rows: [row] } = await db.query<{ scope_keys: AssessmentScope }>('SELECT scope_keys FROM slot_state WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3', [learner, artifactAssessmentSlot, work.slotKey]);
   if (!row) throw new Error('Artifact assessment is missing its frozen scope');
   const { releaseRef, submissionRef, releaseEpoch, submissionEpoch } = row.scope_keys;
-  try {
-    const snapshot = await gatherSnapshot(db, { learner, purpose }, async ({ read }) => {
+  try { const snapshot = await gatherSnapshot(db, { learner, purpose }, async ({ read }) => {
       const mount = await read.fact(releaseRef.id, { mode: 'pinned', rev: releaseRef.rev }), action = await read.fact(submissionRef.id, { mode: 'pinned', rev: submissionRef.rev });
       if (mount.type !== 'content.mountedArtifact' || action.type !== 'activity.artifactAction' || mount.accessEpoch !== releaseEpoch || action.accessEpoch !== submissionEpoch)
         throw new ArtifactAssessmentInputUnavailable();
@@ -49,8 +48,7 @@ export async function executeArtifactAssessment(db: Db, ref: WorkRef, terminalFa
       const release = assessmentRelease(assessment.release), submission = assessmentSubmission(record.submission, release);
       if (release.releaseRef.id !== releaseRef.id || release.releaseRef.rev !== releaseRef.rev || submission.submissionRef.id !== submissionRef.id || submission.submissionRef.rev !== submissionRef.rev)
         throw new ArtifactAssessmentInputUnavailable();
-      return { kind: 'input', data: { release, submission }, effects: [] };
-    });
+      return { kind: 'input', data: { release, submission }, effects: [] };});
     const sealed = await sealCandidate(db, ref, artifactAssessmentPolicy, snapshot);
     if (sealed.kind !== 'sealed') return;
     if (terminalFailure) { await submitCandidate(db, ref, artifactAssessmentPolicy, sealed.id, { kind: 'failed', reason: assessmentExecutionFailed }, propagation); return; }

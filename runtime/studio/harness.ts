@@ -48,14 +48,12 @@ async function completedAttachmentAccount(tx: ReadTransaction, turn: StoredTurn)
 
 export function workspaceGrantChecker(historyRead?: ReadTransaction) {
   let current: Promise<[Settings, WorkspaceRoutes]> | undefined;
-  return async (turn: StoredTurn) => {
-    if (requiresAccountConfirmation(turn) && !turn.accountConfirmation &&
+  return async (turn: StoredTurn) => { if (requiresAccountConfirmation(turn) && !turn.accountConfirmation &&
         (!historyRead || !await completedAttachmentAccount(historyRead,turn))) return false;
     if (!turn.workspaceRevision && !turn.accountRevision) return true;
     const [settings, routes] = await (current ??= Promise.all([loadSettings(), loadWorkspaceAccessRoutes()]));
     const provider = settings.providers.find(profile => profile.id === (turn.providerId ?? 'default'));
     if (!provider || provider.baseUrl !== turn.baseUrl || provider.protocol !== (turn.protocol ?? 'openai')) return false;
     if (turn.accountRevision && provider.credentialRevision !== turn.accountRevision) return false;
-    return !turn.workspaceRevision || workspaceGrantRevision(routes, provider) === turn.workspaceRevision;
-  };
+    return !turn.workspaceRevision || workspaceGrantRevision(routes, provider) === turn.workspaceRevision;};
 }

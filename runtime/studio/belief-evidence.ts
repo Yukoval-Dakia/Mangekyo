@@ -13,8 +13,7 @@ export function openObjectiveActivity(tx: ReadTransaction, id: string, purpose: 
     const fact = await createAuthorizedFactReader(tx, purpose, maySend).fact(factId(id), { mode: 'following' });
     if ((fact.type !== workbookAttemptType && fact.type !== posttestSubmissionType) || !await readActivitySubmissionBirth(tx, fact.ref, fact.type)) return;
     const evidence = objectiveBeliefEvidence(fact);
-    return evidence?.fragments.length ? { ...evidence, fact, ref: claimWitness(fact) } : undefined;
-  });
+    return evidence?.fragments.length ? { ...evidence, fact, ref: claimWitness(fact) } : undefined;});
 }
 export async function openObjectiveCitations(tx: ReadTransaction, refs: readonly ActivityCitation[], purpose: string, maySend: WorkspaceSourceRecipient) {
   const sources = await Promise.all(refs.map(ref => openObjectiveActivity(tx, ref.id, purpose, maySend)));

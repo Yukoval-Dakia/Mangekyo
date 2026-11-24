@@ -10,19 +10,15 @@ import type { WorkspaceSourceRecipient } from './source-read.ts';
 export async function openHypothesisObject(tx: ReadTransaction, data: ExtractedUnderstanding, maySend: WorkspaceSourceRecipient, checkSelf?: CheckNotionRead) {
   if (data.scope.kind !== 'object') return [];
   const reader = purposeReader(tx, maySend);
-  return readable(async () => {
-    let basis = data.belief?.objectBasis;
-    if (!basis) {
-      const original = await originalHypothesisObject(teachingRead(tx), data);
+  return readable(async () => { let basis = data.belief?.objectBasis;
+    if (!basis) { const original = await originalHypothesisObject(teachingRead(tx), data);
       const opened = original ? await readCurrentLearningObject(tx, original, maySend, checkSelf && true) : undefined;
-      if (!opened || opened.basisDigest !== original!.basisDigest) return;
-      basis = opened.basis;
+      if (!opened || opened.basisDigest !== original!.basisDigest) return; basis = opened.basis;
     }
     for (const w of basis) {
       const fact = await reader.reopen({ ...claimRef({ id: w.id, rev: w.rev, accessEpoch: w.epoch }), mode: w.mode, type: w.type });
       if (checkSelf) { await checkStudioNotionFact(tx, fact, 'storage', 'learner'); await checkSelf(fact); }
       else await checkStudioNotionFact(tx, fact, 'teaching', maySend);
     }
-    return basis;
-  });
+    return basis;});
 }

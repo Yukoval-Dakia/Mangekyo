@@ -17,8 +17,7 @@ import { openWorkbookQuestionSources, readReleasedAssessment } from './workbook-
 export async function readPythonAttempts(tx: ReadTransaction, args: Record<string, unknown>, access: {
   maySend: WorkspaceSourceRecipient; known: (id: string) => boolean; track: SourceTrack;
   recordExam?: (event: EvidenceEventV1) => void; includeExamItems?: boolean; cutoff?: Tick;
-}): Promise<PythonAttemptsRead> {
-  const scope = parsePythonAttemptSelection(args);
+}): Promise<PythonAttemptsRead> { const scope = parsePythonAttemptSelection(args);
   if (!scope) return { ok: false, code: 'invalid_args', field: 'attempts', message: `请传 1–${pythonAttemptsLimit} 个不重复的作答 refs（{id, rev?}）。只统计一份卷时可传 paper_id。` };
   const read = purposeReader(tx, access.maySend), deniedCode = (id: string) => access.known(id) ? 'access_revoked' as const : 'not_found' as const;
   const open = async (id: string, types: readonly string[]) => {

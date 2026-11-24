@@ -21,9 +21,7 @@ import { readSavedWorkbookAssessment } from './workbook-assessment.ts';
 import { readWorkspaceAttemptAssessments } from './workspace-read.ts';
 
 let cachedDeps: StudioDiagnosisDeps | undefined;
-function getDeps(): StudioDiagnosisDeps {
-  return cachedDeps ??= {
-    purpose, ...factReadChecks,
+function getDeps(): StudioDiagnosisDeps { return cachedDeps ??= {purpose, ...factReadChecks,
     revisionsOnlyChangeGrants: revisionsOnlyChangeGrants as StudioDiagnosisDeps['revisionsOnlyChangeGrants'],
     createAuthorizedFactReader: createAuthorizedFactReader as StudioDiagnosisDeps['createAuthorizedFactReader'],
     createCommandReadContext: createCommandReadContext as StudioDiagnosisDeps['createCommandReadContext'],
@@ -70,17 +68,14 @@ async function linkedConcepts(tx: ReadTransaction, access: Access, attempt: Work
       const fact = await reader.fact(factId(ref.id), { mode: 'pinned', rev: ref.rev as Revision });
       if (fact.accessEpoch !== ref.accessEpoch || fact.type !== 'activity.workspaceEntry') return false;
       await verifyWorkspaceEntryBasis(reader, fact.ref.id, workspaceEntry(fact.value).basis);
-      return true;
-    },
-    openNotionSource: fact => checkStudioNotionFact(tx, fact, use, 'learner'),
+      return true;}, openNotionSource: fact => checkStudioNotionFact(tx, fact, use, 'learner'),
   });
   const byQuestion = indexLinksByQuestionRev(graph.questionConceptLinks), links: QuestionConceptLink[] = [], concepts = new Map<FactId, string>();
   for (const { sourceQuestionRef } of attempt.paper.questions) {
     const revisions = sourceQuestionRef && byQuestion.get(sourceQuestionRef.id);
     if (!sourceQuestionRef || !revisions) continue;
     const matched = revisions.get(sourceQuestionRef.rev) ?? [];
-    if (matched.length) links.push(...matched);
-    else for (const [revision, candidates] of revisions)
+    if (matched.length) links.push(...matched); else for (const [revision, candidates] of revisions)
       if (revision > sourceQuestionRef.rev && await widenedRevOr(reader, factId(sourceQuestionRef.id), sourceQuestionRef.rev, revision, isFactUnavailable)) links.push(...candidates);
   }
   for (const link of links) { const node = graph.nodes.find(item => item.id === link.conceptId); if (node) concepts.set(link.conceptId, node.title); }
@@ -102,8 +97,7 @@ async function diagnosisContext(tx: ReadTransaction, { attempt, access }: { read
     const retention = projectDiagnosisRetention(conceptIds, linked.concepts, signals);
     const masteryValues = projectBatchConceptMastery({ asOf: new Date().toISOString(), conceptIds, attempts, forecasts: signals, incompleteConceptIds: evidence.incompleteConceptIds });
     const masteryConcepts = [];
-    for (const id of conceptIds) {
-      const value = masteryValues.get(factId(id))!;
+    for (const id of conceptIds) { const value = masteryValues.get(factId(id))!;
       let verified = true;
       try { for (const ref of value.basisRefs) await linked.reader.fact(factId(ref.id), { mode: 'pinned', rev: ref.rev as Revision }); }
       catch (error) { if (!isFactUnavailable(error)) throw error; verified = false; }

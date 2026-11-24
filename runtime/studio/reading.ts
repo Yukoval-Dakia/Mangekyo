@@ -25,8 +25,7 @@ export const readOwnStudyTurn = (tx: ReadTransaction, id: string, options: FactR
 export async function readMaterialText(tx: ReadTransaction, id: string) {
   if (!isSourceFactId(id)) return null;
   const read = storageRead(tx);
-  return await readable(async () => {
-    const snapshot = await read.fact(factId(id), { mode: 'following' });
+  return await readable(async () => { const snapshot = await read.fact(factId(id), { mode: 'following' });
     if (snapshot.type !== materialType) return null;
     const link = await materialIntakeLink(tx, snapshot.ref.id);
     if (!link) return { id, ...materialTextOf(snapshot), sourceRef: sourceReference(snapshot, { kind: 'whole' }) };
@@ -44,8 +43,7 @@ export async function attachmentSources(tx: ReadTransaction, attachment: ReturnT
   const witnesses = await Promise.all([source.sourceRef.fact, ...(source.sourceRef.textFact ? [source.sourceRef.textFact] : [])]
     .map(async ({ id, rev }) => {
       const { ref, accessEpoch } = await read.fact(factId(id), { mode: 'pinned', rev: rev as Revision });
-      return { ref: { id: ref.id, rev: ref.rev }, accessEpoch };
-    }));
+      return { ref: { id: ref.id, rev: ref.rev }, accessEpoch };}));
   return { witnesses, digest: createHash('sha256').update(JSON.stringify(witnesses)).digest('hex') };
 }
 
@@ -67,8 +65,7 @@ export const teachingOrigin = async (tx: ReadTransaction, turn: ReturnType<typeo
 
 export async function teachingTurnAllowed(tx: ReadTransaction, turn: ReturnType<typeof studyTurn>,
   grantCurrent: (turn: ReturnType<typeof studyTurn>) => Promise<boolean>, origin?: ReturnType<typeof studyTurn>) {
-  if (!await grantCurrent(turn)) return false;
-  origin ??= await teachingOrigin(tx, turn);
+  if (!await grantCurrent(turn)) return false; origin ??= await teachingOrigin(tx, turn);
   return (origin === turn || await grantCurrent(origin)) && await attachmentCurrent(tx, origin);
 }
 

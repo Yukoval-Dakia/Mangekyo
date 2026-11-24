@@ -28,8 +28,7 @@ export const completedCompanionTurns = `SELECT s.slot_key AS id, d.effective_tic
     AND d.effective_tick>=d.gather_tick AND d.value->>'action'='companion_reply'`;
 
 export async function newResearchWatermark(tx: ReadTransaction) {
-  const { rows: [row] } = await tx.query<{ observed: Tick; reviewed: Tick }>(
-    `SELECT GREATEST(
+  const { rows: [row] } = await tx.query<{ observed: Tick; reviewed: Tick }>(`SELECT GREATEST(
        COALESCE((SELECT max(changed_tick) FROM facts WHERE learner_id=$1),0),
        COALESCE((SELECT max(done.effective_tick) FROM (${completedCompanionTurns}) done
          JOIN facts f ON (f.learner_id,f.id)=($1,done.id)

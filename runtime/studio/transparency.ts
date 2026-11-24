@@ -56,11 +56,9 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
       learner: tx.learner, purpose: use, recipient: tx.learner, read, isUnavailable: isFactUnavailable, preloadFollowing: read.preloadFollowing, verifyLegacyBasis,
       reopenLegacyQuestion: async (ref: { id: FactId; rev: Revision; accessEpoch: string }) => {
         const fact = await read.fact(ref.id, { mode: 'pinned', rev: ref.rev });
-        return fact.accessEpoch === ref.accessEpoch && await verifyLegacyBasis(fact.ref.id, fact);
-      },
+        return fact.accessEpoch === ref.accessEpoch && await verifyLegacyBasis(fact.ref.id, fact);},
       openNotionSource: (fact: FactSnapshot) => readable(() => verifyNotion(tx, fact, use, check)),
-    };
-  };
+    };};
   const readRetention = (tx: ReadTransaction, check: CheckNotionRead) =>
     readAuthorizedRetention(tx, { callerPurpose: teachingPurpose, maySend: () => true }, notionCheck(tx, teachingPurpose, check));
 
@@ -71,17 +69,12 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
     const { attempts, incompleteConceptIds } = await readConceptAttemptEvidence(tx, readCtx, graph.questionConceptLinks, isFactUnavailable);
     const retention = await readRetention(tx, check), conceptIds = graph.nodes.map(node => node.id);
     let mastery;
-    if (pulseHost) {
-      const reopen = async (refs: readonly BusWitness[]) => {
-        const opened: BusWitness[] = [];
-        for (const ref of refs) {
-          try {
-            const fact = await read.reopen(ref);
+    if (pulseHost) { const reopen = async (refs: readonly BusWitness[]) => { const opened: BusWitness[] = [];
+        for (const ref of refs) { try { const fact = await read.reopen(ref);
             if (fact.ref.id === ref.id && fact.ref.rev === ref.rev && fact.accessEpoch === ref.accessEpoch && (!ref.type || fact.type === ref.type) && await verifyNotion(tx, fact, use, check)) opened.push(ref);
           } catch {}
         }
-        return opened;
-      };
+        return opened;};
       const clock = ((await tx.query<{ clock: string | null }>('SELECT max(changed_tick)::text AS clock FROM facts WHERE learner_id=$1', [tx.learner])).rows[0]?.clock ?? '0') as Tick;
       mastery = (await projectGraphMastery({ tx, links: graph.questionConceptLinks, read, python: pulseHost.python, reopen, isUnavailable: isFactUnavailable,
         scope: { learner: tx.learner, purpose: use, recipientId: tx.learner, asOf, clockWatermark: clock }, concepts: conceptIds, activeMisconceptionConceptIds: misconceptions })).mastery;
@@ -92,16 +85,12 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
     return { readers, read, readCtx, graph, attempts, retention, mastery };
   }
 
-  return {
-    knowledgeGraph(query?: URLSearchParams) {
-      const requested = query?.get('purpose');
+  return {knowledgeGraph(query?: URLSearchParams) { const requested = query?.get('purpose');
       if (requested && requested !== 'storage' && requested !== teachingPurpose) throw new RequestError(400, '图谱读取用途无效。');
       return readScope(async (tx, check) => {
         const asOf = new Date().toISOString(), { graph, mastery } = await readMasterySnapshot(tx, requested ?? 'storage', check, asOf);
-        return composeKnowledgeGraphResponse(asOf, graph, mastery);
-      });
-    },
-    memoryOverview: () => readScope(async (tx, check) => {
+        return composeKnowledgeGraphResponse(asOf, graph, mastery);});
+    }, memoryOverview: () => readScope(async (tx, check) => {
       const asOf = new Date().toISOString(), { readers, read: readStorage, readCtx: storageCtx, graph, attempts, retention, mastery } = await readMasterySnapshot(tx, 'storage', check, asOf);
       const weaknessSummary = await gatherWeaknessOverview(tx, {
         asOf, read: storageCtx, attemptEvidence: attempts, nodes: graph.nodes, links: graph.questionConceptLinks, mastery, isUnavailable: isFactUnavailable,
@@ -114,27 +103,22 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
         isRevocableCompanionTurn: fact => fact.type === 'activity.studyTurn' && !fact.purpose.includes('all') && studyTurn(fact.value).caseId === 'companion',
         readCalibration: async () => projectCalibrationSummary(retention.reconciliations.flatMap(({ view }) => view.kind === 'reconciliation' ? [view as CalibrationInputRecord] : [])),
       });
-      return { ...overview, weaknessSummary };
-    }),
-    aiActivity: () => readScope(async (tx, check) => {
+      return { ...overview, weaknessSummary };}), aiActivity: () => readScope(async (tx, check) => {
       const asOf = new Date().toISOString(), readers = snapshotFactReaders(tx), readResearch = researchReader(tx);
       const readStorage = gatedReader(tx, readers, 'storage', check), readTeaching = gatedReader(tx, readers, teachingPurpose, check);
       return readAiActivity(tx, asOf, {
         feedbackSlotType: slotType, readStorage, readTeaching, isUnavailable: isFactUnavailable,
         readBankQuestion: { ...createCommandReadContext(tx, teachingPurpose), fact: readTeaching.fact, slot: readCurrentQuestionVerification(tx) },
         authorizeTodo: rawSpec => authorizeResearchTodoSpec(rawSpec, { settingsId, readResearch, isUnavailable: isFactUnavailable, verifyFact: notionCheck(tx, researchPurpose, check) }),
-        projectTrace: projectArtifactMountTrace,
-        async validateTurnManifest(rawManifest) {
+        projectTrace: projectArtifactMountTrace, async validateTurnManifest(rawManifest) {
           const manifest = await readable(async () => parseManifest(rawManifest)).catch(() => undefined);
           if (!manifest || (await revalidateManifest(tx, manifest, teachingPurpose)).kind !== 'valid') return undefined;
           for (const w of await savedNotionWitnesses(tx, manifest.inputs)) {
             const f = await readable(() => readTeaching.fact(factId(w.id), { mode: 'pinned', rev: w.rev as Revision }));
             if (!f || f.accessEpoch !== w.epoch) return undefined;
           }
-          return (await manifestFactInputs(tx, manifest.inputs)).map(input => input.id);
-        },
-        async openResearchWorksheet(id) {
-          const opened = await readWorksheetById(tx, id);
+          return (await manifestFactInputs(tx, manifest.inputs)).map(input => input.id);},
+        async openResearchWorksheet(id) { const opened = await readWorksheetById(tx, id);
           return opened ? { title: opened.worksheet.title, summary: opened.worksheet.steps[0] ?? '后台教研复习单已就绪', basisCount: 1,
             href: opened.source ? `/api/papers/${opened.source.paperId}/attempts/${opened.worksheet.source.attemptId}/research` : null } : undefined;
         },

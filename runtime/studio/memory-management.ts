@@ -27,30 +27,22 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
   const revokeTurn = host.boundHandler([activity], createStudioCommandHooks({ async afterFactsChanged(tx, _tick, changes) {
     for (const change of changes) {
       if (change.factType !== 'activity.studyTurn') throw new ClaimInputError('目标不是同伴原话。');
-      await completeTurnStream(tx, change.ref.id);
-    }
-  } }));
-  const translate = async <T>(run: () => Promise<T>) => {
-    try { return await run(); } catch (error) {
+      await completeTurnStream(tx, change.ref.id);}} }));
+  const translate = async <T>(run: () => Promise<T>) => { try { return await run(); } catch (error) {
       if (isMemoryConflict(error) || isKernelErrorKind(error, 'revision_conflict')) throw new RequestError(409, '记忆或依据已变化，请刷新后再试。');
-      throw error;
-    }
-  };
+      throw error;}};
   const claimHandler = (check: (tx: Parameters<typeof areMemoryClaimsCurrent>[0]) => Promise<void>) =>
     host.boundHandler([companion], createStudioCommandHooks({ afterFactsChanged: async tx => check(tx) }));
 
-  return {
-    async list(before: string | null) {
+  return { async list(before: string | null) {
       if (before !== null) { try { claimId(before); } catch { throw new RequestError(400, '记忆分页位置无效。'); } }
       return notionReadScope(db, studioLearner, { readOnly: true }).read((tx, check) => listManagedMemory(tx, before, {
         openClaim: id => openClaimFact(tx, id, 'storage'), evidenceState: claim => managedClaimEvidence(tx, claim),
         openHypothesisObject: data => openHypothesisObject(tx, data, () => true, check),
         openObjectiveCitations: refs => openObjectiveCitations(tx, refs, purpose, () => true),
         openUnderstandingCitations: refs => openUnderstandingCitations(tx, refs, 'storage'),
-      }));
-    },
-    async manage(id: string, input: Record<string, unknown>) {
-      const request = clientRequest(input.requestId);
+      }));},
+    async manage(id: string, input: Record<string, unknown>) { const request = clientRequest(input.requestId);
       let entry;
       try {
         const { rows: [extracted] } = await db.query<{ belief: boolean }>(`SELECT b.data ? 'belief' AS belief FROM facts f JOIN fact_revs b
@@ -69,8 +61,7 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       } catch (error) { if (!(error instanceof ClaimInputError)) throw error; throw new RequestError(400, error.message); }
       const handle = claimHandler(async tx => { if (!await areMemoryClaimsCurrent(tx, [id], undefined, entry.id)) throw new ClaimInputError('已出现更新的记忆。'); });
       const receipt = await translate(() => handle({ purpose: 'storage', id: commandId(stableId('learner-memory-command', id, request)), type: manageClaimCommand, input: entry }));
-      return memoryWriteReceipt(entry, receipt.wrote[0]!.rev, receipt.commandId);
-    },
+      return memoryWriteReceipt(entry, receipt.wrote[0]!.rev, receipt.commandId);},
     async undo(id: string, input: Record<string, unknown>) {
       if (!isUndoToken(input.undo_token)) throw new RequestError(400, '撤回凭据无效。');
       const token = input.undo_token, undoCmdId = commandId(stableId('undo-memory-command', token));
@@ -87,8 +78,7 @@ export function openMemoryManagement(db: Db, activity: LoadedModule, companion: 
       if (!born || claimUndoToken(born.command_id, id) !== token) throw new RequestError(404, '找不到该条目对应的可撤回凭据。');
       const handle = claimHandler(async tx => { if (!await areMemoryClaimsCurrent(tx, [id], undefined, undefined, true)) throw new ClaimInputError('已有后续变更。'); });
       const receipt = await translate(() => handle({ purpose: 'storage', id: undoCmdId, type: undoClaimCommand, input: { id, rev: 1, accessEpoch: '0' } }));
-      return { status: 'withdrawn', ref: receipt.wrote[0] };
-    },
+      return { status: 'withdrawn', ref: receipt.wrote[0] };},
     async revokeSource(id: string, input: Record<string, unknown>) {
       const parsed = parseRevokeSourceInput(input, purpose, turnResearchPurpose);
       if (!parsed.ok) throw new RequestError(400, parsed.message);

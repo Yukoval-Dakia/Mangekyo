@@ -25,12 +25,10 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
   known: (id: string) => boolean; maySend: WorkspaceSourceRecipient; track: SourceTrack;
   currentObject?: { alias: string; sourceRef: SourceRefV1 } | undefined;
   trackAssessment?: ((basis: WorkspaceAssessmentBasis) => void) | undefined;
-}, read: (id: string, track: SourceTrack) => Promise<string>) {
-  const items = [];
+}, read: (id: string, track: SourceTrack) => Promise<string>) { const items = [];
   let flowSnapPromise: ReturnType<typeof loadAuthorizedRecordFlowSnapshot> | undefined;
   const getFlowSnap = () => (flowSnapPromise ??= loadAuthorizedRecordFlowSnapshot(tx, { purpose, maySend: access.maySend }));
-  for (const input of args.refs) {
-    const alias = input === 'current_attempt' || input === 'current_page';
+  for (const input of args.refs) { const alias = input === 'current_attempt' || input === 'current_page';
     const current = access.currentObject?.alias === input ? access.currentObject.sourceRef : undefined;
     if (alias && !current) { items.push(learningToolError('not_found', 'refs', '本轮没有绑定这个当前学习对象。', openLearningSearchNext)); continue; }
     const ref = current ?? parseLearningReference(input);
@@ -52,9 +50,7 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
       if (agentFlow && agentFlow.witnessFactIds.every(fid => snapshots.has(fid))) {
         const { witnessFactIds, ...flow } = agentFlow;
         for (const fid of witnessFactIds) if (fid !== id || root?.type !== textbookPageType) access.track(snapshots.get(fid)!, 'following');
-        items.push({ ...result, flow });
-      } else items.push(result);
-    } else items.push(result);
+        items.push({ ...result, flow });} else items.push(result);} else items.push(result);
   }
   const failureCode = pickOpenLearningBatchFailure(items);
   return { items, ...(failureCode ? learningToolError(failureCode as Parameters<typeof learningToolError>[0], 'refs', '部分或全部引用未打开，详见逐项结果。') : { ok: true }) };

@@ -1,6 +1,5 @@
 // Thin adapter so existing studio callers keep their import path and semantics.
-export {
-  createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError,
+export {createAuthorizedFactReader, createCommandReadContext, FactNotFoundError, FactReadDeniedError,
   isFactNotFound, isFactReadDenied, isFactUnavailable, snapshotFactReaders,
   createCommandHandler, createLearnerHost, lockLearner, withinLearnerTransaction, withLearnerLock,
 } from '../../kernel/src/index.ts';
@@ -9,9 +8,9 @@ export type { CommandHandler, CommandHooks, CommandRequest, CommandRuntimeOption
 import {createAuthorizedFactReader, createCommandHandler, createCommandReadContext, createLearnerHost, isFactNotFound, isFactReadDenied, isFactUnavailable, type LearnerHost} from '../../kernel/src/index.ts';
 import type { CommandRequest, CommandRuntimeOptions } from '../../kernel/src/index.ts';
 import type { Db, ReadTransaction } from '../../kernel/src/db/types.ts';
-import { commandId, type FactId } from '../../kernel/src/declarations/ids.ts';
-import type { CommandReceipt, FactReadOptions, FactSnapshot, Json } from '../../kernel/src/declarations/types.ts';
-import { stableId, studioLearner } from './identity.ts';
+import type { FactId } from '../../kernel/src/declarations/ids.ts';
+import type { FactReadOptions, FactSnapshot } from '../../kernel/src/declarations/types.ts';
+import { studioLearner } from './identity.ts';
 
 export const factReadChecks = { isFactNotFound, isFactReadDenied };
 export const studioHost = (db: Db): LearnerHost => createLearnerHost(db, studioLearner);
@@ -25,22 +24,13 @@ export function createTrackingReadContext(tx: ReadTransaction, purpose: string,
   track?: (fact: FactSnapshot, mode?: 'pinned' | 'following') => void) {
   const reader = createAuthorizedFactReader(tx, purpose, maySend);
   return {...reader, async fact(id: FactId, options: FactReadOptions) {
-    const fact = await reader.fact(id, options); track?.(fact, options.mode); return fact;
-  }};
+    const fact = await reader.fact(id, options); track?.(fact, options.mode); return fact;}};
 }
 
 export type StudioCommandInput = Pick<CommandRequest, 'type' | 'input' | 'purpose' | 'deletionWatermark'> & {
-  readonly requestId: string;
-};
+  readonly requestId: string;};
 
 export const createStudioCommand = (db: Db, options: CommandRuntimeOptions) => createCommandHandler(db, options);
-
-export const runStudioCommand = (handle: (request: CommandRequest) => Promise<CommandReceipt>, command: StudioCommandInput) =>
-  handle({
-    learner: studioLearner, actor: 'learner', purpose: command.purpose, type: command.type,
-    input: command.input as Json, id: commandId(stableId(command.type, command.requestId)),
-    ...(command.deletionWatermark === undefined ? {} : { deletionWatermark: command.deletionWatermark }),
-  });
 
 export async function readFactOrNull(tx: ReadTransaction, purpose: string, id: FactId, options: FactReadOptions) {
   try { return await createCommandReadContext(tx, purpose).fact(id, options); }

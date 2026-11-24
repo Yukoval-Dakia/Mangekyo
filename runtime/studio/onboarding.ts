@@ -32,8 +32,7 @@ const use = (receipt: CommandReceipt, fallback: FactId): Use => ({ id: fallback,
   rev: receipt.wrote.find(ref => ref.id === fallback)?.rev ?? (1 as Revision), accessEpoch: '0' });
 const parseInput = (raw: unknown, date: string, zoneName: string) => {
   try { return parseOnboardingInput(raw, date, zoneName); }
-  catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '冷启动配置无效。'); }
-};
+  catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '冷启动配置无效。'); }};
 const parseProposal = (raw: unknown) => { try { return parseOnboardingProposal(raw); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '冷启动配置无效。'); } };
 const readFact = (tx: ReadTransaction, fact: FactId, options: FactReadOptions, asPurpose = purpose) =>
   createCommandReadContext(tx, asPurpose).fact(fact, options);
@@ -43,15 +42,13 @@ const defaultAuthorizeModel = (loadProvider: () => Promise<ProviderSettings>) =>
   const accessPath = process.env.MANGEKYO_WORKSPACE_ACCESS_FILE || join(homedir(), '.config', 'mangekyo', 'workspace-access.json');
   const stored = await readJsonConfig(accessPath, defaultWorkspaceAccess, normalizeWorkspaceAccess);
   const next = autoAuthorizeActiveRoute(full, stored, randomUUID());
-  if (next.changed) await writeJsonConfig(accessPath, next.stored);
-};
+  if (next.changed) await writeJsonConfig(accessPath, next.stored);};
 export function openOnboarding(db: Db, modules: Modules, options: Options = {}) {
   const host = studioHost(db), hooks = options.hooks ?? createStudioCommandHooks(),
     send = host.boundHandler([modules.plan, modules.content, modules.companion], hooks);
   const loadProvider = options.loadProvider ?? (() => loadSettings()), agent = options.agent ?? proposeOnboardingWithAgent,
     now = options.now ?? (() => new Date()), authorizeModel = options.authorizeModel ?? defaultAuthorizeModel(loadProvider);
-  const status = async () => {
-    const counts = await host.snapshot(async tx => {
+  const status = async () => { const counts = await host.snapshot(async tx => {
       const count = async (type: string, byPurpose = 'storage') =>
         (await listActiveFactsByTypes(tx, { types: [type], purpose: byPurpose, limit: 500 })).rows.length;
       const { rows } = await tx.query<{ kind: string; total: number }>(`SELECT r.data->>'kind' AS kind, count(*)::int AS total
@@ -69,16 +66,14 @@ export function openOnboarding(db: Db, modules: Modules, options: Options = {}) 
               AND f.purpose && ARRAY['storage','all']::text[] AND r.data->>'kind'='exam') AS total`, [tx.learner]);
       return { goals: await count('activity.studyGoal'), memories: await count('companion.memory', purpose), disciplines:
         found.discipline ?? 0, concepts: found.concept ?? 0, questions: found.question ?? 0,
-        goalText: goal?.text ?? '', upcomingExamCount: Number(goal?.total ?? 0) };
-    });
+        goalText: goal?.text ?? '', upcomingExamCount: Number(goal?.total ?? 0) };});
     const timeZone = zone(), provider = await loadProvider().catch(() => undefined);
     return { needsOnboarding: !counts.goals && !counts.disciplines && !counts.concepts, completed:
       counts.goals > 0 || counts.disciplines > 0 || counts.concepts > 0, hasGoal: counts.goals > 0,
       hasDisciplines: counts.disciplines > 0, hasConcepts: counts.concepts > 0, hasQuestions: counts.questions > 0,
       hasMemory: counts.memories > 0, hasModel: Boolean(provider?.baseUrl), currentDate: day(now(), timeZone), timeZone,
       goalText: counts.goalText, disciplineCount: counts.disciplines, conceptCount: counts.concepts,
-      questionCount: counts.questions, upcomingExamCount: counts.upcomingExamCount, counts };
-  };
+      questionCount: counts.questions, upcomingExamCount: counts.upcomingExamCount, counts };};
   const recordSetup = (requestId: string, input: { currentDate: string; timeZone: string }, result: OnboardingAgentResult) =>
     host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, { ownerKind: 'session' as const, ownerId: `onboarding:${requestId}`, stepKey: 'onboarding-setup',
       label: 'onboarding-setup', providerEffectId: `onboarding:${requestId}`, input: { requestId, currentDate: input.currentDate, timeZone: input.timeZone, mode: 'llm' },

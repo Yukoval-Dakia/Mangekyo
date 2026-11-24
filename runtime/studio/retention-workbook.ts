@@ -29,9 +29,7 @@ export function selectedWorkbookRead(tx: ReadTransaction, purpose: string, sourc
     catch (error) {
       if ((error instanceof RequestError && error.status === 403) || (error instanceof Error && error.message === 'Notion 选源不可用。'))
         throw new FactReadDeniedError('recipient', '本卷未获准读取此 Notion 页。');
-      throw error;
-    }
-  } };
+      throw error;}} };
 }
 async function trackSource(tx: ReadTransaction, read: PosttestFactReader, reference: string | SourceRefV1, as: string, maySend: WorkspaceSourceRecipient) {
   const opened: Parameters<SourceTrack>[] = [], source = await resolveSource(tx, reference, { recipient: 'workspace', purpose: as, maySend, track: (...w) => opened.push(w) });
@@ -47,8 +45,7 @@ export function studioWorkbookEvidence(as: string, maySend: WorkspaceSourceRecip
     async reopenCapsule(tx, read, basis) {
       const teaching = selectedWorkbookRead(tx, retentionPurpose, createCommandReadContext(tx, retentionPurpose));
       if (!await reopenControlledHelpBasis(teaching, tx.learner, basis) || !await reopenControlledHelpBasis(read, tx.learner, basis))
-        throw new FactReadDeniedError('changed', '受控帮助见证已变化。');
-    },
+        throw new FactReadDeniedError('changed', '受控帮助见证已变化。');},
     openEdge: (tx, id) => openKnowledgeEdge(tx, id, { recipient: 'workspace', purpose: as, maySend }),
     readPosttestIssuance: readIssuance, readFormalAssessment: readSavedWorkbookAssessment,
     createRead: tx => createCommandReadContext(tx, as), unavailable: isFactUnavailable,
@@ -59,7 +56,6 @@ export function studioWorkbookEvidence(as: string, maySend: WorkspaceSourceRecip
 export function retentionWorkbookEvidence(readIssuance: typeof readPosttestIssuance = (...args) => readPosttestIssuance(...args)) {
   return studioWorkbookEvidence(retentionPurpose, () => true, readIssuance);
 }
-export const {
-  openRetentionTarget, openControlledSubmission, readWorkbookObservation, readWorkbookEvidence,
+export const {openRetentionTarget, openControlledSubmission, readWorkbookObservation, readWorkbookEvidence,
   readComparableWorkbookEvidence, readItemDimensions, readItemConceptLinks,
 } = retentionWorkbookEvidence();

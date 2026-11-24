@@ -44,25 +44,20 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
   const read = researchReader(tx);
   let discovery = false;
   let completed = 0;
-  for (const row of rows) {
-    if (row.rank > detailLimit) continue;
-    if (row.type === researchWorksheetType) {
-      const opened = await readWorksheetById(tx, factId(row.id));
+  for (const row of rows) { if (row.rank > detailLimit) continue;
+    if (row.type === researchWorksheetType) { const opened = await readWorksheetById(tx, factId(row.id));
       if (!opened || !('todoId' in opened.worksheet) || !opened.worksheet.digest) continue;
       const { worksheet, fact } = opened;
       const todo = await readTodo(tx, worksheet.todoId);
       if (todo?.state !== 'completed' || todo.resultId !== worksheet.id) continue;
-      events[row.id] = completedWorksheetEvent(fact, worksheet, worksheet.digest, todo);
-      completed++;
+      events[row.id] = completedWorksheetEvent(fact, worksheet, worksheet.digest, todo); completed++;
       continue;
     }
     const fact = await whenAvailable(() => read.fact(factId(row.id), { mode: 'following' }));
     if (!fact?.purpose.includes(researchPurpose)) continue;
     const add = (kind: string, payload: Json) => { events[row.id] = { event_id: row.id, kind, fact_ref: fact.ref.id, fact_rev: fact.ref.rev, payload }; };
     if (row.type === goalType || row.type === organizerTaskType) {
-      add('goal_or_task_changed', { fact_type: row.type });
-    } else {
-      discovery = true;
+      add('goal_or_task_changed', { fact_type: row.type });} else {discovery = true;
       if (row.type === researchSettingsType) add('research_enabled', {});
       else if (row.type === retentionReviewPermissionType) {
         if (await activeRetentionReview(tx, fact)) add('authorized_retention_miss', { status: 'missed' });
@@ -73,19 +68,16 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
   return { events, discovery: discovery || completed > 0, coverage: coverage(completed, completionRows, detailLimit) };
 }
 
-async function readResearchInventory(tx: ReadTransaction) {
-  const { rows } = await tx.query<{ id: string }>(
+async function readResearchInventory(tx: ReadTransaction) { const { rows } = await tx.query<{ id: string }>(
     `SELECT id FROM facts WHERE learner_id = $1 AND type = $2 AND $3 = ANY(purpose)
       AND retracted_rev IS NULL ORDER BY created_tick DESC, id LIMIT $4`,
     [tx.learner, researchWorksheetType, researchPurpose, detailLimit + 1],
   );
   const items: Record<string, Json> = {};
-  for (const { id } of rows.slice(0, detailLimit)) {
-    const opened = await readWorksheetById(tx, factId(id));
+  for (const { id } of rows.slice(0, detailLimit)) { const opened = await readWorksheetById(tx, factId(id));
     if (!opened) continue;
     const { worksheet } = opened;
-    if ('todoId' in worksheet) {
-      const todo = await readTodo(tx, worksheet.todoId);
+    if ('todoId' in worksheet) { const todo = await readTodo(tx, worksheet.todoId);
       if (todo?.state !== 'completed' || todo.resultId !== id) continue;
     }
     items[id] = worksheetInventoryItem(opened, textSlice(worksheet.title, 0, 80).content);
@@ -95,8 +87,7 @@ async function readResearchInventory(tx: ReadTransaction) {
 
 async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, settingsRevision: number,
   now: number, mode: 'all-local' | 'free' | 'paid', settingsId?: FactId) {
-  const { rows } = await tx.query<{ id: string; recent: boolean }>(
-    `WITH attempts AS (
+  const { rows } = await tx.query<{ id: string; recent: boolean }>(`WITH attempts AS (
        SELECT f.id, f.type, f.created_tick, r.data, row_number() OVER (ORDER BY f.created_tick DESC, f.id) <= $4 AS recent
        FROM facts f JOIN fact_revs r ON (r.learner_id, r.fact_id, r.rev) = (f.learner_id, f.id, f.current_rev)
        WHERE f.learner_id = $1 AND f.type IN ($2, $6) AND $3 = ANY(f.purpose) AND $3 = ANY(r.purpose)
@@ -112,8 +103,7 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
   let olderCandidate: Json | undefined;
   let paidCandidate: Json | undefined;
   const read = researchReader(tx);
-  for (const { id: rawId, recent } of rows) {
-    if (!recent && intent) break;
+  for (const { id: rawId, recent } of rows) { if (!recent && intent) break;
     const id = factId(rawId);
     const fact = await whenAvailable(() => read.fact(id, { mode: 'following' }));
     if (!fact) continue;
@@ -129,8 +119,7 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
       if (!eligibleLane) continue;
       const sourceFactRev = { id, revision: fact.ref.rev, accessEpoch: fact.accessEpoch, anchor };
       const dedupKey = reviewDedupKey(sourceFactRev);
-      const known = await tx.query(
-        `SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
+      const known = await tx.query(`SELECT 1 FROM facts WHERE learner_id = $1 AND id = $2
          UNION ALL SELECT 1 FROM work WHERE family='todo' AND learner_id = $1 AND dedup_key = $3
           AND spec->'sourceFactRev' = $4::jsonb AND spec->>'settingsRevision' = $5 LIMIT 1`,
         [tx.learner, (await worksheetPublication(tx, id, fact.ref.rev, fact.accessEpoch)).factId, dedupKey,
@@ -144,13 +133,11 @@ async function readReviewAttempts(tx: ReadTransaction, discovery: boolean, setti
     }
     const summary = summarizeReviewAttempt(fact, attempt, anchor,
       attempt && textSlice(attempt.paper.title, 0, 100).content);
-    if (mode === 'paid' && intent?.sourceFactRev.id === id) {
-      paidCandidate = summary.data;
+    if (mode === 'paid' && intent?.sourceFactRev.id === id) {paidCandidate = summary.data;
       facts[id] = summary;
       break;
     }
-    if (recent) facts[id] = summary;
-    else if (intent?.sourceFactRev.id === id) olderCandidate = summary;
+    if (recent) facts[id] = summary; else if (intent?.sourceFactRev.id === id) olderCandidate = summary;
   }
   return { facts, intent, olderCandidate, paidCandidate };
 }
@@ -168,10 +155,8 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
      ORDER BY registered_tick DESC, todo_id LIMIT $2`, [tx.learner, recentWindow + 1],
   );
   const todos: Record<string, Json> = {};
-  for (const { todo_id } of rows.slice(0, recentWindow)) {
-    const todo = await readTodo(tx, todo_id);
-    if (!todo || !await eligible(todo.spec)) continue;
-    todos[todo.id] = projectReviewTodo(todo);
+  for (const { todo_id } of rows.slice(0, recentWindow)) { const todo = await readTodo(tx, todo_id);
+    if (!todo || !await eligible(todo.spec)) continue; todos[todo.id] = projectReviewTodo(todo);
   }
   const overview = projectResearchOverview(await readLearningOverview(tx, {
     callerPurpose: researchPurpose, maySend: (_projection, fact) => fact.purpose.includes(researchPurpose),

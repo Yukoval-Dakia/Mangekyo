@@ -17,8 +17,7 @@ export type DraftWitness = { id: FactId; rev: number; epoch: Tick };
 export function openWorkspaceQuestion(db: Db, turn: string, maySend: WorkspaceSourceRecipient,
   authorize: (tx: ReadTransaction) => Promise<void>, witnesses: () => DraftWitness[]) {
   const host = createLearnerHost(db, studioLearner, { actor: 'companion' }), schema = { tool: 'find_tools', args: { query: 'save_question' } };
-  return async (args: Record<string, unknown>, step: number) => {
-    try {
+  return async (args: Record<string, unknown>, step: number) => { try {
       const parsed = parseSaveQuestion(args);
       if (parsed.kind !== 'create' || parsed.append_metadata) return toolFailure('invalid_args', '目前可保存新增题面草稿。题版修改或解法核验请使用题库。', schema);
       if (parsed.question.interaction || parsed.question.sources || parsed.question.shared_materials)

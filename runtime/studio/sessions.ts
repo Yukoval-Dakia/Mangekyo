@@ -38,64 +38,41 @@ const requestedAccount = (route:unknown) => route && typeof route === 'object' &
   ? route.accountRevision : undefined;
 
 export type CaseId = (typeof cases)[number]['id'] | 'companion' | 'riding';
-type TurnRequest = StudyTurnReplay & {
-  selected?: CaseId;
-  req: string;
-  requestedRoute: unknown;
-};
+type TurnRequest = StudyTurnReplay & {selected?: CaseId; req: string; requestedRoute: unknown;};
 export function caseId(value: unknown): CaseId {
   if (!isStudyCaseId(value)) throw new RequestError(400, '对话类型无效。');
   return value;
 }
 export { clientRequest } from '../../modules/capture/request.ts';
-export type DisplayTurn = TeachingFeedback & {
-  writes?: WorkspaceWriteReceipt[];
+export type DisplayTurn = TeachingFeedback & {writes?: WorkspaceWriteReceipt[];
   workspaceBasis?: (WorkspaceWitness & { readonly title?: string; readonly kind?: string })[];
-  learningMemoryDigest?: string;
-  memoryManagement?: true;
-  foregroundDigest?: ForegroundDigest;
-  answer?: string;
-};
+  learningMemoryDigest?: string; memoryManagement?: true;
+  foregroundDigest?: ForegroundDigest; answer?: string;};
 type Status = 'pending' | 'ready' | 'failed' | 'unknown';
-type TurnView = {
-  id: string;
-  submission: ReturnType<typeof studyTurn>;
-  backgroundUnderstanding?: ReturnType<typeof turnResearchAccess>;
-  feedback: DisplayTurn | null;
-  derivationId: string | null;
-  status: Status;
-  error?: string;
-};
+type TurnView = {id: string;
+  submission: ReturnType<typeof studyTurn>; backgroundUnderstanding?: ReturnType<typeof turnResearchAccess>;
+  feedback: DisplayTurn | null; derivationId: string | null; status: Status; error?: string;};
 export async function requireSessionTurn(tx: ReadTransaction, id: string) {
-  try { return await readOwnStudyTurn(tx, id); }
-  catch (error) {
+  try { return await readOwnStudyTurn(tx, id); } catch (error) {
     if (isFactUnavailable(error)) throw new RequestError(409, '本次教学引用的依据已经变更。请重新开始一轮。');
     throw error;
   }
 }
 
 async function history(tx: ReadTransaction, session: string, check?: CheckNotionRead): Promise<TurnView[]> {
-  const { rows } = await tx.query<{
-    id: string;
-    value: DisplayTurn | null;
-    derivationId: string | null;
-    manifest: unknown;
-    settled: boolean;
-    error: { status: Status; message: string } | null;
-  }>(
+  const { rows } = await tx.query<{id: string; value: DisplayTurn | null; derivationId: string | null;
+    manifest: unknown; settled: boolean; error: { status: Status; message: string } | null;}>(
     `SELECT f.id, d.value, d.id AS "derivationId", d.manifest, s.last_id IS NOT NULL AS settled, s.last_error AS error FROM facts f
      JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
      LEFT JOIN slot_state s ON s.learner_id=f.learner_id AND s.slot_type=$3 AND s.slot_key=f.id
      LEFT JOIN derivations d ON d.learner_id=f.learner_id AND d.id=s.current_id
      WHERE f.learner_id=$1 AND f.type='activity.studyTurn' AND r.data->>'sessionId'=$2
-     ORDER BY f.created_tick`,
-    [tx.learner, session, slotType],
+     ORDER BY f.created_tick`, [tx.learner, session, slotType],
   );
   const result: TurnView[] = [];
   const grantCurrent = workspaceGrantChecker(tx);
   let materialAvailable = true;
-  for (const row of rows) {
-    const snapshot = await requireSessionTurn(tx, row.id);
+  for (const row of rows) { const snapshot = await requireSessionTurn(tx, row.id);
     const stored = studyTurn(snapshot.value);
     if (!stored.parentId && stored.attachment) materialAvailable = await attachmentCurrent(tx,stored) && await grantCurrent(stored);
     const {attachment: _attachment, ...withoutAttachment} = stored;
@@ -107,40 +84,29 @@ async function history(tx: ReadTransaction, session: string, check?: CheckNotion
     }
     let feedback = authority === 'authorized' ? row.value : null;
     if (!feedback && row.settled) feedback = unavailableReply(submission.model, authority === 'unconfirmed');
-    result.push({
-      id: row.id,
-      submission,
+    result.push({id: row.id, submission,
       ...(submission.caseId === 'companion' ? {backgroundUnderstanding: turnResearchAccess(snapshot)} : {}),
-      feedback,
-      derivationId: row.derivationId,
-      status: row.error?.status ?? (feedback ? 'ready' : 'pending'),
+      feedback, derivationId: row.derivationId, status: row.error?.status ?? (feedback ? 'ready' : 'pending'),
       ...(row.error ? { error: row.error.message } : {}),
     });
   }
   return result;
 }
-export const loadHistory = (db: Db, session: string) =>
-  studioHost(db).snapshot((tx) => history(tx, session));
+export const loadHistory = (db: Db, session: string) => studioHost(db).snapshot((tx) => history(tx, session));
 
-export function recentConversations(db: Db) {
-  return studioHost(db).snapshot(async (tx) => {
-    const { rows } = await tx.query<{ id: string }>(
-      `SELECT r.data->>'sessionId' AS id FROM facts f
+export function recentConversations(db: Db) { return studioHost(db).snapshot(async (tx) => {
+    const { rows } = await tx.query<{ id: string }>(`SELECT r.data->>'sessionId' AS id FROM facts f
        JOIN fact_revs r ON r.learner_id=f.learner_id AND r.fact_id=f.id AND r.rev=f.current_rev
        WHERE f.learner_id=$1 AND f.type='activity.studyTurn' AND f.retracted_rev IS NULL
          AND r.data->>'caseId' IN ('companion','riding') AND NOT (r.data ? 'classroom')
        GROUP BY r.data->>'sessionId' ORDER BY MAX(f.created_tick) DESC LIMIT 100`, [studioLearner]);
     const result = [];
-    for (const row of rows) {
-      try {
-        const root = studyTurn((await readOwnStudyTurn(tx, row.id)).value);
+    for (const row of rows) { try { const root = studyTurn((await readOwnStudyTurn(tx, row.id)).value);
         if (root.answer) result.push({ id: row.id, title: root.answer.slice(0, 100), caseId: root.caseId });
-      } catch (error) {
-        if (!isFactReadDenied(error)) throw error;
+      } catch (error) { if (!isFactReadDenied(error)) throw error;
       }
     }
-    return result;
-  });
+    return result;});
 }
 async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[]): Promise<WorkspaceWriteView[]> {
   const ids = writes.filter(workspaceWriteNeedsCurrentFact).map(write => write.id);
@@ -148,15 +114,13 @@ async function projectWrites(tx: ReadTransaction, writes: WorkspaceWriteReceipt[
   const {rows} = await tx.query<{id: string; type: string; current_rev: number; retracted_rev: number | null}>(
     'SELECT id,type,current_rev,retracted_rev FROM facts WHERE learner_id=$1 AND id=ANY($2::text[])', [tx.learner, ids]);
   const facts = new Map(rows.map(row => [row.id, row]));
-  return Promise.all(writes.map(async write => {
-    const fact = facts.get(write.id);
+  return Promise.all(writes.map(async write => { const fact = facts.get(write.id);
     const savedPage = write.page?.status === 'saved' ? write.page : undefined;
     const checkMemory = write.memory && !savedPage && write.relation?.status !== 'saved';
     if (fact && fact.retracted_rev === null && fact.current_rev === write.rev &&
         (!checkMemory || await areMemoryClaimsCurrent(tx, [write.id], undefined, undefined, false, fact.type))) return write;
     const undone = savedPage && await readRecordedCommand(tx,textbookUndoId(savedPage.undo_token));
-    return projectStaleWorkspaceWrite(write, Boolean(fact?.retracted_rev), undone?.state === 'done');
-  }));
+    return projectStaleWorkspaceWrite(write, Boolean(fact?.retracted_rev), undone?.state === 'done');}));
 }
 
 async function recoverRevokedReceipts(tx: ReadTransaction, turnIds: string[]) {
@@ -165,8 +129,7 @@ async function recoverRevokedReceipts(tx: ReadTransaction, turnIds: string[]) {
     `SELECT s.slot_key AS id, d.value->'writes' AS writes FROM slot_state s
      JOIN derivations d ON d.learner_id=s.learner_id AND d.id=s.last_id
      WHERE s.learner_id=$1 AND s.slot_type=$2 AND s.slot_key=ANY($3::text[])
-       AND jsonb_typeof(d.value->'writes')='array'`,
-    [tx.learner, slotType, turnIds],
+       AND jsonb_typeof(d.value->'writes')='array'`, [tx.learner, slotType, turnIds],
   );
   return new Map(rows.map(({ id, writes }) => [id, revokedReplyWriteReceipts(writes)]));
 }
@@ -276,9 +239,7 @@ async function fenceTeachingCutover(db: Db) {
             WHERE (f.learner_id,f.id)=(NEW.learner_id,NEW.data->>'sessionId')
               AND r.data ?| ARRAY['attachment','jitContextVersion','accountRevision'])) THEN
           RAISE EXCEPTION 'Protected teaching turn requires learner-confirmed account' USING ERRCODE='23514';
-        END IF;
-        RETURN NEW;
-      END $$`);
+        END IF; RETURN NEW; END $$`);
       await tx.query(`CREATE TRIGGER studio_confirmed_teaching BEFORE INSERT ON fact_revs
         FOR EACH ROW EXECUTE FUNCTION studio_confirmed_teaching()`);
     }

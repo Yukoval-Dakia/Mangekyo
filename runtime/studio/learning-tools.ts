@@ -25,13 +25,11 @@ const intents = ['tutoring','planning','execution','history'] as const satisfies
 export function openLearningTools(options: {
   db: Db; turn: string; manageBeliefs: boolean; workspace: ReturnType<typeof openWorkspaceTools>; maySend: WorkspaceSourceRecipient;
   authorize(tx: ReadTransaction): Promise<void>; authorizeRemote(): Promise<boolean>;
-  track(witness: WorkspaceWitness): void;
-  trackRetention(basis: RetentionBasis): void;
+  track(witness: WorkspaceWitness): void; trackRetention(basis: RetentionBasis): void;
   readContext(intent: MemoryIntent, step: number, expand?: RegionPage, query?: string): Promise<ContextBundle | undefined>;
   onDelivered: NonNullable<LearningTools['onDelivered']>;
   saveBelief(args: Record<string,unknown>, step: number): Promise<string>;
-  notion?: Pick<ReturnType<typeof openStudioNotion>, 'readTool'>;
-}): LearningTools {
+  notion?: Pick<ReturnType<typeof openStudioNotion>, 'readTool'>;}): LearningTools {
   const {db,turn,workspace,maySend,authorize} = options;
   const allowedIntents: readonly MemoryIntent[] = options.manageBeliefs ? [...intents,'management'] : intents;
   const artifact = workspace.presentationTool;
@@ -48,17 +46,14 @@ export function openLearningTools(options: {
     const read = purposeReader(tx,maySend);
     for (const witness of facts) {
       const fact = await read.reopen({...workspaceInput(witness),type:witness.type});
-      await checkStudioNotionFact(tx,fact,purpose,maySend);
-      await check(fact);
+      await checkStudioNotionFact(tx,fact,purpose,maySend); await check(fact);
     }
     for (const basis of retention) {
       const current = await readRetentionBasis(tx,basis.slot,{callerPurpose:purpose,maySend});
       if (!current || canonicalJsonString(current) !== canonicalJsonString(basis)) return false;
     }
-    return true;
-  });
-  return {
-    onDelivered: options.onDelivered,
+    return true;});
+  return {onDelivered: options.onDelivered,
     definitions:learningHostDefinitions(options.manageBeliefs,allowedIntents,artifact,notionReadHost && notionReadDefinition),
     async execute(name,args,{step,handles,receiveImage,priorRead}) {
       if (name === 'search_learning' || name === 'open_learning')
@@ -67,8 +62,7 @@ export function openLearningTools(options: {
         if (!notionReadHost) return toolFailure('not_found','本轮没有此按需工具。',learningToolFallback(name));
         await priorRead;
         const result = await executeNotionRead(args, notionReadHost, {step});
-        if (result.ok) {
-          const read = result.data as NotionReadOutput;
+        if (result.ok) { const read = result.data as NotionReadOutput;
           options.track({id:read.sourceId, rev:read.rev, type:captureSourceType, epoch:read.accessEpoch, mode:'pinned'});
         }
         return result;
@@ -84,14 +78,12 @@ export function openLearningTools(options: {
       }
       if (name === 'save_question') return workspace.saveQuestion?.(args,step)
         ?? toolFailure('not_found','当前回合没有题库写入绑定。',learningToolFallback(name));
-      if (name === 'manage_activity' || name === 'mount_artifact') {
-        const {action,...work} = args;
+      if (name === 'manage_activity' || name === 'mount_artifact') { const {action,...work} = args;
         if (!artifact || (name === 'manage_activity' && action !== 'mount_artifact'))
           return toolFailure('invalid_args','目前可在当前回合挂载作品。',learningToolFallback(name));
         return adaptWorkspaceResult(await workspace.execute('mount_artifact',name === 'manage_activity' ? work : args,step),name);
       }
-      if (name === 'read_context') {
-        await priorRead;
+      if (name === 'read_context') { await priorRead;
         const management = options.manageBeliefs && args.intent === 'management';
         if (Object.keys(args).some(key => !['intent','horizon_hours','expand'].includes(key) && !(management && key === 'query')) ||
             (args.horizon_hours !== undefined && args.intent !== 'radar') ||
@@ -102,10 +94,8 @@ export function openLearningTools(options: {
         const intent = args.intent === 'conversation' ? 'tutoring' : allowedIntents.find(value => value === args.intent);
         if (!intent) return toolFailure('not_found','此上下文意图尚无授权的生产读取。',{tool:'read_context',args:{intent:'tutoring'}});
         let query: string | undefined;
-        if (management) {
-          try { query = memoryRetrieveQuery({query:args.query}); }
-          catch (error) {
-            if (!(error instanceof ClaimInputError)) throw error;
+        if (management) { try { query = memoryRetrieveQuery({query:args.query}); }
+          catch (error) { if (!(error instanceof ClaimInputError)) throw error;
             return toolFailure('invalid_args',error.message,{tool:'read_context',args:{intent}},'query');
           }
         }
@@ -113,8 +103,7 @@ export function openLearningTools(options: {
         const expand = args.expand === undefined ? undefined : pages.get(canonicalJsonString(args.expand));
         if (args.expand !== undefined && !expand)
           return toolFailure('not_found','请传本轮已返回的展开位置。',next,'expand');
-        if (expand) {
-          try { recallRegions(intent,8192,expand); }
+        if (expand) { try { recallRegions(intent,8192,expand); }
           catch { return toolFailure('invalid_args','展开位置与所选意图不符。',next,'expand'); }
         }
         const context = await options.readContext(intent,step,expand,query);
@@ -124,10 +113,8 @@ export function openLearningTools(options: {
           pages.set(canonicalJsonString(item.expand),item.expand);
         return {ok:true,data:context};
       }
-      return toolFailure('not_found','本轮没有此按需工具。',learningToolFallback(name));
-    },
-    writeKeys:(name) => name === 'notion_read' ? notionReadWriteKeys() : [],
-    async preparePython(reads,step) {
+      return toolFailure('not_found','本轮没有此按需工具。',learningToolFallback(name));},
+    writeKeys:(name) => name === 'notion_read' ? notionReadWriteKeys() : [], async preparePython(reads,step) {
       if (!reads.length) return {ok:true,values:[]};
       // Question reads cannot replay across receipt formats. Other SDK effects keep their identity.
       const request = reads.some(read => read.method === 'questions') ? {reads,questionExposure:questionExposureReceiptVersion} : reads;
@@ -145,35 +132,26 @@ export function openLearningTools(options: {
             ...(mode ? {mode} : {})})};
         const now = new Date().toISOString();
         const values = [];
-        for (const request of reads) {
-          const result = await readLearningSdk(tx,request,access,now,clock.tick);
-          if ('ok' in result) return JSON.stringify({error:result,witnesses:[]});
-          values.push(result.value);
+        for (const request of reads) { const result = await readLearningSdk(tx,request,access,now,clock.tick);
+          if ('ok' in result) return JSON.stringify({error:result,witnesses:[]}); values.push(result.value);
         }
         return JSON.stringify({values,questionExposure:questionExposureReceiptVersion,questionNegatives:[...negatives],
           witnesses:[...new Map(witnesses.map(w => [canonicalJsonString(w),w])).values()],
-          ...(retention.size ? {retentionBasis:[...retention.values()]} : {})});
-      },authorize);
+          ...(retention.size ? {retentionBasis:[...retention.values()]} : {})});},authorize);
       const packet = JSON.parse(raw);
       if (packet.error) return packet.error;
-      try {
-        const retention = packet.retentionBasis ?? [];
+      try { const retention = packet.retentionBasis ?? [];
         if (await valid(packet.witnesses,retention)) {
           for (const basis of retention) options.trackRetention(basis);
           for (const witness of packet.witnesses as WorkspaceWitness[]) options.track(witness);
-          return {ok:true,values:packet.values};
-        }
-      } catch (error) {
-    if (!isFactUnavailable(error)) throw error;
+          return {ok:true,values:packet.values};}} catch (error) { if (!isFactUnavailable(error)) throw error;
       }
-      return toolFailure('access_revoked','该计算的原始读取已不再获准。',learningToolFallback('run_calculation'));
-    },
+      return toolFailure('access_revoked','该计算的原始读取已不再获准。',learningToolFallback('run_calculation'));},
     async authorizeHandles() {
       // Follow-up provider rounds contain earlier tool messages. Recheck their
       // cumulative basis even when the next call names only one of the handles.
       return await options.authorizeRemote() ? {ok:true}
-        : toolFailure('access_revoked','结果句柄的依据已不再获准。',learningToolFallback('open_tool_result'));
-    },
+        : toolFailure('access_revoked','结果句柄的依据已不再获准。',learningToolFallback('open_tool_result'));},
     writes:workspace.writes,
   };
 }

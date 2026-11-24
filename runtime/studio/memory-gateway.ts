@@ -73,8 +73,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
       const scopeBasis: WorkspaceWitness[] = [];
       if (!legacy && claim.scope.kind === 'object') {
         if (!options.management && claim.scope.object !== scope.preference.context) continue;
-        for (const ref of claim.scope.basis) {
-          const object = await open(ref.id);
+        for (const ref of claim.scope.basis) { const object = await open(ref.id);
           if (object?.ref.rev === ref.rev && object.accessEpoch === ref.accessEpoch) scopeBasis.push(witness(object));
         }
         if (scopeBasis.length !== claim.scope.basis.length) continue;
@@ -108,8 +107,7 @@ async function collectRecall(tx: ReadTransaction, scope: MemoryScope, maySend: W
   }
   if (!wantsMemory && !wantsPreferences && !wantsCourse && !wantsAnswer) return results;
 
-  async function openAnswer(source: { id: string; itemId: string }) {
-    const fact = await open(source.id);
+  async function openAnswer(source: { id: string; itemId: string }) { const fact = await open(source.id);
     if (fact?.type !== workbookAttemptType) return;
     const { submittedAt, gradingVersion } = workbookAttempt(fact.value), ref = sourceReference(fact, { kind: 'answer-slot', itemId: source.itemId, slotId: 'answer' });
     const projection = await resolveSource(tx, ref, { recipient: 'workspace', maySend }, 'following');

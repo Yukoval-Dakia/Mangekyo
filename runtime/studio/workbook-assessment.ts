@@ -43,9 +43,7 @@ const deps: StudioWorkbookAssessmentDeps = {
   markBlocked: async (db, learner, slotKey, reason) => {
     await (db as Db).tx({ learner: learner as never }, async tx => {
       await tx.query('UPDATE slot_state SET last_error=$4 WHERE learner_id=$1 AND slot_type=$2 AND slot_key=$3',
-        [tx.learner, workbookAssessmentSlot, slotKey, JSON.stringify({ status: 'blocked', reason })]);
-    });
-  },
+        [tx.learner, workbookAssessmentSlot, slotKey, JSON.stringify({ status: 'blocked', reason })]);});},
   dbSnapshot: (db, scope, run) => (db as Db).snapshot(scope, run as never), dbTx: (db, scope, run) => (db as Db).tx(scope, run as never),
   readFormalAssessment: readFormalAssessment as StudioWorkbookAssessmentDeps['readFormalAssessment'],
   registerFormalAssessment: registerFormalAssessment as StudioWorkbookAssessmentDeps['registerFormalAssessment'],

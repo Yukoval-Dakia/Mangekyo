@@ -29,8 +29,7 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
       const authorized = await checkStudioNotionFact(tx, opened, 'storage', 'learner');
       if (!authorized) throw new FactReadDeniedError('recipient', '来源当前不可读取。');
       if (process.env.MANGEKYO_NOTION_TEST_ORIGIN || process.env.MANGEKYO_NOTION_TOKEN) await check(authorized);
-      return authorized as never;
-    };
+      return authorized as never;};
     const gated = { ...read, fact };
     const graph = await readAuthorizedKnowledgeGraph(tx, {
       learner: tx.learner, purpose: 'storage', recipient: tx.learner, read: gated, isUnavailable: isFactUnavailable, preloadFollowing: read.preloadFollowing,
@@ -47,12 +46,10 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
     for (const link of links) {
       const opened = await gated.fact(link.questionId, { mode: 'following' }).catch(e => isFactUnavailable(e) ? undefined : Promise.reject(e)) as FactSnapshot | undefined;
       if (!opened) continue;
-      if (opened.type === 'content.asset') {
-        const asset = parseAsset(opened.value);
+      if (opened.type === 'content.asset') { const asset = parseAsset(opened.value);
         asset.basis?.forEach(source => { if (source.type === 'activity.textMaterial') materialIds.add(source.id); });
         if (asset.kind === 'question' && questionPrompt(asset).trim()) (solutions.set(opened.ref.id, questionSolutionFields(asset)), questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'content.asset', prompt: questionPrompt(asset) }));
-      } else if (opened.type === 'activity.workspaceEntry') {
-        const value = workspaceEntry(opened.value);
+      } else if (opened.type === 'activity.workspaceEntry') { const value = workspaceEntry(opened.value);
         if (value.kind === 'question' && value.body.trim()) questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'activity.workspaceEntry', prompt: value.body,
           ...(value.answer === undefined ? {} : { answer: value.answer }), ...(value.rubric === undefined ? {} : { rubric: value.rubric }) });
       }

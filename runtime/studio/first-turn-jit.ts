@@ -15,11 +15,8 @@ import type { WorkspaceSourceRecipient } from './source-read.ts';
 import { openWorkbookQuestionSources } from './workbook-diagnosis.ts';
 import { workspaceInput, type WorkspaceWitness } from './workspace-agent.ts';
 
-export type StudioJitCounter = FirstTurnJitRoute & {
-  readonly id: string;
-  readonly providerId: string;
-  readonly tokenizer: FirstTurnJitTokenizer;
-};
+export type StudioJitCounter = FirstTurnJitRoute & { readonly id: string;
+  readonly providerId: string; readonly tokenizer: FirstTurnJitTokenizer;};
 
 type RouteSettings = TeachingProvider & { activeProviderId: string; protocol: FirstTurnJitRoute['protocol']; model: string };
 type Turn = ReturnType<typeof studyTurn>;
@@ -38,18 +35,13 @@ function witness(fact: Parameters<WorkspaceSourceRecipient>[0], mode: WorkspaceW
 // frozen paper and its ordinary, deterministic grading recorded an incorrect answer.
 async function oldMistake(tx: ReadTransaction, turn: string, current: WorkspaceWitness, maySend: WorkspaceSourceRecipient) {
   const read = purposeReader(tx, maySend);
-  const open = async (id: string) => {
-    const basis: WorkspaceWitness[] = [];
-    try {
-      const fact = await read.fact(factId(id), {mode: 'following'});
+  const open = async (id: string) => { const basis: WorkspaceWitness[] = [];
+    try { const fact = await read.fact(factId(id), {mode: 'following'});
       if (fact.type !== workbookAttemptType) return;
       const source = await openWorkbookQuestionSources(tx, fact, {maySend, track: (ref, mode) => basis.push(witness(ref, mode))});
-      return source && {...source, fact, basis: [witness(fact), ...basis]};
-    } catch (error) {
+      return source && {...source, fact, basis: [witness(fact), ...basis]};} catch (error) {
       if (!isFactUnavailable(error)) throw error;
-      return;
-    }
-  };
+      return;}};
   const attempt = await open(current.id);
   const question = attempt?.attempt.paper.questions[0];
   if (!attempt || attempt.fact.ref.rev !== current.rev || !question || attempt.attempt.paper.questions.length !== 1 ||
@@ -63,8 +55,7 @@ async function oldMistake(tx: ReadTransaction, turn: string, current: WorkspaceW
       AND f.purpose && ARRAY['teaching','all'] AND r.purpose && ARRAY['teaching','all']
     ORDER BY f.created_tick DESC, f.id LIMIT 4`, [tx.learner, workbookAttemptType, current.id, attempt.birth.tick, turn,
       attempt.paper.id, JSON.stringify([{questionId: question.id, result: 'incorrect'}])]);
-  for (const {id} of rows) {
-    const older = await open(id);
+  for (const {id} of rows) { const older = await open(id);
     if (!older || !older.birth.unchanged || older.paper.rev !== attempt.paper.rev) continue;
     const answer = older.attempt.answers[question.id];
     if (answer === null || answer === undefined || String(answer).trim() === '') continue;
@@ -76,8 +67,7 @@ async function oldMistake(tx: ReadTransaction, turn: string, current: WorkspaceW
 
 export async function prepareFirstTurnJit(db: Db, learner: ReadTransaction['learner'], turn: string, submission: Turn,
   settings: RouteSettings, counter: StudioJitCounter, access: Access) {
-  let opened: Awaited<ReturnType<typeof collect>> | undefined;
-  async function collect(tx: ReadTransaction) {
+  let opened: Awaited<ReturnType<typeof collect>> | undefined; async function collect(tx: ReadTransaction) {
     const selection = submission.currentObject;
     const current = selection && await readCurrentLearningObject(tx, selection, access.maySend);
     if (selection && (!current || current.basisDigest !== selection.basisDigest)) return;
@@ -98,26 +88,18 @@ export async function prepareFirstTurnJit(db: Db, learner: ReadTransaction['lear
     input: {version: 1, purpose, providerId: settings.activeProviderId, endpoint: counter.endpoint,
       protocol: settings.protocol, model: settings.model, reasoningEffort: settings.reasoningEffort ?? 'high',
       workspaceRevision: submission.workspaceRevision!, accountRevision:submission.accountRevision!, counter: counter.id},
-  }, async tx => {
-    opened = await collect(tx);
-    return opened?.receipt ?? '';
-  }, access.authorize);
-  if (!receipt) return;
-  opened ??= await db.snapshot({learner}, async tx => {
-    await access.authorize(tx);
-    return collect(tx);
-  });
+  }, async tx => {opened = await collect(tx);
+    return opened?.receipt ?? '';}, access.authorize);
+  if (!receipt) return; opened ??= await db.snapshot({learner}, async tx => { await access.authorize(tx);
+    return collect(tx);});
   if (opened?.receipt !== receipt) return;
   return opened;
 }
 
 export async function jitWitnessesCurrent(tx: ReadTransaction, basis: readonly WorkspaceWitness[], maySend: WorkspaceSourceRecipient) {
   const read = purposeReader(tx, maySend);
-  try {
-    for (const item of basis) await read.reopen({...workspaceInput(item), type: item.type});
-    return true;
-  } catch (error) {
-    if (!isFactUnavailable(error)) throw error;
+  try { for (const item of basis) await read.reopen({...workspaceInput(item), type: item.type});
+    return true;} catch (error) { if (!isFactUnavailable(error)) throw error;
     return false;
   }
 }

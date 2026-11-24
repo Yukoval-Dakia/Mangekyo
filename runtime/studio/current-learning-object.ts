@@ -15,8 +15,7 @@ import { openWorkbookDiagnosisSource } from './workbook-diagnosis.ts';
 
 export function currentObjectAlias(kind: StudyCurrentObjectSelection['kind']) { return kind === 'attempt' ? 'current_attempt' : 'current_page'; }
 export function readCurrentLearningObject(tx: ReadTransaction, selection: StudyCurrentObjectSelection, maySend: WorkspaceSourceRecipient, ownerNotionRead?: true) {
-  return readable(async () => {
-    const { kind, id, rev } = selection;
+  return readable(async () => { const { kind, id, rev } = selection;
     const fact = await purposeReader(tx, maySend).fact(factId(id), { mode: 'pinned', rev: rev as Revision });
     const sourceRef = sourceReference(fact, { kind: 'whole' }), witnesses = new Map<string, StudyObjectWitness>();
     const track: SourceTrack = (source, mode = 'following') => {

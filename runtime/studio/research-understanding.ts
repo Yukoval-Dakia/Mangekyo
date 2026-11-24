@@ -5,16 +5,12 @@ import type { WorkerConsent } from '../../modules/companion/worker-consent.ts';
 import { workerCall, workerCap } from '../research/worker-dispatch.ts';
 import { independentScoutSource, researchReader } from './research-sources.ts';
 import { createHash } from 'node:crypto';
-import {
-  discoverUnderstandingTodos as discoverUnderstandingTodosSupport,
-  eligibleExtraction as eligibleExtractionSupport,
-  existingUnderstandings as existingUnderstandingsSupport,
+import {discoverUnderstandingTodos as discoverUnderstandingTodosSupport,
+  eligibleExtraction as eligibleExtractionSupport, existingUnderstandings as existingUnderstandingsSupport,
   learnerGovernedSince as learnerGovernedSinceSupport,
   openUnderstandingActivity as openUnderstandingActivitySupport,
-  openUnderstandingCitations as openUnderstandingCitationsSupport,
-  paidSource as paidSourceSupport,
-  readRadarTodo as readRadarTodoSupport,
-  type ResearchHostDeps,
+  openUnderstandingCitations as openUnderstandingCitationsSupport, paidSource as paidSourceSupport,
+  readRadarTodo as readRadarTodoSupport, type ResearchHostDeps,
 } from '../../modules/companion/research-host-support.ts';
 import { createAuthorizedFactReader, createStudioCommand, isFactUnavailable } from './fact-read-helpers.ts';
 
@@ -101,8 +97,7 @@ async function learnerGovernedSince(tx: ReadTransaction, tick: string, sourceId:
 }
 
 export function openUnderstandingExtraction(db: Db, companion: LoadedModule, transport: UnderstandingTransport | undefined,
-  paid?: {grant: WorkerConsent; tariff: WorkerTariff; signal: AbortSignal}) {
-  if (!transport && !paid) return;
+  paid?: {grant: WorkerConsent; tariff: WorkerTariff; signal: AbortSignal}) { if (!transport && !paid) return;
   const maySend = paid ? paidExtractionRecipient : transport?.maySend;
   const budgetCap = paid ? workerCap(paid.grant, paid.tariff) : 0;
   const route = paid?.grant.route ?? transport!.route;
@@ -111,8 +106,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
     throw new Error('个性化抽取只接受已授权的零成本模型传输。');
   return async function execute(ref: WorkRef, todoId: string, settingsCurrent: (tx: ReadTransaction, rev: number) => Promise<boolean>) {
     const scope = {learner: studioLearner};
-    const prepare = async (tx: ReadTransaction) => {
-      const todo = await readTodo(tx, todoId);
+    const prepare = async (tx: ReadTransaction) => { const todo = await readTodo(tx, todoId);
       if (todo?.state !== 'dispatched' || !await readReadyWork(tx, ref) ||
           !await settingsCurrent(tx, todo.spec.settingsRevision)) return null;
       const source = await eligibleExtraction(tx, todo.spec, maySend, budgetCap);
@@ -121,25 +115,19 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
       const target = prior.map((entry: any) => ({id: entry.ref.id, kind: entry.data.kind, text: entry.data.text, scope: entry.data.scope, ttl: entry.data.ttl, directions: entry.directions}));
       const input = JSON.stringify({source: {ref: source.ref, kind: source.kind, fragments: source.fragments},
         considered_at: new Date(todo.spec.expiresAtMs - windowMs).toISOString(), ...(!source.quoteOnly ? {existing: target} : {})});
-      return {todo, source, prior, input};
-    };
+      return {todo, source, prior, input};};
     const cancel = () => cancelWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'cancelled'));
     const fail = () => failWork(db, ref, tx => endDispatchedTodo(tx, todoId, 'failed'));
     const prepared = await db.snapshot(scope, prepare);
-    if (!prepared) {
-      const current = await db.snapshot(scope, tx => readTodo(tx, todoId));
-      if (current?.state === 'completed') await finishWork(db, ref);
-      else await cancel();
+    if (!prepared) { const current = await db.snapshot(scope, tx => readTodo(tx, todoId));
+      if (current?.state === 'completed') await finishWork(db, ref); else await cancel();
       return;
     }
-    const matches = async (tx: ReadTransaction) => {
-      const current = await prepare(tx);
+    const matches = async (tx: ReadTransaction) => { const current = await prepare(tx);
       if (current?.input !== prepared.input || current.source.basisDigest !== prepared.source.basisDigest ||
           JSON.stringify(current.prior) !== JSON.stringify(prepared.prior))
-        throw new ClaimInputError('抽取活动或既有理解已变更。');
-    };
-    try {
-      const {todo, source, prior, input} = prepared;
+        throw new ClaimInputError('抽取活动或既有理解已变更。');};
+    try { const {todo, source, prior, input} = prepared;
       const readOutput = (raw: string) => extractUnderstandings(raw, source, todo.spec.expiresAtMs - windowMs, prior);
       const instructions = source.quoteOnly ? conversationExtractionInstructions : extractionInstructions;
       const effect = paid ? {kind:'done' as const, result:readOutput(await workerCall(db, todoId, source.ref.id, paid.grant,
@@ -147,15 +135,12 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
         label: 'model:' + route, input: {instructions, input,
           ...(source.basisDigest ? {basis: source.basisDigest} : {})}}, async (providerEffectId, checkDispatch) => {
         // Protect admission and starting the send, then release the learner lock while the host awaits the reply.
-        const {response} = await withLearnerLock(db, scope, async tx => {
-          await checkDispatch(tx);
+        const {response} = await withLearnerLock(db, scope, async tx => { await checkDispatch(tx);
           await matches(tx);
           const response = transport!.sample({instructions, input, providerEffectId});
           void response.catch(() => {});
-          return {response};
-        });
-        return readOutput(await response);
-      }, matches);
+          return {response};});
+        return readOutput(await response);}, matches);
       if (effect.kind !== 'done') return void await fail();
       const parsed = readOutput(JSON.stringify({entries: (effect.result as ReturnType<typeof extractUnderstandings>)
         .map(({target, data}) => ({target, ...data}))}));
@@ -170,8 +155,7 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
           evidence_refs: [...(previous ? previous.data.evidence_refs : []), ...data.evidence_refs.map(ref =>
             source.basisDigest ? {...ref, basis_digest: source.basisDigest,
               ...questionOrigin(source, ref.anchor, route)} : ref)],
-          undo_token: previous ? previous.data.undo_token : factId(claimUndoToken(command, id))}};
-      });
+          undo_token: previous ? previous.data.undo_token : factId(claimUndoToken(command, id))}};});
 
       const handle = createStudioCommand(db, {modules: [companion],
         bindCommandRead: (tx, _, base) => bindLinkedCitationRead(base, async citation => {
@@ -187,14 +171,9 @@ export function openUnderstandingExtraction(db: Db, companion: LoadedModule, tra
             (await openUnderstandingCitations(tx, citations, researchPurpose, maySend)).length !== citations.length ||
             await learnerGovernedSince(tx, source.born, source.ref.id) ||
             !await completeTodo(tx, tick, ref, current, entries[0]!.id)) throw new ClaimInputError('抽取工作已失效。');
-      } }) });
-      await handle({...scope, id: command, type: publishUnderstandingCommand, actor: 'companion',
-        purpose: researchPurpose, input: {entries}});
-      await finishWork(db, ref);
-    } catch (error) {
-      if (!(error instanceof ClaimInputError || isFactUnavailable(error) ||
+      } }) }); await handle({...scope, id: command, type: publishUnderstandingCommand, actor: 'companion',
+        purpose: researchPurpose, input: {entries}}); await finishWork(db, ref);
+    } catch (error) { if (!(error instanceof ClaimInputError || isFactUnavailable(error) ||
           error instanceof Error && error.message === 'Effect identity already used with different input')) throw error;
-      await cancel();
-    }
-  };
+      await cancel();}};
 }

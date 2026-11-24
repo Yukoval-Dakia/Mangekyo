@@ -6,14 +6,11 @@ import { intakeFileLimit, intakeOriginal } from '../../modules/capture/intake-va
 import { RequestError } from './sessions.ts';
 import { studioHost } from './fact-read-helpers.ts';
 export { digest } from '@mangekyo/executor-document-extraction/original';
-export function openIntakeObjects(db: Db) {
-  const root = resolveIntakeDataDir(), host = studioHost(db);
-  return openOwnedOriginalFiles(root, {
-    decode: intakeOriginal, maximumSize: intakeFileLimit,
+export function openIntakeObjects(db: Db) { const root = resolveIntakeDataDir(), host = studioHost(db);
+  return openOwnedOriginalFiles(root, {decode: intakeOriginal, maximumSize: intakeFileLimit,
     unavailable: () => new RequestError(404, '原件暂不可读取。'),
     conflict: () => new RequestError(409, '原件的存储归属或内容不匹配。'),
-    unavailableOwner: error => error instanceof RequestError,
-    locations: async materialId => {
+    unavailableOwner: error => error instanceof RequestError, locations: async materialId => {
       const id = factId(materialId), store = factId(await workerStorage(db));
       return { owner: `${store}:${id}`, scoped: join(root, `${store}.${id}`), legacy: join(root, id) };
     },

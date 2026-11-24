@@ -46,23 +46,15 @@ let declarations: ReturnType<typeof activity> | undefined;
 const toolError = (code: Parameters<typeof learningToolError>[0], field: string | undefined, message: string,
   next?: Parameters<typeof learningToolError>[3]) => JSON.stringify(learningToolError(code, field, message, next));
 
-type WorkspaceToolsOptions = {
-  db: Db; turn: string; narrowSaves?: true; draftBasis?(): DraftWitness[];
-  authorize: (tx: ReadTransaction) => Promise<void>;
-  maySend: NotionRecipient;
+type WorkspaceToolsOptions = {db: Db; turn: string; narrowSaves?: true; draftBasis?(): DraftWitness[];
+  authorize: (tx: ReadTransaction) => Promise<void>; maySend: NotionRecipient;
   track: (input: WorkspaceWitness, checkAtDispatch?: true) => void;
   trackAssessment?: (basis: WorkspaceAssessmentBasis) => void;
-  trackRetention?: (basis: RetentionBasis) => void;
-  trackDiagnosis?: () => void;
-  beliefTools?: boolean;
-  presentationManifest?: (tx: ReadTransaction) => Promise<Manifest>;
-  readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined;
-  prior: WorkspaceWitness[];
-  learningBasis?(): readonly WorkspaceWitness[];
-  pageBasis?: readonly WorkspaceWitness[];
-  jitBasis?: readonly WorkspaceWitness[];
-  currentObject?: OpenedCurrentLearningObject | undefined;
-};
+  trackRetention?: (basis: RetentionBasis) => void; trackDiagnosis?: () => void;
+  beliefTools?: boolean; presentationManifest?: (tx: ReadTransaction) => Promise<Manifest>;
+  readArtifactAssessmentWitness?: ReadArtifactAssessmentWitness | undefined; prior: WorkspaceWitness[];
+  learningBasis?(): readonly WorkspaceWitness[]; pageBasis?: readonly WorkspaceWitness[];
+  jitBasis?: readonly WorkspaceWitness[]; currentObject?: OpenedCurrentLearningObject | undefined;};
 
 export function openWorkspaceTools(options: WorkspaceToolsOptions) {
   const {db, turn, currentObject, narrowSaves} = options;

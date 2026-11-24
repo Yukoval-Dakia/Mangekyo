@@ -26,8 +26,7 @@ const EDGE_SQL = `SELECT f.id FROM facts f JOIN fact_revs r ON (r.learner_id,r.f
 
 export async function readPythonQuestions(tx: ReadTransaction, args: PythonRead['args'], through: Tick, access: {
   maySend: PythonQuestionsMaySend; track: PythonQuestionsTrack; known(id: string): boolean; turn: string; trackNegative(id: string): void;
-}) {
-  return readStudioPythonQuestions({
+}) { return readStudioPythonQuestions({
     purpose, questionScope, ...factReadChecks, toolFailure: toolFailure as StudioPythonQuestionsDeps['toolFailure'],
     createAuthorizedFactReader: createAuthorizedFactReader as StudioPythonQuestionsDeps['createAuthorizedFactReader'],
     resolveSource: resolveSource as StudioPythonQuestionsDeps['resolveSource'],

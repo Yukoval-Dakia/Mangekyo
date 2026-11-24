@@ -30,8 +30,7 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
   maySend: WorkspaceSourceRecipient; track: SourceTrack; trackRetention(basis: RetentionBasis): void; known(id:string): boolean; turn: string; trackNegative(id: string): void;
 }, asOf: string, watermark: Tick): Promise<Value | LearningError> {
   if (request.method === 'questions') return readPythonQuestions(tx,request.args,watermark,access);
-  if (request.method === 'kg_prereqs') {
-    const id = request.args.kc_id;
+  if (request.method === 'kg_prereqs') { const id = request.args.kc_id;
     if (!isSourceFactId(id)) return absent('kc_id', '请提供可读取的知识点 ID。');
     const hops = typeof request.args.depth === 'number' ? request.args.depth : 2;
     const graph = await pythonPrerequisites(id, hops, (direction, select, fits) =>
@@ -51,19 +50,14 @@ export async function readLearningSdk(tx: ReadTransaction, request: PythonRead, 
 
   const reader = purposeReader(tx,access.maySend);
   const tracked = {fact:async (...[id,options]: Parameters<ReadContext['fact']>) => {
-    const fact = await reader.fact(id,options);
-    await checkStudioNotionFact(tx,fact,purpose,access.maySend);
+    const fact = await reader.fact(id,options); await checkStudioNotionFact(tx,fact,purpose,access.maySend);
     access.track(fact,options.mode);
-    return fact;
-  }};
+    return fact;}};
   const paperIds = Array.isArray(request.args.paper_ids) ? request.args.paper_ids : null;
-  for (const id of paperIds ?? []) {
-    if (!isSourceFactId(id)) return absent('paper_ids','请提供当前获准的试卷引用。');
-    try {
-      const paper = await tracked.fact(factId(id),{mode:'following'});
+  for (const id of paperIds ?? []) { if (!isSourceFactId(id)) return absent('paper_ids','请提供当前获准的试卷引用。');
+    try { const paper = await tracked.fact(factId(id),{mode:'following'});
       if (paper.type !== workbookPaperType && paper.type !== retentionPaperType)
-        return absent('paper_ids','请提供当前获准的试卷引用。');
-    } catch (error) {
+        return absent('paper_ids','请提供当前获准的试卷引用。');} catch (error) {
     if (!isFactUnavailable(error)) throw error;
       return access.known(id) ? toolFailure('access_revoked','先前打开的试卷已不可用。',{tool:'read_context',args:{intent:'tutoring'}})
         : absent('paper_ids','请提供当前获准的试卷引用。');

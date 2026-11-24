@@ -20,13 +20,11 @@ export { sourceQuestions, sourceSearchExcerpt, textbookText } from '../../module
 export type SourceReadMode = 'pinned' | 'following';
 export type SourceTrack = (fact: FactSnapshot, mode?: SourceReadMode) => void;
 export type WorkspaceSourceRecipient = NotionRecipient;
-export type SourceAccess = {
-  track?: SourceTrack; exactReadModes?: true; rootType?: string;
+export type SourceAccess = {track?: SourceTrack; exactReadModes?: true; rootType?: string;
   readNotionWitness?: (fact: FactSnapshot) => Promise<FactSnapshot>;
 } & ({ recipient: 'learner' } | { recipient: 'workspace'; maySend: WorkspaceSourceRecipient; purpose?: string; ownerNotionRead?: true });
 
-function conceptAsset(fact: FactSnapshot) {
-  const asset = parseAsset(fact.value);
+function conceptAsset(fact: FactSnapshot) { const asset = parseAsset(fact.value);
   if (asset.kind !== 'concept' || !asset.title.trim()) return;
   const content = asset.blocks.map(b => b.body.kind === 'text' ? b.body.text : b.body.kind === 'formula' ? b.body.latex : '').filter(Boolean).join('\n\n');
   return { title: asset.title, content: content || asset.title };

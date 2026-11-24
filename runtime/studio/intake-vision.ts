@@ -36,21 +36,17 @@ export const completeVisionIntake = (
   slotType: visionIntakeSlot, commandType: completeVisionIntakeCommand, stableTag: 'intake-vision-result',
   afterChanged: async (tx, tick) => {
     for (const record of visionOcrEffectRecords(input.material.ref.id, input.document.ref.rev, ref, telemetry ?? []))
-      await recordCompletedEffect(tx, tick, record);
-  },
+      await recordCompletedEffect(tx, tick, record);},
 });
 
 export function openVisionIntakeWork(db: Db, intake: {
   cloudOriginal(materialId: string, sha256: string): Promise<Buffer>;
   originalPage(materialId: string, page: number): Promise<{ original: { name: string; mediaType: string }; bytes: Buffer }>;
   completeVision(ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]): Promise<void>;
-}, deps: {
-  resolveVisionConfig?: () => VisionLlmConfig | null | Promise<VisionLlmConfig | null>;
+}, deps: {resolveVisionConfig?: () => VisionLlmConfig | null | Promise<VisionLlmConfig | null>;
   fetch?: typeof fetch;
   fallbackExtractLocal?: (kind: string, path: string, bytes: Buffer, limit: number) => Promise<LocalExtractionResult>;
-} = {}) {
-  return {
-    execute: (ref: WorkRef, terminalFailure = false, signal?: AbortSignal) =>
+} = {}) { return {execute: (ref: WorkRef, terminalFailure = false, signal?: AbortSignal) =>
       runPendingIntakeWork(db, ref, tx => visionInput(tx, ref), error => error instanceof RequestError, async ({ frozen, host, finish }) => {
         const unchanged = async (tx: ReadTransaction) => { if (!sameIntakeWorkSnapshot(await visionInput(tx, ref), frozen)) throw new StoppedIntakeWork(); };
         const publish = async (extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]) => { await intake.completeVision(ref, frozen, extraction, telemetry); await finish(); };
@@ -58,8 +54,7 @@ export function openVisionIntakeWork(db: Db, intake: {
         const plan = planMultiPageVisionWork(frozen.value);
         if (!plan.pagesToRun.length) return publish(completeMultiPageVisionExtraction(plan.preservedPages, { titleHint: frozen.value.title }));
         const allPages = intakeDocumentPages(frozen.value), pageInputs: { page: number; bytes: Buffer; name: string }[] = [];
-        for (const { page } of plan.pagesToRun) {
-          const entry = allPages.find(item => item.page === page);
+        for (const { page } of plan.pagesToRun) { const entry = allPages.find(item => item.page === page);
           if (!entry) return publish(failedVisionExtraction(`第 ${page} 页原件缺少元数据。`, 'vision_llm', plan.totalPages));
           const result = await intake.originalPage(frozen.material.ref.id, page).catch(() => null);
           if (!result || result.bytes === null) return publish(failedVisionExtraction(`第 ${page} 页原件无法读取。`, 'vision_llm', plan.totalPages));

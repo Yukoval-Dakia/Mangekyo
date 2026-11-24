@@ -1,9 +1,7 @@
 import type { CommandHooks } from '../../kernel/src/index.ts';
 import { createPropagationHooks, type SlotPropagationPolicy } from '../../kernel/src/derivations/propagation.ts';
 
-export function createStudioCommandHooks({
-  policies = [],
-  afterFactsChanged,
+export function createStudioCommandHooks({policies = [], afterFactsChanged,
 }: {
   /** Register policies only for declared slots with a dispatcher in this runtime. */
   readonly policies?: readonly SlotPropagationPolicy[];

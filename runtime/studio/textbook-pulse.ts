@@ -11,8 +11,7 @@ import { studioWorkbookEvidence } from './retention-workbook.ts';
 import { resolveSource } from './source-read.ts';
 
 type SnapshotReader = ReturnType<ReturnType<typeof snapshotFactReaders>>;
-export type TextbookPulseHost = {
-  readonly python: Pick<PythonDeriverHost, 'derive'>;
+export type TextbookPulseHost = { readonly python: Pick<PythonDeriverHost, 'derive'>;
   readonly backtrace: (tx: ReadTransaction, read: { fact: SnapshotReader['fact'] }, facts: ReturnType<typeof snapshotFactReaders>) => Parameters<typeof projectTextbookPulse>[0]['backtrace'];
 };
 
@@ -28,21 +27,17 @@ export async function textbookMasteryPulse(tx: ReadTransaction, check: CheckNoti
     const fact = await read.reopen(ref);
     if (fact.type !== ref.type || fact.ref.rev !== ref.rev || fact.accessEpoch !== ref.accessEpoch) return;
     await checkStudioNotionFact(tx, fact, teaching, 'learner', async source => (await check(source), fact));
-    return ref;
-  });
+    return ref;});
   return projectTextbookPulse({
     tx, page, access: access as never, read: read as never, reopen: reopen as never,
     resolveLegacyQuestion: async pin => {
       const source = await resolveSource(tx, pin.id, { recipient: 'workspace', purpose: teaching, maySend: own });
       return source?.kind === 'question' && source.sourceRef.fact.id === pin.id && source.sourceRef.fact.rev === pin.rev;
-    },
-    slot: readCurrentQuestionVerification(tx),
+    }, slot: readCurrentQuestionVerification(tx),
     evidence: studioWorkbookEvidence(teaching, () => true, undefined, [workspaceEntryType, assetType]) as never,
     backtrace: host.backtrace(tx, { fact: read.fact }, snapshot), limit: pythonAttemptsLimit,
-    derive: async (deriver, payload, refs) => {
-      const result = await host.python.derive(deriver, payload);
+    derive: async (deriver, payload, refs) => { const result = await host.python.derive(deriver, payload);
       return result.kind === 'ok' && result.outcome.kind === 'value' && (await reopen({} as never, refs)).length === refs.length ? result.outcome.value : null;
-    },
-    project: projectTextbookMastery as never,
+    }, project: projectTextbookMastery as never,
   });
 }

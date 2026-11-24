@@ -29,8 +29,7 @@ export function openWorkspaceTextbook(options: {
   const { db, turn, opened } = options, host = createLearnerHost(db, studioLearner, { actor: 'companion' });
   const reader = (tx: ReadTransaction) => purposeReader(tx, options.maySend);
   const createHandler = async () => host.boundHandler([await (content ??= loadContent())], {
-    ...createStudioCommandHooks({ afterFactsChanged: options.authorize }),
-    async beforeProposal(tx, request) {
+    ...createStudioCommandHooks({ afterFactsChanged: options.authorize }), async beforeProposal(tx, request) {
       await options.authorize(tx);
       const input = parseTextbookRevision(request.input), read = reader(tx);
       if ((await read.fact(input.id, following)).ref.rev !== input.expectedRev) throw new Error(`Fact revision conflict: ${input.id}`);

@@ -30,8 +30,7 @@ export type { IntakeMetadata } from '../../modules/capture/intake-view.ts';
 
 type CaptureInput = Omit<intakeOps.IntakeCaptureInput, 'bytes'> & { readonly bytes: Buffer };
 type PagesCaptureInput = Omit<intakeOps.IntakeMultiPageCaptureInput<Buffer>, 'pages'> & {
-  readonly pages: readonly { filename?: unknown; declaredType?: unknown; bytes: Buffer }[];
-};
+  readonly pages: readonly { filename?: unknown; declaredType?: unknown; bytes: Buffer }[];};
 
 export const intakeWriteTargets = {
   [captureIntakeCommand]: { create: [materialType] }, [correctIntakeCommand]: { correct: [materialType] },
@@ -40,8 +39,7 @@ export const intakeWriteTargets = {
   [confirmIntakeQuestionsCommand]: { create: [questionAssetType, questionStateType, questionMetaDraftType] },
 } satisfies CrossModuleWrites;
 
-const prepareDeps = {
-  isBuffer: Buffer.isBuffer, parseWatermark: submittedWatermark,
+const prepareDeps = {isBuffer: Buffer.isBuffer, parseWatermark: submittedWatermark,
   materialIdFor: (requestId: string) => factId(stableId('intake-material', requestId)),
   identify: (bytes: Uint8Array, ext: string, declaredType: unknown) => identifyLocalDocument(bytes as Buffer, ext, declaredType),
   sha256: (bytes: Uint8Array) => digest(bytes as Buffer),
@@ -62,9 +60,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       if (watermark !== undefined) await lifecycle.checkCapture(tx, id, watermark);
       const read = host.read(tx, intakePurpose), material = await read.fact(id, { mode: 'following' });
       if (watermark !== undefined && material.type === captureSourceType) throw new RequestError(409, '同一个请求标识已用于纸卷拍回。');
-      return { id, material, document: await read.fact(intakeId, { mode: 'following' }), intakeId };
-    });
-  };
+      return { id, material, document: await read.fact(intakeId, { mode: 'following' }), intakeId };});};
   const readFacts = (materialId: string, watermark?: string) =>
     factsFor(materialId, watermark).catch(error => { throw intakeOps.translateIntakeReadError(error, error instanceof LifecycleError, isFactUnavailable(error)); });
   const metadataFor = async (materialId: string, watermark?: string): Promise<IntakeMetadata & { questionCards: ReturnType<typeof projectIntakeQuestionCards> }> => {
@@ -75,22 +71,18 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     metadataFor(materialId, watermark).catch(error => error instanceof RequestError && error.status === 404 ? null : Promise.reject(error));
   const runCommand = async (materialId: string, type: string, id: ReturnType<typeof commandId>, input: Json, translate: (e: unknown, unavailable: boolean) => unknown, runner = exec) => {
     try { await runner({ purpose: intakePurpose, type, id, input }); } catch (error) { throw translate(error, isFactUnavailable(error)); }
-    return metadataFor(materialId);
-  };
+    return metadataFor(materialId);};
 
   async function commitCapture(
     materialId: FactId, requestId: string, deletionWatermark: string, matches: (prior: IntakeMetadata) => boolean,
     stage: (commit: (install: () => Promise<void>, commandInput: Json, enqueue?: (tx: DbTransaction, tick: Tick) => Promise<void>) => Promise<void>) => Promise<void>,
-  ) {
-    const prior = await metadataOrNull(materialId, deletionWatermark);
+  ) { const prior = await metadataOrNull(materialId, deletionWatermark);
     if (prior) { if (!matches(prior)) throw new RequestError(409, '同一个请求标识已经用于不同文件或标题。'); return { ...prior, created: false }; }
     let installed = false;
-    try {
-      await stage((install, commandInput, enqueue) => saveWith(async (tx, tick) => {
+    try { await stage((install, commandInput, enqueue) => saveWith(async (tx, tick) => {
         await install(); installed = true; await enqueue?.(tx, tick);
       })({ purpose: intakePurpose, type: captureIntakeCommand, id: intakeCaptureId(requestId), deletionWatermark, input: commandInput }).then(() => undefined));
-    } catch (error) {
-      if (error instanceof LifecycleError) throw error;
+    } catch (error) { if (error instanceof LifecycleError) throw error;
       const raced = await metadataOrNull(materialId, deletionWatermark);
       if (raced && matches(raced)) return { ...raced, created: false };
       if (raced || isKernelErrorKind(error, 'duplicate_command')) throw new RequestError(409, '同一个请求标识已经用于不同内容。');
@@ -99,23 +91,18 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     return { ...(await metadataFor(materialId)), created: installed };
   }
 
-  return {
-    lifecycle, metadata: metadataFor,
+  return {lifecycle, metadata: metadataFor,
     cloudOriginal: (materialId: string, sha256: string) => objects.read(materialId, { sha256 }),
-    original: async (materialId: string) => {
-      const id = factId(materialId);
+    original: async (materialId: string) => { const id = factId(materialId);
       const original = await host.snapshot(async tx => {
         const fact = await host.readOrNull(tx, intakePurpose, id, { mode: 'following' });
-        return fact ? intakeOps.extractPaperReturnOriginal(fact, id) : null;
-      });
+        return fact ? intakeOps.extractPaperReturnOriginal(fact, id) : null;});
       const metadata = original ? { original } : await metadataFor(id);
-      return { metadata, stored: metadata.original, bytes: await objects.read(id, metadata.original) };
-    },
+      return { metadata, stored: metadata.original, bytes: await objects.read(id, metadata.original) };},
     originalPage: async (materialId: string, page: number) => {
       const facts = await factsFor(materialId), entry = intakeDocumentPages(intakeDocument(facts.document.value)).find(item => item.page === page);
       if (!entry) throw new RequestError(404, '找不到该页原件。');
-      return { original: entry, bytes: await objects.readPage(facts.id, page, entry) };
-    },
+      return { original: entry, bytes: await objects.readPage(facts.id, page, entry) };},
     capture: async (input: CaptureInput) => {
       const { requestId, materialId, deletionWatermark, detected, title, original } = intakeOps.prepareIntakeCapture(input, prepareDeps);
       const intakeId = intakeIdFor(materialId), { requested, cloud, asyncVision } = intakeOps.resolveCaptureExtraction(input.extraction, detected.mediaType, mineruSupports, { asyncPhotoDefault: true });
@@ -128,9 +115,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
             materialId, intakeId, title, original, extraction, savedAt: new Date().toISOString(),
             ...(cloud ? { requestedExtraction: 'mineru' } : asyncVision ? { requestedExtraction: 'vision_llm' } : {}),
           }, cloud ? (tx, tick) => enqueueCloudIntake(tx, tick, intakeId) : asyncVision ? (tx, tick) => enqueueVisionIntake(tx, tick, intakeId) : undefined);
-        }));
-    },
-    capturePages: async (input: PagesCaptureInput) => {
+        }));}, capturePages: async (input: PagesCaptureInput) => {
       const { requestId, materialId, deletionWatermark, title, original, originals, pages } = intakeOps.prepareIntakeMultiPageCapture(input, prepareDeps);
       const intakeId = intakeIdFor(materialId), { requested, asyncVision } = intakeOps.resolveCaptureExtraction(
         input.extraction === undefined && pages.length === 1 ? 'vision_llm' : input.extraction, original.mediaType, mineruSupports, { asyncPhotoDefault: true });
@@ -140,8 +125,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
           (_staged, install) => commit(install, {
             materialId, intakeId, title, original, originals, extraction: pendingVisionExtraction('queued', { pageCount: originals.length }),
             savedAt: new Date().toISOString(), requestedExtraction: 'vision_llm',
-          }, (tx, tick) => enqueueVisionIntake(tx, tick, intakeId))));
-    },
+          }, (tx, tick) => enqueueVisionIntake(tx, tick, intakeId))));},
     appendPages: async (input: intakeOps.IntakeAppendPagesInput<Buffer>) => {
       const { materialId, requestId, data, pages } = intakeOps.prepareIntakeAppendPages(input, intakeIdFor, prepareDeps);
       let installed = false;
@@ -151,18 +135,15 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
         await objects.appendOriginals(materialId, startPage, pages.map(p => ({ bytes: p.bytes as Buffer, original: p.original })),
           (_staged, install) => saveWith(async (tx, tick) => { await install(); installed = true; await enqueueVisionIntake(tx, tick, data.intakeId); })({
             purpose: intakePurpose, type: appendIntakePagesCommand, id: commandId(stableId('intake-append-pages', requestId)), input: data,
-          }), { whenUncommitted: async undo => {
-            const now = await factsFor(materialId).catch(() => null);
+          }), { whenUncommitted: async undo => { const now = await factsFor(materialId).catch(() => null);
             if (!(now ? intakeDocumentPages(intakeDocument(now.document.value)) : []).some(p => p.page >= startPage)) await undo();
           } });
       } catch (error) { throw intakeOps.translateIntakeAppendPagesError(error, isFactUnavailable(error)); }
-      return { ...(await metadataFor(materialId)), created: installed };
-    },
+      return { ...(await metadataFor(materialId)), created: installed };},
     confirmDrafts: async (materialId: string, input: unknown, workbookOverride = workbook) => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new RequestError(400, '拍卷确认请求格式无效。');
       const value = input as Record<string, unknown>, parse = <T>(fn: () => T, fallback: string) => { try { return fn(); } catch (e) { throw new RequestError(400, e instanceof Error ? e.message : fallback); } };
-      if (value.mode === 'workbook') {
-        const target = workbookOverride ?? workbook;
+      if (value.mode === 'workbook') { const target = workbookOverride ?? workbook;
         if (!target) throw new RequestError(500, '练习模块未启用。');
         const facts = await readFacts(materialId);
         const draft = parse(() => buildWorkbookDraftFromIntakeSelection(facts.document.value, value as IntakeWorkbookSelection), '微卷选题格式无效。');
@@ -179,8 +160,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
       const { requestId, materialId, deletionWatermark, detected, title, original } = intakeOps.prepareIntakeCapture(input, prepareDeps);
       return objects.withOriginal(materialId, input.bytes, original, (_, install) =>
         papers.upload(intakeOps.resolvePaperReturnSelection(input, materialId, detected.kind),
-          { command: intakeCaptureId(requestId), deletionWatermark, title, original, install }));
-    },
+          { command: intakeCaptureId(requestId), deletionWatermark, title, original, install }));},
     completeCloud: (ref: WorkRef, input: CloudIntakeInput, extraction: IntakeExtraction) =>
       completeIntakeWorkCommand(db, runtime, hooks, ref, input, extraction, { slotType: cloudIntakeSlot, commandType: completeCloudIntakeCommand, stableTag: 'intake-mineru-result' }),
     completeVision: (ref: WorkRef, input: VisionIntakeInput, extraction: IntakeExtraction, telemetry?: readonly VisionOcrCallTelemetry[]) =>
@@ -188,22 +168,17 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     correct: (input: intakeOps.IntakeCorrectInput) => {
       const { materialId, requestId, data } = intakeOps.prepareIntakeCorrection(input, intakeIdFor);
       return runCommand(materialId, correctIntakeCommand, commandId(stableId('intake-correction', requestId)), data, intakeOps.translateIntakeCorrectionError);
-    },
-    retryVision: (input: intakeOps.IntakeRetryVisionInput) => {
+    }, retryVision: (input: intakeOps.IntakeRetryVisionInput) => {
       const { materialId, requestId, data } = intakeOps.prepareIntakeVisionRetry(input, intakeIdFor);
       return runCommand(materialId, retryVisionIntakeCommand, commandId(stableId('intake-vision-retry', requestId)), data,
         intakeOps.translateIntakeVisionRetryError, saveWith((tx, tick) => enqueueVisionIntake(tx, tick, data.intakeId)));
-    },
-    setResearch: (materialId: string, input: unknown) => {
+    }, setResearch: (materialId: string, input: unknown) => {
       const { id, data } = intakeOps.prepareIntakeResearchPermission(materialId, input, intakeIdFor);
       return runCommand(id, setIntakeResearchCommand, commandId(stableId('intake-research', id, String(data.expectedRev), String(data.enabled))), data, intakeOps.translateIntakeResearchError);
-    },
-    questionCards: async (materialId: string) => {
-      const f = await readFacts(materialId);
+    }, questionCards: async (materialId: string) => { const f = await readFacts(materialId);
       return { materialId: f.id, materialRev: f.material.ref.rev, intakeRev: f.document.ref.rev,
         title: intakeOps.projectIntakeFacts(f.id, f.material.value, f.document.value, f.document.ref.rev, f.document.purpose).title,
-        questionCards: projectIntakeQuestionCards(f.document.value) };
-    },
+        questionCards: projectIntakeQuestionCards(f.document.value) };},
   };
 }
 
@@ -212,8 +187,7 @@ function json(response: ServerResponse, status: number, data: unknown) {
   response.end(JSON.stringify(data));
 }
 
-export async function readBody(request: IncomingMessage, limit: number) {
-  const chunks: Buffer[] = [];
+export async function readBody(request: IncomingMessage, limit: number) { const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     if ((size += chunk.length) > limit) { request.resume(); throw new RequestError(413, '请求内容过长。'); }
@@ -227,14 +201,11 @@ export async function handleIntakeRequest(
   method: string | undefined, papers?: ReturnType<typeof openCapturePapers>, workbook?: { save(input: unknown): Promise<{ id: string }> },
 ): Promise<boolean> {
   const cardRoute = /^\/api\/materials\/([0-9A-HJKMNP-TV-Z]{26})\/(question-cards|confirm-drafts)$/.exec(pathname);
-  if (cardRoute?.[1]) {
-    const isCards = cardRoute[2] === 'question-cards';
+  if (cardRoute?.[1]) { const isCards = cardRoute[2] === 'question-cards';
     if (method !== (isCards ? 'GET' : 'POST')) return json(response, 405, { error: '这个入口只接受指定操作。' }), true;
-    try {
-      const result = isCards ? await intake.questionCards(cardRoute[1])
+    try { const result = isCards ? await intake.questionCards(cardRoute[1])
         : await intake.confirmDrafts(cardRoute[1], JSON.parse((await readBody(request, 1_048_576)).toString('utf8')), workbook);
-      return json(response, isCards ? 200 : 201, result), true;
-    } catch (error) {
+      return json(response, isCards ? 200 : 201, result), true;} catch (error) {
       const formatted = intakeOps.formatIntakeErrorResponse(error, isCards ? '这份材料的核对卡无法读取。' : '拍卷确认未能完成。',
         { syntaxMessage: error instanceof SyntaxError ? error.message : undefined });
       return json(response, formatted.status, formatted.body), true;

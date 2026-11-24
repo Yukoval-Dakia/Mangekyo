@@ -6,44 +6,25 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
 /** Development deployments pin the actual code even when the checkout has uncommitted changes. */
-export async function sourceBuildId() {
-  const digest = createHash('sha256');
-  async function add(path: string) {
-    digest
-      .update(relative(root, path))
-      .update('\0')
-      .update(await readFile(path))
-      .update('\0');
+export async function sourceBuildId() { const digest = createHash('sha256');
+  async function add(path: string) {digest.update(relative(root, path)).update('\0')
+      .update(await readFile(path)).update('\0');
   }
-  async function scan(directory: string) {
-    const entries = await readdir(directory, { withFileTypes: true });
+  async function scan(directory: string) { const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
       const path = join(directory, entry.name);
       if (entry.isDirectory() && !['node_modules', 'dist', 'test'].includes(entry.name)) await scan(path);
-      if (
-        entry.isFile() &&
+      if (entry.isFile() &&
         (entry.name.endsWith('.ts') || entry.name.endsWith('.js') || entry.name === 'package.json') &&
-        !entry.name.endsWith('.test.ts')
-      )
+        !entry.name.endsWith('.test.ts'))
         await add(path);
     }
   }
-  for (const directory of [
-    'kernel/src',
-    'kernel/dist',
-    'modules/activity',
-    'modules/capture',
-    'modules/content',
-    'modules/learner',
-    'modules/plan',
-    'surfaces/shared/presentation',
-    'modules/companion',
-    'executors/document-extraction',
-    'executors/temporal/src',
-    'executors/teaching',
-    'runtime/studio',
-  ]) {
-    await scan(join(root, directory));
+  for (const directory of ['kernel/src', 'kernel/dist', 'modules/activity',
+    'modules/capture', 'modules/content', 'modules/learner', 'modules/plan',
+    'surfaces/shared/presentation', 'modules/companion',
+    'executors/document-extraction', 'executors/temporal/src', 'executors/teaching', 'runtime/studio',
+  ]) { await scan(join(root, directory));
   }
   await add(join(root, 'executors/document-extraction/extract-document.swift'));
   await add(join(root, 'pnpm-lock.yaml'));

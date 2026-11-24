@@ -76,16 +76,13 @@ async function currentRow(tx: ReadTransaction, id: FactId): Promise<AccessRow | 
      WHERE f.learner_id=$1 AND f.id=$2 AND f.retracted_rev IS NULL`, [tx.learner, id]);
   return row ?? null;
 }
-function translate(error: unknown): Error {
-  if (error instanceof RequestError) return error;
+function translate(error: unknown): Error { if (error instanceof RequestError) return error;
   if (isFactNotFound(error)) return new RequestError(404, '找不到这条学习记录。');
   if (isFactReadDenied(error)) return new RequestError(403, '这条学习记录当前不可读取。');
-  return matchKernelError<Error>(error, {
-    unknown_command: () => new RequestError(503, '当前服务还不支持开放学习记录。'),
+  return matchKernelError<Error>(error, {unknown_command: () => new RequestError(503, '当前服务还不支持开放学习记录。'),
     duplicate_command: () => new RequestError(409, '同一个请求已经用于不同内容。'),
     revision_conflict: () => new RequestError(409, '这条记录已在别处更新。请刷新后再试。'),
-    not_found: () => new RequestError(404, '找不到这条学习记录。'),
-    retracted: () => new RequestError(409, '这条记录已经撤回。'),
+    not_found: () => new RequestError(404, '找不到这条学习记录。'), retracted: () => new RequestError(409, '这条记录已经撤回。'),
     otherwise: () => new RequestError(400, '学习记录设置未能完成。'),
   });
 }

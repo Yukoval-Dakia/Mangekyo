@@ -34,6 +34,5 @@ export function readWorkbookDisplayAccess(db: Db, paper: string, attempt: string
         items.push({ id, rev: fact.ref.rev, teaching: fact.purpose.includes('teaching') || fact.purpose.includes('all'), paperRev: display.paper.rev, numbers: mapDisplayedQuestionNumbers(work.paper.questions, display.items) });
       }
       return { items, next: rows.length > pageSize ? items.at(-1)!.id : null };
-    } catch (error) { if (isFactUnavailable(error)) throw unavailable(); throw error; }
-  });
+    } catch (error) { if (isFactUnavailable(error)) throw unavailable(); throw error; }});
 }

@@ -23,27 +23,18 @@ export async function sampleResearchScout(db: Db, settingsId: FactId, revision: 
   const prompt = JSON.stringify(prepared.paidInput);
   const { route, reserveUsdMicros } = host;
   const maxOutputTokens = 256;
-  try {
-    const effect = await runEffect(db, {
+  try { const effect = await runEffect(db, {
       ...scope, ...scoutEffectIdentity(settingsId, prepared.intent.dedupKey), input: { revision, route, reserveUsdMicros, maxOutputTokens, prompt },
-    }, async (providerEffectId, checkDispatch) => {
-      let dispatched = false;
-      try {
-        const { response } = await withLearnerLock(db, scope, async tx => {
-          await checkDispatch(tx);
-          await authorize(tx);
+    }, async (providerEffectId, checkDispatch) => { let dispatched = false;
+      try { const { response } = await withLearnerLock(db, scope, async tx => {
+          await checkDispatch(tx); await authorize(tx);
           if (host.retentionDays > budget.maxRetentionDays || host.route !== budget.route || reserveUsdMicros > budget.maxPerCallMicros)
-            throw new ScoutAuthorizationChanged();
-          signal.throwIfAborted();
-          dispatched = true;
+            throw new ScoutAuthorizationChanged(); signal.throwIfAborted(); dispatched = true;
           const response = host.sample({ providerEffectId, prompt, maxOutputTokens, reserveUsdMicros },
-            AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
-          void response.catch(() => {});
-          return { response };
-        });
+            AbortSignal.any([signal, AbortSignal.timeout(20_000)])); void response.catch(() => {});
+          return { response };});
         const receipt = await response;
-        return scoutReceipt(receipt,reserveUsdMicros,raw => researchDecision(prepared,raw));
-      } catch (error) {
+        return scoutReceipt(receipt,reserveUsdMicros,raw => researchDecision(prepared,raw));} catch (error) {
         if (!dispatched) return { decision: 'not_sent', actualUsdMicros: 0 };
         throw error;
       }

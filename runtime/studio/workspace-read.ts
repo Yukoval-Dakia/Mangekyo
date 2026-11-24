@@ -35,12 +35,10 @@ export async function workspaceAssessmentBasis(tx: ReadTransaction, slot: Assess
   const facts = extractAssessmentManifestFacts(manifest.inputs, current.attempt_id, syntheticStudyRecords);
   if (!facts || !facts.some(f => f.id === current.attempt_id) || !facts.some(f => f.id === current.paper_id)) return;
   const bus = createBusScope(tx, { actor: 'companion', purpose, maySend, defaultPreset: 'assessmentBasis', presets: new Map([['assessmentBasis', (fact: FactSnapshot) => fact.type]]) });
-  try {
-    for (let offset = 0; offset < facts.length; offset += 8) {
+  try { for (let offset = 0; offset < facts.length; offset += 8) {
       const { witnesses } = await bus.resolve(facts.slice(offset, offset + 8).map(ref => ({ ...ref, rev: ref.rev as Revision })), 'assessmentBasis');
       if (witnesses.some(w => (w.id === current.attempt_id && w.type !== workbookAttemptType) || (w.id === current.paper_id && w.type !== workbookPaperType))) return;
-    }
-  } catch (error) { if (isFactUnavailable(error)) return; throw error; }
+    }} catch (error) { if (isFactUnavailable(error)) return; throw error; }
   return { slot, facts };
 }
 
@@ -54,8 +52,7 @@ export async function readWorkspaceAttemptAssessments(tx: ReadTransaction, attem
 }
 
 export async function workspaceQuery(tx: ReadTransaction, args: Arguments, access: SourceAccess, semantic?: WorkspaceCandidateChannel) {
-  try {
-    const unappliedFilters = findUnsupportedWorkspaceQueryFields(args);
+  try { const unappliedFilters = findUnsupportedWorkspaceQueryFields(args);
     if (unappliedFilters.length) return { results: [], truncated: false, unappliedFilters };
     const criteria = parseWorkspaceSearch(args), { conceptId, hops = 2, direction = 'both' } = args;
     if (conceptId === undefined) {
@@ -68,8 +65,7 @@ export async function workspaceQuery(tx: ReadTransaction, args: Arguments, acces
     const graph = await readKnowledgeGraph(tx, { conceptId: conceptId as string, hops: hops as 0 | 1 | 2, direction: direction as 'both' | 'inbound' | 'outbound',
       edgeKinds: knowledgeEdgeKinds.filter(kind => requested.includes(kind)) }, access, (source, fact, hop) => {
       const match = workspaceResult(source, fact, criteria);
-      return match ? { ...match, hop } : undefined;
-    });
+      return match ? { ...match, hop } : undefined;});
     if (graph) return { ...graph, unappliedFilters: unappliedWorkspaceFilters(criteria) };
   } catch (error) { if (error instanceof WorkspaceSearchError) return { error: error.message, code: error.code, field: error.field }; throw error; }
   return undefined;
@@ -77,8 +73,7 @@ export async function workspaceQuery(tx: ReadTransaction, args: Arguments, acces
 
 export async function workspaceSearch(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient): Promise<string> {
   const result = await workspaceQuery(tx, args, { recipient: 'workspace', track, maySend });
-  if (result && 'error' in result && result.code) {
-    const { cursor: _cursor, ...query } = args;
+  if (result && 'error' in result && result.code) { const { cursor: _cursor, ...query } = args;
     return JSON.stringify(learningToolError(result.code, result.field, result.error, result.code === 'basis_stale'
       ? { tool: 'search_workspace', args: query, why: '去掉旧分页位置，重新查询。' } : undefined));
   }
@@ -86,8 +81,7 @@ export async function workspaceSearch(tx: ReadTransaction, args: Arguments, trac
 }
 
 export async function workspaceRead(tx: ReadTransaction, args: Arguments, track: SourceTrack, maySend: WorkspaceSourceRecipient,
-  trackAssessment?: (basis: WorkspaceAssessmentBasis) => void): Promise<string> {
-  if (args.id === 'learner') {
+  trackAssessment?: (basis: WorkspaceAssessmentBasis) => void): Promise<string> { if (args.id === 'learner') {
     const observations = JSON.parse(await workspaceSearch(tx, { kind: 'observation' }, track, maySend));
     const attempts = JSON.parse(await workspaceSearch(tx, { kind: 'attempt' }, track, maySend));
     const overview = await readLearningOverview(tx, { callerPurpose: purpose, maySend: (_, snapshot) => maySend(snapshot), track });
