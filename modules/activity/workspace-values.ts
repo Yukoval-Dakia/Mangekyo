@@ -82,7 +82,7 @@ export type WorkspaceEntry = {
 export type WorkspaceEntryFields = Omit<WorkspaceEntry, 'basis'>;
 
 export type SaveWorkspaceEntryInput = {
-  readonly id: FactId; readonly expectedRev?: Revision;
+  readonly id: FactId; readonly expectedRev?: Revision; readonly purpose?: 'storage' | 'teaching';
   readonly entry: WorkspaceEntryFields; readonly basis: readonly WorkspaceEntryBasis[];
 };
 
@@ -259,7 +259,10 @@ export function saveWorkspaceEntryInput(input: unknown): SaveWorkspaceEntryInput
   if (basis.some((item) => item.id === id)) {
     throw new WorkspaceInputError('依据不能指向条目自身。');
   }
-  return { id, entry, basis, ...(expectedRev === undefined ? {} : { expectedRev }) };
+  if (value.purpose !== undefined && value.purpose !== 'storage' && value.purpose !== 'teaching')
+    throw new WorkspaceInputError('工作区条目用途无效。');
+  return { id, entry, basis, ...(expectedRev === undefined ? {} : { expectedRev }),
+    ...(value.purpose === 'storage' || value.purpose === 'teaching' ? { purpose: value.purpose } : {}) };
 }
 
 export function setWorkspaceTeachingInput(input: unknown): SetWorkspaceTeachingInput {

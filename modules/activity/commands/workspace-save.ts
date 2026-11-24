@@ -29,7 +29,7 @@ export default defineCommand({
       return [{
         kind: 'create', id: input.id, factType: workspaceEntryType,
         data,
-        purpose: [storagePurpose, teachingPurpose],
+        purpose: input.purpose === storagePurpose ? [storagePurpose] : [storagePurpose, teachingPurpose],
       }];
     }
     return [{
