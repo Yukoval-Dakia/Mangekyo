@@ -83,7 +83,7 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       expect(await maintenance.run({ force: false, now: () => t2 })).toMatchObject({ ran: false, reason: 'no_maintenance_needed' });
       expect(agentCalls).toBe(1);
 
-      // D07: 开放 background-research 后，远程付费模型无预算必须拒绝，有预算放行，额度耗尽再拒绝
+      // D07: 开放 background-research 后，远程付费模型无预算必须拒绝；预算只够一次时第二次自动触顶
       await db.tx({ learner: studioLearner }, async tx => {
         await tx.query(`UPDATE facts SET purpose=ARRAY['storage','teaching','background-research'] WHERE learner_id=$1 AND id=ANY($2)`, [tx.learner, [c1, c2]]);
         await tx.query(`UPDATE fact_revs SET purpose=ARRAY['storage','teaching','background-research'] WHERE learner_id=$1 AND fact_id=ANY($2)`, [tx.learner, [c1, c2]]);
@@ -92,12 +92,11 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       expect(await maintenance.run({ force: false, now: () => t2 })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
       expect(agentCalls).toBe(1);
       await send('companion.configureResearch', 'research-budget', { id: settingsId, revision: 1, enabled: true,
-        scoutBudget: { route: 'default', limitMicros: 500000, maxPerCallMicros: 50000, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 3600_000 } }, 'learner', 'background-research');
+        scoutBudget: { route: 'default', limitMicros: 50000, maxPerCallMicros: 50000, maxRetentionDays: 0, expiresAtMs: t3.getTime() + 3600_000 } }, 'learner', 'background-research');
       expect(await maintenance.run({ force: false, now: () => t2 })).toMatchObject({ ran: true });
       expect(agentCalls).toBe(2);
-      await db.tx({ learner: studioLearner }, tx => tx.withLearnerWrite(tick => tx.insert('effects', {
-        learner_id: studioLearner, owner_kind: 'session', owner_id: 'spent1', step_key: 's1', label: 'teaching-model', input_digest: 'd1',
-        input: '{}', result: '{}', provider_effect_id: 'pe1', state: 'done', reserved_usd_micros: 500000, actual_usd_micros: 500000, budget_route: 'default', started_tick: tick, ended_tick: tick })));
+      expect((await db.snapshot({ learner: studioLearner }, tx => tx.query<{ held: string }>(
+        `SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50000');
       expect(await maintenance.run({ force: false, now: () => t3 })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
       expect(agentCalls).toBe(2);
 

@@ -1,4 +1,4 @@
-import { commandId, factId, stableId, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
+import { commandId, factId, stableId, type Db, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
 import { recordCompletedEffect } from '../../kernel/src/work/index.ts';
 import { effectBudgetUsage } from '../../kernel/src/work/effects.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
@@ -31,8 +31,9 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
       const settings = force ? null : await currentResearchSettings(tx);
       if (!force && !settings?.enabled) return skip('research_disabled');
       const budget = settings?.scoutBudget;
-      const spent = !force && budget && budget.limitMicros > 0 && budget.expiresAtMs > nowMs ? await effectBudgetUsage(tx) : null;
-      const hasPaidBudget = Boolean(spent && spent.settled + spent.held < BigInt(budget!.limitMicros));
+      const spent = !force && budget && budget.limitMicros > 0 && budget.maxPerCallMicros > 0 && budget.expiresAtMs > nowMs ? await effectBudgetUsage(tx) : null;
+      const paidBudget = spent && budget && spent.settled + spent.held + BigInt(budget.maxPerCallMicros) <= BigInt(budget.limitMicros)
+        ? { route: budget.route, maxPerCallMicros: budget.maxPerCallMicros } : null;
       const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: readPurpose });
       const conceptUses = new Map<string, MaintenanceConceptUse>(), accessEpochs = new Map<string, string>();
       for (const [id, s] of snapshots) { conceptUses.set(id, { id, rev: s.ref.rev, accessEpoch: s.accessEpoch }); accessEpochs.set(id, s.accessEpoch); }
@@ -40,21 +41,30 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         WHERE learner_id=$1 AND label=$2 AND state='done' ORDER BY ended_tick DESC LIMIT 1`, [tx.learner, LABEL])).rows[0];
       const context = buildMaintenanceContext(extractMaintenanceInputFromFlow(snap, { currentDate, nowMs, lastRunAtMs: last?.ranAtMs ? Number(last.ranAtMs) : null,
         lastRunTick: last?.ended_tick ?? null, accessEpochs }), force ? { minIntervalMs: 0, idleCooldownMs: 0 } : {});
-      return context ? { ran: true as const, context, conceptUses, hasPaidBudget } : skip('no_maintenance_needed');
+      return context ? { ran: true as const, context, conceptUses, paidBudget } : skip('no_maintenance_needed');
     });
     if (prepared.ran === false) return prepared;
-    const { context, conceptUses, hasPaidBudget } = prepared, provider = await loadProvider().catch(() => undefined);
+    const { context, conceptUses, paidBudget } = prepared, provider = await loadProvider().catch(() => undefined);
     if (!provider?.baseUrl) {
       if (force) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
       return skip('model_unavailable');
     }
-    if (!force && !isLocalZeroCostProvider(provider) && !hasPaidBudget) return skip('paid_budget_required');
+    const charge = !force && !isLocalZeroCostProvider(provider) ? paidBudget : null;
+    if (!force && !isLocalZeroCostProvider(provider) && !charge) return skip('paid_budget_required');
     const runKey = `${currentDate}:${nowMs}`;
+    const recordEffect = (effectResult: Json) => host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, {
+      ownerKind: 'session', ownerId: `maintenance:${runKey}`, stepKey: LABEL, label: LABEL, providerEffectId: `maintenance:${runKey}`,
+      input: { trigger: context.trigger, force, currentDate }, result: effectResult,
+      ...(charge ? { budgetRoute: charge.route, reservedUsdMicros: charge.maxPerCallMicros, actualUsdMicros: null } : {}) })));
     let result: Awaited<ReturnType<typeof agent>>;
     try { result = await agent(context, { provider, requestId: `maint-${runKey}` }); }
     catch (err) {
       if (!(err instanceof TeachingError)) throw err;
-      if (!force) return skip(err.code);
+      if (!force) {
+        if (charge && err.code !== 'provider_unavailable' && err.code !== 'provider_configuration')
+          await recordEffect({ error: err.code, route: 'knowledge-maintenance', ranAtMs: nowMs });
+        return skip(err.code);
+      }
       const unavail = err.code === 'provider_unavailable' || err.code === 'provider_configuration';
       throw new RequestError(unavail ? 503 : 502, err.message, unavail ? 'model_unavailable' : err.code);
     }
@@ -77,13 +87,10 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
             basis: plan.prepNote.basis.map(u => ({ id: u.id, rev: u.rev, epoch: u.accessEpoch })) } });
       } catch { /* 重复运行安全忽略 */ }
     }
-    await host.tx(tx => tx.withLearnerWrite(tick => recordCompletedEffect(tx, tick, {
-      ownerKind: 'session', ownerId: `maintenance:${runKey}`, stepKey: LABEL, label: LABEL, providerEffectId: `maintenance:${runKey}`,
-      input: { trigger: context.trigger, force, currentDate },
-      result: { model: result.usage.model, ...(result.usage.reportedModel ? { reportedModel: result.usage.reportedModel } : {}),
-        ...(result.usage.inputTokens === undefined ? {} : { inputTokens: result.usage.inputTokens }),
-        ...(result.usage.outputTokens === undefined ? {} : { outputTokens: result.usage.outputTokens }),
-        durationMs: result.usage.durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs, proposedEdges, prepNoteId, rationale: plan.rationale } })));
+    await recordEffect({ model: result.usage.model, ...(result.usage.reportedModel ? { reportedModel: result.usage.reportedModel } : {}),
+      ...(result.usage.inputTokens === undefined ? {} : { inputTokens: result.usage.inputTokens }),
+      ...(result.usage.outputTokens === undefined ? {} : { outputTokens: result.usage.outputTokens }),
+      durationMs: result.usage.durationMs, route: 'knowledge-maintenance', ranAtMs: nowMs, proposedEdges, prepNoteId, rationale: plan.rationale });
     return { ran: true as const, reason: context.trigger, rationale: plan.rationale, proposedEdges, prepNoteId };
   }
   let inFlight: Promise<Awaited<ReturnType<typeof run>>> | null = null;
