@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyAssetQuestionSolutions, assetSummary, parseAsset, questionSolutionFields, type QuestionAsset } from './asset.ts';
+import { applyAssetQuestionSolutions, assetSummary, assetWorkspaceDisplay, parseAsset, questionSolutionFields, type QuestionAsset } from './asset.ts';
 
 describe('content asset helpers', () => {
   it('extracts labeled answer and rubric fields and generic explanation blocks from question assets', () => {
@@ -41,10 +41,14 @@ describe('content asset helpers', () => {
     expect(enriched.questions[1]).toMatchObject({ kind: 'exact', answers: ['2'] });
   });
 
-  it('projects concept asset text and formula blocks as summary', () => {
+  it('projects concept asset text and formula blocks as summary and workspace display', () => {
     const concept = parseAsset({ kind: 'concept', title: '牛顿第二定律', aliases: [], merged_into: null,
       blocks: [{ id: 'summary', parentId: null, body: { kind: 'text', text: '合外力与加速度成正比：F=ma' } }] });
     expect(assetSummary(concept)).toBe('合外力与加速度成正比：F=ma');
+    expect(assetWorkspaceDisplay(concept)).toMatchObject({ title: '牛顿第二定律', kind: 'concept', text: '合外力与加速度成正比：F=ma' });
+    const discipline = parseAsset({ kind: 'discipline', title: '物理', blocks: [],
+      discipline_context: { learningScope: '高中物理', mastery: '中档题独立求解', assessment: ['限时测'], boundaries: ['不超纲'] } });
+    expect(assetWorkspaceDisplay(discipline)).toMatchObject({ title: '物理', kind: 'discipline', text: expect.stringContaining('学习范围：高中物理') });
     const empty = parseAsset({ kind: 'concept', title: '空概念', aliases: [], merged_into: null, blocks: [] });
     expect(assetSummary(empty)).toBeNull();
   });

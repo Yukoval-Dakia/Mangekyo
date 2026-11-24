@@ -1,5 +1,6 @@
 import type { FactId, ManifestInput, Revision } from '@mangekyo/kernel';
-import { questionAsset } from './asset.ts';
+import { assetType, questionAsset } from './asset.ts';
+export { assetType };
 import { knowledgeEdgeEvidenceType, knowledgeEdgeType, sourceUse } from './knowledge-edge.ts';
 import type { parseSaveQuestion } from './question-authoring.ts';
 import type { parseSavePage } from './textbook-edits.ts';

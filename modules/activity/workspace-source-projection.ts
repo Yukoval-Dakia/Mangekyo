@@ -1,5 +1,6 @@
 import type { FactSnapshot } from '@mangekyo/kernel';
 import { intakeDocument, intakeFactType } from '@mangekyo/module-capture/facts/intake-document';
+import { assetType, assetWorkspaceDisplay } from '@mangekyo/module-content/facts/asset-contract';
 import { parseTextbookPage, textbookPageFrom, textbookPageType, type TextbookBlockBody } from '@mangekyo/module-content/facts/textbook-page';
 import goalFact from '@mangekyo/module-plan/facts/goal';
 import taskFact from '@mangekyo/module-plan/facts/organizer-task';
@@ -64,6 +65,7 @@ function textbookDisplay(value: unknown): WorkspaceDisplay {
 
 export function displayOf(type: string, value: unknown): WorkspaceDisplay {
   try {
+    if (type === assetType) return assetWorkspaceDisplay(value);
     if (type === textbookPageType) return textbookDisplay(value);
     if (type === goalFact.type) return goalDisplay(value);
     if (type === taskFact.type) return taskDisplay(value);
