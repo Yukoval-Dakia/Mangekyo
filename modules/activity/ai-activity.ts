@@ -145,7 +145,7 @@ const researchWorksheetType = 'companion.researchWorksheet';
 const notionSelectionType = 'capture.notionSelection';
 
 function classifySlot(slotType: string): { kind: AiRunningKind; label: string } {
-  if (slotType === 'activity.studyFeedback') return { kind: 'teaching', label: '同伴回合回复' };
+  if (slotType === 'activity.studyFeedback' || slotType === 'activity.teachingFeedback') return { kind: 'teaching', label: '同伴对话' };
   if (slotType === 'working.todo' || slotType === 'companion.researchWake') return { kind: 'research', label: '后台教研工作单' };
   if (slotType.startsWith('predict.') || slotType.startsWith('retention.')) return { kind: 'retention', label: '保持预测与对账' };
   if (slotType === 'capture.cloudIntake') return { kind: 'intake', label: '云端文档提取' };
@@ -243,7 +243,8 @@ export async function readAiActivity(
     FROM work w
     LEFT JOIN slot_state s ON (s.learner_id,s.slot_type,s.slot_key)=(w.learner_id,w.slot_type,w.slot_key)
     WHERE w.learner_id=$1 AND w.state IN ('pending','ready','waiting','blocked')
-    ORDER BY w.requested_tick DESC, w.id LIMIT 48`, [tx.learner]);
+      AND NOT (w.slot_type = $2 AND w.state = 'blocked')
+    ORDER BY w.requested_tick DESC, w.id LIMIT 48`, [tx.learner, ports.feedbackSlotType]);
   const completedTodoRows = await tx.query<{
     id: string; spec: unknown; state: string; chain_id: string | null; hop_count: number | null; registered_tick: Tick;
   }>(`

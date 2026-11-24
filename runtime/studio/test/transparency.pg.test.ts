@@ -202,6 +202,7 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
         const fb2Val = { action: 'companion_reply', model: 'kimi-k3.1-pro', message: '课堂回复', foregroundDigest: { id: turnId2, kind: 'companion_completed', summary: '课堂回合完成', sourceRefs: [{ kind: 'fact', id: turnId2, rev: 1, accessEpoch: '0', mode: 'following' }] } };
         await tx.insert('derivations', { learner_id: studioLearner, id: fb2, slot_type: slotType, slot_key: turnId2, deriver: 'activity/evidence-tutor-v1', scope_keys: '{}', value: JSON.stringify(fb2Val), lifecycle: 'effective', freshness: 'current', gather_tick: tick, effective_tick: tick, manifest: JSON.stringify(fb2Manifest) });
         await tx.insert('slot_state', { learner_id: studioLearner, slot_type: slotType, slot_key: turnId2, current_id: fb2, last_id: fb2, pending: 'none', changed_tick: tick, scope_keys: '{}' });
+        await tx.insert('work', { learner_id: studioLearner, id: stableId('tr', 'work-blocked-turn'), slot_type: slotType, slot_key: turnId2, deriver: 'activity/evidence-tutor-v1', state: 'blocked', generation: 2, requested_tick: tick, execution_ref: stableId('tr', 'exec-blocked-turn') });
         const result = JSON.stringify({ reportedModel: 'kimi-k3.1-pro', message: '课堂回复', usage: { prompt_tokens: 120, completion_tokens: 45 } });
         await tx.insert('effects', { learner_id: studioLearner, owner_kind: 'session', owner_id: turnId2, step_key: 'step1', label: 'teaching-model', input_digest: 'd2', provider_effect_id: 'pe2', state: 'done', result, reserved_usd_micros: 900, actual_usd_micros: 600, budget_route: 'magpie', started_tick: tick, ended_tick: tick });
       }));
@@ -248,6 +249,7 @@ it.skipIf(!testDatabaseUrl)('serves /api/ai/activity, /api/knowledge/graph, and 
         pendingProposals: { kind: string }[];
       };
       expect(ai.running).toHaveLength(1);
+      expect(ai.running).toMatchObject([{ kind: 'teaching', title: '同伴对话' }]);
       expect(new Set(ai.handoffs.map(h => h.channel))).toEqual(new Set(['night_chain', 'retention', 'notion']));
       expect(ai.handoffs.find(h => h.id === turnId2)?.href).toBe(`/classroom/${classroomId}`);
       expect(ai.handoffs.find(h => h.id === turnId)?.href).toBe('/companion');
