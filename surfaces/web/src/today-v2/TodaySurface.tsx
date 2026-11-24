@@ -3,6 +3,7 @@ import { api, ApiError, issueGraphQuickPaper, onboardingStatus, remember, rememb
 import { Icon } from '../icons';
 import { roomPath } from '../classroom-contract';
 import { openLink, todayParams, type ActivityRef, type Duration } from '../today-pack';
+import { ResearchHandoffPanel } from './ResearchHandoffPanel';
 import {
   BreathDot,
   Chip,
@@ -287,112 +288,6 @@ function cleanText(value: unknown): string {
   return trimmed;
 }
 
-function handoffFromAiActivity(activity: AiActivitySnapshot | null): NightHandoff | null {
-  if (!activity) return null;
-  const running = Array.isArray(activity.running) ? activity.running : [];
-  const handoffs = Array.isArray(activity.handoffs) ? activity.handoffs : [];
-  if (running.length === 0 && handoffs.length === 0) return null;
-
-  const readableHandoffs: HandoffItem[] = [];
-  for (const item of handoffs) {
-    const title = cleanText(item?.title);
-    const detail = cleanText(item?.summary);
-    const summary = title || detail;
-    if (summary) readableHandoffs.push({ summary, ...(detail && detail !== summary ? { detail } : {}) });
-  }
-
-  const readableRunning: HandoffItem[] = [];
-  for (const task of running) {
-    const title = cleanText(task?.title);
-    if (title) readableRunning.push({ summary: title });
-  }
-
-  if (handoffs.length > 0 && running.length > 0) {
-    return {
-      summary: `已为你整理 ${handoffs.length} 项 · ${running.length} 项后台进行中`,
-      count: handoffs.length + running.length,
-      items: [...readableHandoffs, ...readableRunning].slice(0, 3),
-      active: true,
-      ...(activity.asOf ? { updatedAt: activity.asOf } : {}),
-    };
-  }
-  if (handoffs.length > 0) {
-    return {
-      count: handoffs.length,
-      items: readableHandoffs,
-      active: false,
-      ...(activity.asOf ? { updatedAt: activity.asOf } : {}),
-    };
-  }
-  return {
-    summary: `后台正在整理 ${running.length} 项`,
-    count: running.length,
-    items: readableRunning,
-    active: true,
-    ...(activity.asOf ? { updatedAt: activity.asOf } : {}),
-  };
-}
-
-function HandoffStrip({
-  handoff,
-  onOpenAiActivity,
-}: {
-  handoff: NightHandoff;
-  onOpenAiActivity?: (() => void) | undefined;
-}) {
-  const readableItems = (handoff.items ?? []).filter(
-    (entry) => typeof entry?.summary === 'string' && entry.summary.trim().length > 0 && !isTechnicalIdentifier(entry.summary),
-  );
-  const cleanSummary =
-    typeof handoff.summary === 'string' && handoff.summary.trim().length > 0 && !isTechnicalIdentifier(handoff.summary)
-      ? handoff.summary.trim()
-      : '';
-  const resolvedCount =
-    readableItems.length > 0
-      ? readableItems.length
-      : typeof handoff.count === 'number' && handoff.count > 0
-        ? handoff.count
-        : 0;
-
-  if (!cleanSummary && resolvedCount === 0) return null;
-
-  const headline = cleanSummary || `已为你整理 ${resolvedCount} 项`;
-  const previewTail =
-    !cleanSummary && readableItems.length > 0
-      ? `（${readableItems.slice(0, 2).map((entry) => entry.summary.trim()).join('；')}）`
-      : '';
-
-  const inner = (
-    <>
-      {handoff.active ? <BreathDot /> : <Dot />}
-      <span className="tv2-handoff-copy">
-        <strong>后台教研</strong>
-        <span className="tv2-handoff-sep" aria-hidden="true">·</span>
-        <span>{headline}{previewTail}</span>
-      </span>
-      {onOpenAiActivity && (
-        <span className="tv2-handoff-cue">
-          <span>查看运作明细</span>
-          <Icon name="chevron" />
-        </span>
-      )}
-    </>
-  );
-
-  if (onOpenAiActivity) {
-    return (
-      <button type="button" className="tv2-handoff tv2-handoff--interactive" onClick={onOpenAiActivity}>
-        {inner}
-      </button>
-    );
-  }
-  return (
-    <div className="tv2-handoff" role="status">
-      {inner}
-    </div>
-  );
-}
-
 export function TodaySurface({
   mode = 'any',
   duration,
@@ -406,6 +301,7 @@ export function TodaySurface({
   noModel,
 }: TodaySurfaceProps) {
   const [onboardingNudge, setOnboardingNudge] = useState<'hidden' | 'checking' | 'show'>('checking');
+  const [onboardingCompleted, setOnboardingCompleted] = useState(false);
   const [plan, setPlan] = useState<TodayPlanV2 | null>(null);
   const [aiActivity, setAiActivity] = useState<AiActivitySnapshot | null>(null);
   const [error, setError] = useState('');
@@ -464,6 +360,7 @@ export function TodaySurface({
     onboardingStatus()
       .then(value => {
         if (controller.signal.aborted) return;
+        setOnboardingCompleted(value.completed === true);
         setOnboardingNudge(value.completed ? 'hidden' : 'show');
       })
       .catch(() => {
@@ -630,7 +527,22 @@ export function TodaySurface({
   const activeHandoff =
     handoff !== undefined
       ? handoff
-      : (plan?.handoff ?? handoffFromAiActivity(aiActivity));
+      : (plan?.handoff ?? null);
+
+  const pendingProposals = Array.isArray(aiActivity?.pendingProposals)
+    ? aiActivity!.pendingProposals
+    : [];
+  const activityHandoffs = Array.isArray(aiActivity?.handoffs) ? aiActivity!.handoffs : [];
+  const activityRunning = Array.isArray(aiActivity?.running) ? aiActivity!.running : [];
+  const hasPanelContent =
+    pendingProposals.some((item) => item && item.status === 'pending') ||
+    activityHandoffs.length > 0 ||
+    activityRunning.length > 0 ||
+    activeHandoff !== null;
+  const canRunMaintenance = Boolean(
+    onboardingCompleted && plan && !plan.resting && !offline && navigator.onLine,
+  );
+  const showResearchPanel = hasPanelContent || (onboardingCompleted && !offline);
 
   if (loading && !plan) {
     return (
@@ -646,7 +558,17 @@ export function TodaySurface({
   if (!plan) {
     return (
       <section className="tv2" aria-label="今天">
-        {activeHandoff && <HandoffStrip handoff={activeHandoff} onOpenAiActivity={onOpenAiActivity} />}
+        {showResearchPanel && (
+          <ResearchHandoffPanel
+            pendingProposals={pendingProposals}
+            handoffs={activityHandoffs}
+            runningCount={activityRunning.length}
+            canRunMaintenance={false}
+            onOpenAiActivity={onOpenAiActivity}
+            onNavigate={onNavigate}
+            onRefresh={() => setReloadTick((count) => count + 1)}
+          />
+        )}
         <div className="tv2-hero tv2-hero--calm">
           <h2>{offline ? '当前处于离线状态' : '暂时读不到今天的安排'}</h2>
           <p className="tv2-why">
@@ -727,49 +649,10 @@ export function TodaySurface({
   const overBudget = plan.budgetMinutes > 0 && plan.totalMinutes > plan.budgetMinutes;
   const campaignText = CAMPAIGN_LABELS[plan.campaign] ?? '';
 
-  const proposalConfirmables: Confirmable[] = [];
-  if (Array.isArray(aiActivity?.pendingProposals)) {
-    for (const proposal of aiActivity.pendingProposals) {
-      if (!proposal || proposal.status !== 'pending') continue;
-      const title = cleanText(proposal.title);
-      const summary = cleanText(proposal.summary);
-      const text =
-        title && summary && title !== summary
-          ? `${title}：${summary}`
-          : title || summary;
-      if (!text) continue;
-      const accept = proposal.actions?.accept;
-      const acceptPath =
-        accept && accept.method === 'POST' && typeof accept.path === 'string' && accept.path.length > 0
-          ? accept.path.startsWith('/api/')
-            ? accept.path.slice(4)
-            : accept.path
-          : null;
-      const confirmLabel = acceptPath ? '确认' : onOpenAiActivity ? '去核对' : undefined;
-      proposalConfirmables.push({
-        id: `ai-proposal:${proposal.id}`,
-        text,
-        dismissLabel: '稍后',
-        ...(confirmLabel ? { confirmLabel } : {}),
-        ...(acceptPath
-          ? {
-              onConfirm: async () => {
-                await api(acceptPath, { method: 'POST', body: accept?.body ?? {} });
-                setReloadTick((count) => count + 1);
-              },
-            }
-          : onOpenAiActivity
-            ? { onConfirm: () => onOpenAiActivity() }
-            : {}),
-      });
-    }
-  }
-
   const allConfirmables: { key: string; entry: Confirmable }[] = [];
   const rawConfirmables = [
     ...(confirmables ?? []),
     ...(plan.pendingConfirmations ?? []),
-    ...proposalConfirmables,
   ];
   rawConfirmables.forEach((entry, index) => {
     if (!entry?.text || isTechnicalIdentifier(entry.text)) return;
@@ -1246,7 +1129,17 @@ export function TodaySurface({
 
   return (
     <section className="tv2" aria-busy={loading} aria-label="今天">
-      {activeHandoff && <HandoffStrip handoff={activeHandoff} onOpenAiActivity={onOpenAiActivity} />}
+      {showResearchPanel && (
+        <ResearchHandoffPanel
+          pendingProposals={pendingProposals}
+          handoffs={activityHandoffs}
+          runningCount={activityRunning.length}
+          canRunMaintenance={canRunMaintenance}
+          onOpenAiActivity={onOpenAiActivity}
+          onNavigate={onNavigate}
+          onRefresh={() => setReloadTick((count) => count + 1)}
+        />
+      )}
 
       {onboardingNudge === 'show' && (
         <div className="tv2-onboard" role="status">

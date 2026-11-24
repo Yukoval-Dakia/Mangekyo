@@ -1359,3 +1359,247 @@
   flex: none;
   flex-wrap: wrap;
 }
+
+/* 后台教研交班面板（Wave Always-On-1 AO-3） */
+.tv2-research {
+  display: grid;
+  gap: 14px;
+  padding: 16px 18px 18px;
+  border-radius: var(--radius-lg, 22px);
+  background: var(--tv2-hero-calm);
+  border: 1px solid var(--tv2-line);
+  min-width: 0;
+}
+
+.tv2-research-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tv2-research-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.tv2-research-title-copy {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tv2-research-title-copy strong {
+  font-size: 14.5px;
+  font-weight: 720;
+  color: var(--tv2-ink-3);
+  letter-spacing: -0.005em;
+}
+
+.tv2-research-meta {
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--tv2-ink-2);
+}
+
+.tv2-research-tools {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+  margin-left: auto;
+}
+
+.tv2-research-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md, 16px);
+  background: var(--tv2-notice-bg);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--tv2-ink);
+  overflow-wrap: anywhere;
+}
+
+.tv2-research-status--problem {
+  background: var(--tv2-amber-bg);
+  color: var(--tv2-amber-ink);
+}
+
+.tv2-research-status > .tv2-dot,
+.tv2-research-status > .tv2-dot--breath {
+  margin-top: 6px;
+  flex: none;
+}
+
+.tv2-research-status-copy {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tv2-research-link {
+  color: var(--tv2-primary);
+  font-weight: 640;
+  text-decoration: none;
+}
+
+.tv2-research-link:hover {
+  text-decoration: underline;
+}
+
+.tv2-research-list {
+  margin: 0;
+}
+
+.tv2-research-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  flex-wrap: wrap;
+}
+
+.tv2-research-item-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.tv2-research-item-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tv2-research-item-head strong {
+  font-size: 14px;
+  font-weight: 680;
+  color: var(--tv2-ink);
+  overflow-wrap: anywhere;
+}
+
+.tv2-research-item-summary {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--tv2-ink-2);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tv2-research-item-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex: none;
+  align-self: center;
+}
+
+.tv2-research-more {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-left: 4px;
+}
+
+.tv2-research-handoffs {
+  display: grid;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md, 16px);
+  background: var(--tv2-panel);
+}
+
+.tv2-research-handoff {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tv2-research-handoff-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--tv2-primary);
+  text-decoration: none;
+  min-width: 0;
+}
+
+.tv2-research-handoff-link strong {
+  font-size: 13.5px;
+  font-weight: 680;
+  color: var(--tv2-ink);
+  overflow-wrap: anywhere;
+}
+
+.tv2-research-handoff-link svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--tv2-primary);
+}
+
+.tv2-research-handoff-link:hover strong {
+  color: var(--tv2-primary);
+  text-decoration: underline;
+}
+
+.tv2-research-handoff-heading {
+  font-size: 13.5px;
+  font-weight: 680;
+  color: var(--tv2-ink);
+  overflow-wrap: anywhere;
+}
+
+.tv2-research-handoff-summary {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--tv2-ink-2);
+  overflow-wrap: anywhere;
+}
+
+.tv2-research-handoff-meta {
+  font-size: 12px;
+  font-weight: 560;
+  color: var(--tv2-ink-2);
+}
+
+@media (max-width: 640px) {
+  .tv2-research {
+    padding: 14px 14px 16px;
+    border-radius: 20px;
+  }
+
+  .tv2-research-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tv2-research-tools {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .tv2-research-tools .tv2-btn {
+    flex: 1 1 auto;
+  }
+
+  .tv2-research-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tv2-research-item-actions {
+    align-self: stretch;
+    justify-content: flex-start;
+  }
+}
