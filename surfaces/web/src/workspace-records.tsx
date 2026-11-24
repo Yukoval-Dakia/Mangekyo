@@ -4,7 +4,7 @@ import { PageTitle, ReadState, useResource } from './workspace';
 import { ConceptReading, FixedRecord } from './concept-reading';
 import { BankPractice } from './bank-practice';
 import MathText from './math-text';
-import { issueGraphQuickPaper, workspaceRecordFlow, type RecordFlowView, type RecordFlowMasteryLevel } from './api';
+import { issueGraphQuickPaper, workspaceRecordFlow, type RecordFlowProvenance, type RecordFlowView, type RecordFlowMasteryLevel } from './api';
 import { citeToCompanionDrawer } from './shell/AppShell';
 import './workspace-records.css';
 
@@ -92,11 +92,91 @@ function useRecordFlow(id: string | undefined) {
   return flow;
 }
 
+function provenanceBadge(entry: RecordFlowProvenance): string {
+  const label = entry.originBadge?.trim();
+  return label || '来源';
+}
+
+function provenanceMeta(entry: RecordFlowProvenance): string {
+  return [entry.relation, entry.kind].filter(Boolean).join(' · ');
+}
+
+function ProvenanceCard({ entry }: { entry: RecordFlowProvenance }) {
+  const meta = provenanceMeta(entry);
+  const body = (
+    <>
+      <div className="record-prov-card-head">
+        <span className="m3e-tonal-chip m3e-tonal-chip--strong">{provenanceBadge(entry)}</span>
+        {meta && <small className="record-prov-meta">{meta}</small>}
+      </div>
+      <strong className="record-prov-title">{entry.title}</strong>
+      {entry.excerpt && <small className="record-prov-excerpt">{entry.excerpt}</small>}
+    </>
+  );
+  return (
+    <li className="m3e-seg-item record-prov-item" key={entry.id}>
+      {entry.href ? (
+        <a className="record-prov-link" href={entry.href}>{body}</a>
+      ) : (
+        <div className="record-prov-link record-prov-link--static">{body}</div>
+      )}
+    </li>
+  );
+}
+
+function ProvenanceSection({ flow }: { flow: RecordFlowView }) {
+  const provenance = flow.provenance ?? [];
+  const derived = flow.derived ?? [];
+  if (!provenance.length && !derived.length) {
+    return (
+      <section className="record-section record-prov-section" aria-label="数据溯源脉络">
+        <div className="record-section-head">
+          <strong>数据溯源</strong>
+        </div>
+        <p className="record-prov-empty">暂无登记的上游原件或派生来源。</p>
+      </section>
+    );
+  }
+  return (
+    <section className="record-section record-prov-section" aria-label="数据溯源脉络">
+      <div className="record-section-head">
+        <strong>数据溯源</strong>
+        <small>{provenance.length + derived.length} 条</small>
+      </div>
+
+      <div className="record-prov-band">
+        <p className="record-prov-label">
+          <span aria-hidden="true">↓</span> 来源 · 从哪来
+        </p>
+        {provenance.length > 0 ? (
+          <ul className="m3e-seg-list record-prov-list">
+            {provenance.map((entry) => <ProvenanceCard key={entry.id} entry={entry} />)}
+          </ul>
+        ) : (
+          <p className="record-prov-empty">暂无登记的上游原件或派生来源。</p>
+        )}
+      </div>
+
+      {derived.length > 0 && (
+        <div className="record-prov-band">
+          <p className="record-prov-label">
+            <span aria-hidden="true">↑</span> 下游 · 流向哪
+          </p>
+          <ul className="m3e-seg-list record-prov-list">
+            {derived.map((entry) => <ProvenanceCard key={entry.id} entry={entry} />)}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function FlowPanel({ flow }: { flow: RecordFlowView }) {
   const mastery = flow.mastery;
   const evidenceTotal = mastery.evidenceCount;
   return (
     <aside className="record-flow-side" aria-label="数据流动脉络">
+      <ProvenanceSection flow={flow} />
       <section className="record-section" aria-label="掌握度与记忆保持">
         <div className="record-section-head">
           <strong>掌握度</strong>

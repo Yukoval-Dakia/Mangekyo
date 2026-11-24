@@ -153,6 +153,84 @@
   border-color: var(--m3e-amber);
 }
 
+/* 数据溯源脉络：来源 → 当前 → 下游派生 */
+.record-prov-section {
+  gap: 12px;
+}
+
+.record-prov-band {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.record-prov-label {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 660;
+  letter-spacing: .02em;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.record-prov-label span {
+  font-size: 12px;
+}
+
+.record-prov-list {
+  margin: 0;
+}
+
+.record-prov-link {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.record-prov-link:hover .record-prov-title {
+  color: var(--primary);
+}
+
+.record-prov-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.record-prov-meta {
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 0;
+}
+
+.record-prov-title {
+  display: block;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.record-prov-excerpt {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.record-prov-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
 .record-flow-actions {
   position: sticky;
   inset-block-end: 14px;

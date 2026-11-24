@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {api, ApiError, requestId, type Settings} from '../api.ts';
+import {api, ApiError, requestId, workspaceRecordFlow, type RecordFlowView, type Settings} from '../api.ts';
 import {rememberRoom, rejected, roomPath, writeRoom, type ClassroomWrite} from '../classroom-contract.ts';
 import {chatRoute} from '../model-route.ts';
 import {Icon} from '../icons.tsx';
@@ -44,6 +44,123 @@ const STATUS_CLASS: Record<MasteryStatus, string> = {
   fragile: 'kg-fragile',
   unknown: 'kg-unknown',
 };
+
+const KG_ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+function basisRefParts(value: unknown): { id: string; type?: string } | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as { id?: unknown; type?: unknown; kind?: unknown };
+  const id = typeof record.id === 'string' ? record.id : '';
+  if (!id) return null;
+  const type = typeof record.type === 'string' ? record.type : typeof record.kind === 'string' ? record.kind : undefined;
+  return { id, ...(type !== undefined ? { type } : {}) };
+}
+
+const KG_BASIS_TYPE_LABELS: Record<string, string> = {
+  'content.asset': '知识资产',
+  'content.textbookPage': '教材页',
+  'content.knowledgeEdge': '概念关系',
+  'activity.textMaterial': '材料',
+  'activity.workbookPaper': '试卷',
+  'activity.workbookAttempt': '作答记录',
+  'activity.workspaceEntry': '学习条目',
+  'activity.studyRecord': '学习记录',
+  'learner.belief': '学习认知',
+  'learner.misconception': '错因记录',
+  'companion.memoryAssertion': '同伴记忆',
+  'companion.claim': '同伴断言',
+  'plan.goal': '学习目标',
+};
+
+function basisTypeLabel(type: string | undefined): string {
+  if (!type) return '学习记录';
+  return KG_BASIS_TYPE_LABELS[type] ?? type.split('.').at(-1) ?? '学习记录';
+}
+
+function basisHref(id: string): string | null {
+  return KG_ULID.test(id) ? `/materials/records/${encodeURIComponent(id)}` : null;
+}
+
+function BasisList({
+  basisRefs,
+  flow,
+  onNavigate,
+}: {
+  basisRefs: readonly unknown[];
+  flow: RecordFlowView | null;
+  onNavigate?: ((href: string) => void) | undefined;
+}) {
+  const evidence: { key: string; badge: string; label: string; href: string | null }[] = [];
+  const seen = new Set<string>();
+  const push = (key: string, badge: string, label: string, href: string | null) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    evidence.push({ key, badge, label, href });
+  };
+
+  if (flow) {
+    for (const attempt of flow.attempts) {
+      push(
+        `attempt:${attempt.attemptId}:${attempt.itemId}`,
+        attempt.verdict === 'correct' ? '答对' : attempt.verdict === 'incorrect' ? '答错' : '作答',
+        attempt.paperTitle,
+        attempt.href || null,
+      );
+    }
+    for (const item of flow.misconceptions) {
+      push(`misconception:${item.id}`, '错因', item.summary, item.evidenceHref ?? null);
+    }
+    for (const item of flow.discussions) {
+      push(`discussion:${item.sessionId}:${item.turnId}`, '对话', item.title, item.href || null);
+    }
+  }
+
+  for (const [index, raw] of basisRefs.entries()) {
+    const parsed = basisRefParts(raw);
+    if (!parsed) {
+      push(`basis-${index}`, '依据', '一条学习依据记录', null);
+      continue;
+    }
+    const label = basisTypeLabel(parsed.type);
+    const flowMatch = flow?.provenance?.find(p => p.id === parsed.id)
+      ?? flow?.derived?.find(p => p.id === parsed.id);
+    push(
+      `basis:${parsed.id}`,
+      flowMatch?.originBadge?.trim() || label,
+      flowMatch?.title ?? label,
+      basisHref(parsed.id),
+    );
+  }
+
+  if (evidence.length === 0) {
+    return <p className="kg-detail-empty">尚无依据记录。</p>;
+  }
+
+  return (
+    <ul className="kg-basis-list">
+      {evidence.map(item => (
+        <li key={item.key}>
+          {item.href && onNavigate ? (
+            <button type="button" className="kg-basis-link" onClick={() => onNavigate(item.href!)}>
+              <span className="kg-basis-badge">{item.badge}</span>
+              <span className="kg-basis-text">{item.label}</span>
+            </button>
+          ) : item.href ? (
+            <a className="kg-basis-link" href={item.href}>
+              <span className="kg-basis-badge">{item.badge}</span>
+              <span className="kg-basis-text">{item.label}</span>
+            </a>
+          ) : (
+            <span className="kg-basis-link kg-basis-link--static">
+              <span className="kg-basis-badge">{item.badge}</span>
+              <span className="kg-basis-text">{item.label}</span>
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function useGraphData(props: KnowledgeGraphViewProps) {
   const [remote, setRemote] = useState<KnowledgeGraphResponse | null>(null);
@@ -592,6 +709,24 @@ function DetailPanel({
   const lessonBusy = useRef(false);
   const paperBusy = useRef(false);
   const lessonOperation = useRef<ClassroomWrite | undefined>(undefined);
+  const [flow, setFlow] = useState<RecordFlowView | null>(null);
+  const [flowLoaded, setFlowLoaded] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    workspaceRecordFlow(node.id, controller.signal)
+      .then(result => {
+        if (controller.signal.aborted) return;
+        setFlow(result);
+        setFlowLoaded(true);
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setFlow(null);
+        setFlowLoaded(true);
+      });
+    return () => controller.abort();
+  }, [node.id]);
 
   const startMicroLesson = async () => {
     if (lessonBusy.current || lesson.state === 'starting') return;
@@ -675,16 +810,127 @@ function DetailPanel({
           <Icon name="chevron" />
         </button>
         {basisOpen ? (
-          basisRefs.length > 0 ? (
-            <ul className="kg-basis-list">
-              {basisRefs.map((ref, index) => (
-                <li key={index}>依据 {index + 1}</li>
+          <BasisList basisRefs={basisRefs} flow={flow} onNavigate={onNavigate} />
+        ) : null}
+      </div>
+
+      {(flow && (flow.provenance?.length || flow.derived?.length)) ? (
+        <div className="kg-detail-section">
+          <p className="kg-detail-label">来源溯源</p>
+          {flow.provenance && flow.provenance.length > 0 ? (
+            <ul className="kg-prov-list">
+              {flow.provenance.map(entry => (
+                <li key={entry.id} className="kg-prov-item">
+                  {entry.href ? (
+                    <a className="kg-prov-link" href={entry.href}>
+                      <span className="kg-prov-badge">{entry.originBadge?.trim() || '来源'}</span>
+                      <span className="kg-prov-title">{entry.title}</span>
+                      {entry.relation ? <span className="kg-prov-meta">{entry.relation}</span> : null}
+                    </a>
+                  ) : (
+                    <span className="kg-prov-link kg-prov-link--static">
+                      <span className="kg-prov-badge">{entry.originBadge?.trim() || '来源'}</span>
+                      <span className="kg-prov-title">{entry.title}</span>
+                      {entry.relation ? <span className="kg-prov-meta">{entry.relation}</span> : null}
+                    </span>
+                  )}
+                </li>
               ))}
             </ul>
-          ) : (
-            <p className="kg-detail-empty">尚无依据记录。</p>
-          )
-        ) : null}
+          ) : null}
+          {flow.derived && flow.derived.length > 0 ? (
+            <>
+              <p className="kg-detail-label kg-detail-label--sub">下游派生</p>
+              <ul className="kg-prov-list">
+                {flow.derived.map(entry => (
+                  <li key={entry.id} className="kg-prov-item">
+                    {entry.href ? (
+                      <a className="kg-prov-link" href={entry.href}>
+                        <span className="kg-prov-badge">{entry.originBadge?.trim() || '派生'}</span>
+                        <span className="kg-prov-title">{entry.title}</span>
+                        {entry.relation ? <span className="kg-prov-meta">{entry.relation}</span> : null}
+                      </a>
+                    ) : (
+                      <span className="kg-prov-link kg-prov-link--static">
+                        <span className="kg-prov-badge">{entry.originBadge?.trim() || '派生'}</span>
+                        <span className="kg-prov-title">{entry.title}</span>
+                        {entry.relation ? <span className="kg-prov-meta">{entry.relation}</span> : null}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {(flow && (flow.attempts.length > 0 || flow.misconceptions.length > 0 || flow.discussions.length > 0)) ? (
+        <div className="kg-detail-section">
+          <p className="kg-detail-label">证据记录</p>
+          {flow.attempts.length > 0 ? (
+            <ul className="kg-prov-list">
+              {flow.attempts.slice(0, 4).map(attempt => (
+                <li key={attempt.attemptId + ':' + attempt.itemId} className="kg-prov-item">
+                  <a className="kg-prov-link" href={attempt.href}>
+                    <span className={`kg-prov-badge ${attempt.verdict === 'correct' ? 'kg-prov-badge--correct' : attempt.verdict === 'incorrect' ? 'kg-prov-badge--incorrect' : ''}`}>
+                      {attempt.verdict === 'correct' ? '答对' : attempt.verdict === 'incorrect' ? '答错' : '作答'}
+                    </span>
+                    <span className="kg-prov-title">{attempt.paperTitle}</span>
+                    {attempt.errorStage ? <span className="kg-prov-meta">{attempt.errorStage}</span> : null}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {flow.misconceptions.length > 0 ? (
+            <ul className="kg-prov-list">
+              {flow.misconceptions.slice(0, 3).map(item => (
+                <li key={item.id} className="kg-prov-item">
+                  {item.evidenceHref ? (
+                    <a className="kg-prov-link" href={item.evidenceHref}>
+                      <span className="kg-prov-badge kg-prov-badge--incorrect">错因</span>
+                      <span className="kg-prov-title">{item.summary}</span>
+                      {item.errorStage ? <span className="kg-prov-meta">{item.errorStage}</span> : null}
+                    </a>
+                  ) : (
+                    <span className="kg-prov-link kg-prov-link--static">
+                      <span className="kg-prov-badge kg-prov-badge--incorrect">错因</span>
+                      <span className="kg-prov-title">{item.summary}</span>
+                      {item.errorStage ? <span className="kg-prov-meta">{item.errorStage}</span> : null}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {flow.discussions.length > 0 ? (
+            <ul className="kg-prov-list">
+              {flow.discussions.slice(0, 3).map(item => (
+                <li key={item.sessionId + ':' + item.turnId} className="kg-prov-item">
+                  <a className="kg-prov-link" href={item.href}>
+                    <span className="kg-prov-badge">对话</span>
+                    <span className="kg-prov-title">{item.title}</span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="kg-detail-section">
+        <button
+          type="button"
+          className="kg-detail-full-flow"
+          onClick={() => {
+            if (onNavigate) onNavigate(`/materials/records/${encodeURIComponent(node.id)}`);
+          }}
+          disabled={!onNavigate}
+        >
+          查看完整数据脉络
+          <Icon name="arrow" />
+        </button>
       </div>
 
       {relations.upstream.length > 0 ? (

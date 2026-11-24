@@ -11,6 +11,7 @@ import { Icon, Mark } from "./icons";
 import { TurnArtifacts, type ApplySnapshot } from "./presentation/TurnArtifact";
 import type { ArtifactSnapshotV1 } from "./presentation/session-artifacts";
 import { AgentThinkingSteps } from "./shell/AgentThinkingSteps";
+import { TurnBasisChips } from "./shell/TurnBasisChips";
 
 const actionNames: Record<Turn["action"], string> = {
   companion_reply: "学习同伴",
@@ -175,6 +176,7 @@ export function TeachingTurn({ turn, answer = turn?.answer, message = turn?.mess
           {reload && turn.turnId && turn.backgroundUnderstanding &&
             <TurnResearchConsent turnId={turn.turnId} grant={turn.backgroundUnderstanding} reload={reload} />}
           {turn.recall && sessionId && <StudyCards kit={turn.recall} sessionId={sessionId} materialId={materialId} discuss={discuss} />}
+          <TurnBasisChips turn={turn} />
           <details className="evidence">
             <summary><Icon name="history" /><span>{turn.action === "companion_reply" ? "本轮信息" : "教研依据"}</span><Icon name="chevron" /></summary>
             <div className="evidence-content">

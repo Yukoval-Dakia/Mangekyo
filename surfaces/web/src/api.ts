@@ -90,6 +90,7 @@ export type RelationWrite =
   | {status: 'withdrawn' | 'changed'};
 
 export interface Turn {
+  workspaceBasis?: readonly TurnWorkspaceWitness[];
   backgroundUnderstanding?: {allowed: boolean; rev: number; accessEpoch: string};
   turnId?: string;
   artifacts?: unknown;
@@ -108,6 +109,17 @@ export interface Turn {
   model: string;
   reasoningEffort?: string;
   reportedModel?: string;
+}
+
+export interface TurnWorkspaceWitness {
+  readonly id: string;
+  readonly rev: number;
+  readonly epoch: string;
+  readonly type: string;
+  readonly mode?: 'pinned' | 'following';
+  readonly writeBasis?: true;
+  readonly jitBasis?: true;
+  readonly title?: string;
 }
 
 export interface Session extends PartialMountPermissions {
@@ -592,6 +604,17 @@ export interface RecordFlowDiscussion {
   href: string;
 }
 
+export interface RecordFlowProvenance {
+  readonly id: string;
+  readonly rev?: number;
+  readonly kind: string;
+  readonly title: string;
+  readonly relation: string;
+  readonly originBadge: string;
+  readonly excerpt?: string;
+  readonly href: string | null;
+}
+
 export interface RecordFlowNeighbor {
   id: string;
   title: string;
@@ -615,6 +638,8 @@ export interface RecordFlowView {
   discussions: readonly RecordFlowDiscussion[];
   graphNeighbors: readonly RecordFlowNeighbor[];
   nextActions: readonly RecordFlowNextAction[];
+  readonly provenance?: readonly RecordFlowProvenance[];
+  readonly derived?: readonly RecordFlowProvenance[];
 }
 
 export interface WorkspaceRecordFlowSummary {
@@ -624,6 +649,7 @@ export interface WorkspaceRecordFlowSummary {
   discussionCount: number;
   neighborCount: number;
   conceptTags: readonly string[];
+  readonly originLabel?: string;
 }
 
 export function workspaceRecordFlow(id: string, signal?: AbortSignal) {

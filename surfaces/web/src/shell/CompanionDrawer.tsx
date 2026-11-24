@@ -9,6 +9,7 @@ import type { ChatLink, Resource } from "../workspace";
 import { RecoveryGuide } from "../recovery";
 import { AgentThinkingSteps } from "./AgentThinkingSteps";
 import { TurnArtifacts } from "../presentation/TurnArtifact";
+import { TurnBasisChips } from "./TurnBasisChips";
 
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const RECORD_ROUTE = /^\/materials\/records\/([0-9A-HJKMNP-TV-Z]{26})/;
@@ -196,6 +197,7 @@ function DrawerThread({
                         live={false}
                       />
                     )}
+                    <TurnBasisChips turn={turn} />
                     <TurnEvidence turn={turn} />
                   </article>
                 </li>
