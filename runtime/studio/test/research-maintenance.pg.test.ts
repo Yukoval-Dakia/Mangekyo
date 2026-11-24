@@ -96,21 +96,6 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
         `SELECT COALESCE(sum(reserved_usd_micros),0)::text AS held FROM effects WHERE learner_id=$1 AND reserved_usd_micros IS NOT NULL AND actual_usd_micros IS NULL`, [tx.learner]))).rows[0]?.held).toBe('50000');
       expect(await maintenance.run({ force: false, now: () => t3 })).toMatchObject({ ran: false, reason: 'paid_budget_required' });
       expect(agentCalls).toBe(2);
-      // P1b + P2: 端点去 teaching 后降级 storage；inFlight 期间并发 force:true 返回 in_progress 不串味
-      await db.tx({ learner: studioLearner }, async tx => {
-        await tx.query(`UPDATE facts SET purpose=ARRAY['storage','background-research'] WHERE learner_id=$1 AND id=$2`, [tx.learner, c2]);
-        await tx.query(`UPDATE fact_revs SET purpose=ARRAY['storage','background-research'] WHERE learner_id=$1 AND fact_id=$2`, [tx.learner, c2]);
-      });
-      activeProvider = provider; edgeSpec = { kind: 'prereq_of', swap: true };
-      let release!: () => void, entered!: () => void;
-      const enteredP = new Promise<void>(r => { entered = r; });
-      onAgentEnter = entered; agentGate = new Promise<void>(r => { release = r; });
-      const bg = maintenance.run({ force: false, now: () => t3 });
-      await enteredP;
-      expect(await maintenance.run({ force: true })).toMatchObject({ ran: false, reason: 'in_progress' });
-      onAgentEnter = null; agentGate = null; release();
-      expect(await bg).toMatchObject({ ran: true, proposedEdges: 1 });
-      expect(await edgePurpose(lastFrom)).toBe('storage');
 
       await carePause.pause('test-pause', Date.now());
       expect(await call('POST', '/api/research/maintenance/run')).toMatchObject({ status: 200, body: { ran: false, reason: 'care_paused', proposedEdges: 0 } });
@@ -124,5 +109,21 @@ it.skipIf(!testDatabaseUrl)('runs knowledge maintenance host end-to-end on Postg
       expect(await call('POST', '/api/research/maintenance/run')).toMatchObject({ status: 503, body: { code: 'model_unavailable', next: 'settings' } });
       nextAgentErr = new TeachingError('provider_timeout', '模型响应超时');
       expect(await call('POST', '/api/research/maintenance/run')).toMatchObject({ status: 502, body: { code: 'provider_timeout' } });
+
+      // P1b + P2: 端点去 teaching 后降级 storage；inFlight 期间并发 force:true 返回 in_progress 不串味
+      await db.tx({ learner: studioLearner }, async tx => {
+        await tx.query(`UPDATE facts SET purpose=ARRAY['storage','background-research'] WHERE learner_id=$1 AND id=$2`, [tx.learner, c2]);
+        await tx.query(`UPDATE fact_revs SET purpose=ARRAY['storage','background-research'] WHERE learner_id=$1 AND fact_id=$2`, [tx.learner, c2]);
+      });
+      nextAgentErr = null; activeProvider = provider; edgeSpec = { kind: 'prereq_of', swap: true };
+      let release!: () => void, entered!: () => void;
+      const enteredP = new Promise<void>(r => { entered = r; });
+      onAgentEnter = entered; agentGate = new Promise<void>(r => { release = r; });
+      const bg = maintenance.run({ force: false, now: () => t3 });
+      await enteredP;
+      expect(await maintenance.run({ force: true })).toMatchObject({ ran: false, reason: 'in_progress' });
+      onAgentEnter = null; agentGate = null; release();
+      expect(await bg).toMatchObject({ ran: true, proposedEdges: 1 });
+      expect(await edgePurpose(lastFrom)).toBe('storage');
     } finally { server.close(); }
   }));
