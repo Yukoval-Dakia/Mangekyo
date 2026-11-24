@@ -1,8 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  createCommandReadContext, factId, FactNotFoundError, isFactReadDenied, readable,
-  type FactId, type FactReadOptions, type FactSnapshot, type ReadTransaction, type Revision,
-} from '../../kernel/src/index.ts';
+import {createCommandReadContext, factId, FactNotFoundError, isFactReadDenied, readable, type FactId, type FactReadOptions, type FactSnapshot, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { isSourceFactId, sourceReference, type SourceAnchorV1 } from '../../modules/activity/source-values.ts';
 import { studyTurn, type studyAttachment } from '../../modules/activity/values.ts';

@@ -11,11 +11,5 @@ export function createStudioCommandHooks({
 } = {}): ReturnType<typeof createPropagationHooks> {
   // Sessions and workbook assessments still schedule through their own paths.
   const propagation = createPropagationHooks(policies);
-  return {
-    ...propagation,
-    async onFactsChanged(tx, tick, changes) {
-      await propagation.onFactsChanged(tx, tick, changes);
-      await afterFactsChanged?.(tx, tick, changes);
-    },
-  };
+  return { ...propagation, async onFactsChanged(tx, tick, changes) { await propagation.onFactsChanged(tx, tick, changes); await afterFactsChanged?.(tx, tick, changes); }, };
 }

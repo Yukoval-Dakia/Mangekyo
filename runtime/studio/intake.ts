@@ -2,10 +2,7 @@ import { extractLocalDocument, identifyLocalDocument } from '@mangekyo/executor-
 import { mineruSupports } from '@mangekyo/executor-document-extraction/mineru';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
-import {
-  commandId, createLearnerHost, factId, isFactUnavailable, isKernelErrorKind, LifecycleError,
-  type CommandHooks, type Db, type DbTransaction, type FactId, type Json, type Tick,
-} from '../../kernel/src/index.ts';
+import {commandId, factId, isFactUnavailable, isKernelErrorKind, LifecycleError, type CommandHooks, type Db, type DbTransaction, type FactId, type Json, type Tick} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import type { WorkRef } from '../../kernel/src/work/index.ts';
 import * as intakeOps from '../../modules/capture/intake-operations.ts';
@@ -20,12 +17,13 @@ import { questionMetaDraftType, questionStateType } from '../../modules/content/
 import { materialType } from '../../modules/content/text-material.ts';
 import type { openCapturePapers } from './capture-papers.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId } from './identity.ts';
 import { cloudIntakeSlot, enqueueCloudIntake, mineruToken, type CloudIntakeInput } from './intake-cloud.ts';
 import { completeIntakeWorkCommand, intakeCaptureId, intakeIdFor, openIntakeLifecycle } from './intake-lifecycle.ts';
 import { digest, openIntakeObjects } from './intake-objects.ts';
 import { completeVisionIntake, enqueueVisionIntake, resolveVisionIntakeConfig, type VisionIntakeInput, type VisionOcrCallTelemetry } from './intake-vision.ts';
 import { RequestError } from './sessions.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 export { intakeSwiftTimeoutMs } from '@mangekyo/executor-document-extraction/local';
 export type { IntakeMetadata } from '../../modules/capture/intake-view.ts';
@@ -51,7 +49,7 @@ const prepareDeps = {
 
 export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedModule,
   hooks: CommandHooks = createStudioCommandHooks(), workbook?: { save(input: unknown): Promise<{ id: string }> }) {
-  const host = createLearnerHost(db, studioLearner), runtime = { modules: [captureModule, content], crossModuleWrites: intakeWriteTargets };
+  const host = studioHost(db), runtime = { modules: [captureModule, content], crossModuleWrites: intakeWriteTargets };
   const exec = host.boundHandler(runtime.modules, hooks, undefined, { crossModuleWrites: intakeWriteTargets });
   const objects = openIntakeObjects(db), lifecycle = openIntakeLifecycle(db, objects.erase);
   const saveWith = (before: (tx: DbTransaction, tick: Tick) => Promise<void>) => host.boundHandler(runtime.modules, {
@@ -162,9 +160,7 @@ export function openIntake(db: Db, captureModule: LoadedModule, content: LoadedM
     },
     confirmDrafts: async (materialId: string, input: unknown, workbookOverride = workbook) => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new RequestError(400, '拍卷确认请求格式无效。');
-      const value = input as Record<string, unknown>, parse = <T>(fn: () => T, fallback: string) => {
-        try { return fn(); } catch (e) { throw new RequestError(400, e instanceof Error ? e.message : fallback); }
-      };
+      const value = input as Record<string, unknown>, parse = <T>(fn: () => T, fallback: string) => { try { return fn(); } catch (e) { throw new RequestError(400, e instanceof Error ? e.message : fallback); } };
       if (value.mode === 'workbook') {
         const target = workbookOverride ?? workbook;
         if (!target) throw new RequestError(500, '练习模块未启用。');

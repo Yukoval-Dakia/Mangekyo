@@ -1,4 +1,4 @@
-import { classifyKernelError, commandId, createCommandReadContext, createLearnerHost, factId, isFactNotFound, type CommandHooks, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
+import { classifyKernelError, commandId, createCommandReadContext, factId, isFactNotFound, type CommandHooks, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { memoryValue } from '../../modules/companion/memory.ts';
 import { validateCompanionMemoryInput } from '../../modules/companion/memory-slice.ts';
@@ -7,6 +7,7 @@ import { routeMatchesInput } from './harness.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
 import { loadSettings } from './settings.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 export const memoryId = factId(stableId('companion-memory', studioLearner));
 export async function currentMemory(tx: ReadTransaction) {
@@ -19,7 +20,7 @@ export async function currentMemory(tx: ReadTransaction) {
   }
 }
 export function openMemory(db: Db, module: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
-  const host = createLearnerHost(db, studioLearner), handle = host.boundHandler([module], hooks), read = () => host.snapshot(currentMemory);
+  const host = studioHost(db), handle = host.boundHandler([module], hooks), read = () => host.snapshot(currentMemory);
   return { read, async save(input: Record<string, unknown>) {
     const request = clientRequest(input.requestId), settings = await loadSettings('companion'), endpoint = settings.baseUrl;
     if (input.endpoint !== endpoint || !routeMatchesInput(input.route, settings)) throw new RequestError(409, '模型端点已变更，请重新确认。');

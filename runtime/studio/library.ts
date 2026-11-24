@@ -1,21 +1,20 @@
-import { commandId, createLearnerHost, factId, isFactReadDenied, isKernelErrorKind, type CommandHooks, type Db, type Json } from '../../kernel/src/index.ts';
+import { commandId, factId, isFactReadDenied, isKernelErrorKind, type CommandHooks, type Db, type Json } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { captureMaterial } from '../../modules/capture/intake-values.ts';
 import { materialType, textMaterial } from '../../modules/content/text-material.ts';
 import { goalType, setStudyGoal, studyGoal } from '../../modules/plan/goal-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId } from './identity.ts';
 import { readMaterialText } from './reading.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
-const validate = <Value>(parse: (input: unknown) => Value, input: unknown, message: string) => {
-  try { return parse(input); } catch { throw new RequestError(400, message); }
-};
+const validate = <Value>(parse: (input: unknown) => Value, input: unknown, message: string) => { try { return parse(input); } catch { throw new RequestError(400, message); } };
 
 export function openLibrary(db: Db, captureModule: LoadedModule, content: LoadedModule, plan: LoadedModule,
   hooks: CommandHooks = createStudioCommandHooks()) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const exec = host.boundHandler([captureModule, content, plan], hooks, undefined,
     { crossModuleWrites: { [captureMaterial]: { create: [materialType] } } });
   const write = (type: string, requestId: string, input: Json, deletionWatermark?: string) =>

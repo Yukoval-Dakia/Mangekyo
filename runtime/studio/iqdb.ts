@@ -1,7 +1,4 @@
-import {
-  commandId, createCommandReadContext, createLearnerHost, isFactNotFound, isFactReadDenied, listCompletedEffects,
-  type CommandHooks, type Db, type DbTransaction, type FactId, type ReadTransaction,
-} from '../../kernel/src/index.ts';
+import {commandId, createCommandReadContext, isFactNotFound, isFactReadDenied, listCompletedEffects, type CommandHooks, type Db, type DbTransaction, type FactId, type ReadTransaction} from '../../kernel/src/index.ts';
 import { assertDeletionWatermark } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { recordLocalRead } from '../../kernel/src/work/effects.ts';
@@ -11,17 +8,15 @@ import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { assetType } from '../../modules/content/asset.ts';
 import { materialType } from '../../modules/content/intake-question-bank.ts';
 import { classifySetQuestionTeachingError, parseSetQuestionTeachingInput, questionMetaDraftId } from '../../modules/content/question-state.ts';
-import { storageRead } from './fact-read-helpers.ts';
-import { purpose, stableId, studioLearner } from './identity.ts';
+import { storageRead, studioHost} from './fact-read-helpers.ts';
+import { purpose, stableId } from './identity.ts';
 import { intakeIdFor } from './intake-lifecycle.ts';
 import { enqueueQuestionVerification, readCurrentQuestionVerification } from './iqdb-verification.ts';
 import { RequestError } from './sessions.ts';
 
 export type IssueBank = (tx: DbTransaction, input: { requestId: string; questionRefs: readonly QuestionRef[]; deletionWatermark: string }) => Promise<{ id: FactId }>;
 const proposalLabel = 'iqdb-proposal';
-const validated = <Result>(parse: () => Result) => {
-  try { return parse(); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '题库请求无效。'); }
-};
+const validated = <Result>(parse: () => Result) => { try { return parse(); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '题库请求无效。'); } };
 const inspectQuestion = (tx: ReadTransaction, id: FactId, pinned?: QuestionRef['rev']) =>
   inspectTeachingBankQuestion({ ...createCommandReadContext(tx, purpose), slot: readCurrentQuestionVerification(tx) }, storageRead(tx), id, pinned);
 
@@ -40,7 +35,7 @@ async function listQuestions(tx: ReadTransaction, { teachingOnly = false }: { te
 }
 
 export function openIqdb(db: Db, verificationConfigured: boolean, issueBank: IssueBank, content?: LoadedModule, hooks?: CommandHooks, activity?: LoadedModule, capture?: LoadedModule) {
-  const host = createLearnerHost(db, studioLearner), modules = [content, activity, capture].filter((m): m is LoadedModule => Boolean(m));
+  const host = studioHost(db), modules = [content, activity, capture].filter((m): m is LoadedModule => Boolean(m));
   const exec = modules.length && hooks ? host.boundHandler(modules, hooks, undefined,
     activity ? { crossModuleWrites: { [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType] } } } : undefined) : undefined;
   return {

@@ -5,7 +5,7 @@ import { readJsonConfig, writeJsonConfig } from '../../executors/teaching/local-
 import { defaultStored, normalizeStored, providerIdentifier, providerViews, type StoredRoute } from '../../executors/teaching/workspace-provider-grants.ts';
 export { workspaceGrantRevision, type WorkspaceProviderView } from '../../executors/teaching/workspace-provider-grants.ts';
 import type { SqlValue } from '../../kernel/src/db/types.ts';
-import { commandId, createCommandReadContext, createLearnerHost, factId, isFactNotFound, isFactReadDenied, isFactUnavailable, matchKernelError, type CommandHooks, type Db, type FactId, type FactSnapshot, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
+import { commandId, createCommandReadContext, factId, isFactNotFound, isFactReadDenied, isFactUnavailable, matchKernelError, type CommandHooks, type Db, type FactId, type FactSnapshot, type Json, type ReadTransaction } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { carryRubricAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { materialType } from '../../modules/activity/library-values.ts';
@@ -37,6 +37,7 @@ import { loadSettings, saveSettings } from './settings.ts';
 import { resolveSource } from './source-read.ts';
 import { workspaceQuery } from './workspace-read.ts';
 import { lexicalWorkspaceSql, trigramFunction } from './workspace-search.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 export const syntheticStudyRecords = new Set<string>([
   sourceId('independent', 'work-01'), sourceId('independent', 'work-02'),
@@ -100,15 +101,12 @@ export async function notionTeachingRecipients() {
 
 export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: LoadedModule,
   capture: LoadedModule, plan: LoadedModule, onResearchChanged?: CommandHooks['onFactsChanged']) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const handle = host.boundHandler([activity, content, capture, plan], createStudioCommandHooks({ async afterFactsChanged(tx, tick, changes) {
     await carryRubricAssessments(tx, tick, changes);
     await onResearchChanged?.(tx, tick, changes);
   } }), undefined, { crossModuleWrites: { [setWorkspaceTeachingCommand]: { set_purpose: [materialType, intakeFactType, goalType, organizerTaskType] } } });
-  const providerList = async () => {
-    const [settings, stored] = await Promise.all([loadSettings(), readStored()]);
-    return { activeProviderId: settings.activeProviderId, providers: providerViews(settings, stored) };
-  };
+  const providerList = async () => { const [settings, stored] = await Promise.all([loadSettings(), readStored()]); return { activeProviderId: settings.activeProviderId, providers: providerViews(settings, stored) }; };
 
   return {
     categories: categoryList,

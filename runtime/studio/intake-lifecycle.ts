@@ -1,15 +1,12 @@
 import type { CrossModuleWrites } from '../../kernel/src/commands/contracts.ts';
-import {
-  commandId, createLearnerHost, factId, isFactUnavailable, learnerId, LifecycleError,
-  type CommandHooks, type Db, type DbTransaction, type FactId, type FactSnapshot, type LearnerHost, type ReadTransaction, type Tick,
-} from '../../kernel/src/index.ts';
+import {commandId, createLearnerHost, factId, isFactUnavailable, learnerId, LifecycleError, type CommandHooks, type Db, type DbTransaction, type FactId, type FactSnapshot, type LearnerHost, type ReadTransaction, type Tick} from '../../kernel/src/index.ts';
 import { assertDeletionWatermark, assertUnburned, deletionState, eraseOriginal } from '../../kernel/src/lifecycle.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { cancelWork, finishWork, readReadyWork, requestWork, type WorkRef } from '../../kernel/src/work/index.ts';
 import { isExpectedCloudCompletion, parseIntakeErasureRequest, planIntakeErasureTarget } from '../../modules/capture/intake-operations.ts';
 import { intakeDocument, intakeFactType, intakePurpose, materialType, type IntakeExtraction, type IntakeRequestedExtraction } from '../../modules/capture/intake-values.ts';
 import { captureSourceType } from '../../modules/capture/source.ts';
-import { createCommandReadContext } from './fact-read-helpers.ts';
+import { createCommandReadContext, studioHost} from './fact-read-helpers.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { teachingErasure } from './teaching-erasure.ts';
@@ -67,7 +64,7 @@ export async function completeIntakeWorkCommand(
   ref: WorkRef, { document, material }: IntakeWorkPair, extraction: IntakeExtraction,
   opts: { slotType: string; commandType: string; stableTag: string; afterChanged?: (tx: DbTransaction, tick: Tick) => Promise<void> },
 ) {
-  await createLearnerHost(db, studioLearner).boundHandler(runtime.modules, {
+  await studioHost(db).boundHandler(runtime.modules, {
     ...hooks, async onFactsChanged(tx, tick, changes) {
       if (!isExpectedCloudCompletion(await readReadyWork(tx, ref), opts.slotType, document.ref, material.ref, changes))
         throw new RequestError(409, '交入工作已更改。');
@@ -81,7 +78,7 @@ export async function completeIntakeWorkCommand(
 }
 
 export function openIntakeLifecycle(db: Db, removeObject: (id: FactId) => Promise<void>) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   return {
     state: () => host.snapshot(deletionState),
     checkCapture: async (tx: ReadTransaction, id: FactId, watermark: string) => {

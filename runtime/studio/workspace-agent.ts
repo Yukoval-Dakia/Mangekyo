@@ -1,14 +1,12 @@
 import { checkStudioNotionFact, type NotionRecipient } from './notion.ts';
 import {fileURLToPath} from 'node:url';
-import {commandId, createLearnerHost, factId, isFactUnavailable, isJson,
-  type Db, type Json, type Manifest, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
+import {commandId, factId, isFactUnavailable, isJson, type Db, type Json, type Manifest, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
 import {canonicalJsonString} from '../../kernel/src/commands/canonical.ts';
 import {recordLocalRead} from '../../kernel/src/work/effects.ts';
 import {loadModuleDirectory} from '../../kernel/src/loader.ts';
 import {TeachingError} from '../../executors/teaching/provider.ts';
 import type {PreparedPythonAttempts} from '../../executors/teaching/study-agent.ts';
-import {observationToolInput, parseOpenLearningArgs, presentationTool, validateWorkspaceToolArgs,
-  workspaceStoredReceipt, workspaceWriteResult, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
+import {observationToolInput, parseOpenLearningArgs, presentationTool, validateWorkspaceToolArgs, workspaceStoredReceipt, workspaceWriteResult, type ReceiveStudyImage, type WorkspaceWriteReceipt} from '../../executors/teaching/workspace-tools.ts';
 import type {SourceTrack} from './source-read.ts';
 import {workspaceSearch, workspaceRead, workspaceAssessmentBasis, type WorkspaceAssessmentBasis} from './workspace-read.ts';
 import {openLearningBatch} from './workspace-open.ts';
@@ -21,16 +19,7 @@ import {workbookAttemptType, workbookPaperType, WorkbookSourceMismatch} from '..
 import {goalType} from '../../modules/plan/goal-values.ts';
 import {organizerNoteType} from '../../modules/activity/organizer-values.ts';
 import {organizerTaskType} from '../../modules/plan/organizer-task-values.ts';
-import {
-  WorkspaceInputError,
-  workspaceAttemptTypes,
-  workspaceEntry,
-  workspaceEntryType,
-  workspaceInput,
-  workspaceProofKey,
-  type WorkspaceEntryBasis,
-  type WorkspaceWitness,
-} from '../../modules/activity/workspace-values.ts';
+import {WorkspaceInputError, workspaceAttemptTypes, workspaceEntry, workspaceEntryType, workspaceInput, workspaceProofKey, type WorkspaceEntryBasis, type WorkspaceWitness} from '../../modules/activity/workspace-values.ts';
 export {workspaceInput, workspaceProofKey, type WorkspaceWitness};
 import {purpose, stableId, studioLearner} from './identity.ts';
 import {createStudioCommandHooks} from './command-hooks.ts';
@@ -48,6 +37,7 @@ import type {ActivityCitation} from '../../modules/companion/understanding.ts';
 import {openWorkspaceQuestion, type DraftWitness} from './workspace-question.ts';
 import {openWorkspaceTextbook} from './workspace-textbook.ts';
 import {openWorkspaceRelation, type OpenedRelationSource} from './workspace-relation.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 const artifactTool = presentationTool(presentationCatalog.schema, presentationCatalog.bindings);
 type Seen = {id: string; title: string; text: string; workspace: true};
@@ -76,7 +66,7 @@ type WorkspaceToolsOptions = {
 
 export function openWorkspaceTools(options: WorkspaceToolsOptions) {
   const {db, turn, currentObject, narrowSaves} = options;
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const saveQuestion = options.draftBasis && openWorkspaceQuestion(db,turn,options.maySend,options.authorize,options.draftBasis);
   let publishedFormalArtifact = false;
   const sources = new Map(options.prior.map(input => [input.id, input]));

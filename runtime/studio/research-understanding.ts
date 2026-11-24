@@ -27,10 +27,7 @@ import { readActiveTodos } from '../../kernel/src/work/todo-reads.ts';
 import { admittedActivityFragments, activityEvidenceTypes, bindLinkedCitationRead, citeQuestion, hasLinkedAttempt, questionOrigin, turnEvidenceType } from '../../modules/companion/activity-evidence.ts';
 import { claimType, ClaimInputError } from '../../modules/companion/claim.ts';
 import { memoryAssertionType } from '../../modules/companion/memory-assertion.ts';
-import {
-  conversationExtractionInstructions, extractionGoal, extractionKey, extractionInstructions, extractorProfile, extractedUnderstanding, extractUnderstandings, opensCitation,
-  publishUnderstandingCommand, reviewUnderstanding, type ActivityCitation,
-} from '../../modules/companion/understanding.ts';
+import {conversationExtractionInstructions, extractionGoal, extractionKey, extractionInstructions, extractorProfile, extractedUnderstanding, extractUnderstandings, opensCitation, publishUnderstandingCommand, reviewUnderstanding, type ActivityCitation} from '../../modules/companion/understanding.ts';
 import { researchPurpose } from '../../modules/companion/research.ts';
 import { claimUndoToken, claimWitness } from './memory-claims.ts';
 import { studyTurn, turnAllowsBackgroundUnderstanding } from '../../modules/activity/values.ts';
@@ -50,12 +47,7 @@ import { undoTextbookCommand } from './workspace-textbook.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 
 // A zero-cost host supplies an authorized route. A paid route requires budget admission first.
-export type UnderstandingTransport = {
-  route: string;
-  cost: 0;
-  maySend?: WorkspaceSourceRecipient;
-  sample(request: { instructions: string; input: string; providerEffectId: string }): Promise<string>;
-};
+export type UnderstandingTransport = { route: string; cost: 0; maySend?: WorkspaceSourceRecipient; sample(request: { instructions: string; input: string; providerEffectId: string }): Promise<string>; };
 const windowMs = 86_400_000;
 const mayResearch: WorkspaceSourceRecipient = fact =>
   fact.type === turnEvidenceType ? turnAllowsBackgroundUnderstanding(fact) : fact.purpose.includes(researchPurpose) || fact.purpose.includes('all');

@@ -8,7 +8,7 @@ import { isSourceFactId, parseLearningReference, type SourceRefV1 } from '../../
 import { createKnowledgeEdgeCommand, createVerifiedKnowledgeEdgeCommand, KnowledgeEdgeBasisError, knowledgeEdgeEvidenceType, KnowledgeEdgeEvidenceError, knowledgeEdgeType, knowledgeEndpointKind, knowledgeUseKey, parseEdgeClaim, parseEdgeWrite, withdrawKnowledgeEdgeCommand } from '../../modules/content/knowledge-edge.ts';
 import { buildSavedEdgeRef, projectConfirmedRelationState, resolveOpenedRelationInputs } from '../../modules/content/workspace-slice.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { purposeReader } from './fact-read-helpers.ts';
+import { purposeReader, studioHost} from './fact-read-helpers.ts';
 import { purpose, stableId, studioLearner } from './identity.ts';
 import { readKnowledgeSources } from './knowledge-graph.ts';
 import { RequestError } from './sessions.ts';
@@ -78,7 +78,7 @@ export function openWorkspaceRelation(options: {
 }
 
 export function openRelationReview(db: Db, contentModule: LoadedModule, afterFactsChanged?: CommandHooks['onFactsChanged']) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const handle = host.commandHandler([contentModule], createStudioCommandHooks(afterFactsChanged ? { afterFactsChanged } : {}));
   const unavailableBasis = (error: unknown) => isFactUnavailable(error) || error instanceof KnowledgeEdgeBasisError;
   const translate = (error: unknown): never => {

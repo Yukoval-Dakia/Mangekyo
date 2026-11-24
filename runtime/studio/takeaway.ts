@@ -1,22 +1,20 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { canonicalJsonString } from '../../kernel/src/commands/canonical.ts';
-import {
-  createCommandReadContext, createLearnerHost, factId, isFactUnavailable,
-  type CommandHooks, type CommandId, type CommandReceipt, type Db, type DbTransaction, type Json,
-} from '../../kernel/src/index.ts';
+import {createCommandReadContext, factId, isFactUnavailable, type CommandHooks, type CommandId, type CommandReceipt, type Db, type DbTransaction, type Json} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
 import { takeawayDisplay, takeawayFeedback, takeawayOpen, takeawaySave, takeawayUndo } from '../../modules/activity/takeaway-host.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId } from './identity.ts';
 import { RequestError } from './sessions.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 const reject = (status: number, message: string) => new RequestError(status, message);
 
 export function openTakeaway(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
   const key = randomBytes(32);
   const sign = (scope: unknown) => createHmac('sha256', key).update(canonicalJsonString(scope)).digest('base64url');
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const commands = { modules: [activity], hooks };
   type Handle = (request: { id: CommandId; type: string; input: unknown; purpose: string }) => Promise<CommandReceipt>;
   const deps = (tx: DbTransaction, handle: Handle) => ({

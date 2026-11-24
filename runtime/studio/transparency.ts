@@ -51,9 +51,7 @@ export function openTransparency(db: Db, pulseHost?: TextbookPulseHost, learner:
     openObjectiveCitations: (refs: Parameters<typeof openObjectiveCitations>[1]) => openObjectiveCitations(tx, refs, teachingPurpose, () => true),
   });
   const graphAccess = (tx: ReadTransaction, read: ReturnType<typeof gatedReader>, use: string, check: CheckNotionRead) => {
-    const verifyLegacyBasis = async (id: FactId, fact: FactSnapshot) => {
-      try { await verifyWorkspaceEntryBasis(read, id, workspaceEntry(fact.value).basis); return true; } catch { return false; }
-    };
+    const verifyLegacyBasis = async (id: FactId, fact: FactSnapshot) => { try { await verifyWorkspaceEntryBasis(read, id, workspaceEntry(fact.value).basis); return true; } catch { return false; } };
     return {
       learner: tx.learner, purpose: use, recipient: tx.learner, read, isUnavailable: isFactUnavailable, preloadFollowing: read.preloadFollowing, verifyLegacyBasis,
       reopenLegacyQuestion: async (ref: { id: FactId; rev: Revision; accessEpoch: string }) => {

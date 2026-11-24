@@ -1,6 +1,6 @@
 import { readFactCollection, readValueRevisions } from '../../kernel/src/commands/fact-collection.ts';
 import { gatherSnapshot } from '../../kernel/src/derivations/gather.ts';
-import { commandId, createBusScope, createLearnerHost, factId, isFactNotFound, isFactReadDenied, matchKernelError, readable, type CommandHooks, type Db, type FactSnapshot, type Json, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
+import { commandId, createBusScope, factId, isFactNotFound, isFactReadDenied, matchKernelError, readable, type CommandHooks, type Db, type FactSnapshot, type Json, type ReadTransaction, type Revision } from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { allAssessments } from '../../modules/activity/learning-attempt-read.ts';
 import { readGoal, readTasks } from '../../modules/activity/learning-overview.ts';
@@ -25,11 +25,9 @@ import { createStudioCommandHooks } from './command-hooks.ts';
 import { stableId, studioLearner } from './identity.ts';
 import { loadRecordFlowSnapshot } from './record-flow.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
-const validate = <Input, Value>(parse: (input: Input) => Value, input: Input): Value => {
-  try { return parse(input); }
-  catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '内容格式无效。'); }
-};
+const validate = <Input, Value>(parse: (input: Input) => Value, input: Input): Value => { try { return parse(input); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : '内容格式无效。'); } };
 const translate = (error: unknown): Error => {
   if (error instanceof RequestError) return error;
   if (isFactNotFound(error)) return new RequestError(400, '链接的材料或要恢复的版本不存在。');
@@ -47,7 +45,7 @@ const requestOf = (input: unknown) => clientRequest(input && typeof input === 'o
 
 export function openOrganizer(db: Db, activity: LoadedModule, plan: LoadedModule,
   hooks: CommandHooks = createStudioCommandHooks(), carePause?: { paused: (tx: ReadTransaction, now?: number) => Promise<boolean> }) {
-  const host = createLearnerHost(db, studioLearner), access = { callerPurpose: storagePurpose, maySend: () => true };
+  const host = studioHost(db), access = { callerPurpose: storagePurpose, maySend: () => true };
   const bus = createBusScope({ db, learner: studioLearner }, {
     actor: 'learner', purpose: storagePurpose, maySend: access.maySend, defaultPreset: 'organizer', presets: new Map([['organizer', (fact: FactSnapshot) => fact]]),
   }, host.commandHandler([activity, plan], hooks));

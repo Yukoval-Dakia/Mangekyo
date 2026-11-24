@@ -1,5 +1,5 @@
-import { commandId, createLearnerHost, factId, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
-import { storageRead } from './fact-read-helpers.ts';
+import { commandId, factId, type Db, type ReadTransaction } from '../../kernel/src/index.ts';
+import { storageRead, studioHost} from './fact-read-helpers.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { pauseCare, resumeCare, readCarePause, carePauseTtlMs, type CarePauseStatus } from '../../modules/companion/care-pause.ts';
@@ -8,7 +8,7 @@ import { stableId, studioLearner } from './identity.ts';
 const gateId = factId(stableId('care-pause', studioLearner));
 
 export function openCarePause(db: Db, companion: LoadedModule) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const handle = host.boundHandler([companion], createStudioCommandHooks());
   const status = (tx: ReadTransaction, now = Date.now()): Promise<CarePauseStatus> =>
     readCarePause(storageRead(tx), gateId, now);

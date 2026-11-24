@@ -1,27 +1,15 @@
 import { assertDeletionWatermark, assertUnburned } from '../../kernel/src/lifecycle.ts';
 import { submittedWatermark } from '../../modules/capture/request.ts';
-import {
-  commandId, createCommandReadContext, createLearnerHost, factId, isFactReadDenied, LifecycleError, matchKernelError,
-  type CommandHooks, type Db, type FactId,
-} from '../../kernel/src/index.ts';
+import {commandId, createCommandReadContext, factId, isFactReadDenied, LifecycleError, matchKernelError, type CommandHooks, type Db, type FactId} from '../../kernel/src/index.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
-import {
-  practiceInput,
-  practiceSubmission,
-  ridingPaper,
-  ridingPracticeCommand,
-  ridingPracticePurpose,
-  ridingPracticeType,
-  type PracticeAttempt,
-  type PracticeInput,
-  type PracticeView,
-} from '../../modules/activity/practice-values.ts';
+import {practiceInput, practiceSubmission, ridingPaper, ridingPracticeCommand, ridingPracticePurpose, ridingPracticeType, type PracticeAttempt, type PracticeInput, type PracticeView} from '../../modules/activity/practice-values.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
-import { stableId, studioLearner } from './identity.ts';
+import { stableId } from './identity.ts';
 import { clientRequest, RequestError } from './sessions.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks = createStudioCommandHooks()) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const handle = host.boundHandler([activity], hooks);
 
   async function read(selected?: FactId): Promise<PracticeView> {
@@ -64,11 +52,7 @@ export function openPractice(db: Db, activity: LoadedModule, hooks: CommandHooks
       });
     }
     let data: PracticeInput;
-    try {
-      data = practiceInput(input, archived.paper);
-    } catch {
-      throw new RequestError(409, '同一个提交标识已经用于不同的作答。');
-    }
+    try { data = practiceInput(input, archived.paper); } catch { throw new RequestError(409, '同一个提交标识已经用于不同的作答。'); }
     if (archived.feedback.some(({ questionId, answer }) => data.answers[questionId] !== answer))
       throw new RequestError(409, '同一个提交标识已经用于不同的作答。');
     return read(attemptId);

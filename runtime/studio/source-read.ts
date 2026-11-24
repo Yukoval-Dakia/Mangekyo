@@ -1,7 +1,4 @@
-import {
-  createAuthorizedFactReader, factId, isFactNotFound, isFactUnavailable,
-  type FactSnapshot, type ReadTransaction, type Revision,
-} from '../../kernel/src/index.ts';
+import {createAuthorizedFactReader, factId, isFactNotFound, isFactUnavailable, type FactSnapshot, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
 import { materialType, storagePurpose } from '../../modules/activity/library-values.ts';
 import { isSourceFactId, sourceReference, sourceRefV1, type SourceAnchorV1 } from '../../modules/activity/source-values.ts';
 import { readFrozenWorkbookRecord } from '../../modules/activity/workbook-bank.ts';

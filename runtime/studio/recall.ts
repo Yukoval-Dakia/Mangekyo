@@ -1,18 +1,10 @@
-import {
-  commandId, createCommandReadContext, createLearnerHost, factId, matchKernelError, parseManifest, readEffectiveDerivation,
-  type CommandHooks, type CommandReceipt, type Db, type DbTransaction,
-  type FactId, type FactRef, type ReadTransaction, type Revision,
-} from '../../kernel/src/index.ts';
+import {commandId, createCommandReadContext, factId, matchKernelError, parseManifest, readEffectiveDerivation, type CommandHooks, type CommandReceipt, type Db, type DbTransaction, type FactId, type FactRef, type ReadTransaction, type Revision} from '../../kernel/src/index.ts';
 import { notionReadScope, teachingResultAuthority, type CheckNotionRead } from './notion.ts';
 import type { LoadedModule } from '../../kernel/src/loader.ts';
 import { studyKit } from '../../executors/teaching/study-kit.ts';
 import { helpExposure, helpExposureRequest, helpExposureType, sameHelpRef, type HelpRef } from '../../modules/activity/help-exposure-values.ts';
 import { storagePurpose } from '../../modules/activity/library-values.ts';
-import {
-  issueRecallCommand, parseRecallMount, recallDisplayEvent, recallIssuance, recallIssuanceType, recallItemView, recallMountedItem,
-  recallResponseId, recallResultView, recallRevealInput, recallRevealView, recallSubmission, recallSubmissionType, recallSubmitInput,
-  recallTarget, submitRecallCommand, type RecallMount,
-} from '../../modules/activity/recall-values.ts';
+import {issueRecallCommand, parseRecallMount, recallDisplayEvent, recallIssuance, recallIssuanceType, recallItemView, recallMountedItem, recallResponseId, recallResultView, recallRevealInput, recallRevealView, recallSubmission, recallSubmissionType, recallSubmitInput, recallTarget, submitRecallCommand, type RecallMount} from '../../modules/activity/recall-values.ts';
 import { studyTurn } from '../../modules/activity/values.ts';
 import { attachmentSources, teachingOrigin } from './reading.ts';
 import { workspaceGrantChecker } from './harness.ts';
@@ -20,6 +12,7 @@ import { purpose, slotType, stableId, studioLearner } from './identity.ts';
 import { createStudioCommandHooks } from './command-hooks.ts';
 import { readActivityHelpEvents, readActivitySubmissionBirth } from '../../modules/activity/learning-attempt-read.ts';
 import { RecallRequestError } from '../../modules/activity/recall-http-support.ts';
+import { studioHost } from './fact-read-helpers.ts';
 
 export { RecallRequestError };
 
@@ -127,7 +120,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
   /** The host must authenticate the actual render event and correlate it to its mount and reveal grant. */
   verifyDisplay?: (receipt: unknown) => Promise<DisplayWitness | null>;
 } = {}) {
-  const host = createLearnerHost(db, studioLearner);
+  const host = studioHost(db);
   const hooks = options.hooks ?? createStudioCommandHooks();
 
   const notionRead = () => notionReadScope(db, studioLearner);
@@ -238,10 +231,7 @@ export function openRecall(db: Db, activity: LoadedModule, options: {
       return writeMounted(mount, async (tx, handle, _check, { ref, item }) => {
         const id = factId(stableId('recall-submission', requestId));
         const existing = await optionalPinned(tx, { id, rev: firstRevision });
-        const data = {
-          issuance: ref, itemId: item.itemId, responseId: recallResponseId, answer,
-          observation: existing?.type === recallSubmissionType ? recallSubmission(existing.value).observation : observation,
-        };
+        const data = { issuance: ref, itemId: item.itemId, responseId: recallResponseId, answer, observation: existing?.type === recallSubmissionType ? recallSubmission(existing.value).observation : observation, };
         const receipt = await handle({purpose: storagePurpose, type: submitRecallCommand, id: commandId(id), input: {id, data}});
         return resultFor(tx, data, writtenRef(receipt), item);
       });

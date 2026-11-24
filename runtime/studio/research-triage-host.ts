@@ -58,9 +58,7 @@ async function readDeltas(tx: ReadTransaction, reviewed: Tick) {
     }
     const fact = await whenAvailable(() => read.fact(factId(row.id), { mode: 'following' }));
     if (!fact?.purpose.includes(researchPurpose)) continue;
-    const add = (kind: string, payload: Json) => {
-      events[row.id] = { event_id: row.id, kind, fact_ref: fact.ref.id, fact_rev: fact.ref.rev, payload };
-    };
+    const add = (kind: string, payload: Json) => { events[row.id] = { event_id: row.id, kind, fact_ref: fact.ref.id, fact_rev: fact.ref.rev, payload }; };
     if (row.type === goalType || row.type === organizerTaskType) {
       add('goal_or_task_changed', { fact_type: row.type });
     } else {
@@ -184,9 +182,7 @@ export async function prepareResearchTriage(tx: ReadTransaction, reviewed: Tick,
   }, { limitPerKind: 1 });
   const prefix = { facts, todos, inventory: inventory.items, forecasts: {}, memos: {}, work: {}, signals: {},
     chain: null, budget: { remaining: 0 } };
-  const snapshot: TriageSnapshot = {
-    ...prefix, events, facts: intent && olderCandidate ? { ...facts, [intent.sourceFactRev.id]: olderCandidate } : facts,
-  };
+  const snapshot: TriageSnapshot = { ...prefix, events, facts: intent && olderCandidate ? { ...facts, [intent.sourceFactRev.id]: olderCandidate } : facts, };
   const action = intent && reviewAction(intent.sourceFactRev.id);
   const request = researchTriageRequest({ prefix, events, olderCandidate, settingsRevision, overview, retention, recentWindow,
     todoCoverage: coverage(Object.keys(todos).length, rows.length, recentWindow), inventoryCoverage: inventory.coverage,
