@@ -333,6 +333,171 @@ export interface OnboardingProposeResponse {
   proposal: OnboardingProposal;
 }
 
+export type OnboardingStreamStageId =
+  | 'connect'
+  | 'profile_exams'
+  | 'disciplines_plan'
+  | 'knowledge_graph'
+  | 'starter_questions'
+  | 'verify';
+
+export type OnboardingStreamFindingKind =
+  | 'subject'
+  | 'exam'
+  | 'discipline'
+  | 'concept'
+  | 'edge'
+  | 'question'
+  | 'goal'
+  | 'repair';
+
+export type OnboardingStreamEvent =
+  | { event: 'meta'; data: { model?: string; currentDate?: string; timeZone?: string } }
+  | { event: 'stage'; data: { stage: OnboardingStreamStageId; status: 'active' | 'done' | 'error'; detail?: string } }
+  | { event: 'thinking'; data: { stage: OnboardingStreamStageId; delta: string } }
+  | { event: 'finding'; data: { stage: OnboardingStreamStageId; kind: OnboardingStreamFindingKind; label: string; detail?: string } }
+  | { event: 'done'; data: { proposal: OnboardingProposal; mode?: 'llm' | 'offline_manual' } }
+  | { event: 'error'; data: { message: string; code?: string; stage?: OnboardingStreamStageId; next?: string } };
+
+export interface OnboardingStreamResult {
+  proposal: OnboardingProposal;
+  mode?: 'llm' | 'offline_manual' | undefined;
+}
+
+function onboardingStreamFailure(
+  message: string,
+  code?: string,
+  next?: string,
+  stage?: OnboardingStreamStageId,
+): ApiError & { stage?: OnboardingStreamStageId } {
+  const failure = new ApiError(0, message, code, next) as ApiError & { stage?: OnboardingStreamStageId };
+  if (stage) failure.stage = stage;
+  return failure;
+}
+
+/**
+ * POST /api/onboarding/propose/stream 的健壮 SSE 消费。
+ * 服务端尚未部署流式端点（404/405）时优雅回退到同步 proposeOnboarding；
+ * 回退路径只透传真实 connect 阶段与 done，绝不伪造思考文本。
+ */
+export async function proposeOnboardingStream(
+  input: OnboardingProposeInput,
+  onEvent: (event: OnboardingStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<OnboardingStreamResult> {
+  const response = await fetch('/api/onboarding/propose/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify(input),
+    ...(signal ? { signal } : {}),
+  });
+
+  if (response.status === 404 || response.status === 405) {
+    onEvent({ event: 'stage', data: { stage: 'connect', status: 'active', detail: '正在请求方案生成…' } });
+    const fallback = await proposeOnboarding(input, signal);
+    const result: OnboardingStreamResult = {
+      proposal: fallback.proposal,
+      mode: fallback.proposal.meta?.source === 'offline_manual' ? 'offline_manual' : 'llm',
+    };
+    onEvent({ event: 'done', data: { proposal: result.proposal, ...(result.mode ? { mode: result.mode } : {}) } });
+    return result;
+  }
+
+  const contentType = response.headers.get('Content-Type') ?? '';
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null);
+    const stage = typeof failure?.stage === 'string' ? (failure.stage as OnboardingStreamStageId) : undefined;
+    const message = typeof failure?.error === 'string' && failure.error
+      ? failure.error
+      : `推演请求失败（HTTP ${response.status}）。`;
+    const code = typeof failure?.code === 'string' ? failure.code : undefined;
+    const next = typeof failure?.next === 'string' ? failure.next : undefined;
+    onEvent({ event: 'error', data: { message, ...(code ? { code } : {}), ...(stage ? { stage } : {}), ...(next ? { next } : {}) } });
+    const error = new ApiError(response.status, message, code, next) as ApiError & { stage?: OnboardingStreamStageId };
+    if (stage) error.stage = stage;
+    throw error;
+  }
+
+  if (!response.body) {
+    throw onboardingStreamFailure('推演流不可用，请重试。');
+  }
+  if (!contentType.includes('text/event-stream')) {
+    // 兼容服务端以 JSON 直出 { proposal } 的降级响应。
+    const fallback = await response.json().catch(() => null);
+    const proposal = (fallback as OnboardingProposeResponse | null)?.proposal;
+    if (proposal) {
+      const mode = proposal.meta?.source === 'offline_manual' ? 'offline_manual' : 'llm';
+      onEvent({ event: 'done', data: { proposal, mode } });
+      return { proposal, mode };
+    }
+    throw onboardingStreamFailure('推演响应格式无法识别，请重试。');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finished: OnboardingStreamResult | null = null;
+
+  const dispatchFrame = (frame: string) => {
+    let eventName = 'message';
+    const dataLines: string[] = [];
+    for (const rawLine of frame.split('\n')) {
+      const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+      if (!line || line.startsWith(':')) continue;
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).replace(/^ /, ''));
+      }
+    }
+    if (dataLines.length === 0) return;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(dataLines.join('\n'));
+    } catch {
+      return; // 心跳或非 JSON 帧安全跳过
+    }
+    const streamEvent = { event: eventName, data: payload } as OnboardingStreamEvent;
+    onEvent(streamEvent);
+    if (streamEvent.event === 'done') {
+      finished = { proposal: streamEvent.data.proposal, mode: streamEvent.data.mode };
+    } else if (streamEvent.event === 'error') {
+      const data = streamEvent.data;
+      throw onboardingStreamFailure(
+        typeof data?.message === 'string' && data.message ? data.message : '推演暂时失败，请重试。',
+        data?.code,
+        data?.next,
+        data?.stage,
+      );
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, '\n');
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        if (frame.trim()) dispatchFrame(frame);
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) dispatchFrame(buffer);
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+
+  if (!finished) {
+    throw onboardingStreamFailure('推演流意外中断，未收到完成事件，请重试。');
+  }
+  return finished;
+}
+
 export interface OnboardingApplyInput {
   requestId: string;
   proposal: OnboardingProposal;
