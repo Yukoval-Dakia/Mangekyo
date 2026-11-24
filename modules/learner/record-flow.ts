@@ -88,6 +88,7 @@ export type AgentRecordFlow = {
   readonly recentAttempts: readonly RecordFlowAttempt[];
   readonly graphNeighbors: readonly RecordFlowNeighbor[];
   readonly relatedDiscussions: readonly RecordFlowDiscussion[];
+  readonly witnessFactIds: readonly string[];
 };
 
 export type LearnerModelFlowSignal = {
@@ -163,6 +164,7 @@ type IndexedNeighbor = {
   readonly targetId: string;
   readonly relation: string;
   readonly direction: 'in' | 'out';
+  readonly edgeFactId?: string;
 };
 
 type IndexedAssessment = {
@@ -217,10 +219,11 @@ function addToMap<K, V>(map: Map<K, V[]>, key: K, value: V) {
   else map.set(key, [value]);
 }
 
-function addNeighbor(map: Map<string, IndexedNeighbor[]>, fromId: string, toId: string, relation: string) {
+function addNeighbor(map: Map<string, IndexedNeighbor[]>, fromId: string, toId: string, relation: string, edgeFactId?: string) {
   if (!fromId || !toId || fromId === toId) return;
-  addToMap(map, fromId, { targetId: toId, relation, direction: 'out' });
-  addToMap(map, toId, { targetId: fromId, relation, direction: 'in' });
+  const edge = edgeFactId ? { edgeFactId } : {};
+  addToMap(map, fromId, { targetId: toId, relation, direction: 'out', ...edge });
+  addToMap(map, toId, { targetId: fromId, relation, direction: 'in', ...edge });
 }
 
 function factKind(fact: RawFlowFact): string {
@@ -448,7 +451,7 @@ export function indexRecordFlowSnapshot(
       const fromId = str(rec(rec(data.from).sourceUse).id);
       const toId = str(rec(rec(data.to).sourceUse).id);
       const relation = str(data.kind) || 'related_to';
-      addNeighbor(neighborsById, fromId, toId, relation);
+      addNeighbor(neighborsById, fromId, toId, relation, fact.id);
       continue;
     }
 
@@ -930,18 +933,70 @@ export function summarizeRecordFlowForList(
 
 const AGENT_FLOW_KINDS = new Set(['concept', 'method', 'archetype', 'question', 'textbook', 'material', 'paper', 'attempt']);
 
+function collectFlowWitnessFactIds(
+  flow: RecordFlowView,
+  misconceptions: readonly RecordFlowMisconception[],
+  attempts: readonly RecordFlowAttempt[],
+  neighbors: readonly RecordFlowNeighbor[],
+  discussions: readonly RecordFlowDiscussion[],
+  snap: FlowGraphSnapshot,
+): string[] {
+  const ids = new Set<string>([flow.identity.id]);
+  for (const m of misconceptions) {
+    if (snap.factsById.has(m.id)) ids.add(m.id);
+    else if (m.id.startsWith('error:')) {
+      const attemptId = m.id.slice('error:'.length).split(':')[0];
+      if (attemptId && snap.factsById.has(attemptId)) ids.add(attemptId);
+    }
+  }
+  for (const a of attempts) {
+    if (snap.factsById.has(a.attemptId)) ids.add(a.attemptId);
+    if (snap.factsById.has(a.paperId)) ids.add(a.paperId);
+  }
+  const neighborIds = new Set<string>();
+  for (const n of neighbors) {
+    if (snap.factsById.has(n.id)) {
+      ids.add(n.id);
+      neighborIds.add(n.id);
+    }
+  }
+  for (const edge of snap.neighborsById.get(flow.identity.id) ?? []) {
+    if (edge.edgeFactId && neighborIds.has(edge.targetId) && snap.factsById.has(edge.edgeFactId)) {
+      ids.add(edge.edgeFactId);
+    }
+  }
+  for (const d of discussions) {
+    if (snap.factsById.has(d.turnId)) ids.add(d.turnId);
+  }
+  // Include all attempts & misconceptions that contributed to mastery level/score.
+  for (const a of flow.attempts) {
+    if (snap.factsById.has(a.attemptId)) ids.add(a.attemptId);
+    if (snap.factsById.has(a.paperId)) ids.add(a.paperId);
+  }
+  for (const m of flow.misconceptions) {
+    if (snap.factsById.has(m.id)) ids.add(m.id);
+  }
+  return [...ids];
+}
+
 /**
- * Compact high-signal `flow` block returned to the teaching agent via `open_learning`.
+ * Compact high-signal `flow` block returned to the teaching agent via `open_learning`,
+ * including exact `witnessFactIds` so outbound revocation / accessEpoch revalidation tracks every referenced fact.
  */
 export function projectAgentRecordFlow(targetId: string, snap: FlowGraphSnapshot): AgentRecordFlow | null {
   const flow = projectRecordFlow(targetId, snap);
   if (!flow || !AGENT_FLOW_KINDS.has(flow.identity.kind)) return null;
+  const misconceptions = flow.misconceptions.slice(0, 4);
+  const recentAttempts = flow.attempts.slice(0, 3);
+  const graphNeighbors = flow.graphNeighbors.slice(0, 8);
+  const relatedDiscussions = flow.discussions.slice(0, 3);
   return {
     mastery: flow.mastery,
-    misconceptions: flow.misconceptions.slice(0, 4),
-    recentAttempts: flow.attempts.slice(0, 3),
-    graphNeighbors: flow.graphNeighbors.slice(0, 8),
-    relatedDiscussions: flow.discussions.slice(0, 3),
+    misconceptions,
+    recentAttempts,
+    graphNeighbors,
+    relatedDiscussions,
+    witnessFactIds: collectFlowWitnessFactIds(flow, misconceptions, recentAttempts, graphNeighbors, relatedDiscussions, snap),
   };
 }
 
@@ -1004,30 +1059,21 @@ export function projectLearnerModelFlowSignals(
       flow.graphNeighbors.length > 0 ||
       flow.discussions.length > 0;
     if (!hasSignal) continue;
-    const witnessFactIds = new Set<string>([flow.identity.id]);
-    for (const m of flow.misconceptions.slice(0, 2)) {
-      if (snap.factsById.has(m.id)) witnessFactIds.add(m.id);
-    }
-    for (const a of flow.attempts.slice(0, 2)) {
-      if (snap.factsById.has(a.attemptId)) witnessFactIds.add(a.attemptId);
-    }
-    for (const n of flow.graphNeighbors.slice(0, 4)) {
-      if (snap.factsById.has(n.id)) witnessFactIds.add(n.id);
-    }
-    for (const d of flow.discussions.slice(0, 2)) {
-      if (snap.factsById.has(d.turnId)) witnessFactIds.add(d.turnId);
-    }
+    const misconceptions = flow.misconceptions.slice(0, 2);
+    const recentAttempts = flow.attempts.slice(0, 2);
+    const graphNeighbors = flow.graphNeighbors.slice(0, 4);
+    const relatedDiscussions = flow.discussions.slice(0, 2);
     signals.push({
       id: flow.identity.id,
       kind: flow.identity.kind,
       title: flow.identity.title,
       ...(flow.identity.subject ? { subject: flow.identity.subject } : {}),
       mastery: flow.mastery,
-      misconceptions: flow.misconceptions.slice(0, 2),
-      recentAttempts: flow.attempts.slice(0, 2),
-      graphNeighbors: flow.graphNeighbors.slice(0, 4),
-      relatedDiscussions: flow.discussions.slice(0, 2),
-      witnessFactIds: [...witnessFactIds],
+      misconceptions,
+      recentAttempts,
+      graphNeighbors,
+      relatedDiscussions,
+      witnessFactIds: collectFlowWitnessFactIds(flow, misconceptions, recentAttempts, graphNeighbors, relatedDiscussions, snap),
     });
     if (signals.length >= limit) break;
   }

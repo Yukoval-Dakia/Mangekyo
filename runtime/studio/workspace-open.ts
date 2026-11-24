@@ -48,8 +48,12 @@ export async function openLearningBatch(tx: ReadTransaction, args: OpenLearningA
     const result = root ? projectOpenedLearning(value, root, args.part) ?? learningToolError('not_found', 'part', args.part.kind === 'block' ? '未找到所选教材块。' : '没有找到所选题项。', openLearningSearchNext) : value;
     if (result.ok !== false) {
       for (const [fact, mode] of witnesses) access.track(fact, fact === root && fact.type === textbookPageType ? 'pinned' : mode);
-      const flow = projectAgentRecordFlow(id, (await getFlowSnap()).snap);
-      items.push(flow ? { ...result, flow } : result);
+      const { snap, snapshots } = await getFlowSnap(), agentFlow = projectAgentRecordFlow(id, snap);
+      if (agentFlow && agentFlow.witnessFactIds.every(fid => snapshots.has(fid))) {
+        const { witnessFactIds, ...flow } = agentFlow;
+        for (const fid of witnessFactIds) if (fid !== id || root?.type !== textbookPageType) access.track(snapshots.get(fid)!, 'following');
+        items.push({ ...result, flow });
+      } else items.push(result);
     } else items.push(result);
   }
   const failureCode = pickOpenLearningBatchFailure(items);
