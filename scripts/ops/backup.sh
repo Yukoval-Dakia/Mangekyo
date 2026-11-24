@@ -35,7 +35,7 @@ BLOB_DIR=""
 BACKUP_ROOT="./backups"
 KEEP=30
 PG_DUMP=""
-PG_CONTAINER=""
+PG_CONTAINER="${PG_CONTAINER:-}"
 
 log() { printf '[backup] %s\n' "$*"; }
 err() { printf '[backup] ERROR: %s\n' "$*" >&2; }

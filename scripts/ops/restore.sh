@@ -38,7 +38,7 @@ SCHEMA=""
 DATABASE_URL=""
 BLOB_DIR=""
 PG_RESTORE=""
-PG_CONTAINER=""
+PG_CONTAINER="${PG_CONTAINER:-}"
 DRY_RUN=0
 ASSUME_YES=0
 FORCE=0
@@ -90,6 +90,7 @@ MANIFEST_BLOB_DIR="$(read_manifest blobDir)"
 # 若用户指定了不同 --schema，视为目标覆盖检查用，不改变实际恢复 schema。
 # 提前确定 RESTORE_SCHEMA，确保第 2 步覆盖保护检查的是实际写入的 schema。
 RESTORE_SCHEMA="${MANIFEST_SCHEMA:-${SCHEMA}}"
+[[ "${RESTORE_SCHEMA}" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die "manifest schema 名无效：${RESTORE_SCHEMA}"
 
 # 探测运行中的 PostgreSQL 容器。优先级（可用 PG_CONTAINER 环境变量或
 # --pg-container 显式指定覆盖）：
