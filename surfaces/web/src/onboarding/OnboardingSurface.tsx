@@ -4,15 +4,20 @@ import {
   applyOnboarding,
   onboardingStatus,
   proposeOnboarding,
+  proposeOnboardingStream,
   requestId,
   type OnboardingApplyResponse,
   type OnboardingCompletedExam,
+  type OnboardingProposal,
   type OnboardingProposeInput,
   type OnboardingStatus,
+  type OnboardingStreamEvent,
+  type OnboardingStreamStageId,
   type OnboardingUpcomingExam,
 } from '../api';
 import MathText from '../math-text';
 import { handleSpaNavigation } from '../today-v2/shared';
+import { GeneratingWorkbench } from './GeneratingWorkbench';
 import {
   applySummary,
   countSelectedEdges,
@@ -26,6 +31,12 @@ import {
   type DraftUpcomingExam,
   type QuickPrefDraft,
 } from './types';
+import {
+  initialWorkbenchState,
+  markStageError,
+  reduceStreamEvent,
+  type OnboardingWorkbenchState,
+} from './stream-types';
 import './onboarding.css';
 
 export type OnboardingSurfaceProps = {
@@ -72,13 +83,6 @@ const DIFFICULTY_LABELS = {
   stretch: '进阶',
 } as const;
 
-const GENERATE_STAGES = [
-  '学制与考试节点',
-  '学科语境',
-  '知识图谱',
-  '摸底题库',
-] as const;
-
 const MEMO_LIMIT = 780;
 
 function localId() {
@@ -87,13 +91,6 @@ function localId() {
 
 function sortedUpcoming(exams: DraftUpcomingExam[]): DraftUpcomingExam[] {
   return [...exams].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-}
-
-function isModelFailure(error: unknown): boolean {
-  return (
-    error instanceof ApiError &&
-    (error.status === 503 || error.code === 'model_unavailable' || error.code === 'model_failed')
-  );
 }
 
 function isAbort(error: unknown): boolean {
@@ -105,14 +102,17 @@ export function OnboardingSurface({ onNavigate, onOpenSettings, onApplied }: Onb
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
   const [profileText, setProfileText] = useState('');
   const [quickPrefs, setQuickPrefs] = useState<QuickPrefDraft>({});
-  const [generateStage, setGenerateStage] = useState(0);
   const [generateError, setGenerateError] = useState<ApiError | TypeError | null>(null);
+  const [workbench, setWorkbench] = useState<OnboardingWorkbenchState>(initialWorkbenchState);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [streamRunning, setStreamRunning] = useState(false);
   const [draft, setDraft] = useState<DraftProposal | null>(null);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyError, setApplyError] = useState('');
   const [applyResult, setApplyResult] = useState<OnboardingApplyResponse | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastInputRef = useRef<OnboardingProposeInput | null>(null);
+  const generationRef = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -124,23 +124,9 @@ export function OnboardingSurface({ onNavigate, onOpenSettings, onApplied }: Onb
     return () => controller.abort();
   }, []);
 
-  useEffect(() => {
-    if (step !== 'generating' || generateError) return;
-    setGenerateStage(0);
-    const timer = window.setInterval(() => {
-      setGenerateStage(current => Math.min(current + 1, GENERATE_STAGES.length - 1));
-    }, 1400);
-    return () => window.clearInterval(timer);
-  }, [step, generateError]);
-
   const timeZone = useMemo(() => {
     return status?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   }, [status?.timeZone]);
-
-  const todayLabel = useMemo(() => {
-    const date = status?.currentDate ?? new Date().toISOString().slice(0, 10);
-    return date;
-  }, [status?.currentDate]);
 
   const beginPropose = useCallback(
     (mode: 'llm' | 'offline_manual') => {
@@ -154,61 +140,67 @@ export function OnboardingSurface({ onNavigate, onOpenSettings, onApplied }: Onb
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
+      const generation = generationRef.current + 1;
+      generationRef.current = generation;
       setGenerateError(null);
+      setWorkbench(initialWorkbenchState());
+      setRunStartedAt(Date.now());
       setStep('generating');
-      proposeOnboarding(input, controller.signal)
-        .then(response => {
-          if (controller.signal.aborted) return;
-          setDraft(toDraftProposal(response.proposal, localId));
-          setStep('review');
-        })
+
+      const settle = (proposal: OnboardingProposal) => {
+        if (controller.signal.aborted || generationRef.current !== generation) return;
+        setStreamRunning(false);
+        setDraft(toDraftProposal(proposal, localId));
+        setStep('review');
+      };
+      const fail = (failure: unknown, stageId?: OnboardingStreamStageId) => {
+        if (controller.signal.aborted || isAbort(failure) || generationRef.current !== generation) return;
+        setStreamRunning(false);
+        setWorkbench(current => markStageError(current, stageId));
+        setGenerateError(
+          failure instanceof ApiError || failure instanceof TypeError
+            ? failure
+            : new ApiError(0, '推演暂时失败，请重试。'),
+        );
+      };
+      const onEvent = (event: OnboardingStreamEvent) => {
+        if (controller.signal.aborted || generationRef.current !== generation) return;
+        setWorkbench(current => reduceStreamEvent(current, event));
+      };
+
+      if (mode === 'offline_manual') {
+        // 离线手动直出：无多余等待，与此前行为保持一致。
+        setStreamRunning(true);
+        proposeOnboarding(input, controller.signal)
+          .then(response => settle(response.proposal))
+          .catch((failure: unknown) => fail(failure));
+        return;
+      }
+
+      setStreamRunning(true);
+      proposeOnboardingStream(input, onEvent, controller.signal)
+        .then(result => settle(result.proposal))
         .catch((failure: unknown) => {
-          if (controller.signal.aborted || isAbort(failure)) return;
-          setGenerateError(
-            failure instanceof ApiError || failure instanceof TypeError
-              ? failure
-              : new ApiError(0, '推演暂时失败，请重试。'),
-          );
+          const stageId =
+            failure instanceof ApiError
+              ? (failure as ApiError & { stage?: OnboardingStreamStageId }).stage
+              : undefined;
+          fail(failure, stageId);
         });
     },
     [profileText, quickPrefs, timeZone],
   );
 
   function cancelGenerating() {
+    generationRef.current += 1;
     abortRef.current?.abort();
+    setStreamRunning(false);
     setGenerateError(null);
     setStep('intro');
   }
 
   function goOfflineManual() {
-    const input = lastInputRef.current;
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setGenerateError(null);
-    const offlineInput: OnboardingProposeInput = input
-      ? { ...input, mode: 'offline_manual' }
-      : {
-          profileText: profileText.trim(),
-          timeZone,
-          ...(toQuickPrefs(quickPrefs) ? { quickPrefs: toQuickPrefs(quickPrefs) } : {}),
-          mode: 'offline_manual',
-        };
-    lastInputRef.current = offlineInput;
-    proposeOnboarding(offlineInput, controller.signal)
-      .then(response => {
-        if (controller.signal.aborted) return;
-        setDraft(toDraftProposal(response.proposal, localId));
-        setStep('review');
-      })
-      .catch((failure: unknown) => {
-        if (controller.signal.aborted || isAbort(failure)) return;
-        setGenerateError(
-          failure instanceof ApiError || failure instanceof TypeError
-            ? failure
-            : new ApiError(0, '离线草稿暂时不可用，请重试。'),
-        );
-      });
+    beginPropose('offline_manual');
   }
 
   function updateDraft(mutator: (current: DraftProposal) => DraftProposal) {
@@ -258,16 +250,42 @@ export function OnboardingSurface({ onNavigate, onOpenSettings, onApplied }: Onb
 
   if (step === 'generating') {
     return (
-      <section className="ob" aria-label="推演中">
-        <GeneratingStep
-          stage={generateStage}
-          todayLabel={todayLabel}
+      <section className="ob ob--wide" aria-label="推演中">
+        <GeneratingWorkbench
+          state={workbench}
+          running={streamRunning}
+          runStartedAt={runStartedAt}
+          currentDate={status?.currentDate}
           timeZone={timeZone}
-          error={generateError}
+          error={
+            generateError
+              ? {
+                  message:
+                    generateError instanceof TypeError
+                      ? '网络好像断了一下，推演没能完成。'
+                      : generateError.message || '推演暂时失败，请重试。',
+                  ...(generateError instanceof ApiError && generateError.code
+                    ? { code: generateError.code }
+                    : {}),
+                  ...(generateError instanceof ApiError && generateError.next
+                    ? { next: generateError.next }
+                    : {}),
+                  ...(generateError instanceof ApiError &&
+                  (generateError as ApiError & { stage?: OnboardingStreamStageId }).stage
+                    ? {
+                        stage: (generateError as ApiError & { stage?: OnboardingStreamStageId })
+                          .stage,
+                      }
+                    : {}),
+                }
+              : null
+          }
           onCancel={cancelGenerating}
           onOpenSettings={onOpenSettings}
           onOffline={goOfflineManual}
-          onRetry={() => beginPropose(lastInputRef.current?.mode === 'offline_manual' ? 'offline_manual' : 'llm')}
+          onRetry={() =>
+            beginPropose(lastInputRef.current?.mode === 'offline_manual' ? 'offline_manual' : 'llm')
+          }
         />
       </section>
     );
@@ -469,83 +487,6 @@ function IntroStep({
           先自己逛逛
         </button>
       </div>
-    </div>
-  );
-}
-
-function GeneratingStep({
-  stage,
-  todayLabel,
-  timeZone,
-  error,
-  onCancel,
-  onOpenSettings,
-  onOffline,
-  onRetry,
-}: {
-  stage: number;
-  todayLabel: string;
-  timeZone: string;
-  error: ApiError | TypeError | null;
-  onCancel: () => void;
-  onOpenSettings?: (() => void) | undefined;
-  onOffline: () => void;
-  onRetry: () => void;
-}) {
-  return (
-    <div className="ob-generating">
-      <p className="ob-kicker">今天是 {todayLabel} · {timeZone}</p>
-      <h1>正在为你推演初始方案</h1>
-
-      {!error ? (
-        <>
-          <ol className="ob-stages">
-            {GENERATE_STAGES.map((label, index) => (
-              <li
-                key={label}
-                className={
-                  index < stage ? 'ob-stage ob-stage--done' : index === stage ? 'ob-stage ob-stage--active' : 'ob-stage'
-                }
-              >
-                <span className="ob-stage-dot" aria-hidden="true" />
-                {label}
-                {index === stage && <span className="ob-stage-note">推演中…</span>}
-                {index < stage && <span className="ob-stage-note">已就绪</span>}
-              </li>
-            ))}
-          </ol>
-          <button type="button" className="ob-btn ob-btn--ghost" onClick={onCancel}>
-            取消并返回
-          </button>
-        </>
-      ) : (
-        <div className="ob-fail" role="alert">
-          <p className="ob-fail-title">
-            {error instanceof TypeError
-              ? '网络好像断了一下，推演没能完成。'
-              : isModelFailure(error)
-                ? '模型暂时不可用，推演没能完成。'
-                : error.message || '推演暂时失败。'}
-          </p>
-          {error instanceof ApiError && error.next && <p className="ob-fail-next">{error.next}</p>}
-          <div className="ob-actions">
-            {onOpenSettings && (
-              <button type="button" className="ob-btn ob-btn--primary" onClick={onOpenSettings}>
-                打开模型设置
-              </button>
-            )}
-            <button type="button" className="ob-btn ob-btn--tonal" onClick={onOffline}>
-              改用离线手动配置
-            </button>
-            <button type="button" className="ob-btn ob-btn--ghost" onClick={onRetry}>
-              重试
-            </button>
-            <button type="button" className="ob-btn ob-btn--ghost" onClick={onCancel}>
-              返回重填
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
