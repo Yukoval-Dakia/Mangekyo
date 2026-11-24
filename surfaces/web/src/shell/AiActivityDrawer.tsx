@@ -125,6 +125,7 @@ const USAGE_CALL_LABELS: Readonly<Record<string, string>> = {
   "notion-access-denial": "Notion 访问拦截",
   "notion-request": "Notion 请求",
   "onboarding-setup": "学习画像与初始配置",
+  "knowledge-maintenance-v1": "后台知识库自主维护",
 };
 
 function usageCallLabel(call: AiUsageCallItem) {

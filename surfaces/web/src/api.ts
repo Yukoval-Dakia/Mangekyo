@@ -554,6 +554,22 @@ export function applyOnboarding(input: OnboardingApplyInput) {
   });
 }
 
+export interface ResearchMaintenanceRunResponse {
+  ran: boolean;
+  reason: string;
+  rationale?: string;
+  proposedEdges: number;
+  prepNoteId?: string | null;
+}
+
+export function runResearchMaintenance(signal?: AbortSignal) {
+  return api<ResearchMaintenanceRunResponse>('/research/maintenance/run', {
+    method: 'POST',
+    body: { requestId: requestId() },
+    ...(signal ? { signal } : {}),
+  });
+}
+
 export type RecordFlowMasteryLevel = 'unknown' | 'fragile' | 'developing' | 'solid';
 
 export interface RecordFlowIdentity {
