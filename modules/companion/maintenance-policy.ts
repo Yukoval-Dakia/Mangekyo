@@ -90,12 +90,6 @@ export type SuggestedMaintenanceEdge = {
   readonly rationale: string;
 };
 
-export type SuggestedSummaryUpdate = {
-  readonly conceptId: string;
-  readonly summary: string;
-  readonly rationale: string;
-};
-
 export type SuggestedPrepNote = {
   readonly title: string;
   readonly focusConceptIds: readonly string[];
@@ -107,7 +101,6 @@ export type MaintenanceProposal = {
   readonly shouldAct: boolean;
   readonly rationale: string;
   readonly suggestedEdges: readonly SuggestedMaintenanceEdge[];
-  readonly suggestedSummaryUpdates: readonly SuggestedSummaryUpdate[];
   readonly suggestedPrepNote?: SuggestedPrepNote;
 };
 
@@ -130,13 +123,6 @@ export type PlannedKnowledgeEdgeProposal = {
   };
 };
 
-export type PlannedSummaryUpdate = {
-  readonly conceptId: string;
-  readonly dedupKey: string;
-  readonly summary: string;
-  readonly rationale: string;
-};
-
 export type PlannedPrepNote = {
   readonly dedupKey: string;
   readonly title: string;
@@ -150,7 +136,6 @@ export type MaintenanceActionPlan = {
   readonly shouldAct: boolean;
   readonly rationale: string;
   readonly edgeProposals: readonly PlannedKnowledgeEdgeProposal[];
-  readonly summaryUpdates: readonly PlannedSummaryUpdate[];
   readonly prepNote: PlannedPrepNote | null;
   readonly rejectedCount: number;
 };
@@ -159,7 +144,6 @@ export type PlanMaintenanceOptions = {
   readonly conceptUses?: ReadonlyMap<string, MaintenanceConceptUse>;
   readonly purpose?: 'storage' | 'teaching';
   readonly maxEdges?: number;
-  readonly maxSummaryUpdates?: number;
 };
 
 const VALID_EDGE_KINDS = new Set<MaintenanceEdgeKind>(['prereq_of', 'related_to']);
@@ -418,11 +402,9 @@ export function buildMaintenanceContext(
 
   let isolatedCount = 0;
   let weakOrErrorCount = 0;
-  let missingSummaryCount = 0;
   for (const concept of allConcepts) {
     if ((degree.get(concept.id) ?? 0) === 0) isolatedCount += 1;
     if (concept.masteryLevel === 'fragile' || concept.errorStages.length > 0) weakOrErrorCount += 1;
-    if (!concept.summary) missingSummaryCount += 1;
   }
 
   const minIntervalMs = Math.max(0, options.minIntervalMs ?? DEFAULT_MAINTENANCE_MIN_INTERVAL_MS);
@@ -443,7 +425,7 @@ export function buildMaintenanceContext(
     (input.recentSignals.some((s) => s.tick === undefined || toBigIntTick(s.tick) > lastRunTick) ||
       isolatedCount > 0 ||
       weakOrErrorCount > 0);
-  const hasMaintenanceBacklog = isolatedCount >= 2 || weakOrErrorCount >= 1 || missingSummaryCount >= 1;
+  const hasMaintenanceBacklog = isolatedCount >= 2 || weakOrErrorCount >= 1;
 
   let trigger: MaintenanceTrigger | null = null;
   if (hasNewHighSignal && elapsedMs >= minIntervalMs) {
@@ -547,7 +529,6 @@ export function planMaintenanceActions(
       shouldAct: false,
       rationale,
       edgeProposals: [],
-      summaryUpdates: [],
       prepNote: null,
       rejectedCount: 0,
     };
@@ -557,7 +538,6 @@ export function planMaintenanceActions(
   const existingEdgeSigs = new Set(context.edges.map((e) => `${e.fromId}\0${e.toId}\0${e.kind}`));
   const purpose = options.purpose ?? 'teaching';
   const maxEdges = Math.max(0, Math.min(MAX_MAINTENANCE_EDGE_PROPOSALS, options.maxEdges ?? MAX_MAINTENANCE_EDGE_PROPOSALS));
-  const maxSummaryUpdates = Math.max(0, Math.min(8, options.maxSummaryUpdates ?? 5));
   const useOf = (id: string): MaintenanceConceptUse =>
     options.conceptUses?.get(id) ?? { id, rev: 1, accessEpoch: '0' };
 
@@ -614,30 +594,7 @@ export function planMaintenanceActions(
     });
   }
 
-  // 2. Validate concept summary updates (strictly in-context concepts only).
-  const summaryUpdates: PlannedSummaryUpdate[] = [];
-  const seenSummaryConcepts = new Set<string>();
-  for (const raw of proposal.suggestedSummaryUpdates ?? []) {
-    const conceptId = cleanText(raw.conceptId, 128);
-    const summary = cleanText(raw.summary, 600);
-    if (!conceptId || !summary || !validConceptIds.has(conceptId) || seenSummaryConcepts.has(conceptId)) {
-      rejectedCount += 1;
-      continue;
-    }
-    if (summaryUpdates.length >= maxSummaryUpdates) {
-      rejectedCount += 1;
-      continue;
-    }
-    seenSummaryConcepts.add(conceptId);
-    summaryUpdates.push({
-      conceptId,
-      dedupKey: `maintenance-summary:${context.currentDate}:${conceptId}`,
-      summary,
-      rationale: cleanText(raw.rationale, 240) || '补充缺失或过简的概念摘要',
-    });
-  }
-
-  // 3. Validate <= 1 traceable, idempotent prepNote with verified focusConceptIds basis.
+  // 2. Validate <= 1 traceable, idempotent prepNote with verified focusConceptIds basis.
   let prepNote: PlannedPrepNote | null = null;
   if (proposal.suggestedPrepNote) {
     const rawNote = proposal.suggestedPrepNote;
@@ -672,12 +629,11 @@ export function planMaintenanceActions(
     }
   }
 
-  const hasActions = edgeProposals.length > 0 || summaryUpdates.length > 0 || prepNote !== null;
+  const hasActions = edgeProposals.length > 0 || prepNote !== null;
   return {
     shouldAct: hasActions,
     rationale,
     edgeProposals,
-    summaryUpdates,
     prepNote,
     rejectedCount,
   };
