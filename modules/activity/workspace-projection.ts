@@ -11,7 +11,7 @@ export type WorkspaceDisplay = {
   readonly title: string;
   readonly excerpt: string;
   readonly text: string;
-  readonly kind?: WorkspaceEntryKind;
+  readonly kind?: string;
   readonly links?: readonly string[];
   readonly tags?: readonly string[];
   readonly question?: {prompt:string; answer?:string; rubric?:string};

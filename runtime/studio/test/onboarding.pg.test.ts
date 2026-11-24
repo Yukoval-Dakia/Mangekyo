@@ -4,6 +4,7 @@ import { testDatabaseUrl, withLearnerDatabase } from '../../../kernel/test/learn
 import { openOnboarding } from '../onboarding.ts';
 import { openTransparency } from '../transparency.ts';
 import { openWorkbook } from '../workbook.ts';
+import { openWorkspaceAccess } from '../workspace-access.ts';
 import { resolveSource } from '../source-read.ts';
 import { serve } from '../http.ts';
 import { studioLearner } from '../identity.ts';
@@ -46,7 +47,7 @@ const proposal = {
 
 it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and records transparency evidence on PostgreSQL', () =>
   withLearnerDatabase(studioLearner, async db => {
-    const [activity, plan, content, companion] = await Promise.all(['activity', 'plan', 'content', 'companion'].map(loadStudioTestModule));
+    const [activity, capture, plan, content, companion] = await Promise.all(['activity', 'capture', 'plan', 'content', 'companion'].map(loadStudioTestModule));
     let modelEnabled = true, authorizedCalls = 0;
     const onboarding = openOnboarding(db, { plan: plan!, content: content!, companion: companion! }, {
       loadProvider: async () => ({ baseUrl: modelEnabled ? 'http://127.0.0.1:3425/v1' : '', model: 'mock-model', protocol: 'openai',
@@ -57,7 +58,8 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
       authorizeModel: async () => { authorizedCalls += 1; },
     });
     const workbook = openWorkbook(db, activity!), transparency = openTransparency(db);
-    const free = await port(), server = serve(db, {} as never, {} as never, {} as never, { onboarding, workbook, transparency } as never, free);
+    const workspace = openWorkspaceAccess(db, activity!, content!, capture!, plan!);
+    const free = await port(), server = serve(db, {} as never, {} as never, {} as never, { onboarding, workbook, transparency, workspace } as never, free);
     await new Promise<void>(resolve => server.listen(free, '127.0.0.1', resolve));
     const call = async (path: string, body?: unknown) => {
       const response = await fetch(`http://127.0.0.1:${free}${path}`, body === undefined ? {} : {
@@ -117,6 +119,17 @@ it.skipIf(!testDatabaseUrl)('serves onboarding status/apply idempotently and rec
       expect(savedPaper.rows[0]?.value.questions[0]).toMatchObject({
         prompt: '求光滑斜面加速度', explanation: '$a=g\\sin\\theta$', rubric: '参考答案：$a=g\\sin\\theta$\n评分要点：分解重力并列牛顿第二定律',
       });
+      const conceptRecord = await call(`/api/workspace/access/records/${newton.id}?offset=0`);
+      expect(conceptRecord).toMatchObject({ status: 200, body: { id: newton.id, title: '牛顿第二定律', kind: 'concept', text: 'F=ma', eligible: false } });
+      const conceptList = await call('/api/workspace/access?category=entry&kind=concept');
+      expect(conceptList.status).toBe(200);
+      expect(conceptList.body.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: newton.id, title: '牛顿第二定律', kind: 'concept' })]));
+      const questionList = await call('/api/workspace/access?category=entry&kind=question');
+      expect(questionList.status).toBe(200);
+      const qId = String((questionList.body.items as { id: string }[])[0]!.id);
+      const questionRecord = await call(`/api/workspace/access/records/${qId}?offset=0`);
+      expect(questionRecord).toMatchObject({ status: 200, body: { id: qId, title: '斜面受力', kind: 'question',
+        question: { prompt: '求光滑斜面加速度', answer: '$a=g\\sin\\theta$', rubric: '分解重力并列牛顿第二定律' } } });
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }

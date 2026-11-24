@@ -625,3 +625,70 @@ export function applyAssetQuestionSolutions<Q extends QuickPaperDraftQuestion>(
     }),
   };
 }
+
+export type AssetWorkspaceDisplay = {
+  readonly title: string;
+  readonly excerpt: string;
+  readonly text: string;
+  readonly kind?: string;
+  readonly tags?: readonly string[];
+  readonly question?: { prompt: string; answer?: string; rubric?: string };
+};
+
+function cleanDisplayText(raw: string): string {
+  return raw.replace(/\u0000/g, '');
+}
+
+function compactExcerpt(raw: string, limit = 240): string {
+  const compact = cleanDisplayText(raw).replace(/\s+/g, ' ').trim();
+  return compact.length > limit ? compact.slice(0, limit) + '…' : compact;
+}
+
+function renderAssetBlocks(blocks: readonly Block[]): string {
+  return blocks.flatMap(({ body }) => {
+    if (body.kind === 'text') return [body.text];
+    if (body.kind === 'formula') return [body.latex];
+    if (body.kind === 'table') return body.rows.map(row => row.join(' ｜ '));
+    return [];
+  }).filter(Boolean).join('\n\n');
+}
+
+export function assetWorkspaceDisplay(value: unknown): AssetWorkspaceDisplay {
+  const asset = parseAsset(value);
+  if (asset.kind === 'question') {
+    const prompt = questionPrompt(asset);
+    const { answer, rubric } = questionSolutionFields(asset);
+    const text = cleanDisplayText([
+      prompt,
+      answer ? `参考答案\n${answer}` : '',
+      rubric ? `评分要点\n${rubric}` : '',
+    ].filter(Boolean).join('\n\n'));
+    return {
+      title: asset.title, kind: 'question', text, excerpt: compactExcerpt(prompt || asset.title),
+      question: { prompt, ...(answer ? { answer } : {}), ...(rubric ? { rubric } : {}) },
+    };
+  }
+  if (asset.kind === 'discipline') {
+    const ctx = asset.discipline_context;
+    const parts = [
+      ctx?.learningScope ? `学习范围：${ctx.learningScope}` : '',
+      ctx?.mastery ? `掌握标准：${ctx.mastery}` : '',
+      ctx?.assessment?.length ? `评估方式：${ctx.assessment.join('；')}` : '',
+      ctx?.boundaries?.length ? `教学边界：${ctx.boundaries.join('；')}` : '',
+      renderAssetBlocks(asset.blocks),
+    ].filter(Boolean);
+    const text = cleanDisplayText(parts.join('\n\n') || asset.title);
+    return { title: asset.title, kind: 'discipline', text, excerpt: compactExcerpt(text), ...(asset.tags ? { tags: asset.tags } : {}) };
+  }
+  if (asset.kind === 'concept' || asset.kind === 'method' || asset.kind === 'archetype') {
+    const body = renderAssetBlocks(asset.blocks);
+    const aliases = asset.aliases.length ? `别名：${asset.aliases.join('、')}` : '';
+    const text = cleanDisplayText([body, aliases].filter(Boolean).join('\n\n') || asset.title);
+    return { title: asset.title, kind: asset.kind, text, excerpt: compactExcerpt(body || text), ...(asset.tags ? { tags: asset.tags } : {}) };
+  }
+  const body = cleanDisplayText(renderAssetBlocks(asset.blocks) || asset.title);
+  return {
+    title: asset.title, ...(asset.kind === 'textbook' ? { kind: 'page' } : {}),
+    text: body, excerpt: compactExcerpt(body), ...(asset.tags ? { tags: asset.tags } : {}),
+  };
+}

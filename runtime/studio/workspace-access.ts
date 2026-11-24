@@ -22,7 +22,7 @@ import { setWorkspaceTeachingCommand, validateWorkspaceTeachingRequest, workspac
 import { intakeFactType } from '../../modules/capture/intake-values.ts';
 import { knowledgeEdgeEvidenceType, knowledgeEdgeType } from '../../modules/content/knowledge-edge.ts';
 import { textbookPageType } from '../../modules/content/textbook-page.ts';
-import { buildUpdatedRouteEntry, buildWorkspaceTeachingCommand, isPlainObject, lookupTeachingFailure, parseAdvancedWorkspaceListParams, projectWorkspacePreview, ulidFactPattern, validateRouteGrantInput, type TeachingFailureReason } from '../../modules/content/workspace-slice.ts';
+import { assetType, buildUpdatedRouteEntry, buildWorkspaceTeachingCommand, isPlainObject, lookupTeachingFailure, parseAdvancedWorkspaceListParams, projectWorkspacePreview, ulidFactPattern, validateRouteGrantInput, type TeachingFailureReason } from '../../modules/content/workspace-slice.ts';
 import { goalType } from '../../modules/plan/goal-values.ts';
 import { organizerTaskType } from '../../modules/plan/organizer-task-values.ts';
 import { summarizeRecordFlowForList } from '../../modules/learner/record-flow.ts';
@@ -140,7 +140,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
         confirmNotionRead(db, studioLearner, async (tx, check) => {
           const where = ['f.learner_id=$1', 'f.retracted_rev IS NULL', 'f.type = ANY($2::text[])', 'NOT (f.type=$3 AND f.id = ANY($4::text[]))'];
           const values: SqlValue[] = [tx.learner, types, studyRecordType, [...syntheticStudyRecords]];
-          if (kind) { values.push(workspaceEntryType, kind); where.push(`f.type=$5 AND r.data->>'kind'=$6`); }
+          if (kind) { values.push([workspaceEntryType, assetType], kind); where.push(`f.type = ANY($5::text[]) AND r.data->>'kind'=$6`); }
           const trigram = query ? await trigramFunction(tx) : undefined;
           if (query) { values.push(query); const { fts, score } = lexicalWorkspaceSql(values.length, trigram); where.push(`(${fts} OR ${score}>=0.45)`); }
           if (cursor) { values.push(cursor.tick, cursor.id); where.push(`(f.created_tick, f.id) < ($${values.length - 1}::bigint, $${values.length}::text)`); }
@@ -216,7 +216,7 @@ export function openWorkspaceAccess(db: Db, activity: LoadedModule, content: Loa
       });
       if (!row) throw new RequestError(404, '找不到这条学习记录。');
       const checked = validateWorkspaceTeachingRequest({
-        row, allowedType: allowedTypes.has(row.type) || row.type === workbookPresentationType,
+        row, allowedType: (allowedTypes.has(row.type) && row.type !== assetType) || row.type === workbookPresentationType,
         synthetic: row.type === studyRecordType && syntheticStudyRecords.has(row.id), purposes: purposesOf(row.purpose), use, expectedRev, enabled, link,
       });
       if (!checked.ok) throw teachingFailure(checked.reason);

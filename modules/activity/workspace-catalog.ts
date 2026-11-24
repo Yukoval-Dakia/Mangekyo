@@ -1,4 +1,5 @@
 import type { FactSnapshot } from '@mangekyo/kernel';
+import { assetType } from '@mangekyo/module-content/facts/asset-contract';
 import { textbookPageType } from '@mangekyo/module-content/facts/textbook-page';
 import goal from '@mangekyo/module-plan/facts/goal';
 import task from '@mangekyo/module-plan/facts/organizer-task';
@@ -19,8 +20,6 @@ const defaultPage = 20;
 const maximumTextChunk = 12_000;
 const defaultTextChunk = 6_000;
 
-type EntryKind = typeof entryKinds[number];
-
 type AccessCategory = {
   readonly id: string;
   readonly label: string;
@@ -36,7 +35,7 @@ export const categories: readonly AccessCategory[] = [
   { id: 'record', label: '学习记录', types: [studyRecordType] },
   { id: 'goal', label: '目标', types: [goal.type] },
   { id: 'task', label: '任务', types: [task.type] },
-  { id: 'entry', label: '生成条目', types: [workspaceEntryType] },
+  { id: 'entry', label: '生成条目', types: [workspaceEntryType, assetType] },
 ];
 export const allowedTypes = new Set(categories.flatMap((category) => category.types));
 export type AccessRow = {
@@ -53,7 +52,7 @@ type AccessItem = {
   readonly rev: number;
   readonly type: string;
   readonly category: string;
-  readonly kind?: EntryKind;
+  readonly kind?: string;
   readonly title: string;
   readonly excerpt: string;
   readonly occurredAt: string | null;
@@ -146,7 +145,7 @@ export function itemOf(row: AccessRow, {display, purposes, fact}: AccessDisplay)
     tags: display.tags ?? [],
     author: authorOf(row.author),
     teaching: purposes.includes('teaching') || purposes.includes('all'),
-    eligible: !purposes.includes('all'),
+    eligible: row.type !== assetType && !purposes.includes('all'),
     purposes,
   };
 }
@@ -164,12 +163,13 @@ export function workspaceRecordPage(row: AccessRow, read: AccessDisplay, offset:
   };
 }
 
+const catalogKinds = new Set<string>([...entryKinds, 'discipline', 'method', 'archetype', 'textbook', 'capture']);
 export function workspaceCatalogQuery(params: URLSearchParams) {
   const limit = readLimit(params.get('limit'), defaultPage, maximumPage);
   const cursor = decodeCursor(params.get('cursor'));
   const category = categoryOf(params.get('category'));
   const kind = params.get('kind');
-  if (kind && !entryKinds.some(item => item === kind)) throw new WorkspaceCatalogInputError('工作区条目类型无效。');
+  if (kind && !catalogKinds.has(kind)) throw new WorkspaceCatalogInputError('工作区条目类型无效。');
   const query = readSearch(params.get('query'));
   const types = category ? [...category.types] : [...allowedTypes];
   return {limit, cursor, kind, query, types};
