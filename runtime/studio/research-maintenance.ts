@@ -24,16 +24,15 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
     loadProvider = deps.loadProvider ?? (() => loadSettings()), agent = deps.agent ?? proposeKnowledgeMaintenanceWithAgent,
     handle = host.boundHandler([deps.content, deps.activity], createStudioCommandHooks(deps.afterFactsChanged ? { afterFactsChanged: deps.afterFactsChanged } : {}));
   async function run(options: { force?: boolean; now?: () => Date } = {}) {
-    const force = options.force === true, nowMs = (options.now ?? now)().getTime(),
+    const force = options.force === true, nowMs = (options.now ?? now)().getTime(), readPurpose = force ? 'teaching' : researchPurpose,
       currentDate = new Intl.DateTimeFormat('en-CA', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' }).format(new Date(nowMs));
     const prepared = await host.snapshot(async tx => {
       if (await deps.carePause.paused(tx, nowMs)) return skip('care_paused');
-      const settings = !force ? await currentResearchSettings(tx) : undefined;
+      const settings = force ? null : await currentResearchSettings(tx);
       if (!force && !settings?.enabled) return skip('research_disabled');
       const budget = settings?.scoutBudget;
-      const spent = budget && budget.limitMicros > 0 && budget.expiresAtMs > nowMs ? await effectBudgetUsage(tx) : undefined;
-      const hasPaidBudget = spent !== undefined && spent.settled + spent.held < BigInt(budget!.limitMicros);
-      const readPurpose: 'teaching' | typeof researchPurpose = force ? 'teaching' : researchPurpose;
+      const spent = !force && budget && budget.limitMicros > 0 && budget.expiresAtMs > nowMs ? await effectBudgetUsage(tx) : null;
+      const hasPaidBudget = Boolean(spent && spent.settled + spent.held < BigInt(budget!.limitMicros));
       const { snap, snapshots } = await loadAuthorizedRecordFlowSnapshot(tx, { purpose: readPurpose });
       const conceptUses = new Map<string, MaintenanceConceptUse>(), accessEpochs = new Map<string, string>();
       for (const [id, s] of snapshots) { conceptUses.set(id, { id, rev: s.ref.rev, accessEpoch: s.accessEpoch }); accessEpochs.set(id, s.accessEpoch); }
@@ -41,29 +40,25 @@ export function openKnowledgeMaintenance(db: Db, deps: Deps) {
         WHERE learner_id=$1 AND label=$2 AND state='done' ORDER BY ended_tick DESC LIMIT 1`, [tx.learner, LABEL])).rows[0];
       const context = buildMaintenanceContext(extractMaintenanceInputFromFlow(snap, { currentDate, nowMs, lastRunAtMs: last?.ranAtMs ? Number(last.ranAtMs) : null,
         lastRunTick: last?.ended_tick ?? null, accessEpochs }), force ? { minIntervalMs: 0, idleCooldownMs: 0 } : {});
-      return context ? { ran: true as const, context, conceptUses, hasPaidBudget, readPurpose, writePurpose: readPurpose === 'background-research' ? 'storage' as const : 'teaching' as const } : skip('no_maintenance_needed');
+      return context ? { ran: true as const, context, conceptUses, hasPaidBudget } : skip('no_maintenance_needed');
     });
     if (prepared.ran === false) return prepared;
-    const { context, conceptUses, hasPaidBudget, readPurpose, writePurpose } = prepared, provider = await loadProvider().catch(() => undefined);
+    const { context, conceptUses, hasPaidBudget } = prepared, provider = await loadProvider().catch(() => undefined);
     if (!provider?.baseUrl) {
       if (force) throw new RequestError(503, '尚未配置可用的 AI 模型，请先前往设置配置模型。', 'model_unavailable');
       return skip('model_unavailable');
     }
     if (!force && !isLocalZeroCostProvider(provider) && !hasPaidBudget) return skip('paid_budget_required');
     const runKey = `${currentDate}:${nowMs}`;
-    let result;
-    try {
-      result = await agent(context, { provider, requestId: `maint-${runKey}` });
-    } catch (err) {
-      if (err instanceof TeachingError) {
-        if (force && (err.code === 'provider_unavailable' || err.code === 'provider_configuration'))
-          throw new RequestError(503, err.message, 'model_unavailable');
-        if (force) throw new RequestError(502, err.message, err.code);
-        return skip(err.code);
-      }
-      throw err;
+    let result: Awaited<ReturnType<typeof agent>>;
+    try { result = await agent(context, { provider, requestId: `maint-${runKey}` }); }
+    catch (err) {
+      if (!(err instanceof TeachingError)) throw err;
+      if (!force) return skip(err.code);
+      const unavail = err.code === 'provider_unavailable' || err.code === 'provider_configuration';
+      throw new RequestError(unavail ? 503 : 502, err.message, unavail ? 'model_unavailable' : err.code);
     }
-    const plan = planMaintenanceActions(result.proposal, context, { conceptUses, writePurpose });
+    const plan = planMaintenanceActions(result.proposal, context, { conceptUses, purpose: force ? 'teaching' : 'storage' });
     let proposedEdges = 0;
     for (const edge of plan.edgeProposals) {
       try {
