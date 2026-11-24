@@ -18,6 +18,8 @@ import { checkProviderOutcome, providerEndpoint, providerProtocol, requestComple
 import {createLearningTurn, learningArguments, learningRecovery, runLearningBatch, toolCallSummary, toolDisplayLabel, toolProgressPhase, toolResultStatus} from './learning-turn.ts';
 import {adaptWorkspaceResult, learningToolFallback, narrowWorkspaceDefinitions, saveBeliefDefinition, toolFailure,
   type LearningTools} from './learning-tools.ts';
+import {collectAllowedCitationIds, sanitizeInlineCitations, stripIncompleteCiteSuffix} from './inline-citations.ts';
+import {companionInlineCitationGuidance} from './prompt.ts';
 
 type StudyWorkspaceTools = WorkspaceTools & {
   presentationOnly?: true;
@@ -103,10 +105,12 @@ const memoryRegionTool = { type: 'function', function: { name: 'open_memory_regi
   parameters: { type: 'object', properties: { region: { type: 'string' }, start: { type: 'integer' }, basisDigest: { type: 'string' } },
     required: ['region', 'start', 'basisDigest'], additionalProperties: false } } };
 const parallelReadOnlyWorkspaceTools = new Set(['open_learning', 'search_workspace', 'read_workspace', 'read_learner_radar']);
+const nonCitationTools = new Set(['exa_search', 'python', 'read_file', 'write_file', 'find_tools', 'run_calculation']);
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 
-function streamableAssistantText(raw: string): string {
-  return publicAssistantContent(raw).trimStart().replace(possibleTagSuffix, '').trimEnd();
+function streamableAssistantText(raw: string, allowedCitationIds: ReadonlySet<string>): string {
+  const cleaned = stripIncompleteCiteSuffix(publicAssistantContent(raw).trimStart().replace(possibleTagSuffix, ''));
+  return sanitizeInlineCitations(cleaned, allowedCitationIds).trimEnd();
 }
 
 type ModelReply = {
@@ -185,7 +189,20 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
   const coreDefinitions = learning?.resident ?? [...builtins, ...nativeTools, ...(tools ? [openToolResult] : []), ...(options.openMemoryRegion ? [memoryRegionTool] : []),
     ...(options.memoryTools ? memoryDefinitions : []),
     ...(discovery ? [findTools] : Array.from(remotes, ([name, remote]) => remoteToolDefinition(name, remote)))];
+  const hasCitationTools = Boolean((workspace && !workspace.presentationOnly) || learning || options.memoryTools);
+  const allowedCitationIds = new Set<string>();
+  if (hasCitationTools || options.jitContext || options.learningMemory || options.currentLearningObject || options.classroomEvidence) {
+    if (options.jitContext) collectAllowedCitationIds(JSON.stringify(options.jitContext), allowedCitationIds);
+    collectAllowedCitationIds(options.learningMemory, allowedCitationIds);
+    collectAllowedCitationIds(options.currentLearningObject, allowedCitationIds);
+    collectAllowedCitationIds(options.classroomEvidence, allowedCitationIds);
+  }
   const messages: (Message | ToolMessage)[] = [...initial];
+  if (streamReply && hasCitationTools && !initial.some(m => m.role === 'system' && m.content.includes('[[cite:'))) {
+    let insertAt = 0;
+    while (insertAt < messages.length && messages[insertAt]!.role === 'system') insertAt++;
+    messages.splice(insertAt, 0, { role: 'system', content: companionInlineCitationGuidance });
+  }
   const trace: string[] = [];
   const endpoint = providerEndpoint(options.provider);
   let emptyFindTools = 0;
@@ -259,7 +276,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
           await flushThinking();
           if (!options.onProgress && !options.onTextDelta) return;
           if (options.onProgress && Date.now() - lastPush >= 80) {
-            const message = publicAssistantContent(text).trimStart();
+            const message = sanitizeInlineCitations(stripIncompleteCiteSuffix(publicAssistantContent(text).trimStart()), allowedCitationIds);
             if (message !== lastText && message.trim() && message.length <= maxReply) {
               lastText = message;
               lastPush = Date.now();
@@ -267,7 +284,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
             }
           }
           if (!options.onTextDelta) return;
-          const visible = streamableAssistantText(text);
+          const visible = streamableAssistantText(text, allowedCitationIds);
           if (visible.length > maxReply || visible.length <= emittedDeltaText.length ||
               !visible.startsWith(emittedDeltaText)) return;
           const delta = visible.slice(emittedDeltaText.length);
@@ -294,7 +311,7 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       if (reply.toolCalls?.length) {
         await options.onProgress?.({ phase: toolProgressPhase(reply.toolCalls) });
       }
-      const message = publicAssistantContent(reply.content ?? '').trim();
+      const message = sanitizeInlineCitations(publicAssistantContent(reply.content ?? '').trim(), allowedCitationIds);
       // Only exchanges made entirely of recognized greeting and courtesy phrases can
       // exclude answer delivery. Tool, remote and JIT input remains unclassified.
       const phatic = options.trackPhaticReplies && reportedModel && !options.jitContext && !remotes.size && !reply.toolCalls &&
@@ -320,12 +337,15 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
       }
     }
     if (!reply.calls) {
-      if (!reply.message?.trim() && (options.learningTools?.writes() ?? workspace?.writes())?.length)
+      const writes = options.learningTools?.writes() ?? workspace?.writes();
+      for (const write of writes ?? []) collectAllowedCitationIds(write.id, allowedCitationIds);
+      const finalMessage = reply.message ? sanitizeInlineCitations(reply.message, allowedCitationIds).trim() : '';
+      if (!finalMessage && writes?.length)
         return {message:'已为你完成这次保存。之后可以在「我」页面随时查看、修改或撤回。',
           completion:'receipts_only' as const, trace, ...(reply.reportedModel ? {reportedModel:reply.reportedModel} : {}),
           ...(reply.usage ? {usage: reply.usage} : {})};
-      if (!reply.message?.trim() || reply.message.length > maxReply) throw new TeachingError('provider_response', '模型没有返回可用的答复。');
-      return { message: reply.message, ...(reply.reportedModel ? { reportedModel: reply.reportedModel } : {}),
+      if (!finalMessage || finalMessage.length > maxReply) throw new TeachingError('provider_response', '模型没有返回可用的答复。');
+      return { message: finalMessage, ...(reply.reportedModel ? { reportedModel: reply.reportedModel } : {}),
         ...(reply.usage ? {usage: reply.usage} : {}), ...(trace.length ? {trace} : {}) };
     }
     if (!available || (!tools && !learning && !options.beliefTools) ||
@@ -499,6 +519,10 @@ async function runStudyRounds(initial: Message[], options: StudyRunOptions, stre
     };
     function appendResult(call: FunctionCall, result: {content: string; preview?: string; summary: string; image?: StudyImage; delivery?: DeliveredToolRange}) {
       trace.push(result.summary);
+      if (!remotes.has(call.function.name) && !nonCitationTools.has(call.function.name) && toolResultStatus(result.content) !== 'error') {
+        collectAllowedCitationIds(result.content, allowedCitationIds);
+        collectAllowedCitationIds(result.preview, allowedCitationIds);
+      }
       const message: ToolResultMessage = {role: 'tool', tool_call_id: call.id, content: result.content, ...(result.image && {image:result.image})};
       if (result.delivery) deliveries.set(message, result.delivery);
       if (result.preview) previews.set(message, result.preview);

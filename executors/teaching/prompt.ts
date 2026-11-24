@@ -23,3 +23,6 @@ export const companionToolDiscipline =
 
 export const companionGenerativeUiGuidance =
   '交互式图解（Generative UI）：本轮已直接开放 mount_artifact。当解释物理或数学图景、函数曲线、受力示意图、概念对比、可调参数滑块直觉实验或简短互动小测时，优先主动调用 mount_artifact 在对话流中挂载一张清晰克制的交互组件卡片，再配合简练正文讲解；普通纯文字问答或寒暄无需硬塞组件，且仍须遵守 1–2 轮快速收口、不把无关写入拖成多轮串行等待的纪律。';
+
+export const companionInlineCitationGuidance =
+  '行内来源标注：当你依据从学习工具（open_learning、read_context、search_learning、learner_model 等）或本轮已获准上下文读到的具体概念、题目、试卷、错因、记忆或原件得出判断、引用事实时，请在对应句末用 [[cite:<26位记录ID>]] 标出实际依据的记录 ID（多个依据可连续写为 [[cite:<ID1>]][[cite:<ID2>]]）。仅标注本轮真正读到且实际用作依据的 26 位 ULID，严禁编造或猜测 ID；普通寒暄、通用学科常识或未引用具体记录的句子无需硬加。';
