@@ -3,7 +3,7 @@ import { readConceptAttemptEvidence } from '../../modules/activity/concept-evide
 import { buildNodePracticeInput, collectRedPenQuestionIds, mapQuickPaperDraft, type NodePracticeQuestion } from '../../modules/activity/node-practice-candidates.ts';
 import { verifyWorkspaceEntryBasis, workspaceEntry } from '../../modules/activity/workspace-values.ts';
 import { captureSourceType, sourceEnvelope } from '../../modules/capture/source.ts';
-import { parseAsset, questionPrompt } from '../../modules/content/asset.ts';
+import { applyAssetQuestionSolutions, parseAsset, questionPrompt, questionSolutionFields } from '../../modules/content/asset.ts';
 import { readAuthorizedKnowledgeGraph } from '../../modules/content/knowledge-graph-overview.ts';
 import { projectBatchConceptMastery } from '../../modules/learner/knowledge-mastery.ts';
 import { selectQuestionsForConceptNode } from '../../modules/plan/node-practice.ts';
@@ -43,14 +43,14 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
     });
     if (!graph.nodes.some(node => node.id === nodeId)) throw new RequestError(404, '找不到这个知识点。');
     const links = graph.questionConceptLinks.filter(l => l.conceptId === nodeId || graph.edges.some(e => e.kind === 'prereq_of' && e.toId === nodeId && e.fromId === l.conceptId));
-    const questions: NodePracticeQuestion[] = [], materialIds = new Set<FactId>();
+    const questions: NodePracticeQuestion[] = [], materialIds = new Set<FactId>(), solutions = new Map<FactId, ReturnType<typeof questionSolutionFields>>();
     for (const link of links) {
       const opened = await gated.fact(link.questionId, { mode: 'following' }).catch(e => isFactUnavailable(e) ? undefined : Promise.reject(e)) as FactSnapshot | undefined;
       if (!opened) continue;
       if (opened.type === 'content.asset') {
         const asset = parseAsset(opened.value);
         asset.basis?.forEach(source => { if (source.type === 'activity.textMaterial') materialIds.add(source.id); });
-        if (asset.kind === 'question' && questionPrompt(asset).trim()) questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'content.asset', prompt: questionPrompt(asset) });
+        if (asset.kind === 'question' && questionPrompt(asset).trim()) (solutions.set(opened.ref.id, questionSolutionFields(asset)), questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'content.asset', prompt: questionPrompt(asset) }));
       } else if (opened.type === 'activity.workspaceEntry') {
         const value = workspaceEntry(opened.value);
         if (value.kind === 'question' && value.body.trim()) questions.push({ id: opened.ref.id, rev: opened.ref.rev, kind: 'activity.workspaceEntry', prompt: value.body,
@@ -64,7 +64,7 @@ export async function issueGraphQuickPaperResponse(db: Db, workbook: ReturnType<
     const mastery = projectBatchConceptMastery({ asOf: new Date().toISOString(), conceptIds: graph.nodes.map(i => i.id), attempts: evidence.attempts, forecasts: [], incompleteConceptIds: evidence.incompleteConceptIds, activeMisconceptionConceptIds: new Set() });
     const selection = selectQuestionsForConceptNode(buildNodePracticeInput({ graph, nodeId, masteryByConcept: mastery, attempts: evidence.attempts, readableQuestions: questions, ...(count === undefined ? {} : { count }) }));
     if (selection.kind === 'empty') return selection;
-    const draft = mapQuickPaperDraft({ ...selection, questionRefs: selection.questionRefs.map(factId) }, questions);
+    const rawDraft = mapQuickPaperDraft({ ...selection, questionRefs: selection.questionRefs.map(factId) }, questions), draft = rawDraft && applyAssetQuestionSolutions(rawDraft, solutions);
     return draft ? { kind: 'ready' as const, selection, draft } : { kind: 'empty' as const, suggestedAction: 'start_classroom' as const, reason: '该知识点尚未收录可自测题，建议先开 10 分钟微课或拍入相关练习。' as const };
   });
   if (prepared.kind !== 'ready') return { status: 200, body: prepared };

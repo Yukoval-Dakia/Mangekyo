@@ -8,7 +8,7 @@ import { fields, list, pageId, record, revision, text } from './parse.ts';
 
 export function parseCreateKnowledgeEntity(input: unknown) {
   const value = record(input);
-  fields(value, 'id', 'entity', 'purpose', 'resolution');
+  fields(value, 'id', 'entity', 'purpose', 'resolution', 'summary');
   const entity = parseKnowledgeEntity(value.entity);
   if (entity.merged_into !== null) throw new Error('请通过合并命令建立实体重定向。');
   const purpose: unknown = value.purpose ?? 'storage';
@@ -21,14 +21,21 @@ export function parseCreateKnowledgeEntity(input: unknown) {
   if (candidates.length > 32 || sources.length === 0 || sources.length > 32) {
     throw new Error('规范实体需要已打开的来源和有界的候选集合。');
   }
+  let summary: string | undefined;
+  if (value.summary !== undefined && value.summary !== null) {
+    const trimmed = text(value.summary, '概念摘要', true).trim();
+    if (trimmed.length > 600) throw new Error('概念摘要超过 600 字。');
+    if (trimmed) summary = trimmed;
+  }
   return {
     id: pageId(value.id), entity, purpose: purpose === 'teaching' ? 'teaching' as const : 'storage' as const,
     candidates, sources, reason: text(resolution.reason, '无匹配依据'),
+    ...(summary ? { summary } : {}),
   };
 }
 
 export async function createKnowledgeEntity(
-  ctx: CommandContext, { id, entity, purpose, candidates, sources }: ReturnType<typeof parseCreateKnowledgeEntity>,
+  ctx: CommandContext, { id, entity, purpose, candidates, sources, summary }: ReturnType<typeof parseCreateKnowledgeEntity>,
 ): Promise<readonly FactWrite[]> {
   const uses = await Promise.all(sources.map(use => readKnowledgeUse(ctx, use)));
   const names = [entity.canonicalName, ...entity.aliases].map(normalizeKnowledgeName);
@@ -61,7 +68,8 @@ export async function createKnowledgeEntity(
   })));
   const { canonicalName: title, ...canonical } = entity;
   const basis = uses.map(fact => ({ id: fact.ref.id, rev: fact.ref.rev, epoch: fact.accessEpoch, type: fact.type }));
-  return [{ kind: 'create', id, factType: assetType, data: { ...canonical, title, blocks: [], basis }, purpose: allowed }, ...claims];
+  const blocks = summary ? [{ id: 'summary', parentId: null, body: { kind: 'text' as const, text: summary } }] : [];
+  return [{ kind: 'create', id, factType: assetType, data: { ...canonical, title, blocks, basis }, purpose: allowed }, ...claims];
 }
 
 export function parseMergeKnowledgeEntity(input: unknown) {

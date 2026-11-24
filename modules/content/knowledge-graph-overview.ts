@@ -1,5 +1,5 @@
 import { FactNotFoundError, factId, type FactId, type FactSnapshot, type LearnerId, type Revision, type Tick } from '@mangekyo/kernel';
-import { AssetBasisError, assetType, checkTextbookBasis, parseAsset } from './asset.ts';
+import { AssetBasisError, assetSummary, assetType, checkTextbookBasis, parseAsset } from './asset.ts';
 import { evolveGraphCommand, parseGraphEvolution } from './graph-evolution.ts';
 import {
   createKnowledgeEdgeCommand, KnowledgeEdgeBasisError, knowledgeEdgeType, knowledgeEndpointKind,
@@ -216,7 +216,7 @@ export async function readAuthorizedKnowledgeGraph(
         if (!nodeMap.has(snapshot.ref.id)) {
           nodeMap.set(snapshot.ref.id, {
             id: snapshot.ref.id, rev: snapshot.ref.rev, factType: assetType,
-            title: entity.canonicalName, aliases: [...entity.aliases], summary: null,
+            title: entity.canonicalName, aliases: [...entity.aliases], summary: assetSummary(parseAsset(snapshot.value)),
           });
           ensureCounts(snapshot.ref.id);
         }
