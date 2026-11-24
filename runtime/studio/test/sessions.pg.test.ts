@@ -65,6 +65,7 @@ it.skipIf(!testDatabaseUrl)('enables workspace tools for authorized attachment t
     // materialId-only + workspace authorized + account confirmed → full tool stack
     access(true);
     const fullId = await material(db, 'full', text, true);
+    const deniedId = await material(db, 'denied', '未授教学用途的材料。', false);
     const first = await studio.start('companion', 'req-full', '这材料讲了什么？', {id: fullId, mode: 'ask'}, undefined, route);
     const firstTurn = await saved(db, first.id);
     expect(firstTurn).toMatchObject({workspaceRevision: 'wrev-1', learningToolsVersion: 1, memoryVersion: 1,
@@ -83,6 +84,9 @@ it.skipIf(!testDatabaseUrl)('enables workspace tools for authorized attachment t
     const followHandle = createCommandHandler(db, {modules: [activity], hooks: {async onFactsChanged() {}}});
     await followHandle({learner: studioLearner, actor: 'learner', purpose: 'teaching', type: 'activity.submitTurn',
       id: commandId(stableId('follow-origin')), input: {id: followParent, data: followOrigin}});
+    const epochOf = async (id: string) => (await db.snapshot({learner: studioLearner}, async tx =>
+      (await tx.query<{epoch: string}>(`SELECT access_epoch::text AS epoch FROM facts WHERE learner_id=$1 AND id=$2`, [tx.learner, id])).rows[0]?.epoch))!;
+    const fullEpoch = await epochOf(fullId), deniedEpoch = await epochOf(deniedId);
     await db.tx({learner: studioLearner}, tx => tx.withLearnerWrite(async tick => {
       const fbId = stableId('follow-fb');
       const manifest = JSON.stringify({version: 1, learner: studioLearner, purpose: 'teaching', gatherTick: tick,
@@ -91,7 +95,9 @@ it.skipIf(!testDatabaseUrl)('enables workspace tools for authorized attachment t
         slot_key: followParent, deriver: 'activity/evidence-tutor-learning-tools-v1', scope_keys: '{}',
         value: JSON.stringify({action: 'companion_reply', model: 'm-test', rationale: 'ok', message: '首轮回复',
           evidenceIds: [], reads: [], trace: [],
-          workspaceBasis: [{id: fullId, rev: 1, epoch: '0', type: 'activity.textMaterial'},
+          workspaceBasis: [{id: fullId, rev: 1, epoch: fullEpoch, type: 'activity.textMaterial'},
+            {id: fullId, rev: 1, epoch: '999', type: 'activity.textMaterial'},
+            {id: deniedId, rev: 1, epoch: deniedEpoch, type: 'activity.textMaterial'},
             {id: stableId('missing-basis'), rev: 1, epoch: '0', type: 'content.asset'}]}), lifecycle: 'effective', freshness: 'current',
         gather_tick: tick, effective_tick: tick, manifest});
       await tx.insert('slot_state', {learner_id: studioLearner, slot_type: 'activity.teachingFeedback',
@@ -99,7 +105,9 @@ it.skipIf(!testDatabaseUrl)('enables workspace tools for authorized attachment t
     }));
     const enriched = await getSession(db, followParent);
     expect(enriched.turns[0]?.workspaceBasis).toEqual([
-      {id: fullId, rev: 1, epoch: '0', type: 'activity.textMaterial', title: '材料', kind: 'material'},
+      {id: fullId, rev: 1, epoch: fullEpoch, type: 'activity.textMaterial', title: '材料', kind: 'material'},
+      {id: fullId, rev: 1, epoch: '999', type: 'activity.textMaterial'},
+      {id: deniedId, rev: 1, epoch: deniedEpoch, type: 'activity.textMaterial'},
       {id: stableId('missing-basis'), rev: 1, epoch: '0', type: 'content.asset'},
     ]);
     const follow = await studio.answer(followParent, followParent, '继续追问', 'req-follow', undefined, route);
